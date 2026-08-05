@@ -22,99 +22,48 @@
 // comparison.
 
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
-use std::sync::{Mutex, OnceLock};
+use std::sync::OnceLock;
 use std::time::Instant;
 
-use rusqlite::{Connection, OpenFlags, OptionalExtension};
-use tracing::{debug, info, warn};
+use rusqlite::{Connection, OptionalExtension};
+use tracing::debug;
 
 use zaparoo_core::media_types::{
     MediaMeta, MediaMetaParams, MediaMetaProperty, MediaMetaSystemRef, MediaMetaTitle, TagInfo,
 };
 
-/// Tables this module queries. Verified at open so a Core schema change
-/// turns the layer off instead of producing wrong metadata.
-const REQUIRED_TABLES: &[&str] = &[
-    "Media",
-    "MediaTitles",
-    "Systems",
-    "MediaTags",
-    "MediaTitleTags",
-    "Tags",
-    "TagTypes",
-    "MediaProperties",
-    "MediaTitleProperties",
-];
+use crate::media_db::{ReadDb, ReadDbSpec, MEDIA_DB_PATH};
 
-struct MetaDb {
-    conn: Mutex<Option<Connection>>,
-    db_path: PathBuf,
-}
+static META_DB: OnceLock<Option<ReadDb>> = OnceLock::new();
 
-static META_DB: OnceLock<Option<MetaDb>> = OnceLock::new();
+static SPEC: ReadDbSpec = ReadDbSpec {
+    domain: "media_meta_db",
+    env_switch: "ZAPAROO_FRONTEND_DB_META",
+    db_path: MEDIA_DB_PATH,
+    required_tables: &[
+        "Media",
+        "MediaTitles",
+        "Systems",
+        "MediaTags",
+        "MediaTitleTags",
+        "Tags",
+        "TagTypes",
+        "MediaProperties",
+        "MediaTitleProperties",
+    ],
+    uri: false,
+    prepare: None,
+    active_msg: "direct metadata active",
+    fallback_msg: "metadata uses RPC only",
+};
 
-fn meta_db() -> Option<&'static MetaDb> {
-    META_DB
-        .get_or_init(|| {
-            let disabled = std::env::var("ZAPAROO_FRONTEND_DB_META")
-                .is_ok_and(|v| v == "0" || v.eq_ignore_ascii_case("off"));
-            if disabled {
-                info!("media_meta_db: disabled via ZAPAROO_FRONTEND_DB_META");
-                return None;
-            }
-            let db_path = PathBuf::from(crate::media_art_db::MEDIA_DB_PATH);
-            if !db_path.is_file() {
-                return None;
-            }
-            match open_checked(&db_path) {
-                Ok(conn) => {
-                    info!(db = %db_path.display(), "media_meta_db: direct metadata active");
-                    Some(MetaDb {
-                        conn: Mutex::new(Some(conn)),
-                        db_path,
-                    })
-                }
-                Err(e) => {
-                    warn!("media_meta_db: unavailable ({e}), metadata uses RPC only");
-                    None
-                }
-            }
-        })
-        .as_ref()
+fn meta_db() -> Option<&'static ReadDb> {
+    META_DB.get_or_init(|| ReadDb::init(&SPEC)).as_ref()
 }
 
 /// Whether the direct metadata layer initialized.
 pub fn enabled() -> bool {
     meta_db().is_some()
-}
-
-fn open_checked(db_path: &Path) -> Result<Connection, String> {
-    let conn = Connection::open_with_flags(
-        db_path,
-        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
-    )
-    .map_err(|e| e.to_string())?;
-    conn.busy_timeout(std::time::Duration::from_millis(200))
-        .map_err(|e| e.to_string())?;
-    let placeholders = vec!["?"; REQUIRED_TABLES.len()].join(",");
-    let sql = format!(
-        "SELECT count(*) FROM sqlite_master WHERE type='table' AND name IN ({placeholders})"
-    );
-    let n: i64 = conn
-        .query_row(
-            &sql,
-            rusqlite::params_from_iter(REQUIRED_TABLES.iter()),
-            |r| r.get(0),
-        )
-        .map_err(|e| e.to_string())?;
-    let expected = i64::try_from(REQUIRED_TABLES.len()).unwrap_or(i64::MAX);
-    if n != expected {
-        return Err(format!(
-            "expected {expected} known tables, found {n} — Core schema changed, refusing to guess"
-        ));
-    }
-    Ok(conn)
 }
 
 /// Async wrapper for call sites living on the runtime: the lookup is a
@@ -136,34 +85,15 @@ pub async fn media_meta_async(params: MediaMetaParams) -> Option<MediaMeta> {
 pub fn media_meta(params: &MediaMetaParams) -> Option<MediaMeta> {
     let db = meta_db()?;
     let started = Instant::now();
-    #[allow(clippy::unwrap_used, reason = "Mutex poisoning is unrecoverable")]
-    let mut guard = db.conn.lock().unwrap();
-    if guard.is_none() {
-        match open_checked(&db.db_path) {
-            Ok(conn) => *guard = Some(conn),
-            Err(e) => {
-                debug!("media_meta_db: reopen failed ({e})");
-                return None;
-            }
-        }
-    }
-    let conn = guard.as_ref()?;
-    match lookup_meta(conn, params) {
-        Ok(result) => {
-            if result.is_some() {
-                debug!(
-                    lookup_ms = started.elapsed().as_millis(),
-                    "media_meta_db: metadata resolved",
-                );
-            }
-            result
-        }
-        Err(e) => {
-            warn!("media_meta_db: query failed ({e}), dropping connection; metadata falls back to RPC");
-            *guard = None;
-            None
-        }
-    }
+    let result = db.with_conn(
+        || format!("meta lookup media_id={:?}", params.media_id),
+        |conn| lookup_meta(conn, params),
+    )??;
+    debug!(
+        lookup_ms = started.elapsed().as_millis(),
+        "media_meta_db: metadata resolved",
+    );
+    Some(result)
 }
 
 fn lookup_meta(conn: &Connection, params: &MediaMetaParams) -> rusqlite::Result<Option<MediaMeta>> {

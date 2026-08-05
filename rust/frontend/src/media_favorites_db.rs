@@ -29,55 +29,32 @@
 // `ZAPAROO_FRONTEND_DB_FAVORITES=0` disables the layer at runtime for
 // A/B comparison.
 
-use std::path::{Path, PathBuf};
-use std::sync::{Mutex, OnceLock};
+use std::sync::OnceLock;
 use std::time::Instant;
 
 use rusqlite::types::Value;
-use rusqlite::{Connection, OpenFlags};
-use tracing::{debug, info, warn};
+use rusqlite::Connection;
+use tracing::debug;
 
 use zaparoo_core::media_types::{MediaItem, System, TagInfo};
 
-/// Tables this module queries. Verified at open so a Core schema change
-/// turns the layer off instead of producing wrong favorites.
-const REQUIRED_TABLES: &[&str] = &["Media", "Systems", "MediaTags", "Tags", "TagTypes"];
+use crate::media_db::{ReadDb, ReadDbSpec, MEDIA_DB_PATH};
 
-struct FavoritesDb {
-    conn: Mutex<Option<Connection>>,
-    db_path: PathBuf,
-}
+static FAVORITES_DB: OnceLock<Option<ReadDb>> = OnceLock::new();
 
-static FAVORITES_DB: OnceLock<Option<FavoritesDb>> = OnceLock::new();
+static SPEC: ReadDbSpec = ReadDbSpec {
+    domain: "media_favorites_db",
+    env_switch: "ZAPAROO_FRONTEND_DB_FAVORITES",
+    db_path: MEDIA_DB_PATH,
+    required_tables: &["Media", "Systems", "MediaTags", "Tags", "TagTypes"],
+    uri: false,
+    prepare: None,
+    active_msg: "direct favorites listing active",
+    fallback_msg: "favorites use RPC only",
+};
 
-fn favorites_db() -> Option<&'static FavoritesDb> {
-    FAVORITES_DB
-        .get_or_init(|| {
-            let disabled = std::env::var("ZAPAROO_FRONTEND_DB_FAVORITES")
-                .is_ok_and(|v| v == "0" || v.eq_ignore_ascii_case("off"));
-            if disabled {
-                info!("media_favorites_db: disabled via ZAPAROO_FRONTEND_DB_FAVORITES");
-                return None;
-            }
-            let db_path = PathBuf::from(crate::media_art_db::MEDIA_DB_PATH);
-            if !db_path.is_file() {
-                return None;
-            }
-            match open_checked(&db_path) {
-                Ok(conn) => {
-                    info!(db = %db_path.display(), "media_favorites_db: direct favorites listing active");
-                    Some(FavoritesDb {
-                        conn: Mutex::new(Some(conn)),
-                        db_path,
-                    })
-                }
-                Err(e) => {
-                    warn!("media_favorites_db: unavailable ({e}), favorites use RPC only");
-                    None
-                }
-            }
-        })
-        .as_ref()
+fn favorites_db() -> Option<&'static ReadDb> {
+    FAVORITES_DB.get_or_init(|| ReadDb::init(&SPEC)).as_ref()
 }
 
 /// Whether the direct favorites layer initialized. Says the database is
@@ -85,34 +62,6 @@ fn favorites_db() -> Option<&'static FavoritesDb> {
 /// return `None` per call on query errors.
 pub fn enabled() -> bool {
     favorites_db().is_some()
-}
-
-fn open_checked(db_path: &Path) -> Result<Connection, String> {
-    let conn = Connection::open_with_flags(
-        db_path,
-        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
-    )
-    .map_err(|e| e.to_string())?;
-    conn.busy_timeout(std::time::Duration::from_millis(200))
-        .map_err(|e| e.to_string())?;
-    let placeholders = vec!["?"; REQUIRED_TABLES.len()].join(",");
-    let sql = format!(
-        "SELECT count(*) FROM sqlite_master WHERE type='table' AND name IN ({placeholders})"
-    );
-    let n: i64 = conn
-        .query_row(
-            &sql,
-            rusqlite::params_from_iter(REQUIRED_TABLES.iter()),
-            |r| r.get(0),
-        )
-        .map_err(|e| e.to_string())?;
-    let expected = i64::try_from(REQUIRED_TABLES.len()).unwrap_or(i64::MAX);
-    if n != expected {
-        return Err(format!(
-            "expected {expected} known tables, found {n} — Core schema changed, refusing to guess"
-        ));
-    }
-    Ok(conn)
 }
 
 /// The complete favorite set, in one query. Returns `None` whenever the
@@ -128,40 +77,19 @@ pub fn favorites(cancelled: &(dyn Fn() -> bool + Sync)) -> Option<Vec<MediaItem>
         return None;
     }
     let started = Instant::now();
-    #[allow(clippy::unwrap_used, reason = "Mutex poisoning is unrecoverable")]
-    let mut guard = db.conn.lock().unwrap();
-    if guard.is_none() {
-        match open_checked(&db.db_path) {
-            Ok(conn) => *guard = Some(conn),
-            Err(e) => {
-                debug!("media_favorites_db: reopen failed ({e})");
-                return None;
-            }
-        }
+    let items = db.with_conn(
+        || "favorites listing".to_string(),
+        |conn| list_favorites(conn, cancelled),
+    )??;
+    if cancelled() {
+        return None;
     }
-    let conn = guard.as_ref()?;
-    match list_favorites(conn, cancelled) {
-        Ok(result) => {
-            if cancelled() {
-                return None;
-            }
-            if let Some(items) = &result {
-                debug!(
-                    entries = items.len(),
-                    lookup_ms = started.elapsed().as_millis(),
-                    "media_favorites_db: favorites listed",
-                );
-            }
-            result
-        }
-        Err(e) => {
-            warn!(
-                "media_favorites_db: query failed ({e}), dropping connection; favorites fall back to RPC"
-            );
-            *guard = None;
-            None
-        }
-    }
+    debug!(
+        entries = items.len(),
+        lookup_ms = started.elapsed().as_millis(),
+        "media_favorites_db: favorites listed",
+    );
+    Some(items)
 }
 
 fn list_favorites(

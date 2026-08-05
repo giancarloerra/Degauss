@@ -39,67 +39,44 @@
 // comparison.
 
 use std::fmt::Write as _;
-use std::path::{Path, PathBuf};
-use std::sync::{Mutex, OnceLock};
+use std::sync::OnceLock;
 use std::time::Instant;
 
 use rusqlite::types::Value;
-use rusqlite::{Connection, OpenFlags, OptionalExtension};
-use tracing::{debug, info, warn};
+use rusqlite::{Connection, OptionalExtension};
+use tracing::debug;
 
 use zaparoo_core::media_types::{BrowseEntry, MediaBrowseResult, TagInfo};
 
-/// Tables this module queries. Verified at open so a Core schema change
-/// turns the layer off instead of producing wrong listings.
-const REQUIRED_TABLES: &[&str] = &[
-    "Media",
-    "Systems",
-    "MediaTitles",
-    "BrowseDirs",
-    "BrowseDirCounts",
-    "MediaTags",
-    "Tags",
-    "TagTypes",
-    "DBConfig",
-    "MediaProperties",
-    "MediaTitleProperties",
-];
+use crate::media_db::{ReadDb, ReadDbSpec, MEDIA_DB_PATH};
 
-struct BrowseDb {
-    conn: Mutex<Option<Connection>>,
-    db_path: PathBuf,
-}
+static BROWSE_DB: OnceLock<Option<ReadDb>> = OnceLock::new();
 
-static BROWSE_DB: OnceLock<Option<BrowseDb>> = OnceLock::new();
+static SPEC: ReadDbSpec = ReadDbSpec {
+    domain: "media_browse_db",
+    env_switch: "ZAPAROO_FRONTEND_DB_BROWSE",
+    db_path: MEDIA_DB_PATH,
+    required_tables: &[
+        "Media",
+        "Systems",
+        "MediaTitles",
+        "BrowseDirs",
+        "BrowseDirCounts",
+        "MediaTags",
+        "Tags",
+        "TagTypes",
+        "DBConfig",
+        "MediaProperties",
+        "MediaTitleProperties",
+    ],
+    uri: false,
+    prepare: None,
+    active_msg: "direct folder listing active",
+    fallback_msg: "listings use RPC only",
+};
 
-fn browse_db() -> Option<&'static BrowseDb> {
-    BROWSE_DB
-        .get_or_init(|| {
-            let disabled = std::env::var("ZAPAROO_FRONTEND_DB_BROWSE")
-                .is_ok_and(|v| v == "0" || v.eq_ignore_ascii_case("off"));
-            if disabled {
-                info!("media_browse_db: disabled via ZAPAROO_FRONTEND_DB_BROWSE");
-                return None;
-            }
-            let db_path = PathBuf::from(crate::media_art_db::MEDIA_DB_PATH);
-            if !db_path.is_file() {
-                return None;
-            }
-            match open_checked(&db_path) {
-                Ok(conn) => {
-                    info!(db = %db_path.display(), "media_browse_db: direct folder listing active");
-                    Some(BrowseDb {
-                        conn: Mutex::new(Some(conn)),
-                        db_path,
-                    })
-                }
-                Err(e) => {
-                    warn!("media_browse_db: unavailable ({e}), listings use RPC only");
-                    None
-                }
-            }
-        })
-        .as_ref()
+fn browse_db() -> Option<&'static ReadDb> {
+    BROWSE_DB.get_or_init(|| ReadDb::init(&SPEC)).as_ref()
 }
 
 /// Whether the direct listing layer initialized. A `true` here does not
@@ -108,34 +85,6 @@ fn browse_db() -> Option<&'static BrowseDb> {
 /// says the database is present, readable, and schema-compatible.
 pub fn enabled() -> bool {
     browse_db().is_some()
-}
-
-fn open_checked(db_path: &Path) -> Result<Connection, String> {
-    let conn = Connection::open_with_flags(
-        db_path,
-        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
-    )
-    .map_err(|e| e.to_string())?;
-    conn.busy_timeout(std::time::Duration::from_millis(200))
-        .map_err(|e| e.to_string())?;
-    let placeholders = vec!["?"; REQUIRED_TABLES.len()].join(",");
-    let sql = format!(
-        "SELECT count(*) FROM sqlite_master WHERE type='table' AND name IN ({placeholders})"
-    );
-    let n: i64 = conn
-        .query_row(
-            &sql,
-            rusqlite::params_from_iter(REQUIRED_TABLES.iter()),
-            |r| r.get(0),
-        )
-        .map_err(|e| e.to_string())?;
-    let expected = i64::try_from(REQUIRED_TABLES.len()).unwrap_or(i64::MAX);
-    if n != expected {
-        return Err(format!(
-            "expected {expected} known tables, found {n} — Core schema changed, refusing to guess"
-        ));
-    }
-    Ok(conn)
 }
 
 /// List a folder straight from the database. Returns `None` whenever the
@@ -158,43 +107,21 @@ pub fn browse_folder(
         return None;
     }
     let started = Instant::now();
-    #[allow(clippy::unwrap_used, reason = "Mutex poisoning is unrecoverable")]
-    let mut guard = db.conn.lock().unwrap();
-    if guard.is_none() {
-        // A previous call dropped the connection after an error; try a
-        // fresh open so one transient failure (e.g. mid-reindex churn)
-        // does not disable the layer for the whole session.
-        match open_checked(&db.db_path) {
-            Ok(conn) => *guard = Some(conn),
-            Err(e) => {
-                debug!("media_browse_db: reopen failed ({e})");
-                return None;
-            }
-        }
+    let result = db.with_conn(
+        || format!("folder listing path={path}"),
+        |conn| list_folder(conn, path, systems, cancelled),
+    )??;
+    if cancelled() {
+        return None;
     }
-    let conn = guard.as_ref()?;
-    match list_folder(conn, path, systems, cancelled) {
-        Ok(result) => {
-            if cancelled() {
-                return None;
-            }
-            if let Some(r) = &result {
-                debug!(
-                    ?path,
-                    entries = r.entries.len(),
-                    total_files = r.total_files,
-                    lookup_ms = started.elapsed().as_millis(),
-                    "media_browse_db: folder listed",
-                );
-            }
-            result
-        }
-        Err(e) => {
-            warn!("media_browse_db: query failed ({e}), dropping connection; listing falls back to RPC");
-            *guard = None;
-            None
-        }
-    }
+    debug!(
+        ?path,
+        entries = result.entries.len(),
+        total_files = result.total_files,
+        lookup_ms = started.elapsed().as_millis(),
+        "media_browse_db: folder listed",
+    );
+    Some(result)
 }
 
 /// SQL fragment `?N,?N+1,...` for `len` placeholders starting at `start`.

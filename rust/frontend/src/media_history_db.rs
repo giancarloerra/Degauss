@@ -24,60 +24,36 @@
 // `ZAPAROO_FRONTEND_DB_HISTORY=0` disables the layer at runtime for
 // A/B comparison.
 
-use std::path::{Path, PathBuf};
-use std::sync::{Mutex, OnceLock};
+use std::sync::OnceLock;
 use std::time::Instant;
 
-use rusqlite::{Connection, OpenFlags};
+use rusqlite::Connection;
 use time::format_description::well_known::Rfc3339;
 use time::OffsetDateTime;
-use tracing::{debug, info, warn};
+use tracing::debug;
 
 use zaparoo_core::media_types::MediaHistoryEntry;
+
+use crate::media_db::{ReadDb, ReadDbSpec};
 
 /// Core's user database on the card, next to the media database.
 const USER_DB_PATH: &str = "/media/fat/zaparoo/user.db";
 
-/// Tables this module queries in `user.db`. Verified at open so a Core
-/// schema change turns the layer off instead of producing wrong
-/// history.
-const REQUIRED_TABLES: &[&str] = &["MediaHistory"];
+static HISTORY_DB: OnceLock<Option<ReadDb>> = OnceLock::new();
 
-struct HistoryDb {
-    conn: Mutex<Option<Connection>>,
-    db_path: PathBuf,
-}
+static SPEC: ReadDbSpec = ReadDbSpec {
+    domain: "media_history_db",
+    env_switch: "ZAPAROO_FRONTEND_DB_HISTORY",
+    db_path: USER_DB_PATH,
+    required_tables: &["MediaHistory"],
+    uri: true,
+    prepare: Some(attach_media_db),
+    active_msg: "direct history listing active",
+    fallback_msg: "history uses RPC only",
+};
 
-static HISTORY_DB: OnceLock<Option<HistoryDb>> = OnceLock::new();
-
-fn history_db() -> Option<&'static HistoryDb> {
-    HISTORY_DB
-        .get_or_init(|| {
-            let disabled = std::env::var("ZAPAROO_FRONTEND_DB_HISTORY")
-                .is_ok_and(|v| v == "0" || v.eq_ignore_ascii_case("off"));
-            if disabled {
-                info!("media_history_db: disabled via ZAPAROO_FRONTEND_DB_HISTORY");
-                return None;
-            }
-            let db_path = PathBuf::from(USER_DB_PATH);
-            if !db_path.is_file() {
-                return None;
-            }
-            match open_checked(&db_path) {
-                Ok(conn) => {
-                    info!(db = %db_path.display(), "media_history_db: direct history listing active");
-                    Some(HistoryDb {
-                        conn: Mutex::new(Some(conn)),
-                        db_path,
-                    })
-                }
-                Err(e) => {
-                    warn!("media_history_db: unavailable ({e}), history uses RPC only");
-                    None
-                }
-            }
-        })
-        .as_ref()
+fn history_db() -> Option<&'static ReadDb> {
+    HISTORY_DB.get_or_init(|| ReadDb::init(&SPEC)).as_ref()
 }
 
 /// Whether the direct history layer initialized.
@@ -85,44 +61,17 @@ pub fn enabled() -> bool {
     history_db().is_some()
 }
 
-fn open_checked(db_path: &Path) -> Result<Connection, String> {
-    let conn = Connection::open_with_flags(
-        db_path,
-        OpenFlags::SQLITE_OPEN_READ_ONLY
-            | OpenFlags::SQLITE_OPEN_NO_MUTEX
-            | OpenFlags::SQLITE_OPEN_URI,
-    )
-    .map_err(|e| e.to_string())?;
-    conn.busy_timeout(std::time::Duration::from_millis(200))
-        .map_err(|e| e.to_string())?;
-    let placeholders = vec!["?"; REQUIRED_TABLES.len()].join(",");
-    let sql = format!(
-        "SELECT count(*) FROM sqlite_master WHERE type='table' AND name IN ({placeholders})"
-    );
-    let n: i64 = conn
-        .query_row(
-            &sql,
-            rusqlite::params_from_iter(REQUIRED_TABLES.iter()),
-            |r| r.get(0),
-        )
-        .map_err(|e| e.to_string())?;
-    let expected = i64::try_from(REQUIRED_TABLES.len()).unwrap_or(i64::MAX);
-    if n != expected {
-        return Err(format!(
-            "expected {expected} known tables, found {n} — Core schema changed, refusing to guess"
-        ));
-    }
-    // Best-effort media-id resolution: attach the media database
-    // read-only. Attachment failure is not fatal — entries then carry
-    // `media_id: None` and the cover pipeline resolves by path.
+/// Best-effort media-id resolution: attach the media database
+/// read-only. Attachment failure is not fatal — entries then carry
+/// `media_id: None` and the cover pipeline resolves by path.
+fn attach_media_db(conn: &Connection) {
     let media_uri = format!(
         "file:{}?mode=ro",
-        crate::media_art_db::MEDIA_DB_PATH.replace('?', "%3F")
+        crate::media_db::MEDIA_DB_PATH.replace('?', "%3F")
     );
     if let Err(e) = conn.execute("ATTACH DATABASE ?1 AS mediadb", [&media_uri]) {
         debug!("media_history_db: media db attach failed ({e}); media ids unresolved");
     }
-    Ok(conn)
 }
 
 fn media_attached(conn: &Connection) -> bool {
@@ -145,40 +94,19 @@ pub fn history(cancelled: &(dyn Fn() -> bool + Sync)) -> Option<Vec<MediaHistory
         return None;
     }
     let started = Instant::now();
-    #[allow(clippy::unwrap_used, reason = "Mutex poisoning is unrecoverable")]
-    let mut guard = db.conn.lock().unwrap();
-    if guard.is_none() {
-        match open_checked(&db.db_path) {
-            Ok(conn) => *guard = Some(conn),
-            Err(e) => {
-                debug!("media_history_db: reopen failed ({e})");
-                return None;
-            }
-        }
+    let items = db.with_conn(
+        || "history listing".to_string(),
+        |conn| list_history(conn, media_attached(conn), cancelled),
+    )??;
+    if cancelled() {
+        return None;
     }
-    let conn = guard.as_ref()?;
-    match list_history(conn, media_attached(conn), cancelled) {
-        Ok(result) => {
-            if cancelled() {
-                return None;
-            }
-            if let Some(items) = &result {
-                debug!(
-                    entries = items.len(),
-                    lookup_ms = started.elapsed().as_millis(),
-                    "media_history_db: history listed",
-                );
-            }
-            result
-        }
-        Err(e) => {
-            warn!(
-                "media_history_db: query failed ({e}), dropping connection; history falls back to RPC"
-            );
-            *guard = None;
-            None
-        }
-    }
+    debug!(
+        entries = items.len(),
+        lookup_ms = started.elapsed().as_millis(),
+        "media_history_db: history listed",
+    );
+    Some(items)
 }
 
 fn list_history(

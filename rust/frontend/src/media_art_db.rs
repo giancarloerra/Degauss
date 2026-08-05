@@ -36,14 +36,12 @@
 // comparison.
 
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, OnceLock};
+use std::sync::OnceLock;
 
-use rusqlite::{Connection, OpenFlags};
-use tracing::{debug, info, warn};
+use rusqlite::Connection;
 
+use crate::media_db::{ReadDb, ReadDbSpec, MEDIA_DB_PATH};
 use crate::media_image_cache::MediaKey;
-
-pub(crate) const MEDIA_DB_PATH: &str = "/media/fat/zaparoo/media.db";
 
 /// Cap on candidates returned per lookup: bounds the file-read retries
 /// the caller performs when leading candidates point at dead files.
@@ -74,84 +72,21 @@ pub struct ArtHit {
     pub type_tag: String,
 }
 
-struct ArtDb {
-    conn: Mutex<Option<Connection>>,
-    db_path: PathBuf,
-}
+static ART_DB: OnceLock<Option<ReadDb>> = OnceLock::new();
 
-static ART_DB: OnceLock<Option<ArtDb>> = OnceLock::new();
+static SPEC: ReadDbSpec = ReadDbSpec {
+    domain: "media_art_db",
+    env_switch: "ZAPAROO_FRONTEND_DB_ART",
+    db_path: MEDIA_DB_PATH,
+    required_tables: &["Media", "MediaProperties", "MediaTitleProperties", "Tags"],
+    uri: false,
+    prepare: None,
+    active_msg: "direct art lookup active",
+    fallback_msg: "covers use RPC only",
+};
 
-fn art_db() -> Option<&'static ArtDb> {
-    ART_DB
-        .get_or_init(|| {
-            let disabled = std::env::var("ZAPAROO_FRONTEND_DB_ART")
-                .is_ok_and(|v| v == "0" || v.eq_ignore_ascii_case("off"));
-            if disabled {
-                info!("media_art_db: disabled via ZAPAROO_FRONTEND_DB_ART");
-                return None;
-            }
-            let db_path = PathBuf::from(MEDIA_DB_PATH);
-            if !db_path.is_file() {
-                return None;
-            }
-            match open_checked(&db_path) {
-                Ok(conn) => {
-                    info!(db = %db_path.display(), "media_art_db: direct art lookup active");
-                    Some(ArtDb {
-                        conn: Mutex::new(Some(conn)),
-                        db_path,
-                    })
-                }
-                Err(e) => {
-                    warn!("media_art_db: unavailable ({e}), covers use RPC only");
-                    None
-                }
-            }
-        })
-        .as_ref()
-}
-
-/// Open read-only and verify the tables this module queries actually
-/// exist, so a future Core schema change turns the layer off instead of
-/// producing wrong answers.
-fn open_checked(db_path: &Path) -> Result<Connection, String> {
-    let conn = Connection::open_with_flags(
-        db_path,
-        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
-    )
-    .map_err(|e| {
-        // A WAL-mode database opened read-only needs the -shm/-wal
-        // sidecars to be accessible; SQLITE_READONLY_CANTINIT is the
-        // specific "cannot initialize WAL under these permissions"
-        // failure, worth naming so a permissions problem on the card
-        // is diagnosable from the log rather than a generic open error.
-        if let rusqlite::Error::SqliteFailure(ffi_err, _) = &e {
-            if ffi_err.extended_code == rusqlite::ffi::SQLITE_READONLY_CANTINIT {
-                return format!(
-                    "WAL sidecar files are not accessible read-only \
-                     (SQLITE_READONLY_CANTINIT) — check permissions on \
-                     the media database directory: {e}"
-                );
-            }
-        }
-        e.to_string()
-    })?;
-    conn.busy_timeout(std::time::Duration::from_millis(200))
-        .map_err(|e| e.to_string())?;
-    let n: i64 = conn
-        .query_row(
-            "SELECT count(*) FROM sqlite_master WHERE type='table' AND name IN \
-             ('Media','MediaProperties','MediaTitleProperties','Tags')",
-            [],
-            |r| r.get(0),
-        )
-        .map_err(|e| e.to_string())?;
-    if n != 4 {
-        return Err(format!(
-            "expected 4 known tables, found {n} — Core schema changed, refusing to guess"
-        ));
-    }
-    Ok(conn)
+fn art_db() -> Option<&'static ReadDb> {
+    ART_DB.get_or_init(|| ReadDb::init(&SPEC)).as_ref()
 }
 
 /// Resolve artwork candidates for `key`, best first. Callers try each
@@ -165,31 +100,11 @@ pub fn resolve_art(key: &MediaKey, preferred_types: &[String]) -> Vec<ArtHit> {
     let Some(db) = art_db() else {
         return Vec::new();
     };
-    #[allow(clippy::unwrap_used, reason = "mutex poisoning is unrecoverable")]
-    let mut guard = db.conn.lock().unwrap();
-    if guard.is_none() {
-        match open_checked(&db.db_path) {
-            Ok(c) => *guard = Some(c),
-            Err(e) => {
-                debug!("media_art_db: reopen failed ({e})");
-                return Vec::new();
-            }
-        }
-    }
-    #[allow(clippy::unwrap_used, reason = "populated just above")]
-    let conn = guard.as_ref().unwrap();
-    match resolve_with(conn, key, preferred_types) {
-        Ok(hits) => hits,
-        Err(e) => {
-            debug!(
-                system_id = %key.system_id,
-                path = %key.path,
-                "media_art_db: lookup error ({e}), dropping connection",
-            );
-            *guard = None;
-            Vec::new()
-        }
-    }
+    db.with_conn(
+        || format!("art lookup system={} path={}", key.system_id, key.path),
+        |conn| resolve_with(conn, key, preferred_types),
+    )
+    .unwrap_or_default()
 }
 
 fn resolve_with(
@@ -505,6 +420,6 @@ mod tests {
             .unwrap()
             .execute_batch("CREATE TABLE unrelated (x);")
             .unwrap();
-        assert!(open_checked(&p).is_err());
+        assert!(crate::media_db::open_checked(&p, &SPEC).is_err());
     }
 }

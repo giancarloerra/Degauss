@@ -7,6 +7,7 @@ mod bind;
 pub mod image_overrides;
 mod media_art_db;
 mod media_browse_db;
+mod media_db;
 mod media_favorites_db;
 mod media_history_db;
 mod media_image_cache;
