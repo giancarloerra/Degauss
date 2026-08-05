@@ -38,6 +38,13 @@ MainLayout {
     readonly property string modalQrCode: "qr_code"
     readonly property string modalCommercialNotice: "commercial_notice"
     readonly property string modalCoreVersion: "core_version_warning"
+    readonly property string modalRandomFailed: "random_failed"
+    // Sentinel id for the favorites "show everything" row; maps to an empty
+    // filter. Must never be "" — see openFavoritesFilterMenu.
+    readonly property string _favoritesFilterAll: "all"
+    // Sentinel id for the favorites "default order" row; maps to an empty
+    // sort mode. Must never be "" — see openFavoritesSortMenu.
+    readonly property string _favoritesSortDefault: "default"
     readonly property string modalFirstRunIndex: "first_run_index"
     readonly property string modalLogUpload: "log_upload"
     readonly property string modalQuitConfirm: "quit_confirm"
@@ -165,6 +172,19 @@ MainLayout {
         property: "screenHeight"
         value: root.scene.height
     }
+    // Keep the detail-cover tier's inputs identical to the fetch-size
+    // inputs (`_gamesDetailCoverMaxSize` below), so request tier and
+    // decode tier can never diverge.
+    Binding {
+        target: Sizing
+        property: "detailCoverViewportWidth"
+        value: root._gamesGridViewportWidth
+    }
+    Binding {
+        target: Sizing
+        property: "detailCoverViewportHeight"
+        value: root._gamesGridViewportHeight
+    }
 
     function _requestScreen(screen: string): void {
         if (screen === root.screenSystems)
@@ -241,6 +261,8 @@ MainLayout {
             root.commercialNoticeModalRequested = true;
         else if (modal === root.modalCoreVersion)
             root.coreVersionModalRequested = true;
+        else if (modal === root.modalRandomFailed)
+            root.randomFailedModalRequested = true;
         else if (modal === root.modalFirstRunIndex)
             root.firstRunIndexModalRequested = true;
         else if (modal === root.modalLogUpload)
@@ -1341,6 +1363,9 @@ MainLayout {
         function onRequestContextMenu(index: int, anchorRect): void {
             root.openContextMenu("favorites", index, anchorRect);
         }
+        function onRequestPageMenu(): void {
+            root.openFavoritesPageMenu();
+        }
     }
     Connections {
         target: root.recentsScreen
@@ -2021,6 +2046,42 @@ MainLayout {
             ScreenManager.pushModal(root.modalCoreVersion);
     }
 
+    // A random pick that resolves nothing must say so: it is a one-shot
+    // action with no other visible result, and staying silent is
+    // indistinguishable from the button being broken.
+    function openRandomFailedModal(): void {
+        root._requestModal(root.modalRandomFailed);
+        root.randomFailedModalVisible = true;
+        if (ScreenManager.topModal !== root.modalRandomFailed)
+            ScreenManager.pushModal(root.modalRandomFailed);
+    }
+
+    function closeRandomFailedModal(): void {
+        root.randomFailedModalVisible = false;
+        // Either list can raise it; clearing both is harmless and keeps the
+        // notice from re-opening on the next property read.
+        Browse.GamesModel.clear_random_error();
+        Browse.FavoritesModel.clear_random_error();
+        if (ScreenManager.topModal === root.modalRandomFailed)
+            ScreenManager.popModal();
+    }
+
+    Connections {
+        target: Browse.GamesModel
+        function onRandom_errorChanged(): void {
+            if ((Browse.GamesModel.random_error ?? "") !== "")
+                root.openRandomFailedModal();
+        }
+    }
+
+    Connections {
+        target: Browse.FavoritesModel
+        function onRandom_errorChanged(): void {
+            if ((Browse.FavoritesModel.random_error ?? "") !== "")
+                root.openRandomFailedModal();
+        }
+    }
+
     function closeCoreVersionModal(): void {
         root.coreVersionModalVisible = false;
         if (ScreenManager.topModal === root.modalCoreVersion)
@@ -2100,11 +2161,11 @@ MainLayout {
     }
 
     // Open the page/list-scoped operations menu (West button), the "View"
-    // counterpart to North's item-scoped "Options". For now it holds a single
-    // entry, Go to..., kept pre-focused so the common path is a fixed
-    // West-then-Accept chord; future list ops (sort/filter/layout) append here.
-    // The facet fetch is kicked off here so the buckets are likely ready by the
-    // time the user advances into the grid.
+    // counterpart to North's item-scoped "Options". Go to... stays
+    // pre-focused so the common path is a fixed West-then-Accept chord;
+    // future list ops (sort/filter/layout) append here. The facet fetch is
+    // kicked off here so the buckets are likely ready by the time the user
+    // advances into the grid.
     function openPageMenu(): void {
         Browse.GamesModel.load_letter_index();
         const entries = [
@@ -2113,7 +2174,155 @@ MainLayout {
                 "label": qsTr("Go to...")
             }
         ];
+        // The pick is uniform over the games listed in THIS folder, so the
+        // label says so rather than implying the whole system. Omitted when
+        // the folder holds no games (only subfolders), because there would be
+        // nothing to pick.
+        if (Browse.GamesModel.total_files > 0)
+            entries.push({
+                "id": "launch_random",
+                "label": qsTr("Random game in this folder")
+            });
         root.openListPickerModal(qsTr("View"), entries, "jump_letter", "page_menu");
+    }
+
+    // Favorites' West-button menu: how the list is ordered and scoped, plus
+    // the random pick. Sort and filter both need every favorite loaded (Core
+    // returns them in database order, 25 at a time, with no sort parameter),
+    // so opening the menu warms that load rather than making the user wait
+    // after choosing.
+    function openFavoritesPageMenu(): void {
+        Browse.FavoritesModel.ensure_full_load();
+        const entries = [
+            {
+                "id": "favorites_sort",
+                "label": qsTr("Sort: %1").arg(root._favoritesSortLabel())
+            },
+            {
+                "id": "favorites_filter",
+                "label": qsTr("Show: %1").arg(root._favoritesFilterLabel())
+            },
+            {
+                "id": "launch_random_favorite",
+                "label": qsTr("Random favorite")
+            }
+        ];
+        root.openListPickerModal(qsTr("View"), entries, "favorites_sort", "page_menu_favorites");
+    }
+
+    function _favoritesSortLabel(): string {
+        return Browse.FavoritesModel.sort_mode === "name" ? qsTr("A-Z") : qsTr("Default");
+    }
+
+    // Human-readable form of the active scope, resolved against the facet so
+    // the label matches the picker row that set it.
+    function _favoritesFilterLabel(): string {
+        const active = Browse.FavoritesModel.filter ?? "";
+        if (active === "")
+            return qsTr("All");
+        if (active.startsWith("cat:"))
+            return active.slice(4);
+        const id = active.startsWith("sys:") ? active.slice(4) : active;
+        const systems = root._favoritesSystemFacet();
+        for (let i = 0; i < systems.length; i++) {
+            if (systems[i].id === id)
+                return systems[i].name;
+        }
+        return id;
+    }
+
+    function _favoritesSystemFacet(): var {
+        let parsed = [];
+        try {
+            parsed = JSON.parse(Browse.FavoritesModel.system_facet_json || "[]");
+        } catch (e) {
+            parsed = [];
+        }
+        return Array.isArray(parsed) ? parsed : [];
+    }
+
+    function openFavoritesSortMenu(): void {
+        // Same trap as the filter picker: ListPickerModal treats an empty id
+        // as "nothing pending" and never emits an accept for it, so the
+        // default row needs a real id mapped back on accept. Without this,
+        // choosing A-Z once left no way back to Core's order.
+        const entries = [
+            {
+                "id": root._favoritesSortDefault,
+                "label": qsTr("Default")
+            },
+            {
+                "id": "name",
+                "label": qsTr("A-Z")
+            }
+        ];
+        const active = Browse.FavoritesModel.sort_mode === "" ? root._favoritesSortDefault : Browse.FavoritesModel.sort_mode;
+        root.openListPickerModal(qsTr("Sort"), entries, active, "favorites_sort_pick");
+    }
+
+    // One flat list: everything, then the categories present, then the
+    // individual systems. Built from the loaded favorites, so every row here
+    // is guaranteed to match at least one entry.
+    // Rebuild the open scope picker when the facet grows. The full load can
+    // still be in flight when the user opens "Show", and without this the
+    // picker would silently omit systems that arrive on later pages.
+    Connections {
+        target: Browse.FavoritesModel
+        function onSystem_facet_jsonChanged(): void {
+            if (root.listPickerModalVisible && root.listPickerFieldId === "favorites_filter_pick")
+                root.openFavoritesFilterMenu();
+        }
+    }
+
+    function openFavoritesFilterMenu(): void {
+        const systems = root._favoritesSystemFacet();
+        // NOT the empty string: ListPickerModal uses "" as its own
+        // "nothing pending" sentinel and refuses to emit an accept for it,
+        // so an empty id would make this row silently do nothing.
+        const entries = [
+            {
+                "id": root._favoritesFilterAll,
+                "label": qsTr("All (%1)").arg(Browse.FavoritesModel.total_count)
+            }
+        ];
+        const categories = [];
+        for (let i = 0; i < systems.length; i++) {
+            const category = systems[i].category ?? "";
+            if (category === "")
+                continue;
+            const existing = categories.find(c => c.name === category);
+            if (existing) {
+                existing.count += systems[i].count;
+                existing.systems += 1;
+            } else
+                categories.push({
+                    "name": category,
+                    "count": systems[i].count,
+                    "systems": 1
+                });
+        }
+        for (let c = 0; c < categories.length; c++) {
+            // A category holding a single system says exactly what that
+            // system's own row says — and when the system is named after its
+            // category (Core's Arcade system is literally "Arcade") the two
+            // rows are indistinguishable. Offer the narrower row only.
+            if (categories[c].systems < 2)
+                continue;
+            entries.push({
+                "id": "cat:" + categories[c].name,
+                // Category names come from Core untranslated; only the
+                // surrounding count frame is localized.
+                "label": qsTr("%1 (%2)").arg(categories[c].name).arg(categories[c].count)
+            });
+        }
+        for (let s = 0; s < systems.length; s++) {
+            entries.push({
+                "id": "sys:" + systems[s].id,
+                "label": qsTr("%1 (%2)").arg(systems[s].name).arg(systems[s].count)
+            });
+        }
+        const active = Browse.FavoritesModel.filter === "" ? root._favoritesFilterAll : Browse.FavoritesModel.filter;
+        root.openListPickerModal(qsTr("Show"), entries, active, "favorites_filter_pick");
     }
 
     // Re-parse the model's facet JSON into the live grid entries. Bound through
@@ -2303,6 +2512,32 @@ MainLayout {
             root.closeListPickerModal();
             if (selectedId === "jump_letter")
                 root.openLetterJumpModal();
+            else if (selectedId === "launch_random")
+                Browse.GamesModel.launch_random();
+            return;
+        }
+        if (fieldId === "page_menu_favorites") {
+            root.closeListPickerModal();
+            if (selectedId === "launch_random_favorite")
+                Browse.FavoritesModel.launch_random();
+            else if (selectedId === "favorites_sort")
+                root.openFavoritesSortMenu();
+            else if (selectedId === "favorites_filter")
+                root.openFavoritesFilterMenu();
+            return;
+        }
+        if (fieldId === "favorites_sort_pick") {
+            root.closeListPickerModal();
+            const mode = selectedId === root._favoritesSortDefault ? "" : selectedId;
+            Browse.FavoritesModel.set_sort_mode(mode);
+            Browse.FavoritesState.sort = mode;
+            return;
+        }
+        if (fieldId === "favorites_filter_pick") {
+            root.closeListPickerModal();
+            const value = selectedId === root._favoritesFilterAll ? "" : selectedId;
+            Browse.FavoritesModel.set_filter(value);
+            Browse.FavoritesState.filter = value;
             return;
         }
         if (fieldId === "system_launcher_pending")
@@ -2450,6 +2685,7 @@ MainLayout {
     onCloseFirstRunIndexRequested: root.closeFirstRunIndexModal()
     onCloseCommercialNoticeRequested: root.closeCommercialNoticeModal()
     onCloseCoreVersionRequested: root.closeCoreVersionModal()
+    onCloseRandomFailedRequested: root.closeRandomFailedModal()
 
     function beginCardWrite(owner: string): void {
         if (owner === "systems")
@@ -2556,6 +2792,10 @@ MainLayout {
             } else if (ScreenManager.topModal === root.modalCoreVersion) {
                 if (root.coreVersionModal !== null)
                     root.coreVersionModal.handleAction(action);
+            } else if (ScreenManager.topModal === root.modalRandomFailed) {
+                // Accept or Back both dismiss a one-button notice.
+                if (action === "accept" || action === "cancel")
+                    root.closeRandomFailedModal();
             } else if (ScreenManager.topModal === root.modalLogUpload) {
                 if (root.logUploadModal !== null)
                     root.logUploadModal.handleAction(action);

@@ -278,7 +278,7 @@ Item {
                     anchors.fill: parent
                     source: root._lastGoodCoverSource
                     fillMode: Image.PreserveAspectFit
-                    sourceSize.width: 512
+                    sourceSize.width: Sizing.detailCoverSourceWidth
                     smooth: true
                     asynchronous: false
                     cache: true
@@ -292,7 +292,7 @@ Item {
                     anchors.fill: parent
                     source: root._coverSource
                     fillMode: Image.PreserveAspectFit
-                    sourceSize.width: 512
+                    sourceSize.width: Sizing.detailCoverSourceWidth
                     smooth: true
                     asynchronous: true
                     visible: root._coverSource !== "" && status === Image.Ready && !root.detailSuppressed

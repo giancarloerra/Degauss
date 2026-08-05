@@ -39,9 +39,6 @@ skip = [
     # cxx-qt-build pulls codespan-reporting 0.11 directly; its cxx-gen dep pulls 0.13.
     { crate = "codespan-reporting@0.11.1" },
     { crate = "codespan-reporting@0.13.1" },
-    # codespan-reporting 0.11 → unicode-width 0.1; codespan-reporting 0.13 → 0.2.
-    { crate = "unicode-width@0.1.14" },
-    { crate = "unicode-width@0.2.2" },
     # tempfile+uuid hold getrandom 0.4; rand 0.9 (via tungstenite) brings 0.3.
     # (0.3 is build-script-only in the linux/armv7 filtered graph so cargo-deny
     # doesn't surface it; listing it here would warn as unmatched.)

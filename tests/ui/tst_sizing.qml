@@ -114,6 +114,37 @@ TestCase {
         verify(Math.abs(scaled - baseline * 1.5) <= 1, "pctH scaling should track screen height proportionally");
     }
 
+    function test_detail_cover_tier_capped_by_viewport_width(): void {
+        // Pin the resolution through the Main harness first: the cover-box
+        // math reads the singleton's live screen size for its paddings, so
+        // asserting against detached argument pairs would depend on test
+        // order.
+        //
+        // CRT-native scene: 352x240 minus the 5% safe-area insets. The
+        // doubled detail tier must not exceed what the framebuffer can
+        // express -- a 512-wide decode can never be displayed at 512 on a
+        // 352-wide mode and only wastes resample time and decoded-cache
+        // bytes.
+        main.crtNativePath = true;
+        setResolutionExpect(352, 240, crtSafeWidth(352), crtSafeHeight(240));
+        verify(Sizing.detailCoverSourceSize(Sizing.screenWidth, Sizing.screenHeight) <= 256,
+               "CRT detail tier must not exceed the viewport-expressible tier");
+        compare(Sizing.detailCoverSourceWidth,
+                Sizing.detailCoverSourceSize(Sizing.detailCoverViewportWidth,
+                                             Sizing.detailCoverViewportHeight),
+                "decode width must equal the tier for its bound viewport");
+
+        // Wider scenes keep the historical behavior: at 1080p the doubled
+        // grid tier lands on the top tier, uncapped.
+        main.crtNativePath = false;
+        setResolution(1920, 1080);
+        compare(Sizing.detailCoverSourceSize(1920, 1080), 768,
+                "1080p detail tier must stay the top tier");
+
+        // Restore the harness default so later tests stay order-independent.
+        setResolution(1280, 720);
+    }
+
     function test_crt_systems_grid_is_three_by_three(): void {
         Sizing.crtNativePath = true;
         setResolution(352, 240);

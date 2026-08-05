@@ -134,23 +134,65 @@ pub fn media_search_response(params: &Value) -> Value {
         .and_then(Value::as_array)
         .map(|a| a.iter().filter_map(Value::as_str).collect::<Vec<_>>())
         .unwrap_or_default();
+    let tags = params
+        .get("tags")
+        .and_then(Value::as_array)
+        .map(|a| a.iter().filter_map(Value::as_str).collect::<Vec<_>>())
+        .unwrap_or_default();
     let max = params
         .get("maxResults")
         .and_then(Value::as_u64)
         .unwrap_or(100) as usize;
+    // Cursor is opaque to clients, so the mock uses the row offset as its
+    // own cursor format. Real Core's cursors are keyset tokens.
+    let offset = params
+        .get("cursor")
+        .and_then(Value::as_str)
+        .and_then(|c| c.parse::<usize>().ok())
+        .unwrap_or(0);
 
-    let results: Vec<Value> = games_for_systems(&systems).take(max).collect();
+    let matching: Vec<Value> = games_for_systems(&systems)
+        .filter(|game| tags.iter().all(|tag| game_has_tag(game, tag)))
+        .collect();
+    let total = matching.len();
+    let results: Vec<Value> = matching.into_iter().skip(offset).take(max).collect();
+    let next_offset = offset.saturating_add(results.len());
+    // A zero-length page would hand back the same cursor with hasNextPage
+    // still true, so a client draining pages would spin forever. Real Core
+    // rejects maxResults=0 outright; the mock just terminates the chain.
+    let has_next_page = !results.is_empty() && next_offset < total;
+
     // `total` is deprecated upstream and always returns -1; pagination
-    // info now travels under the `pagination` envelope. The mock has no
-    // real pagination, so it always reports a single complete page.
+    // info travels under the `pagination` envelope.
+    let mut pagination = json!({
+        "hasNextPage": has_next_page,
+        "pageSize": max,
+    });
+    if has_next_page {
+        pagination["nextCursor"] = json!(next_offset.to_string());
+    }
     json!({
         "results": results,
         "total": -1,
-        "pagination": {
-            "hasNextPage": false,
-            "pageSize": max,
-        },
+        "pagination": pagination,
     })
+}
+
+/// Match one `type:value` filter against a search row's `tags` array, the
+/// same shape Core returns. Only the AND form is modelled; the frontend
+/// never sends the `-`/`~` operators.
+fn game_has_tag(game: &Value, filter: &str) -> bool {
+    let Some((want_type, want_value)) = filter.split_once(':') else {
+        return false;
+    };
+    game.get("tags")
+        .and_then(Value::as_array)
+        .is_some_and(|tags| {
+            tags.iter().any(|tag| {
+                tag.get("type").and_then(Value::as_str) == Some(want_type)
+                    && tag.get("tag").and_then(Value::as_str) == Some(want_value)
+            })
+        })
 }
 
 pub fn media_browse_response(params: &Value) -> Value {
@@ -269,19 +311,58 @@ fn system_display_for(id: &str) -> &str {
 }
 
 fn games_for_systems<'a>(systems: &'a [&'a str]) -> impl Iterator<Item = Value> + 'a {
-    ALL_GAMES.iter().filter_map(move |(name, file, system)| {
-        if !systems.is_empty() && !systems.contains(system) {
-            return None;
-        }
-        Some(json!({
-            "name": name,
-            "path": format!("/mock/{system}/{file}"),
-            "zapScript": format!("@{system}/{file}"),
-            "system": { "id": system, "name": system, "category": "" },
-            "tags": disambiguating_tags_for(file),
-            "disambiguatingTags": disambiguating_tags_for(file),
-        }))
-    })
+    ALL_GAMES
+        .iter()
+        .enumerate()
+        .filter_map(move |(index, (name, file, system))| {
+            if !systems.is_empty() && !systems.contains(system) {
+                return None;
+            }
+            let (system_name, category) = system_meta(system);
+            Some(json!({
+                "name": name,
+                "path": format!("/mock/{system}/{file}"),
+                "zapScript": format!("@{system}/{file}"),
+                "system": { "id": system, "name": system_name, "category": category },
+                "tags": tags_for(file, index),
+                "disambiguatingTags": disambiguating_tags_for(file),
+            }))
+        })
+}
+
+/// Display name and category for a mock system id, mirroring
+/// `systems_response` so search rows and the systems catalog agree.
+/// Unknown ids fall back to the id itself with an empty category, which is
+/// what a client sees for media outside the catalog.
+fn system_meta(system: &str) -> (&'static str, &'static str) {
+    match system {
+        "NES" => ("Nintendo Entertainment System", "Consoles"),
+        "SNES" => ("Super Nintendo", "Consoles"),
+        "Genesis" => ("Sega Genesis", "Consoles"),
+        "Nintendo64" => ("Nintendo 64", "Consoles"),
+        "Gameboy" => ("Game Boy", "Handhelds"),
+        "GameboyColor" => ("Game Boy Color", "Handhelds"),
+        "GBA" => ("Game Boy Advance", "Handhelds"),
+        "NDS" => ("Nintendo DS", "Handhelds"),
+        "MAME" => ("MAME", "Arcade"),
+        "NeoGeo" => ("Neo Geo", "Arcade"),
+        _ => ("Unknown", ""),
+    }
+}
+
+/// Full tag list for a search row: the disambiguation tags plus, for every
+/// third entry, the `user:favorite` tag. A deterministic spread means the
+/// mock's Favorites screen holds entries from several systems, which is what
+/// the favorites sort and system-filter paths need to exercise.
+fn tags_for(file: &str, index: usize) -> Value {
+    let mut tags = disambiguating_tags_for(file)
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    if index.is_multiple_of(3) {
+        tags.push(json!({ "tag": "favorite", "type": "user" }));
+    }
+    Value::Array(tags)
 }
 
 // Synthesize disambiguating tags for a handful of mock entries so the

@@ -75,6 +75,22 @@ Item {
             acceptCommit.stop();
             return;
         }
+        modal._applyInitialIndex();
+        modal._pressScale = 1.0;
+        pressAnim.stop();
+        modal._pendingId = "";
+    }
+
+    // Callers swap `entries` in place on an already-open modal (the launcher
+    // flow replaces a one-row "saving" list with a three-row error list).
+    // Without this the stale currentIndex can sit past the new list's end, so
+    // no row renders focused and Accept is a dead key until the user moves.
+    onEntriesChanged: {
+        if (modal.open)
+            modal._applyInitialIndex();
+    }
+
+    function _applyInitialIndex(): void {
         let next = 0;
         if (modal.initialId !== "") {
             for (let i = 0; i < modal.entries.length; ++i) {
@@ -87,9 +103,6 @@ Item {
         viewport.contentY = 0;
         modal.currentIndex = next;
         modal._scrollCurrentIntoView();
-        modal._pressScale = 1.0;
-        pressAnim.stop();
-        modal._pendingId = "";
     }
 
     function _scrollCurrentIntoView(): void {

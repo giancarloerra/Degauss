@@ -17,6 +17,7 @@ set(
     tst_focused_media_detail_controller.qml
     tst_browse_detail_pane.qml
     tst_media_list_titles.qml
+    tst_media_list_paging.qml
     tst_list_picker_modal.qml
     tst_letter_jump_modal.qml
     tst_motion.qml

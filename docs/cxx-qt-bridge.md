@@ -8,8 +8,13 @@ Read this before writing Rust QML models with cxx-qt 0.8 in
   calling crate's scope, so `cxx` must appear in that crate's `[dependencies]`.
   The transitive dependency through `cxx-qt` is not enough.
 
-- **`#[qproperty(T, snake_case_name)]` becomes camelCase** on the Qt and QML
-  side. `#[qproperty(bool, has_next_page)]` is exposed as `hasNextPage` in QML.
+- **`#[qproperty(T, snake_case_name)]` keeps its Rust name** on the Qt and QML
+  side. `#[qproperty(bool, has_next_page)]` generates
+  `Q_PROPERTY(bool has_next_page READ getHas_next_page ...)`, so QML reads it as
+  `model.has_next_page`. Only `#[cxx_name = "..."]` changes the exposed name.
+  Reading a camelCase spelling yields `undefined`, which a `?? ""` fallback
+  turns into a silent empty value rather than an error, so get the spelling
+  right at the call site.
 
 - **User-defined `#[qinvokable]` methods keep their Rust name** (snake_case).
   QML calls them as `model.set_system(id)` and so on. Add

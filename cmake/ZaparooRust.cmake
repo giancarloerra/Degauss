@@ -12,9 +12,9 @@ include_guard(GLOBAL)
 
 include(FetchContent)
 
-# Tell Corrosion the Rust target triple explicitly for cross-builds. CMake's
-# processor names are not enough for Rust target selection: MiSTer is ARMv7
-# hard-float, while ARM64 builds use aarch64 Linux.
+# Tell Corrosion the Rust target triple explicitly for cross-builds. CMake's processor names are not
+# enough for Rust target selection: MiSTer is ARMv7 hard-float, while ARM64 builds use aarch64
+# Linux.
 if(CMAKE_CROSSCOMPILING AND NOT Rust_CARGO_TARGET)
     if(CMAKE_SYSTEM_PROCESSOR STREQUAL "arm")
         set(Rust_CARGO_TARGET
@@ -48,8 +48,8 @@ if(ZAPAROO_WITH_UPDATE)
 endif()
 
 # ── Environment variables for cxx_qt_build's build.rs ─────────────────────── QMAKE: cxx_qt_build
-# (via qt-build-utils) uses qmake to locate Qt headers and libraries. For static
-# cross-builds the system qmake points to x86_64 Qt; override with the target qmake.
+# (via qt-build-utils) uses qmake to locate Qt headers and libraries. For static cross-builds the
+# system qmake points to x86_64 Qt; override with the target qmake.
 get_target_property(_rs_qt6_core_type Qt6::Core TYPE)
 if(_rs_qt6_core_type STREQUAL "STATIC_LIBRARY")
     if(CMAKE_SYSTEM_PROCESSOR STREQUAL "aarch64")
@@ -122,7 +122,9 @@ if(_rs_qt6_core_type STREQUAL "STATIC_LIBRARY")
     endforeach()
     include("${_rs_qt_prefix}/lib/cmake/Qt6Gui/Qt6QLinuxFbIntegrationPluginConfig.cmake" OPTIONAL)
     include("${_rs_qt_prefix}/lib/cmake/Qt6Gui/Qt6QEglFSIntegrationPluginConfig.cmake" OPTIONAL)
-    include("${_rs_qt_prefix}/lib/cmake/Qt6Gui/Qt6QEglFSKmsGbmIntegrationPluginConfig.cmake" OPTIONAL)
+    include("${_rs_qt_prefix}/lib/cmake/Qt6Gui/Qt6QEglFSKmsGbmIntegrationPluginConfig.cmake"
+            OPTIONAL
+    )
     include("${_rs_qt_prefix}/lib/cmake/Qt6Gui/Qt6QWebpPluginConfig.cmake" OPTIONAL)
     foreach(_rs_qml_plugin IN ITEMS qtquickcontrols2plugin qtquickcontrols2basicstyleplugin
                                     qtquickcontrols2implplugin qtquicktemplates2plugin quickwindow

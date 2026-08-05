@@ -32,6 +32,7 @@
 
 use crate::media_image_cache::{global_media_image_cache, MediaImageCache, MediaKey};
 use crate::models::nav_timing::NavTiming;
+use crate::models::random_pick::random_index;
 use crate::models::tag_utils::{
     disambiguating_tag_labels, sibling_disambiguation_displays, tag_display_value,
 };
@@ -330,6 +331,14 @@ pub struct GamesModelRust {
     letter_index_json: QString,
     letter_index_scheme: QString,
     letter_index_seq: Arc<AtomicU64>,
+    // Random-pick state. `random_seeking` is true while the walk that
+    // resolves a uniformly chosen position is in flight; `random_error`
+    // carries a stable reason code (never prose) so a failed pick reports
+    // something instead of silently doing nothing. Superseded by
+    // `random_seq` when a newer press or a scope change arrives.
+    random_seeking: bool,
+    random_error: QString,
+    random_seq: Arc<AtomicU64>,
 }
 
 impl Default for GamesModelRust {
@@ -385,6 +394,9 @@ impl Default for GamesModelRust {
             letter_index_json: QString::default(),
             letter_index_scheme: QString::default(),
             letter_index_seq: Arc::new(AtomicU64::new(0)),
+            random_seeking: false,
+            random_error: QString::default(),
+            random_seq: Arc::new(AtomicU64::new(0)),
         }
     }
 }
@@ -440,6 +452,8 @@ pub mod ffi {
         #[qproperty(i32, detail_cover_max_size, READ, WRITE = set_detail_cover_max_size, NOTIFY)]
         #[qproperty(QString, letter_index_json)]
         #[qproperty(QString, letter_index_scheme)]
+        #[qproperty(bool, random_seeking)]
+        #[qproperty(QString, random_error)]
         type GamesModel = super::GamesModelRust;
 
         #[qinvokable]
@@ -483,6 +497,12 @@ pub mod ffi {
 
         #[qinvokable]
         fn launch_text_at(self: &GamesModel, index: i32) -> QString;
+
+        #[qinvokable]
+        fn launch_random(self: Pin<&mut GamesModel>);
+
+        #[qinvokable]
+        fn clear_random_error(self: Pin<&mut GamesModel>);
 
         #[qinvokable]
         fn write_card_at(self: Pin<&mut GamesModel>, index: i32);
@@ -954,6 +974,100 @@ impl ffi::GamesModel {
         QString::from(portable_text_for_entry(&self.entries[index as usize]).as_str())
     }
 
+    /// Launch a uniformly chosen game from the folder currently listed.
+    ///
+    /// Deliberately does NOT use Core's `**launch.random`: that picks a random
+    /// database row id within the system's id range and takes the next row at
+    /// or above it, so a game's odds are proportional to the gap in front of
+    /// it. On a system whose rows were added over time (arcade sets churn
+    /// constantly) one game wins nearly every draw.
+    ///
+    /// Instead: draw a position uniformly over the scope's launchable rows and
+    /// resolve that position. Whichever row sits at a given position is
+    /// irrelevant to how it got there, so gaps, deletions and re-indexing
+    /// cannot skew it. Resolves locally with no request when the folder is
+    /// already fully loaded, which is the common case.
+    fn launch_random(mut self: Pin<&mut Self>) {
+        // A new press supersedes an in-flight walk.
+        let ticket = self.rust().random_seq.fetch_add(1, Ordering::SeqCst) + 1;
+        if !self.random_error.is_empty() {
+            self.as_mut().set_random_error(QString::default());
+        }
+
+        // Fast path: everything is already here, so the pick needs no RPC and
+        // no Core-reported totals (which can disagree with what arrived).
+        if scope_fully_loaded(self.count, self.has_next_page, self.next_cursor.as_deref()) {
+            let pool = launchable_count(&self.entries);
+            if pool == 0 {
+                self.as_mut().fail_random("empty-scope");
+                return;
+            }
+            let target = random_index(pool);
+            let Some(text) = launchable_entries(&self.entries)
+                .nth(target)
+                .and_then(run_text_for_entry)
+            else {
+                self.as_mut().fail_random("no-launch-payload");
+                return;
+            };
+            self.as_mut().set_random_seeking(false);
+            spawn_random_run(text);
+            return;
+        }
+
+        // Slow path: walk the listing counting launchable rows until the
+        // drawn position. `total_files` bounds the draw; it is never used as
+        // an index, so an inaccurate count costs at most a failed walk that
+        // reports itself.
+        let pool = usize::try_from(self.total_files).unwrap_or(0);
+        if pool == 0 {
+            self.as_mut().fail_random("empty-scope");
+            return;
+        }
+        let target = random_index(pool);
+        let path = self.current_path.to_string();
+        let sid = self.current_system_id.to_string();
+        let systems = if sid.is_empty() {
+            Vec::new()
+        } else {
+            vec![sid]
+        };
+        let leading_dirs = self.total_dirs;
+        let random_seq = self.rust().random_seq.clone();
+        // Also ride the browse ticket so navigating to another folder
+        // abandons this walk.
+        let browse_seq = self.rust().seq.clone();
+        let browse_ticket = browse_seq.load(Ordering::SeqCst);
+        let qt_thread = self.qt_thread();
+        self.as_mut().set_random_seeking(true);
+
+        spawn_random_walk(RandomWalk {
+            qt_thread,
+            random_seq,
+            ticket,
+            browse_seq,
+            browse_ticket,
+            path,
+            systems,
+            leading_dirs,
+            target,
+        });
+    }
+
+    fn clear_random_error(mut self: Pin<&mut Self>) {
+        if !self.random_error.is_empty() {
+            self.as_mut().set_random_error(QString::default());
+        }
+    }
+
+    /// Report a random pick that could not be resolved. Never silent: the
+    /// screen has a one-shot action that visibly did nothing otherwise.
+    fn fail_random(mut self: Pin<&mut Self>, reason: &str) {
+        warn!("random game pick failed: {reason}");
+        self.as_mut().set_random_seeking(false);
+        self.as_mut().set_random_error(QString::from(reason));
+    }
+
     fn write_card_at(mut self: Pin<&mut Self>, index: i32) {
         if index < 0 || index >= self.count {
             self.as_mut()
@@ -1418,6 +1532,15 @@ impl ffi::GamesModel {
         self.as_mut().set_current_path(QString::from(path.as_str()));
         self.as_mut().set_loading(true);
         self.as_mut().set_error_message(QString::default());
+        // A scope change supersedes any random walk in flight via the browse
+        // ticket, and that abort deliberately writes nothing, so its flags
+        // have to be released here or they stay set for the session.
+        if self.random_seeking {
+            self.as_mut().set_random_seeking(false);
+        }
+        if !self.random_error.is_empty() {
+            self.as_mut().set_random_error(QString::default());
+        }
         self.as_mut().set_current_detail_loading(false);
         self.as_mut().set_current_description(QString::default());
         self.as_mut().set_current_detail_tags(QString::default());
@@ -1545,6 +1668,198 @@ fn is_media_capable_entry(entry: &BrowseEntry) -> bool {
     entry.entry_type == "media"
         || (entry.entry_type == "directory"
             && (entry.media_id.is_some() || !entry.zap_script.is_empty()))
+}
+
+/// Everything one random walk needs. Grouped so the walk can live outside
+/// `launch_random`, which the line limit (rightly) keeps short.
+struct RandomWalk {
+    qt_thread: cxx_qt::CxxQtThread<ffi::GamesModel>,
+    random_seq: Arc<AtomicU64>,
+    ticket: u64,
+    browse_seq: Arc<AtomicU64>,
+    browse_ticket: u64,
+    path: String,
+    systems: Vec<String>,
+    leading_dirs: i32,
+    target: usize,
+}
+
+/// Walk the listing counting only launchable rows until the drawn position,
+/// then launch that entry. Aborts without writing anything when superseded.
+fn spawn_random_walk(walk: RandomWalk) {
+    let RandomWalk {
+        qt_thread,
+        random_seq,
+        ticket,
+        browse_seq,
+        browse_ticket,
+        path,
+        systems,
+        leading_dirs,
+        target,
+    } = walk;
+    let store = global_store();
+    global_handle().spawn(async move {
+        let mut cursor: Option<String> = None;
+        let mut remaining = target;
+        let mut first_page = true;
+        // Bounded so a pathological listing cannot loop forever; 64 pages of
+        // up to 1000 rows covers any realistic folder.
+        for _ in 0..64 {
+            if random_seq.load(Ordering::SeqCst) != ticket
+                || browse_seq.load(Ordering::SeqCst) != browse_ticket
+            {
+                return; // superseded: a newer press or scope owns the flags
+            }
+            let max_results = walk_page_size(remaining, if first_page { leading_dirs } else { 0 });
+            let result = store
+                .client()
+                .media_browse(MediaBrowseParams {
+                    path: path.clone(),
+                    systems: systems.clone(),
+                    max_results: Some(max_results),
+                    cursor: cursor.clone(),
+                    letter: None,
+                    sort: None,
+                })
+                .await;
+            first_page = false;
+            let result = match result {
+                Ok(result) => result,
+                Err(e) => {
+                    warn!("random game walk failed: {}", e.message);
+                    finish_random(
+                        &qt_thread,
+                        &random_seq,
+                        ticket,
+                        &browse_seq,
+                        browse_ticket,
+                        Err("browse-failed"),
+                    );
+                    return;
+                }
+            };
+            let page_launchable = launchable_count(&result.entries);
+            if remaining < page_launchable {
+                let text = launchable_entries(&result.entries)
+                    .nth(remaining)
+                    .and_then(run_text_for_entry);
+                let outcome = text.ok_or("no-launch-payload");
+                finish_random(
+                    &qt_thread,
+                    &random_seq,
+                    ticket,
+                    &browse_seq,
+                    browse_ticket,
+                    outcome,
+                );
+                return;
+            }
+            remaining -= page_launchable;
+            match result.next_cursor() {
+                // A cursor that does not advance would loop forever.
+                Some(next) if result.has_next_page() && Some(&next) != cursor.as_ref() => {
+                    cursor = Some(next);
+                }
+                _ => {
+                    finish_random(
+                        &qt_thread,
+                        &random_seq,
+                        ticket,
+                        &browse_seq,
+                        browse_ticket,
+                        Err("walk-exhausted"),
+                    );
+                    return;
+                }
+            }
+        }
+        finish_random(
+            &qt_thread,
+            &random_seq,
+            ticket,
+            &browse_seq,
+            browse_ticket,
+            Err("walk-too-long"),
+        );
+    });
+}
+
+/// Fire the run mutation for a resolved random pick.
+fn spawn_random_run(text: String) {
+    let store = global_store();
+    global_handle().spawn(async move {
+        if let Err(e) = store.run_mutation::<RunMutation>(RunParams { text }).await {
+            warn!("random game run failed: {}", e.message);
+        }
+    });
+}
+
+/// Settle a walk back on the Qt thread: launch the resolved entry, or record
+/// why nothing could be launched. Writes nothing when superseded, because a
+/// newer press then owns the flags.
+fn finish_random(
+    qt_thread: &cxx_qt::CxxQtThread<ffi::GamesModel>,
+    random_seq: &Arc<AtomicU64>,
+    ticket: u64,
+    browse_seq: &Arc<AtomicU64>,
+    browse_ticket: u64,
+    outcome: Result<String, &'static str>,
+) {
+    let random_seq = random_seq.clone();
+    let browse_seq = browse_seq.clone();
+    let outcome = outcome.map_err(str::to_string);
+    let _ = qt_thread.queue(move |mut model| {
+        // Both tickets, not just the random one: navigating to another folder
+        // bumps only the browse seq, and launching a game the user has
+        // already browsed away from would be worse than not launching.
+        if random_seq.load(Ordering::SeqCst) != ticket
+            || browse_seq.load(Ordering::SeqCst) != browse_ticket
+        {
+            return;
+        }
+        model.as_mut().set_random_seeking(false);
+        match outcome {
+            Ok(text) => spawn_random_run(text),
+            Err(reason) => {
+                warn!("random game pick failed: {reason}");
+                model
+                    .as_mut()
+                    .set_random_error(QString::from(reason.as_str()));
+            }
+        }
+    });
+}
+
+/// The launchable rows of a page, i.e. everything that is not a container.
+/// Directories are navigation, not games, so they never take part in a random
+/// pick and never count toward a position.
+fn launchable_entries(entries: &[BrowseEntry]) -> impl Iterator<Item = &BrowseEntry> {
+    entries.iter().filter(|entry| !entry.is_folder())
+}
+
+/// Number of launchable rows in a page.
+fn launchable_count(entries: &[BrowseEntry]) -> usize {
+    launchable_entries(entries).count()
+}
+
+/// True when `entries` already holds the scope's complete listing, so a random
+/// pick can be resolved locally with no request at all. Deliberately derived
+/// from the loaded rows and the cursor state only: `total_files`/`total_dirs`
+/// are Core-reported and can disagree with what actually arrived.
+fn scope_fully_loaded(count: i32, has_next_page: bool, next_cursor: Option<&str>) -> bool {
+    count > 0 && !has_next_page && next_cursor.is_none()
+}
+
+/// How many rows to request while walking to `remaining`-th launchable entry.
+/// `leading_dirs` is a sizing hint for the first page only, where the listing
+/// starts with the scope's directory block; being wrong only costs an extra
+/// round trip, never a wrong pick, so it is never used as an index.
+fn walk_page_size(remaining: usize, leading_dirs: i32) -> u32 {
+    const MAX_BROWSE_PAGE: usize = 1000;
+    let hint = usize::try_from(leading_dirs.max(0)).unwrap_or(0);
+    let want = remaining.saturating_add(1).saturating_add(hint);
+    u32::try_from(want.min(MAX_BROWSE_PAGE)).unwrap_or(1000)
 }
 
 fn run_text_for_entry(entry: &BrowseEntry) -> Option<String> {
@@ -3425,11 +3740,12 @@ mod tests {
         cover_key_for_with, cover_placeholder_for, decide_initial, dedup_roots_drop_ancestors,
         detail_image_keys_from_meta, detail_tags_from_tags, display_name, display_title_for_entry,
         entry_system_id, is_media_capable_entry, is_strict_ancestor_path, jump_fetch_limit,
-        media_capable_directory_browse_params, media_key_for, meta_params_for_entry,
-        ordered_detail_image_keys, position_of_game_path, prefetch_around_plan,
-        prefetch_cursor_window_plan, project_status, result_total_dirs, run_text_for_entry,
-        seeded_refetch_pagination_state, singleton_directory_needs_launch_resolution,
-        transform_entries, InitialAction, Projection,
+        launchable_count, launchable_entries, media_capable_directory_browse_params, media_key_for,
+        meta_params_for_entry, ordered_detail_image_keys, position_of_game_path,
+        prefetch_around_plan, prefetch_cursor_window_plan, project_status, result_total_dirs,
+        run_text_for_entry, scope_fully_loaded, seeded_refetch_pagination_state,
+        singleton_directory_needs_launch_resolution, transform_entries, walk_page_size,
+        InitialAction, Projection,
     };
     use super::{FETCH_MORE_RAPID_CHUNK_SIZE, JUMP_FETCH_CHUNK_SIZE};
     use crate::media_image_cache::{MediaImageCache, MediaKey};
@@ -3467,6 +3783,82 @@ mod tests {
             zap_script: format!("@{system_id}/{name}"),
             ..BrowseEntry::default()
         }
+    }
+
+    // --- uniform random pick ---------------------------------------------
+    // The whole point of picking by POSITION is that a game's odds cannot
+    // depend on anything but how many games there are. These tests pin the
+    // pieces that decide which position maps to which entry.
+
+    #[test]
+    fn launchable_rows_exclude_folders() {
+        let entries = vec![
+            folder("Konami", "/games/Arcade/Konami"),
+            media("Contra", "/games/Arcade/contra.mra", "Arcade"),
+            folder("Capcom", "/games/Arcade/Capcom"),
+            media("Pang", "/games/Arcade/pang.mra", "Arcade"),
+        ];
+        assert_eq!(launchable_count(&entries), 2, "folders are not games");
+        let names: Vec<&str> = launchable_entries(&entries)
+            .map(|e| e.name.as_str())
+            .collect();
+        assert_eq!(names, vec!["Contra", "Pang"]);
+    }
+
+    #[test]
+    fn launchable_position_skips_leading_directory_block() {
+        // Core lists every directory before any file, so position 0 must be
+        // the first FILE, not the first row. Picking by row would let
+        // "random game" land on a folder.
+        let entries = vec![
+            folder("A", "/games/Arcade/A"),
+            folder("B", "/games/Arcade/B"),
+            media("Galaga", "/games/Arcade/galaga.mra", "Arcade"),
+            media("Rygar", "/games/Arcade/rygar.mra", "Arcade"),
+        ];
+        let first = launchable_entries(&entries).next().expect("a game");
+        assert_eq!(first.name, "Galaga");
+        let last = launchable_entries(&entries).nth(1).expect("a game");
+        assert_eq!(last.name, "Rygar");
+    }
+
+    #[test]
+    fn a_folder_of_only_directories_has_no_pool() {
+        let entries = vec![
+            folder("A", "/games/Arcade/A"),
+            folder("B", "/games/Arcade/B"),
+        ];
+        assert_eq!(launchable_count(&entries), 0, "nothing to launch");
+    }
+
+    #[test]
+    fn scope_is_fully_loaded_only_when_nothing_is_outstanding() {
+        assert!(scope_fully_loaded(10, false, None), "all rows are here");
+        assert!(!scope_fully_loaded(10, true, None), "more pages advertised");
+        assert!(
+            !scope_fully_loaded(10, false, Some("cursor")),
+            "a cursor means the chain is unfinished"
+        );
+        assert!(!scope_fully_loaded(0, false, None), "empty is not loaded");
+    }
+
+    #[test]
+    fn walk_page_size_covers_the_target_and_the_directory_block() {
+        // Must fetch at least target+1 rows to be able to land ON the target,
+        // plus room for the leading directories that occupy the first page.
+        assert_eq!(walk_page_size(0, 0), 1);
+        assert_eq!(walk_page_size(4, 0), 5);
+        assert_eq!(walk_page_size(4, 3), 8);
+        // Later pages carry no directory block.
+        assert_eq!(walk_page_size(9, 0), 10);
+    }
+
+    #[test]
+    fn walk_page_size_is_capped_at_cores_limit() {
+        assert_eq!(walk_page_size(5000, 0), 1000);
+        assert_eq!(walk_page_size(999, 0), 1000);
+        // A negative or absurd directory hint must not underflow.
+        assert_eq!(walk_page_size(2, -5), 3);
     }
 
     #[test]

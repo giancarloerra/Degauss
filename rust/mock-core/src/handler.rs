@@ -182,15 +182,88 @@ mod tests {
 
     #[test]
     fn media_search_emits_pagination_envelope() {
-        let req = r#"{"jsonrpc":"2.0","id":"1","method":"media.search","params":{"systems":[],"maxResults":50}}"#;
+        // A page that covers every row reports no next page and no cursor.
+        let req = r#"{"jsonrpc":"2.0","id":"1","method":"media.search","params":{"systems":[],"maxResults":1000}}"#;
         let resp = parse(&dispatch(req));
         let pagination = resp["result"]["pagination"]
             .as_object()
             .expect("pagination object");
         assert_eq!(pagination["hasNextPage"], Value::Bool(false));
-        assert_eq!(pagination["pageSize"], Value::from(50));
+        assert_eq!(pagination["pageSize"], Value::from(1000));
+        assert!(!pagination.contains_key("nextCursor"));
         // Deprecated but still present for backward compatibility.
         assert_eq!(resp["result"]["total"], Value::from(-1));
+    }
+
+    // The frontend drains favorites over several cursor round-trips, so the
+    // mock has to model a real cursor chain: a short page must advertise a
+    // next page and hand back a cursor that resumes where it stopped.
+    #[test]
+    fn media_search_paginates_with_a_resumable_cursor() {
+        let first = parse(&dispatch(
+            r#"{"jsonrpc":"2.0","id":"1","method":"media.search","params":{"systems":[],"maxResults":5}}"#,
+        ));
+        let page1 = first["result"]["results"].as_array().expect("array");
+        assert_eq!(page1.len(), 5);
+        assert_eq!(
+            first["result"]["pagination"]["hasNextPage"],
+            Value::Bool(true)
+        );
+        let cursor = first["result"]["pagination"]["nextCursor"]
+            .as_str()
+            .expect("cursor");
+        // Offset cursor: page two must resume exactly where page one ended,
+        // not skip rows or restart inside page one.
+        assert_eq!(cursor, "5");
+
+        let second = parse(&dispatch(&format!(
+            r#"{{"jsonrpc":"2.0","id":"2","method":"media.search","params":{{"systems":[],"maxResults":5,"cursor":"{cursor}"}}}}"#
+        )));
+        let page2 = second["result"]["results"].as_array().expect("array");
+        assert_eq!(page2.len(), 5);
+        // The second page resumes rather than repeating the first.
+        assert_ne!(page1[0]["path"], page2[0]["path"]);
+    }
+
+    // Favorites are a tag query. Without this the Favorites screen in
+    // `just mock-core` lists every game and the feature cannot be exercised.
+    #[test]
+    fn media_search_filters_by_user_favorite_tag() {
+        let req = r#"{"jsonrpc":"2.0","id":"1","method":"media.search","params":{"systems":[],"maxResults":1000,"tags":["user:favorite"]}}"#;
+        let resp = parse(&dispatch(req));
+        let results = resp["result"]["results"].as_array().expect("array");
+        assert!(!results.is_empty(), "some mock games are favorites");
+
+        let unfiltered = parse(&dispatch(
+            r#"{"jsonrpc":"2.0","id":"2","method":"media.search","params":{"systems":[],"maxResults":1000}}"#,
+        ));
+        let all = unfiltered["result"]["results"].as_array().expect("array");
+        assert!(
+            results.len() < all.len(),
+            "the tag filter must narrow the set"
+        );
+
+        for game in results {
+            let tags = game["tags"].as_array().expect("tags array");
+            assert!(
+                tags.iter()
+                    .any(|tag| tag["type"] == "user" && tag["tag"] == "favorite"),
+                "every returned row carries the favorite tag"
+            );
+        }
+    }
+
+    // The favorites system filter groups by system id and category, so search
+    // rows must carry real system metadata rather than the bare id.
+    #[test]
+    fn media_search_rows_carry_system_name_and_category() {
+        let req = r#"{"jsonrpc":"2.0","id":"1","method":"media.search","params":{"systems":["NES"],"maxResults":5}}"#;
+        let resp = parse(&dispatch(req));
+        let results = resp["result"]["results"].as_array().expect("array");
+        let system = &results[0]["system"];
+        assert_eq!(system["id"], Value::from("NES"));
+        assert_eq!(system["name"], Value::from("Nintendo Entertainment System"));
+        assert_eq!(system["category"], Value::from("Consoles"));
     }
 
     #[test]

@@ -94,6 +94,7 @@ ApplicationWindow {
     property bool firstRunIndexModalRequested: false
     property bool commercialNoticeModalRequested: false
     property bool coreVersionModalRequested: false
+    property bool randomFailedModalRequested: false
     property bool logUploadModalRequested: false
     property bool quitConfirmModalRequested: false
     property bool listPickerModalRequested: false
@@ -292,6 +293,7 @@ ApplicationWindow {
     property bool qrCodeModalVisible: false
     property bool commercialNoticeModalVisible: false
     property bool coreVersionModalVisible: false
+    property bool randomFailedModalVisible: false
     property bool firstRunIndexModalVisible: false
     property bool gameInfoModalVisible: false
     property bool logUploadModalVisible: false
@@ -409,6 +411,7 @@ ApplicationWindow {
     signal closeQrCodeRequested
     signal closeCommercialNoticeRequested
     signal closeCoreVersionRequested
+    signal closeRandomFailedRequested
     signal closeFirstRunIndexRequested
     signal closeLogUploadRequested
     signal closeQuitConfirmRequested
@@ -809,6 +812,22 @@ ApplicationWindow {
             }
 
             Loader {
+                id: randomFailedModalLoader
+                anchors.fill: parent
+                active: root.randomFailedModalRequested
+                sourceComponent: Component {
+                    Modal {
+                        open: root.randomFailedModalVisible
+                        kind: "action_error"
+                        title: qsTr("Random game")
+                        body: qsTr("Couldn't pick anything to launch.")
+                        buttonLabel: qsTr("OK")
+                        onAccepted: root.closeRandomFailedRequested()
+                    }
+                }
+            }
+
+            Loader {
                 id: contextMenuLoader
                 anchors.fill: parent
                 active: root.contextMenuRequested
@@ -1128,7 +1147,7 @@ ApplicationWindow {
                                 label: qsTr("I understand")
                             }
                         ];
-                    if (root.coreVersionModalVisible)
+                    if (root.coreVersionModalVisible || root.randomFailedModalVisible)
                         return [
                             {
                                 button: "ButtonA",
@@ -1288,27 +1307,43 @@ ApplicationWindow {
                                 button: "ButtonA",
                                 label: qsTr("Open")
                             });
-                            if (isFavorites)
+                            if (isFavorites) {
                                 row.push({
                                     button: "ButtonX",
                                     label: qsTr("Options")
                                 });
+                                // Sort/scope/random live behind West; without
+                                // a cue the whole menu is invisible on a pad.
+                                row.push({
+                                    button: "ButtonY",
+                                    label: qsTr("View")
+                                });
+                            }
                             row.push({
                                 button: "ButtonB",
                                 label: qsTr("Back")
                             });
                             return row;
                         }
-                        return [
+                        // Empty/error. On Favorites an empty list can be the
+                        // result of the View menu's own scope, so advertise the
+                        // way back out of it here too.
+                        const fallback = [
                             {
                                 button: "ButtonA",
                                 label: qsTr("Retry")
-                            },
-                            {
-                                button: "ButtonB",
-                                label: qsTr("Back")
                             }
                         ];
+                        if (isFavorites && state === "empty")
+                            fallback.push({
+                                button: "ButtonY",
+                                label: qsTr("View")
+                            });
+                        fallback.push({
+                            button: "ButtonB",
+                            label: qsTr("Back")
+                        });
+                        return fallback;
                     }
                     if (root.activeScreen === root.screenSettings) {
                         if (root.settingsScreen === null)
