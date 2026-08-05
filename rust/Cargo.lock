@@ -1581,9 +1581,9 @@ dependencies = [
 
 [[package]]
 name = "zaparoo-update"
-version = "0.1.10"
+version = "1.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2da8131829aff32f7bc29b43c0daff26a4dba4161e55d69550056ddf4c74129e"
+checksum = "2169041e0f7d161e54d3d109828e7d495d644561b03a874eb53a7114125f944c"
 dependencies = [
  "tokio",
  "zaparoo-update-runtime-linux-armv7",
@@ -1593,21 +1593,21 @@ dependencies = [
 
 [[package]]
 name = "zaparoo-update-runtime-linux-armv7"
-version = "0.1.10"
+version = "1.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c78f301c6dc89fbe37c253525d497a07f012933b42d42e6361fdbaffe5f0d58e"
+checksum = "79a0bea270d9fbbb0b772df7d5475f7c12eb44fb232a2f35b1fe60af0e94ea71"
 
 [[package]]
 name = "zaparoo-update-runtime-linux-x86_64"
-version = "0.1.10"
+version = "1.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bcc82b1ebed0e704b79493c1c51869db4ace3aa84e0eff2e1062a52297ee2a14"
+checksum = "c1d3365516bbd268500fe8c30dc79bc9841b99e62cb1c187b4f19e03c0d9c7b0"
 
 [[package]]
 name = "zaparoo-update-runtime-windows-x86_64"
-version = "0.1.10"
+version = "1.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "704bb8a4855d526267d6db08880a86838daa679daa72f6acbbee4290aec231dc"
+checksum = "cdf77591760e408a453df5c2d8c3db86f3eaef05d24e92f9915340ed798edb9f"
 
 [[package]]
 name = "zerocopy"

@@ -107,11 +107,15 @@ fn lookup_same_title(
     let Some(slug) = slug else {
         return Ok(None);
     };
+    // `m.SystemDBID = mt.SystemDBID` keeps classification twins honest:
+    // a media row indexed under a different system than its title must
+    // not surface here labelled with the requested system id.
     let mut stmt = conn.prepare_cached(
         "SELECT mt.Name, m.Path, m.DBID FROM MediaTitles mt \
          INNER JOIN Systems s ON s.DBID = mt.SystemDBID \
          INNER JOIN Media m ON m.MediaTitleDBID = mt.DBID \
          WHERE s.SystemID = ?1 AND mt.Slug = ?2 AND m.IsMissing = 0 \
+           AND m.SystemDBID = mt.SystemDBID \
          ORDER BY m.DBID ASC",
     )?;
     let rows = stmt.query_map(rusqlite::params![system_id, slug], |r| {
@@ -187,6 +191,27 @@ mod tests {
         assert_eq!(items[0].media_id, Some(100));
         assert_eq!(items[1].name, "Street Fighter II (alt)");
         assert_eq!(items[1].system.id, "Arcade");
+    }
+
+    #[test]
+    fn media_row_under_foreign_system_is_excluded() {
+        // A classification twin: a media row pointing at the Arcade
+        // title but indexed under a different system must not surface
+        // labelled as Arcade.
+        let conn = test_db();
+        conn.execute_batch(
+            "INSERT INTO Systems VALUES (2, 'CPS2', 'CPS2');
+             INSERT INTO Media VALUES (104, 10, 2, '/games/CPS2/sf2.zip', 0);",
+        )
+        .unwrap();
+        let items = lookup_same_title(&conn, "Arcade", "/games/Arcade/sf2.zip")
+            .unwrap()
+            .expect("known path answers");
+        assert!(
+            items.iter().all(|i| !i.path.starts_with("/games/CPS2/")),
+            "foreign-system twin must be excluded"
+        );
+        assert_eq!(items.len(), 2);
     }
 
     #[test]

@@ -80,8 +80,8 @@ impl ReadDb {
     /// Returns `None` (domain off, RPC serves) on any refusal, logging
     /// the reason at the appropriate level.
     pub fn init(spec: &'static ReadDbSpec) -> Option<ReadDb> {
-        let disabled = std::env::var(spec.env_switch)
-            .is_ok_and(|v| v == "0" || v.eq_ignore_ascii_case("off"));
+        let disabled =
+            std::env::var(spec.env_switch).is_ok_and(|v| v == "0" || v.eq_ignore_ascii_case("off"));
         if disabled {
             info!("{}: disabled via {}", spec.domain, spec.env_switch);
             return None;
