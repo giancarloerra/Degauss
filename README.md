@@ -54,10 +54,13 @@ cargo install --locked cargo-nextest cargo-deny
 
 ## Trademarks
 
-This repository includes Zaparoo trademarks used here with permission from the
-trademark owner. If you redistribute or adapt the project, remove or replace
-those marks first. See the Zaparoo [Terms of Use](https://zaparoo.org/terms/)
-for the details.
+Degauss does not use the Zaparoo name or logo in its branding, and this
+repository bundles no Zaparoo brand assets. Zaparoo is a trademark of Wizzo
+Pty Ltd; where the interface or documentation says "Zaparoo Core", that is a
+factual statement of compatibility with the separately distributed Zaparoo
+Core service, not an affiliation or endorsement. See the Zaparoo
+[Terms of Use](https://zaparoo.org/terms/) before reusing any Zaparoo marks
+in derivative work.
 
 ## License
 
@@ -74,7 +77,9 @@ Third-party components:
   [legal@zaparoo.org](mailto:legal@zaparoo.org).
   See [`src/LICENSES/Qt-LGPL-NOTICE.txt`](src/LICENSES/Qt-LGPL-NOTICE.txt)
   and [`src/LICENSES/LGPLv3.txt`](src/LICENSES/LGPLv3.txt).
-- **zaparoo-update**: optional third-party update integration, separately owned
+- **zaparoo-update**: optional third-party update integration (compiled out of
+  this fork's MiSTer build; desktop dev presets keep upstream defaults),
+  separately owned
   and licensed under PolyForm Noncommercial License 1.0.0. Commercial licenses
   for Zaparoo Frontend do not grant commercial rights to zaparoo-update;
   commercial use, distribution, or bundling with the update integration enabled
