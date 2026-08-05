@@ -56,6 +56,38 @@ Ltd; see the Trademarks section. The code remains under the upstream
 PolyForm Noncommercial 1.0.0 license with all upstream copyright
 notices preserved.
 
+## Install on MiSTer
+
+Degauss replaces the stock frontend binary; Zaparoo Core stays exactly
+as installed. One-time setup, from SSH or the MiSTer console:
+
+```bash
+wget -O /media/fat/Scripts/update_degauss.sh https://raw.githubusercontent.com/giancarloerra/degauss/main/scripts/mister/update_degauss.sh
+```
+
+Then run **update_degauss** from the MiSTer Scripts menu. The script:
+
+- checks the installed Zaparoo Core version against the release's
+  declared minimum (and maximum, when one is declared) and refuses to
+  install an incompatible build,
+- backs up the stock frontend once as `frontend.zaparoo-original`, and
+  the previously installed Degauss as `frontend.degauss-prev` on every
+  update,
+- verifies the download's checksum before touching anything, then
+  swaps binaries with a staged move that is safe while the frontend is
+  running.
+
+Run it again anytime to update to the latest release. If a Zaparoo
+update ever reinstalls the stock frontend, run the script again and
+Degauss is back. To return to the stock frontend:
+
+```bash
+/media/fat/Scripts/update_degauss.sh -restore
+```
+
+Every Degauss release tracks an upstream Zaparoo Frontend release and
+states the Core versions it was built and tested against.
+
 ## Build
 
 Start with [docs/building.md](docs/building.md). It covers the packages you
