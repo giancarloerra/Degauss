@@ -55,8 +55,9 @@ use zaparoo_core::endpoints::media_tags_update::MediaTagsUpdateMutation;
 use zaparoo_core::endpoints::readers_write::ReadersWriteMutation;
 use zaparoo_core::endpoints::run::RunMutation;
 use zaparoo_core::media_types::{
-    BrowseEntry, MediaBrowseIndexParams, MediaBrowseParams, MediaBrowseResult, MediaMeta,
-    MediaMetaParams, MediaTagsUpdateParams, Pagination, ReadersWriteParams, RunParams, TagInfo,
+    BrowseEntry, BrowseIndexGroup, MediaBrowseIndexParams, MediaBrowseIndexResult,
+    MediaBrowseParams, MediaBrowseResult, MediaMeta, MediaMetaParams, MediaTagsUpdateParams,
+    Pagination, ReadersWriteParams, RunParams, TagInfo,
 };
 use zaparoo_core::platform::{self, Platform};
 use zaparoo_core::remote_resource::ResourceStatus;
@@ -853,6 +854,22 @@ impl ffi::GamesModel {
         if path.is_empty() {
             self.as_mut().set_letter_index_json(QString::from("[]"));
             self.as_mut().set_letter_index_scheme(QString::from("none"));
+            return;
+        }
+        // A complete local listing answers the facet with no request at
+        // all: the buckets fall out of the rows already in the model.
+        // Beyond saving the round trip, the local facet's offsets are
+        // authoritative for the exact rows on screen, including folders
+        // where the direct listing's SortName order diverges from a
+        // Core-side sort mode the RPC facet would describe instead. The
+        // seq bump retires any in-flight RPC facet from a prior scope.
+        if scope_fully_loaded(self.count, self.has_next_page, self.next_cursor.as_deref()) {
+            self.letter_index_seq.fetch_add(1, Ordering::SeqCst);
+            let index = local_letter_index(&self.entries);
+            self.as_mut()
+                .set_letter_index_json(QString::from(index.groups_json().as_str()));
+            self.as_mut()
+                .set_letter_index_scheme(QString::from(index.scheme.as_str()));
             return;
         }
         let sid = self.current_system_id.to_string();
@@ -2022,6 +2039,60 @@ fn walk_page_size(remaining: usize, leading_dirs: i32) -> u32 {
     let hint = usize::try_from(leading_dirs.max(0)).unwrap_or(0);
     let want = remaining.saturating_add(1).saturating_add(hint);
     u32::try_from(want.min(MAX_BROWSE_PAGE)).unwrap_or(1000)
+}
+
+/// Bucket key for a browse display name, byte-exact with Core's
+/// `BrowseNameFirstChar`: the uppercased first byte when it is a latin
+/// letter, `"0-9"` for a digit, `"#"` for everything else — including
+/// empty names and multi-byte first characters, whose first byte is not
+/// ASCII, exactly as Core's byte-indexed fold treats them.
+fn browse_bucket_key(name: &str) -> String {
+    match name.as_bytes().first() {
+        Some(b) => {
+            let up = b.to_ascii_uppercase();
+            if up.is_ascii_uppercase() {
+                (up as char).to_string()
+            } else if up.is_ascii_digit() {
+                "0-9".to_string()
+            } else {
+                "#".to_string()
+            }
+        }
+        None => "#".to_string(),
+    }
+}
+
+/// The jump-to-letter facet computed from a complete local listing: the
+/// same buckets Core's `media.browse.index` derives, over the rows the
+/// user is actually looking at. Buckets appear in first-appearance
+/// (listing) order; `count` folds every row of a bucket wherever it
+/// appears, and `offset` is the bucket's first item position among
+/// files (0-based, directories excluded), the exact contract of the RPC
+/// facet. `cursor` stays empty because the router jumps by offset and
+/// never seeks by cursor.
+fn local_letter_index(entries: &[BrowseEntry]) -> MediaBrowseIndexResult {
+    let mut groups: Vec<BrowseIndexGroup> = Vec::new();
+    let mut file_pos: u32 = 0;
+    for entry in launchable_entries(entries) {
+        let key = browse_bucket_key(&entry.name);
+        if let Some(group) = groups.iter_mut().find(|g| g.key == key) {
+            group.count += 1;
+        } else {
+            groups.push(BrowseIndexGroup {
+                key: key.clone(),
+                label: key,
+                count: 1,
+                cursor: String::new(),
+                offset: file_pos,
+            });
+        }
+        file_pos = file_pos.saturating_add(1);
+    }
+    MediaBrowseIndexResult {
+        scheme: "latin".to_string(),
+        total_files: file_pos,
+        groups,
+    }
 }
 
 fn run_text_for_entry(entry: &BrowseEntry) -> Option<String> {
@@ -3902,11 +3973,12 @@ mod tests {
     )]
 
     use super::{
-        child_launch_text_from_browse_result, chunk_for_subbatching, compute_unresolved_keys,
-        cover_key_for_with, cover_placeholder_for, decide_initial, dedup_roots_drop_ancestors,
-        detail_image_keys_from_meta, detail_tags_from_tags, display_name, display_title_for_entry,
-        entry_system_id, is_media_capable_entry, is_strict_ancestor_path, jump_fetch_limit,
-        launchable_count, launchable_entries, media_capable_directory_browse_params, media_key_for,
+        browse_bucket_key, child_launch_text_from_browse_result, chunk_for_subbatching,
+        compute_unresolved_keys, cover_key_for_with, cover_placeholder_for, decide_initial,
+        dedup_roots_drop_ancestors, detail_image_keys_from_meta, detail_tags_from_tags,
+        display_name, display_title_for_entry, entry_system_id, is_media_capable_entry,
+        is_strict_ancestor_path, jump_fetch_limit, launchable_count, launchable_entries,
+        local_letter_index, media_capable_directory_browse_params, media_key_for,
         meta_params_for_entry, ordered_detail_image_keys, position_of_game_path,
         prefetch_around_plan, prefetch_cursor_window_plan, project_status, result_total_dirs,
         run_text_for_entry, scope_fully_loaded, seeded_refetch_pagination_state,
@@ -3949,6 +4021,58 @@ mod tests {
             zap_script: format!("@{system_id}/{name}"),
             ..BrowseEntry::default()
         }
+    }
+
+    // --- local letter index ----------------------------------------------
+    // The local facet must be indistinguishable from Core's
+    // media.browse.index over the same rows: same bucket vocabulary
+    // (byte-exact with BrowseNameFirstChar), same 0-based file offsets,
+    // same first-appearance ordering.
+
+    #[test]
+    fn bucket_key_mirrors_core_vocabulary() {
+        assert_eq!(browse_bucket_key("Sonic"), "S");
+        assert_eq!(browse_bucket_key("sonic"), "S");
+        assert_eq!(browse_bucket_key("1942"), "0-9");
+        assert_eq!(browse_bucket_key("'89 Dennou"), "#");
+        assert_eq!(browse_bucket_key(""), "#");
+        // Multi-byte first character: Core folds on the first BYTE,
+        // which is non-ASCII, so the title lands in the symbol bucket.
+        assert_eq!(browse_bucket_key("Éxito"), "#");
+    }
+
+    #[test]
+    fn local_index_offsets_exclude_directories_and_fold_buckets() {
+        let entries = vec![
+            folder("Capcom", "/games/Arcade/Capcom"),
+            media("1942", "/games/a", "Arcade"),
+            media("Alien Syndrome", "/games/b", "Arcade"),
+            media("Altered Beast", "/games/c", "Arcade"),
+            media("Bubble Bobble", "/games/d", "Arcade"),
+        ];
+        let index = local_letter_index(&entries);
+        assert_eq!(index.scheme, "latin");
+        assert_eq!(index.total_files, 4);
+        let keys: Vec<&str> = index.groups.iter().map(|g| g.key.as_str()).collect();
+        assert_eq!(keys, ["0-9", "A", "B"]);
+        // Offsets are 0-based positions among FILES: the leading
+        // directory does not shift them.
+        assert_eq!(index.groups[0].offset, 0);
+        assert_eq!(index.groups[1].offset, 1);
+        assert_eq!(index.groups[1].count, 2);
+        assert_eq!(index.groups[2].offset, 3);
+        // The router jumps by offset; no cursor is synthesized.
+        assert!(index.groups.iter().all(|g| g.cursor.is_empty()));
+        assert!(index.groups.iter().all(|g| g.label == g.key));
+    }
+
+    #[test]
+    fn local_index_over_empty_or_dir_only_listing_has_no_groups() {
+        assert!(local_letter_index(&[]).groups.is_empty());
+        let dirs_only = vec![folder("Capcom", "/games/Arcade/Capcom")];
+        let index = local_letter_index(&dirs_only);
+        assert!(index.groups.is_empty());
+        assert_eq!(index.total_files, 0);
     }
 
     // --- uniform random pick ---------------------------------------------

@@ -13,6 +13,7 @@ mod media_history_db;
 mod media_image_cache;
 mod media_meta_cache;
 mod media_meta_db;
+mod media_search_db;
 mod mister_runtime;
 mod models;
 pub mod system_logos;

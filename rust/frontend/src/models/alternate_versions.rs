@@ -178,18 +178,33 @@ async fn discover_alternate_versions(
         .map(|media| media.title.name.trim().to_string())
         .filter(|title| !title.is_empty())
         .unwrap_or_else(|| name.trim().to_string());
-    let result = client
-        .media_search(MediaSearchParams {
-            query: Some(canonical_title.clone()),
-            systems: vec![ARCADE_SYSTEM_ID.to_string()],
-            max_results: Some(MAX_ALT_RESULTS),
-            ..MediaSearchParams::default()
-        })
-        .await
-        .map_err(|e| e.message)?;
+    // Direct-first: the database's own slug grouping answers "which
+    // rows are the same title" without the search round trip. `None`
+    // (path unknown, layer off) falls through to the RPC search, and
+    // both paths feed the same candidate filters below.
+    let search_rows = match crate::media_search_db::same_title_media_async(
+        ARCADE_SYSTEM_ID.to_string(),
+        selected_path.to_string(),
+    )
+    .await
+    {
+        Some(rows) => rows,
+        None => {
+            client
+                .media_search(MediaSearchParams {
+                    query: Some(canonical_title.clone()),
+                    systems: vec![ARCADE_SYSTEM_ID.to_string()],
+                    max_results: Some(MAX_ALT_RESULTS),
+                    ..MediaSearchParams::default()
+                })
+                .await
+                .map_err(|e| e.message)?
+                .results
+        }
+    };
     let selected_norm = normalize_seed_title(&canonical_title);
     let mut alternate_folders = HashSet::new();
-    for entry in result.results {
+    for entry in search_rows {
         if !is_alternate_candidate(&entry, selected_path) {
             continue;
         }
@@ -206,16 +221,39 @@ async fn discover_alternate_versions(
     let mut seen_paths = HashSet::new();
     let mut discovered = Vec::new();
     for folder in alternate_folders {
-        let page = client
-            .media_browse(MediaBrowseParams {
-                path: folder,
-                systems: vec![ARCADE_SYSTEM_ID.to_string()],
-                max_results: Some(1000),
-                ..MediaBrowseParams::default()
-            })
-            .await
-            .map_err(|e| e.message)?;
-        for entry in page.entries {
+        // Direct-first for the folder read too, so alternate discovery
+        // performs zero RPCs when the read layer is up. The listing
+        // module's own gates (browse-cache serveability, schema guard)
+        // decide per folder; `None` falls back to the RPC browse.
+        let direct = tokio::task::spawn_blocking({
+            let folder = folder.clone();
+            move || {
+                crate::media_browse_db::browse_folder(
+                    &folder,
+                    &[ARCADE_SYSTEM_ID.to_string()],
+                    &|| false,
+                )
+            }
+        })
+        .await
+        .ok()
+        .flatten();
+        let entries = match direct {
+            Some(result) => result.entries,
+            None => {
+                client
+                    .media_browse(MediaBrowseParams {
+                        path: folder,
+                        systems: vec![ARCADE_SYSTEM_ID.to_string()],
+                        max_results: Some(1000),
+                        ..MediaBrowseParams::default()
+                    })
+                    .await
+                    .map_err(|e| e.message)?
+                    .entries
+            }
+        };
+        for entry in entries {
             if entry.is_folder() || entry.path.is_empty() || entry.path == selected_path {
                 continue;
             }
