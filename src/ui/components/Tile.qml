@@ -68,6 +68,11 @@ Item {
 
     id: root
 
+    // Focus ring colour. Selection yellow by default; the Hub's home
+    // tiles override it to the state teal so all three wordmark colours
+    // live on screen with distinct roles.
+    property color focusRingColor: Theme.accent
+
     // qmllint disable missing-property compiler
     readonly property bool delegateIsSelected: parent.isSelected
     readonly property bool delegateIsFocused: parent.isFocused
@@ -390,7 +395,7 @@ Item {
 
         anchors.fill: parent
         anchors.margins: root._outlineGap
-        color: Theme.accent
+        color: root.focusRingColor
         radius: Math.max(0, root._tileCornerRadius - root._outlineGap)
         antialiasing: true
         visible: root._focusedSelection
@@ -546,10 +551,10 @@ Item {
         anchors.topMargin: Sizing.px(parent.width / 12)
         width: Sizing.px(parent.width / 6)
         height: width
-        // Tinted on the fly from theme tokens (fill -> stateMarker lavender,
+        // Tinted on the fly from theme tokens (fill -> favoriteMarker red,
         // keyline -> bgBar dark outline) via the tinted-svg provider, like every
         // other icon. The source SVG is neutral grayscale; colors live in Theme.
-        source: Resources.coverUrl("icons/Heart", Theme.stateMarker, Theme.stateMarker, Theme.bgBar)
+        source: Resources.coverUrl("icons/Heart", Theme.favoriteMarker, Theme.favoriteMarker, Theme.bgBar)
         sourceSize.width: Sizing.px(width)
         sourceSize.height: Sizing.px(height)
         fillMode: Image.PreserveAspectFit

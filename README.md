@@ -43,8 +43,9 @@ updated. Writes never touch the database directly.
 
 **The look.** A monochrome interface where the only chroma is the
 Degauss wordmark's own palette, one meaning per colour: yellow
-(`#FFCD09`) is selection, teal (`#03A49D`) is state and activity, red
-(`#FE2E1D`) is error. Yellow holds contrast for any use in both
+(`#FFCD09`) is selection, teal (`#03A49D`) is state and activity (the
+home tiles' focus, the status pill's progress), red (`#FE2E1D`) marks
+favorites and errors. Yellow holds contrast for any use in both
 themes; teal and red carry text on the dark theme and act as graphic
 accents on `crt-light`, the dedicated theme that lifts the surfaces
 for analog tubes.

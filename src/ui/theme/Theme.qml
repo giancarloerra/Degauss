@@ -65,16 +65,18 @@ QtObject {
     // any use on every surface of both themes (11.2:1 dark, 6.0:1
     // crt-light at worst).
     readonly property color accent: "#FFCD09"
-    // Persistent-state marker tint (favorite heart, hidden badge) — the
-    // wordmark's teal, a different hue from the selection yellow so
-    // "selected" and "favorited" can never be confused. Used as a
-    // graphic mark, not text, which its crt-light contrast supports.
-    // Paired with a dark `bgBar` outline/border for visibility on light
-    // cover art. The hidden badge uses it directly (TileBadge); the
-    // favorite heart is tinted to it on the fly via the tinted-svg
-    // provider (Heart.svg is a neutral grayscale source), so the color
-    // lives only here.
+    // State and activity tint (hidden badge, status-pill progress and
+    // spinner, the home tiles' focus ring) — the wordmark's teal, a
+    // different hue from the selection yellow so the two can never be
+    // confused. Used as a graphic mark, not text, which its crt-light
+    // contrast supports.
     readonly property color stateMarker: "#03A49D"
+    // Favorite marker — the wordmark's red, so hearts read instantly.
+    // A graphic glyph paired with a dark `bgBar` outline for visibility
+    // on light cover art; tinted on the fly via the tinted-svg provider
+    // (Heart.svg is a neutral grayscale source), so the colour lives
+    // only here.
+    readonly property color favoriteMarker: "#FE2E1D"
     // System logo tint tokens — two ramps, selected by Tile based on focus state.
     // Inactive ramp: mid grey so unfocused tiles read as secondary
     // against the yellow focused ramp.

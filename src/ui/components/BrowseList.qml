@@ -307,7 +307,9 @@ Item {
                 anchors.verticalCenter: parent.verticalCenter
                 width: Sizing.pctH(3.2)
                 height: width
-                source: Resources.iconUrl("Heart")
+                // Tinted like the tile heart: favourite red with the
+                // dark keyline, via the tinted-svg provider.
+                source: Resources.coverUrl("icons/Heart", Theme.favoriteMarker, Theme.favoriteMarker, Theme.bgBar)
                 sourceSize.width: Sizing.px(width)
                 sourceSize.height: Sizing.px(height)
                 fillMode: Image.PreserveAspectFit
