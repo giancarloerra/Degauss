@@ -856,6 +856,20 @@ impl ffi::GamesModel {
     /// jump-to-letter rail. Fire-and-forget: the router calls this when the
     /// page-ops menu opens so the buckets are likely ready by the time the
     /// user picks "Jump to letter".
+    /// Tear down per-listing state from the prior scope: the endpoint
+    /// watcher, any cover gate left from the prior path (see
+    /// `reset_cover_gate` — without this teardown a stale timer
+    /// callback could fire after the new path's `set_loading(true)` and
+    /// prematurely release its gate), and the listing provenance flag,
+    /// which only `apply_direct_listing` reasserts.
+    fn reset_listing_scope(mut self: Pin<&mut Self>) {
+        if let Some(handle) = self.as_mut().rust_mut().watcher.take() {
+            handle.abort();
+        }
+        reset_cover_gate(self.as_mut());
+        self.as_mut().rust_mut().listing_is_direct = false;
+    }
+
     fn load_letter_index(mut self: Pin<&mut Self>) {
         let path = self.current_path.to_string();
         // A root listing has no meaningful first-character rail. The seq
@@ -1639,17 +1653,7 @@ impl ffi::GamesModel {
         // the same reason.
         self.as_mut().set_total_dirs(0);
 
-        if let Some(handle) = self.as_mut().rust_mut().watcher.take() {
-            handle.abort();
-        }
-        // Tear down any cover gate left from the prior path. See
-        // `reset_cover_gate` for the rationale; without this teardown
-        // a stale timer callback could fire after the new path's
-        // `set_loading(true)` and prematurely release its gate.
-        reset_cover_gate(self.as_mut());
-        // Listing provenance resets with the listing; only
-        // `apply_direct_listing` reasserts it.
-        self.as_mut().rust_mut().listing_is_direct = false;
+        self.as_mut().reset_listing_scope();
 
         let seq = self.rust().seq.clone();
         let ticket = seq.fetch_add(1, Ordering::SeqCst) + 1;
