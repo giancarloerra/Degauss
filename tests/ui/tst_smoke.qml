@@ -16,7 +16,7 @@ import Zaparoo.Browse as Browse
 TestCase {
     function test_window_loads() {
         verify(mainWindow.visible, "Main window should be visible");
-        compare(mainWindow.title, "Zaparoo Frontend");
+        compare(mainWindow.title, "Degauss");
     }
 
     function test_initial_state() {

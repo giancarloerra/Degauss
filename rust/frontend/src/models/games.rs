@@ -202,6 +202,13 @@ pub struct GamesModelRust {
     loading_more: bool,
     error_message: QString,
     has_next_page: bool,
+    // True when the current listing came from the direct database path
+    // (`media_browse_db`), which always orders by `SortName`. The local
+    // letter facet is gated on this: an RPC-loaded listing can carry a
+    // Core-side sort mode (rank/date prefixes) whose order a latin rail
+    // must not describe, so those keep the RPC facet, which reports
+    // scheme "none" for them.
+    listing_is_direct: bool,
     // Files-only count from Core (`BrowseFileCount`). Combined with
     // `total_dirs` to compute total entries for the page denominator.
     // Directories always precede files, so `total_dirs + total_files`
@@ -360,6 +367,7 @@ impl Default for GamesModelRust {
             loading_more: false,
             error_message: QString::default(),
             has_next_page: false,
+            listing_is_direct: false,
             total_files: 0,
             total_dirs: 0,
             page_size: DEFAULT_PAGE_SIZE,
@@ -850,20 +858,27 @@ impl ffi::GamesModel {
     /// user picks "Jump to letter".
     fn load_letter_index(mut self: Pin<&mut Self>) {
         let path = self.current_path.to_string();
-        // A root listing has no meaningful first-character rail.
+        // A root listing has no meaningful first-character rail. The seq
+        // bump retires any in-flight facet from a prior folder scope,
+        // which would otherwise land later and overwrite this answer.
         if path.is_empty() {
+            self.letter_index_seq.fetch_add(1, Ordering::SeqCst);
             self.as_mut().set_letter_index_json(QString::from("[]"));
             self.as_mut().set_letter_index_scheme(QString::from("none"));
             return;
         }
-        // A complete local listing answers the facet with no request at
-        // all: the buckets fall out of the rows already in the model.
-        // Beyond saving the round trip, the local facet's offsets are
-        // authoritative for the exact rows on screen, including folders
-        // where the direct listing's SortName order diverges from a
-        // Core-side sort mode the RPC facet would describe instead. The
-        // seq bump retires any in-flight RPC facet from a prior scope.
-        if scope_fully_loaded(self.count, self.has_next_page, self.next_cursor.as_deref()) {
+        // A complete DIRECT listing answers the facet with no request at
+        // all: the buckets fall out of the rows already in the model, and
+        // the direct path guarantees SortName order, so a latin rail and
+        // its offsets describe exactly what is on screen (the buckets
+        // fold the displayed names, which are what the rail navigates).
+        // RPC-loaded listings keep the RPC facet even when complete: they
+        // can carry a Core-side sort mode (rank/date prefixes) where
+        // Core correctly suppresses the rail with scheme "none". The seq
+        // bump retires any in-flight RPC facet from a prior scope.
+        if self.listing_is_direct
+            && scope_fully_loaded(self.count, self.has_next_page, self.next_cursor.as_deref())
+        {
             self.letter_index_seq.fetch_add(1, Ordering::SeqCst);
             let index = local_letter_index(&self.entries);
             self.as_mut()
@@ -1632,6 +1647,9 @@ impl ffi::GamesModel {
         // a stale timer callback could fire after the new path's
         // `set_loading(true)` and prematurely release its gate.
         reset_cover_gate(self.as_mut());
+        // Listing provenance resets with the listing; only
+        // `apply_direct_listing` reasserts it.
+        self.as_mut().rust_mut().listing_is_direct = false;
 
         let seq = self.rust().seq.clone();
         let ticket = seq.fetch_add(1, Ordering::SeqCst) + 1;
@@ -1720,6 +1738,7 @@ fn apply_direct_listing(
     seq: Arc<AtomicU64>,
     qt_thread: &cxx_qt::CxxQtThread<ffi::GamesModel>,
 ) {
+    model.as_mut().rust_mut().listing_is_direct = true;
     let head_len = usize::try_from(model.page_size.max(1)).unwrap_or(30);
     if result.entries.len() <= head_len.saturating_mul(2) {
         apply_status(model, ResourceStatus::Ready(result));

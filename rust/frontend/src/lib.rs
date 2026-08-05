@@ -433,7 +433,7 @@ pub extern "C" fn zaparoo_rust_init(crt_native_path_forced: bool) -> c_int {
     install_crash_signal_handler();
     startup_trace("rust:crash handler installed");
 
-    tracing::info!("Zaparoo Frontend starting");
+    tracing::info!("Degauss starting");
     tracing::info!(
         "build {}",
         models::build_info::provenance_string(env!("CARGO_PKG_VERSION"))

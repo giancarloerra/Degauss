@@ -196,10 +196,9 @@ int main(int argc, char* argv[]) // NOLINT
             Qt::HighDpiScaleFactorRoundingPolicy::Floor);
     }
 
-    QGuiApplication::setApplicationName("Zaparoo Frontend");
+    QGuiApplication::setApplicationName("Degauss");
     QGuiApplication::setApplicationVersion(ZAPAROO_VERSION);
-    QGuiApplication::setOrganizationName("Zaparoo");
-    QGuiApplication::setOrganizationDomain("zaparoo.org");
+    QGuiApplication::setOrganizationName("Degauss");
 
     if (zaparoo_rust_init(crtNativePathForced) != 0)
     {

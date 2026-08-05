@@ -141,6 +141,7 @@ RUN mkdir -p build && cd build && \
             -DBUILD_SHARED_LIBS=OFF \
             -DZAPAROO_BUILD_TESTS=OFF \
             -DZAPAROO_EMBEDDED=ON \
+            -DZAPAROO_WITH_UPDATE=OFF \
             -DQt6LinguistTools_DIR=/opt/qt6-host/lib/cmake/Qt6LinguistTools; \
     fi \
     && ninja \
