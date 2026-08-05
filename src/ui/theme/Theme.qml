@@ -9,15 +9,22 @@ import QtQuick
 QtObject {
     property bool crtNativePath: false
 
+    // UI colour theme, driven by the persisted `theme` setting via
+    // MainLayout's Binding. "crt-light" lifts the backgrounds and
+    // surfaces for analog CRT output, where the stock near-black
+    // palette reads too dark on a tube.
+    property string theme: "default"
+    readonly property bool _crtLight: theme === "crt-light"
+
     // Backgrounds
-    readonly property color bgDeep: "#0f0f23"
-    readonly property color bgPanel: "#1a1a35"
-    readonly property color bgBar: "#0a0a15"
+    readonly property color bgDeep: _crtLight ? "#69698A" : "#0f0f23"
+    readonly property color bgPanel: _crtLight ? "#36365E" : "#1a1a35"
+    readonly property color bgBar: _crtLight ? "#464669" : "#0a0a15"
     // Card surface used for tile bodies in rows/grids. Sits a step
     // above bgPanel so a solid white icon+label silhouette has clear
     // contrast — the page bg pattern stays visible in the gaps between
     // tiles, and each tile reads as a self-contained chip.
-    readonly property color surfaceCard: "#22223a"
+    readonly property color surfaceCard: _crtLight ? "#464669" : "#22223a"
     // Selected row fill. Cooler and darker than the amber accent so
     // text stays high-contrast while the accent bar remains the focus
     // cue layered on top.
@@ -32,6 +39,10 @@ QtObject {
     // Text
     readonly property color textPrimary: "#ffffff"
     readonly property color textLabel: "#888888"
+    // Unselected list-row titles: on the lighter crt-light surfaces the
+    // stock mid-grey sinks into the background, so lift it while keeping
+    // clear headroom below the selected row's full white.
+    readonly property color textListTitleDim: _crtLight ? "#C2C2DC" : "#888888"
     // Variant/disambiguation suffix tone — a muted lavender-grey that reads as
     // secondary metadata next to the title without competing with it, and
     // stays legible on `surfaceCard` and on the CRT path. Drawn after the name

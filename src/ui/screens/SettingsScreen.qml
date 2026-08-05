@@ -178,6 +178,11 @@ Item {
         },
         {
             kind: "field",
+            id: "theme",
+            label: qsTr("Theme")
+        },
+        {
+            kind: "field",
             id: "mediaImageType",
             label: qsTr("Preferred artwork")
         },
@@ -408,6 +413,8 @@ Item {
             return settings._browseLayoutDisplay(Browse.Settings.current_browse_layout);
         if (id === "systemLogoStyle")
             return settings._systemLogoStyleDisplay(Browse.Settings.current_system_logo_style);
+        if (id === "theme")
+            return settings._themeDisplay(Browse.Settings.current_theme);
         if (id === "buttonLayout")
             return settings._buttonLayoutDisplay(Browse.Settings.current_button_layout);
         if (id === "screensaverTimeout")
@@ -548,7 +555,7 @@ Item {
         if (!settings._isField(settings.currentIndex))
             return false;
         const id = settings.fields[settings.currentIndex].id;
-        return id === "language" || id === "clockFormat" || id === "region" || id === "orientation" || id === "browseLayout" || id === "systemLogoStyle" || id === "buttonLayout" || id === "resolution" || id === "screensaverTimeout" || id === "mediaImageType" || id === "crtVideoStandard";
+        return id === "language" || id === "clockFormat" || id === "region" || id === "orientation" || id === "browseLayout" || id === "systemLogoStyle" || id === "theme" || id === "buttonLayout" || id === "resolution" || id === "screensaverTimeout" || id === "mediaImageType" || id === "crtVideoStandard";
     }
     // True when focused row accepts A without left/right cycling:
     // pickers, jobs, modal/navigation rows, and root category rows.
@@ -638,6 +645,11 @@ Item {
 
     function _systemLogoStyleList(): list<string> {
         const raw = Browse.Settings.available_system_logo_styles;
+        return raw === undefined || raw === null ? [] : raw;
+    }
+
+    function _themeList(): list<string> {
+        const raw = Browse.Settings.available_themes;
         return raw === undefined || raw === null ? [] : raw;
     }
 
@@ -735,6 +747,12 @@ Item {
         if (value === "color")
             return qsTr("Full color");
         return qsTr("Tinted");
+    }
+
+    function _themeDisplay(value: string): string {
+        if (value === "crt-light")
+            return qsTr("CRT light");
+        return qsTr("Default");
     }
 
     function _buttonLayoutDisplay(value: string): string {
@@ -892,6 +910,15 @@ Item {
                     label: settings._systemLogoStyleDisplay(list[i])
                 });
             initialId = Browse.Settings.current_system_logo_style;
+        } else if (id === "theme") {
+            title = qsTr("Theme");
+            const list = settings._themeList();
+            for (let i = 0; i < list.length; i++)
+                entries.push({
+                    id: list[i],
+                    label: settings._themeDisplay(list[i])
+                });
+            initialId = Browse.Settings.current_theme;
         } else if (id === "buttonLayout") {
             title = qsTr("Button style");
             const list = settings._buttonLayoutList();

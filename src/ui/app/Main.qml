@@ -2581,6 +2581,8 @@ MainLayout {
             Browse.Settings.set_browse_layout(selectedId);
         else if (fieldId === "systemLogoStyle")
             Browse.Settings.set_system_logo_style(selectedId);
+        else if (fieldId === "theme")
+            Browse.Settings.set_theme(selectedId);
         else if (fieldId === "buttonLayout")
             Browse.Settings.set_button_layout(selectedId);
         else if (fieldId === "resolution") {

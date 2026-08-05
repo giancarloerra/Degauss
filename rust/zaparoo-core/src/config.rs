@@ -59,6 +59,7 @@ pub struct SettingsConfig {
     pub clock_format: Option<String>,
     pub browse_layout: Option<String>,
     pub system_logo_style: Option<String>,
+    pub theme: Option<String>,
     pub button_layout: Option<String>,
     pub mouse_enabled: Option<bool>,
     pub reduce_motion: Option<bool>,
@@ -87,6 +88,7 @@ pub struct SettingsMirror<'a> {
     pub clock_format: &'a str,
     pub browse_layout: &'a str,
     pub system_logo_style: &'a str,
+    pub theme: &'a str,
     pub button_layout: &'a str,
     pub mouse_enabled: bool,
     pub reduce_motion: bool,
@@ -178,6 +180,7 @@ struct RawSettings {
     clock_format: Option<String>,
     browse_layout: Option<String>,
     system_logo_style: Option<String>,
+    theme: Option<String>,
     button_layout: Option<String>,
     mouse_enabled: Option<bool>,
     reduce_motion: Option<bool>,
@@ -317,6 +320,7 @@ fn settings_config_from_raw(raw: RawSettings) -> SettingsConfig {
         clock_format: trim_opt(raw.clock_format),
         browse_layout: trim_opt(raw.browse_layout),
         system_logo_style: trim_opt(raw.system_logo_style),
+        theme: trim_opt(raw.theme),
         button_layout: trim_opt(raw.button_layout),
         mouse_enabled: raw.mouse_enabled,
         reduce_motion: raw.reduce_motion,
@@ -389,6 +393,10 @@ pub fn save_settings_mirror(path: &Path, mirror: SettingsMirror<'_>) -> Result<(
     settings.insert(
         "system_logo_style".into(),
         toml::Value::String(mirror.system_logo_style.trim().to_string()),
+    );
+    settings.insert(
+        "theme".into(),
+        toml::Value::String(mirror.theme.trim().to_string()),
     );
     settings.insert(
         "button_layout".into(),
@@ -1020,6 +1028,7 @@ mod tests {
                 clock_format: "24h",
                 browse_layout: "list",
                 system_logo_style: "color",
+                theme: "crt-light",
                 button_layout: "b",
                 mouse_enabled: false,
                 reduce_motion: true,
@@ -1074,6 +1083,7 @@ mod tests {
                 clock_format: "auto",
                 browse_layout: "grid",
                 system_logo_style: "tinted",
+                theme: "default",
                 button_layout: "a",
                 mouse_enabled: true,
                 reduce_motion: false,
@@ -1123,6 +1133,7 @@ mod tests {
                 clock_format: "12h",
                 browse_layout: "list",
                 system_logo_style: "color",
+                theme: "crt-light",
                 button_layout: "c",
                 mouse_enabled: false,
                 reduce_motion: false,

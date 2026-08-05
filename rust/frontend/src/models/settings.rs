@@ -141,6 +141,8 @@ const BROWSE_LAYOUTS: &[&str] = &["grid", "list"];
 const DEFAULT_BROWSE_LAYOUT: &str = "grid";
 const SYSTEM_LOGO_STYLES: &[&str] = &["tinted", "color"];
 const DEFAULT_SYSTEM_LOGO_STYLE: &str = "tinted";
+const THEMES: &[&str] = &["default", "crt-light"];
+const DEFAULT_THEME: &str = "default";
 const BUTTON_LAYOUTS: &[&str] = &["a", "b", "c", "d"];
 const DEFAULT_BUTTON_LAYOUT: &str = "a";
 // Screensaver idle-timeout choices. Values are seconds as ASCII
@@ -193,6 +195,8 @@ pub struct SettingsRust {
     current_browse_layout: QString,
     available_system_logo_styles: QStringList,
     current_system_logo_style: QString,
+    available_themes: QStringList,
+    current_theme: QString,
     available_button_layouts: QStringList,
     current_button_layout: QString,
     current_mouse_enabled: bool,
@@ -235,6 +239,8 @@ pub mod ffi {
         #[qproperty(QString, current_browse_layout, READ, WRITE = set_browse_layout, NOTIFY)]
         #[qproperty(QStringList, available_system_logo_styles, READ, CONSTANT)]
         #[qproperty(QString, current_system_logo_style, READ, WRITE = set_system_logo_style, NOTIFY)]
+        #[qproperty(QStringList, available_themes, READ, CONSTANT)]
+        #[qproperty(QString, current_theme, READ, WRITE = set_theme, NOTIFY)]
         #[qproperty(QStringList, available_button_layouts, READ, CONSTANT)]
         #[qproperty(QString, current_button_layout, READ, WRITE = set_button_layout, NOTIFY)]
         #[qproperty(bool, current_mouse_enabled, READ, WRITE = set_mouse_enabled, NOTIFY)]
@@ -268,6 +274,8 @@ pub mod ffi {
 
         #[qinvokable]
         fn set_system_logo_style(self: Pin<&mut Settings>, value: QString);
+        #[qinvokable]
+        fn set_theme(self: Pin<&mut Settings>, value: QString);
 
         #[qinvokable]
         fn set_button_layout(self: Pin<&mut Settings>, value: QString);
@@ -333,6 +341,8 @@ impl Initialize for ffi::Settings {
         self.as_mut().rust_mut().available_system_logo_styles = system_logo_styles();
         self.as_mut().rust_mut().current_system_logo_style =
             QString::from(merged.system_logo_style.as_str());
+        self.as_mut().rust_mut().available_themes = themes();
+        self.as_mut().rust_mut().current_theme = QString::from(merged.theme.as_str());
         self.as_mut().rust_mut().available_button_layouts = button_layouts();
         self.as_mut().rust_mut().current_button_layout =
             QString::from(merged.button_layout.as_str());
@@ -446,6 +456,21 @@ impl ffi::Settings {
         mirror_settings_to_config(&config_file_path(), &snapshot.settings);
         self.as_mut().rust_mut().current_system_logo_style = QString::from(value_str.as_str());
         self.as_mut().current_system_logo_style_changed();
+    }
+
+    #[allow(
+        clippy::needless_pass_by_value,
+        reason = "cxx-qt qinvokable signature requires QString by value"
+    )]
+    fn set_theme(mut self: Pin<&mut Self>, value: QString) {
+        let value_str = normalize_theme(&value.to_string()).to_string();
+        if self.current_theme.to_string() == value_str {
+            return;
+        }
+        let snapshot = persist_settings(|s| s.theme.clone_from(&value_str));
+        mirror_settings_to_config(&config_file_path(), &snapshot.settings);
+        self.as_mut().rust_mut().current_theme = QString::from(value_str.as_str());
+        self.as_mut().current_theme_changed();
     }
 
     #[allow(
@@ -604,6 +629,7 @@ pub(super) fn mirror_settings_to_config(config_path: &std::path::Path, settings:
             clock_format: settings.clock_format.as_str(),
             browse_layout: settings.browse_layout.as_str(),
             system_logo_style: settings.system_logo_style.as_str(),
+            theme: settings.theme.as_str(),
             button_layout: settings.button_layout.as_str(),
             mouse_enabled: settings.mouse_enabled,
             reduce_motion: settings.reduce_motion,
@@ -651,6 +677,16 @@ fn merge_crt_settings(snapshot: &SettingsState, config: &Config) -> (String, i32
     (standard, h_offset, v_offset)
 }
 
+/// Merge one string setting: the config value wins when present,
+/// falling back to the persisted snapshot, normalized either way.
+fn merge_string_setting(
+    config_value: Option<&str>,
+    snapshot_value: &str,
+    normalize: impl Fn(&str) -> &'static str,
+) -> String {
+    normalize(config_value.unwrap_or(snapshot_value)).to_string()
+}
+
 fn merge_settings(snapshot: &SettingsState, config: &Config) -> SettingsState {
     let (crt_video_standard, crt_h_offset, crt_v_offset) = merge_crt_settings(snapshot, config);
     SettingsState {
@@ -684,14 +720,16 @@ fn merge_settings(snapshot: &SettingsState, config: &Config) -> SettingsState {
                 .unwrap_or(snapshot.browse_layout.as_str()),
         )
         .to_string(),
-        system_logo_style: normalize_system_logo_style(
-            config
-                .settings
-                .system_logo_style
-                .as_deref()
-                .unwrap_or(snapshot.system_logo_style.as_str()),
-        )
-        .to_string(),
+        system_logo_style: merge_string_setting(
+            config.settings.system_logo_style.as_deref(),
+            snapshot.system_logo_style.as_str(),
+            normalize_system_logo_style,
+        ),
+        theme: merge_string_setting(
+            config.settings.theme.as_deref(),
+            snapshot.theme.as_str(),
+            normalize_theme,
+        ),
         button_layout: normalize_button_layout(
             config
                 .settings
@@ -770,6 +808,14 @@ fn system_logo_styles() -> QStringList {
     let mut list = QStringList::default();
     for style in SYSTEM_LOGO_STYLES {
         list.append(QString::from(*style));
+    }
+    list
+}
+
+fn themes() -> QStringList {
+    let mut list = QStringList::default();
+    for theme in THEMES {
+        list.append(QString::from(*theme));
     }
     list
 }
@@ -886,6 +932,15 @@ fn normalize_system_logo_style(value: &str) -> &'static str {
         .copied()
         .find(|style| *style == trimmed)
         .unwrap_or(DEFAULT_SYSTEM_LOGO_STYLE)
+}
+
+fn normalize_theme(value: &str) -> &'static str {
+    let trimmed = value.trim();
+    THEMES
+        .iter()
+        .copied()
+        .find(|theme| *theme == trimmed)
+        .unwrap_or(DEFAULT_THEME)
 }
 
 fn normalize_screensaver_timeout(value: &str) -> &'static str {

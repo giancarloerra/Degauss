@@ -298,7 +298,7 @@ Item {
                 focused: row._highlightVisible
                 centerContent: false
                 fontPixelSize: Sizing.fontSize(2.9)
-                nameColor: row._highlightVisible ? Theme.textPrimary : Theme.textLabel
+                nameColor: row._highlightVisible ? Theme.textPrimary : Theme.textListTitleDim
             }
 
             Image {

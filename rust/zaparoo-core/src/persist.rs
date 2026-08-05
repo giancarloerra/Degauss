@@ -117,6 +117,10 @@ pub struct SettingsState {
     pub browse_layout: String,
     #[serde(default = "default_system_logo_style")]
     pub system_logo_style: String,
+    /// UI color theme: `default`, or `crt-light` for the brighter
+    /// palette tuned for analog CRT output.
+    #[serde(default = "default_theme")]
+    pub theme: String,
     #[serde(default = "default_button_layout")]
     pub button_layout: String,
     #[serde(default = "default_mouse_enabled")]
@@ -168,6 +172,7 @@ impl Default for SettingsState {
             orientation: default_orientation(),
             browse_layout: default_browse_layout(),
             system_logo_style: default_system_logo_style(),
+            theme: default_theme(),
             button_layout: default_button_layout(),
             mouse_enabled: default_mouse_enabled(),
             reduce_motion: false,
@@ -207,6 +212,10 @@ fn default_browse_layout() -> String {
 
 fn default_system_logo_style() -> String {
     "tinted".into()
+}
+
+fn default_theme() -> String {
+    "default".into()
 }
 
 fn default_button_layout() -> String {
@@ -359,6 +368,7 @@ mod tests {
                 orientation: "cw".into(),
                 browse_layout: "list".into(),
                 system_logo_style: "color".into(),
+                theme: "crt-light".into(),
                 button_layout: "b".into(),
                 mouse_enabled: false,
                 reduce_motion: true,

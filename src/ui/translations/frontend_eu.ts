@@ -373,10 +373,6 @@ Euskara - devilschile2</source>
         <source>Loading favorites…</source>
         <translation type="unfinished">Gogokoak kargatzen...</translation>
     </message>
-    <message>
-        <source>%1 entries</source>
-        <translation type="obsolete">%1 sarrera</translation>
-    </message>
 </context>
 <context>
     <name>FirstRunIndexModal</name>
@@ -447,34 +443,34 @@ Euskara - devilschile2</source>
 <context>
     <name>GamesScreen</name>
     <message>
-        <location filename="../screens/GamesScreen.qml" line="142"/>
-        <location filename="../screens/GamesScreen.qml" line="186"/>
+        <location filename="../screens/GamesScreen.qml" line="137"/>
+        <location filename="../screens/GamesScreen.qml" line="177"/>
         <source>%1 files</source>
         <translation>%1 fitxategi</translation>
     </message>
     <message>
-        <location filename="../screens/GamesScreen.qml" line="59"/>
+        <location filename="../screens/GamesScreen.qml" line="54"/>
         <source>Loading game…</source>
         <translation type="unfinished">Jokua kargatzen...</translation>
     </message>
     <message>
-        <location filename="../screens/GamesScreen.qml" line="155"/>
-        <location filename="../screens/GamesScreen.qml" line="187"/>
+        <location filename="../screens/GamesScreen.qml" line="146"/>
+        <location filename="../screens/GamesScreen.qml" line="178"/>
         <source>%1 / %2</source>
         <translation type="unfinished">%1 / %2</translation>
     </message>
     <message>
-        <location filename="../screens/GamesScreen.qml" line="54"/>
+        <location filename="../screens/GamesScreen.qml" line="49"/>
         <source>Loading games…</source>
         <translation type="unfinished">Jokuak kargatzen</translation>
     </message>
     <message>
-        <location filename="../screens/GamesScreen.qml" line="151"/>
+        <location filename="../screens/GamesScreen.qml" line="142"/>
         <source>Loading more…</source>
         <translation type="unfinished">Gehiago kargatzen...</translation>
     </message>
     <message>
-        <location filename="../screens/GamesScreen.qml" line="53"/>
+        <location filename="../screens/GamesScreen.qml" line="48"/>
         <source>No games in this system</source>
         <translation>Sistema honek ez du jokurik</translation>
     </message>
@@ -611,148 +607,148 @@ Euskara - devilschile2</source>
 <context>
     <name>Main</name>
     <message>
-        <location filename="../app/Main.qml" line="1525"/>
+        <location filename="../app/Main.qml" line="1518"/>
         <source>Launch core</source>
         <translation type="unfinished">Exekutatu nukleoa</translation>
     </message>
     <message>
-        <location filename="../app/Main.qml" line="1534"/>
-        <location filename="../app/Main.qml" line="1779"/>
+        <location filename="../app/Main.qml" line="1527"/>
+        <location filename="../app/Main.qml" line="1772"/>
         <source>Change launcher</source>
         <translation type="unfinished">Aldatu abiarazlea</translation>
     </message>
     <message>
-        <location filename="../app/Main.qml" line="1598"/>
+        <location filename="../app/Main.qml" line="1591"/>
         <source>Remove from favorites</source>
         <translation type="unfinished">Kendu gogokoetatik</translation>
     </message>
     <message>
-        <location filename="../app/Main.qml" line="1598"/>
+        <location filename="../app/Main.qml" line="1591"/>
         <source>Add to favorites</source>
         <translation type="unfinished">Gehitu gogokoetan</translation>
     </message>
     <message>
-        <location filename="../app/Main.qml" line="1603"/>
+        <location filename="../app/Main.qml" line="1596"/>
         <source>Write to NFC token</source>
         <translation type="unfinished">Idatzi NFC token-a</translation>
     </message>
     <message>
-        <location filename="../app/Main.qml" line="1607"/>
+        <location filename="../app/Main.qml" line="1600"/>
         <source>QR code</source>
         <translation type="unfinished">QR kodea</translation>
     </message>
     <message>
-        <location filename="../app/Main.qml" line="1582"/>
-        <location filename="../app/Main.qml" line="1617"/>
+        <location filename="../app/Main.qml" line="1575"/>
+        <location filename="../app/Main.qml" line="1610"/>
         <source>Launch game</source>
         <translation type="unfinished">Abiarazi jokua</translation>
     </message>
     <message>
-        <location filename="../app/Main.qml" line="2120"/>
+        <location filename="../app/Main.qml" line="2113"/>
         <source>Go to...</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../app/Main.qml" line="2123"/>
+        <location filename="../app/Main.qml" line="2116"/>
         <source>View</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../app/Main.qml" line="3171"/>
+        <location filename="../app/Main.qml" line="3027"/>
         <source>Loading systems…</source>
         <translation type="unfinished">Sistemak kargatzen</translation>
     </message>
     <message>
-        <location filename="../app/Main.qml" line="3177"/>
+        <location filename="../app/Main.qml" line="3033"/>
         <source>Loading favorites…</source>
         <translation type="unfinished">Gogokoak kargatzen</translation>
     </message>
     <message>
-        <location filename="../app/Main.qml" line="3173"/>
+        <location filename="../app/Main.qml" line="3029"/>
         <source>Loading games…</source>
         <translation type="unfinished">Jokoak kargatzen</translation>
     </message>
     <message>
-        <location filename="../app/Main.qml" line="1541"/>
-        <location filename="../app/Main.qml" line="1570"/>
+        <location filename="../app/Main.qml" line="1534"/>
+        <location filename="../app/Main.qml" line="1563"/>
         <source>Update media database</source>
         <translation type="unfinished">Eguneratu multimedia datu-basea</translation>
     </message>
     <message>
-        <location filename="../app/Main.qml" line="1544"/>
-        <location filename="../app/Main.qml" line="1573"/>
+        <location filename="../app/Main.qml" line="1537"/>
+        <location filename="../app/Main.qml" line="1566"/>
         <source>Scrape metadata</source>
         <translation type="unfinished">Metadatuak scrapeatu</translation>
     </message>
     <message>
-        <location filename="../app/Main.qml" line="1549"/>
-        <location filename="../app/Main.qml" line="1558"/>
+        <location filename="../app/Main.qml" line="1542"/>
+        <location filename="../app/Main.qml" line="1551"/>
         <source>Unhide</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../app/Main.qml" line="1549"/>
-        <location filename="../app/Main.qml" line="1558"/>
+        <location filename="../app/Main.qml" line="1542"/>
+        <location filename="../app/Main.qml" line="1551"/>
         <source>Hide</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../app/Main.qml" line="1775"/>
+        <location filename="../app/Main.qml" line="1768"/>
         <source>Default</source>
         <translation type="unfinished">Lehenetsia</translation>
     </message>
     <message>
-        <location filename="../app/Main.qml" line="1775"/>
+        <location filename="../app/Main.qml" line="1768"/>
         <source>Current: %1</source>
         <translation type="unfinished">Unekoa: %1</translation>
     </message>
     <message>
-        <location filename="../app/Main.qml" line="2263"/>
+        <location filename="../app/Main.qml" line="2256"/>
         <source>Saving launcher</source>
         <translation type="unfinished">Abiarazlea gordetzen</translation>
     </message>
     <message>
-        <location filename="../app/Main.qml" line="2267"/>
+        <location filename="../app/Main.qml" line="2260"/>
         <source>Saving…</source>
         <translation type="unfinished">Gordetzen...</translation>
     </message>
     <message>
-        <location filename="../app/Main.qml" line="2281"/>
+        <location filename="../app/Main.qml" line="2274"/>
         <source>Launcher update failed</source>
         <translation type="unfinished">Abiarazle egukeraketak huts egin du</translation>
     </message>
     <message>
-        <location filename="../app/Main.qml" line="2285"/>
+        <location filename="../app/Main.qml" line="2278"/>
         <source>Error: %1</source>
         <translation type="unfinished">Errorea: %1</translation>
     </message>
     <message>
-        <location filename="../app/Main.qml" line="2289"/>
+        <location filename="../app/Main.qml" line="2282"/>
         <source>Retry</source>
         <translation type="unfinished">Berriro saiatu</translation>
     </message>
     <message>
-        <location filename="../app/Main.qml" line="2293"/>
+        <location filename="../app/Main.qml" line="2286"/>
         <source>Cancel</source>
         <translation type="unfinished">Utzi</translation>
     </message>
     <message>
-        <location filename="../app/Main.qml" line="3175"/>
+        <location filename="../app/Main.qml" line="3031"/>
         <source>Loading game…</source>
         <translation type="unfinished">Jokua kargatzen...</translation>
     </message>
     <message>
-        <location filename="../app/Main.qml" line="3179"/>
+        <location filename="../app/Main.qml" line="3035"/>
         <source>Loading recently played…</source>
         <translation type="unfinished">Duela gutxi jokatutakoak kargatzen...</translation>
     </message>
     <message>
-        <location filename="../app/Main.qml" line="3181"/>
+        <location filename="../app/Main.qml" line="3037"/>
         <source>Loading settings…</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../app/Main.qml" line="3183"/>
+        <location filename="../app/Main.qml" line="3039"/>
         <source>Loading…</source>
         <translation type="unfinished">Kargatzen…</translation>
     </message>
@@ -760,103 +756,103 @@ Euskara - devilschile2</source>
 <context>
     <name>MainLayout</name>
     <message>
-        <location filename="../app/MainLayout.qml" line="768"/>
+        <location filename="../app/MainLayout.qml" line="774"/>
         <source>Writing failed</source>
         <translation>Idazketak huts egin du</translation>
     </message>
     <message>
-        <location filename="../app/MainLayout.qml" line="768"/>
+        <location filename="../app/MainLayout.qml" line="774"/>
         <source>Put a writable card near the reader</source>
         <translation>Jarri idatzi daitekeen txartel bat irakurlearen ondoan</translation>
     </message>
     <message>
-        <location filename="../app/MainLayout.qml" line="803"/>
+        <location filename="../app/MainLayout.qml" line="809"/>
         <source>Update Zaparoo Core</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../app/MainLayout.qml" line="804"/>
+        <location filename="../app/MainLayout.qml" line="810"/>
         <source>This frontend needs Zaparoo Core %1 or newer. You&apos;re running %2. Some features may not work until you update.</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../app/MainLayout.qml" line="805"/>
-        <location filename="../app/MainLayout.qml" line="1135"/>
+        <location filename="../app/MainLayout.qml" line="811"/>
+        <location filename="../app/MainLayout.qml" line="1141"/>
         <source>OK</source>
         <translation type="unfinished">Ados</translation>
     </message>
     <message>
-        <location filename="../app/MainLayout.qml" line="915"/>
+        <location filename="../app/MainLayout.qml" line="921"/>
         <source>Are you sure you want to exit?</source>
         <translation type="unfinished">Ziur zaude irten nahi duzula?</translation>
     </message>
     <message>
-        <location filename="../app/MainLayout.qml" line="1065"/>
-        <location filename="../app/MainLayout.qml" line="1146"/>
+        <location filename="../app/MainLayout.qml" line="1071"/>
+        <location filename="../app/MainLayout.qml" line="1152"/>
         <source>Select</source>
         <translation>Aukeratu</translation>
     </message>
     <message>
-        <location filename="../app/MainLayout.qml" line="1069"/>
-        <location filename="../app/MainLayout.qml" line="1073"/>
-        <location filename="../app/MainLayout.qml" line="1087"/>
-        <location filename="../app/MainLayout.qml" line="1102"/>
-        <location filename="../app/MainLayout.qml" line="1113"/>
+        <location filename="../app/MainLayout.qml" line="1075"/>
+        <location filename="../app/MainLayout.qml" line="1079"/>
+        <location filename="../app/MainLayout.qml" line="1093"/>
+        <location filename="../app/MainLayout.qml" line="1108"/>
+        <location filename="../app/MainLayout.qml" line="1119"/>
         <source>Close</source>
         <translation>Itxi</translation>
     </message>
     <message>
-        <location filename="../app/MainLayout.qml" line="1080"/>
-        <location filename="../app/MainLayout.qml" line="1120"/>
-        <location filename="../app/MainLayout.qml" line="1150"/>
-        <location filename="../app/MainLayout.qml" line="1172"/>
+        <location filename="../app/MainLayout.qml" line="1086"/>
+        <location filename="../app/MainLayout.qml" line="1126"/>
+        <location filename="../app/MainLayout.qml" line="1156"/>
+        <location filename="../app/MainLayout.qml" line="1178"/>
         <source>Cancel</source>
         <translation>Utzi</translation>
     </message>
     <message>
-        <location filename="../app/MainLayout.qml" line="1098"/>
+        <location filename="../app/MainLayout.qml" line="1104"/>
         <source>Done</source>
         <translation type="unfinished">Eginda</translation>
     </message>
     <message>
-        <location filename="../app/MainLayout.qml" line="1128"/>
+        <location filename="../app/MainLayout.qml" line="1134"/>
         <source>I understand</source>
         <translation type="unfinished">Ulertzen dut</translation>
     </message>
     <message>
-        <location filename="../app/MainLayout.qml" line="1157"/>
+        <location filename="../app/MainLayout.qml" line="1163"/>
         <source>Adjust</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../app/MainLayout.qml" line="1161"/>
+        <location filename="../app/MainLayout.qml" line="1167"/>
         <source>Save</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../app/MainLayout.qml" line="1180"/>
+        <location filename="../app/MainLayout.qml" line="1186"/>
         <source>Start</source>
         <translation type="unfinished">Hasi</translation>
     </message>
     <message>
-        <location filename="../app/MainLayout.qml" line="1388"/>
+        <location filename="../app/MainLayout.qml" line="1394"/>
         <source>Scroll</source>
         <translation type="unfinished">Scroll-a egin</translation>
     </message>
     <message>
-        <location filename="../app/MainLayout.qml" line="1437"/>
+        <location filename="../app/MainLayout.qml" line="1443"/>
         <source>View</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../app/MainLayout.qml" line="1061"/>
-        <location filename="../app/MainLayout.qml" line="1142"/>
-        <location filename="../app/MainLayout.qml" line="1199"/>
-        <location filename="../app/MainLayout.qml" line="1236"/>
-        <location filename="../app/MainLayout.qml" line="1284"/>
-        <location filename="../app/MainLayout.qml" line="1328"/>
-        <location filename="../app/MainLayout.qml" line="1347"/>
-        <location filename="../app/MainLayout.qml" line="1420"/>
+        <location filename="../app/MainLayout.qml" line="1067"/>
+        <location filename="../app/MainLayout.qml" line="1148"/>
+        <location filename="../app/MainLayout.qml" line="1205"/>
+        <location filename="../app/MainLayout.qml" line="1242"/>
+        <location filename="../app/MainLayout.qml" line="1290"/>
+        <location filename="../app/MainLayout.qml" line="1334"/>
+        <location filename="../app/MainLayout.qml" line="1353"/>
+        <location filename="../app/MainLayout.qml" line="1426"/>
         <source>Move</source>
         <translation>Mugitu</translation>
     </message>
@@ -866,58 +862,58 @@ Euskara - devilschile2</source>
         <translation type="unfinished">Zaparoo Frontend</translation>
     </message>
     <message>
-        <location filename="../app/MainLayout.qml" line="399"/>
+        <location filename="../app/MainLayout.qml" line="405"/>
         <source>Favorites</source>
         <translation type="unfinished">Gogokoak</translation>
     </message>
     <message>
-        <location filename="../app/MainLayout.qml" line="401"/>
+        <location filename="../app/MainLayout.qml" line="407"/>
         <source>Recently Played</source>
         <translation type="unfinished">Duela gutxi jokatuak</translation>
     </message>
     <message>
-        <location filename="../app/MainLayout.qml" line="784"/>
+        <location filename="../app/MainLayout.qml" line="790"/>
         <source>Quit and restart Zaparoo Frontend?</source>
         <translation type="unfinished">Itxi eta Zaparoo Frontend berabiarazi</translation>
     </message>
     <message>
-        <location filename="../app/MainLayout.qml" line="785"/>
+        <location filename="../app/MainLayout.qml" line="791"/>
         <source>In order to apply this setting we need to restart the frontend.</source>
         <translation type="unfinished">Ezarpenak indarrean jartzeko frontend-a berrabiarazi behar dugu</translation>
     </message>
     <message>
-        <location filename="../app/MainLayout.qml" line="914"/>
+        <location filename="../app/MainLayout.qml" line="920"/>
         <source>Quit Zaparoo Frontend?</source>
         <translation type="unfinished">Itxi Zaparoo Frontend?</translation>
     </message>
     <message>
-        <location filename="../app/MainLayout.qml" line="1203"/>
-        <location filename="../app/MainLayout.qml" line="1241"/>
-        <location filename="../app/MainLayout.qml" line="1289"/>
-        <location filename="../app/MainLayout.qml" line="1333"/>
-        <location filename="../app/MainLayout.qml" line="1425"/>
+        <location filename="../app/MainLayout.qml" line="1209"/>
+        <location filename="../app/MainLayout.qml" line="1247"/>
+        <location filename="../app/MainLayout.qml" line="1295"/>
+        <location filename="../app/MainLayout.qml" line="1339"/>
+        <location filename="../app/MainLayout.qml" line="1431"/>
         <source>Open</source>
         <translation>Ireki</translation>
     </message>
     <message>
-        <location filename="../app/MainLayout.qml" line="1213"/>
+        <location filename="../app/MainLayout.qml" line="1219"/>
         <source>Quit</source>
         <translation>Irten</translation>
     </message>
     <message>
-        <location filename="../app/MainLayout.qml" line="1222"/>
-        <location filename="../app/MainLayout.qml" line="1247"/>
-        <location filename="../app/MainLayout.qml" line="1258"/>
-        <location filename="../app/MainLayout.qml" line="1273"/>
-        <location filename="../app/MainLayout.qml" line="1298"/>
-        <location filename="../app/MainLayout.qml" line="1309"/>
-        <location filename="../app/MainLayout.qml" line="1321"/>
-        <location filename="../app/MainLayout.qml" line="1337"/>
-        <location filename="../app/MainLayout.qml" line="1371"/>
-        <location filename="../app/MainLayout.qml" line="1392"/>
-        <location filename="../app/MainLayout.qml" line="1401"/>
-        <location filename="../app/MainLayout.qml" line="1441"/>
-        <location filename="../app/MainLayout.qml" line="1452"/>
+        <location filename="../app/MainLayout.qml" line="1228"/>
+        <location filename="../app/MainLayout.qml" line="1253"/>
+        <location filename="../app/MainLayout.qml" line="1264"/>
+        <location filename="../app/MainLayout.qml" line="1279"/>
+        <location filename="../app/MainLayout.qml" line="1304"/>
+        <location filename="../app/MainLayout.qml" line="1315"/>
+        <location filename="../app/MainLayout.qml" line="1327"/>
+        <location filename="../app/MainLayout.qml" line="1343"/>
+        <location filename="../app/MainLayout.qml" line="1377"/>
+        <location filename="../app/MainLayout.qml" line="1398"/>
+        <location filename="../app/MainLayout.qml" line="1407"/>
+        <location filename="../app/MainLayout.qml" line="1447"/>
+        <location filename="../app/MainLayout.qml" line="1458"/>
         <source>Back</source>
         <translation>Atzera</translation>
     </message>
@@ -926,28 +922,28 @@ Euskara - devilschile2</source>
         <translation type="obsolete">Orria</translation>
     </message>
     <message>
-        <location filename="../app/MainLayout.qml" line="1209"/>
-        <location filename="../app/MainLayout.qml" line="1244"/>
-        <location filename="../app/MainLayout.qml" line="1294"/>
-        <location filename="../app/MainLayout.qml" line="1430"/>
+        <location filename="../app/MainLayout.qml" line="1215"/>
+        <location filename="../app/MainLayout.qml" line="1250"/>
+        <location filename="../app/MainLayout.qml" line="1300"/>
+        <location filename="../app/MainLayout.qml" line="1436"/>
         <source>Options</source>
         <translation type="unfinished">Aukerak</translation>
     </message>
     <message>
-        <location filename="../app/MainLayout.qml" line="1109"/>
-        <location filename="../app/MainLayout.qml" line="1254"/>
-        <location filename="../app/MainLayout.qml" line="1305"/>
-        <location filename="../app/MainLayout.qml" line="1448"/>
+        <location filename="../app/MainLayout.qml" line="1115"/>
+        <location filename="../app/MainLayout.qml" line="1260"/>
+        <location filename="../app/MainLayout.qml" line="1311"/>
+        <location filename="../app/MainLayout.qml" line="1454"/>
         <source>Retry</source>
         <translation>Berriro saiatu</translation>
     </message>
     <message>
-        <location filename="../app/MainLayout.qml" line="1356"/>
+        <location filename="../app/MainLayout.qml" line="1362"/>
         <source>Change</source>
         <translation>Aldatu</translation>
     </message>
     <message>
-        <location filename="../app/MainLayout.qml" line="1362"/>
+        <location filename="../app/MainLayout.qml" line="1368"/>
         <source>Toggle</source>
         <translation>Txandakatu</translation>
     </message>
@@ -960,12 +956,12 @@ Euskara - devilschile2</source>
         <translation type="unfinished">Kargatzen…</translation>
     </message>
     <message>
-        <location filename="../screens/MediaListScreen.qml" line="456"/>
+        <location filename="../screens/MediaListScreen.qml" line="452"/>
         <source>%1 entries</source>
         <translation type="unfinished">%1 sarrera</translation>
     </message>
     <message>
-        <location filename="../screens/MediaListScreen.qml" line="457"/>
+        <location filename="../screens/MediaListScreen.qml" line="453"/>
         <source>%1 / %2</source>
         <translation type="unfinished">%1 / %2</translation>
     </message>
@@ -1033,25 +1029,25 @@ Euskara - devilschile2</source>
     <name>SettingsScreen</name>
     <message>
         <location filename="../screens/SettingsScreen.qml" line="95"/>
-        <location filename="../screens/SettingsScreen.qml" line="200"/>
-        <location filename="../screens/SettingsScreen.qml" line="290"/>
-        <location filename="../screens/SettingsScreen.qml" line="842"/>
+        <location filename="../screens/SettingsScreen.qml" line="205"/>
+        <location filename="../screens/SettingsScreen.qml" line="295"/>
+        <location filename="../screens/SettingsScreen.qml" line="860"/>
         <source>Language</source>
         <translation>Hizkuntza</translation>
     </message>
     <message>
         <location filename="../screens/SettingsScreen.qml" line="172"/>
-        <location filename="../screens/SettingsScreen.qml" line="878"/>
+        <location filename="../screens/SettingsScreen.qml" line="896"/>
         <source>Browsing layout</source>
         <translation>Nabigazio diseinua</translation>
     </message>
     <message>
-        <location filename="../screens/SettingsScreen.qml" line="222"/>
+        <location filename="../screens/SettingsScreen.qml" line="227"/>
         <source>Mouse support</source>
         <translation>Saguaren euskarria</translation>
     </message>
     <message>
-        <location filename="../screens/SettingsScreen.qml" line="234"/>
+        <location filename="../screens/SettingsScreen.qml" line="239"/>
         <source>Update media database</source>
         <translation type="unfinished">Eguneratu multimedia datu-basea</translation>
     </message>
@@ -1061,46 +1057,46 @@ Euskara - devilschile2</source>
     </message>
     <message>
         <location filename="../screens/SettingsScreen.qml" line="131"/>
-        <location filename="../screens/SettingsScreen.qml" line="869"/>
+        <location filename="../screens/SettingsScreen.qml" line="887"/>
         <source>Orientation</source>
         <translation type="unfinished">Orientazioa</translation>
     </message>
     <message>
-        <location filename="../screens/SettingsScreen.qml" line="217"/>
-        <location filename="../screens/SettingsScreen.qml" line="896"/>
+        <location filename="../screens/SettingsScreen.qml" line="222"/>
+        <location filename="../screens/SettingsScreen.qml" line="923"/>
         <source>Button style</source>
         <translation type="unfinished">Botoi estiloa</translation>
     </message>
     <message>
         <location filename="../screens/SettingsScreen.qml" line="136"/>
-        <location filename="../screens/SettingsScreen.qml" line="905"/>
+        <location filename="../screens/SettingsScreen.qml" line="932"/>
         <source>Screensaver</source>
         <translation type="unfinished">Pantaila babeslea</translation>
     </message>
     <message>
         <location filename="../screens/SettingsScreen.qml" line="107"/>
-        <location filename="../screens/SettingsScreen.qml" line="294"/>
+        <location filename="../screens/SettingsScreen.qml" line="299"/>
         <source>Library</source>
         <translation type="unfinished">Liburutegia</translation>
     </message>
     <message>
-        <location filename="../screens/SettingsScreen.qml" line="239"/>
+        <location filename="../screens/SettingsScreen.qml" line="244"/>
         <source>Discover arcade alternate versions</source>
         <translation type="unfinished">Aurkitu arcade bertsio alternatiboak</translation>
     </message>
     <message>
-        <location filename="../screens/SettingsScreen.qml" line="182"/>
-        <location filename="../screens/SettingsScreen.qml" line="914"/>
+        <location filename="../screens/SettingsScreen.qml" line="187"/>
+        <location filename="../screens/SettingsScreen.qml" line="941"/>
         <source>Preferred artwork</source>
         <translation type="unfinished">Hobetsitako artelana</translation>
     </message>
     <message>
-        <location filename="../screens/SettingsScreen.qml" line="244"/>
+        <location filename="../screens/SettingsScreen.qml" line="249"/>
         <source>Scrape metadata</source>
         <translation type="unfinished">Metadatuak scrapeatu</translation>
     </message>
     <message>
-        <location filename="../screens/SettingsScreen.qml" line="249"/>
+        <location filename="../screens/SettingsScreen.qml" line="254"/>
         <source>Re-scrape existing</source>
         <translation type="unfinished">Berriro scrapeatzea existitzen da</translation>
     </message>
@@ -1109,35 +1105,35 @@ Euskara - devilschile2</source>
         <translation type="obsolete">Aurreratua</translation>
     </message>
     <message>
-        <location filename="../screens/SettingsScreen.qml" line="261"/>
+        <location filename="../screens/SettingsScreen.qml" line="266"/>
         <source>Debug logging</source>
         <translation type="unfinished">Arazte erregistroa</translation>
     </message>
     <message>
-        <location filename="../screens/SettingsScreen.qml" line="266"/>
+        <location filename="../screens/SettingsScreen.qml" line="271"/>
         <source>Upload log file</source>
         <translation type="unfinished">Igo erregistro fitxategia</translation>
     </message>
     <message>
-        <location filename="../screens/SettingsScreen.qml" line="256"/>
+        <location filename="../screens/SettingsScreen.qml" line="261"/>
         <source>About / License</source>
         <translation type="unfinished">Buruz / Lizentzia</translation>
     </message>
     <message>
-        <location filename="../screens/SettingsScreen.qml" line="210"/>
-        <location filename="../screens/SettingsScreen.qml" line="851"/>
+        <location filename="../screens/SettingsScreen.qml" line="215"/>
+        <location filename="../screens/SettingsScreen.qml" line="869"/>
         <source>Clock format</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../screens/SettingsScreen.qml" line="205"/>
-        <location filename="../screens/SettingsScreen.qml" line="860"/>
+        <location filename="../screens/SettingsScreen.qml" line="210"/>
+        <location filename="../screens/SettingsScreen.qml" line="878"/>
         <source>System names</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
         <location filename="../screens/SettingsScreen.qml" line="89"/>
-        <location filename="../screens/SettingsScreen.qml" line="288"/>
+        <location filename="../screens/SettingsScreen.qml" line="293"/>
         <source>Browsing</source>
         <translation type="unfinished"></translation>
     </message>
@@ -1153,7 +1149,7 @@ Euskara - devilschile2</source>
     </message>
     <message>
         <location filename="../screens/SettingsScreen.qml" line="156"/>
-        <location filename="../screens/SettingsScreen.qml" line="923"/>
+        <location filename="../screens/SettingsScreen.qml" line="950"/>
         <source>Video standard</source>
         <translation type="unfinished"></translation>
     </message>
@@ -1164,410 +1160,422 @@ Euskara - devilschile2</source>
     </message>
     <message>
         <location filename="../screens/SettingsScreen.qml" line="177"/>
-        <location filename="../screens/SettingsScreen.qml" line="887"/>
+        <location filename="../screens/SettingsScreen.qml" line="905"/>
         <source>System logos</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../screens/SettingsScreen.qml" line="187"/>
-        <source>Show hidden items</source>
+        <location filename="../screens/SettingsScreen.qml" line="182"/>
+        <location filename="../screens/SettingsScreen.qml" line="914"/>
+        <source>Theme</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
         <location filename="../screens/SettingsScreen.qml" line="192"/>
+        <source>Show hidden items</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="../screens/SettingsScreen.qml" line="197"/>
         <source>Show original filenames</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../screens/SettingsScreen.qml" line="227"/>
+        <location filename="../screens/SettingsScreen.qml" line="232"/>
         <source>Reduce motion</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../screens/SettingsScreen.qml" line="311"/>
+        <location filename="../screens/SettingsScreen.qml" line="316"/>
         <source>Optimizing</source>
         <translation type="unfinished">Optimizatzen</translation>
     </message>
     <message>
-        <location filename="../screens/SettingsScreen.qml" line="313"/>
-        <location filename="../screens/SettingsScreen.qml" line="322"/>
+        <location filename="../screens/SettingsScreen.qml" line="318"/>
+        <location filename="../screens/SettingsScreen.qml" line="327"/>
         <source>Paused</source>
         <translation type="unfinished">Geldituta</translation>
     </message>
     <message>
-        <location filename="../screens/SettingsScreen.qml" line="313"/>
-        <location filename="../screens/SettingsScreen.qml" line="322"/>
+        <location filename="../screens/SettingsScreen.qml" line="318"/>
+        <location filename="../screens/SettingsScreen.qml" line="327"/>
         <source>In progress</source>
         <translation type="unfinished">Abian</translation>
     </message>
     <message>
-        <location filename="../screens/SettingsScreen.qml" line="316"/>
+        <location filename="../screens/SettingsScreen.qml" line="321"/>
         <source>%1 indexed</source>
         <translation type="unfinished">%1 indexatuta</translation>
     </message>
     <message>
-        <location filename="../screens/SettingsScreen.qml" line="325"/>
+        <location filename="../screens/SettingsScreen.qml" line="330"/>
         <source>%1 scraped</source>
         <translation type="unfinished">%1 scrapetatuta</translation>
     </message>
     <message>
-        <location filename="../screens/SettingsScreen.qml" line="572"/>
+        <location filename="../screens/SettingsScreen.qml" line="579"/>
         <source>Cancel</source>
         <translation type="unfinished">Utzi</translation>
     </message>
     <message>
-        <location filename="../screens/SettingsScreen.qml" line="572"/>
+        <location filename="../screens/SettingsScreen.qml" line="579"/>
         <source>Start</source>
         <translation type="unfinished">Hasi</translation>
     </message>
     <message>
-        <location filename="../screens/SettingsScreen.qml" line="574"/>
+        <location filename="../screens/SettingsScreen.qml" line="581"/>
         <source>Upload</source>
         <translation type="unfinished">Igo</translation>
     </message>
     <message>
-        <location filename="../screens/SettingsScreen.qml" line="575"/>
+        <location filename="../screens/SettingsScreen.qml" line="582"/>
         <source>Open</source>
         <translation type="unfinished">Ireki</translation>
     </message>
     <message>
-        <location filename="../screens/SettingsScreen.qml" line="661"/>
+        <location filename="../screens/SettingsScreen.qml" line="673"/>
         <source>English</source>
         <translation>Ingelera</translation>
     </message>
     <message>
-        <location filename="../screens/SettingsScreen.qml" line="663"/>
+        <location filename="../screens/SettingsScreen.qml" line="675"/>
         <source>Italian</source>
         <translation>Italiera</translation>
     </message>
     <message>
-        <location filename="../screens/SettingsScreen.qml" line="665"/>
+        <location filename="../screens/SettingsScreen.qml" line="677"/>
         <source>Spanish</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../screens/SettingsScreen.qml" line="667"/>
+        <location filename="../screens/SettingsScreen.qml" line="679"/>
         <source>Basque</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../screens/SettingsScreen.qml" line="669"/>
+        <location filename="../screens/SettingsScreen.qml" line="681"/>
         <source>German</source>
         <translation type="unfinished">Alemaniera</translation>
     </message>
     <message>
-        <location filename="../screens/SettingsScreen.qml" line="671"/>
+        <location filename="../screens/SettingsScreen.qml" line="683"/>
         <source>Greek</source>
         <translation type="unfinished">Grekoa</translation>
     </message>
     <message>
-        <location filename="../screens/SettingsScreen.qml" line="673"/>
+        <location filename="../screens/SettingsScreen.qml" line="685"/>
         <source>Japanese</source>
         <translation type="unfinished">Japoniera</translation>
     </message>
     <message>
-        <location filename="../screens/SettingsScreen.qml" line="675"/>
+        <location filename="../screens/SettingsScreen.qml" line="687"/>
         <source>Korean</source>
         <translation type="unfinished">Koreera</translation>
     </message>
     <message>
-        <location filename="../screens/SettingsScreen.qml" line="677"/>
+        <location filename="../screens/SettingsScreen.qml" line="689"/>
         <source>Dutch</source>
         <translation type="unfinished">Holandera</translation>
     </message>
     <message>
-        <location filename="../screens/SettingsScreen.qml" line="679"/>
+        <location filename="../screens/SettingsScreen.qml" line="691"/>
         <source>Romanian</source>
         <translation type="unfinished">Errumaniera</translation>
     </message>
     <message>
-        <location filename="../screens/SettingsScreen.qml" line="681"/>
+        <location filename="../screens/SettingsScreen.qml" line="693"/>
         <source>Slovak</source>
         <translation type="unfinished">eslovakiera</translation>
     </message>
     <message>
-        <location filename="../screens/SettingsScreen.qml" line="683"/>
+        <location filename="../screens/SettingsScreen.qml" line="695"/>
         <source>Ukrainian</source>
         <translation type="unfinished">Ukraniera</translation>
     </message>
     <message>
-        <location filename="../screens/SettingsScreen.qml" line="685"/>
+        <location filename="../screens/SettingsScreen.qml" line="697"/>
         <source>Chinese (Simplified)</source>
         <translation type="unfinished">Txinera (sinplifikatua)</translation>
     </message>
     <message>
-        <location filename="../screens/SettingsScreen.qml" line="687"/>
+        <location filename="../screens/SettingsScreen.qml" line="699"/>
         <source>Chinese (Traditional)</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../screens/SettingsScreen.qml" line="689"/>
+        <location filename="../screens/SettingsScreen.qml" line="701"/>
         <source>Hebrew</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../screens/SettingsScreen.qml" line="691"/>
+        <location filename="../screens/SettingsScreen.qml" line="703"/>
         <source>Arabic</source>
         <translation type="unfinished">Arabiera</translation>
     </message>
     <message>
-        <location filename="../screens/SettingsScreen.qml" line="693"/>
+        <location filename="../screens/SettingsScreen.qml" line="705"/>
         <source>Hindi</source>
         <translation type="unfinished">HIndia</translation>
     </message>
     <message>
-        <location filename="../screens/SettingsScreen.qml" line="694"/>
-        <location filename="../screens/SettingsScreen.qml" line="702"/>
-        <location filename="../screens/SettingsScreen.qml" line="795"/>
+        <location filename="../screens/SettingsScreen.qml" line="706"/>
+        <location filename="../screens/SettingsScreen.qml" line="714"/>
+        <location filename="../screens/SettingsScreen.qml" line="813"/>
         <source>Auto</source>
         <translation>Auto</translation>
     </message>
     <message>
-        <location filename="../screens/SettingsScreen.qml" line="699"/>
+        <location filename="../screens/SettingsScreen.qml" line="711"/>
         <source>12-hour</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../screens/SettingsScreen.qml" line="701"/>
+        <location filename="../screens/SettingsScreen.qml" line="713"/>
         <source>24-hour</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../screens/SettingsScreen.qml" line="712"/>
+        <location filename="../screens/SettingsScreen.qml" line="724"/>
         <source>Americas</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../screens/SettingsScreen.qml" line="714"/>
+        <location filename="../screens/SettingsScreen.qml" line="726"/>
         <source>Europe</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../screens/SettingsScreen.qml" line="716"/>
+        <location filename="../screens/SettingsScreen.qml" line="728"/>
         <source>Japan</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../screens/SettingsScreen.qml" line="717"/>
+        <location filename="../screens/SettingsScreen.qml" line="729"/>
         <source>Automatic</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../screens/SettingsScreen.qml" line="722"/>
+        <location filename="../screens/SettingsScreen.qml" line="734"/>
         <source>Rotated CW</source>
         <translation type="unfinished">CW biratua</translation>
     </message>
     <message>
-        <location filename="../screens/SettingsScreen.qml" line="724"/>
+        <location filename="../screens/SettingsScreen.qml" line="736"/>
         <source>Rotated CCW</source>
         <translation type="unfinished">CCW biratua</translation>
     </message>
     <message>
-        <location filename="../screens/SettingsScreen.qml" line="725"/>
+        <location filename="../screens/SettingsScreen.qml" line="737"/>
         <source>Horizontal</source>
         <translation type="unfinished">Horizontala</translation>
     </message>
     <message>
-        <location filename="../screens/SettingsScreen.qml" line="730"/>
+        <location filename="../screens/SettingsScreen.qml" line="742"/>
         <source>Detailed list view</source>
         <translation>Xehetasun listaren ikuspegia</translation>
     </message>
     <message>
-        <location filename="../screens/SettingsScreen.qml" line="731"/>
+        <location filename="../screens/SettingsScreen.qml" line="743"/>
         <source>Grid view</source>
         <translation>Sarearen ikuspegia</translation>
     </message>
     <message>
-        <location filename="../screens/SettingsScreen.qml" line="736"/>
+        <location filename="../screens/SettingsScreen.qml" line="748"/>
         <source>Full color</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../screens/SettingsScreen.qml" line="737"/>
+        <location filename="../screens/SettingsScreen.qml" line="749"/>
         <source>Tinted</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../screens/SettingsScreen.qml" line="742"/>
+        <location filename="../screens/SettingsScreen.qml" line="754"/>
+        <source>CRT light</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="../screens/SettingsScreen.qml" line="760"/>
         <source>Style B</source>
         <translation type="unfinished">B estiloa</translation>
     </message>
     <message>
-        <location filename="../screens/SettingsScreen.qml" line="744"/>
+        <location filename="../screens/SettingsScreen.qml" line="762"/>
         <source>Style C</source>
         <translation type="unfinished">C estiloa</translation>
     </message>
     <message>
-        <location filename="../screens/SettingsScreen.qml" line="746"/>
+        <location filename="../screens/SettingsScreen.qml" line="764"/>
         <source>Style D</source>
         <translation type="unfinished">D estiloa</translation>
     </message>
     <message>
-        <location filename="../screens/SettingsScreen.qml" line="747"/>
+        <location filename="../screens/SettingsScreen.qml" line="765"/>
         <source>Style A</source>
         <translation type="unfinished">A estiloa</translation>
     </message>
     <message>
-        <location filename="../screens/SettingsScreen.qml" line="787"/>
+        <location filename="../screens/SettingsScreen.qml" line="805"/>
         <source>PAL (50 Hz)</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../screens/SettingsScreen.qml" line="789"/>
+        <location filename="../screens/SettingsScreen.qml" line="807"/>
         <source>480i (60 Hz)</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../screens/SettingsScreen.qml" line="790"/>
+        <location filename="../screens/SettingsScreen.qml" line="808"/>
         <source>NTSC (60 Hz)</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../screens/SettingsScreen.qml" line="1539"/>
+        <location filename="../screens/SettingsScreen.qml" line="1566"/>
         <source>Loading settings…</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../screens/SettingsScreen.qml" line="626"/>
+        <location filename="../screens/SettingsScreen.qml" line="633"/>
+        <location filename="../screens/SettingsScreen.qml" line="755"/>
         <source>Default</source>
         <translation>Lehenetsia</translation>
     </message>
     <message>
-        <location filename="../screens/SettingsScreen.qml" line="762"/>
+        <location filename="../screens/SettingsScreen.qml" line="780"/>
         <source>Off</source>
         <translation type="unfinished">Desaktibatuta</translation>
     </message>
     <message>
-        <location filename="../screens/SettingsScreen.qml" line="764"/>
+        <location filename="../screens/SettingsScreen.qml" line="782"/>
         <source>1 second (testing)</source>
         <translation type="unfinished">segundu 1 (frogatzen)</translation>
     </message>
     <message>
-        <location filename="../screens/SettingsScreen.qml" line="766"/>
+        <location filename="../screens/SettingsScreen.qml" line="784"/>
         <source>1 minute</source>
         <translation type="unfinished">minutu 1</translation>
     </message>
     <message>
-        <location filename="../screens/SettingsScreen.qml" line="768"/>
+        <location filename="../screens/SettingsScreen.qml" line="786"/>
         <source>2 minutes</source>
         <translation type="unfinished">2 minutu</translation>
     </message>
     <message>
-        <location filename="../screens/SettingsScreen.qml" line="770"/>
+        <location filename="../screens/SettingsScreen.qml" line="788"/>
         <source>5 minutes</source>
         <translation type="unfinished">5 minutu</translation>
     </message>
     <message>
-        <location filename="../screens/SettingsScreen.qml" line="772"/>
+        <location filename="../screens/SettingsScreen.qml" line="790"/>
         <source>10 minutes</source>
         <translation type="unfinished">10 minutu</translation>
     </message>
     <message>
-        <location filename="../screens/SettingsScreen.qml" line="774"/>
+        <location filename="../screens/SettingsScreen.qml" line="792"/>
         <source>15 minutes</source>
         <translation type="unfinished">15 minutu</translation>
     </message>
     <message>
-        <location filename="../screens/SettingsScreen.qml" line="776"/>
+        <location filename="../screens/SettingsScreen.qml" line="794"/>
         <source>30 minutes</source>
         <translation type="unfinished">30 minutu</translation>
     </message>
     <message>
-        <location filename="../screens/SettingsScreen.qml" line="777"/>
+        <location filename="../screens/SettingsScreen.qml" line="795"/>
         <source>%1 seconds</source>
         <translation type="unfinished">%1 segundu</translation>
     </message>
     <message>
         <location filename="../screens/SettingsScreen.qml" line="125"/>
-        <location filename="../screens/SettingsScreen.qml" line="833"/>
+        <location filename="../screens/SettingsScreen.qml" line="851"/>
         <source>Resolution</source>
         <translation type="unfinished">Bereizmena</translation>
     </message>
     <message>
         <location filename="../screens/SettingsScreen.qml" line="83"/>
-        <location filename="../screens/SettingsScreen.qml" line="286"/>
+        <location filename="../screens/SettingsScreen.qml" line="291"/>
         <source>Display</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
         <location filename="../screens/SettingsScreen.qml" line="101"/>
-        <location filename="../screens/SettingsScreen.qml" line="292"/>
+        <location filename="../screens/SettingsScreen.qml" line="297"/>
         <source>Controls</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
         <location filename="../screens/SettingsScreen.qml" line="113"/>
-        <location filename="../screens/SettingsScreen.qml" line="296"/>
+        <location filename="../screens/SettingsScreen.qml" line="301"/>
         <source>Support</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../screens/SettingsScreen.qml" line="797"/>
+        <location filename="../screens/SettingsScreen.qml" line="815"/>
         <source>Image</source>
         <translation type="unfinished">Irudia</translation>
     </message>
     <message>
-        <location filename="../screens/SettingsScreen.qml" line="799"/>
+        <location filename="../screens/SettingsScreen.qml" line="817"/>
         <source>Thumbnail</source>
         <translation type="unfinished">Miniatura</translation>
     </message>
     <message>
-        <location filename="../screens/SettingsScreen.qml" line="801"/>
+        <location filename="../screens/SettingsScreen.qml" line="819"/>
         <source>Box art</source>
         <translation type="unfinished">Kaxaren artelana</translation>
     </message>
     <message>
-        <location filename="../screens/SettingsScreen.qml" line="803"/>
+        <location filename="../screens/SettingsScreen.qml" line="821"/>
         <source>3D box art</source>
         <translation type="unfinished">Kaxaren 3D artelana</translation>
     </message>
     <message>
-        <location filename="../screens/SettingsScreen.qml" line="805"/>
+        <location filename="../screens/SettingsScreen.qml" line="823"/>
         <source>Screenshot</source>
         <translation type="unfinished">Pantaila argazkoa</translation>
     </message>
     <message>
-        <location filename="../screens/SettingsScreen.qml" line="807"/>
+        <location filename="../screens/SettingsScreen.qml" line="825"/>
         <source>Wheel</source>
         <translation type="unfinished">Gurpila</translation>
     </message>
     <message>
-        <location filename="../screens/SettingsScreen.qml" line="809"/>
+        <location filename="../screens/SettingsScreen.qml" line="827"/>
         <source>Title screen</source>
         <translation type="unfinished">Izenburu pantaila</translation>
     </message>
     <message>
-        <location filename="../screens/SettingsScreen.qml" line="811"/>
+        <location filename="../screens/SettingsScreen.qml" line="829"/>
         <source>Map</source>
         <translation type="unfinished">Mapa</translation>
     </message>
     <message>
-        <location filename="../screens/SettingsScreen.qml" line="813"/>
+        <location filename="../screens/SettingsScreen.qml" line="831"/>
         <source>Marquee</source>
         <translation type="unfinished">Karpa</translation>
     </message>
     <message>
-        <location filename="../screens/SettingsScreen.qml" line="815"/>
+        <location filename="../screens/SettingsScreen.qml" line="833"/>
         <source>Fan art</source>
         <translation type="unfinished">Fan artelana</translation>
     </message>
     <message>
-        <location filename="../screens/SettingsScreen.qml" line="817"/>
+        <location filename="../screens/SettingsScreen.qml" line="835"/>
         <source>Box side</source>
         <translation type="unfinished">Kaxa alboa</translation>
     </message>
     <message>
-        <location filename="../screens/SettingsScreen.qml" line="819"/>
+        <location filename="../screens/SettingsScreen.qml" line="837"/>
         <source>Box back</source>
         <translation type="unfinished">Kaxa atzekaldea</translation>
     </message>
     <message>
-        <location filename="../screens/SettingsScreen.qml" line="297"/>
+        <location filename="../screens/SettingsScreen.qml" line="302"/>
         <source>Settings</source>
         <translation>Ezarpenak</translation>
     </message>
     <message>
-        <location filename="../screens/SettingsScreen.qml" line="1527"/>
+        <location filename="../screens/SettingsScreen.qml" line="1554"/>
         <source>No settings available on this platform</source>
         <translation>Ez dago ezarpenik plataforma honetan</translation>
     </message>
