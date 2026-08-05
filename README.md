@@ -14,9 +14,9 @@ It features:
 - Uniform random game across the current folder: every game gets equal
   odds regardless of how folders nest.
 - A `crt-light` theme that lifts surfaces for analog CRT output.
-- Fast list travel: Left/Right walk the list row by row, several times
-  faster than the held Up/Down repeat, with cover work paused until
-  you stop.
+- Fast list travel: holding Left/Right pages the list at a fast,
+  steady cadence, with cover work paused until you stop; favorite
+  hearts stay visible while you scroll.
 - Jump-to-letter, computed locally the moment a folder is fully
   loaded.
 
@@ -41,7 +41,7 @@ if the database ever changes shape, the affected read turns itself off
 loudly and the frontend behaves exactly like upstream until it is
 updated. Writes never touch the database directly.
 
-**The look.** A monochrome interface where the only chroma is the
+**The look.** A more neutral monochrome interface where the only chroma is the
 Degauss wordmark's own palette, one meaning per colour: yellow
 (`#FFCD09`) is selection, teal (`#03A49D`) is state and activity (the
 home tiles' focus, the status pill's progress), red (`#FE2E1D`) marks

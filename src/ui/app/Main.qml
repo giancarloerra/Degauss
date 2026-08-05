@@ -3052,48 +3052,21 @@ MainLayout {
     property int _pageTurboChainCount: 0
     property double _pageTurboLastPressMs: 0
     property double _pageTurboGapMs: 500
-    // Fast-walk cadence, two stages. The list is a PAGED view: the
-    // page flip is its unit of travel and its expensive repaint, so
-    // any rate meaningfully above the row walk necessarily looks like
-    // paging (multi-row ticks cross a boundary every few ticks and
-    // read as jittery paging — device-observed). The walk therefore
-    // does each speed in its best form: stage 1 is a single-row walk
-    // at `_scrollTurboTickMs`, smooth and visibly quicker than the
-    // Up/Down repeat; after `_scrollTurboEscalateTicks` ticks of
-    // sustained hold (~1.5 s) it escalates to whole-page flips at the
-    // page turbo cadence — the fastest honest travel this view has,
-    // with a consistent landing row instead of intra-page scatter.
-    // Escalation lives in the turbo ticker (the pad bridge's
-    // press/release pairs); a genuinely held key on desktop keeps the
-    // stage-1 cadence through `repeatTick`, which is plenty there.
-    readonly property int _scrollTurboTickMs: 60
-    readonly property int _scrollTurboEscalateTicks: 25
-    property int _pageTurboTicks: 0
-
-    // Pure: whether `action` on `screen` in `layout` is the fast
-    // row-walk pair (Left/Right on the games list). Decides both the
-    // repeat/turbo cadence and the lower turbo threshold.
-    function _turboSmoothScrollFor(action: string, screen: var, layout: string): bool {
-        return (action === "left" || action === "right") && screen === root.screenGames && layout === "list";
+    // Pure: the repeat cadence for a genuinely held key. Left/Right on
+    // the games list page whole pages, and the page repaint is the
+    // expensive unit, so a held page repeats at the page-turbo cadence
+    // rather than the 90 ms row cadence — the same fluid rhythm the
+    // bridge-pair ticker produces, whichever hold shape the input
+    // stack delivers. Everything else keeps the row cadence.
+    function _heldRepeatIntervalFor(action: string, screen: var, layout: string): int {
+        const heldPaging = (action === "left" || action === "right") && screen === root.screenGames && layout === "list";
+        return heldPaging ? root._pageTurboTickMs : root._repeatTickMs;
     }
 
-    // Pure: chained presses needed before the turbo ticker takes over.
-    // Page keys keep 3 so a deliberate double-tap never turbo-pages;
-    // the row walk takes 2 — a double-tap is then just two rows, which
-    // is harmless, and the walk should reach speed quickly.
-    function _turboThresholdFor(action: string, screen: var, layout: string): int {
-        return root._turboSmoothScrollFor(action, screen, layout) ? 2 : root._pageTurboThreshold;
-    }
-
-    // Pure: the page action stage 2 dispatches for a walk direction.
-    function _turboPageAction(action: string): string {
-        return action === "right" ? "page_next" : "page_prev";
-    }
-
-    // Left/Right on the games list are row moves, but the pad bridge
-    // still delivers a held Left/Right as press/release pairs, so they
-    // must feed the turbo like the page keys do — the ticker is what
-    // turns the pair stream back into a continuous walk.
+    // The games screen routes Left/Right through _performPage in list
+    // layout (see MediaListScreen), so a held Left/Right there is a
+    // held page button and must feed the turbo like the dedicated page
+    // keys when the input stack delivers it as press/release pairs.
     function _pageTurboEligible(action: string): bool {
         if (action === "page_next" || action === "page_prev")
             return true;
@@ -3128,9 +3101,8 @@ MainLayout {
         root._pageTurboLastPressMs = now;
         if (pageTurboTick.running)
             return true;
-        if (root._pageTurboChainCount >= root._turboThresholdFor(action, root.activeScreen, Browse.Settings.current_browse_layout)) {
+        if (root._pageTurboChainCount >= root._pageTurboThreshold) {
             root._noteRapidNavigationAction(action, true);
-            root._pageTurboTicks = 0;
             pageTurboTick.restart();
             return true;
         }
@@ -3141,12 +3113,11 @@ MainLayout {
         pageTurboTick.stop();
         root._pageTurboChainCount = 0;
         root._pageTurboAction = "";
-        root._pageTurboTicks = 0;
     }
 
     Timer {
         id: pageTurboTick
-        interval: root._turboSmoothScrollFor(root._pageTurboAction, root.activeScreen, Browse.Settings.current_browse_layout) && root._pageTurboTicks < root._scrollTurboEscalateTicks ? root._scrollTurboTickMs : root._pageTurboTickMs
+        interval: root._pageTurboTickMs
         repeat: true
         onTriggered: {
             if (root.pendingTransition !== "" || root.transitionCueVisible || ScreenManager.hasModal || !root.active) {
@@ -3159,17 +3130,8 @@ MainLayout {
                 root._stopPageTurbo();
                 return;
             }
-            root._pageTurboTicks += 1;
-            // Stage 1 dispatches the turbo's own action — in the games
-            // list that is a single-row move, so the ticker IS the
-            // held-key walk. Stage 2 (sustained hold) dispatches whole
-            // pages at the page cadence for the long haul.
             root._noteRapidNavigationAction(root._pageTurboAction, true);
-            const smooth = root._turboSmoothScrollFor(root._pageTurboAction, root.activeScreen, Browse.Settings.current_browse_layout);
-            if (smooth && root._pageTurboTicks > root._scrollTurboEscalateTicks)
-                root.handleAction(root._turboPageAction(root._pageTurboAction));
-            else
-                root.handleAction(root._pageTurboAction);
+            root.handleAction(root._pageTurboAction);
         }
     }
 
@@ -3379,9 +3341,7 @@ MainLayout {
 
     Timer {
         id: repeatTick
-        // The games-list row walk (held Left/Right) repeats at the
-        // smooth cadence — triple the Up/Down speed, same machinery.
-        interval: root._turboSmoothScrollFor(root._heldAction, root.activeScreen, Browse.Settings.current_browse_layout) ? root._scrollTurboTickMs : root._repeatTickMs
+        interval: root._heldRepeatIntervalFor(root._heldAction, root.activeScreen, Browse.Settings.current_browse_layout)
         repeat: true
         onTriggered: {
             if (root._heldAction === "") {

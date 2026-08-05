@@ -614,30 +614,16 @@ TestCase {
         main.pendingTransition = "";
     }
 
-    // Smooth-scroll turbo. Pure-helper tests per the QML test isolation
-    // rule: the mode decision, the direction mapping, and the ramp are
-    // free functions of their inputs, so the tick's behaviour is pinned
-    // without driving a timer or a real settings singleton.
-    function test_turbo_smooth_scroll_mode_only_for_list_left_right(): void {
-        verify(main._turboSmoothScrollFor("right", main.screenGames, "list"), "right on games list smooth-scrolls");
-        verify(main._turboSmoothScrollFor("left", main.screenGames, "list"), "left on games list smooth-scrolls");
-        verify(!main._turboSmoothScrollFor("page_next", main.screenGames, "list"), "page keys keep page ticks");
-        verify(!main._turboSmoothScrollFor("right", main.screenGames, "grid"), "grid layout keeps page ticks");
-        verify(!main._turboSmoothScrollFor("right", main.screenSystems, "list"), "other screens keep page ticks");
-    }
-
-    function test_turbo_threshold_lower_for_row_walk(): void {
-        compare(main._turboThresholdFor("right", main.screenGames, "list"), 2, "the row walk engages on the second chained press");
-        compare(main._turboThresholdFor("page_next", main.screenGames, "list"), main._pageTurboThreshold, "page keys keep the double-tap guard");
-        compare(main._turboThresholdFor("right", main.screenGames, "grid"), main._pageTurboThreshold, "grid keeps the double-tap guard");
-    }
-
-    function test_fast_walk_two_stage_shape(): void {
-        verify(main._scrollTurboTickMs < main._repeatTickMs, "stage 1 walks visibly faster than the Up/Down repeat");
-        const stageOneMs = main._scrollTurboTickMs * main._scrollTurboEscalateTicks;
-        verify(stageOneMs >= 1000 && stageOneMs <= 2500, "escalation waits for a deliberate sustained hold");
-        compare(main._turboPageAction("right"), "page_next", "stage 2 pages forward for right");
-        compare(main._turboPageAction("left"), "page_prev", "stage 2 pages back for left");
+    // Held-repeat cadence. Pure-helper test per the QML test isolation
+    // rule: a genuinely held Left/Right on the games list repeats
+    // whole pages, so it must tick at the page-turbo cadence; row
+    // actions and other contexts keep the row cadence.
+    function test_held_repeat_cadence_pages_at_turbo_rate(): void {
+        compare(main._heldRepeatIntervalFor("right", main.screenGames, "list"), main._pageTurboTickMs, "held right on the games list repeats at the page cadence");
+        compare(main._heldRepeatIntervalFor("left", main.screenGames, "list"), main._pageTurboTickMs, "held left on the games list repeats at the page cadence");
+        compare(main._heldRepeatIntervalFor("down", main.screenGames, "list"), main._repeatTickMs, "the row walk keeps the row cadence");
+        compare(main._heldRepeatIntervalFor("right", main.screenGames, "grid"), main._repeatTickMs, "grid cell moves keep the row cadence");
+        compare(main._heldRepeatIntervalFor("right", main.screenSystems, "list"), main._repeatTickMs, "other screens keep the row cadence");
     }
 
     // Duplicate-input guard. The Keys.onPressed handler collapses a
