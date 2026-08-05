@@ -614,6 +614,30 @@ TestCase {
         main.pendingTransition = "";
     }
 
+    // Smooth-scroll turbo. Pure-helper tests per the QML test isolation
+    // rule: the mode decision, the direction mapping, and the ramp are
+    // free functions of their inputs, so the tick's behaviour is pinned
+    // without driving a timer or a real settings singleton.
+    function test_turbo_smooth_scroll_mode_only_for_list_left_right(): void {
+        verify(main._turboSmoothScrollFor("right", main.screenGames, "list"), "right on games list smooth-scrolls");
+        verify(main._turboSmoothScrollFor("left", main.screenGames, "list"), "left on games list smooth-scrolls");
+        verify(!main._turboSmoothScrollFor("page_next", main.screenGames, "list"), "page keys keep page ticks");
+        verify(!main._turboSmoothScrollFor("right", main.screenGames, "grid"), "grid layout keeps page ticks");
+        verify(!main._turboSmoothScrollFor("right", main.screenSystems, "list"), "other screens keep page ticks");
+    }
+
+    function test_turbo_row_action_maps_direction(): void {
+        compare(main._turboRowAction("right"), "down", "right walks forward");
+        compare(main._turboRowAction("left"), "up", "left walks back");
+    }
+
+    function test_scroll_turbo_interval_ramps_to_floor(): void {
+        compare(main._scrollTurboInterval(0), main._scrollTurboStartMs, "ramp starts at the start cadence");
+        verify(main._scrollTurboInterval(main._scrollTurboRampTicks / 2) < main._scrollTurboStartMs, "ramp accelerates");
+        compare(main._scrollTurboInterval(main._scrollTurboRampTicks), main._scrollTurboFloorMs, "ramp reaches the floor");
+        compare(main._scrollTurboInterval(main._scrollTurboRampTicks + 50), main._scrollTurboFloorMs, "floor holds beyond the ramp");
+    }
+
     // Duplicate-input guard. The Keys.onPressed handler collapses a
     // second delivery of the same key while the guard window is open
     // (controller / input-stack double send). The decision is a pure

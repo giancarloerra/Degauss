@@ -163,7 +163,17 @@ Item {
                 Text {
                     anchors.horizontalCenter: parent.horizontalCenter
                     horizontalAlignment: Text.AlignHCenter
-                    text: qsTr("An independent fork of Zaparoo Frontend, for Zaparoo Core.")
+                    text: qsTr("A 'speed' fork of Zaparoo Frontend")
+                    color: Theme.textLabel
+                    font.family: Theme.fontUi
+                    font.pixelSize: Sizing.fontSize(2.4)
+                    renderType: Text.NativeRendering
+                }
+
+                Text {
+                    anchors.horizontalCenter: parent.horizontalCenter
+                    horizontalAlignment: Text.AlignHCenter
+                    text: qsTr("Maintained by Giancarlo Erra.")
                     color: Theme.textLabel
                     font.family: Theme.fontUi
                     font.pixelSize: Sizing.fontSize(2.4)

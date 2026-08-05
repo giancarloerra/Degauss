@@ -7,12 +7,16 @@ import QtQuick
 // Project-wide color and font constants.
 // Never hardcode colors or font families inline — use these instead.
 //
-// Degauss runs a monochrome palette: every tone is a grey whose value
-// was derived from the upstream colour it replaced by preserving
-// relative luminance (sRGB -> linear -> Y -> sRGB), so contrast
-// relationships and perceived brightness match the original design
-// exactly; only hue and saturation were removed. Content (covers,
-// artwork, the wordmark) stays full colour.
+// Degauss runs a monochrome base palette: every grey was derived from
+// the upstream colour it replaced by preserving relative luminance
+// (sRGB -> linear -> Y -> sRGB), so contrast relationships match the
+// original design exactly. The only chroma in the UI is the wordmark's
+// own three colours, each holding exactly one meaning: yellow
+// (#FFCD09) means selected, teal (#03A49D) means a persistent state
+// (favorite, hidden), red (#FE2E1D family) means error. Contrast per
+// surface is tabled in README.md's brand-palette section; teal and red
+// are graphic accents on the lighter crt-light surfaces, not body-text
+// colours. Content (covers, artwork, the wordmark) stays full colour.
 QtObject {
     property bool crtNativePath: false
 
@@ -55,29 +59,36 @@ QtObject {
     // stays legible on `surfaceCard` and on the CRT path. Drawn after the name
     // in the inline caption (see `ScrollingCaption.qml`).
     readonly property color textVariant: "#8D8D8D"
-    // Accent — bright tone used for selection highlights.
-    readonly property color accent: "#C2C2C2"
-    // Persistent-state marker tint (favorite heart, hidden badge). A step
-    // darker than the accent so these markers stay distinct from the focus
-    // ring/logo tint instead of melting into them — the accent brightness
-    // means "selected" exclusively. Paired with a dark `bgBar`
-    // outline/border for visibility on light cover art. The hidden badge
-    // uses it directly (TileBadge); the favorite heart is tinted to it on
-    // the fly via the tinted-svg provider (Heart.svg is a neutral
-    // grayscale source), so the color lives only here.
-    readonly property color stateMarker: "#9D9D9D"
+    // Accent — the wordmark's yellow, the "selected" colour. Passes for
+    // any use on every surface of both themes (11.2:1 dark, 6.0:1
+    // crt-light at worst).
+    readonly property color accent: "#FFCD09"
+    // Persistent-state marker tint (favorite heart, hidden badge) — the
+    // wordmark's teal, a different hue from the selection yellow so
+    // "selected" and "favorited" can never be confused. Used as a
+    // graphic mark, not text, which its crt-light contrast supports.
+    // Paired with a dark `bgBar` outline/border for visibility on light
+    // cover art. The hidden badge uses it directly (TileBadge); the
+    // favorite heart is tinted to it on the fly via the tinted-svg
+    // provider (Heart.svg is a neutral grayscale source), so the color
+    // lives only here.
+    readonly property color stateMarker: "#03A49D"
     // System logo tint tokens — two ramps, selected by Tile based on focus state.
     // Inactive ramp: mid grey so unfocused tiles read as secondary
-    // against the brighter focused ramp.
+    // against the yellow focused ramp.
     readonly property color logoPrimary: "#9D9D9D"
     readonly property color logoSecondary: "#676767"
     readonly property color logoShadow: "#444444"
-    // Focused ramp: the bright accent tone marks the selected tile's logo.
-    readonly property color logoFocusPrimary: "#E7E7E7"
+    // Focused ramp: the accent yellow marks the selected tile's logo,
+    // with a lightened primary and a darkened shadow of the same hue.
+    readonly property color logoFocusPrimary: "#FFE699"
     readonly property color logoFocusSecondary: accent
-    readonly property color logoFocusShadow: "#6D6D6D"
-    // Error emphasis, kept distinct in brightness from the selection accent.
-    readonly property string errorHex: "#ABABAB"
+    readonly property color logoFocusShadow: "#997B05"
+    // Error emphasis — the wordmark's red on the dark theme; crt-light
+    // lifts it to a salmon of the same family because the pure red
+    // reads at only ~2.4:1 on the lighter surfaces (the salmon's ~3.9:1
+    // matches what upstream's error tone achieved there).
+    readonly property string errorHex: _crtLight ? "#FF8A7A" : "#FE2E1D"
     readonly property color error: errorHex
     // Fonts
     readonly property string fontUi: crtNativePath ? "MxPlus HP 100LX 6x8" : "Noto Sans"
