@@ -10,58 +10,63 @@
     </message>
     <message>
         <location filename="../screens/AboutScreen.qml" line="155"/>
-        <source>Zaparoo Frontend</source>
+        <source>Degauss</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
         <location filename="../screens/AboutScreen.qml" line="166"/>
+        <source>An independent fork of Zaparoo Frontend, for Zaparoo Core.</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="../screens/AboutScreen.qml" line="176"/>
         <source>Version %1 · %2 · %3</source>
         <translation>Verzia %1 · %2 · %3</translation>
     </message>
     <message>
-        <location filename="../screens/AboutScreen.qml" line="176"/>
+        <location filename="../screens/AboutScreen.qml" line="186"/>
         <source>Built %1</source>
         <translation>Zostavené %1</translation>
     </message>
     <message>
-        <location filename="../screens/AboutScreen.qml" line="187"/>
+        <location filename="../screens/AboutScreen.qml" line="197"/>
         <source>Copyright 2026 Wizzo Pty Ltd and the Zaparoo Project contributors.</source>
         <translation>Autorské práva 2026 Wizzo Pty Ltd a prispievatelia projektu Zaparoo.</translation>
     </message>
     <message>
-        <location filename="../screens/AboutScreen.qml" line="198"/>
+        <location filename="../screens/AboutScreen.qml" line="208"/>
         <source>Source available under the PolyForm Noncommercial License 1.0.0. Free for personal, non-commercial use. Commercial use requires a separate license.</source>
         <translation>Zdrojový kód je dostupný pod licenciou PolyForm Noncommercial License 1.0.0. Bezplatne na osobné, nekomerčné použitie. Komerčné použitie alebo redistribúcia vyžaduje samostatnú licenciu.</translation>
     </message>
     <message>
-        <location filename="../screens/AboutScreen.qml" line="209"/>
+        <location filename="../screens/AboutScreen.qml" line="219"/>
         <source>Commercial licensing: legal@zaparoo.org</source>
         <translation>Komerčné licencovanie: legal@zaparoo.org</translation>
     </message>
     <message>
-        <location filename="../screens/AboutScreen.qml" line="220"/>
+        <location filename="../screens/AboutScreen.qml" line="230"/>
         <source>Project: https://zaparoo.org</source>
         <translation>Projekt: https://zaparoo.org</translation>
     </message>
     <message>
-        <location filename="../screens/AboutScreen.qml" line="230"/>
+        <location filename="../screens/AboutScreen.qml" line="240"/>
         <source>Created by</source>
         <translation>Vytvorili</translation>
     </message>
     <message>
-        <location filename="../screens/AboutScreen.qml" line="254"/>
+        <location filename="../screens/AboutScreen.qml" line="264"/>
         <source>Translations</source>
         <translation>Preklady</translation>
     </message>
     <message>
-        <location filename="../screens/AboutScreen.qml" line="267"/>
+        <location filename="../screens/AboutScreen.qml" line="277"/>
         <source>Italiano - Andrea Bogazzi
 Español - Carlos R.
 Euskara - devilschile2</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../screens/AboutScreen.qml" line="278"/>
+        <location filename="../screens/AboutScreen.qml" line="288"/>
         <source>Full license text in COPYING.</source>
         <translation>Úplný text licencie v súbore COPYING.</translation>
     </message>
@@ -200,7 +205,7 @@ Euskara - devilschile2</source>
     <name>CommercialNoticeModal</name>
     <message>
         <location filename="../components/CommercialNoticeModal.qml" line="98"/>
-        <source>Welcome to Zaparoo Frontend</source>
+        <source>Welcome to Degauss</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
@@ -359,19 +364,34 @@ Euskara - devilschile2</source>
 <context>
     <name>FavoritesScreen</name>
     <message>
-        <location filename="../screens/FavoritesScreen.qml" line="24"/>
+        <location filename="../screens/FavoritesScreen.qml" line="29"/>
         <source>Favorites</source>
         <translation>Obľúbené</translation>
     </message>
     <message>
-        <location filename="../screens/FavoritesScreen.qml" line="25"/>
+        <location filename="../screens/FavoritesScreen.qml" line="32"/>
         <source>No favorites yet</source>
         <translation>Zatiaľ žiadne obľúbené</translation>
     </message>
     <message>
-        <location filename="../screens/FavoritesScreen.qml" line="26"/>
+        <location filename="../screens/FavoritesScreen.qml" line="32"/>
+        <source>No favorites in this scope</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="../screens/FavoritesScreen.qml" line="33"/>
         <source>Loading favorites…</source>
         <translation>Načítanie obľúbených…</translation>
+    </message>
+    <message>
+        <location filename="../screens/FavoritesScreen.qml" line="50"/>
+        <source>%1 of %2</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="../screens/FavoritesScreen.qml" line="51"/>
+        <source>%1 entries</source>
+        <translation type="unfinished">%1 položiek</translation>
     </message>
 </context>
 <context>
@@ -382,6 +402,11 @@ Euskara - devilschile2</source>
         <translation>Prvé nastavenie</translation>
     </message>
     <message>
+        <location filename="../components/FirstRunIndexModal.qml" line="208"/>
+        <source>Zaparoo Core needs to scan your games before you can use the frontend. This usually takes a few minutes.</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
         <location filename="../components/FirstRunIndexModal.qml" line="283"/>
         <source>Indexing paused</source>
         <translation>Indexovanie pozastavené</translation>
@@ -390,11 +415,6 @@ Euskara - devilschile2</source>
         <location filename="../components/FirstRunIndexModal.qml" line="230"/>
         <source>Optimizing database - almost done</source>
         <translation>Optimalizácia databázy – takmer hotovo</translation>
-    </message>
-    <message>
-        <location filename="../components/FirstRunIndexModal.qml" line="208"/>
-        <source>Zaparoo needs to scan your games before you can use the frontend. This usually takes a few minutes.</source>
-        <translation type="unfinished"></translation>
     </message>
     <message>
         <location filename="../components/FirstRunIndexModal.qml" line="285"/>
@@ -443,34 +463,34 @@ Euskara - devilschile2</source>
 <context>
     <name>GamesScreen</name>
     <message>
-        <location filename="../screens/GamesScreen.qml" line="137"/>
-        <location filename="../screens/GamesScreen.qml" line="177"/>
+        <location filename="../screens/GamesScreen.qml" line="142"/>
+        <location filename="../screens/GamesScreen.qml" line="186"/>
         <source>%1 files</source>
         <translation>%1 súborov</translation>
     </message>
     <message>
-        <location filename="../screens/GamesScreen.qml" line="54"/>
+        <location filename="../screens/GamesScreen.qml" line="59"/>
         <source>Loading game…</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../screens/GamesScreen.qml" line="146"/>
-        <location filename="../screens/GamesScreen.qml" line="178"/>
+        <location filename="../screens/GamesScreen.qml" line="155"/>
+        <location filename="../screens/GamesScreen.qml" line="187"/>
         <source>%1 / %2</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../screens/GamesScreen.qml" line="49"/>
+        <location filename="../screens/GamesScreen.qml" line="54"/>
         <source>Loading games…</source>
         <translation>Načítanie hier…</translation>
     </message>
     <message>
-        <location filename="../screens/GamesScreen.qml" line="142"/>
+        <location filename="../screens/GamesScreen.qml" line="151"/>
         <source>Loading more…</source>
         <translation>Načítava sa viac…</translation>
     </message>
     <message>
-        <location filename="../screens/GamesScreen.qml" line="48"/>
+        <location filename="../screens/GamesScreen.qml" line="53"/>
         <source>No games in this system</source>
         <translation>V tomto systéme nie sú žiadne hry</translation>
     </message>
@@ -599,148 +619,203 @@ Euskara - devilschile2</source>
 <context>
     <name>Main</name>
     <message>
-        <location filename="../app/Main.qml" line="1518"/>
+        <location filename="../app/Main.qml" line="1550"/>
         <source>Launch core</source>
         <translation>Spustiť core</translation>
     </message>
     <message>
-        <location filename="../app/Main.qml" line="1527"/>
-        <location filename="../app/Main.qml" line="1772"/>
+        <location filename="../app/Main.qml" line="1559"/>
+        <location filename="../app/Main.qml" line="1804"/>
         <source>Change launcher</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../app/Main.qml" line="1591"/>
+        <location filename="../app/Main.qml" line="1623"/>
         <source>Remove from favorites</source>
         <translation>Odstrániť z obľúbených</translation>
     </message>
     <message>
-        <location filename="../app/Main.qml" line="1591"/>
+        <location filename="../app/Main.qml" line="1623"/>
         <source>Add to favorites</source>
         <translation>Pridať do obľúbených</translation>
     </message>
     <message>
-        <location filename="../app/Main.qml" line="1596"/>
+        <location filename="../app/Main.qml" line="1628"/>
         <source>Write to NFC token</source>
         <translation>Zapísať na NFC token</translation>
     </message>
     <message>
-        <location filename="../app/Main.qml" line="1600"/>
+        <location filename="../app/Main.qml" line="1632"/>
         <source>QR code</source>
         <translation>QR kód</translation>
     </message>
     <message>
-        <location filename="../app/Main.qml" line="1575"/>
-        <location filename="../app/Main.qml" line="1610"/>
+        <location filename="../app/Main.qml" line="1607"/>
+        <location filename="../app/Main.qml" line="1642"/>
         <source>Launch game</source>
         <translation>Spustiť hru</translation>
     </message>
     <message>
-        <location filename="../app/Main.qml" line="2113"/>
+        <location filename="../app/Main.qml" line="2181"/>
         <source>Go to...</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../app/Main.qml" line="2116"/>
+        <location filename="../app/Main.qml" line="2193"/>
+        <location filename="../app/Main.qml" line="2217"/>
         <source>View</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../app/Main.qml" line="3027"/>
+        <location filename="../app/Main.qml" line="3413"/>
         <source>Loading systems…</source>
         <translation>Načítanie systémov…</translation>
     </message>
     <message>
-        <location filename="../app/Main.qml" line="3033"/>
+        <location filename="../app/Main.qml" line="3419"/>
         <source>Loading favorites…</source>
         <translation>Načítanie obľúbených…</translation>
     </message>
     <message>
-        <location filename="../app/Main.qml" line="3029"/>
+        <location filename="../app/Main.qml" line="3415"/>
         <source>Loading games…</source>
         <translation>Načítanie hier…</translation>
     </message>
     <message>
-        <location filename="../app/Main.qml" line="1534"/>
-        <location filename="../app/Main.qml" line="1563"/>
+        <location filename="../app/Main.qml" line="1566"/>
+        <location filename="../app/Main.qml" line="1595"/>
         <source>Update media database</source>
         <translation type="unfinished">Aktualizovať databázu médií</translation>
     </message>
     <message>
-        <location filename="../app/Main.qml" line="1537"/>
-        <location filename="../app/Main.qml" line="1566"/>
+        <location filename="../app/Main.qml" line="1569"/>
+        <location filename="../app/Main.qml" line="1598"/>
         <source>Scrape metadata</source>
         <translation type="unfinished">Získať metadáta</translation>
     </message>
     <message>
-        <location filename="../app/Main.qml" line="1542"/>
-        <location filename="../app/Main.qml" line="1551"/>
+        <location filename="../app/Main.qml" line="1574"/>
+        <location filename="../app/Main.qml" line="1583"/>
         <source>Unhide</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../app/Main.qml" line="1542"/>
-        <location filename="../app/Main.qml" line="1551"/>
+        <location filename="../app/Main.qml" line="1574"/>
+        <location filename="../app/Main.qml" line="1583"/>
         <source>Hide</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../app/Main.qml" line="1768"/>
+        <location filename="../app/Main.qml" line="1800"/>
+        <location filename="../app/Main.qml" line="2221"/>
+        <location filename="../app/Main.qml" line="2259"/>
         <source>Default</source>
         <translation type="unfinished">Predvolené</translation>
     </message>
     <message>
-        <location filename="../app/Main.qml" line="1768"/>
+        <location filename="../app/Main.qml" line="1800"/>
         <source>Current: %1</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../app/Main.qml" line="2256"/>
+        <location filename="../app/Main.qml" line="2191"/>
+        <source>Random game in this folder</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="../app/Main.qml" line="2206"/>
+        <source>Sort: %1</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="../app/Main.qml" line="2210"/>
+        <source>Show: %1</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="../app/Main.qml" line="2214"/>
+        <source>Random favorite</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="../app/Main.qml" line="2221"/>
+        <location filename="../app/Main.qml" line="2263"/>
+        <source>A-Z</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="../app/Main.qml" line="2229"/>
+        <source>All</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="../app/Main.qml" line="2267"/>
+        <source>Sort</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="../app/Main.qml" line="2292"/>
+        <source>All (%1)</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="../app/Main.qml" line="2322"/>
+        <location filename="../app/Main.qml" line="2328"/>
+        <source>%1 (%2)</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="../app/Main.qml" line="2332"/>
+        <source>Show</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="../app/Main.qml" line="2472"/>
         <source>Saving launcher</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../app/Main.qml" line="2260"/>
+        <location filename="../app/Main.qml" line="2476"/>
         <source>Saving…</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../app/Main.qml" line="2274"/>
+        <location filename="../app/Main.qml" line="2490"/>
         <source>Launcher update failed</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../app/Main.qml" line="2278"/>
+        <location filename="../app/Main.qml" line="2494"/>
         <source>Error: %1</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../app/Main.qml" line="2282"/>
+        <location filename="../app/Main.qml" line="2498"/>
         <source>Retry</source>
         <translation type="unfinished">Skúsiť znova</translation>
     </message>
     <message>
-        <location filename="../app/Main.qml" line="2286"/>
+        <location filename="../app/Main.qml" line="2502"/>
         <source>Cancel</source>
         <translation type="unfinished">Zrušiť</translation>
     </message>
     <message>
-        <location filename="../app/Main.qml" line="3031"/>
+        <location filename="../app/Main.qml" line="3417"/>
         <source>Loading game…</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../app/Main.qml" line="3035"/>
+        <location filename="../app/Main.qml" line="3421"/>
         <source>Loading recently played…</source>
         <translation>Načítanie nedávno hraných…</translation>
     </message>
     <message>
-        <location filename="../app/Main.qml" line="3037"/>
+        <location filename="../app/Main.qml" line="3423"/>
         <source>Loading settings…</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../app/Main.qml" line="3039"/>
+        <location filename="../app/Main.qml" line="3425"/>
         <source>Loading…</source>
         <translation>Načítanie…</translation>
     </message>
@@ -748,164 +823,172 @@ Euskara - devilschile2</source>
 <context>
     <name>MainLayout</name>
     <message>
-        <location filename="../app/MainLayout.qml" line="774"/>
+        <location filename="../app/MainLayout.qml" line="777"/>
         <source>Writing failed</source>
         <translation>Zápis zlyhal</translation>
     </message>
     <message>
-        <location filename="../app/MainLayout.qml" line="774"/>
+        <location filename="../app/MainLayout.qml" line="777"/>
         <source>Put a writable card near the reader</source>
         <translation>Priložte zapisovateľnú kartu k čítačke</translation>
     </message>
     <message>
-        <location filename="../app/MainLayout.qml" line="809"/>
+        <location filename="../app/MainLayout.qml" line="793"/>
+        <source>Quit and restart Degauss?</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="../app/MainLayout.qml" line="812"/>
         <source>Update Zaparoo Core</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../app/MainLayout.qml" line="810"/>
+        <location filename="../app/MainLayout.qml" line="813"/>
         <source>This frontend needs Zaparoo Core %1 or newer. You&apos;re running %2. Some features may not work until you update.</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../app/MainLayout.qml" line="811"/>
-        <location filename="../app/MainLayout.qml" line="1141"/>
+        <location filename="../app/MainLayout.qml" line="814"/>
+        <location filename="../app/MainLayout.qml" line="830"/>
+        <location filename="../app/MainLayout.qml" line="1160"/>
         <source>OK</source>
         <translation type="unfinished">V poriadku</translation>
     </message>
     <message>
-        <location filename="../app/MainLayout.qml" line="921"/>
+        <location filename="../app/MainLayout.qml" line="828"/>
+        <source>Random game</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="../app/MainLayout.qml" line="829"/>
+        <source>Couldn&apos;t pick anything to launch.</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="../app/MainLayout.qml" line="939"/>
+        <source>Quit Degauss?</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="../app/MainLayout.qml" line="940"/>
         <source>Are you sure you want to exit?</source>
         <translation>Naozaj chcete ukončiť?</translation>
     </message>
     <message>
-        <location filename="../app/MainLayout.qml" line="1071"/>
-        <location filename="../app/MainLayout.qml" line="1152"/>
+        <location filename="../app/MainLayout.qml" line="1090"/>
+        <location filename="../app/MainLayout.qml" line="1171"/>
         <source>Select</source>
         <translation>Vybrať</translation>
     </message>
     <message>
-        <location filename="../app/MainLayout.qml" line="1075"/>
-        <location filename="../app/MainLayout.qml" line="1079"/>
-        <location filename="../app/MainLayout.qml" line="1093"/>
-        <location filename="../app/MainLayout.qml" line="1108"/>
-        <location filename="../app/MainLayout.qml" line="1119"/>
+        <location filename="../app/MainLayout.qml" line="1094"/>
+        <location filename="../app/MainLayout.qml" line="1098"/>
+        <location filename="../app/MainLayout.qml" line="1112"/>
+        <location filename="../app/MainLayout.qml" line="1127"/>
+        <location filename="../app/MainLayout.qml" line="1138"/>
         <source>Close</source>
         <translation>Zavrieť</translation>
     </message>
     <message>
-        <location filename="../app/MainLayout.qml" line="1086"/>
-        <location filename="../app/MainLayout.qml" line="1126"/>
-        <location filename="../app/MainLayout.qml" line="1156"/>
-        <location filename="../app/MainLayout.qml" line="1178"/>
+        <location filename="../app/MainLayout.qml" line="1105"/>
+        <location filename="../app/MainLayout.qml" line="1145"/>
+        <location filename="../app/MainLayout.qml" line="1175"/>
+        <location filename="../app/MainLayout.qml" line="1197"/>
         <source>Cancel</source>
         <translation>Zrušiť</translation>
     </message>
     <message>
-        <location filename="../app/MainLayout.qml" line="1104"/>
+        <location filename="../app/MainLayout.qml" line="1123"/>
         <source>Done</source>
         <translation>Hotovo</translation>
     </message>
     <message>
-        <location filename="../app/MainLayout.qml" line="1134"/>
+        <location filename="../app/MainLayout.qml" line="1153"/>
         <source>I understand</source>
         <translation>Rozumiem</translation>
     </message>
     <message>
-        <location filename="../app/MainLayout.qml" line="1163"/>
+        <location filename="../app/MainLayout.qml" line="1182"/>
         <source>Adjust</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../app/MainLayout.qml" line="1167"/>
+        <location filename="../app/MainLayout.qml" line="1186"/>
         <source>Save</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../app/MainLayout.qml" line="1186"/>
+        <location filename="../app/MainLayout.qml" line="1205"/>
         <source>Start</source>
         <translation>Spustiť</translation>
     </message>
     <message>
-        <location filename="../app/MainLayout.qml" line="1394"/>
+        <location filename="../app/MainLayout.qml" line="1429"/>
         <source>Scroll</source>
         <translation>Posúvať</translation>
     </message>
     <message>
-        <location filename="../app/MainLayout.qml" line="1443"/>
+        <location filename="../app/MainLayout.qml" line="1325"/>
+        <location filename="../app/MainLayout.qml" line="1346"/>
+        <location filename="../app/MainLayout.qml" line="1478"/>
         <source>View</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../app/MainLayout.qml" line="1067"/>
-        <location filename="../app/MainLayout.qml" line="1148"/>
-        <location filename="../app/MainLayout.qml" line="1205"/>
-        <location filename="../app/MainLayout.qml" line="1242"/>
-        <location filename="../app/MainLayout.qml" line="1290"/>
-        <location filename="../app/MainLayout.qml" line="1334"/>
-        <location filename="../app/MainLayout.qml" line="1353"/>
-        <location filename="../app/MainLayout.qml" line="1426"/>
+        <location filename="../app/MainLayout.qml" line="1086"/>
+        <location filename="../app/MainLayout.qml" line="1167"/>
+        <location filename="../app/MainLayout.qml" line="1224"/>
+        <location filename="../app/MainLayout.qml" line="1261"/>
+        <location filename="../app/MainLayout.qml" line="1309"/>
+        <location filename="../app/MainLayout.qml" line="1369"/>
+        <location filename="../app/MainLayout.qml" line="1388"/>
+        <location filename="../app/MainLayout.qml" line="1461"/>
         <source>Move</source>
         <translation>Presunúť</translation>
     </message>
     <message>
-        <location filename="../app/MainLayout.qml" line="178"/>
-        <source>Zaparoo Frontend</source>
-        <translation type="unfinished"></translation>
-    </message>
-    <message>
-        <location filename="../app/MainLayout.qml" line="405"/>
+        <location filename="../app/MainLayout.qml" line="407"/>
         <source>Favorites</source>
         <translation type="unfinished">Obľúbené</translation>
     </message>
     <message>
-        <location filename="../app/MainLayout.qml" line="407"/>
+        <location filename="../app/MainLayout.qml" line="409"/>
         <source>Recently Played</source>
         <translation type="unfinished">Nedávno hrané</translation>
     </message>
     <message>
-        <location filename="../app/MainLayout.qml" line="790"/>
-        <source>Quit and restart Zaparoo Frontend?</source>
-        <translation type="unfinished"></translation>
-    </message>
-    <message>
-        <location filename="../app/MainLayout.qml" line="791"/>
+        <location filename="../app/MainLayout.qml" line="794"/>
         <source>In order to apply this setting we need to restart the frontend.</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../app/MainLayout.qml" line="920"/>
-        <source>Quit Zaparoo Frontend?</source>
-        <translation type="unfinished"></translation>
-    </message>
-    <message>
-        <location filename="../app/MainLayout.qml" line="1209"/>
-        <location filename="../app/MainLayout.qml" line="1247"/>
-        <location filename="../app/MainLayout.qml" line="1295"/>
-        <location filename="../app/MainLayout.qml" line="1339"/>
-        <location filename="../app/MainLayout.qml" line="1431"/>
+        <location filename="../app/MainLayout.qml" line="1228"/>
+        <location filename="../app/MainLayout.qml" line="1266"/>
+        <location filename="../app/MainLayout.qml" line="1314"/>
+        <location filename="../app/MainLayout.qml" line="1374"/>
+        <location filename="../app/MainLayout.qml" line="1466"/>
         <source>Open</source>
         <translation>Otvoriť</translation>
     </message>
     <message>
-        <location filename="../app/MainLayout.qml" line="1219"/>
+        <location filename="../app/MainLayout.qml" line="1238"/>
         <source>Quit</source>
         <translation>Ukončiť</translation>
     </message>
     <message>
-        <location filename="../app/MainLayout.qml" line="1228"/>
-        <location filename="../app/MainLayout.qml" line="1253"/>
-        <location filename="../app/MainLayout.qml" line="1264"/>
-        <location filename="../app/MainLayout.qml" line="1279"/>
-        <location filename="../app/MainLayout.qml" line="1304"/>
-        <location filename="../app/MainLayout.qml" line="1315"/>
-        <location filename="../app/MainLayout.qml" line="1327"/>
-        <location filename="../app/MainLayout.qml" line="1343"/>
-        <location filename="../app/MainLayout.qml" line="1377"/>
-        <location filename="../app/MainLayout.qml" line="1398"/>
-        <location filename="../app/MainLayout.qml" line="1407"/>
-        <location filename="../app/MainLayout.qml" line="1447"/>
-        <location filename="../app/MainLayout.qml" line="1458"/>
+        <location filename="../app/MainLayout.qml" line="1247"/>
+        <location filename="../app/MainLayout.qml" line="1272"/>
+        <location filename="../app/MainLayout.qml" line="1283"/>
+        <location filename="../app/MainLayout.qml" line="1298"/>
+        <location filename="../app/MainLayout.qml" line="1330"/>
+        <location filename="../app/MainLayout.qml" line="1350"/>
+        <location filename="../app/MainLayout.qml" line="1362"/>
+        <location filename="../app/MainLayout.qml" line="1378"/>
+        <location filename="../app/MainLayout.qml" line="1412"/>
+        <location filename="../app/MainLayout.qml" line="1433"/>
+        <location filename="../app/MainLayout.qml" line="1442"/>
+        <location filename="../app/MainLayout.qml" line="1482"/>
+        <location filename="../app/MainLayout.qml" line="1493"/>
         <source>Back</source>
         <translation>Späť</translation>
     </message>
@@ -914,28 +997,33 @@ Euskara - devilschile2</source>
         <translation type="vanished">Stránka</translation>
     </message>
     <message>
-        <location filename="../app/MainLayout.qml" line="1215"/>
-        <location filename="../app/MainLayout.qml" line="1250"/>
-        <location filename="../app/MainLayout.qml" line="1300"/>
-        <location filename="../app/MainLayout.qml" line="1436"/>
+        <location filename="../app/MainLayout.qml" line="1234"/>
+        <location filename="../app/MainLayout.qml" line="1269"/>
+        <location filename="../app/MainLayout.qml" line="1319"/>
+        <location filename="../app/MainLayout.qml" line="1471"/>
         <source>Options</source>
         <translation>Možnosti</translation>
     </message>
     <message>
-        <location filename="../app/MainLayout.qml" line="1115"/>
-        <location filename="../app/MainLayout.qml" line="1260"/>
-        <location filename="../app/MainLayout.qml" line="1311"/>
-        <location filename="../app/MainLayout.qml" line="1454"/>
+        <location filename="../app/MainLayout.qml" line="1134"/>
+        <location filename="../app/MainLayout.qml" line="1279"/>
+        <location filename="../app/MainLayout.qml" line="1340"/>
+        <location filename="../app/MainLayout.qml" line="1489"/>
         <source>Retry</source>
         <translation>Skúsiť znova</translation>
     </message>
     <message>
-        <location filename="../app/MainLayout.qml" line="1362"/>
+        <location filename="../app/MainLayout.qml" line="179"/>
+        <source>Degauss</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="../app/MainLayout.qml" line="1397"/>
         <source>Change</source>
         <translation>Zmeniť</translation>
     </message>
     <message>
-        <location filename="../app/MainLayout.qml" line="1368"/>
+        <location filename="../app/MainLayout.qml" line="1403"/>
         <source>Toggle</source>
         <translation>Prepínať</translation>
     </message>
@@ -948,12 +1036,12 @@ Euskara - devilschile2</source>
         <translation type="unfinished">Načítanie…</translation>
     </message>
     <message>
-        <location filename="../screens/MediaListScreen.qml" line="452"/>
+        <location filename="../screens/MediaListScreen.qml" line="470"/>
         <source>%1 entries</source>
         <translation type="unfinished">%1 položiek</translation>
     </message>
     <message>
-        <location filename="../screens/MediaListScreen.qml" line="453"/>
+        <location filename="../screens/MediaListScreen.qml" line="471"/>
         <source>%1 / %2</source>
         <translation type="unfinished"></translation>
     </message>
