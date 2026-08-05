@@ -123,10 +123,13 @@ Item {
         return Sizing.center(size, pill._spinnerDotSize);
     }
 
+    // Activity wears the brand teal: the active dot over the neutral
+    // pill, and the progress fill below. Inverted inactive dots match
+    // the fill colour so they disappear against it.
     function _spinnerDotColor(index: int, inverted: bool): color {
         if (index === pill._spinnerFrame)
-            return inverted ? Theme.bgBar : Theme.textPrimary;
-        return inverted ? Theme.accent : Theme.borderMid;
+            return inverted ? Theme.bgBar : Theme.stateMarker;
+        return inverted ? Theme.stateMarker : Theme.borderMid;
     }
 
     Timer {
@@ -163,7 +166,9 @@ Item {
         Rectangle {
             width: pill.width
             height: pill.height
-            color: Theme.accent
+            // Progress is activity, so it fills in the brand teal;
+            // yellow stays reserved for selection.
+            color: Theme.stateMarker
             radius: Sizing.half(pill.height)
         }
     }

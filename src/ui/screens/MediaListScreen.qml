@@ -338,11 +338,15 @@ Item {
 
         root._focusArmed = true;
 
+        // In list layout Left/Right are the fast-travel pair to Up/Down:
+        // the same single-row walk through the same machinery, driven
+        // faster when held (see Main.qml's smooth-scroll turbo and the
+        // held-key repeat cadence). Paging lives on the page keys only.
         if (action === "left") {
             if (root._listLayout && typeof root.listLeftAction === "function")
                 root.listLeftAction();
             else if (root._listLayout && root._state() === "ready")
-                root._performPage(-1);
+                root._performLinearMove(-1);
             else if (!root._listLayout && typeof root.gridMoveAction === "function")
                 root.gridMoveAction(-1, 0);
             else if (!root._listLayout)
@@ -351,7 +355,7 @@ Item {
             if (root._listLayout && typeof root.listRightAction === "function")
                 root.listRightAction();
             else if (root._listLayout && root._state() === "ready")
-                root._performPage(1);
+                root._performLinearMove(1);
             else if (!root._listLayout && typeof root.gridMoveAction === "function")
                 root.gridMoveAction(1, 0);
             else if (!root._listLayout)

@@ -79,11 +79,12 @@ QtObject {
     readonly property color logoPrimary: "#9D9D9D"
     readonly property color logoSecondary: "#676767"
     readonly property color logoShadow: "#444444"
-    // Focused ramp: the accent yellow marks the selected tile's logo,
-    // with a lightened primary and a darkened shadow of the same hue.
-    readonly property color logoFocusPrimary: "#FFE699"
-    readonly property color logoFocusSecondary: accent
-    readonly property color logoFocusShadow: "#997B05"
+    // Focused ramp: a brighter grey ramp — focus is signalled by the
+    // yellow ring and selection bar, not by recolouring the logo art,
+    // so the tiles' marks keep their neutral tone when selected.
+    readonly property color logoFocusPrimary: "#E7E7E7"
+    readonly property color logoFocusSecondary: "#C2C2C2"
+    readonly property color logoFocusShadow: "#6D6D6D"
     // Error emphasis — the wordmark's red on the dark theme; crt-light
     // lifts it to a salmon of the same family because the pure red
     // reads at only ~2.4:1 on the lighter surfaces (the salmon's ~3.9:1

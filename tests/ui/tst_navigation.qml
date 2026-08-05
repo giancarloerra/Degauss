@@ -626,16 +626,14 @@ TestCase {
         verify(!main._turboSmoothScrollFor("right", main.screenSystems, "list"), "other screens keep page ticks");
     }
 
-    function test_turbo_row_action_maps_direction(): void {
-        compare(main._turboRowAction("right"), "down", "right walks forward");
-        compare(main._turboRowAction("left"), "up", "left walks back");
+    function test_turbo_threshold_lower_for_row_walk(): void {
+        compare(main._turboThresholdFor("right", main.screenGames, "list"), 2, "the row walk engages on the second chained press");
+        compare(main._turboThresholdFor("page_next", main.screenGames, "list"), main._pageTurboThreshold, "page keys keep the double-tap guard");
+        compare(main._turboThresholdFor("right", main.screenGames, "grid"), main._pageTurboThreshold, "grid keeps the double-tap guard");
     }
 
-    function test_scroll_turbo_interval_ramps_to_floor(): void {
-        compare(main._scrollTurboInterval(0), main._scrollTurboStartMs, "ramp starts at the start cadence");
-        verify(main._scrollTurboInterval(main._scrollTurboRampTicks / 2) < main._scrollTurboStartMs, "ramp accelerates");
-        compare(main._scrollTurboInterval(main._scrollTurboRampTicks), main._scrollTurboFloorMs, "ramp reaches the floor");
-        compare(main._scrollTurboInterval(main._scrollTurboRampTicks + 50), main._scrollTurboFloorMs, "floor holds beyond the ramp");
+    function test_scroll_cadence_is_triple_row_speed(): void {
+        verify(main._scrollTurboTickMs * 3 === main._repeatTickMs, "the walk cadence is exactly three times the Up/Down repeat");
     }
 
     // Duplicate-input guard. The Keys.onPressed handler collapses a

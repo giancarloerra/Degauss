@@ -1,21 +1,53 @@
 # Degauss
 
-Degauss is a game frontend for
-[Zaparoo Core](https://zaparoo.org), maintained as an independent fork of
-[Zaparoo Frontend](https://github.com/ZaparooProject/zaparoo-frontend). It is
-not affiliated with or endorsed by the Zaparoo Project or Wizzo Pty Ltd;
-Zaparoo is a trademark of Wizzo Pty Ltd, and references to Zaparoo Core here
-are factual statements of compatibility. The code remains under the upstream
-PolyForm Noncommercial 1.0.0 license with all upstream copyright notices
-preserved.
+Degauss is a speed-first game frontend for MiSTer FPGA, maintained by
+Giancarlo Erra. It exists because browsing a large game library should
+feel instant on the real hardware — an 800 MHz ARM with no GPU, often
+driving an analog CRT — and because a frontend for that hardware
+deserves a look designed for it.
+
+**The speed philosophy: read locally, ask nobody.** Everything the
+interface shows is read directly from the local media database the
+moment you ask for it, instead of being paged over RPC round trips.
+Folder listings, cover art, favorites, play history, detail metadata,
+the jump-to-letter index, and alternate-version discovery all resolve
+on-device; in steady-state browsing the frontend performs **zero
+network calls**, and the connection to Zaparoo Core carries only
+writes, launches, and notifications. Measured on a MiSTer over a large
+library:
+
+- entering a folder of roughly two thousand entries: **~4.5 s → ~0.5 s**
+- a visible page of covers: **~13x faster**
+- favorites and recents: from about a second to **effectively instant**
+- detail metadata: **~2 ms** median lookup against ~60–70 ms over RPC,
+  letting the detail pane track the cursor essentially live
+- fast travel: held Left/Right walks a list at triple the normal repeat
+  speed, row by row, with cover work paused until you stop
+
+Every direct read keeps the RPC as its fallback behind a schema guard:
+if the database ever changes shape, the affected read turns itself off
+loudly and the frontend behaves exactly like upstream until it is
+updated. Writes never touch the database directly.
+
+**The look.** A monochrome interface where the only colour is the
+Degauss wordmark's own palette — yellow means selected, teal means
+state and activity, red means error — with a dedicated `crt-light`
+theme that lifts the surfaces for tubes.
+
+Degauss is an independent fork of
+[Zaparoo Frontend](https://github.com/ZaparooProject/zaparoo-frontend)
+and requires [Zaparoo Core](https://zaparoo.org) on the device. It is
+not affiliated with or endorsed by the Zaparoo Project or Wizzo Pty
+Ltd; see the Trademarks section. The code remains under the upstream
+PolyForm Noncommercial 1.0.0 license with all upstream copyright
+notices preserved.
 
 ## Brand palette
 
-The UI is deliberately monochrome (each grey preserves the relative
-luminance of the upstream colour it replaced), so the wordmark's three
-colours are the only chroma available and read as highlights wherever
-they appear. Contrast ratios against the theme surfaces, for choosing
-where each may carry text versus purely graphic accents:
+The UI is deliberately monochrome, so the wordmark's three colours are
+the only chroma available and read as highlights wherever they appear.
+Contrast ratios against the theme surfaces, for choosing where each may
+carry text versus purely graphic accents:
 
 | Colour | Hex | Dark panels / cards | CRT-light panels / cards | Safe uses |
 |---|---|---|---|---|

@@ -82,23 +82,22 @@ TestCase {
         screen.optimisticLoading = false;
     }
 
-    // Left/Right in list layout must land exactly where page_prev /
-    // page_next land: a whole page per press, like MiSTer's own menu.
-    // Asserting equivalence (not a hardcoded page size) keeps the test
-    // honest if the page metric ever changes.
-    function test_list_left_right_page_like_page_prev_next(): void {
+    // Left/Right in list layout are the fast-travel pair to Up/Down:
+    // one row per press through the same walk, never a page. Paging is
+    // the page keys' job alone, asserted alongside so the two families
+    // can never collapse into each other again.
+    function test_list_left_right_move_one_row(): void {
         Browse.Settings.current_browse_layout = "list";
         screen.mediaGrid.setCurrentIndexImmediate(0);
 
-        screen.handleAction("page_next");
-        const pagedIndex = screen.mediaGrid.currentIndex;
-        verify(pagedIndex > 0, "page_next should advance from row 0");
-        screen.handleAction("page_prev");
-        compare(screen.mediaGrid.currentIndex, 0);
-
         screen.handleAction("right");
-        compare(screen.mediaGrid.currentIndex, pagedIndex);
+        compare(screen.mediaGrid.currentIndex, 1, "right walks one row forward");
         screen.handleAction("left");
+        compare(screen.mediaGrid.currentIndex, 0, "left walks one row back");
+
+        screen.handleAction("page_next");
+        verify(screen.mediaGrid.currentIndex > 1, "page_next still pages a whole page");
+        screen.handleAction("page_prev");
         compare(screen.mediaGrid.currentIndex, 0);
     }
 
