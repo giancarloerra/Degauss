@@ -9,10 +9,8 @@ It features:
 
 - The direct-read speed stack below.
 - Favorites as a full view: the complete set loads at once, with sort
-  modes, system and category scope filters, and Random working on
-  favorites.
-- Uniform random game across the current folder: every game gets equal
-  odds regardless of how folders nest.
+  modes, system and category scope filters.
+- True random game across any folder and favourites.
 - A `crt-light` theme that lifts surfaces for analog CRT output.
 - Fast list travel: holding Left/Right pages the list at a fast,
   steady cadence, with cover work paused until you stop; favorite
