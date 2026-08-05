@@ -6,7 +6,7 @@
 // singleton trips qmllint's "Member can be shadowed" check. Suppress
 // the compiler category file-wide until the schema grows the slot.
 // qmllint disable compiler
-// Top header bar — Zaparoo logo on the left, host status row + Core
+// Top header bar — Degauss logo on the left, host status row + Core
 // status pill stacked on the right. Height is fixed at
 // `Sizing.headerHeight` so the pill's slot is reserved even when the
 // pill is idle and the logo can match the two stacked rows exactly.

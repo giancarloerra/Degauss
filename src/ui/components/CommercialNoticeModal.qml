@@ -95,7 +95,7 @@ Item {
 
         open: modal.open
         kind: "shell"
-        title: qsTr("Welcome to Zaparoo Frontend")
+        title: qsTr("Welcome to Degauss")
         panelMaxWidth: Sizing.pctH(110)
 
         Column {

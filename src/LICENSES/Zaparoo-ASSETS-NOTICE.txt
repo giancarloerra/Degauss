@@ -1,15 +1,19 @@
-Zaparoo Project Asset Notice
-============================
+Bundled Asset Notice
+====================
 
-The following bundled visual assets are original Zaparoo Project assets or
-Zaparoo trademarks used with permission from the trademark owner. They are
-covered by this repository's project license or trademark notice, not by a
-third-party asset license:
+Degauss branding (original assets of this fork, not covered by any
+upstream trademark):
 
   resources/images/logo.png
-  resources/images/logo-crt.png
+
+The following bundled visual assets are original Zaparoo Project assets,
+covered by this repository's project license, and are retained from the
+upstream project:
+
   resources/images/bg-circuit.svg
   resources/images/bg-circuit.png
 
-Redistributors or downstream projects should review README.md's trademark
-section before reusing Zaparoo marks.
+This fork does not use the Zaparoo name or logo in its branding. Zaparoo
+is a trademark of Wizzo Pty Ltd; references to Zaparoo Core in the user
+interface are factual statements of compatibility. Redistributors should
+review README.md's trademark section before reusing any Zaparoo marks.

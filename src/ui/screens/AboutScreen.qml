@@ -144,19 +144,29 @@ Item {
                     source: "qrc:/qt/qml/Zaparoo/App/resources/images/logo.png"
                     fillMode: Image.PreserveAspectFit
                     sourceSize.width: 600
-                    sourceSize.height: 135
+                    sourceSize.height: 150
                     width: Math.min(parent.width, Sizing.pctH(35))
-                    height: Sizing.px(width * 135 / 600)
+                    height: Sizing.px(width * 150 / 600)
                 }
 
                 Text {
                     anchors.horizontalCenter: parent.horizontalCenter
                     horizontalAlignment: Text.AlignHCenter
-                    text: qsTr("Zaparoo Frontend")
+                    text: qsTr("Degauss")
                     color: Theme.textPrimary
                     font.family: Theme.fontUi
                     font.pixelSize: Sizing.fontSize(4)
                     font.weight: Font.Medium
+                    renderType: Text.NativeRendering
+                }
+
+                Text {
+                    anchors.horizontalCenter: parent.horizontalCenter
+                    horizontalAlignment: Text.AlignHCenter
+                    text: qsTr("An independent fork of Zaparoo Frontend, for Zaparoo Core.")
+                    color: Theme.textLabel
+                    font.family: Theme.fontUi
+                    font.pixelSize: Sizing.fontSize(2.4)
                     renderType: Text.NativeRendering
                 }
 

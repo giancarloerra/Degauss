@@ -205,7 +205,7 @@ Item {
             Text {
                 width: parent.width
                 visible: modal.phase === "idle"
-                text: qsTr("Zaparoo needs to scan your games before you can use the frontend. This usually takes a few minutes.")
+                text: qsTr("Zaparoo Core needs to scan your games before you can use the frontend. This usually takes a few minutes.")
                 font.family: Theme.fontUi
                 font.pixelSize: Sizing.fontSize(2.6)
                 color: Theme.textPrimary

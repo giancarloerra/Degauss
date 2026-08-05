@@ -1,7 +1,13 @@
-# Zaparoo Frontend
+# Degauss
 
-Zaparoo Frontend is the game frontend for
-[Zaparoo Core](https://zaparoo.org).
+Degauss is a game frontend for
+[Zaparoo Core](https://zaparoo.org), maintained as an independent fork of
+[Zaparoo Frontend](https://github.com/ZaparooProject/zaparoo-frontend). It is
+not affiliated with or endorsed by the Zaparoo Project or Wizzo Pty Ltd;
+Zaparoo is a trademark of Wizzo Pty Ltd, and references to Zaparoo Core here
+are factual statements of compatibility. The code remains under the upstream
+PolyForm Noncommercial 1.0.0 license with all upstream copyright notices
+preserved.
 
 ## Build
 

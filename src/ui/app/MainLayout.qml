@@ -176,7 +176,7 @@ ApplicationWindow {
     maximumHeight: _crtPreviewActive ? root.videoHeight * (root.crtPreviewScale > 0 ? root._clampCrtPreviewScale(root.crtPreviewScale) : root._crtPreviewMaxScale) : 16777215
     visible: true
     visibility: root.fullScreen ? Window.FullScreen : Window.Windowed
-    title: qsTr("Zaparoo Frontend")
+    title: qsTr("Degauss")
 
     onWidthChanged: {
         if (root._crtPreviewActive && root.crtPreviewScale === 0 && !root._crtPreviewResizeGuard)
@@ -790,7 +790,7 @@ ApplicationWindow {
                     Modal {
                         open: root.settingNeedsRestartModalVisible
                         kind: "confirm"
-                        title: qsTr("Quit and restart Zaparoo Frontend?")
+                        title: qsTr("Quit and restart Degauss?")
                         body: qsTr("In order to apply this setting we need to restart the frontend.")
                         onConfirmed: root.acceptRestart()
                         onCancelRequested: root.cancelRestart()
@@ -936,7 +936,7 @@ ApplicationWindow {
                     Modal {
                         open: root.quitConfirmModalVisible
                         kind: "confirm"
-                        title: qsTr("Quit Zaparoo Frontend?")
+                        title: qsTr("Quit Degauss?")
                         body: qsTr("Are you sure you want to exit?")
                         onConfirmed: root.quitConfirmAccepted()
                         onCancelRequested: root.closeQuitConfirmRequested()

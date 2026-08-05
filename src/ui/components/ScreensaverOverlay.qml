@@ -6,7 +6,7 @@ import QtQuick
 import Zaparoo.Theme
 
 // Screen-burn protection. After an idle timeout the frontend paints a
-// solid-black backstop and bounces a single copy of the Zaparoo logo
+// solid-black backstop and bounces a single copy of the Degauss logo
 // across it. Black is the only background that fully removes the
 // burn-in load on OLED (pixels off = zero degradation) and gives CRT
 // phosphor a true rest; a translucent scrim over a snapshot of the
