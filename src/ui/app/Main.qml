@@ -3054,17 +3054,21 @@ MainLayout {
     property double _pageTurboGapMs: 500
     // Smooth-scroll cadence: Left/Right in the games list are row moves
     // (MediaListScreen routes them to the same single-row walk as
-    // Up/Down), and a HELD Left/Right drives that walk at triple the
-    // Up/Down repeat speed — same mechanism, same animation, only the
-    // cadence differs. 30 ms is the target: ~33 rows/s, the old page
-    // turbo's travel rate with every row visible, and comfortably above
-    // a two-row repaint on the software renderer while the display
-    // field rate (~17-20 ms) stays the hard floor. Both hold shapes are
-    // covered: a genuinely held key repeats through `repeatTick` at
-    // this cadence, and the pad bridge's press/release pairs engage the
-    // turbo ticker below at the same cadence. Page keys keep the
+    // Up/Down), and a HELD Left/Right drives that walk several times
+    // faster than the Up/Down repeat. The speed lever is rows per tick,
+    // not a shorter timer: the per-row paint cost on the software
+    // renderer is the real floor, so a faster timer alone barely moves
+    // the travel rate (device-observed). Dispatching the row action
+    // `_scrollTurboRowsPerTick` times inside one tick runs in a single
+    // JS turn, so the view repaints ONCE at the final cursor position;
+    // only the departed and arrived rows redraw, and the cost per tick
+    // stays that of a single move. 3 rows every 45 ms is ~66 rows/s,
+    // six times the held Up/Down walk. Both hold shapes are covered: a
+    // genuinely held key through `repeatTick`, the pad bridge's
+    // press/release pairs through the turbo ticker. Page keys keep the
     // page-per-tick turbo.
-    readonly property int _scrollTurboTickMs: 30
+    readonly property int _scrollTurboTickMs: 45
+    readonly property int _scrollTurboRowsPerTick: 3
 
     // Pure: whether `action` on `screen` in `layout` is the fast
     // row-walk pair (Left/Right on the games list). Decides both the
@@ -3150,9 +3154,13 @@ MainLayout {
             }
             // The dispatched action is the turbo's own: in the games
             // list that is a row move (MediaListScreen routing), so the
-            // ticker IS the held-key walk at the smooth cadence.
+            // ticker IS the held-key walk at the smooth cadence. Smooth
+            // mode dispatches the move several times in this one JS
+            // turn; the view paints once, at the final position.
             root._noteRapidNavigationAction(root._pageTurboAction, true);
-            root.handleAction(root._pageTurboAction);
+            const smoothSteps = root._turboSmoothScrollFor(root._pageTurboAction, root.activeScreen, Browse.Settings.current_browse_layout) ? root._scrollTurboRowsPerTick : 1;
+            for (let i = 0; i < smoothSteps; ++i)
+                root.handleAction(root._pageTurboAction);
         }
     }
 
@@ -3314,7 +3322,12 @@ MainLayout {
 
     function _handleRepeatAction(): void {
         root._noteRapidNavigationAction(root._heldAction, true);
-        root.handleAction(root._heldAction);
+        // The games-list row walk moves several rows per tick in one JS
+        // turn (single repaint at the landing row); everything else
+        // keeps the classic one-action tick.
+        const steps = root._turboSmoothScrollFor(root._heldAction, root.activeScreen, Browse.Settings.current_browse_layout) ? root._scrollTurboRowsPerTick : 1;
+        for (let i = 0; i < steps; ++i)
+            root.handleAction(root._heldAction);
     }
 
     Timer {

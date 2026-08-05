@@ -632,8 +632,10 @@ TestCase {
         compare(main._turboThresholdFor("right", main.screenGames, "grid"), main._pageTurboThreshold, "grid keeps the double-tap guard");
     }
 
-    function test_scroll_cadence_is_triple_row_speed(): void {
-        verify(main._scrollTurboTickMs * 3 === main._repeatTickMs, "the walk cadence is exactly three times the Up/Down repeat");
+    function test_scroll_travel_rate_is_several_times_row_speed(): void {
+        const walkRowsPerSecond = (1000 / main._scrollTurboTickMs) * main._scrollTurboRowsPerTick;
+        const holdRowsPerSecond = 1000 / main._repeatTickMs;
+        verify(walkRowsPerSecond >= holdRowsPerSecond * 5, "the fast walk must travel at least five times the held Up/Down rate");
     }
 
     // Duplicate-input guard. The Keys.onPressed handler collapses a
