@@ -4,10 +4,21 @@ Degauss is a speed-first fork of
 [Zaparoo Frontend](https://github.com/ZaparooProject/zaparoo-frontend),
 maintained by Giancarlo Erra (tracking as quickly as possible every new
 release of [Zaparoo Core](https://zaparoo.org) and upstream Frontend).
-It exists because browsing a large game library should feel instant on
-the real hardware, an 800 MHz ARM with no GPU, often driving an analog
-CRT, and because a frontend for that hardware deserves a look designed
-for it.
+On top of the upstream frontend it carries the features contributed
+upstream as pull requests, plus its own additions:
+
+- Favorites as a full view: the complete set loads at once, with sort
+  modes, system and category scope filters, and Random working on
+  favorites.
+- Uniform random game across the current folder: every game gets equal
+  odds regardless of how folders nest.
+- A `crt-light` theme that lifts surfaces for analog CRT output.
+- Fast list travel: Left/Right walk the list row by row, several times
+  faster than the held Up/Down repeat, with cover work paused until
+  you stop.
+- Jump-to-letter, computed locally the moment a folder is fully
+  loaded.
+- The direct-read speed stack below.
 
 **The speed philosophy: read locally, ask nobody.** Everything the
 interface shows is read directly from the local media database the
@@ -24,8 +35,6 @@ a MiSTer over a large library:
 - favorites and recents: from about a second to **effectively instant**
 - detail metadata: **~2 ms** median lookup against ~60–70 ms over RPC,
   letting the detail pane track the cursor essentially live
-- fast travel: held Left/Right walks a list at triple the normal repeat
-  speed, row by row, with cover work paused until you stop
 
 Every direct read keeps the RPC as its fallback behind a schema guard:
 if the database ever changes shape, the affected read turns itself off
