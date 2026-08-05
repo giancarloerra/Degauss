@@ -18,13 +18,6 @@ set(_APP_RESOURCES
     "${_RESOURCE_ROOT}/fonts/NotoSansKR.ttf"
     "${_RESOURCE_ROOT}/fonts/NotoSansTC.ttf"
     "${_RESOURCE_ROOT}/images/logo.png"
-    # Tiled circuit-trace background. The .png is pre-rendered from the
-    # .svg at the pattern's native 304×304 (rsvg-convert / Inkscape /
-    # ImageMagick); shipping both keeps the source available for
-    # re-rendering. The .png is what `Image.Tile` consumes — tiled SVG
-    # would re-rasterize the source on every paint of the dirty rect.
-    "${_RESOURCE_ROOT}/images/bg-circuit.png"
-    "${_RESOURCE_ROOT}/images/bg-circuit.svg"
 )
 
 # System logos are black/white SVGs (curated from PRO100BYTE/console-logos — see

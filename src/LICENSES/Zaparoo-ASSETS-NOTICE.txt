@@ -6,14 +6,8 @@ upstream trademark):
 
   resources/images/logo.png
 
-The following bundled visual assets are original Zaparoo Project assets,
-covered by this repository's project license, and are retained from the
-upstream project:
-
-  resources/images/bg-circuit.svg
-  resources/images/bg-circuit.png
-
-This fork does not use the Zaparoo name or logo in its branding. Zaparoo
-is a trademark of Wizzo Pty Ltd; references to Zaparoo Core in the user
-interface are factual statements of compatibility. Redistributors should
-review README.md's trademark section before reusing any Zaparoo marks.
+No upstream Zaparoo Project visual assets remain bundled. This fork does
+not use the Zaparoo name or logo in its branding. Zaparoo is a trademark
+of Wizzo Pty Ltd; references to Zaparoo Core in the user interface are
+factual statements of compatibility. Redistributors should review
+README.md's trademark section before reusing any Zaparoo marks.

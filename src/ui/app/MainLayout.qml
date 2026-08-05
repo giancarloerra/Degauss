@@ -538,48 +538,13 @@ ApplicationWindow {
                 color: Theme.bgDeep
             }
 
-            // Faint circuit-trace texture, tiled across the whole window. The
-            // PNG is pre-rendered from resources/images/bg-circuit.svg at the
-            // source pattern's native 304×304 size, with white at ~8 % alpha
-            // baked into the pixmap so QtSvg isn't needed at runtime. Sits
-            // between bgDeep and the rest of the tree so logos, captions, and
-            // selection cards stay fully legible. `Image.Tile` is software-
-            // rendered, so this is MiSTer-safe; `cache: true` keeps the
-            // pixmap in QPixmapCache after first decode.
-            Image {
-                id: backgroundTexture
-
-                anchors.fill: parent
-                // Full bleed past the safe-area inset, same as bgDeep.
-                anchors.margins: -Math.max(root._crtInsetW, root._crtInsetH)
-                source: "qrc:/qt/qml/Zaparoo/App/resources/images/bg-circuit.png"
-                fillMode: Image.Tile
-                cache: true
-                smooth: false        // 1:1 tile — filtering would just blur the lines
-                // Synchronous so the first frame paints with the texture instead
-                // of flashing the bare bgDeep underneath. One small PNG decode
-                // at startup is cheap.
-                asynchronous: false
-
-                property double _startupTraceLoadStartedAt: 0
-
-                onStatusChanged: {
-                    if (!root._startupTraceActive && !root._firstFrameSeen)
-                        return;
-                    if (status === Image.Loading) {
-                        backgroundTexture._startupTraceLoadStartedAt = Date.now();
-                        root._startupTrace("startup/qml resource load start", "coverKey=background/bg-circuit", "source=" + source);
-                    } else if (status === Image.Ready) {
-                        const durMs = backgroundTexture._startupTraceLoadStartedAt > 0 ? Math.max(0, Date.now() - backgroundTexture._startupTraceLoadStartedAt) : 0;
-                        root._startupTrace("startup/qml resource load ready", "coverKey=background/bg-circuit", "source=" + source, "dur_ms=" + durMs, "tileWidth=" + sourceSize.width, "tileHeight=" + sourceSize.height);
-                        backgroundTexture._startupTraceLoadStartedAt = 0;
-                    } else if (status === Image.Error) {
-                        const durMs = backgroundTexture._startupTraceLoadStartedAt > 0 ? Math.max(0, Date.now() - backgroundTexture._startupTraceLoadStartedAt) : 0;
-                        root._startupTrace("startup/qml resource load error", "coverKey=background/bg-circuit", "source=" + source, "dur_ms=" + durMs);
-                        backgroundTexture._startupTraceLoadStartedAt = 0;
-                    }
-                }
-            }
+            // The background is the flat `bgDeep` colour above. A tiled
+            // texture used to sit here (upstream's circuit traces); if a
+            // Degauss texture arrives later it goes back in the same spot:
+            // a small seamlessly-tileable square PNG (upstream's was
+            // 304×304), pattern baked at low alpha over transparency,
+            // `Image.Tile` + `smooth: false`, full-bleed margins matching
+            // bgDeep, synchronous load so the first frame never flashes.
 
             // ── Top header (logo + status row + status pill) ───────────────────────────
 

@@ -9,6 +9,20 @@ are factual statements of compatibility. The code remains under the upstream
 PolyForm Noncommercial 1.0.0 license with all upstream copyright notices
 preserved.
 
+## Brand palette
+
+The UI is deliberately monochrome (each grey preserves the relative
+luminance of the upstream colour it replaced), so the wordmark's three
+colours are the only chroma available and read as highlights wherever
+they appear. Contrast ratios against the theme surfaces, for choosing
+where each may carry text versus purely graphic accents:
+
+| Colour | Hex | Dark panels / cards | CRT-light panels / cards | Safe uses |
+|---|---|---|---|---|
+| Yellow | `#FFCD09` | 11.2:1 / 10.3:1 | 7.6:1 / 6.0:1 | Anything, both themes, including small text |
+| Teal | `#03A49D` | 5.5:1 / 5.0:1 | 3.7:1 / 2.9:1 | Text on dark; graphic accents (rings, bars, badges) on CRT-light |
+| Red | `#FE2E1D` | 4.5:1 / 4.2:1 | 3.0:1 / 2.4:1 | Text on dark (borderline); graphic accents on CRT-light |
+
 ## Build
 
 Start with [docs/building.md](docs/building.md). It covers the packages you
