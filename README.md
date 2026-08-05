@@ -5,7 +5,7 @@ Degauss is a speed-first fork of
 maintained by Giancarlo Erra (tracking as quickly as possible every new
 release of [Zaparoo Core](https://zaparoo.org) and
 [Zaparoo Frontend](https://github.com/ZaparooProject/zaparoo-frontend)).
-On top of the upstream frontend it adds:
+It features:
 
 - The direct-read speed stack below.
 - Favorites as a full view: the complete set loads at once, with sort
@@ -20,7 +20,7 @@ On top of the upstream frontend it adds:
 - Jump-to-letter, computed locally the moment a folder is fully
   loaded.
 
-**The speed philosophy: read locally, ask nobody.** Everything the
+**The speed philosophy: read locally.** Everything the
 interface shows is read directly from the local media database the
 moment you ask for it, instead of being paged over RPC round trips.
 Folder listings, cover art, favorites, play history, detail metadata,
