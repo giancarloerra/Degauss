@@ -26,6 +26,11 @@ MediaListScreen {
 
     readonly property bool _portraitNonCrtList: !Theme.crtNativePath && Browse.Settings.current_orientation !== "horizontal"
     readonly property int _listPageSize: games._portraitNonCrtList ? 16 : 10
+    // How many list pages before the loaded edge `_prefetchListTail`
+    // starts a fetch. The background fill below does the heavy lifting;
+    // this only covers the gap when the user is outrunning it and the
+    // next fill tick has not fired yet.
+    readonly property int _listPrefetchPages: 5
     readonly property bool _tateOrientation: Browse.Settings.current_orientation !== "horizontal"
     readonly property var _gridShape: Sizing.gamesGridShape(games._gridViewportWidth, games._gridViewportHeight)
     readonly property int _gridColumns: games._gridShape.columns
@@ -138,7 +143,11 @@ MediaListScreen {
     topStripRightTextProvider: () => {
         if (!games._listLayout)
             return "";
-        if (Browse.GamesModel.loading_more)
+        // The background fill keeps `loading_more` true for most of a
+        // large folder's first seconds, so the banner only shows when
+        // the user is actually near the loaded edge waiting on rows;
+        // everywhere else the position readout keeps priority.
+        if (Browse.GamesModel.loading_more && games.gamesGrid.currentIndex >= games.gamesGrid.itemCount - games._browsePageSize)
             return qsTr("Loading more…");
         if (games.gamesGrid.itemCount <= 0)
             return "";
@@ -311,8 +320,33 @@ MediaListScreen {
             return;
         const count = games.gamesGrid.itemCount;
         const knownTotal = Browse.GamesModel.total_dirs + Browse.GamesModel.total_files;
-        if (index >= count - games._listPageSize && games._listHasMore(count, knownTotal))
+        if (index >= count - games._listPageSize * games._listPrefetchPages && games._listHasMore(count, knownTotal))
             Browse.GamesModel.fetch_more();
+    }
+
+    // Background folder fill. The paged model used to fetch only on
+    // demand, so paging raced a media.browse round trip and lost
+    // routinely ("Loading more…" at the loaded edge). Instead, once a
+    // folder's first page is up, keep pulling gentle chunks until the
+    // whole folder is local. The repeat interval paces Core so other
+    // requests interleave between chunks; a tick during an in-flight
+    // fetch is a no-op (`fetch_more` debounces on `loading_more`) and
+    // the next tick resumes. Leaving the screen stops the timer via
+    // `active`; switching folders re-aims it (`has_next_page` resets
+    // with the new browse, and stale responses die on the model's
+    // browse generation counter).
+    Timer {
+        id: backgroundFolderFill
+        interval: 200
+        repeat: true
+        // List layout only: grid delegates are not suspended, so a
+        // background append there would materialize delegate cells the
+        // user never asked for; grid paging keeps its own look-ahead.
+        running: games.active && games._listLayout && !Browse.GamesModel.loading && Browse.GamesModel.has_next_page
+        onTriggered: {
+            if (!Browse.GamesModel.loading_more && Browse.GamesModel.has_next_page)
+                Browse.GamesModel.fetch_more();
+        }
     }
 
     // Page jump (L/R shoulder buttons). Wraps in both directions; same

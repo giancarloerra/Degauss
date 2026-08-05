@@ -31,6 +31,7 @@ Item {
     property alias releasePulse: browseList.releasePulse
     property alias screenSettling: browseList.screenSettling
     property alias focusReady: browseList.focusReady
+    property alias rapidRenderMode: browseList.rapidRenderMode
     property alias detailCanPreviousImage: detailPane.canPreviousImage
     property alias detailCanNextImage: detailPane.canNextImage
     property alias detailReserveImageNav: detailPane.reserveImageNav

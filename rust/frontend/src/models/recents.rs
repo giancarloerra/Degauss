@@ -345,12 +345,35 @@ fn page_snapshot(result: &MediaHistoryResult) -> PageSnapshot {
     )
 }
 
-fn apply_state(
-    mut model: Pin<&mut ffi::RecentsModel>,
-    (data, err): (Option<PageSnapshot>, String),
-) {
+/// Post-Ready pagination: warm page 2 over the RPC. Reached only when
+/// the direct read could not answer (or the layer is disabled), so the
+/// paged chain must continue exactly as it always did. `fetch_more` is
+/// itself guarded by `has_next_page` and `loading_more`.
+fn finish_ready_pagination(mut model: Pin<&mut ffi::RecentsModel>, has_next_page: bool) {
+    if has_next_page && !model.cover_requests_paused {
+        model.as_mut().fetch_more();
+    }
+}
+
+fn apply_state(model: Pin<&mut ffi::RecentsModel>, (data, err): (Option<PageSnapshot>, String)) {
+    if let Some(snapshot) = data {
+        // Direct-first: the store's Ready is the trigger and the local
+        // read is the content; the RPC page it delivered is only
+        // applied when the local read cannot answer.
+        if crate::media_history_db::enabled() {
+            spawn_direct_ready(model, snapshot);
+        } else {
+            apply_ready_page(model, snapshot);
+        }
+    } else {
+        apply_pending_or_error(model, &err);
+    }
+}
+
+fn apply_ready_page(mut model: Pin<&mut ffi::RecentsModel>, snapshot: PageSnapshot) {
     let apply_started = Instant::now();
-    if let Some((entries, has_next_page, next_cursor)) = data {
+    {
+        let (entries, has_next_page, next_cursor) = snapshot;
         if let Some(timing) = model.as_mut().rust_mut().nav_timing.as_mut() {
             timing.mark_request_done();
         }
@@ -410,13 +433,131 @@ fn apply_state(
         if model.loading_more {
             model.as_mut().set_loading_more(false);
         }
-        // Look-ahead prefetch: warm page 2 so the first scroll past the
-        // initial page doesn't surface a "Loading more…" cue. `fetch_more`
-        // is itself guarded by `has_next_page` and `loading_more`.
-        if has_next_page && !model.cover_requests_paused {
-            model.as_mut().fetch_more();
+        finish_ready_pagination(model.as_mut(), has_next_page);
+    }
+}
+
+/// Direct-first Ready handling: bump the chain, read the complete
+/// deduplicated local history, and paint it; the RPC page in
+/// `snapshot` applies only when the local read cannot answer.
+fn spawn_direct_ready(mut model: Pin<&mut ffi::RecentsModel>, snapshot: PageSnapshot) {
+    model.as_mut().rust_mut().seq.fetch_add(1, Ordering::SeqCst);
+    let seq = model.rust().seq.clone();
+    let ticket = seq.load(Ordering::SeqCst);
+    let qt_thread = model.qt_thread();
+    global_handle().spawn(async move {
+        let cancel_seq = seq.clone();
+        let direct = tokio::task::spawn_blocking(move || {
+            crate::media_history_db::history(&|| cancel_seq.load(Ordering::SeqCst) != ticket)
+        })
+        .await
+        .ok()
+        .flatten();
+        let _ = qt_thread.queue(move |model| {
+            if seq.load(Ordering::SeqCst) != ticket {
+                return;
+            }
+            match direct {
+                Some(entries) => apply_direct_full_paint(model, entries),
+                None => apply_ready_page(model, snapshot),
+            }
+        });
+    });
+}
+
+/// Early paint: fired from the Pending branch so a cold entry shows the
+/// complete local history in tens of milliseconds instead of waiting
+/// for the store's first network Ready, which then re-confirms it.
+fn spawn_direct_early_paint(model: &Pin<&mut ffi::RecentsModel>) {
+    if !crate::media_history_db::enabled() || model.count > 0 {
+        return;
+    }
+    let seq = model.rust().seq.clone();
+    let ticket = seq.load(Ordering::SeqCst);
+    let qt_thread = model.qt_thread();
+    global_handle().spawn(async move {
+        let cancel_seq = seq.clone();
+        let direct = tokio::task::spawn_blocking(move || {
+            crate::media_history_db::history(&|| cancel_seq.load(Ordering::SeqCst) != ticket)
+        })
+        .await
+        .ok()
+        .flatten();
+        let Some(entries) = direct else {
+            return;
+        };
+        let _ = qt_thread.queue(move |model| {
+            if model.rust().seq.load(Ordering::SeqCst) != ticket {
+                return;
+            }
+            apply_direct_full_paint(model, entries);
+        });
+    });
+}
+
+/// Land the complete local history as a first-class paint: the direct
+/// counterpart of `apply_ready_page` with terminal pagination, serving
+/// both the cold entry and every store-triggered refresh.
+fn apply_direct_full_paint(
+    mut model: Pin<&mut ffi::RecentsModel>,
+    entries: Vec<MediaHistoryEntry>,
+) {
+    let apply_started = Instant::now();
+    if model.nav_timing.is_none() {
+        model.as_mut().rust_mut().nav_timing = Some(NavTiming::new("direct"));
+    }
+    if let Some(timing) = model.as_mut().rust_mut().nav_timing.as_mut() {
+        timing.set_source("direct");
+        timing.mark_request_done();
+    }
+    model.as_mut().rust_mut().history_requested = true;
+    model.as_mut().rust_mut().history_fetching = false;
+    model.as_mut().rust_mut().history_subscription = None;
+    model.as_mut().ensure_cover_subscription();
+    if !model.cover_requests_paused {
+        enqueue_recents_covers(&entries);
+    }
+    let count = i32::try_from(entries.len()).unwrap_or(i32::MAX);
+    clear_current_detail_state(model.as_mut());
+    model.as_mut().begin_reset_model();
+    {
+        let mut rust = model.as_mut().rust_mut();
+        rust.entries = entries;
+        rust.count = count;
+        rust.next_cursor = None;
+    }
+    model.as_mut().end_reset_model();
+    model.as_mut().count_changed();
+    sync_resume_state(model.as_mut());
+    if let Some(timing) = model.as_mut().rust_mut().nav_timing.as_mut() {
+        timing.mark_apply_done();
+    }
+    debug!(
+        apply_ms = apply_started.elapsed().as_millis(),
+        "recents: apply_direct_full_paint timing",
+    );
+    if model.has_next_page {
+        model.as_mut().set_has_next_page(false);
+    }
+    if model.cover_requests_paused {
+        disarm_cover_gate(model.as_mut());
+        if model.loading {
+            model.as_mut().set_loading(false);
         }
-    } else if err.is_empty() {
+        finish_nav_timing(model.as_mut(), "covers-paused", 0);
+    } else {
+        arm_cover_gate(model.as_mut());
+    }
+    if model.loading_more {
+        model.as_mut().set_loading_more(false);
+    }
+    if !model.error_message.is_empty() {
+        model.as_mut().set_error_message(QString::default());
+    }
+}
+
+fn apply_pending_or_error(mut model: Pin<&mut ffi::RecentsModel>, err: &str) {
+    if err.is_empty() {
         info!(
             count = model.count,
             "recents-diag: apply_state Pending branch (loading, entries untouched)"
@@ -443,9 +584,10 @@ fn apply_state(
         if model.has_next_page {
             model.as_mut().set_has_next_page(false);
         }
+        spawn_direct_early_paint(&model);
     } else {
         info!(
-            error = err.as_str(),
+            error = err,
             count = model.count,
             "recents-diag: apply_state Errored branch (history_requested reset, entries untouched)"
         );
@@ -469,7 +611,7 @@ fn apply_state(
             model.as_mut().set_has_next_page(false);
         }
     }
-    let qerr = QString::from(err.as_str());
+    let qerr = QString::from(err);
     if model.error_message != qerr {
         model.as_mut().set_error_message(qerr);
     }
@@ -928,10 +1070,11 @@ impl ffi::RecentsModel {
         let store = global_store();
         let store_key = meta_key.clone();
         global_handle().spawn(async move {
-            let result = store
-                .client()
-                .media_meta(MediaMetaParams::for_media(system, path.clone()))
-                .await;
+            let params = MediaMetaParams::for_media(system, path.clone());
+            let result = match crate::media_meta_db::media_meta_async(params.clone()).await {
+                Some(media) => Ok(zaparoo_core::media_types::MediaMetaResult { media }),
+                None => store.client().media_meta(params).await,
+            };
             // Cache the outcome (positive or negative) regardless of whether
             // this callback is still current, so a later revisit is instant.
             match &result {

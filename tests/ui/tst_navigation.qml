@@ -10,6 +10,7 @@ import QtQuick
 import QtTest
 import Zaparoo.App
 import Zaparoo.Browse as Browse
+import Zaparoo.Screens
 import Zaparoo.Theme
 
 // Exercises the hub ↔ systems ↔ games navigation state machine defined
@@ -68,6 +69,12 @@ TestCase {
         // next test if we didn't reset it here.
         main._stopRepeat();
         main._resetRapidNavigation();
+        main._stopPageTurbo();
+        // Singleton state survives across TestCases in this binary; a
+        // modal left open by an earlier suite would trip the turbo's
+        // input gate and fail the paging tests for reasons unrelated
+        // to navigation.
+        ScreenManager.modalStack = [];
     }
 
     function cleanup(): void {
@@ -487,15 +494,41 @@ TestCase {
         compare(main._repeatPending, true, "Re-arm restarts the initial-delay timer");
     }
 
-    function test_rapid_navigation_taps_activate_on_second_press(): void {
+    function test_rapid_navigation_taps_activate_at_threshold(): void {
+        // A quick skip (two-to-four taps) must never gate the detail
+        // cover; only a sustained burst reaching the threshold engages
+        // rapid mode.
         main._noteRapidNavigationAction("down", false);
         compare(main.rapidNavigationAction, "down", "rapid action tracks latest rapid input even before active mode");
-        compare(main.rapidNavigationActive, false, "single isolated press should not enter rapid mode");
+        for (var i = 2; i < main._rapidNavigationTapThreshold; i++) {
+            main._noteRapidNavigationAction("down", false);
+            compare(main.rapidNavigationActive, false,
+                    "press " + i + " of a burst below the threshold must not enter rapid mode");
+        }
         main._noteRapidNavigationAction("down", false);
-        compare(main.rapidNavigationActive, true, "second press inside quiet window enters rapid mode");
-        wait(main._rapidNavigationQuietMs + 40);
+        compare(main.rapidNavigationActive, true, "threshold press enters rapid mode");
+        // Without an established QML hold-repeat the quiet timer runs at
+        // the chain interval, so the exit wait keys off that value.
+        wait(main._rapidNavigationChainQuietMs + 40);
         compare(main.rapidNavigationActive, false, "rapid mode clears after quiet window");
         compare(main.rapidNavigationAction, "", "quiet reset clears rapid action");
+    }
+
+    function test_rapid_navigation_chains_discrete_repeats(): void {
+        // Gamepad input stacks deliver a held dpad as separate
+        // press/release pairs at their own cadence. Slower than the
+        // held-key quiet window, those repeats must still chain into one
+        // burst through the wider chain window, or rapid mode never
+        // engages during a pad hold and cover work churns through it.
+        for (var i = 1; i < main._rapidNavigationTapThreshold; i++) {
+            main._noteRapidNavigationAction("page_next", false);
+            compare(main.rapidNavigationActive, false,
+                    "press " + i + " below the threshold must not enter rapid mode");
+            wait(150);
+        }
+        main._noteRapidNavigationAction("page_next", false);
+        compare(main.rapidNavigationActive, true,
+                "spaced discrete repeats chain to the threshold and enter rapid mode");
     }
 
     function test_rapid_navigation_ignores_non_rapid_action(): void {
@@ -516,8 +549,69 @@ TestCase {
         compare(main.rapidNavigationActive, true, "held page action should enter rapid mode on first repeat tick");
         compare(main.rapidNavigationIndicatorActive, true, "held page action should show rapid indicator on first repeat tick");
         main._stopRepeat();
-        wait(main._rapidNavigationQuietMs + 40);
+        // The forced tick note is followed by the action router's own
+        // non-forced note for the same action, which re-arms the wider
+        // chain window; only from the second tick onward (repeat tick
+        // established) does the tight window stick. A single-tick hold
+        // therefore exits on the chain window.
+        wait(main._rapidNavigationChainQuietMs + 40);
         compare(main.rapidNavigationActive, false);
+    }
+
+    // Page turbo. The pad bridge delivers held page buttons as discrete
+    // press/release pairs, so the third chained press hands paging to a
+    // self-driven tick (see Main.qml's _notePageTurboPress). handleKey
+    // is called directly, which bypasses the Keys-level duplicate
+    // guard, so back-to-back presses chain without waits. Each
+    // simulated press is followed by its release, matching the bridge's
+    // real pair shape, so the hold-repeat machinery disarms exactly as
+    // it does on device.
+    function _bridgePagePress(key: int): void {
+        main.handleKey(key);
+        main.handleKeyRelease(key);
+    }
+
+    function test_page_turbo_engages_on_third_chained_press(): void {
+        _bridgePagePress(Qt.Key_PageDown);
+        compare(main._pageTurboChainCount, 1);
+        verify(!main.pageTurboRunning, "one press must not start turbo");
+        _bridgePagePress(Qt.Key_PageDown);
+        verify(!main.pageTurboRunning, "two presses must not start turbo");
+        _bridgePagePress(Qt.Key_PageDown);
+        verify(main.pageTurboRunning, "third chained press should start turbo");
+        compare(main.rapidNavigationActive, true, "turbo forces rapid mode so cover work pauses");
+        compare(main._heldAction, "", "hold-repeat must be disarmed while turbo drives");
+    }
+
+    function test_page_turbo_stops_on_other_action(): void {
+        _bridgePagePress(Qt.Key_PageDown);
+        _bridgePagePress(Qt.Key_PageDown);
+        _bridgePagePress(Qt.Key_PageDown);
+        verify(main.pageTurboRunning);
+        main.handleKey(Qt.Key_Down);
+        verify(!main.pageTurboRunning, "a non-page action must stop turbo immediately");
+    }
+
+    function test_page_turbo_direction_flip_stops_and_pages_normally(): void {
+        _bridgePagePress(Qt.Key_PageDown);
+        _bridgePagePress(Qt.Key_PageDown);
+        _bridgePagePress(Qt.Key_PageDown);
+        verify(main.pageTurboRunning);
+        _bridgePagePress(Qt.Key_PageUp);
+        verify(!main.pageTurboRunning, "flipping direction must stop the old turbo");
+        compare(main._pageTurboChainCount, 1, "the flip press starts a fresh chain");
+    }
+
+    // Gated input must not feed turbo: presses swallowed by an
+    // in-flight transition would otherwise start a tick that pages the
+    // destination screen once it becomes ready.
+    function test_page_turbo_does_not_engage_while_transition_pending(): void {
+        main.pendingTransition = "games";
+        _bridgePagePress(Qt.Key_PageDown);
+        _bridgePagePress(Qt.Key_PageDown);
+        _bridgePagePress(Qt.Key_PageDown);
+        verify(!main.pageTurboRunning, "gated presses must not start turbo");
+        main.pendingTransition = "";
     }
 
     // Duplicate-input guard. The Keys.onPressed handler collapses a

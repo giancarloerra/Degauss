@@ -45,7 +45,16 @@ Item {
     required property Component delegate
 
     property int currentIndex: 0
-    readonly property int itemCount: itemRepeater.count
+    // List layout never renders the grid, but the Repeater still
+    // materializes one cell per model row (five role reads each) —
+    // measured at roughly three milliseconds per row on the DE10, which
+    // turned every large-folder reset or insert into seconds of
+    // UI-thread stall. Suspending swaps the Repeater's model out and
+    // serves `itemCount` straight from the model's own count property,
+    // so the list cursor, page math, and jump logic keep working with
+    // zero delegates alive.
+    property bool suspendDelegates: false
+    readonly property int itemCount: root.suspendDelegates ? (root.model && root.model.count !== undefined ? root.model.count : 0) : itemRepeater.count
 
     // Whether this section currently owns user focus. Tile uses this to
     // gate the selection card so only one section shows the focus cue
@@ -354,7 +363,7 @@ Item {
     // `hasMorePages` watcher so a final empty append still resolves
     // a chain. Waiting on the exact target index (not just `pageCount`
     // catching up) avoids an early commit while the Repeater is mid-
-    // materialisation: the target page may report `pageCount` reached
+    // materialization: the target page may report `pageCount` reached
     // while the row/col slot itself isn't realised yet.
     function _commitPendingTarget(): void {
         // Jump-to-index: land on the exact absolute target. Pages stay
@@ -618,7 +627,7 @@ Item {
         Repeater {
             id: itemRepeater
 
-            model: root.model
+            model: root.suspendDelegates ? null : root.model
 
             Item {
                 id: cellItem
@@ -643,7 +652,7 @@ Item {
                 readonly property int cellCol: cellLocal % root.columns
                 readonly property bool isSelected: index === root.currentIndex
 
-                // Cover-decode gate AND delegate-materialisation gate.
+                // Cover-decode gate AND delegate-materialization gate.
                 // PagedGrid's Repeater creates one cellItem per model
                 // row at construction. Two-tier gate, both anchored on
                 // distance from `root.currentPage`:
@@ -656,7 +665,7 @@ Item {
                 //     consume already-warmed bytes early enough.
                 //   - retention range (±5 pages): cells inside this
                 //     radius keep their TileLoader.active=true so the
-                //     Tile delegate stays materialised, AND cells that
+                //     Tile delegate stays materialized, AND cells that
                 //     have already requested keep their coverKey set
                 //     so Tile's Image keeps the decoded texture
                 //     referenced. The active gate is what prevents
@@ -763,7 +772,7 @@ Item {
 
                     anchors.fill: parent
                     sourceComponent: root.delegate
-                    // Bound delegate materialisation to the retention
+                    // Bound delegate materialization to the retention
                     // window. Cells outside +/-5 pages keep their
                     // cellItem (Repeater contract - it owns one item
                     // per model row) but don't construct a Tile, so

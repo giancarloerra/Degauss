@@ -35,6 +35,9 @@ insta           = { version = "1", features = ["yaml"] }
 tempfile        = "3"
 base64          = "0.22"
 semver          = "1"
+# Bundled so the MiSTer cross-build needs no system sqlite; used only by
+# the read-only media.db art lookup on device.
+rusqlite        = { version = "0.32", features = ["bundled"] }
 
 [workspace.lints.rust]
 unsafe_op_in_unsafe_fn        = "deny"

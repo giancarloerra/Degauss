@@ -43,6 +43,7 @@ use tokio::sync::broadcast::error::RecvError;
 use tokio::task::JoinHandle;
 use tracing::{info, warn};
 use zaparoo_core::client::ClientError;
+use zaparoo_core::endpoints::catalog::CatalogEndpoint;
 use zaparoo_core::endpoints::media_favorites::{FavoritesArgs, MediaFavoritesEndpoint};
 use zaparoo_core::endpoints::media_tags_update::MediaTagsUpdateMutation;
 use zaparoo_core::endpoints::readers_write::ReadersWriteMutation;
@@ -435,12 +436,27 @@ fn project(status: &ResourceStatus<MediaSearchResult>) -> (Option<PageSnapshot>,
     }
 }
 
-fn apply_state(
-    mut model: Pin<&mut ffi::FavoritesModel>,
-    (data, err): (Option<PageSnapshot>, String),
-) {
+fn apply_state(model: Pin<&mut ffi::FavoritesModel>, (data, err): (Option<PageSnapshot>, String)) {
+    if let Some(snapshot) = data {
+        // Direct-first: the store's Ready is the trigger and the local
+        // read is the content; the RPC page it delivered is only
+        // applied when the direct read cannot answer. This keeps every
+        // freshness path (heart toggles, reconnects) intact while the
+        // painted list always comes from the complete local set.
+        if crate::media_favorites_db::enabled() {
+            spawn_direct_ready(model, snapshot);
+        } else {
+            apply_ready_page(model, snapshot);
+        }
+    } else {
+        apply_pending_or_error(model, &err);
+    }
+}
+
+fn apply_ready_page(mut model: Pin<&mut ffi::FavoritesModel>, snapshot: PageSnapshot) {
     let apply_started = Instant::now();
-    if let Some((entries, has_next_page, next_cursor)) = data {
+    {
+        let (entries, has_next_page, next_cursor) = snapshot;
         if model.nav_timing.is_none() {
             model.as_mut().rust_mut().nav_timing = Some(NavTiming::new("cache"));
         }
@@ -503,17 +519,126 @@ fn apply_state(
         if model.loading_more {
             model.as_mut().set_loading_more(false);
         }
-        // Look-ahead prefetch: warm page 2 so the first scroll past the
-        // initial page doesn't surface a "Loading more…" cue. `fetch_more`
-        // is itself guarded by `has_next_page` and `loading_more`. Skipped
-        // when a full load is about to run, which fetches everything anyway.
-        if has_next_page && !model.cover_requests_paused && !needs_full_load {
-            model.as_mut().fetch_more();
+        finish_ready_pagination(model.as_mut(), has_next_page, needs_full_load);
+    }
+}
+
+/// Direct-first Ready handling: bump the chain, read the complete
+/// local set (with catalog enrichment), and paint it; the RPC page in
+/// `snapshot` applies only when the local read cannot answer.
+fn spawn_direct_ready(mut model: Pin<&mut ffi::FavoritesModel>, snapshot: PageSnapshot) {
+    // The bump invalidates in-flight cursor fetches exactly like a page
+    // apply would; the callback ticket rides the post-bump value.
+    model.as_mut().rust_mut().seq.fetch_add(1, Ordering::SeqCst);
+    let seq = model.rust().seq.clone();
+    let ticket = seq.load(Ordering::SeqCst);
+    let qt_thread = model.qt_thread();
+    global_handle().spawn(async move {
+        let cancel_seq = seq.clone();
+        let direct = tokio::task::spawn_blocking(move || {
+            crate::media_favorites_db::favorites(&|| cancel_seq.load(Ordering::SeqCst) != ticket)
+        })
+        .await
+        .ok()
+        .flatten();
+        let _ = qt_thread.queue(move |model| {
+            if seq.load(Ordering::SeqCst) != ticket {
+                return;
+            }
+            match direct.and_then(enrich_from_catalog) {
+                Some(entries) => apply_direct_full_paint(model, entries),
+                None => apply_ready_page(model, snapshot),
+            }
+        });
+    });
+}
+
+/// Early paint: fired from the Pending branch so a cold entry shows the
+/// complete local set in tens of milliseconds instead of waiting for
+/// the store's first network Ready, which then simply re-confirms it.
+fn spawn_direct_early_paint(model: &Pin<&mut ffi::FavoritesModel>) {
+    if !crate::media_favorites_db::enabled() || model.count > 0 || model.full_loaded {
+        return;
+    }
+    let seq = model.rust().seq.clone();
+    let ticket = seq.load(Ordering::SeqCst);
+    let qt_thread = model.qt_thread();
+    global_handle().spawn(async move {
+        let cancel_seq = seq.clone();
+        let direct = tokio::task::spawn_blocking(move || {
+            crate::media_favorites_db::favorites(&|| cancel_seq.load(Ordering::SeqCst) != ticket)
+        })
+        .await
+        .ok()
+        .flatten();
+        let Some(entries) = direct.and_then(enrich_from_catalog) else {
+            return;
+        };
+        let _ = qt_thread.queue(move |model| {
+            if model.rust().seq.load(Ordering::SeqCst) != ticket {
+                return;
+            }
+            apply_direct_full_paint(model, entries);
+        });
+    });
+}
+
+/// Land the complete local set as a first-class paint: the direct
+/// counterpart of `apply_ready_page` plus terminal full-load state, so
+/// it can serve both the cold entry and every store-triggered refresh.
+fn apply_direct_full_paint(mut model: Pin<&mut ffi::FavoritesModel>, entries: Vec<MediaItem>) {
+    let apply_started = Instant::now();
+    if model.nav_timing.is_none() {
+        model.as_mut().rust_mut().nav_timing = Some(NavTiming::new("direct"));
+    }
+    if let Some(timing) = model.as_mut().rust_mut().nav_timing.as_mut() {
+        timing.set_source("direct");
+        timing.mark_request_done();
+    }
+    model.as_mut().ensure_cover_subscription();
+    if !model.cover_requests_paused {
+        enqueue_favorites_covers(&entries);
+    }
+    clear_current_detail_state(model.as_mut());
+    {
+        let mut rust = model.as_mut().rust_mut();
+        rust.entries = entries;
+        rust.next_cursor = None;
+        rust.random_pending = false;
+    }
+    model.as_mut().set_full_loading(false);
+    model.as_mut().set_full_loaded(true);
+    model.as_mut().rebuild_view();
+    if let Some(timing) = model.as_mut().rust_mut().nav_timing.as_mut() {
+        timing.mark_apply_done();
+    }
+    info!(
+        apply_ms = apply_started.elapsed().as_millis(),
+        "favorites: apply_direct_full_paint timing",
+    );
+    if model.has_next_page {
+        model.as_mut().set_has_next_page(false);
+    }
+    if model.cover_requests_paused {
+        disarm_cover_gate(model.as_mut());
+        if model.loading {
+            model.as_mut().set_loading(false);
         }
-        if needs_full_load {
-            model.as_mut().ensure_full_load();
-        }
-    } else if err.is_empty() {
+        finish_nav_timing(model.as_mut(), "covers-paused", 0);
+    } else {
+        arm_cover_gate(model.as_mut());
+    }
+    if model.loading_more {
+        model.as_mut().set_loading_more(false);
+    }
+    if !model.error_message.is_empty() {
+        model.as_mut().set_error_message(QString::default());
+    }
+    model.as_mut().launch_pending_random();
+}
+
+fn apply_pending_or_error(mut model: Pin<&mut ffi::FavoritesModel>, err: &str) {
+    if err.is_empty() {
         if model.nav_timing.is_none() {
             model.as_mut().rust_mut().nav_timing = Some(NavTiming::new("network"));
         } else if let Some(timing) = model.as_mut().rust_mut().nav_timing.as_mut() {
@@ -548,6 +673,7 @@ fn apply_state(
         if model.has_next_page {
             model.as_mut().set_has_next_page(false);
         }
+        spawn_direct_early_paint(&model);
     } else {
         // Same disarm as the Pending branch — an Errored transition
         // doesn't reset entries, so a callback queued during the prior
@@ -576,10 +702,81 @@ fn apply_state(
             model.as_mut().set_has_next_page(false);
         }
     }
-    let qerr = QString::from(err.as_str());
+    let qerr = QString::from(err);
     if model.error_message != qerr {
         model.as_mut().set_error_message(qerr);
     }
+}
+
+/// Fill `system.category` (and any missing `system.name`) from the
+/// store's catalog snapshot. Returns `None` when the catalog is not
+/// Ready yet — the RPC full load carries its own enrichment, so the
+/// caller falls back rather than serving entries the scope filter
+/// cannot match.
+fn enrich_from_catalog(mut entries: Vec<MediaItem>) -> Option<Vec<MediaItem>> {
+    let resource = global_store().subscribe::<CatalogEndpoint>(());
+    let rx = resource.subscribe();
+    let status = rx.borrow();
+    let ResourceStatus::Ready(catalog) = &*status else {
+        return None;
+    };
+    let by_id: std::collections::HashMap<&str, (&str, &str)> = catalog
+        .systems
+        .iter()
+        .map(|s| (s.id.as_str(), (s.name.as_str(), s.category.as_str())))
+        .collect();
+    for entry in &mut entries {
+        if let Some((name, category)) = by_id.get(entry.system.id.as_str()) {
+            entry.system.category = (*category).to_string();
+            if entry.system.name.is_empty() {
+                entry.system.name = (*name).to_string();
+            }
+        }
+    }
+    Some(entries)
+}
+
+/// Post-Ready pagination: warm page 2 over the RPC, or run the full
+/// load when the sort or filter needs the whole set. Reached only when
+/// the direct read could not answer (or the layer is disabled), so the
+/// paged chain must continue exactly as it always did; the always-full
+/// behavior is delivered by the direct-first paint, not from here.
+/// `fetch_more` is itself guarded by `has_next_page` and
+/// `loading_more`.
+fn finish_ready_pagination(
+    mut model: Pin<&mut ffi::FavoritesModel>,
+    has_next_page: bool,
+    needs_full_load: bool,
+) {
+    if has_next_page && !model.cover_requests_paused && !needs_full_load {
+        model.as_mut().fetch_more();
+    }
+    if needs_full_load {
+        model.as_mut().ensure_full_load();
+    }
+}
+
+/// Land the direct full favorite set: the local-read counterpart of the
+/// RPC chain's terminal chunk. Entries replace wholesale (the local set
+/// is complete and self-consistent), the cursor chain ends, and the
+/// same finalize contract runs: view rebuild, `full_loaded`, and any
+/// queued random press.
+fn apply_direct_favorites(mut model: Pin<&mut ffi::FavoritesModel>, entries: Vec<MediaItem>) {
+    model.as_mut().set_full_loading(false);
+    if model.loading_more {
+        model.as_mut().set_loading_more(false);
+    }
+    {
+        let mut rust = model.as_mut().rust_mut();
+        rust.entries = entries;
+        rust.next_cursor = None;
+    }
+    if model.has_next_page {
+        model.as_mut().set_has_next_page(false);
+    }
+    model.as_mut().rebuild_view();
+    model.as_mut().set_full_loaded(true);
+    model.as_mut().launch_pending_random();
 }
 
 impl ffi::FavoritesModel {
@@ -773,6 +970,53 @@ impl ffi::FavoritesModel {
             return;
         }
         self.as_mut().set_full_loading(true);
+        // MiSTer fast path: the whole favorite set arrives from one
+        // local query (`media_favorites_db`) and upgrades the model in
+        // a single apply, replacing the chained RPC drain below. Any
+        // `None` falls through to that chain unchanged; the store's
+        // endpoint subscription remains the freshness signal either
+        // way, so favorite toggles keep refetching exactly as before.
+        if crate::media_favorites_db::enabled() {
+            let seq = self.rust().seq.clone();
+            let ticket = seq.load(Ordering::SeqCst);
+            self.as_mut().set_loading_more(true);
+            let qt_thread = self.qt_thread();
+            global_handle().spawn(async move {
+                let cancel_seq = seq.clone();
+                let direct = tokio::task::spawn_blocking(move || {
+                    crate::media_favorites_db::favorites(&|| {
+                        cancel_seq.load(Ordering::SeqCst) != ticket
+                    })
+                })
+                .await
+                .ok()
+                .flatten();
+                let _ = qt_thread.queue(move |model| {
+                    if seq.load(Ordering::SeqCst) != ticket {
+                        return;
+                    }
+                    // The scope filter matches on system category and the
+                    // filter modal labels on system name; categories are
+                    // Core catalog knowledge, not database rows, so the
+                    // direct set must be enriched from the catalog
+                    // snapshot before it can honestly replace the RPC
+                    // set. No Ready catalog, no direct upgrade.
+                    match direct.and_then(enrich_from_catalog) {
+                        Some(entries) => apply_direct_favorites(model, entries),
+                        None => model.start_full_load_rpc(),
+                    }
+                });
+            });
+            return;
+        }
+        self.start_full_load_rpc();
+    }
+
+    /// The RPC full-load chain: resume from the cursor and drain to the
+    /// end one `FULL_LOAD_SIZE` page at a time. Kept verbatim as the
+    /// fallback behind the direct read; `full_loading` is already true
+    /// when this runs.
+    fn start_full_load_rpc(mut self: Pin<&mut Self>) {
         // Share `seq` with the cursor chain so a fresh `apply_state` (screen
         // re-entry, favorite toggled elsewhere) invalidates this in flight.
         let seq = self.rust().seq.clone();
@@ -1252,10 +1496,11 @@ impl ffi::FavoritesModel {
         let store = global_store();
         let store_key = meta_key.clone();
         global_handle().spawn(async move {
-            let result = store
-                .client()
-                .media_meta(MediaMetaParams::for_media(system, path.clone()))
-                .await;
+            let params = MediaMetaParams::for_media(system, path.clone());
+            let result = match crate::media_meta_db::media_meta_async(params.clone()).await {
+                Some(media) => Ok(zaparoo_core::media_types::MediaMetaResult { media }),
+                None => store.client().media_meta(params).await,
+            };
             // Cache the outcome (positive or negative) regardless of whether
             // this callback is still current, so a later revisit is instant.
             match &result {

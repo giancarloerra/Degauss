@@ -74,6 +74,7 @@ pub struct AppStatusRust {
     /// `MIN_CORE_VERSION` as a `QString`, exposed so the warning message has
     /// a single source of truth for the required version.
     min_core_version: QString,
+    direct_meta: bool,
 }
 
 impl Default for AppStatusRust {
@@ -86,6 +87,7 @@ impl Default for AppStatusRust {
             core_version_supported: true,
             core_version_checked: false,
             min_core_version: QString::from(MIN_CORE_VERSION),
+            direct_meta: false,
         }
     }
 }
@@ -129,6 +131,9 @@ pub mod ffi {
         #[qproperty(bool, core_version_supported)]
         #[qproperty(bool, core_version_checked)]
         #[qproperty(QString, min_core_version)]
+        /// True when the direct-database metadata layer initialized;
+        /// QML shortens the detail settle debounce accordingly.
+        #[qproperty(bool, direct_meta)]
         type AppStatus = super::AppStatusRust;
     }
 
@@ -140,6 +145,10 @@ impl Initialize for ffi::AppStatus {
     fn initialize(mut self: Pin<&mut Self>) {
         let started = std::time::Instant::now();
         crate::startup_trace("rust:model AppStatus init start");
+        // Seeded once: the layer's availability is decided at first
+        // touch and stable for the process lifetime.
+        let direct_meta = crate::media_meta_db::enabled();
+        self.as_mut().set_direct_meta(direct_meta);
         bind_catalog_status(self.as_mut());
         bind_link_state(self.as_mut());
         bind_core_version(self);

@@ -125,9 +125,14 @@ impl MediaMetaCache {
             let store = global_store();
             let cache = global_media_meta_cache();
             for (key, params) in to_fetch {
-                let meta = match store.client().media_meta(params).await {
-                    Ok(result) => Some(result.media),
-                    Err(_) => None,
+                // Direct database resolution first; the RPC remains the
+                // fallback for any None, mirroring the other read paths.
+                let meta = match crate::media_meta_db::media_meta_async(params.clone()).await {
+                    Some(media) => Some(media),
+                    None => match store.client().media_meta(params).await {
+                        Ok(result) => Some(result.media),
+                        Err(_) => None,
+                    },
                 };
                 cache.store(key, meta);
             }

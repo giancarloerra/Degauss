@@ -5,8 +5,13 @@
 #[macro_use]
 mod bind;
 pub mod image_overrides;
+mod media_art_db;
+mod media_browse_db;
+mod media_favorites_db;
+mod media_history_db;
 mod media_image_cache;
 mod media_meta_cache;
+mod media_meta_db;
 mod mister_runtime;
 mod models;
 pub mod system_logos;

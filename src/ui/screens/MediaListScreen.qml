@@ -440,6 +440,10 @@ Item {
     FocusedMediaDetailController {
         id: focusedDetail
 
+        // With direct-database metadata the fetch costs a millisecond,
+        // so the settle wait shrinks to a couple of frames — enough to
+        // coalesce a fast tap burst, no longer a visible pause.
+        debounceMs: Browse.AppStatus.direct_meta ? 40 : 220
         enabled: !root._gateHide && root._listLayout
         itemCount: mediaGrid.itemCount
         currentIndex: mediaGrid.currentIndex
@@ -470,6 +474,7 @@ Item {
     BrowseListDetailView {
         id: listCard
 
+        rapidRenderMode: root.detailRapidScrollActive
         visible: !root._gateHide && root._listLayout
         anchors.left: parent.left
         anchors.leftMargin: root._listLayoutProfile && root._listLayoutProfile.list ? root._listLayoutProfile.list.cardSideMargin : Sizing.pctW(5)
@@ -511,6 +516,15 @@ Item {
     }
 
     PagedGrid {
+        // Rapid paging crosses the default 2-page buffer faster than a
+        // media.browse refill can land; a deeper look-ahead starts the
+        // fetch while the user is still many pages from the loaded edge,
+        // so "Loading more" stops interrupting sustained paging.
+        loadAheadPages: root.detailRapidScrollActive ? 8 : 2
+        // The grid is invisible in list layout but stays the row/cursor
+        // authority; suspending its delegates removes the per-row
+        // materialization cost from every model reset and insert.
+        suspendDelegates: root._listLayout
         id: mediaGrid
 
         visible: !root._gateHide && !root._listLayout && root.renderGridLayout

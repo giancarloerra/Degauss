@@ -105,10 +105,11 @@ impl ffi::GameInfo {
         let qt_thread = self.qt_thread();
         let store = global_store();
         global_handle().spawn(async move {
-            let result = store
-                .client()
-                .media_meta(MediaMetaParams::for_media(system.clone(), path.clone()))
-                .await;
+            let params = MediaMetaParams::for_media(system.clone(), path.clone());
+            let result = match crate::media_meta_db::media_meta_async(params.clone()).await {
+                Some(media) => Ok(zaparoo_core::media_types::MediaMetaResult { media }),
+                None => store.client().media_meta(params).await,
+            };
             let _ = qt_thread.queue(move |mut model| {
                 if seq.load(Ordering::SeqCst) != ticket {
                     return;

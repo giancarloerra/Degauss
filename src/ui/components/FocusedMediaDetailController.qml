@@ -12,6 +12,9 @@ Item {
 
     property int itemCount: 0
     property int currentIndex: 0
+    // Sized for a Core round trip; when metadata is a local database
+    // read the wait serves no purpose beyond input coalescing, so the
+    // host may drop it to a frame-scale value (see MediaListScreen).
     property int debounceMs: 220
     property var mediaModel: null
     property var identityForIndex: null

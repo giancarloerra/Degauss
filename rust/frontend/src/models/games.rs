@@ -56,7 +56,7 @@ use zaparoo_core::endpoints::readers_write::ReadersWriteMutation;
 use zaparoo_core::endpoints::run::RunMutation;
 use zaparoo_core::media_types::{
     BrowseEntry, MediaBrowseIndexParams, MediaBrowseParams, MediaBrowseResult, MediaMeta,
-    MediaMetaParams, MediaTagsUpdateParams, ReadersWriteParams, RunParams, TagInfo,
+    MediaMetaParams, MediaTagsUpdateParams, Pagination, ReadersWriteParams, RunParams, TagInfo,
 };
 use zaparoo_core::platform::{self, Platform};
 use zaparoo_core::remote_resource::ResourceStatus;
@@ -121,6 +121,14 @@ const DEFAULT_PAGE_SIZE: i32 = 15;
 // the visible and next pages, so a large `FETCH_MORE_CHUNK_SIZE` no
 // longer floods the cover queue.
 const FETCH_MORE_CHUNK_SIZE: i32 = 100;
+// Rapid-scroll chunk. Bigger chunks are not free: measured on device,
+// media.browse response time grows superlinearly with chunk size on a
+// large folder (a max-size 1000-row request costs several seconds while
+// a 100-row request returns in well under one), and a blocked pager
+// waits that whole time. 300 buys ~30 list pages of runway per fetch
+// while keeping the worst-case wait at the loaded edge short. The
+// background folder fill (GamesScreen.qml) is what makes edge waits
+// rare; this chunk only sets how painful one is when it happens.
 const FETCH_MORE_RAPID_CHUNK_SIZE: i32 = 300;
 // Ceiling for a jump-to-letter fetch (Core's `max_results` cap). A position
 // jump must load every row up to the target before
@@ -1345,7 +1353,10 @@ impl ffi::GamesModel {
         let qt_thread = self.qt_thread();
         let store = global_store();
         global_handle().spawn(async move {
-            let result = store.client().media_meta(params).await;
+            let result = match crate::media_meta_db::media_meta_async(params.clone()).await {
+                Some(media) => Ok(zaparoo_core::media_types::MediaMetaResult { media }),
+                None => store.client().media_meta(params).await,
+            };
             let _ = qt_thread.queue(move |mut model| {
                 if seq.load(Ordering::SeqCst) != ticket {
                     return;
@@ -1608,49 +1619,200 @@ impl ffi::GamesModel {
         let seq = self.rust().seq.clone();
         let ticket = seq.fetch_add(1, Ordering::SeqCst) + 1;
 
-        let max_results = u32::try_from(self.page_size.max(1)).unwrap_or(u32::from(u16::MAX));
-        let resource = global_store().subscribe::<MediaBrowseEndpoint>(BrowseArgs::new(
-            path,
-            systems,
-            max_results,
-        ));
-        let mut status_rx = resource.subscribe();
-
-        // Spawn the watcher BEFORE applying the sync seed. If
-        // `apply_status` recurses into `start_initial_browse` (auto-nav
-        // cascade on a single-folder result), the inner call's
-        // `watcher.take().abort()` cleans up this handle correctly —
-        // doing this in the other order leaks the inner watcher when
-        // the outer call later overwrites `self.watcher`.
-        let qt_thread = self.qt_thread();
-        let snapshot = status_rx.borrow_and_update().clone();
-        if let Some(timing) = self.as_mut().rust_mut().nav_timing.as_mut() {
-            if matches!(snapshot, ResourceStatus::Ready(_)) {
-                timing.set_source("cache");
-                timing.mark_request_done();
-            }
-        }
-        let seq_for_loop = seq.clone();
-        let handle = global_handle().spawn(async move {
-            while status_rx.changed().await.is_ok() {
-                let snapshot = status_rx.borrow_and_update().clone();
-                let seq_for_closure = seq_for_loop.clone();
-                let _ = qt_thread.queue(move |model| {
-                    if seq_for_closure.load(Ordering::SeqCst) != ticket {
+        // MiSTer fast path: list the folder straight from Core's media
+        // database (`media_browse_db`) and hand the result to the same
+        // Ready pipeline the RPC feeds. A full local listing arrives in
+        // one piece with no further pages, so the paged fetch machinery
+        // (background fill, tail prefetch, edge stalls) stays idle for
+        // folders served this way. Root browses (empty path) always use
+        // the RPC — their entries come from Core's launcher routes,
+        // which do not live in the database. Any `None` (cache not
+        // serveable, unknown path, query error) falls through to the
+        // exact RPC subscribe this method always performed.
+        if !path.is_empty() && crate::media_browse_db::enabled() {
+            // Mirror the RPC path's Pending status so the query window
+            // shows the loading cue instead of an empty view: the RPC
+            // flow gets this from the store's status stream, the direct
+            // flow must say it itself.
+            apply_status(self.as_mut(), ResourceStatus::Loading);
+            let qt_thread = self.qt_thread();
+            let seq_direct = seq.clone();
+            let path_direct = path.clone();
+            let systems_direct = systems.clone();
+            global_handle().spawn(async move {
+                let query_path = path_direct.clone();
+                let query_systems = systems_direct.clone();
+                let cancel_seq = seq_direct.clone();
+                let direct = tokio::task::spawn_blocking(move || {
+                    crate::media_browse_db::browse_folder(&query_path, &query_systems, &|| {
+                        cancel_seq.load(Ordering::SeqCst) != ticket
+                    })
+                })
+                .await
+                .ok()
+                .flatten();
+                let qt_thread_tail = qt_thread.clone();
+                let _ = qt_thread.queue(move |mut model| {
+                    if seq_direct.load(Ordering::SeqCst) != ticket {
                         return;
                     }
-                    apply_status(model, snapshot);
+                    match direct {
+                        Some(result) => {
+                            mark_nav_source(model.as_mut(), "direct");
+                            apply_direct_listing(
+                                model,
+                                result,
+                                ticket,
+                                seq_direct,
+                                &qt_thread_tail,
+                            );
+                        }
+                        None => subscribe_browse_endpoint(
+                            model,
+                            path_direct,
+                            systems_direct,
+                            ticket,
+                            seq_direct,
+                        ),
+                    }
                 });
-            }
-        });
-        self.as_mut().rust_mut().watcher = Some(handle);
-
-        // Sync seed runs inline on the Qt thread, so it cannot race a
-        // queued callback (Qt won't pump events until set_system /
-        // set_path returns). No ticket check needed; the value we read
-        // is whichever the resource has right now.
-        apply_status(self.as_mut(), snapshot);
+            });
+            return;
+        }
+        subscribe_browse_endpoint(self, path, systems, ticket, seq);
     }
+}
+
+/// Hand a complete direct listing to the model: paint first, bulk the
+/// rest. A model reset costs the UI thread roughly linear time in row
+/// count (measured on device at a few milliseconds per row, so a
+/// two-thousand-row folder froze entry for several seconds), while
+/// inserts beyond the viewport stay cheap because tile delegates are
+/// retention-gated. The reset therefore carries only the first page,
+/// and the remainder lands as bulk inserts queued behind the paint.
+/// During the gap the model reports `has_next_page = true` (synthetic
+/// pagination, no cursor) with `loading_more` held true, so the
+/// saved-selection chase keeps waiting and every fetch path no-ops
+/// instead of firing an RPC; the last chunk flips both off, and the
+/// resulting `onCountChanged` re-runs the restore against the full
+/// listing.
+fn apply_direct_listing(
+    mut model: Pin<&mut ffi::GamesModel>,
+    mut result: MediaBrowseResult,
+    ticket: u64,
+    seq: Arc<AtomicU64>,
+    qt_thread: &cxx_qt::CxxQtThread<ffi::GamesModel>,
+) {
+    let head_len = usize::try_from(model.page_size.max(1)).unwrap_or(30);
+    if result.entries.len() <= head_len.saturating_mul(2) {
+        apply_status(model, ResourceStatus::Ready(result));
+        return;
+    }
+    let tail = result.entries.split_off(head_len);
+    result.pagination = Some(Pagination {
+        has_next_page: true,
+        page_size: 0,
+        next_cursor: None,
+    });
+    apply_status(model.as_mut(), ResourceStatus::Ready(result));
+    // Same Qt-thread call as the head apply: QML cannot observe the gap
+    // between the reset and this flag, so no fetch can slip in between.
+    model.as_mut().set_loading_more(true);
+    queue_direct_tail(qt_thread, tail, ticket, seq);
+}
+
+/// One bulk insert per event-loop turn keeps the paint responsive
+/// between chunks; the jump path uses the same size for the same
+/// reason. Stale chunks self-disarm on the browse ticket: a newer
+/// `start_initial_browse` owns the model and resets its own flags.
+const DIRECT_TAIL_CHUNK: usize = 1000;
+
+fn queue_direct_tail(
+    qt_thread: &cxx_qt::CxxQtThread<ffi::GamesModel>,
+    mut tail: Vec<BrowseEntry>,
+    ticket: u64,
+    seq: Arc<AtomicU64>,
+) {
+    let rest = if tail.len() > DIRECT_TAIL_CHUNK {
+        tail.split_off(DIRECT_TAIL_CHUNK)
+    } else {
+        Vec::new()
+    };
+    let qt_thread_next = qt_thread.clone();
+    let _ = qt_thread.queue(move |mut model| {
+        if seq.load(Ordering::SeqCst) != ticket {
+            return;
+        }
+        let started = Instant::now();
+        let entries = transform_entries(tail, platform::current().as_ref());
+        insert_sub_batch(model.as_mut(), entries);
+        debug!(
+            insert_ms = started.elapsed().as_millis(),
+            remaining = rest.len(),
+            "games: direct tail chunk",
+        );
+        if rest.is_empty() {
+            model.as_mut().set_loading_more(false);
+            model.as_mut().set_has_next_page(false);
+            return;
+        }
+        queue_direct_tail(&qt_thread_next, rest, ticket, seq);
+    });
+}
+
+/// Subscribe to the store-backed `media.browse` endpoint and wire its
+/// status stream into `apply_status`. Split out of
+/// `start_initial_browse` so the direct-database fast path can fall
+/// back to the identical RPC flow from an async context.
+fn subscribe_browse_endpoint(
+    mut model: Pin<&mut ffi::GamesModel>,
+    path: String,
+    systems: Vec<String>,
+    ticket: u64,
+    seq: Arc<AtomicU64>,
+) {
+    let max_results = u32::try_from(model.page_size.max(1)).unwrap_or(u32::from(u16::MAX));
+    let resource = global_store().subscribe::<MediaBrowseEndpoint>(BrowseArgs::new(
+        path,
+        systems,
+        max_results,
+    ));
+    let mut status_rx = resource.subscribe();
+
+    // Spawn the watcher BEFORE applying the sync seed. If
+    // `apply_status` recurses into `start_initial_browse` (auto-nav
+    // cascade on a single-folder result), the inner call's
+    // `watcher.take().abort()` cleans up this handle correctly —
+    // doing this in the other order leaks the inner watcher when
+    // the outer call later overwrites `self.watcher`.
+    let qt_thread = model.qt_thread();
+    let snapshot = status_rx.borrow_and_update().clone();
+    if let Some(timing) = model.as_mut().rust_mut().nav_timing.as_mut() {
+        if matches!(snapshot, ResourceStatus::Ready(_)) {
+            timing.set_source("cache");
+            timing.mark_request_done();
+        }
+    }
+    let seq_for_loop = seq;
+    let handle = global_handle().spawn(async move {
+        while status_rx.changed().await.is_ok() {
+            let snapshot = status_rx.borrow_and_update().clone();
+            let seq_for_closure = seq_for_loop.clone();
+            let _ = qt_thread.queue(move |model| {
+                if seq_for_closure.load(Ordering::SeqCst) != ticket {
+                    return;
+                }
+                apply_status(model, snapshot);
+            });
+        }
+    });
+    model.as_mut().rust_mut().watcher = Some(handle);
+
+    // Sync seed runs inline on the Qt thread, so it cannot race a
+    // queued callback (Qt won't pump events until set_system /
+    // set_path returns). No ticket check needed; the value we read
+    // is whichever the resource has right now.
+    apply_status(model, snapshot);
 }
 
 /// Resolve the system id role exposed to QML. Single-system entries
@@ -1885,7 +2047,11 @@ async fn resolve_media_capable_directory_run_text(
     fallback_text: Option<String>,
 ) -> Option<String> {
     if let Some(params) = meta_params {
-        match client.media_meta(params).await {
+        let resolved = match crate::media_meta_db::media_meta_async(params.clone()).await {
+            Some(media) => Ok(zaparoo_core::media_types::MediaMetaResult { media }),
+            None => client.media_meta(params).await,
+        };
+        match resolved {
             Ok(result) if !result.media.path.trim().is_empty() => return Some(result.media.path),
             Ok(_) => warn!(
                 "singleton launch path resolve returned empty path for {}; trying folder browse",

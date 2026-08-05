@@ -83,6 +83,35 @@ TestCase {
         loadMoreSpy.clear();
     }
 
+    ListModel {
+        id: suspendModel
+        ListElement { name: "a"; coverKey: ""; favorite: 0; hidden: false; disambiguatingTags: "" }
+        ListElement { name: "b"; coverKey: ""; favorite: 0; hidden: false; disambiguatingTags: "" }
+        ListElement { name: "c"; coverKey: ""; favorite: 0; hidden: false; disambiguatingTags: "" }
+    }
+
+    PagedGrid {
+        id: suspendProbe
+        suspendDelegates: true
+        model: suspendModel
+        delegate: Item {}
+        columnsOverride: 3
+        rowsOverride: 3
+        width: 300
+        height: 300
+    }
+
+    // Suspended delegates: the grid must keep reporting itemCount from
+    // the model's own count with zero delegates materialized, so list
+    // layout can use the grid as cursor authority without paying the
+    // per-row instantiation cost on every insert.
+    function test_suspended_delegates_track_model_count(): void {
+        suspendProbe.model = suspendModel;
+        compare(suspendProbe.itemCount, 3, "itemCount must come from model.count while suspended");
+        suspendModel.append({"name": "d", "coverKey": "", "favorite": 0, "hidden": false, "disambiguatingTags": ""});
+        compare(suspendProbe.itemCount, 4, "itemCount must track model growth while suspended");
+    }
+
     function test_geometry_matches_pinned_resolution(): void {
         compare(grid.columns, 4, "expected 4 columns at 480px height");
         compare(grid.rows, 3, "expected 3 rows at 480px height");

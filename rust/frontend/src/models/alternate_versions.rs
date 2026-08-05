@@ -165,14 +165,17 @@ async fn discover_alternate_versions(
     if system_id != ARCADE_SYSTEM_ID || name.trim().is_empty() || selected_path.trim().is_empty() {
         return Ok(Vec::new());
     }
-    let canonical_title = client
-        .media_meta(MediaMetaParams::for_media(
-            system_id.to_string(),
-            selected_path.to_string(),
-        ))
-        .await
-        .ok()
-        .map(|result| result.media.title.name.trim().to_string())
+    let meta_params = MediaMetaParams::for_media(system_id.to_string(), selected_path.to_string());
+    let canonical_media = match crate::media_meta_db::media_meta_async(meta_params.clone()).await {
+        Some(media) => Some(media),
+        None => client
+            .media_meta(meta_params)
+            .await
+            .ok()
+            .map(|result| result.media),
+    };
+    let canonical_title = canonical_media
+        .map(|media| media.title.name.trim().to_string())
         .filter(|title| !title.is_empty())
         .unwrap_or_else(|| name.trim().to_string());
     let result = client

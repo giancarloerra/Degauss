@@ -48,6 +48,13 @@ skip = [
     { crate = "thiserror@2.0.18" },
     { crate = "thiserror-impl@1.0.69" },
     { crate = "thiserror-impl@2.0.18" },
+    # rusqlite's hashlink tracks hashbrown one major behind indexmap
+    # (pulled by cxx-qt's build tooling); no rusqlite release aligns them.
+    { crate = "hashbrown@0.14.5" },
+    # cxx/cxx-gen 1.0.195+ moved to syn 3 (RUSTSEC-2026-0202 forces the
+    # bump); serde_derive and the cxx-qt macros remain on syn 2.
+    { crate = "syn@2.0.118" },
+    { crate = "syn@3.0.3" },
 ]
 
 [sources]

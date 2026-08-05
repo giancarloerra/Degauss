@@ -1069,6 +1069,13 @@ MainLayout {
     // gamesScreen.onRequestSystemsScreen below) so this path needs
     // no per-transition flag.
     function _navigateFromSystems(systemId: string): void {
+        // A repeat Accept for the same system while its entry is still
+        // in flight would restart the whole load from scratch (model
+        // reset, re-browse, re-restore) and double the visible loading
+        // time; users press again exactly when a load feels slow, so
+        // absorb the duplicate instead.
+        if (root.pendingTransition === "games" && Browse.GamesState.system_id === systemId)
+            return;
         root._requestScreen(root.screenGames);
         Browse.SystemsState.system_id = systemId;
         // Setting system_id on GamesState resets path_stack/selected_at_level
@@ -2857,7 +2864,26 @@ MainLayout {
     // active, just like fresh presses.
     readonly property int _repeatInitialMs: 350
     readonly property int _repeatTickMs: 90
-    readonly property int _rapidNavigationQuietMs: 260
+    // Taps only engage rapid mode from a sustained burst: with covers now
+    // loading locally in milliseconds, gating on the second press hid
+    // speed the frontend has — a quick double-tap skip paid an artificial
+    // wait. Held-key repeat still forces rapid mode through its own path,
+    // and the quiet window stays above the 90 ms repeat tick so a held
+    // key cannot flicker the detail pane between ticks.
+    readonly property int _rapidNavigationQuietMs: 120
+    // Chain window for discrete repeats. Gamepad input stacks (MiSTer's
+    // pad-to-key translation among them) deliver a held dpad as separate
+    // press/release pairs at their own cadence rather than one held key,
+    // so the QML hold-repeat never establishes and every repeat counts
+    // through the tap path. At repeat cadences slower than the 120 ms
+    // quiet window the burst count reset on every press and rapid mode
+    // never engaged — cover work then churned through the whole hold.
+    // While no QML repeat is established, the quiet timer runs at this
+    // wider interval instead: it chains any realistic pad repeat rate
+    // into one burst, while a genuine held key keeps the tight window
+    // (the 90 ms tick re-arms it, so exit stays fast after release).
+    readonly property int _rapidNavigationChainQuietMs: 300
+    readonly property int _rapidNavigationTapThreshold: 5
     // Window for collapsing a second delivery of the same key into one
     // press — hardware contact bounce or input-stack double send. Far
     // below _repeatInitialMs and the repeat tick so it never touches
@@ -2957,10 +2983,18 @@ MainLayout {
         const sameBurst = rapidNavigationQuiet.running && root.rapidNavigationAction === action;
         root._rapidNavigationTapCount = sameBurst ? root._rapidNavigationTapCount + 1 : 1;
         root.rapidNavigationAction = action;
-        if (forceActive || rapidNavigationQuiet.running)
+        if (forceActive || root._rapidNavigationTapCount >= root._rapidNavigationTapThreshold)
             root.rapidNavigationActive = true;
-        if (forceActive || root._rapidNavigationTapCount >= 3)
+        if (forceActive || root._rapidNavigationTapCount >= root._rapidNavigationTapThreshold)
             root.rapidNavigationIndicatorActive = true;
+        // An established QML hold-repeat (forced tick notes, and the
+        // action router's follow-up notes while the tick runs) re-arms
+        // the tight window so rapid exits fast after release. Discrete
+        // taps — including gamepad stacks that deliver a held dpad as
+        // press/release pairs at their own cadence — get the wider
+        // chain window so the burst survives between repeats instead
+        // of resetting on every press.
+        rapidNavigationQuiet.interval = forceActive || repeatTick.running ? root._rapidNavigationQuietMs : root._rapidNavigationChainQuietMs;
         rapidNavigationQuiet.restart();
     }
 
@@ -2988,6 +3022,106 @@ MainLayout {
     // arms the initial-delay timer. Pulled out of handleKey so unit
     // tests can drive the repeat state machine without also routing
     // through handleAction → real screens. No-op for non-dpad actions.
+    // ── Page turbo ─────────────────────────────────────────────────
+    // Held L/R page buttons arrive from the platform's pad bridge as
+    // discrete press/release pairs at the bridge's own autofire cadence
+    // (about two per second measured), not as a held key: Qt-level
+    // autorepeats are dropped at the Keys handler, our hold-repeat
+    // needs a genuinely held key, and the rapid chain window is
+    // narrower than the bridge cadence, so held paging crawled at
+    // bridge speed with cover work running the whole time. The turbo
+    // treats the press *stream* as the hold signal: the third chained
+    // press starts a self-driven tick that pages at `_pageTurboTickMs`,
+    // forces rapid mode (pausing cover work), and swallows further
+    // bridge presses while it runs. The bridge releases immediately
+    // after every press, so release events carry no lift information;
+    // the stop condition is press silence — once no press has arrived
+    // for ~1.3x the observed cadence the button is deemed lifted. That
+    // leaves a short coast after lift (bounded by that deadline), the
+    // unavoidable price of pair-shaped input. A threshold of three
+    // keeps deliberate double-taps out of turbo entirely.
+    // Exposed for tst_navigation: the tick's running state is the
+    // observable "turbo is driving" contract.
+    readonly property bool pageTurboRunning: pageTurboTick.running
+    readonly property int _pageTurboTickMs: 170
+    readonly property int _pageTurboChainMs: 700
+    readonly property int _pageTurboThreshold: 3
+    property string _pageTurboAction: ""
+    property int _pageTurboChainCount: 0
+    property double _pageTurboLastPressMs: 0
+    property double _pageTurboGapMs: 500
+
+    // The games screen routes Left/Right through _performPage in list
+    // layout (see GamesScreen), so a held Left/Right there is a held
+    // page button and must feed the turbo like the dedicated page keys.
+    function _pageTurboEligible(action: string): bool {
+        if (action === "page_next" || action === "page_prev")
+            return true;
+        return (action === "left" || action === "right") && root.activeScreen === root.screenGames && Browse.Settings.current_browse_layout === "list";
+    }
+
+    // Returns true when the press was absorbed because turbo is (or
+    // has just started) driving that action. Any non-eligible action,
+    // or a direction flip, stops turbo and handles the press normally.
+    function _notePageTurboPress(action: string): bool {
+        if (!root._pageTurboEligible(action)) {
+            root._stopPageTurbo();
+            return false;
+        }
+        // A direction flip stops the old turbo but falls through, so
+        // the flip press itself seeds a fresh chain and pages once.
+        if (pageTurboTick.running && action !== root._pageTurboAction)
+            root._stopPageTurbo();
+        const now = Date.now();
+        const gap = now - root._pageTurboLastPressMs;
+        if (root._pageTurboAction === action && gap < root._pageTurboChainMs) {
+            root._pageTurboChainCount += 1;
+            // Sub-120ms doubles are bounce or test drivers, not the
+            // bridge cadence; keep them out of the estimate.
+            if (gap > 120)
+                root._pageTurboGapMs = 0.5 * root._pageTurboGapMs + 0.5 * gap;
+        } else {
+            root._pageTurboAction = action;
+            root._pageTurboChainCount = 1;
+            root._pageTurboGapMs = 500;
+        }
+        root._pageTurboLastPressMs = now;
+        if (pageTurboTick.running)
+            return true;
+        if (root._pageTurboChainCount >= root._pageTurboThreshold) {
+            root._noteRapidNavigationAction(action, true);
+            pageTurboTick.restart();
+            return true;
+        }
+        return false;
+    }
+
+    function _stopPageTurbo(): void {
+        pageTurboTick.stop();
+        root._pageTurboChainCount = 0;
+        root._pageTurboAction = "";
+    }
+
+    Timer {
+        id: pageTurboTick
+        interval: root._pageTurboTickMs
+        repeat: true
+        onTriggered: {
+            if (root.pendingTransition !== "" || root.transitionCueVisible || ScreenManager.hasModal || !root.active) {
+                root._stopPageTurbo();
+                return;
+            }
+            const now = Date.now();
+            const deadline = root._pageTurboLastPressMs + Math.max(420, root._pageTurboGapMs * 1.3);
+            if (now > deadline) {
+                root._stopPageTurbo();
+                return;
+            }
+            root._noteRapidNavigationAction(root._pageTurboAction, true);
+            root.handleAction(root._pageTurboAction);
+        }
+    }
+
     function _armRepeat(action: string, key: int): void {
         if (!root._isRepeatableAction(action))
             return;
@@ -3011,6 +3145,14 @@ MainLayout {
         const action = Browse.Input.action_for_key(key);
         root._startupTrace("input/qml key mapped", "key=" + key, "action=" + action);
         if (action === "")
+            return;
+        // The turbo must observe the same gates handleAction applies:
+        // presses swallowed by a transition or owned by a modal must not
+        // feed or sustain it, or a tick could page the newly ready
+        // screen with input the user never aimed at it.
+        if (root.pendingTransition !== "" || root.transitionCueVisible || ScreenManager.hasModal)
+            root._stopPageTurbo();
+        else if (root._notePageTurboPress(action))
             return;
         root.handleAction(action);
         root._armRepeat(action, key);
@@ -3150,6 +3292,10 @@ MainLayout {
 
     Timer {
         id: rapidNavigationQuiet
+        // Interval is assigned imperatively on every note (see
+        // _noteRapidNavigationAction) — held-key notes use the tight
+        // window, discrete taps the chain window. Assigning per restart
+        // keeps the running countdown immune to binding re-evaluation.
         interval: root._rapidNavigationQuietMs
         repeat: false
         onTriggered: {

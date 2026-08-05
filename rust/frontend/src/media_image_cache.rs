@@ -16,7 +16,9 @@
 // **Memory only — never disk.** Zaparoo Core is the canonical
 // persistent store for media images and metadata; the frontend caches
 // in process memory only and re-fetches what it needs after a cold
-// start. MiSTer has under 512 MB of shared system RAM with the frontend
+// start. (On `MiSTer`, a miss first resolves the artwork file directly
+// via `media_art_db` and reads it off the card — a read-only fast path,
+// not a second store.) MiSTer has under 512 MB of shared system RAM with the frontend
 // competing against Core, the FPGA wrapper, and the active core for it,
 // so the cache enforces a strict bytes cap (`CACHE_CAP_BYTES`) with LRU
 // eviction that prefers read entries over still-unread prefetches.
@@ -80,11 +82,24 @@ const CACHE_CAP_BYTES: usize = 128 * 1024 * 1024;
 const MAX_FETCH_ATTEMPTS: u8 = 3;
 
 /// Number of fetch worker tasks pulling from the shared LIFO queue.
-/// Two workers let visible pages fill multiple covers at a time
-/// while keeping Core/WebSocket pressure low on `MiSTer`. If runtime
-/// logs show stalls, resets, or media.image rate-limit errors, tune
-/// this before trying any broader queue changes.
-const FETCH_DRIVER_WORKERS: usize = 2;
+/// Sized for the local fast paths (media.db lookup ~7 ms median, disk
+/// read ~26 ms measured on `MiSTer`): eight workers drain a 30-tile
+/// page burst in well under the old two-worker queue wait (p90 was
+/// 150 ms of queueing against a 20 ms lookup). Core is protected
+/// separately — only the `media.image` RPC branch passes through
+/// `RPC_CONCURRENCY`, so raising this does not add WebSocket pressure.
+const FETCH_DRIVER_WORKERS: usize = 8;
+
+/// Cap on concurrent `media.image` RPC calls across all fetch workers.
+/// Preserves the original two-outstanding-requests politeness toward
+/// Core (which serializes image lookups internally anyway) now that
+/// `FETCH_DRIVER_WORKERS` is sized for the local fast paths instead.
+const RPC_CONCURRENCY: usize = 2;
+
+fn rpc_gate() -> &'static tokio::sync::Semaphore {
+    static GATE: OnceLock<tokio::sync::Semaphore> = OnceLock::new();
+    GATE.get_or_init(|| tokio::sync::Semaphore::new(RPC_CONCURRENCY))
+}
 
 /// Hard cap on pending enqueues in the fetch queue. Sized for a few
 /// dense visual pages (current, lookahead, previous) plus margin, so
@@ -104,6 +119,78 @@ const SUPPORTED_EXTS: &[(&str, &str)] = &[
 ];
 
 const SUPPORTED_PLAIN_EXTS: &[&str] = &["png", "jpg", "jpeg", "webp"];
+
+/// Direct-read: resolve the cover's artwork file from Core's media
+/// database and read it straight off the card. This is the
+/// first-view fast path — no RPC, no semaphore, no base64 — available
+/// because Core already persisted every scraper match as a plain file
+/// path. `wanted` mirrors the `image_types` restriction the RPC request
+/// would carry: when non-empty, a hit of a different type is rejected
+/// rather than guessed at, so a typed carousel request never silently
+/// receives the wrong art kind. Returns `None` on any miss or error and
+/// the caller falls through to the RPC exactly as before.
+///
+/// Unlike the RPC path there is no `max_size` downscale here: the
+/// original file is returned as-is. Producing a resized variant
+/// locally would mean re-encoding or storing thumbnails, both ruled
+/// out for this path, and decode cost stays bounded regardless
+/// because views decode at their snapped `sourceSize` tier; only the
+/// encoded bytes held in RAM are larger than what Core would send.
+async fn db_art_lookup(
+    key: &MediaKey,
+    wanted: &[String],
+    queue_wait: Duration,
+) -> Option<FetchOutcome> {
+    let key_owned = key.clone();
+    let wanted_owned = wanted.to_vec();
+    let started = Instant::now();
+    let hit = tokio::task::spawn_blocking(move || {
+        // Try candidates best-first: the database can hold dead paths
+        // (files moved after an old scrape), so a failed read moves on
+        // to the next candidate instead of surrendering to RPC.
+        for hit in crate::media_art_db::resolve_art(&key_owned, &wanted_owned) {
+            if !wanted_owned.is_empty() && !wanted_owned.contains(&hit.type_tag) {
+                continue;
+            }
+            let Some(ext) = hit
+                .path
+                .extension()
+                .and_then(|e| e.to_str())
+                .and_then(ext_from_extension_field)
+            else {
+                continue;
+            };
+            match std::fs::read(&hit.path) {
+                Ok(bytes) if !bytes.is_empty() => return Some((bytes, ext, hit.type_tag)),
+                Ok(_) => {}
+                Err(e) => {
+                    debug!(
+                        art_path = %hit.path.display(),
+                        "media_art_db: art file unreadable ({e}), trying next candidate",
+                    );
+                }
+            }
+        }
+        None
+    })
+    .await
+    .ok()??;
+    let (bytes, ext, type_tag) = hit;
+    debug!(
+        system_id = %key.system_id,
+        path = %key.path,
+        bytes = bytes.len(),
+        lookup_ms = started.elapsed().as_millis(),
+        queue_wait_ms = queue_wait.as_millis(),
+        "media_image_cache: db art direct read",
+    );
+    Some(FetchOutcome::Success {
+        bytes,
+        ext,
+        type_tag,
+    })
+}
+
 const CORE_DEFAULT_IMAGE_TYPES: &[&str] = &[
     "image",
     "thumbnail",
@@ -1357,6 +1444,9 @@ async fn fetch_one(
     if max_size > 0 {
         params.max_size = Some(max_size);
     }
+    if let Some(outcome) = db_art_lookup(&key, &params.image_types, queue_wait).await {
+        return (entry, outcome);
+    }
     debug!(
         system_id = %key.system_id,
         path = %key.path,
@@ -1367,8 +1457,21 @@ async fn fetch_one(
         max_size,
         "media_image_cache: media.image request"
     );
+    // Only the RPC passes through the gate: local lookups above run at
+    // full worker width, while Core never sees more than
+    // `RPC_CONCURRENCY` outstanding image requests. The gate wait is
+    // timed separately so `fetch_ms` keeps meaning "Core round trip"
+    // and stays comparable with pre-gate logs.
+    let gate_started = Instant::now();
+    #[allow(
+        clippy::unwrap_used,
+        reason = "gate semaphore is never closed, acquire cannot fail"
+    )]
+    let permit = rpc_gate().acquire().await.unwrap();
+    let gate_duration = gate_started.elapsed();
     let fetch_started = Instant::now();
     let result = store.client().media_image(params).await;
+    drop(permit);
     let fetch_duration = fetch_started.elapsed();
     let (outcome, decode_duration) = match result {
         Ok(image) => classify_media_image_result(&key, &image),
@@ -1386,6 +1489,7 @@ async fn fetch_one(
         path = %key.path,
         outcome = fetch_outcome_label(&outcome),
         queue_wait_ms = queue_wait.as_millis(),
+        gate_ms = gate_duration.as_millis(),
         fetch_ms = fetch_duration.as_millis(),
         decode_ms = decode_duration.as_millis(),
         "media_image_cache: cover timing",
@@ -2020,7 +2124,7 @@ mod tests {
         // against any future Core regression that lets empty payloads
         // through. We can't drive the decoder directly without a live Store, so exercise the
         // downstream contract: `NoImage` → negative memo, no map
-        // entry, pending cleared. This locks in the behaviour that
+        // entry, pending cleared. This locks in the behavior that
         // empty payloads do not pollute the cache and the
         // `(system_id, path)` is suppressed from refetch.
         let state = Arc::new(RwLock::new(CacheState::new()));
