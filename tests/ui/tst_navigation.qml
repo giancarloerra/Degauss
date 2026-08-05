@@ -632,10 +632,12 @@ TestCase {
         compare(main._turboThresholdFor("right", main.screenGames, "grid"), main._pageTurboThreshold, "grid keeps the double-tap guard");
     }
 
-    function test_scroll_travel_rate_is_several_times_row_speed(): void {
-        const walkRowsPerSecond = (1000 / main._scrollTurboTickMs) * main._scrollTurboRowsPerTick;
-        const holdRowsPerSecond = 1000 / main._repeatTickMs;
-        verify(walkRowsPerSecond >= holdRowsPerSecond * 5, "the fast walk must travel at least five times the held Up/Down rate");
+    function test_fast_walk_two_stage_shape(): void {
+        verify(main._scrollTurboTickMs < main._repeatTickMs, "stage 1 walks visibly faster than the Up/Down repeat");
+        const stageOneMs = main._scrollTurboTickMs * main._scrollTurboEscalateTicks;
+        verify(stageOneMs >= 1000 && stageOneMs <= 2500, "escalation waits for a deliberate sustained hold");
+        compare(main._turboPageAction("right"), "page_next", "stage 2 pages forward for right");
+        compare(main._turboPageAction("left"), "page_prev", "stage 2 pages back for left");
     }
 
     // Duplicate-input guard. The Keys.onPressed handler collapses a
