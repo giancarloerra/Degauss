@@ -12,11 +12,13 @@ import QtQuick
 // (sRGB -> linear -> Y -> sRGB), so contrast relationships match the
 // original design exactly. The only chroma in the UI is the wordmark's
 // own three colours, each holding exactly one meaning: yellow
-// (#FFCD09) means selected, teal (#03A49D) means a persistent state
-// (favorite, hidden), red (#FE2E1D family) means error. Contrast per
-// surface is tabled in README.md's brand-palette section; teal and red
-// are graphic accents on the lighter crt-light surfaces, not body-text
-// colours. Content (covers, artwork, the wordmark) stays full colour.
+// (#FFCD09) means selected, teal (#03A49D) means state and activity
+// (favorite, hidden, progress), red (#FE2E1D family) means error.
+// Measured contrast per surface: yellow 11.2:1 dark / 6.0:1 crt-light
+// at worst (safe for any use); teal 5.0:1 dark / 2.9:1 crt-light and
+// red 4.2:1 dark / 2.4:1 crt-light, so both carry text on the dark
+// theme only and act as graphic accents on the lighter crt-light
+// surfaces. Content (covers, artwork, the wordmark) stays full colour.
 QtObject {
     property bool crtNativePath: false
 

@@ -1,20 +1,23 @@
 # Degauss
 
-Degauss is a speed-first game frontend for MiSTer FPGA, maintained by
-Giancarlo Erra. It exists because browsing a large game library should
-feel instant on the real hardware — an 800 MHz ARM with no GPU, often
-driving an analog CRT — and because a frontend for that hardware
-deserves a look designed for it.
+Degauss is a speed-first fork of
+[Zaparoo Frontend](https://github.com/ZaparooProject/zaparoo-frontend),
+maintained by Giancarlo Erra (tracking as quickly as possible every new
+release of [Zaparoo Core](https://zaparoo.org) and upstream Frontend).
+It exists because browsing a large game library should feel instant on
+the real hardware, an 800 MHz ARM with no GPU, often driving an analog
+CRT, and because a frontend for that hardware deserves a look designed
+for it.
 
 **The speed philosophy: read locally, ask nobody.** Everything the
 interface shows is read directly from the local media database the
 moment you ask for it, instead of being paged over RPC round trips.
 Folder listings, cover art, favorites, play history, detail metadata,
 the jump-to-letter index, and alternate-version discovery all resolve
-on-device; in steady-state browsing the frontend performs **zero
-network calls**, and the connection to Zaparoo Core carries only
-writes, launches, and notifications. Measured on a MiSTer over a large
-library:
+on-device; in steady-state browsing the frontend performs **zero API
+round trips**: the always-on connection to the local Zaparoo Core
+service carries only writes, launches, and notifications. Measured on
+a MiSTer over a large library:
 
 - entering a folder of roughly two thousand entries: **~4.5 s → ~0.5 s**
 - a visible page of covers: **~13x faster**
@@ -29,31 +32,19 @@ if the database ever changes shape, the affected read turns itself off
 loudly and the frontend behaves exactly like upstream until it is
 updated. Writes never touch the database directly.
 
-**The look.** A monochrome interface where the only colour is the
-Degauss wordmark's own palette — yellow means selected, teal means
-state and activity, red means error — with a dedicated `crt-light`
-theme that lifts the surfaces for tubes.
+**The look.** A monochrome interface where the only chroma is the
+Degauss wordmark's own palette, one meaning per colour: yellow
+(`#FFCD09`) is selection, teal (`#03A49D`) is state and activity, red
+(`#FE2E1D`) is error. Yellow holds contrast for any use in both
+themes; teal and red carry text on the dark theme and act as graphic
+accents on `crt-light`, the dedicated theme that lifts the surfaces
+for analog tubes.
 
-Degauss is an independent fork of
-[Zaparoo Frontend](https://github.com/ZaparooProject/zaparoo-frontend)
-and requires [Zaparoo Core](https://zaparoo.org) on the device. It is
-not affiliated with or endorsed by the Zaparoo Project or Wizzo Pty
+Degauss requires [Zaparoo Core](https://zaparoo.org) on the device. It
+is not affiliated with or endorsed by the Zaparoo Project or Wizzo Pty
 Ltd; see the Trademarks section. The code remains under the upstream
 PolyForm Noncommercial 1.0.0 license with all upstream copyright
 notices preserved.
-
-## Brand palette
-
-The UI is deliberately monochrome, so the wordmark's three colours are
-the only chroma available and read as highlights wherever they appear.
-Contrast ratios against the theme surfaces, for choosing where each may
-carry text versus purely graphic accents:
-
-| Colour | Hex | Dark panels / cards | CRT-light panels / cards | Safe uses |
-|---|---|---|---|---|
-| Yellow | `#FFCD09` | 11.2:1 / 10.3:1 | 7.6:1 / 6.0:1 | Anything, both themes, including small text |
-| Teal | `#03A49D` | 5.5:1 / 5.0:1 | 3.7:1 / 2.9:1 | Text on dark; graphic accents (rings, bars, badges) on CRT-light |
-| Red | `#FE2E1D` | 4.5:1 / 4.2:1 | 3.0:1 / 2.4:1 | Text on dark (borderline); graphic accents on CRT-light |
 
 ## Build
 
