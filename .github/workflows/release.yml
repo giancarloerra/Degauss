@@ -27,7 +27,7 @@ jobs:
           sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /opt/hostedtoolcache/CodeQL
           df -h /
 
-      - uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@v4
 
       - name: Build MiSTer ARM32 binary
         run: USE_LOCAL_TOOLCHAIN=1 ./scripts/build-arm32.sh
