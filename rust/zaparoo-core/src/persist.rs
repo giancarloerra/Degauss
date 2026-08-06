@@ -356,6 +356,7 @@ mod tests {
                 system_id: "NES".into(),
                 path_stack: vec![String::new(), "/roms/nes/mario".into()],
                 selected_at_level: vec!["/roms/nes/mario".into(), "/roms/nes/mario/smb.nes".into()],
+                favorites_filter: false,
             },
             recents: RecentsState {
                 selected_path: "/roms/nes/mario/smb.nes".into(),
@@ -455,6 +456,7 @@ resolution = "1920x1080"
                                 system_id: format!("sys-{i}-{j}"),
                                 path_stack: vec![String::new()],
                                 selected_at_level: vec![format!("/roms/{i}/{j}.rom")],
+                                favorites_filter: false,
                             },
                             favorites: FavoritesState::default(),
                             recents: RecentsState::default(),
