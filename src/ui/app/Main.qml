@@ -2199,6 +2199,25 @@ MainLayout {
         root.openListPickerModal(qsTr("View"), entries, "jump_letter", "page_menu");
     }
 
+    // Games filter picker: the page-menu row announces the active state
+    // ("Show: All" / "Show: Favorites"); this picker presents the actual
+    // choice, preselected on what is active, mirroring the favorites
+    // screen's filter menu.
+    function openGamesFilterMenu(): void {
+        const entries = [
+            {
+                "id": "all",
+                "label": qsTr("All")
+            },
+            {
+                "id": "favorites",
+                "label": qsTr("Favorites only")
+            }
+        ];
+        const active = Browse.GamesModel.favorites_only ? "favorites" : "all";
+        root.openListPickerModal(qsTr("Show"), entries, active, "games_filter_pick");
+    }
+
     // Favorites' West-button menu: how the list is ordered and scoped, plus
     // the random pick. Sort and filter both need every favorite loaded (Core
     // returns them in database order, 25 at a time, with no sort parameter),
@@ -2528,7 +2547,12 @@ MainLayout {
             else if (selectedId === "launch_random")
                 Browse.GamesModel.launch_random();
             else if (selectedId === "games_filter")
-                Browse.GamesModel.apply_favorites_filter(!Browse.GamesModel.favorites_only);
+                root.openGamesFilterMenu();
+            return;
+        }
+        if (fieldId === "games_filter_pick") {
+            root.closeListPickerModal();
+            Browse.GamesModel.apply_favorites_filter(selectedId === "favorites");
             return;
         }
         if (fieldId === "page_menu_favorites") {
