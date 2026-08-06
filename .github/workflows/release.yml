@@ -6,8 +6,9 @@
 # run (the upstream ghcr image requires authentication), which is slow
 # and disk-hungry; the free-space step below makes room on the runner.
 # Tolerant of a release that already exists (e.g. one created manually
-# with a locally built binary): assets are then uploaded with
-# --clobber instead.
+# with a locally built, device-tested binary): existing assets are
+# never overwritten — the CI build then only validates that the tag
+# builds and fills in any missing assets.
 name: Release
 on:
   push:
@@ -41,8 +42,11 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "${GITHUB_REF_NAME}" \
+          if ! gh release create "${GITHUB_REF_NAME}" \
             output/frontend output/frontend.md5 output/min_core_version.txt \
-            --title "Degauss ${GITHUB_REF_NAME}" --generate-notes \
-          || gh release upload "${GITHUB_REF_NAME}" \
-            output/frontend output/frontend.md5 output/min_core_version.txt --clobber
+            --title "Degauss ${GITHUB_REF_NAME}" --generate-notes; then
+            # Release exists: attach only what is missing, never replace.
+            gh release upload "${GITHUB_REF_NAME}" \
+              output/frontend output/frontend.md5 output/min_core_version.txt \
+              || true
+          fi
