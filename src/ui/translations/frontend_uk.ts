@@ -468,34 +468,34 @@ Euskara - devilschile2</source>
 <context>
     <name>GamesScreen</name>
     <message>
-        <location filename="../screens/GamesScreen.qml" line="142"/>
-        <location filename="../screens/GamesScreen.qml" line="186"/>
+        <location filename="../screens/GamesScreen.qml" line="160"/>
+        <location filename="../screens/GamesScreen.qml" line="204"/>
         <source>%1 files</source>
         <translation>%1 файлів</translation>
     </message>
     <message>
-        <location filename="../screens/GamesScreen.qml" line="59"/>
+        <location filename="../screens/GamesScreen.qml" line="77"/>
         <source>Loading game…</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../screens/GamesScreen.qml" line="155"/>
-        <location filename="../screens/GamesScreen.qml" line="187"/>
+        <location filename="../screens/GamesScreen.qml" line="173"/>
+        <location filename="../screens/GamesScreen.qml" line="205"/>
         <source>%1 / %2</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../screens/GamesScreen.qml" line="54"/>
+        <location filename="../screens/GamesScreen.qml" line="72"/>
         <source>Loading games…</source>
         <translation>Завантаження ігор…</translation>
     </message>
     <message>
-        <location filename="../screens/GamesScreen.qml" line="151"/>
+        <location filename="../screens/GamesScreen.qml" line="169"/>
         <source>Loading more…</source>
         <translation>Завантаження ще…</translation>
     </message>
     <message>
-        <location filename="../screens/GamesScreen.qml" line="53"/>
+        <location filename="../screens/GamesScreen.qml" line="71"/>
         <source>No games in this system</source>
         <translation>У цій системі немає ігор</translation>
     </message>
@@ -672,17 +672,17 @@ Euskara - devilschile2</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../app/Main.qml" line="3456"/>
+        <location filename="../app/Main.qml" line="3458"/>
         <source>Loading systems…</source>
         <translation>Завантаження систем…</translation>
     </message>
     <message>
-        <location filename="../app/Main.qml" line="3462"/>
+        <location filename="../app/Main.qml" line="3464"/>
         <source>Loading favorites…</source>
         <translation>Завантаження вибраного…</translation>
     </message>
     <message>
-        <location filename="../app/Main.qml" line="3458"/>
+        <location filename="../app/Main.qml" line="3460"/>
         <source>Loading games…</source>
         <translation>Завантаження ігор…</translation>
     </message>
@@ -819,22 +819,22 @@ Euskara - devilschile2</source>
         <translation type="unfinished">Скасувати</translation>
     </message>
     <message>
-        <location filename="../app/Main.qml" line="3460"/>
+        <location filename="../app/Main.qml" line="3462"/>
         <source>Loading game…</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../app/Main.qml" line="3464"/>
+        <location filename="../app/Main.qml" line="3466"/>
         <source>Loading recently played…</source>
         <translation>Завантаження нещодавніх…</translation>
     </message>
     <message>
-        <location filename="../app/Main.qml" line="3466"/>
+        <location filename="../app/Main.qml" line="3468"/>
         <source>Loading settings…</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../app/Main.qml" line="3468"/>
+        <location filename="../app/Main.qml" line="3470"/>
         <source>Loading…</source>
         <translation>Завантаження…</translation>
     </message>
