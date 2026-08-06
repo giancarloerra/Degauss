@@ -2190,6 +2190,12 @@ MainLayout {
                 "id": "launch_random",
                 "label": qsTr("Random game in this folder")
             });
+        // Level-local favorites projection: files of this folder filter
+        // to the favorite ones; directories stay for navigation.
+        entries.push({
+            "id": "games_filter",
+            "label": qsTr("Show: %1").arg(Browse.GamesModel.favorites_only ? qsTr("Favorites") : qsTr("All"))
+        });
         root.openListPickerModal(qsTr("View"), entries, "jump_letter", "page_menu");
     }
 
@@ -2521,6 +2527,8 @@ MainLayout {
                 root.openLetterJumpModal();
             else if (selectedId === "launch_random")
                 Browse.GamesModel.launch_random();
+            else if (selectedId === "games_filter")
+                Browse.GamesModel.apply_favorites_filter(!Browse.GamesModel.favorites_only);
             return;
         }
         if (fieldId === "page_menu_favorites") {
