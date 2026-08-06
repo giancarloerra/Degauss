@@ -1112,11 +1112,24 @@ impl ffi::GamesModel {
             self.as_mut().set_random_error(QString::default());
         }
 
+        // Under the favorites filter the pick must wait for the complete
+        // listing: the slow walk asks Core, which knows nothing of the
+        // filter and could launch a hidden row, and sampling only the
+        // loaded pages would give unloaded favorites zero probability.
+        // The games screen drains the listing whenever the filter is on,
+        // so this state is transient; the visible failure beats a biased
+        // pick.
+        if self.favorites_only
+            && !scope_fully_loaded(self.count, self.has_next_page, self.next_cursor.as_deref())
+        {
+            self.as_mut().fail_random("favorites-list-loading");
+            return;
+        }
+
         // Fast path: everything is already here, so the pick needs no RPC and
         // no Core-reported totals (which can disagree with what arrived).
-        // The favorites filter also forces this path: the slow walk asks
-        // Core, which knows nothing of the filter, and could launch a
-        // hidden row; the visible favorites are the pool by definition.
+        // The favorites filter also forces this path once complete: the
+        // visible favorites are the pool by definition.
         if self.favorites_only
             || scope_fully_loaded(self.count, self.has_next_page, self.next_cursor.as_deref())
         {
@@ -1707,7 +1720,11 @@ impl ffi::GamesModel {
             .rust_mut()
             .append_seq
             .fetch_add(1, Ordering::SeqCst);
-        if !self.entries.is_empty() {
+        // Either projection may hold rows: under the favorites filter
+        // the visible set can be empty while the full listing is not,
+        // and skipping the reset then would leave stale rows for a
+        // later re-projection.
+        if !self.entries.is_empty() || !self.all_entries.is_empty() {
             self.as_mut().begin_reset_model();
             self.as_mut().rust_mut().entries.clear();
             self.as_mut().rust_mut().all_entries.clear();

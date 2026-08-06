@@ -2552,7 +2552,9 @@ MainLayout {
         }
         if (fieldId === "games_filter_pick") {
             root.closeListPickerModal();
-            Browse.GamesModel.apply_favorites_filter(selectedId === "favorites");
+            const enabled = selectedId === "favorites";
+            Browse.GamesModel.apply_favorites_filter(enabled);
+            Browse.GamesState.favorites_filter = enabled;
             return;
         }
         if (fieldId === "page_menu_favorites") {

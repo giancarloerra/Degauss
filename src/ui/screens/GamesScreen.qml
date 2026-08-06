@@ -24,6 +24,24 @@ MediaListScreen {
 
     property alias gamesGrid: games.mediaGrid
 
+    // Restore the persisted favorites projection before the first
+    // browse: the property alone suffices pre-listing, since the
+    // projection applies when the listing lands.
+    Component.onCompleted: {
+        Browse.GamesModel.favorites_only = Browse.GamesState.favorites_filter === true;
+    }
+
+    // While the favorites filter is on, drain the rest of the listing:
+    // the filtered view and the random pick are only truthful over the
+    // complete folder. With direct listings the folder arrives whole
+    // and this never fires; it exists for the RPC-fallback case.
+    Timer {
+        interval: 150
+        repeat: true
+        running: games.active && Browse.GamesModel.favorites_only && Browse.GamesModel.has_next_page && !Browse.GamesModel.loading
+        onTriggered: Browse.GamesModel.fetch_more()
+    }
+
     readonly property bool _portraitNonCrtList: !Theme.crtNativePath && Browse.Settings.current_orientation !== "horizontal"
     readonly property int _listPageSize: games._portraitNonCrtList ? 16 : 10
     // How many list pages before the loaded edge `_prefetchListTail`

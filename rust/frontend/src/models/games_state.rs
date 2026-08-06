@@ -27,6 +27,7 @@ pub struct GamesStateRust {
     system_id: QString,
     path_stack: QStringList,
     selected_at_level: QStringList,
+    favorites_filter: bool,
 }
 
 #[cxx_qt::bridge]
@@ -45,7 +46,13 @@ pub mod ffi {
         #[qproperty(QString, system_id, READ, WRITE = set_system_id, NOTIFY)]
         #[qproperty(QStringList, path_stack, READ, NOTIFY)]
         #[qproperty(QStringList, selected_at_level, READ, NOTIFY)]
+        #[qproperty(bool, favorites_filter, READ, WRITE = set_favorites_filter, NOTIFY)]
         type GamesState = super::GamesStateRust;
+
+        /// Persisted favorites-only projection for folder listings,
+        /// restored by the games screen before its first browse.
+        #[qinvokable]
+        fn set_favorites_filter(self: Pin<&mut GamesState>, value: bool);
 
         #[qinvokable]
         fn set_system_id(self: Pin<&mut GamesState>, value: QString);
@@ -79,6 +86,7 @@ impl Initialize for ffi::GamesState {
             normalize_persisted(&snapshot.path_stack, &snapshot.selected_at_level);
         self.as_mut().rust_mut().path_stack = vec_to_qstringlist(&path_stack);
         self.as_mut().rust_mut().selected_at_level = vec_to_qstringlist(&selected_at_level);
+        self.as_mut().rust_mut().favorites_filter = snapshot.favorites_filter;
         crate::startup_trace(format!(
             "rust:model GamesState init end dur_ms={}",
             started.elapsed().as_millis()
@@ -87,6 +95,17 @@ impl Initialize for ffi::GamesState {
 }
 
 impl ffi::GamesState {
+    fn set_favorites_filter(mut self: Pin<&mut Self>, value: bool) {
+        if self.favorites_filter == value {
+            return;
+        }
+        self.as_mut().rust_mut().favorites_filter = value;
+        self.as_mut().favorites_filter_changed();
+        persist_games(|g| {
+            g.favorites_filter = value;
+        });
+    }
+
     fn set_system_id(mut self: Pin<&mut Self>, value: QString) {
         if self.system_id == value {
             return;

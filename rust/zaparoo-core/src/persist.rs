@@ -58,6 +58,9 @@ pub struct GamesState {
     pub system_id: String,
     pub path_stack: Vec<String>,
     pub selected_at_level: Vec<String>,
+    /// Favorites-only projection of folder listings. Serde-defaulted so
+    /// state files written before the field existed keep loading.
+    pub favorites_filter: bool,
 }
 
 impl Default for GamesState {
@@ -66,6 +69,7 @@ impl Default for GamesState {
             system_id: String::new(),
             path_stack: vec![String::new()],
             selected_at_level: vec![String::new()],
+            favorites_filter: false,
         }
     }
 }
