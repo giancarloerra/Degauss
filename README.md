@@ -36,7 +36,7 @@ if the database ever changes shape, the affected read turns itself off
 loudly and the frontend behaves exactly like upstream until it is
 updated. Writes never touch the database directly.
 
-**The look.** A more neutral monochrome interface where the only chroma is the
+**The look.** An opinionated more neutral monochrome interface where the only chroma is the
 Degauss wordmark's own palette, one meaning per colour: yellow
 (`#FFCD09`) is selection, teal (`#03A49D`) is state and activity (the
 home tiles' focus, the status pill's progress), red (`#FE2E1D`) marks
