@@ -557,7 +557,7 @@ Euskara - devilschile2</source>
         <translation type="vanished">Ajustes</translation>
     </message>
     <message>
-        <location filename="../screens/HubScreen.qml" line="796"/>
+        <location filename="../screens/HubScreen.qml" line="800"/>
         <source>No systems available. Run Update media database from Settings.</source>
         <translation>No hay sistemas disponibles. Ejecuta Actualizar la base de datos de medios desde Ajustes.</translation>
     </message>
@@ -666,23 +666,23 @@ Euskara - devilschile2</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../app/Main.qml" line="2193"/>
-        <location filename="../app/Main.qml" line="2217"/>
+        <location filename="../app/Main.qml" line="2199"/>
+        <location filename="../app/Main.qml" line="2223"/>
         <source>View</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../app/Main.qml" line="3454"/>
+        <location filename="../app/Main.qml" line="3432"/>
         <source>Loading systems…</source>
         <translation>Cargando sistemas…</translation>
     </message>
     <message>
-        <location filename="../app/Main.qml" line="3460"/>
+        <location filename="../app/Main.qml" line="3438"/>
         <source>Loading favorites…</source>
         <translation>Cargando favoritos…</translation>
     </message>
     <message>
-        <location filename="../app/Main.qml" line="3456"/>
+        <location filename="../app/Main.qml" line="3434"/>
         <source>Loading games…</source>
         <translation>Cargando juegos…</translation>
     </message>
@@ -712,8 +712,8 @@ Euskara - devilschile2</source>
     </message>
     <message>
         <location filename="../app/Main.qml" line="1800"/>
-        <location filename="../app/Main.qml" line="2221"/>
-        <location filename="../app/Main.qml" line="2259"/>
+        <location filename="../app/Main.qml" line="2227"/>
+        <location filename="../app/Main.qml" line="2265"/>
         <source>Default</source>
         <translation type="unfinished">Por defecto</translation>
     </message>
@@ -728,99 +728,106 @@ Euskara - devilschile2</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../app/Main.qml" line="2206"/>
+        <location filename="../app/Main.qml" line="2212"/>
         <source>Sort: %1</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../app/Main.qml" line="2210"/>
+        <location filename="../app/Main.qml" line="2197"/>
+        <location filename="../app/Main.qml" line="2216"/>
         <source>Show: %1</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../app/Main.qml" line="2214"/>
+        <location filename="../app/Main.qml" line="2220"/>
         <source>Random favorite</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../app/Main.qml" line="2221"/>
-        <location filename="../app/Main.qml" line="2263"/>
+        <location filename="../app/Main.qml" line="2227"/>
+        <location filename="../app/Main.qml" line="2269"/>
         <source>A-Z</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../app/Main.qml" line="2229"/>
+        <location filename="../app/Main.qml" line="2197"/>
+        <location filename="../app/Main.qml" line="2235"/>
         <source>All</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../app/Main.qml" line="2267"/>
+        <location filename="../app/Main.qml" line="2197"/>
+        <source>Favorites</source>
+        <translation type="unfinished">Favoritos</translation>
+    </message>
+    <message>
+        <location filename="../app/Main.qml" line="2273"/>
         <source>Sort</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../app/Main.qml" line="2292"/>
+        <location filename="../app/Main.qml" line="2298"/>
         <source>All (%1)</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../app/Main.qml" line="2322"/>
         <location filename="../app/Main.qml" line="2328"/>
+        <location filename="../app/Main.qml" line="2334"/>
         <source>%1 (%2)</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../app/Main.qml" line="2332"/>
+        <location filename="../app/Main.qml" line="2338"/>
         <source>Show</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../app/Main.qml" line="2472"/>
+        <location filename="../app/Main.qml" line="2478"/>
         <source>Saving launcher</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../app/Main.qml" line="2476"/>
+        <location filename="../app/Main.qml" line="2482"/>
         <source>Saving…</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../app/Main.qml" line="2490"/>
+        <location filename="../app/Main.qml" line="2496"/>
         <source>Launcher update failed</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../app/Main.qml" line="2494"/>
+        <location filename="../app/Main.qml" line="2500"/>
         <source>Error: %1</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../app/Main.qml" line="2498"/>
+        <location filename="../app/Main.qml" line="2504"/>
         <source>Retry</source>
         <translation type="unfinished">Reintentar</translation>
     </message>
     <message>
-        <location filename="../app/Main.qml" line="2502"/>
+        <location filename="../app/Main.qml" line="2508"/>
         <source>Cancel</source>
         <translation type="unfinished">Cancelar</translation>
     </message>
     <message>
-        <location filename="../app/Main.qml" line="3458"/>
+        <location filename="../app/Main.qml" line="3436"/>
         <source>Loading game…</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../app/Main.qml" line="3462"/>
+        <location filename="../app/Main.qml" line="3440"/>
         <source>Loading recently played…</source>
         <translation>Cargando jugados recientemente…</translation>
     </message>
     <message>
-        <location filename="../app/Main.qml" line="3464"/>
+        <location filename="../app/Main.qml" line="3442"/>
         <source>Loading settings…</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../app/Main.qml" line="3466"/>
+        <location filename="../app/Main.qml" line="3444"/>
         <source>Loading…</source>
         <translation>Cargando…</translation>
     </message>
@@ -1041,12 +1048,12 @@ Euskara - devilschile2</source>
         <translation type="unfinished">Cargando…</translation>
     </message>
     <message>
-        <location filename="../screens/MediaListScreen.qml" line="470"/>
+        <location filename="../screens/MediaListScreen.qml" line="474"/>
         <source>%1 entries</source>
         <translation type="unfinished">%1 entradas</translation>
     </message>
     <message>
-        <location filename="../screens/MediaListScreen.qml" line="471"/>
+        <location filename="../screens/MediaListScreen.qml" line="475"/>
         <source>%1 / %2</source>
         <translation type="unfinished"></translation>
     </message>
@@ -1693,7 +1700,7 @@ Euskara - devilschile2</source>
 <context>
     <name>Tile</name>
     <message>
-        <location filename="../components/Tile.qml" line="569"/>
+        <location filename="../components/Tile.qml" line="574"/>
         <source>Hidden</source>
         <translation type="unfinished"></translation>
     </message>
