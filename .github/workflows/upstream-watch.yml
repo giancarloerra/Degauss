@@ -1,0 +1,33 @@
+# Watches upstream Zaparoo releases and opens a tracking issue for each
+# new one, so a Degauss release can follow. Idempotent: an issue whose
+# title already exists (open or closed) is not recreated.
+name: Watch upstream releases
+on:
+  schedule:
+    - cron: "17 6 * * *"
+  workflow_dispatch:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    steps:
+      - name: Open tracking issues for new upstream releases
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -e
+          for repo in ZaparooProject/zaparoo-frontend ZaparooProject/zaparoo-core; do
+            # The tag name is third-party data; strip it to a tag-safe
+            # character set before it appears on any command line.
+            tag=$(gh api "repos/${repo}/releases/latest" --jq .tag_name 2>/dev/null | tr -cd 'A-Za-z0-9._-' || echo "")
+            [ -n "$tag" ] || continue
+            title="Track upstream ${repo#*/} ${tag}"
+            existing=$(gh issue list -R "${GITHUB_REPOSITORY}" --search "\"$title\" in:title" --state all --json number --jq 'length')
+            if [ "${existing}" = "0" ]; then
+              gh issue create -R "${GITHUB_REPOSITORY}" \
+                --title "$title" \
+                --body "Upstream ${repo} published ${tag}. Merge it, run the full gate chain, verify on device, and tag a Degauss release."
+            fi
+          done
