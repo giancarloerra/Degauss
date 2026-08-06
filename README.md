@@ -1,4 +1,6 @@
-# Degauss
+<p align="center">
+  <img src="resources/images/logo.png" width="500" alt="Degauss">
+</p>
 
 Degauss is a speed-first fork of
 [Zaparoo Frontend](https://github.com/ZaparooProject/zaparoo-frontend).
