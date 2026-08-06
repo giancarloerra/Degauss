@@ -1,10 +1,7 @@
 # Degauss
 
 Degauss is a speed-first fork of
-[Zaparoo Frontend](https://github.com/ZaparooProject/zaparoo-frontend),
-maintained by Giancarlo Erra (tracking as quickly as possible every new
-release of [Zaparoo Core](https://zaparoo.org) and
-[Zaparoo Frontend](https://github.com/ZaparooProject/zaparoo-frontend)).
+[Zaparoo Frontend](https://github.com/ZaparooProject/zaparoo-frontend).
 It features:
 
 - The direct-read speed stack below.
