@@ -686,8 +686,8 @@ Euskara - devilschile2</source>
     </message>
     <message>
         <location filename="../app/Main.qml" line="1800"/>
-        <location filename="../app/Main.qml" line="2227"/>
-        <location filename="../app/Main.qml" line="2265"/>
+        <location filename="../app/Main.qml" line="2246"/>
+        <location filename="../app/Main.qml" line="2284"/>
         <source>Default</source>
         <translation type="unfinished">डिफ़ॉल्ट</translation>
     </message>
@@ -708,35 +708,41 @@ Euskara - devilschile2</source>
     </message>
     <message>
         <location filename="../app/Main.qml" line="2199"/>
-        <location filename="../app/Main.qml" line="2223"/>
+        <location filename="../app/Main.qml" line="2242"/>
         <source>View</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../app/Main.qml" line="2212"/>
+        <location filename="../app/Main.qml" line="2214"/>
+        <source>Favorites only</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="../app/Main.qml" line="2231"/>
         <source>Sort: %1</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
         <location filename="../app/Main.qml" line="2197"/>
-        <location filename="../app/Main.qml" line="2216"/>
+        <location filename="../app/Main.qml" line="2235"/>
         <source>Show: %1</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../app/Main.qml" line="2220"/>
+        <location filename="../app/Main.qml" line="2239"/>
         <source>Random favorite</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../app/Main.qml" line="2227"/>
-        <location filename="../app/Main.qml" line="2269"/>
+        <location filename="../app/Main.qml" line="2246"/>
+        <location filename="../app/Main.qml" line="2288"/>
         <source>A-Z</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
         <location filename="../app/Main.qml" line="2197"/>
-        <location filename="../app/Main.qml" line="2235"/>
+        <location filename="../app/Main.qml" line="2210"/>
+        <location filename="../app/Main.qml" line="2254"/>
         <source>All</source>
         <translation type="unfinished"></translation>
     </message>
@@ -746,88 +752,89 @@ Euskara - devilschile2</source>
         <translation type="unfinished">पसंदीदा</translation>
     </message>
     <message>
-        <location filename="../app/Main.qml" line="2273"/>
+        <location filename="../app/Main.qml" line="2292"/>
         <source>Sort</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../app/Main.qml" line="2298"/>
+        <location filename="../app/Main.qml" line="2317"/>
         <source>All (%1)</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../app/Main.qml" line="2328"/>
-        <location filename="../app/Main.qml" line="2334"/>
+        <location filename="../app/Main.qml" line="2347"/>
+        <location filename="../app/Main.qml" line="2353"/>
         <source>%1 (%2)</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../app/Main.qml" line="2338"/>
+        <location filename="../app/Main.qml" line="2218"/>
+        <location filename="../app/Main.qml" line="2357"/>
         <source>Show</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../app/Main.qml" line="2478"/>
+        <location filename="../app/Main.qml" line="2497"/>
         <source>Saving launcher</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../app/Main.qml" line="2482"/>
+        <location filename="../app/Main.qml" line="2501"/>
         <source>Saving…</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../app/Main.qml" line="2496"/>
+        <location filename="../app/Main.qml" line="2515"/>
         <source>Launcher update failed</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../app/Main.qml" line="2500"/>
+        <location filename="../app/Main.qml" line="2519"/>
         <source>Error: %1</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../app/Main.qml" line="2504"/>
+        <location filename="../app/Main.qml" line="2523"/>
         <source>Retry</source>
         <translation type="unfinished">फिर से प्रयास करें</translation>
     </message>
     <message>
-        <location filename="../app/Main.qml" line="2508"/>
+        <location filename="../app/Main.qml" line="2527"/>
         <source>Cancel</source>
         <translation type="unfinished">रद्द करें</translation>
     </message>
     <message>
-        <location filename="../app/Main.qml" line="3432"/>
+        <location filename="../app/Main.qml" line="3456"/>
         <source>Loading systems…</source>
         <translation>सिस्टम लोड हो रहे हैं…</translation>
     </message>
     <message>
-        <location filename="../app/Main.qml" line="3434"/>
+        <location filename="../app/Main.qml" line="3458"/>
         <source>Loading games…</source>
         <translation>गेम लोड हो रहे हैं…</translation>
     </message>
     <message>
-        <location filename="../app/Main.qml" line="3436"/>
+        <location filename="../app/Main.qml" line="3460"/>
         <source>Loading game…</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../app/Main.qml" line="3438"/>
+        <location filename="../app/Main.qml" line="3462"/>
         <source>Loading favorites…</source>
         <translation>पसंदीदा लोड हो रहे हैं…</translation>
     </message>
     <message>
-        <location filename="../app/Main.qml" line="3440"/>
+        <location filename="../app/Main.qml" line="3464"/>
         <source>Loading recently played…</source>
         <translation>हाल ही में खेले गए लोड हो रहे हैं…</translation>
     </message>
     <message>
-        <location filename="../app/Main.qml" line="3442"/>
+        <location filename="../app/Main.qml" line="3466"/>
         <source>Loading settings…</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../app/Main.qml" line="3444"/>
+        <location filename="../app/Main.qml" line="3468"/>
         <source>Loading…</source>
         <translation>लोड हो रहा है…</translation>
     </message>
