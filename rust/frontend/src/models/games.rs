@@ -3046,8 +3046,7 @@ fn apply_favorite_tags(
         model.as_mut().rust_mut().entries.remove(index as usize);
         let count = model.count.saturating_sub(1);
         model.as_mut().rust_mut().count = count;
-        let displays =
-            compute_disambig_displays(&model.entries, model.show_original_filenames);
+        let displays = compute_disambig_displays(&model.entries, model.show_original_filenames);
         model.as_mut().rust_mut().disambig_displays = displays;
         model.as_mut().end_remove_rows();
         model.as_mut().count_changed();
