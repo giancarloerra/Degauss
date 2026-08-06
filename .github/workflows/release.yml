@@ -2,35 +2,77 @@
 # the GitHub release with its checksum and the Core compatibility file
 # (the asset contract scripts/mister/update_degauss.sh consumes).
 #
-# The Qt cross toolchain is built from Dockerfile.toolchain on first
-# run (the upstream ghcr image requires authentication), which is slow
-# and disk-hungry; the free-space step below makes room on the runner.
+# The Qt cross toolchain is cached as a GHCR package on this repository:
+# a release run pulls it in minutes; on a cache miss (new toolchain
+# version) the build scripts create it from Dockerfile.toolchain
+# (~100 minutes, proven within runner limits) and the run pushes it to
+# GHCR for every later release. No docker/setup-buildx-action here: the
+# runner's default buildx driver shares the daemon image store, which
+# the app build's FROM of the locally loaded toolchain image requires;
+# the isolated container driver that action creates cannot see it.
+#
 # Tolerant of a release that already exists (e.g. one created manually
 # with a locally built, device-tested binary): existing assets are
-# never overwritten — the CI build then only validates that the tag
-# builds and fills in any missing assets.
+# never overwritten — the run then only validates the build and fills
+# in missing assets. workflow_dispatch allows validating the pipeline
+# against an existing tag.
 name: Release
 on:
   push:
     tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to build and (re)attach assets for"
+        required: true
 
 jobs:
   build:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      packages: write
+    env:
+      RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_TAG }}
 
       - name: Free runner disk space
         run: |
           sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /opt/hostedtoolcache/CodeQL
           df -h /
 
-      - uses: docker/setup-buildx-action@v3
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Restore toolchain image from GHCR cache
+        id: toolchain
+        run: |
+          TC_VERSION=$(tr -d '[:space:]' < scripts/toolchain/VERSION)
+          GHCR_IMAGE="ghcr.io/${GITHUB_REPOSITORY}/qt6-arm32-toolchain:${TC_VERSION}"
+          echo "tc_version=${TC_VERSION}" >> "$GITHUB_OUTPUT"
+          echo "ghcr_image=${GHCR_IMAGE}" >> "$GITHUB_OUTPUT"
+          if docker pull "${GHCR_IMAGE}"; then
+            docker tag "${GHCR_IMAGE}" "zaparoo/qt6-arm32-mister:${TC_VERSION}"
+            echo "cached=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "cached=false" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Build MiSTer ARM32 binary
         run: USE_LOCAL_TOOLCHAIN=1 ./scripts/build-arm32.sh
+
+      - name: Push toolchain image to GHCR cache
+        if: steps.toolchain.outputs.cached == 'false'
+        run: |
+          docker tag "zaparoo/qt6-arm32-mister:${{ steps.toolchain.outputs.tc_version }}" "${{ steps.toolchain.outputs.ghcr_image }}"
+          docker push "${{ steps.toolchain.outputs.ghcr_image }}"
 
       - name: Assemble release assets
         run: |
@@ -42,11 +84,11 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          if ! gh release create "${GITHUB_REF_NAME}" \
+          if ! gh release create "${RELEASE_TAG}" \
             output/frontend output/frontend.md5 output/min_core_version.txt \
-            --title "Degauss ${GITHUB_REF_NAME}" --generate-notes; then
+            --title "Degauss ${RELEASE_TAG}" --generate-notes; then
             # Release exists: attach only what is missing, never replace.
-            gh release upload "${GITHUB_REF_NAME}" \
+            gh release upload "${RELEASE_TAG}" \
               output/frontend output/frontend.md5 output/min_core_version.txt \
               || true
           fi
