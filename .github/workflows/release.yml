@@ -55,7 +55,9 @@ jobs:
         id: toolchain
         run: |
           TC_VERSION=$(tr -d '[:space:]' < scripts/toolchain/VERSION)
-          GHCR_IMAGE="ghcr.io/${GITHUB_REPOSITORY}/qt6-arm32-toolchain:${TC_VERSION}"
+          # Docker repository names must be lowercase; the GitHub
+          # repository name is not necessarily.
+          GHCR_IMAGE="ghcr.io/$(echo "${GITHUB_REPOSITORY}" | tr '[:upper:]' '[:lower:]')/qt6-arm32-toolchain:${TC_VERSION}"
           echo "tc_version=${TC_VERSION}" >> "$GITHUB_OUTPUT"
           echo "ghcr_image=${GHCR_IMAGE}" >> "$GITHUB_OUTPUT"
           if docker pull "${GHCR_IMAGE}"; then
