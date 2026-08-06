@@ -3025,7 +3025,9 @@ fn apply_favorite_tags(
     }
     // Both projections carry the truth: the visible row and its twin in
     // the unfiltered listing.
-    model.as_mut().rust_mut().entries[index as usize].tags = tags.clone();
+    model.as_mut().rust_mut().entries[index as usize]
+        .tags
+        .clone_from(&tags);
     let all_pos = model.all_entries.iter().position(|e| {
         if media_id.is_some() {
             e.media_id == media_id
@@ -4134,8 +4136,8 @@ mod tests {
         meta_params_for_entry, ordered_detail_image_keys, position_of_game_path,
         prefetch_around_plan, prefetch_cursor_window_plan, project_status, result_total_dirs,
         run_text_for_entry, scope_fully_loaded, seeded_refetch_pagination_state,
-        singleton_directory_needs_launch_resolution, transform_entries, walk_page_size,
-        InitialAction, Projection,
+        singleton_directory_needs_launch_resolution, transform_entries, visible_entries,
+        walk_page_size, InitialAction, Projection,
     };
     use super::{FETCH_MORE_RAPID_CHUNK_SIZE, JUMP_FETCH_CHUNK_SIZE};
     use crate::media_image_cache::{MediaImageCache, MediaKey};
