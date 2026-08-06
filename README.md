@@ -6,7 +6,8 @@ It features:
 
 - The direct-read speed stack below.
 - Favorites as a full view: the complete set loads at once, with sort
-  modes, system and category scope filters.
+  modes, system, category scope filters and favourites filter for
+  every folder.
 - True random game across any folder and favourites.
 - A `crt-light` theme that lifts surfaces for analog CRT output.
 - Fast list travel: holding Left/Right pages the list at a fast,
@@ -132,9 +133,11 @@ Non-commercial use only. For commercial licensing, contact
 Third-party components:
 
 - **Qt framework**: LGPLv3. Dynamically linked on desktop builds; statically
-  linked on MiSTer ARM32. Object files for re-linking against a modified Qt
-  are available on request at
-  [legal@zaparoo.org](mailto:legal@zaparoo.org).
+  linked on MiSTer ARM32. For binaries distributed from this repository,
+  object files for re-linking against a modified Qt are available on
+  request via this repository's issues; the full source and the
+  reproducible Qt toolchain build (`Dockerfile.toolchain`) are in this
+  repository.
   See [`src/LICENSES/Qt-LGPL-NOTICE.txt`](src/LICENSES/Qt-LGPL-NOTICE.txt)
   and [`src/LICENSES/LGPLv3.txt`](src/LICENSES/LGPLv3.txt).
 - **zaparoo-update**: optional third-party update integration (compiled out of
