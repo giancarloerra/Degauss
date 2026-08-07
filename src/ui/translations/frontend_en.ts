@@ -545,7 +545,7 @@ Euskara - devilschile2</source>
         <translation type="vanished">Settings</translation>
     </message>
     <message>
-        <location filename="../screens/HubScreen.qml" line="800"/>
+        <location filename="../screens/HubScreen.qml" line="796"/>
         <source>No systems available. Run Update media database from Settings.</source>
         <translation type="unfinished"></translation>
     </message>

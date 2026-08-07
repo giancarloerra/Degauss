@@ -557,7 +557,7 @@ Euskara - devilschile2</source>
         <translation type="vanished">Setări</translation>
     </message>
     <message>
-        <location filename="../screens/HubScreen.qml" line="800"/>
+        <location filename="../screens/HubScreen.qml" line="796"/>
         <source>No systems available. Run Update media database from Settings.</source>
         <translation>Niciun sistem disponibil. Rulați Actualizare bază de date din Setări.</translation>
     </message>

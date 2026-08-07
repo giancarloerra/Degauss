@@ -557,7 +557,7 @@ Euskara - devilschile2</source>
         <translation type="vanished">الإعدادات</translation>
     </message>
     <message>
-        <location filename="../screens/HubScreen.qml" line="800"/>
+        <location filename="../screens/HubScreen.qml" line="796"/>
         <source>No systems available. Run Update media database from Settings.</source>
         <translation>لا توجد أنظمة متاحة. شغّل تحديث قاعدة بيانات الوسائط من الإعدادات.</translation>
     </message>
