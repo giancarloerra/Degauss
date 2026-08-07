@@ -107,7 +107,7 @@ jobs:
   rust-lint:
     name: Rust lint (fmt + clippy + deny)
     needs: ensure-lint-image
-    runs-on: ubicloud-standard-8
+    runs-on: ubuntu-latest
     container:
       image: ${{ needs.ensure-lint-image.outputs.image }}
       credentials:
@@ -136,7 +136,7 @@ jobs:
   rust-test:
     name: Rust tests (nextest)
     needs: ensure-lint-image
-    runs-on: ubicloud-standard-8
+    runs-on: ubuntu-latest
     container:
       image: ${{ needs.ensure-lint-image.outputs.image }}
       credentials:
@@ -161,7 +161,7 @@ jobs:
     # running lint as the final step of the same job avoids building twice.
     name: Desktop build + ctest + lint
     needs: ensure-lint-image
-    runs-on: ubicloud-standard-8
+    runs-on: ubuntu-latest
     container:
       image: ${{ needs.ensure-lint-image.outputs.image }}
       credentials:
