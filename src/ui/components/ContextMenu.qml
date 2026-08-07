@@ -236,7 +236,7 @@ Item {
                     height: menu.rowHeight
                     color: Theme.surfaceCard
                     border.width: index === menu.currentIndex ? Sizing.stroke(2) : Sizing.stroke(1)
-                    border.color: index === menu.currentIndex ? Theme.accent : Theme.borderMid
+                    border.color: index === menu.currentIndex ? Theme.focusItem : Theme.borderMid
                     radius: Sizing.cornerRadius
                     transformOrigin: Item.Center
                     scale: row.index === menu.currentIndex ? menu._pressScale : 1.0

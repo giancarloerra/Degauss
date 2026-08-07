@@ -71,7 +71,7 @@ Item {
     // Focus ring colour. Selection yellow by default; the Hub's home
     // tiles override it to the state teal so all three wordmark colours
     // live on screen with distinct roles.
-    property color focusRingColor: Theme.accent
+    property color focusRingColor: Theme.focusContainer
 
     // qmllint disable missing-property compiler
     readonly property bool delegateIsSelected: parent.isSelected

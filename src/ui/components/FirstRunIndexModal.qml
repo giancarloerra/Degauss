@@ -265,7 +265,7 @@ Item {
                             anchors.top: parent.top
                             anchors.bottom: parent.bottom
                             width: Sizing.px(progressTrack.width * _ratio)
-                            color: Theme.accent
+                            color: Theme.stateMarker
                             radius: parent.radius
                         }
                     }
@@ -326,7 +326,7 @@ Item {
                     // so render with the focused recipe (accent border,
                     // 2px) instead of the unfocused borderMid edge.
                     border.width: Sizing.stroke(2)
-                    border.color: Theme.accent
+                    border.color: Theme.focusItem
                     radius: Sizing.cornerRadius
                     transformOrigin: Item.Center
                     scale: modal._pressScale

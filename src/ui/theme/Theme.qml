@@ -71,6 +71,16 @@ QtObject {
     // confused. Used as a graphic mark, not text, which its crt-light
     // contrast supports.
     readonly property color stateMarker: "#03A49D"
+    // Focus tokens. Two families, so the eye learns one rule: a
+    // CONTAINER being focused (icon tiles on the hub and settings, the
+    // grid's placeholder ring, the games list's selection bar) wears
+    // the yellow; an ITEM being chosen inside a surface (modal buttons,
+    // picker and context-menu rows, settings rows and their toggles)
+    // wears the teal. Both default to the palette colours above; a
+    // future config-file palette overrides these tokens, not the call
+    // sites.
+    readonly property color focusContainer: accent
+    readonly property color focusItem: stateMarker
     // Favorite marker — the wordmark's red, so hearts read instantly.
     // A graphic glyph paired with a dark `bgBar` outline for visibility
     // on light cover art; tinted on the fly via the tinted-svg provider

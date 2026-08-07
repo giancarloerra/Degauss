@@ -15,7 +15,7 @@ import Zaparoo.Theme
 //                screen (subpages, About / License).
 //
 // Surface is always `surfaceCard`; focus swaps the border to
-// `Theme.accent` (2px) and unfocused rows show `Theme.borderMid` (1px).
+// `Theme.focusItem` (2px) and unfocused rows show `Theme.borderMid` (1px).
 // Same recipe as tile cards, modal buttons, and list-picker rows —
 // settings rows are no longer the visual outlier.
 //
@@ -97,7 +97,7 @@ Item {
         anchors.fill: parent
         radius: Sizing.cornerRadius
         color: Theme.surfaceCard
-        border.color: root.isFocused ? Theme.accent : Theme.borderMid
+        border.color: root.isFocused ? Theme.focusItem : Theme.borderMid
         border.width: root.isFocused ? Sizing.stroke(2) : Sizing.stroke(1)
     }
 
@@ -158,7 +158,7 @@ Item {
             // outer surface carries the focus indicator, and against
             // the always-on card behind the toggle a static pill
             // border read as chrome-on-chrome.
-            color: root.checked ? Theme.accent : Theme.borderMid
+            color: root.checked ? Theme.focusItem : Theme.borderMid
         }
 
         Rectangle {

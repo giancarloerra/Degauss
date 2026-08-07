@@ -612,9 +612,7 @@ Item {
 
         Component {
             id: tileDelegate
-            Tile {
-                focusRingColor: Theme.stateMarker
-            }
+            Tile {}
         }
 
         Repeater {
@@ -706,9 +704,7 @@ Item {
 
         Component {
             id: actionTileDelegate
-            Tile {
-                focusRingColor: Theme.stateMarker
-            }
+            Tile {}
         }
 
         Repeater {

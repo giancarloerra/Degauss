@@ -207,7 +207,7 @@ Item {
                             height: modal._rowHeight
                             color: Theme.surfaceCard
                             border.width: row.index === modal.currentIndex ? Sizing.stroke(2) : Sizing.stroke(1)
-                            border.color: row.index === modal.currentIndex ? Theme.accent : Theme.borderMid
+                            border.color: row.index === modal.currentIndex ? Theme.focusItem : Theme.borderMid
                             radius: Sizing.cornerRadius
                             transformOrigin: Item.Center
                             scale: row.index === modal.currentIndex ? modal._pressScale : 1.0

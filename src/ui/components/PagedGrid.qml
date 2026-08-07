@@ -752,7 +752,7 @@ Item {
 
                     anchors.fill: parent
                     anchors.margins: Sizing.pctH(0.4)
-                    color: Theme.accent
+                    color: Theme.focusContainer
                     radius: Math.max(0, Sizing.cornerRadius - Sizing.pctH(0.4))
                     antialiasing: true
                     visible: cellItem.isSelected && root.focused && root.focusReady && (root.rapidRenderMode || tileLoader.status !== Loader.Ready)

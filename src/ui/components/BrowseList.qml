@@ -280,7 +280,7 @@ Item {
                 anchors.top: parent.top
                 anchors.bottom: parent.bottom
                 width: root._selectionAccentWidth
-                color: Theme.accent
+                color: Theme.focusContainer
                 visible: row._highlightVisible
                 radius: Math.max(0, Sizing.px(width / 3))
             }

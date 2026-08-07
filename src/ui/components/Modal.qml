@@ -247,7 +247,7 @@ Item {
                         // render with the focused recipe (accent border,
                         // 2px) instead of the unfocused borderMid edge.
                         border.width: Sizing.stroke(2)
-                        border.color: Theme.accent
+                        border.color: Theme.focusItem
                         radius: Sizing.cornerRadius
                         transformOrigin: Item.Center
                         scale: modal._pressTarget === "cancel" ? modal._pressScale : 1.0
@@ -287,7 +287,7 @@ Item {
                         // render with the focused recipe (accent border,
                         // 2px) instead of the unfocused borderMid edge.
                         border.width: Sizing.stroke(2)
-                        border.color: Theme.accent
+                        border.color: Theme.focusItem
                         radius: Sizing.cornerRadius
                         transformOrigin: Item.Center
                         scale: modal._pressTarget === "ok" ? modal._pressScale : 1.0
@@ -338,7 +338,7 @@ Item {
                             height: Sizing.pctH(7)
                             color: Theme.surfaceCard
                             border.width: modal._focusYes ? Sizing.stroke(1) : Sizing.stroke(2)
-                            border.color: modal._focusYes ? Theme.borderMid : Theme.accent
+                            border.color: modal._focusYes ? Theme.borderMid : Theme.focusItem
                             radius: Sizing.cornerRadius
                             transformOrigin: Item.Center
                             scale: modal._pressTarget === "no" ? modal._pressScale : 1.0
@@ -368,7 +368,7 @@ Item {
                             height: Sizing.pctH(7)
                             color: Theme.surfaceCard
                             border.width: modal._focusYes ? Sizing.stroke(2) : Sizing.stroke(1)
-                            border.color: modal._focusYes ? Theme.accent : Theme.borderMid
+                            border.color: modal._focusYes ? Theme.focusItem : Theme.borderMid
                             radius: Sizing.cornerRadius
                             transformOrigin: Item.Center
                             scale: modal._pressTarget === "yes" ? modal._pressScale : 1.0
