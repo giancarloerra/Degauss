@@ -41,6 +41,10 @@ jobs:
       - name: Record the revision it was built from
         id: fork
         run: |
+          # The job runs as root inside the container while the checkout is
+          # owned by the runner user, and git refuses to read a repository
+          # owned by somebody else until told this one is expected.
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
           SHA=$(git rev-parse HEAD)
           echo "sha=${SHA}" >> "$GITHUB_OUTPUT"
           echo "built from ${SHA}"
