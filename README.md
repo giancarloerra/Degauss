@@ -19,7 +19,7 @@ the box, and can be tuned to your liking.
 
 Source available, written in Rust and using Slint, and licensed for non-commercial use.
 
-> ### Star this repository to support it
+> ### Star this repository to support it ⭐️
 >
 > Degauss is written and maintained by one person in his own time. A star is
 > the whole of what it costs you and the clearest signal that the work is
@@ -27,10 +27,6 @@ Source available, written in Rust and using Slint, and licensed for non-commerci
 > [open an issue](../../issues/new/choose) and if you starred it I'll know it matters to someone beyond just fixing things :-)
 
 ## Watch it in action
-
-<!-- ONE thing to change when the upload finishes: replace both copies of
-     VIDEO_ID below with the id from the YouTube URL. For
-     https://youtu.be/dQw4w9WgXcQ the id is dQw4w9WgXcQ. -->
 
 <p align="center">
   <a href="https://www.youtube.com/watch?v=w4dGS4kX35Q">
