@@ -1,0 +1,27 @@
+# Build output
+/target/
+
+# Binaries staged for the card; built, not committed.
+/deploy/Scripts/.degauss/degauss
+
+# Written by Degauss itself when settings change
+/settings.toml
+
+# Staged for the card at build time from assets/logos; not committed twice.
+/deploy/Scripts/.degauss/logos/
+
+# Local working directory, not part of the project.
+/internal/
+
+# What macOS leaves behind in any folder opened in Finder. No leading slash,
+# so each one matches at every depth rather than only at the root.
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+.Spotlight-V100
+.Trashes
+.fseventsd
+.TemporaryItems
+.DocumentRevisions-V100
+

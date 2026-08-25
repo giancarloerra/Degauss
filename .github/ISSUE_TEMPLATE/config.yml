@@ -1,0 +1,4 @@
+# No blank issues: the two forms below cover everything, and a form filled in
+# is a report that can be acted on rather than one that needs a conversation
+# before it can start.
+blank_issues_enabled: false

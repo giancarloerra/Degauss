@@ -1,0 +1,1982 @@
+# Per-system launch parameters, MiSTer.
+#
+# Each entry names the core to load, the folders a system's games live in,
+# the file extensions that belong to it, and the slot a file is loaded into.
+#
+# "mgl" in an extension list marks a system whose folders are also scanned
+# for .mgl files. [[systems.launch]] maps to the delay, type and index
+# attributes of the MGL <file> element.
+#
+# Nothing regenerates this file: edit it freely.
+[[systems]]
+name = "3DO"
+id = "3DO"
+folders = ["3DO"]
+rbf = "_Console/3DO"
+extensions = ["iso", "cue", "chd", "mgl"]
+
+[[systems.launch]]
+extensions = ["iso", "cue", "chd"]
+type = "s"
+index = 0
+delay = 1
+
+[[systems]]
+name = "Adventure Vision"
+id = "AdventureVision"
+folders = ["AVision"]
+rbf = "_Console/AdventureVision"
+extensions = ["bin", "mgl"]
+
+[[systems.launch]]
+extensions = ["bin"]
+type = "f"
+index = 1
+delay = 1
+
+[[systems]]
+name = "Amiga"
+id = "Amiga"
+folders = ["Amiga"]
+rbf = "_Computer/Minimig"
+extensions = ["adf", "mgl"]
+
+[[systems.launch]]
+extensions = ["adf", "mgl"]
+type = "f"
+index = 0
+delay = 1
+
+[[systems]]
+name = "Amiga CD32"
+id = "AmigaCD32"
+folders = ["AmigaCD32"]
+rbf = "_Computer/Minimig"
+extensions = ["cue", "chd", "iso", "mgl"]
+
+[[systems.launch]]
+extensions = ["cue", "chd", "iso"]
+type = "s"
+index = 1
+delay = 1
+
+[[systems]]
+name = "Amstrad CPC"
+id = "Amstrad"
+folders = ["Amstrad"]
+rbf = "_Computer/Amstrad"
+extensions = ["dsk", "cdt", "sna", "mgl"]
+
+[[systems.launch]]
+extensions = ["dsk"]
+type = "s"
+index = 0
+delay = 1
+
+[[systems.launch]]
+extensions = ["dsk"]
+type = "s"
+index = 1
+delay = 1
+
+[[systems.launch]]
+extensions = ["e??"]
+type = "f"
+index = 3
+delay = 1
+
+[[systems.launch]]
+extensions = ["cdt"]
+type = "f"
+index = 4
+delay = 1
+
+[[systems.launch]]
+extensions = ["sna"]
+type = "f"
+index = 6
+delay = 1
+
+[[systems]]
+name = "Amstrad PCW"
+id = "AmstradPCW"
+folders = ["Amstrad PCW"]
+rbf = "_Computer/Amstrad-PCW"
+extensions = ["dsk", "mgl"]
+
+[[systems.launch]]
+extensions = ["dsk"]
+type = "s"
+index = 0
+delay = 1
+
+[[systems.launch]]
+extensions = ["dsk"]
+type = "s"
+index = 1
+delay = 1
+
+[[systems]]
+name = "Apogee BK-01"
+id = "Apogee"
+folders = ["APOGEE"]
+rbf = "_Computer/Apogee"
+extensions = ["rka", "rkr", "gam", "mgl"]
+
+[[systems.launch]]
+extensions = ["rka", "rkr", "gam"]
+type = "f"
+index = 1
+delay = 1
+
+[[systems]]
+name = "Apple I"
+id = "AppleI"
+folders = ["Apple-I"]
+rbf = "_Computer/Apple-I"
+extensions = ["txt", "mgl"]
+
+[[systems.launch]]
+extensions = ["txt"]
+type = "f"
+index = 1
+delay = 1
+
+[[systems]]
+name = "Apple IIe"
+id = "AppleII"
+folders = ["Apple-II"]
+rbf = "_Computer/Apple-II"
+extensions = ["dsk", "do", "po", "nib", "hdv", "mgl"]
+
+[[systems.launch]]
+extensions = ["nib", "dsk", "do", "po"]
+type = "s"
+index = 0
+delay = 1
+
+[[systems.launch]]
+extensions = ["hdv"]
+type = "s"
+index = 1
+delay = 1
+
+[[systems]]
+name = "Apple IIGS"
+id = "AppleIIGS"
+folders = ["Apple-IIgs"]
+rbf = "_Computer/Apple-IIgs"
+extensions = ["hdv", "po", "2mg", "woz", "dsk", "do", "nib", "mgl"]
+
+[[systems.launch]]
+extensions = ["hdv", "po", "2mg"]
+type = "s"
+index = 0
+delay = 1
+
+[[systems.launch]]
+extensions = ["woz"]
+type = "s"
+index = 2
+delay = 1
+
+[[systems.launch]]
+extensions = ["dsk", "do", "nib"]
+type = "s"
+index = 3
+delay = 1
+
+[[systems]]
+name = "Apple Lisa"
+id = "AppleLisa"
+folders = ["LISA"]
+rbf = "_Computer/Apple-Lisa"
+extensions = ["img", "vhd", "mgl"]
+
+[[systems.launch]]
+extensions = ["img", "vhd"]
+type = "s"
+index = 0
+delay = 2
+
+[[systems]]
+name = "Arcade"
+id = "Arcade"
+folders = ["_Arcade"]
+rbf = ""
+extensions = ["mra", "mgl"]
+
+category = "Arcade"
+# Nothing is skipped. The folders a card holds beside the games are the
+# work of the organise scripts people run: _Organized re-sorts every game
+# by genre and manufacturer, _alternatives holds the other builds of a
+# board. Hiding them made those scripts pointless; browsing a folder at a
+# time makes them useful, and cannot produce the duplicates that hiding
+# them was there to prevent.
+
+[[systems]]
+name = "Arcadia 2001"
+id = "Arcadia"
+folders = ["Arcadia"]
+rbf = "_Console/Arcadia"
+extensions = ["bin", "mgl"]
+
+[[systems.launch]]
+extensions = ["bin"]
+type = "f"
+index = 1
+delay = 1
+
+[[systems]]
+name = "Arduboy"
+id = "Arduboy"
+folders = ["Arduboy"]
+rbf = "_Other/Arduboy"
+extensions = ["hex", "bin", "mgl"]
+
+[[systems.launch]]
+extensions = ["bin", "hex"]
+type = "f"
+index = 0
+delay = 1
+
+[[systems]]
+name = "Atari 2600"
+id = "Atari2600"
+folders = ["ATARI7800", "Atari2600"]
+rbf = "_Console/Atari7800"
+setname = "Atari2600"
+extensions = ["a26", "mgl"]
+
+[[systems.launch]]
+extensions = ["a26", "bin"]
+type = "f"
+index = 1
+delay = 1
+
+[[systems]]
+name = "Atari 5200"
+id = "Atari5200"
+folders = ["ATARI5200"]
+rbf = "_Console/Atari5200"
+extensions = ["car", "a52", "bin", "rom", "mgl"]
+
+[[systems.launch]]
+extensions = ["car", "a52", "bin", "rom"]
+type = "s"
+index = 1
+delay = 1
+
+[[systems]]
+name = "Atari 7800"
+id = "Atari7800"
+folders = ["ATARI7800"]
+rbf = "_Console/Atari7800"
+extensions = ["a78", "bin", "mgl"]
+
+[[systems.launch]]
+extensions = ["a78", "bin"]
+type = "f"
+index = 1
+delay = 1
+
+[[systems]]
+name = "Atari 800XL"
+id = "Atari800"
+folders = ["ATARI800"]
+rbf = "_Computer/Atari800"
+extensions = ["atr", "xex", "xfd", "atx", "car", "rom", "bin", "mgl"]
+
+[[systems.launch]]
+extensions = ["atr", "xex", "xfd", "atx"]
+type = "s"
+index = 0
+delay = 1
+
+[[systems.launch]]
+extensions = ["atr", "xex", "xfd", "atx"]
+type = "s"
+index = 1
+delay = 1
+
+[[systems.launch]]
+extensions = ["car", "rom", "bin"]
+type = "s"
+index = 2
+delay = 1
+
+[[systems]]
+name = "Atari Lynx"
+id = "AtariLynx"
+folders = ["AtariLynx"]
+rbf = "_Console/AtariLynx"
+extensions = ["lnx", "mgl"]
+
+[[systems.launch]]
+extensions = ["lnx"]
+type = "f"
+index = 1
+delay = 1
+
+[[systems]]
+name = "Atom"
+id = "AcornAtom"
+folders = ["AcornAtom"]
+rbf = "_Computer/AcornAtom"
+extensions = ["vhd", "mgl"]
+
+[[systems.launch]]
+extensions = ["vhd"]
+type = "s"
+index = 1
+delay = 1
+
+[[systems]]
+name = "Audio"
+id = "Audio"
+folders = ["MegaVGMDrive"]
+rbf = "_Custom Cores/Cores/VGM_MD_MiSTer"
+extensions = ["vgm", "mgl"]
+
+[[systems.launch]]
+extensions = ["vgm"]
+type = "f"
+index = 1
+delay = 1
+
+[[systems]]
+name = "Bally Astrocade"
+id = "Astrocade"
+folders = ["Astrocade"]
+rbf = "_Console/Astrocade"
+extensions = ["bin", "mgl"]
+
+[[systems.launch]]
+extensions = ["bin"]
+type = "f"
+index = 1
+delay = 1
+
+[[systems]]
+name = "BBC Micro/Master"
+id = "BBCMicro"
+folders = ["BBCMicro"]
+rbf = "_Computer/BBCMicro"
+extensions = ["ssd", "dsd", "vhd", "mgl"]
+
+[[systems.launch]]
+extensions = ["vhd"]
+type = "s"
+index = 0
+delay = 1
+
+[[systems.launch]]
+extensions = ["ssd", "dsd"]
+type = "s"
+index = 1
+delay = 1
+
+[[systems.launch]]
+extensions = ["ssd", "dsd"]
+type = "s"
+index = 2
+delay = 1
+
+[[systems]]
+name = "BK0011M"
+id = "BK0011M"
+folders = ["BK0011M"]
+rbf = "_Computer/BK0011M"
+extensions = ["bin", "dsk", "vhd", "mgl"]
+
+[[systems.launch]]
+extensions = ["bin"]
+type = "f"
+index = 1
+delay = 1
+
+[[systems.launch]]
+extensions = ["dsk"]
+type = "s"
+index = 1
+delay = 1
+
+[[systems.launch]]
+extensions = ["dsk"]
+type = "s"
+index = 2
+delay = 1
+
+[[systems.launch]]
+extensions = ["vhd"]
+type = "s"
+index = 0
+delay = 1
+
+[[systems]]
+name = "Casio PV-1000"
+id = "CasioPV1000"
+folders = ["Casio_PV-1000"]
+rbf = "_Console/Casio_PV-1000"
+extensions = ["bin", "mgl"]
+
+[[systems.launch]]
+extensions = ["bin"]
+type = "f"
+index = 1
+delay = 1
+
+[[systems]]
+name = "Casio PV-2000"
+id = "CasioPV2000"
+folders = ["Casio_PV-2000"]
+rbf = "_Computer/Casio_PV-2000"
+extensions = ["bin", "mgl"]
+
+[[systems.launch]]
+extensions = ["bin"]
+type = "f"
+index = 1
+delay = 1
+
+[[systems]]
+name = "CD-i"
+id = "CDI"
+folders = ["CD-i"]
+rbf = "_Console/CDi"
+extensions = ["cue", "chd", "mgl"]
+
+[[systems.launch]]
+extensions = ["cue", "chd"]
+type = "s"
+index = 1
+delay = 1
+
+[[systems]]
+name = "Channel F"
+id = "ChannelF"
+folders = ["ChannelF"]
+rbf = "_Console/ChannelF"
+extensions = ["rom", "bin", "mgl"]
+
+[[systems.launch]]
+extensions = ["rom", "bin"]
+type = "f"
+index = 1
+delay = 1
+
+[[systems]]
+name = "CHIP-8"
+id = "Chip8"
+folders = ["Chip8"]
+rbf = "_Other/Chip8"
+extensions = ["ch8", "mgl"]
+
+[[systems.launch]]
+extensions = ["ch8"]
+type = "f"
+index = 1
+delay = 1
+
+[[systems]]
+name = "ColecoVision"
+id = "ColecoVision"
+folders = ["Coleco"]
+rbf = "_Console/ColecoVision"
+extensions = ["col", "bin", "rom", "mgl"]
+
+[[systems.launch]]
+extensions = ["col", "bin", "rom"]
+type = "f"
+index = 1
+delay = 1
+
+[[systems]]
+name = "Commodore 16"
+id = "C16"
+folders = ["C16"]
+rbf = "_Computer/C16"
+extensions = ["d64", "g64", "prg", "tap", "bin", "mgl"]
+
+[[systems.launch]]
+extensions = ["d64", "g64"]
+type = "s"
+index = 0
+delay = 1
+
+[[systems.launch]]
+extensions = ["d64", "g64"]
+type = "s"
+index = 1
+delay = 1
+
+[[systems.launch]]
+extensions = ["prg", "tap", "bin"]
+type = "f"
+index = 1
+delay = 1
+
+[[systems]]
+name = "Commodore 64"
+id = "C64"
+folders = ["C64"]
+rbf = "_Computer/C64"
+extensions = ["d64", "g64", "t64", "d81", "prg", "crt", "reu", "tap", "mgl"]
+
+[[systems.launch]]
+extensions = ["d64", "g64", "t64", "d81"]
+type = "s"
+index = 0
+delay = 1
+
+[[systems.launch]]
+extensions = ["d64", "g64", "t64", "d81"]
+type = "s"
+index = 1
+delay = 1
+
+[[systems.launch]]
+extensions = ["prg", "crt", "reu", "tap"]
+type = "f"
+index = 1
+delay = 1
+
+[[systems]]
+name = "Commodore PET 2001"
+id = "PET2001"
+folders = ["PET2001"]
+rbf = "_Computer/PET2001"
+extensions = ["prg", "tap", "mgl"]
+
+[[systems.launch]]
+extensions = ["prg", "tap"]
+type = "f"
+index = 1
+delay = 1
+
+[[systems]]
+name = "Commodore VIC-20"
+id = "VIC20"
+folders = ["VIC20"]
+rbf = "_Computer/VIC20"
+extensions = ["d64", "g64", "prg", "tap", "crt", "mgl"]
+
+[[systems.launch]]
+extensions = ["d64", "g64"]
+type = "s"
+index = 0
+delay = 1
+
+[[systems.launch]]
+extensions = ["d64", "g64"]
+type = "s"
+index = 1
+delay = 1
+
+[[systems.launch]]
+extensions = ["prg", "crt", "ct?", "tap"]
+type = "f"
+index = 1
+delay = 1
+
+[[systems]]
+name = "EDSAC"
+id = "EDSAC"
+folders = ["EDSAC"]
+rbf = "_Computer/EDSAC"
+extensions = ["tap", "mgl"]
+
+[[systems.launch]]
+extensions = ["tap"]
+type = "f"
+index = 1
+delay = 1
+
+[[systems]]
+name = "Electron"
+id = "AcornElectron"
+folders = ["AcornElectron"]
+rbf = "_Computer/AcornElectron"
+extensions = ["vhd", "mgl"]
+
+[[systems.launch]]
+extensions = ["vhd"]
+type = "s"
+index = 0
+delay = 1
+
+[[systems]]
+name = "Famicom Disk System"
+id = "FDS"
+folders = ["NES", "FDS"]
+rbf = "_Console/NES"
+setname = "FDS"
+extensions = ["fds", "mgl"]
+
+[[systems.launch]]
+extensions = ["fds"]
+type = "f"
+index = 1
+delay = 2
+
+[[systems]]
+name = "Galaksija"
+id = "Galaksija"
+folders = ["Galaksija"]
+rbf = "_Computer/Galaksija"
+extensions = ["tap", "mgl"]
+
+[[systems.launch]]
+extensions = ["tap"]
+type = "f"
+index = 1
+delay = 1
+
+[[systems]]
+name = "Gamate"
+id = "Gamate"
+folders = ["Gamate"]
+rbf = "_Console/Gamate"
+extensions = ["bin", "mgl"]
+
+[[systems.launch]]
+extensions = ["bin"]
+type = "f"
+index = 1
+delay = 1
+
+[[systems]]
+name = "Game & Watch"
+id = "GameNWatch"
+folders = ["GameNWatch", "Game and Watch"]
+rbf = "_Console/GnW"
+extensions = ["bin", "mgl", "gnw"]
+
+[[systems.launch]]
+extensions = ["bin"]
+type = "f"
+index = 1
+delay = 1
+
+[[systems.launch]]
+extensions = ["gnw"]
+type = "f"
+index = 1
+delay = 1
+
+[[systems]]
+name = "Game Gear"
+id = "GameGear"
+folders = ["SMS", "GameGear"]
+rbf = "_Console/SMS"
+setname = "GameGear"
+extensions = ["gg", "mgl"]
+
+[[systems.launch]]
+extensions = ["gg"]
+type = "f"
+index = 2
+delay = 1
+
+[[systems]]
+name = "Game Gear (2 Player)"
+id = "GameGear2P"
+folders = ["GameGear2P"]
+rbf = "_Console/GameGear2P"
+setname = "GameGear2P"
+extensions = ["gg", "mgl"]
+
+[[systems.launch]]
+extensions = ["gg"]
+type = "f"
+index = 2
+delay = 1
+
+[[systems]]
+name = "Gameboy"
+id = "Gameboy"
+folders = ["GAMEBOY"]
+rbf = "_Console/Gameboy"
+extensions = ["gb", "mgl"]
+
+[[systems.launch]]
+extensions = ["gb"]
+type = "f"
+index = 1
+delay = 2
+
+[[systems]]
+name = "Gameboy (2 Player)"
+id = "Gameboy2P"
+folders = ["GAMEBOY2P"]
+rbf = "_Console/Gameboy2P"
+extensions = ["gb", "gbc", "mgl"]
+
+[[systems.launch]]
+extensions = ["gb", "gbc"]
+type = "f"
+index = 1
+delay = 2
+
+[[systems]]
+name = "Gameboy Advance"
+id = "GBA"
+folders = ["GBA"]
+rbf = "_Console/GBA"
+extensions = ["gba", "mgl"]
+
+[[systems.launch]]
+extensions = ["gba"]
+type = "f"
+index = 1
+delay = 2
+
+[[systems]]
+name = "Gameboy Advance (2 Player)"
+id = "GBA2P"
+folders = ["GBA2P"]
+rbf = "_Console/GBA2P"
+extensions = ["gba", "mgl"]
+
+[[systems.launch]]
+extensions = ["gba"]
+type = "f"
+index = 1
+delay = 2
+
+[[systems]]
+name = "Gameboy Color"
+id = "GameboyColor"
+folders = ["GAMEBOY", "GBC"]
+rbf = "_Console/Gameboy"
+setname = "GBC"
+extensions = ["gbc", "mgl"]
+
+[[systems.launch]]
+extensions = ["gbc"]
+type = "f"
+index = 1
+delay = 2
+
+[[systems]]
+name = "Genesis"
+id = "Genesis"
+folders = ["MegaDrive", "Genesis"]
+rbf = "_Console/MegaDrive"
+extensions = ["gen", "bin", "md", "mgl"]
+
+[[systems.launch]]
+extensions = ["bin", "gen", "md"]
+type = "f"
+index = 1
+delay = 1
+
+[[systems]]
+name = "Genesis 32X"
+id = "Sega32X"
+folders = ["S32X"]
+rbf = "_Console/S32X"
+extensions = ["32x", "mgl"]
+
+[[systems.launch]]
+extensions = ["32x"]
+type = "f"
+index = 1
+delay = 1
+
+[[systems]]
+name = "Groovy"
+id = "Groovy"
+folders = ["Groovy"]
+rbf = "_Utility/Groovy"
+extensions = ["gmc", "mgl"]
+
+[[systems.launch]]
+extensions = ["gmc"]
+type = "f"
+index = 1
+delay = 3
+
+[[systems]]
+name = "Intellivision"
+id = "Intellivision"
+folders = ["Intellivision"]
+rbf = "_Console/Intellivision"
+extensions = ["rom", "int", "bin", "mgl"]
+
+[[systems.launch]]
+extensions = ["rom", "int", "bin"]
+type = "f"
+index = 1
+delay = 1
+
+[[systems]]
+name = "Interact"
+id = "Interact"
+folders = ["Interact"]
+rbf = "_Computer/Interact"
+extensions = ["cin", "k7", "mgl"]
+
+[[systems.launch]]
+extensions = ["cin", "k7"]
+type = "f"
+index = 1
+delay = 1
+
+[[systems]]
+name = "Jaguar"
+id = "Jaguar"
+folders = ["Jaguar"]
+rbf = "_Console/Jaguar"
+extensions = ["jag", "j64", "rom", "bin", "mgl"]
+
+[[systems.launch]]
+extensions = ["jag", "j64", "rom", "bin"]
+type = "f"
+index = 0
+delay = 1
+reset_delay = 1
+reset_hold = 1
+
+[[systems]]
+name = "Jaguar CD"
+id = "JaguarCD"
+folders = ["Jaguar"]
+rbf = "_Console/Jaguar"
+extensions = ["cdi", "mgl"]
+
+[[systems.launch]]
+extensions = ["cdi"]
+type = "s"
+index = 1
+delay = 1
+reset_delay = 1
+reset_hold = 1
+
+[[systems]]
+name = "Jupiter Ace"
+id = "Jupiter"
+folders = ["Jupiter"]
+rbf = "_Computer/Jupiter"
+extensions = ["ace", "mgl"]
+
+[[systems.launch]]
+extensions = ["ace"]
+type = "f"
+index = 1
+delay = 1
+
+[[systems]]
+name = "Laser 350/500/700"
+id = "Laser"
+folders = ["Laser"]
+rbf = "_Computer/Laser310"
+extensions = ["vz", "mgl"]
+
+[[systems.launch]]
+extensions = ["vz"]
+type = "f"
+index = 1
+delay = 1
+
+[[systems]]
+name = "Lynx 48/96K"
+id = "Lynx48"
+folders = ["Lynx48"]
+rbf = "_Computer/Lynx48"
+extensions = ["tap", "mgl"]
+
+[[systems.launch]]
+extensions = ["tap"]
+type = "f"
+index = 1
+delay = 1
+
+[[systems]]
+name = "M5"
+id = "SordM5"
+folders = ["Sord M5"]
+rbf = "_Computer/SordM5"
+extensions = ["bin", "rom", "cas", "mgl"]
+
+[[systems.launch]]
+extensions = ["bin", "rom"]
+type = "f"
+index = 1
+delay = 1
+
+[[systems.launch]]
+extensions = ["cas"]
+type = "f"
+index = 2
+delay = 1
+
+[[systems]]
+name = "Macintosh Plus"
+id = "MacPlus"
+folders = ["MACPLUS"]
+rbf = "_Computer/MacPlus"
+extensions = ["dsk", "img", "vhd", "mgl"]
+
+[[systems.launch]]
+extensions = ["dsk"]
+type = "f"
+index = 1
+delay = 1
+
+[[systems.launch]]
+extensions = ["dsk"]
+type = "f"
+index = 2
+delay = 1
+
+[[systems.launch]]
+extensions = ["img", "vhd"]
+type = "s"
+index = 0
+delay = 1
+
+[[systems.launch]]
+extensions = ["img", "vhd"]
+type = "s"
+index = 1
+delay = 1
+
+[[systems]]
+name = "Magnavox Odyssey2"
+id = "Odyssey2"
+folders = ["ODYSSEY2"]
+rbf = "_Console/Odyssey2"
+extensions = ["bin", "mgl"]
+
+[[systems.launch]]
+extensions = ["bin"]
+type = "f"
+index = 1
+delay = 1
+
+[[systems]]
+name = "Master System"
+id = "MasterSystem"
+folders = ["SMS"]
+rbf = "_Console/SMS"
+extensions = ["sms", "mgl"]
+
+[[systems.launch]]
+extensions = ["sms"]
+type = "f"
+index = 1
+delay = 1
+
+[[systems]]
+name = "Mattel Aquarius"
+id = "Aquarius"
+folders = ["AQUARIUS"]
+rbf = "_Computer/Aquarius"
+extensions = ["bin", "caq", "mgl"]
+
+[[systems.launch]]
+extensions = ["bin"]
+type = "f"
+index = 1
+delay = 1
+
+[[systems.launch]]
+extensions = ["caq"]
+type = "f"
+index = 2
+delay = 1
+
+[[systems]]
+name = "Mega Duck"
+id = "MegaDuck"
+folders = ["GAMEBOY", "MegaDuck"]
+rbf = "_Console/Gameboy"
+extensions = ["bin", "mgl"]
+
+[[systems.launch]]
+extensions = ["bin"]
+type = "f"
+index = 1
+delay = 2
+
+[[systems]]
+name = "MSX"
+id = "MSX"
+folders = ["MSX"]
+rbf = "_Computer/MSX"
+extensions = ["vhd", "mgl"]
+
+[[systems.launch]]
+extensions = ["vhd"]
+type = "s"
+index = 1
+delay = 1
+
+[[systems]]
+name = "MSX1"
+id = "MSX1"
+folders = ["MSX1"]
+rbf = "_Computer/MSX1"
+extensions = ["dsk", "rom", "mgl"]
+
+[[systems.launch]]
+extensions = ["dsk"]
+type = "s"
+index = 1
+delay = 1
+
+[[systems.launch]]
+extensions = ["rom"]
+type = "f"
+index = 2
+delay = 1
+
+[[systems.launch]]
+extensions = ["rom"]
+type = "f"
+index = 3
+delay = 1
+
+[[systems]]
+name = "MultiComp"
+id = "MultiComp"
+folders = ["MultiComp"]
+rbf = "_Computer/MultiComp"
+extensions = ["img", "mgl"]
+
+[[systems.launch]]
+extensions = ["img"]
+type = "s"
+index = 1
+delay = 1
+
+[[systems]]
+name = "Neo Geo"
+id = "NeoGeo"
+folders = ["NEOGEO"]
+rbf = "_Console/NeoGeo"
+extensions = ["neo", "mgl"]
+
+[[systems.launch]]
+extensions = ["neo", "mgl"]
+type = "f"
+index = 1
+delay = 1
+
+[[systems]]
+name = "Neo Geo CD"
+id = "NeoGeoCD"
+folders = ["NeoGeo-CD", "NEOGEO"]
+rbf = "_Console/NeoGeo"
+extensions = ["cue", "chd", "mgl"]
+
+[[systems.launch]]
+extensions = ["cue", "chd"]
+type = "s"
+index = 1
+delay = 1
+
+[[systems]]
+name = "Neo Geo MVS"
+id = "NeoGeoMVS"
+folders = ["NEOGEO"]
+rbf = "_Console/NeoGeo"
+extensions = ["neo", "mgl"]
+
+[[systems.launch]]
+extensions = ["neo"]
+type = "f"
+index = 1
+delay = 1
+
+[[systems]]
+name = "Neo Geo Pocket"
+id = "NeoGeoPocket"
+folders = ["NGP"]
+rbf = "_Arcade/JTNGP"
+setname = "NeoGeoPocket"
+extensions = ["ngp", "mgl"]
+
+[[systems.launch]]
+extensions = ["ngp"]
+type = "f"
+index = 1
+delay = 2
+
+[[systems]]
+name = "Neo Geo Pocket Color"
+id = "NeoGeoPocketColor"
+folders = ["NGPC"]
+rbf = "_Arcade/JTNGPC"
+setname = "JTNGPC"
+extensions = ["ngc", "mgl"]
+
+[[systems.launch]]
+extensions = ["ngc"]
+type = "f"
+index = 1
+delay = 2
+
+[[systems]]
+name = "NES"
+id = "NES"
+folders = ["NES"]
+rbf = "_Console/NES"
+extensions = ["nes", "mgl"]
+
+[[systems.launch]]
+extensions = ["nes"]
+type = "f"
+index = 1
+delay = 2
+
+[[systems]]
+name = "NES Music"
+id = "NESMusic"
+folders = ["NES"]
+rbf = "_Console/NES"
+extensions = ["nsf", "mgl"]
+
+[[systems.launch]]
+extensions = ["nsf"]
+type = "f"
+index = 1
+delay = 2
+
+[[systems]]
+name = "Nintendo 64"
+id = "Nintendo64"
+folders = ["N64"]
+rbf = "_Console/N64"
+extensions = ["n64", "z64", "v64", "mgl"]
+
+[[systems.launch]]
+extensions = ["n64", "z64", "v64"]
+type = "f"
+index = 1
+delay = 1
+
+[[systems]]
+name = "OpenBOR"
+id = "OpenBOR"
+folders = ["OpenBOR"]
+rbf = "_Other/OpenBOR_4086"
+extensions = ["pak", "mgl"]
+
+[[systems.launch]]
+extensions = ["pak"]
+type = "s"
+index = 0
+delay = 2
+
+[[systems]]
+name = "Orao"
+id = "Orao"
+folders = ["ORAO"]
+rbf = "_Computer/ORAO"
+extensions = ["tap", "mgl"]
+
+[[systems.launch]]
+extensions = ["tap"]
+type = "f"
+index = 1
+delay = 1
+
+[[systems]]
+name = "Oric"
+id = "Oric"
+folders = ["Oric"]
+rbf = "_Computer/Oric"
+extensions = ["dsk", "mgl"]
+
+[[systems.launch]]
+extensions = ["dsk"]
+type = "s"
+index = 0
+delay = 1
+
+[[systems]]
+name = "PC (DOS)"
+id = "DOS"
+folders = ["AO486", "/media/fat/_DOS Games"]
+rbf = "_Computer/ao486"
+extensions = ["mgl", "vhd", "img", "ima", "vfd", "iso", "cue", "chd"]
+
+[[systems.launch]]
+extensions = ["img", "ima", "vfd"]
+type = "s"
+index = 0
+delay = 1
+
+# IDE 0-0, the hard disk. A DOS game is usually a disk image with its CD
+# beside it: the game boots from the disk and then asks for the disc, so
+# mounting only the disk starts a game that cannot find itself. The .mgl
+# shortcuts the card already carries do exactly this, disk at 2 and disc
+# at 4, followed by a reset.
+[[systems.launch]]
+extensions = ["vhd"]
+type = "s"
+index = 2
+delay = 1
+reset_delay = 1
+companion_extensions = ["iso", "chd", "cue"]
+companion_index = 4
+
+# IDE 1-0, the CD-ROM, when the disc is what was chosen.
+[[systems.launch]]
+extensions = ["iso", "cue", "chd"]
+type = "s"
+index = 4
+delay = 1
+reset_delay = 1
+
+[[systems]]
+name = "PC/XT"
+id = "PCXT"
+folders = ["PCXT"]
+rbf = "_Computer/PCXT"
+extensions = ["img", "vhd", "ima", "vfd", "mgl"]
+
+[[systems.launch]]
+extensions = ["img", "ima", "vfd"]
+type = "s"
+index = 0
+delay = 1
+
+[[systems.launch]]
+extensions = ["img", "ima", "vfd"]
+type = "s"
+index = 1
+delay = 1
+
+[[systems.launch]]
+extensions = ["vhd"]
+type = "s"
+index = 2
+delay = 1
+
+[[systems.launch]]
+extensions = ["vhd"]
+type = "s"
+index = 3
+delay = 1
+
+[[systems]]
+name = "PDP-1"
+id = "PDP1"
+folders = ["PDP1"]
+rbf = "_Computer/PDP1"
+extensions = ["bin", "rim", "pdp", "mgl"]
+
+[[systems.launch]]
+extensions = ["pdp", "rim", "bin"]
+type = "f"
+index = 1
+delay = 1
+
+[[systems]]
+name = "PICO-8"
+id = "Pico8"
+folders = ["PICO-8"]
+rbf = "_Other/PICO-8"
+extensions = ["p8", "mgl"]
+
+[[systems.launch]]
+extensions = ["p8", "p8.png"]
+type = "s"
+index = 0
+delay = 2
+
+[[systems]]
+name = "Playstation"
+id = "PSX"
+folders = ["PSX"]
+rbf = "_Console/PSX"
+extensions = ["cue", "chd", "exe", "mgl"]
+
+[[systems.launch]]
+extensions = ["cue", "chd"]
+type = "s"
+index = 1
+delay = 1
+
+[[systems.launch]]
+extensions = ["exe"]
+type = "f"
+index = 1
+delay = 1
+
+[[systems]]
+name = "PMD 85-2A"
+id = "PMD85"
+folders = ["PMD85"]
+rbf = "_Computer/PMD85"
+extensions = ["rmm", "mgl"]
+
+[[systems.launch]]
+extensions = ["rmm"]
+type = "f"
+index = 1
+delay = 1
+
+[[systems]]
+name = "Pocket Challenge V2"
+id = "PocketChallengeV2"
+folders = ["WonderSwan", "PocketChallengeV2"]
+rbf = "_Console/WonderSwan"
+setname = "PocketChallengeV2"
+extensions = ["pc2", "mgl"]
+
+[[systems.launch]]
+extensions = ["pc2"]
+type = "f"
+index = 1
+delay = 1
+
+[[systems]]
+name = "Pokemon Mini"
+id = "PokemonMini"
+folders = ["PokemonMini"]
+rbf = "_Console/PokemonMini"
+extensions = ["min", "mgl"]
+
+[[systems.launch]]
+extensions = ["min"]
+type = "f"
+index = 1
+delay = 1
+
+[[systems]]
+name = "RX-78 Gundam"
+id = "RX78"
+folders = ["RX78"]
+rbf = "_Computer/RX78"
+extensions = ["bin", "mgl"]
+
+[[systems.launch]]
+extensions = ["bin"]
+type = "f"
+index = 1
+delay = 1
+
+[[systems]]
+name = "SAM Coupe"
+id = "SAMCoupe"
+folders = ["SAMCOUPE"]
+rbf = "_Computer/SAMCoupe"
+extensions = ["dsk", "mgt", "img", "mgl"]
+
+[[systems.launch]]
+extensions = ["dsk", "mgt", "img"]
+type = "s"
+index = 0
+delay = 1
+
+[[systems.launch]]
+extensions = ["dsk", "mgt", "img"]
+type = "s"
+index = 1
+delay = 1
+
+[[systems]]
+name = "Saturn"
+id = "Saturn"
+folders = ["Saturn"]
+rbf = "_Console/Saturn"
+extensions = ["cue", "chd", "mgl"]
+
+[[systems.launch]]
+extensions = ["cue", "chd"]
+type = "s"
+index = 0
+delay = 2
+
+[[systems]]
+name = "Sega CD"
+id = "MegaCD"
+folders = ["MegaCD"]
+rbf = "_Console/MegaCD"
+extensions = ["cue", "chd", "mgl"]
+
+[[systems.launch]]
+extensions = ["cue", "chd"]
+type = "s"
+index = 0
+delay = 1
+
+[[systems]]
+name = "SG-1000"
+id = "SG1000"
+folders = ["SG1000", "Coleco", "SMS"]
+rbf = "_Console/ColecoVision"
+setname = "SG1000"
+extensions = ["sg", "mgl"]
+
+[[systems.launch]]
+extensions = ["sg"]
+type = "f"
+index = 0
+delay = 1
+
+[[systems]]
+name = "Sinclair QL"
+id = "QL"
+folders = ["QL"]
+rbf = "_Computer/QL"
+extensions = ["mdv", "win", "mgl"]
+
+[[systems.launch]]
+extensions = ["win"]
+type = "s"
+index = 0
+delay = 1
+
+[[systems.launch]]
+extensions = ["mdv"]
+type = "f"
+index = 2
+delay = 1
+
+[[systems]]
+name = "SNES"
+id = "SNES"
+folders = ["SNES"]
+rbf = "_Console/SNES"
+extensions = ["sfc", "smc", "bin", "bs", "mgl"]
+
+[[systems.launch]]
+extensions = ["sfc", "smc", "bin", "bs"]
+type = "f"
+index = 0
+delay = 2
+
+[[systems]]
+name = "SNES Music"
+id = "SNESMusic"
+folders = ["SNES"]
+rbf = "_Console/SNES"
+extensions = ["spc", "mgl"]
+
+[[systems.launch]]
+extensions = ["spc"]
+type = "f"
+index = 1
+delay = 2
+
+[[systems]]
+name = "Specialist/MX"
+id = "Specialist"
+folders = ["SPMX"]
+rbf = "_Computer/Specialist"
+extensions = ["rks", "odi", "mgl"]
+
+[[systems.launch]]
+extensions = ["rks"]
+type = "f"
+index = 0
+delay = 1
+
+[[systems.launch]]
+extensions = ["odi"]
+type = "s"
+index = 0
+delay = 1
+
+[[systems]]
+name = "Super Gameboy"
+id = "SuperGameboy"
+folders = ["SGB"]
+rbf = "_Console/SGB"
+extensions = ["sgb", "gb", "gbc", "mgl"]
+
+[[systems.launch]]
+extensions = ["sgb", "gb", "gbc"]
+type = "f"
+index = 1
+delay = 1
+
+[[systems]]
+name = "SuperGrafx"
+id = "SuperGrafx"
+folders = ["TGFX16"]
+rbf = "_Console/TurboGrafx16"
+extensions = ["sgx", "mgl"]
+
+[[systems.launch]]
+extensions = ["sgx"]
+type = "f"
+index = 1
+delay = 1
+
+[[systems]]
+name = "SuperVision"
+id = "SuperVision"
+folders = ["SuperVision"]
+rbf = "_Console/SuperVision"
+extensions = ["bin", "sv", "mgl"]
+
+[[systems.launch]]
+extensions = ["bin", "sv"]
+type = "f"
+index = 1
+delay = 1
+
+[[systems]]
+name = "SV-328"
+id = "SVI328"
+folders = ["SVI328"]
+rbf = "_Computer/Svi328"
+extensions = ["cas", "bin", "rom", "mgl"]
+
+[[systems.launch]]
+extensions = ["bin", "rom"]
+type = "f"
+index = 1
+delay = 1
+
+[[systems.launch]]
+extensions = ["cas"]
+type = "f"
+index = 2
+delay = 1
+
+[[systems]]
+name = "Tandy MC-10"
+id = "AliceMC10"
+folders = ["AliceMC10"]
+rbf = "_Computer/AliceMC10"
+extensions = ["c10", "mgl"]
+
+[[systems.launch]]
+extensions = ["c10"]
+type = "f"
+index = 1
+delay = 1
+
+[[systems]]
+name = "Tatung Einstein"
+id = "TatungEinstein"
+folders = ["TatungEinstein"]
+rbf = "_Computer/TatungEinstein"
+extensions = ["dsk", "mgl"]
+
+[[systems.launch]]
+extensions = ["dsk"]
+type = "s"
+index = 0
+delay = 1
+
+[[systems]]
+name = "TI-99/4A"
+id = "TI994A"
+folders = ["TI-99_4A"]
+rbf = "_Computer/Ti994a"
+extensions = ["bin", "m99", "mgl"]
+
+[[systems.launch]]
+extensions = ["m99", "bin"]
+type = "f"
+index = 1
+delay = 1
+
+[[systems.launch]]
+extensions = ["bin"]
+type = "f"
+index = 2
+delay = 1
+
+[[systems.launch]]
+extensions = ["bin"]
+type = "f"
+index = 3
+delay = 1
+
+[[systems]]
+name = "TRS-80"
+id = "TRS80"
+folders = ["TRS-80"]
+rbf = "_Computer/TRS-80"
+extensions = ["dsk", "jvi", "cmd", "cas", "mgl"]
+
+[[systems.launch]]
+extensions = ["dsk", "jvi"]
+type = "s"
+index = 0
+delay = 1
+
+[[systems.launch]]
+extensions = ["dsk", "jvi"]
+type = "s"
+index = 1
+delay = 1
+
+[[systems.launch]]
+extensions = ["cmd"]
+type = "f"
+index = 2
+delay = 1
+
+[[systems.launch]]
+extensions = ["cas"]
+type = "f"
+index = 1
+delay = 1
+
+[[systems]]
+name = "TRS-80 CoCo 2"
+id = "CoCo2"
+folders = ["CoCo2"]
+rbf = "_Computer/CoCo2"
+extensions = ["dsk", "cas", "ccc", "rom", "mgl"]
+
+[[systems.launch]]
+extensions = ["rom", "ccc"]
+type = "f"
+index = 1
+delay = 1
+
+[[systems.launch]]
+extensions = ["dsk"]
+type = "s"
+index = 0
+delay = 1
+
+[[systems.launch]]
+extensions = ["dsk"]
+type = "s"
+index = 1
+delay = 1
+
+[[systems.launch]]
+extensions = ["dsk"]
+type = "s"
+index = 2
+delay = 1
+
+[[systems.launch]]
+extensions = ["dsk"]
+type = "s"
+index = 3
+delay = 1
+
+[[systems.launch]]
+extensions = ["cas"]
+type = "f"
+index = 2
+delay = 1
+
+[[systems]]
+name = "TS-1500"
+id = "ZX81"
+folders = ["ZX81"]
+rbf = "_Computer/ZX81"
+extensions = ["p", "0", "mgl"]
+
+[[systems.launch]]
+extensions = ["0", "p"]
+type = "f"
+index = 1
+delay = 1
+
+[[systems]]
+name = "TS-Config"
+id = "TSConf"
+folders = ["TSConf"]
+rbf = "_Computer/TSConf"
+extensions = ["vhd", "mgl"]
+
+[[systems.launch]]
+extensions = ["vhd"]
+type = "s"
+index = 0
+delay = 1
+
+[[systems]]
+name = "TurboGrafx-16"
+id = "TurboGrafx16"
+folders = ["TGFX16"]
+rbf = "_Console/TurboGrafx16"
+extensions = ["pce", "bin", "mgl"]
+
+[[systems.launch]]
+extensions = ["bin", "pce"]
+type = "f"
+index = 0
+delay = 1
+
+[[systems]]
+name = "TurboGrafx-16 CD"
+id = "TurboGrafx16CD"
+folders = ["TGFX16-CD"]
+rbf = "_Console/TurboGrafx16"
+extensions = ["cue", "chd", "mgl"]
+
+[[systems.launch]]
+extensions = ["cue", "chd"]
+type = "s"
+index = 0
+delay = 1
+
+[[systems]]
+name = "Tutor"
+id = "TomyTutor"
+folders = ["TomyTutor"]
+rbf = "_Computer/TomyTutor"
+extensions = ["bin", "cas", "mgl"]
+
+[[systems.launch]]
+extensions = ["bin"]
+type = "f"
+index = 2
+delay = 1
+
+[[systems.launch]]
+extensions = ["cas"]
+type = "s"
+index = 0
+delay = 1
+
+[[systems]]
+name = "UK101"
+id = "UK101"
+folders = ["UK101"]
+rbf = "_Computer/UK101"
+extensions = ["txt", "bas", "lod", "mgl"]
+
+[[systems.launch]]
+extensions = ["txt", "bas", "lod"]
+type = "f"
+index = 1
+delay = 1
+
+[[systems]]
+name = "VC4000"
+id = "VC4000"
+folders = ["VC4000"]
+rbf = "_Console/VC4000"
+extensions = ["bin", "mgl"]
+
+[[systems.launch]]
+extensions = ["bin"]
+type = "f"
+index = 1
+delay = 1
+
+[[systems]]
+name = "Vector-06C"
+id = "Vector06C"
+folders = ["VECTOR06"]
+rbf = "_Computer/Vector-06C"
+extensions = ["rom", "com", "c00", "edd", "fdd", "mgl"]
+
+[[systems.launch]]
+extensions = ["rom", "com", "c00", "edd"]
+type = "f"
+index = 1
+delay = 1
+
+[[systems.launch]]
+extensions = ["fdd"]
+type = "s"
+index = 0
+delay = 1
+
+[[systems.launch]]
+extensions = ["fdd"]
+type = "s"
+index = 1
+delay = 1
+
+[[systems]]
+name = "Vectrex"
+id = "Vectrex"
+folders = ["VECTREX"]
+rbf = "_Console/Vectrex"
+extensions = ["vec", "bin", "rom", "mgl"]
+
+[[systems.launch]]
+extensions = ["vec", "bin", "rom"]
+type = "f"
+index = 1
+delay = 1
+
+[[systems]]
+name = "Virtual Boy"
+id = "VirtualBoy"
+folders = ["VirtualBoy"]
+rbf = "_Console/VirtualBoy"
+extensions = ["vb", "mgl"]
+
+[[systems.launch]]
+extensions = ["vb"]
+type = "f"
+index = 1
+delay = 1
+
+[[systems]]
+name = "VTech CreatiVision"
+id = "CreatiVision"
+folders = ["CreatiVision"]
+rbf = "_Console/CreatiVision"
+extensions = ["rom", "bin", "bas", "mgl"]
+
+[[systems.launch]]
+extensions = ["rom", "bin"]
+type = "f"
+index = 1
+delay = 1
+
+[[systems.launch]]
+extensions = ["bas"]
+type = "f"
+index = 3
+delay = 1
+
+[[systems]]
+name = "WonderSwan"
+id = "WonderSwan"
+folders = ["WonderSwan"]
+rbf = "_Console/WonderSwan"
+extensions = ["ws", "mgl"]
+
+[[systems.launch]]
+extensions = ["ws"]
+type = "f"
+index = 1
+delay = 1
+
+[[systems]]
+name = "WonderSwan Color"
+id = "WonderSwanColor"
+folders = ["WonderSwan", "WonderSwanColor"]
+rbf = "_Console/WonderSwan"
+setname = "WonderSwanColor"
+extensions = ["wsc", "mgl"]
+
+[[systems.launch]]
+extensions = ["wsc"]
+type = "f"
+index = 1
+delay = 1
+
+[[systems]]
+name = "X68000"
+id = "X68000"
+folders = ["X68000"]
+rbf = "_Computer/X68000"
+extensions = ["d88", "xdf", "dim", "hdm", "hdf", "mgl", "ram"]
+
+# FDD0. The core declares "P1S0,D88XDFDIMHDM": four floppy formats, not one.
+# FDD1 gets no rule of its own: the first rule matching an extension wins.
+[[systems.launch]]
+extensions = ["d88", "xdf", "dim", "hdm"]
+type = "s"
+index = 0
+delay = 1
+
+[[systems.launch]]
+extensions = ["hdf"]
+type = "s"
+index = 2
+delay = 1
+
+[[systems.launch]]
+extensions = ["ram"]
+type = "s"
+index = 3
+delay = 1
+
+[[systems]]
+name = "ZX Spectrum"
+id = "ZXSpectrum"
+folders = ["Spectrum"]
+rbf = "_Computer/ZX-Spectrum"
+extensions = ["tap", "csw", "tzx", "sna", "z80", "trd", "img", "dsk", "mgt", "vhd", "mgl"]
+
+[[systems.launch]]
+extensions = ["trd", "img", "dsk", "mgt"]
+type = "s"
+index = 0
+delay = 1
+
+[[systems.launch]]
+extensions = ["tap", "csw", "tzx"]
+type = "f"
+index = 2
+delay = 1
+
+[[systems.launch]]
+extensions = ["z80", "sna"]
+type = "f"
+index = 4
+delay = 1
+
+[[systems.launch]]
+extensions = ["vhd"]
+type = "s"
+index = 1
+delay = 1
+
+[[systems]]
+name = "ZX Spectrum Next"
+id = "ZXNext"
+folders = ["ZXNext"]
+rbf = "_Computer/ZXNext"
+extensions = ["vhd", "tzx", "csw", "mgl"]
+
+[[systems.launch]]
+extensions = ["vhd"]
+type = "s"
+index = 0
+delay = 1
+
+[[systems.launch]]
+extensions = ["vhd"]
+type = "s"
+index = 1
+delay = 1
+
+[[systems.launch]]
+extensions = ["tzx", "csw"]
+type = "f"
+index = 1
+delay = 1
+
+[[systems]]
+# The cores the stock menu keeps under Other: Chess, Flappy Bird, Chip8,
+# Arduboy and the rest. They are not games and no games folder belongs to
+# them, so nothing else in this table would ever show them. A core file
+# describes itself, so it needs no launch rule: it is handed to MiSTer as
+# it is.
+name = "Cores"
+id = "OtherCores"
+folders = ["/media/fat/_Other"]
+rbf = ""
+extensions = ["rbf", "mra", "mgl"]
+category = "Other"
+
+[[systems]]
+# The test and measurement cores the stock menu keeps under Utility:
+# 240p Test Suite, input lag, memory test and the rest. Same shape as the
+# Other group: no games folder belongs to them, so nothing else in this
+# table would ever list them, and a core file needs no launch rule because
+# it describes itself.
+name = "Cores"
+id = "UtilityCores"
+folders = ["/media/fat/_Utility"]
+rbf = ""
+extensions = ["rbf", "mra", "mgl"]
+category = "Utility"
+
+[[systems]]
+# MiSTer's own favourites folder, exactly as its favourites script keeps
+# it: folders the user named, holding an .mgl for each game and a link for
+# each core file. Nothing here is Degauss's, which is the point. It is
+# listed last because it is not a machine.
+name = "Favorites"
+id = "Favorites"
+folders = ["/media/fat/_@Favorites"]
+rbf = ""
+extensions = ["mgl", "mra", "rbf"]
+category = "Favorites"

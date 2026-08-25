@@ -1,0 +1,12 @@
+# Cross-linking without a C toolchain.
+#
+# The dependency tree is pure Rust, so the only thing a cross build needs is
+# a linker that understands ELF. Rust ships one (rust-lld) and a
+# self-contained musl libc, so this builds on Linux, macOS or Windows with
+# nothing installed but rustup: no Docker, no arm-linux-gnueabihf-gcc.
+#
+# rust-lld is named rather than pathed, so it resolves inside whichever
+# toolchain is active on the machine doing the build.
+[target.armv7-unknown-linux-musleabihf]
+linker = "rust-lld"
+rustflags = ["-C", "linker-flavor=ld.lld"]

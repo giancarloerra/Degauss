@@ -1,0 +1,168 @@
+name: release
+
+# Builds both binaries and attaches a ready-to-copy archive to the release
+# for the tag that triggered it.
+#
+# Two binaries, because Degauss is two programs: the frontend, built here,
+# and MiSTer_Degauss, the GPLv3 fork of MiSTer Main that hands it the screen.
+# The fork lives in its own repository under its own licence and is built in
+# its own job below.
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  # The MiSTer Main fork. Debian bullseye on purpose: it carries glibc 2.31,
+  # which is what the MiSTer rootfs has. A newer distribution links against
+  # symbols the device does not have and the binary refuses to start.
+  main-fork:
+    runs-on: ubuntu-latest
+    container: debian:bullseye
+    steps:
+      - name: Install the cross toolchain
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            crossbuild-essential-armhf make ca-certificates git
+
+      - name: Check out the fork
+        uses: actions/checkout@v4
+        with:
+          repository: giancarloerra/Degauss-Main
+          ref: degauss
+
+      # The branch moves. GPL asks for the source that corresponds to the
+      # binary, so the exact revision is recorded and shipped beside it.
+      - name: Record the revision it was built from
+        id: fork
+        run: |
+          SHA=$(git rev-parse HEAD)
+          echo "sha=${SHA}" >> "$GITHUB_OUTPUT"
+          echo "built from ${SHA}"
+
+      - name: Build
+        # The Cortex-A9 in the DE10-Nano has NEON and upstream builds with
+        # it: the scalar fallback in scaler.cpp is guarded by __ARM_NEON and
+        # does not compile. Debian's compiler defaults to vfpv3-d16 and would
+        # take that dead branch, so the architecture is stated here.
+        run: |
+          make BASE=arm-linux-gnueabihf \
+            CC="arm-linux-gnueabihf-gcc -mcpu=cortex-a9 -mfpu=neon -mfloat-abi=hard"
+          mv MiSTer MiSTer_Degauss
+
+      - name: Check it is what it should be
+        run: |
+          file MiSTer_Degauss | tee /dev/stderr | grep -q "ELF 32-bit LSB executable, ARM"
+
+      - name: Carry the revision to the packaging job
+        env:
+          FORK_SHA: ${{ steps.fork.outputs.sha }}
+        run: printf '%s' "$FORK_SHA" > MiSTer_Degauss.sha
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: MiSTer_Degauss
+          path: |
+            MiSTer_Degauss
+            MiSTer_Degauss.sha
+
+  mister:
+    runs-on: ubuntu-latest
+    needs: main-fork
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install the ARM target
+        run: rustup target add armv7-unknown-linux-musleabihf
+
+      - name: Build
+        run: ./scripts/build-arm.sh
+
+      - name: Check the binary is what it should be
+        run: |
+          file deploy/Scripts/.degauss/degauss | tee /dev/stderr | grep -q "ELF 32-bit LSB executable, ARM"
+          file deploy/Scripts/.degauss/degauss | grep -q "statically linked"
+
+      - name: Collect the Main fork
+        uses: actions/download-artifact@v4
+        with:
+          name: MiSTer_Degauss
+          path: fork
+
+      - name: Package
+        id: package
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          NAME="degauss-${VERSION}-mister"
+          mkdir -p "dist/${NAME}/degauss"
+          cp -R deploy/Scripts "dist/${NAME}/Scripts"
+          install -m 0755 fork/MiSTer_Degauss "dist/${NAME}/degauss/MiSTer_Degauss"
+          cp README.md LICENSE "dist/${NAME}/"
+          # The fork is GPLv3 and its source has to be findable from the
+          # thing that ships its binary.
+          FORK_SHA=$(cat fork/MiSTer_Degauss.sha)
+          cat > "dist/${NAME}/degauss/SOURCE.txt" <<EOF
+          MiSTer_Degauss is a fork of MiSTer Main, licensed GPL-3.0-or-later.
+
+          This binary was built from commit:
+            ${FORK_SHA}
+          Source: https://github.com/giancarloerra/Degauss-Main/tree/${FORK_SHA}
+          Upstream: https://github.com/MiSTer-devel/Main_MiSTer
+
+          Degauss itself is a separate program under the PolyForm Noncommercial
+          License 1.0.0. See LICENSE beside this file.
+          EOF
+          (cd dist && zip -qr "${NAME}.zip" "${NAME}")
+          sha256sum "dist/${NAME}.zip" > "dist/${NAME}.zip.sha256"
+          echo "name=${NAME}" >> "$GITHUB_OUTPUT"
+
+      - name: Check the archive holds both binaries
+        run: |
+          unzip -l dist/*.zip | grep -q "degauss/MiSTer_Degauss"
+          unzip -l dist/*.zip | grep -q "Scripts/.degauss/degauss"
+
+      # The Downloader database, so `update_all` can keep Degauss current.
+      # It names every file with its hash and where to fetch it, which is why
+      # the two built binaries are attached to the release on their own as
+      # well as inside the archive.
+      - name: Build the Downloader database
+        run: |
+          cp deploy/Scripts/.degauss/degauss dist/degauss
+          cp fork/MiSTer_Degauss dist/MiSTer_Degauss
+          python3 scripts/make-db.py "${GITHUB_REF_NAME}" deploy fork/MiSTer_Degauss dist/degauss.json
+          (cd dist && zip -q degauss.json.zip degauss.json && rm degauss.json)
+
+      - name: Check the database is well formed
+        run: |
+          python3 - <<'PY'
+          import json, zipfile
+          with zipfile.ZipFile("dist/degauss.json.zip") as z:
+              db = json.loads(z.read("degauss.json"))
+          assert db["v"] == 1, db["v"]
+          assert db["db_id"] == "degauss", db["db_id"]
+          assert db["files"], "no files"
+          for path, entry in db["files"].items():
+              for field in ("hash", "size", "url"):
+                  assert field in entry, (path, field)
+          print(len(db["files"]), "files in the database")
+          PY
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.package.outputs.name }}
+          path: dist/*.zip
+
+      - name: Attach to the release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/*.zip
+            dist/*.sha256
+            dist/degauss
+            dist/MiSTer_Degauss

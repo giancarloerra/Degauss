@@ -1,0 +1,49 @@
+[package]
+name = "degauss"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.96"
+description = "A fast, software-rendered frontend for MiSTer FPGA"
+publish = false
+license-file = "LICENSE"
+authors = ["Giancarlo Erra"]
+
+[dependencies]
+# No backend, no GPU renderer, no system fonts: everything the renderer needs
+# is compiled in, which is what makes a single static binary possible.
+# Deliberately WITHOUT slint's "std" feature. In 1.17 `std` force-enables
+# `systemfonts`, which pulls fontique -> fontconfig-sys, a C library needing
+# pkg-config and a target sysroot to cross-compile, and a shared library on
+# the device at runtime. This is Slint's own MCU/embedded configuration:
+# libm instead of std math, fonts embedded at build time by slint-build.
+# Degauss itself uses std normally; only Slint's internals go without.
+slint = { version = "1.17", default-features = false, features = [
+    "compat-1-2",
+    "renderer-software",
+    "libm",
+    "unsafe-single-threaded",
+] }
+bytemuck = "1"
+quick-xml = "0.42"
+zune-png = "0.5"
+serde = { version = "1.0", features = ["derive"] }
+# The written-down copy of what the card holds. Pure Rust, so it needs
+# nothing the rest of this build does not already have: no C library, no
+# pkg-config, no target sysroot.
+postcard = { version = "1", features = ["use-std"] }
+toml = "1.1"
+zune-jpeg = "0.5.15"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+evdev = "0.13"
+libc = "0.2"
+
+[build-dependencies]
+slint-build = "1.17"
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = "symbols"

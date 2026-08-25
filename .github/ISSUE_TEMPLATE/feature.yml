@@ -1,0 +1,34 @@
+name: Feature request
+description: Something Degauss does not do yet
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Degauss is deliberately small and fast. That means saying no to
+        things, so the most useful part of a request is what you are trying
+        to get done, not the control you imagine doing it.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What are you trying to do
+      description: The situation on your card, and what is awkward about it today.
+    validations:
+      required: true
+
+  - type: textarea
+    id: idea
+    attributes:
+      label: What you have in mind
+      description: How you picture it working. Rough is fine.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: What you tried instead
+      description: Settings, folder layouts or other tools you already tried.
+    validations:
+      required: false

@@ -1,0 +1,923 @@
+// Degauss.
+//
+// Everything is drawn inside a safe rectangle, because a CRT crops the edges
+// of the picture and a interface that assumes it owns every pixel forces the
+// user to turn on underscan. The insets come from the config.
+//
+// Deliberately plain: no gradients, shadows, animations or rounded corners.
+// Each of those costs the software renderer real time on every frame.
+
+// A title that is elided when it is not the one you are looking at, and
+// walks itself sideways when it is.
+//
+// A list of games is full of names longer than the column: "Teenage Mutant
+// Ninja Turtles - Turtles in Time (USA)" against a third of a 640 pixel
+// screen. Eliding alone hides exactly the part that distinguishes one
+// version from another, which is usually at the end.
+//
+// It waits before moving. The wait is what makes it readable rather than
+// restless: scrolling through a list, every title would otherwise be in
+// motion the moment it was passed.
+component ScrollingTitle inherits Rectangle {
+    in property <string> text;
+    in property <color> text-color;
+    in property <length> font-size;
+    in property <bool> active;
+    in property <bool> at-end;
+    in property <TextHorizontalAlignment> align: left;
+    /// Milliseconds per pixel travelled, and the longest it may take.
+    /// A description is read while it moves and wants half the pace of a
+    /// title, which is only being identified.
+    in property <float> ms-per-px: 22;
+    in property <duration> travel-cap: 1400ms;
+
+    clip: true;
+
+    txt := Text {
+        text: root.text;
+        color: root.text-color;
+        font-size: root.font-size;
+        horizontal-alignment: root.align;
+        vertical-alignment: center;
+        height: parent.height;
+        // Given its full width the text is not elided, and can be walked
+        // sideways instead. Given the box width it elides as usual.
+        width: root.active && self.preferred-width > parent.width
+            ? self.preferred-width
+            : parent.width;
+        overflow: elide;
+        x: root.active && root.at-end && self.preferred-width > parent.width
+            ? parent.width - self.preferred-width
+            : 0px;
+        // A speed, not a duration. Giving every line the same 1.4 s made a
+        // long description tear past while a short title ambled, because
+        // the one with further to go had to go faster. Capped, so the
+        // longest line still turns round within the shared timer's period.
+        animate x {
+            duration: min(root.travel-cap, max(300ms,
+                (max(0px, txt.preferred-width - root.width) / 1px) * root.ms-per-px * 1ms));
+            easing: linear;
+        }
+    }
+}
+
+struct DetailLine {
+    label: string,
+    value: string,
+}
+
+// The picture, and under it what the gamelist knows, a line each. Any line
+// too long for the width walks sideways; the rest sit still. They all move
+// together because they share one timer, which reads as the panel breathing
+// rather than as six things fidgeting.
+component DetailPanel inherits Rectangle {
+    in property <[DetailLine]> lines;
+    in property <length> font-size;
+    in property <length> line-height;
+    in property <length> pad;
+    in property <color> text-color;
+    in property <color> label-color;
+    in property <bool> at-end;
+    in property <float> ms-per-px;
+    in property <duration> travel-cap;
+
+    // The longest label there is, measured rather than guessed, so every
+    // value starts at the same place down the column. Never drawn.
+    gauge := Text {
+        text: "Lang:";
+        font-size: root.font-size;
+        visible: false;
+    }
+
+    VerticalLayout {
+        alignment: start;
+        spacing: 0px;
+        for line in root.lines: Rectangle {
+            height: root.line-height;
+
+            Text {
+                text: line.label;
+                color: root.label-color;
+                font-size: root.font-size;
+                vertical-alignment: center;
+                x: 0;
+                y: 0;
+                width: gauge.preferred-width;
+                height: parent.height;
+            }
+
+            // Only the value moves. A label that walks away from its own
+            // value is unreadable, and there is nothing to read in it
+            // anyway: it says the same thing every time.
+            ScrollingTitle {
+                x: gauge.preferred-width + root.pad;
+                y: 0;
+                width: parent.width - gauge.preferred-width - root.pad;
+                height: parent.height;
+                text: line.value;
+                text-color: root.text-color;
+                font-size: root.font-size;
+                active: true;
+                at-end: root.at-end;
+                ms-per-px: root.ms-per-px;
+                travel-cap: root.travel-cap;
+            }
+        }
+    }
+}
+
+struct Row {
+    title: string,
+    favorite: bool,
+    cover: image,
+    has-cover: bool,
+    // Options rows carry their current value here; browse rows leave it empty.
+    value: string,
+}
+
+export { Row }
+
+export component DegaussWindow inherits Window {
+    // Palette.
+    in property <color> c-background;
+    in property <color> c-panel;
+    in property <color> c-bar;
+    in property <color> c-surface;
+    in property <color> c-text;
+    in property <color> c-text-dim;
+    in property <color> c-accent;
+    in property <color> c-accent-text;
+    in property <color> c-state;
+    in property <color> c-favorite;
+
+    // Safe area, so nothing lands under the bezel.
+    in property <length> inset-left;
+    in property <length> inset-right;
+    in property <length> inset-top;
+    in property <length> inset-bottom;
+
+    // Geometry, computed from the framebuffer size.
+    in property <length> row-height: 20px;
+    in property <length> body-font: 13px;
+    in property <length> small-font: 11px;
+    in property <length> pad: 6px;
+    in property <length> chrome-height: 22px;
+
+    // 0 = browse, 1 = a plain list (menu, context, options, advanced, help,
+    // favourite folders), 2 = the wordmark (about and splash), 3 = the
+    // screensaver, 4 = the grid of letters.
+    in property <int> screen: 0;
+    in property <string> about-version;
+    in property <string> about-line;
+    in property <string> about-copyright;
+    in property <string> about-licence;
+    // Within browse: 0 = details, 1 = tiled, 2 = list, 3 = carousel.
+    in property <int> layout: 0;
+
+    in property <[Row]> rows;
+    in property <int> selected;
+    /// Flipped by a timer so the selected title walks to its end and back.
+    in property <bool> marquee-end;
+    /// The same for the lines under the picture, which travel at half the
+    /// pace and so turn round on their own, slower clock.
+    in property <bool> detail-end;
+
+    // The large artwork: a screenshot, a system logo, or nothing.
+    in property <image> art;
+    in property <bool> has-art;
+    in property <length> art-width;
+    // Drawn in the artwork panel when there is no picture for this row and
+    // no logo in the logos folder: the system or game name, set large.
+    in property <string> art-caption;
+    /// Inside the favourites folder there is nothing to picture and the
+    /// name says only what the row already says, so the mark itself stands
+    /// in: one big heart in the colour it has everywhere else.
+    in property <bool> art-heart;
+
+    in property <int> columns: 3;
+    in property <length> tile-width: 100px;
+    in property <length> tile-height: 80px;
+
+    in property <string> heading;
+    in property <string> status;
+    in property <length> bar-height: 16px;
+    in property <length> bar-font: 9px;
+    in property <string> clock;
+    in property <bool> wifi;
+    in property <bool> bluetooth;
+    /// Shown for a moment after it changes, then gone again.
+    in property <string> speed-badge;
+    in property <bool> speed-visible;
+    in property <bool> wide-bar;
+    in property <bool> show-bar;
+    /// True on the master list, which is short enough to look stranded
+    /// against the top of the screen.
+    in property <bool> center-rows;
+    /// How many rows the grid of letters is laid out in.
+    in property <int> grid-rows: 4;
+    /// What the gamelist knows about the selected game, a line each and
+    /// already labelled. Always six, so the lines stay in the same places
+    /// whatever a card happens to know.
+    in property <[DetailLine]> detail-lines;
+    /// How tall the block of lines is, and one line of it.
+    in property <length> detail-height;
+    in property <length> detail-line;
+    /// True on the list of groups, which is short and leaves the bottom of
+    /// its column empty.
+    in property <bool> show-brand;
+    /// True when the grid is narrowing a list rather than jumping down it,
+    /// which is the only time the two spare buttons edit anything.
+    in property <bool> find-search;
+    in property <length> saver-cell;
+    in property <length> saver-offset;
+    in property <string> overlay;
+    // The performance readout, shown only when asked for.
+    in property <string> stats;
+    in property <bool> show-stats;
+
+    background: root.screen == 3 ? #000000 : root.c-background;
+
+    // Everything lives inside the safe rectangle.
+    Rectangle {
+        x: root.inset-left;
+        y: root.inset-top;
+        width: root.width - root.inset-left - root.inset-right;
+        height: root.height - root.inset-top - root.inset-bottom;
+        clip: true;
+
+        // ---- title bar ---------------------------------------------------
+        // Only on the settings and menu screens. Browsing does not need a
+        // strip of chrome naming what is plainly on the screen, and the
+        // option explanation has nowhere else to live.
+        if root.screen == 1 || root.screen == 4: Rectangle {
+            x: 0; y: 0;
+            width: parent.width;
+            height: root.chrome-height;
+            background: root.c-panel;
+            HorizontalLayout {
+                padding-left: root.pad;
+                padding-right: root.pad;
+                // Without this a long title runs straight into the
+                // explanation beside it, with no gap to read them apart.
+                spacing: root.pad * 2;
+                Text {
+                    text: root.heading;
+                    color: root.c-text;
+                    font-size: root.small-font;
+                    vertical-alignment: center;
+                    overflow: elide;
+                }
+                // The explanation of the selected option lives here and is
+                // routinely longer than the space, so it walks like a title
+                // rather than eliding into a sentence that stops halfway.
+                ScrollingTitle {
+                    text: root.status;
+                    text-color: root.c-state;
+                    font-size: root.small-font;
+                    align: right;
+                    active: true;
+                    at-end: root.marquee-end;
+                    horizontal-stretch: 2;
+                }
+            }
+        }
+
+        // ---- body --------------------------------------------------------
+        Rectangle {
+            x: 0;
+            y: root.screen == 1 || root.screen == 4 ? root.chrome-height : 0px;
+            width: parent.width;
+            height: root.screen == 3
+                ? parent.height
+                : parent.height
+                    - (root.screen == 1 || root.screen == 4 ? root.chrome-height : 0px)
+                    - (root.show-bar ? root.bar-height : 0px);
+            clip: true;
+
+            // The wordmark, on its own. Used for the splash and About.
+            //
+            // Positioned by hand rather than by a layout: percentages of a
+            // layout's parent resolve to nothing here, and the result is a
+            // blank screen.
+            if root.screen == 2: Rectangle {
+                width: parent.width;
+                height: parent.height;
+                background: root.c-background;
+
+                logo := Image {
+                    source: @image-url("../assets/degauss-logo.png");
+                    image-fit: contain;
+                    width: parent.width * 70%;
+                    height: parent.height * 38%;
+                    x: (parent.width - self.width) / 2;
+                    y: parent.height * 18%;
+                }
+
+                Text {
+                    text: root.about-version;
+                    color: root.c-text-dim;
+                    font-size: root.small-font;
+                    horizontal-alignment: center;
+                    width: parent.width;
+                    y: logo.y + logo.height + root.pad;
+                }
+
+                Text {
+                    text: root.overlay != "" ? root.overlay : root.about-line;
+                    color: root.overlay != "" ? root.c-text : root.c-text-dim;
+                    font-size: root.small-font;
+                    horizontal-alignment: center;
+                    width: parent.width;
+                    y: logo.y + logo.height + root.pad * 2 + root.small-font;
+                }
+
+                Text {
+                    text: root.about-copyright;
+                    color: root.c-text-dim;
+                    font-size: root.small-font;
+                    horizontal-alignment: center;
+                    width: parent.width;
+                    y: logo.y + logo.height + root.pad * 3 + root.small-font * 2;
+                }
+
+                Text {
+                    text: root.about-licence;
+                    color: root.c-text-dim;
+                    font-size: root.small-font;
+                    horizontal-alignment: center;
+                    width: parent.width;
+                    y: logo.y + logo.height + root.pad * 4 + root.small-font * 3;
+                }
+            }
+
+            // A plain list: menus, options, help, and the browse "list" layout.
+            if root.screen == 1 || (root.screen == 0 && root.layout == 2): VerticalLayout {
+                alignment: root.center-rows ? LayoutAlignment.center : LayoutAlignment.start;
+                spacing: 0px;
+                for row[index] in root.rows: Rectangle {
+                    height: root.row-height;
+                    background: index == root.selected ? root.c-accent : transparent;
+                    HorizontalLayout {
+                        padding-left: root.pad;
+                        padding-right: root.pad;
+                        spacing: root.pad;
+                        Text {
+                            // Written here as a literal, because the glyphs
+                            // that reach the binary are the ones the
+                            // compiler finds in this file. A heart asked
+                            // for from Rust alone draws nothing at all.
+                            text: row.favorite ? "\u{2665} " : "";
+                            color: root.c-favorite;
+                            font-size: root.body-font;
+                            vertical-alignment: center;
+                            width: row.favorite ? self.preferred-width : 0px;
+                        }
+                        ScrollingTitle {
+                            text: row.title;
+                            text-color: index == root.selected ? root.c-accent-text : root.c-text;
+                            font-size: root.body-font;
+                            active: index == root.selected;
+                            at-end: root.marquee-end;
+                        }
+                        Text {
+                            text: row.value;
+                            color: index == root.selected ? root.c-accent-text : root.c-text;
+                            font-size: root.body-font;
+                            vertical-alignment: center;
+                            horizontal-alignment: right;
+                        }
+
+                    }
+                }
+            }
+
+            // A grid of letters: jump down a long list, or narrow it.
+            if root.screen == 4: Rectangle {
+                for cell[index] in root.rows: Rectangle {
+                    property <length> cell-width: parent.width / root.columns;
+                    property <length> cell-height: parent.height / root.grid-rows;
+                    width: self.cell-width;
+                    height: self.cell-height;
+                    x: Math.mod(index, root.columns) * self.cell-width;
+                    y: Math.floor(index / root.columns) * self.cell-height;
+                    background: index == root.selected ? root.c-accent : transparent;
+                    Text {
+                        text: cell.title;
+                        color: index == root.selected ? root.c-accent-text : root.c-text;
+                        font-size: root.body-font;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                        width: parent.width;
+                        height: parent.height;
+                    }
+                }
+            }
+
+            // Browse, preview: titles on the left, a big picture on the right.
+            if root.screen == 0 && root.layout == 0: HorizontalLayout {
+                spacing: 0px;
+
+                Rectangle {
+                    background: root.c-background;
+                    clip: true;
+
+                    // The list of groups is three or four entries in a
+                    // column with room for ten, so the wordmark goes in the
+                    // space rather than leaving it blank.
+                    Image {
+                        visible: root.show-brand;
+                        source: @image-url("../assets/degauss-logo.png");
+                        image-fit: contain;
+                        width: parent.width * 70%;
+                        height: root.chrome-height;
+                        x: (parent.width - self.width) / 2;
+                        y: parent.height - self.height - root.pad;
+                    }
+
+                    VerticalLayout {
+                        alignment: root.center-rows ? LayoutAlignment.center : LayoutAlignment.start;
+                        spacing: 0px;
+                        for row[index] in root.rows: Rectangle {
+                            height: root.row-height;
+                            background: index == root.selected ? root.c-accent : transparent;
+                            HorizontalLayout {
+                                padding-left: root.pad;
+                                padding-right: root.pad / 2;
+                                Text {
+                                    text: row.favorite ? "\u{2665} " : "";
+                                    color: root.c-favorite;
+                                    font-size: root.body-font;
+                                    vertical-alignment: center;
+                                    width: row.favorite ? self.preferred-width : 0px;
+                                }
+                                ScrollingTitle {
+                                    text: row.title;
+                                    text-color: index == root.selected ? root.c-accent-text : root.c-text;
+                                    font-size: root.body-font;
+                                    active: index == root.selected;
+                                    at-end: root.marquee-end;
+                                }
+                                Text {
+                                    text: row.value;
+                                    color: index == root.selected ? root.c-accent-text : root.c-text-dim;
+                                    font-size: root.small-font;
+                                    vertical-alignment: center;
+                                    horizontal-alignment: right;
+                                    // A floor, not a width. 34px is what a
+                                    // count needs on a tube and holds the
+                                    // column steady when the numbers are
+                                    // short. On a larger framebuffer the
+                                    // font grows and the number does not
+                                    // fit, so the box has to grow with it
+                                    // or the figure is cut off under the
+                                    // picture.
+                                    width: row.value == ""
+                                        ? 0px
+                                        : max(34px, self.preferred-width);
+                                }
+                            }
+                        }
+                    }
+                }
+
+                Rectangle {
+                    width: root.art-width;
+                    background: root.c-surface;
+                    property <length> panel: root.detail-height;
+
+                    Image {
+                        source: root.art;
+                        visible: root.has-art;
+                        image-fit: contain;
+                        x: 1px;
+                        y: 1px;
+                        width: parent.width - 2px;
+                        height: parent.height - parent.panel - 2px;
+                    }
+                    // The stand-in when there is no picture, and there is
+                    // nothing worth picturing.
+                    Text {
+                        visible: !root.has-art && root.art-heart;
+                        text: "\u{2665}";
+                        color: root.c-favorite;
+                        font-size: root.body-font * 6;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                        x: root.pad;
+                        y: 0px;
+                        width: parent.width - root.pad * 2;
+                        height: parent.height - parent.panel;
+                    }
+                    // The stand-in when there is no picture.
+                    // Stands in for a logo, so it is set like one rather
+                    // than like a caption.
+                    Text {
+                        visible: !root.has-art && !root.art-heart;
+                        text: root.art-caption;
+                        color: root.c-text;
+                        font-size: root.body-font * 1.7;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                        wrap: word-wrap;
+                        x: root.pad;
+                        y: 0px;
+                        width: parent.width - root.pad * 2;
+                        height: parent.height - parent.panel;
+                    }
+
+                    DetailPanel {
+                        x: root.pad;
+                        y: parent.height - parent.panel;
+                        width: parent.width - root.pad * 2;
+                        height: parent.panel;
+                        lines: root.detail-lines;
+                        font-size: root.small-font;
+                        line-height: root.detail-line;
+                        pad: root.pad;
+                        text-color: root.c-text;
+                        label-color: root.c-text-dim;
+                        at-end: root.detail-end;
+                        ms-per-px: 44;
+                        travel-cap: 8000ms;
+                    }
+                }
+            }
+
+            // Browse, covers: a grid of large tiles, placed by index.
+            if root.screen == 0 && root.layout == 1: Rectangle {
+                background: root.c-background;
+                for row[index] in root.rows: Rectangle {
+                    x: mod(index, root.columns) * root.tile-width;
+                    y: floor(index / root.columns) * root.tile-height;
+                    width: root.tile-width;
+                    height: root.tile-height;
+                    background: index == root.selected ? root.c-accent : root.c-background;
+                    Image {
+                        source: row.cover;
+                        visible: row.has-cover;
+                        image-fit: contain;
+                        x: 2px;
+                        y: 2px;
+                        width: parent.width - 4px;
+                        height: parent.height - 4px - root.small-font;
+                    }
+                    // In the corner of the tile rather than beside a title
+                    // there is no room for: the picture is the row here.
+                    Text {
+                        text: row.favorite ? "\u{2665}" : "";
+                        color: root.c-favorite;
+                        font-size: root.small-font;
+                        x: 3px;
+                        y: 2px;
+                    }
+                    ScrollingTitle {
+                        text: row.title;
+                        text-color: index == root.selected ? root.c-accent-text : root.c-text-dim;
+                        font-size: root.small-font;
+                        align: center;
+                        active: index == root.selected;
+                        at-end: root.marquee-end;
+                        x: 2px;
+                        y: parent.height - root.small-font - 2px;
+                        width: parent.width - 4px;
+                        height: root.small-font;
+                    }
+                }
+            }
+        }
+
+        // ---- bottom bar ---------------------------------------------------
+        // The machine on the left, what the buttons do on the right, and
+        // the scroll speed in between for a moment after it changes. Not on
+        // the wordmark: nothing should sit under a logo.
+        if root.show-bar: Rectangle {
+            x: 0;
+            y: parent.height - root.bar-height;
+            width: parent.width;
+            height: root.bar-height;
+            background: root.c-bar;
+
+            // Placed rather than negotiated: in a layout the legend was
+            // the thing that gave way and elided, however the spacer was
+            // weighted.
+            HorizontalLayout {
+                x: root.pad;
+                y: 0;
+                width: parent.width * 30%;
+                height: parent.height;
+                spacing: root.pad;
+                alignment: start;
+
+                Text {
+                    text: root.clock;
+                    color: root.c-text-dim;
+                    font-size: root.bar-font;
+                    vertical-alignment: center;
+                }
+                // Drawn rather than written. The glyphs are baked into the
+                // binary from the text in this file, and the font behind
+                // them has no symbol for either of these, so a character
+                // would come out as nothing at all.
+                Rectangle {
+                    visible: root.wifi;
+                    width: root.wifi ? root.bar-font * 1.1 : 0px;
+                    height: root.bar-height;
+                    // Four bars climbing left to right: signal strength,
+                    // which is what the word said and what everything else
+                    // on a machine draws.
+                    Rectangle {
+                        background: root.c-state;
+                        width: root.bar-font * 0.14;
+                        height: root.bar-font * 0.25;
+                        x: 0;
+                        y: (parent.height + root.bar-font * 0.7) / 2 - self.height;
+                    }
+                    Rectangle {
+                        background: root.c-state;
+                        width: root.bar-font * 0.14;
+                        height: root.bar-font * 0.42;
+                        x: root.bar-font * 0.24;
+                        y: (parent.height + root.bar-font * 0.7) / 2 - self.height;
+                    }
+                    Rectangle {
+                        background: root.c-state;
+                        width: root.bar-font * 0.14;
+                        height: root.bar-font * 0.58;
+                        x: root.bar-font * 0.48;
+                        y: (parent.height + root.bar-font * 0.7) / 2 - self.height;
+                    }
+                    Rectangle {
+                        background: root.c-state;
+                        width: root.bar-font * 0.14;
+                        height: root.bar-font * 0.75;
+                        x: root.bar-font * 0.72;
+                        y: (parent.height + root.bar-font * 0.7) / 2 - self.height;
+                    }
+                }
+                // The bluetooth rune, as pixels. Drawn rather than written
+                // for the same reason, and drawn as a grid because this
+                // build has no path support and the symbol is nine pixels
+                // tall on the screen it was made for.
+                Rectangle {
+                    property <length> dot: max(1px, root.bar-font * 0.16);
+                    visible: root.bluetooth;
+                    width: root.bluetooth ? self.dot * 6 : 0px;
+                    height: root.bar-height;
+                    for p in [
+                        {x: 2, y: 0}, {x: 2, y: 1}, {x: 3, y: 1},
+                        {x: 0, y: 2}, {x: 2, y: 2}, {x: 4, y: 2},
+                        {x: 1, y: 3}, {x: 2, y: 3}, {x: 3, y: 3},
+                        {x: 2, y: 4},
+                        {x: 1, y: 5}, {x: 2, y: 5}, {x: 3, y: 5},
+                        {x: 0, y: 6}, {x: 2, y: 6}, {x: 4, y: 6},
+                        {x: 2, y: 7}, {x: 3, y: 7},
+                        {x: 2, y: 8},
+                    ]: Rectangle {
+                        background: root.c-state;
+                        width: parent.dot;
+                        height: parent.dot;
+                        x: p.x * parent.dot;
+                        y: (parent.height - parent.dot * 9) / 2 + p.y * parent.dot;
+                    }
+                }
+            }
+
+            // One literal per form, because the glyphs that end up in the
+            // binary are the ones the compiler finds written here. A string
+            // built in Rust can ask for an arrow that was never embedded,
+            // and a missing glyph draws nothing at all.
+            Text {
+                text: root.show-stats
+                    ? root.stats
+                    : root.screen == 4
+                    ? (root.find-search
+                        ? "A Pick   B Back   X Delete   Y Clear"
+                        : "A Pick   B Back")
+                    : root.screen == 1
+                        ? (root.wide-bar
+                            ? "\u{2191}\u{2193} Choose   \u{2190}\u{2192} Change   A Select   B Back"
+                            : "\u{2190}\u{2192} Change  A Select  B Back")
+                        : (root.wide-bar
+                            ? "\u{2191}\u{2193} Choose   \u{2190}\u{2192} Speed   A Select   B Back   X This folder   Y Menu"
+                            : "A Select  B Back  X Folder  Y Menu");
+                color: root.show-stats ? root.c-state : root.c-text-dim;
+                font-size: root.bar-font;
+                x: parent.width * 30%;
+                y: 0;
+                width: parent.width * 70% - root.pad;
+                height: parent.height;
+                vertical-alignment: center;
+                horizontal-alignment: right;
+                overflow: elide;
+            }
+        }
+
+        // The scroll speed, for a moment after it changes. Over everything
+        // and sized to its own text, so it confirms the press without
+        // moving anything or waiting for anything.
+
+
+        if root.overlay != "" && root.screen < 2: Rectangle {
+            background: root.c-surface;
+            height: root.row-height * 3;
+            y: (parent.height - self.height) / 2;
+            Rectangle {
+                background: root.c-accent;
+                height: 2px;
+                y: 0px;
+            }
+            Text {
+                text: root.overlay;
+                color: root.c-text;
+                font-size: root.body-font;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+                wrap: word-wrap;
+                x: root.pad;
+                width: parent.width - root.pad * 2;
+            }
+        }
+    }
+
+        // Outside the safe area on purpose: the overscan margin is part
+        // of the screen too, and a band of grey around the pictures is
+        // exactly the still image a screensaver is meant to prevent.
+        // The screensaver: a strip of pictures drifting sideways, each
+        // one filling the height. Cropped rather than fitted on
+        // purpose: letterboxing would leave bands of unchanging grey
+        // along the top and bottom, which on a tube is the one thing a
+        // screensaver exists to avoid.
+        if root.screen == 3: Rectangle {
+            x: 0;
+            y: 0;
+            width: root.width;
+            height: root.height;
+            background: #000000;
+            clip: true;
+            for row[index] in root.rows: Rectangle {
+                x: index * root.saver-cell - root.saver-offset;
+                y: 0;
+                width: root.saver-cell;
+                height: parent.height;
+                clip: true;
+
+                Image {
+                    source: row.cover;
+                    visible: row.has-cover;
+                    image-fit: cover;
+                    x: 0;
+                    y: 0;
+                    width: parent.width;
+                    height: parent.height;
+                }
+
+                // What is being looked at, on the picture and travelling
+                // with it. Sized to its own text and cut to the cell, so a
+                // long title cannot spill onto the picture beside it.
+                Rectangle {
+                    visible: row.has-cover && row.title != "";
+                    background: root.c-bar;
+                    border-radius: 2px;
+                    width: Math.min(
+                        root.saver-cell - root.pad * 2,
+                        caption.preferred-width + root.pad * 2);
+                    height: caption.preferred-height + root.pad;
+                    x: (parent.width - self.width) / 2;
+                    // Along the bottom, clear of the edge: the middle of a
+                    // picture is the part worth seeing.
+                    y: parent.height - self.height - root.pad * 3;
+
+                    caption := Text {
+                        text: row.title;
+                        color: root.c-text;
+                        font-size: root.small-font;
+                        x: root.pad;
+                        y: root.pad / 2;
+                    }
+                }
+            }
+        }
+
+        // Browse, carousel: one cover across the middle, its
+        // neighbours half off each edge. Nothing moves; a cover that
+        // slides into place is a cover you are waiting for.
+        //
+        // Given the safe rectangle explicitly, because unlike the
+        // screensaver this is ordinary browsing and a television crops the
+        // edges. `tile-width` is measured against the safe width, so
+        // centring it in the whole screen would put the middle cover off
+        // centre by the margin and push its neighbours behind the bezel.
+        if root.screen == 0 && root.layout == 3: Rectangle {
+            x: root.inset-left;
+            y: root.inset-top;
+            width: root.width - root.inset-left - root.inset-right;
+            height: root.height - root.inset-top - root.inset-bottom;
+            clip: true;
+            property <length> panel: root.detail-height;
+
+            for row[index] in root.rows: Rectangle {
+                // Where this one sits relative to the chosen one, so
+                // the middle stays the middle even at the ends of the
+                // list, where the window cannot centre itself.
+                property <int> offset: index - root.selected;
+
+                x: (parent.width - root.tile-width) / 2 + offset * root.tile-width;
+                y: 0;
+                width: root.tile-width;
+                height: parent.height - parent.panel;
+
+                Image {
+                    source: row.cover;
+                    visible: row.has-cover;
+                    image-fit: contain;
+                    x: root.pad;
+                    y: root.pad;
+                    width: parent.width - root.pad * 2;
+                    height: parent.height - root.pad * 3 - root.body-font;
+                }
+
+                Text {
+                    text: row.has-cover ? "" : row.title;
+                    color: root.c-text-dim;
+                    font-size: root.small-font;
+                    x: root.pad;
+                    y: root.pad;
+                    width: parent.width - root.pad * 2;
+                    height: parent.height - root.pad * 3 - root.body-font;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                    wrap: word-wrap;
+                    overflow: elide;
+                }
+
+                // The ones either side are held back so the middle
+                // reads as the one being chosen.
+                Rectangle {
+                    background: #000000;
+                    opacity: offset == 0 ? 0.0 : 0.5;
+                    x: 0;
+                    y: 0;
+                    width: parent.width;
+                    height: parent.height;
+                }
+
+                // In the corner of the cover, not on the title line: the
+                // title scrolls and the heart must not move with it.
+                Text {
+                    text: row.favorite ? "\u{2665}" : "";
+                    color: root.c-favorite;
+                    font-size: root.body-font;
+                    x: root.pad;
+                    y: root.pad;
+                }
+                ScrollingTitle {
+                    text: row.title;
+                    text-color: offset == 0 ? root.c-text : root.c-text-dim;
+                    font-size: root.body-font;
+                    align: center;
+                    active: offset == 0;
+                    at-end: root.marquee-end;
+                    x: root.pad;
+                    y: parent.height - root.body-font - root.pad;
+                    width: parent.width - root.pad * 2;
+                    height: root.body-font;
+                }
+            }
+
+            // Once, under the row, for the cover in the middle: six copies
+            // of the same lines sliding past each other would be unreadable.
+            DetailPanel {
+                x: root.pad;
+                y: parent.height - parent.panel;
+                width: parent.width - root.pad * 2;
+                height: parent.panel;
+                lines: root.detail-lines;
+                font-size: root.small-font;
+                line-height: root.detail-line;
+                pad: root.pad;
+                text-color: root.c-text;
+                label-color: root.c-text-dim;
+                at-end: root.detail-end;
+                ms-per-px: 44;
+                travel-cap: 8000ms;
+            }
+        }
+
+        if root.speed-visible: Rectangle {
+            background: root.c-bar;
+            border-radius: 2px;
+            width: speed-text.preferred-width + root.pad * 2;
+            height: speed-text.preferred-height + root.pad;
+            x: (parent.width - self.width) / 2;
+            y: parent.height - self.height - root.pad
+                - (root.show-bar ? root.bar-height : 0px);
+
+            speed-text := Text {
+                text: root.speed-badge;
+                color: root.c-state;
+                font-size: root.small-font;
+                x: root.pad;
+                y: root.pad / 2;
+            }
+        }
+    }

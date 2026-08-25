@@ -1,0 +1,71 @@
+name: Bug report
+description: Something does not work the way it should
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Degauss runs on your card, not on mine, so the details below are what
+        make a fault findable. `/tmp/degauss.log` is written on every start
+        and is usually the fastest way to the answer.
+
+  - type: input
+    id: version
+    attributes:
+      label: Degauss version
+      description: The release you are on, or the commit if you built it yourself. **About** in the main menu shows it.
+      placeholder: v0.1.0
+    validations:
+      required: true
+
+  - type: dropdown
+    id: display
+    attributes:
+      label: Display
+      options:
+        - CRT over analog RGB
+        - HDMI
+        - Both
+        - Something else
+    validations:
+      required: true
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What you saw, and what you expected instead.
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: How to bring it back
+      description: The steps that produce it, from the moment Degauss starts.
+      placeholder: |
+        1. Open Console, then SNES
+        2. Hold down for a few seconds
+        3. ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: log
+    attributes:
+      label: The log
+      description: The contents of `/tmp/degauss.log` after the fault. It is pasted as code automatically.
+      render: text
+    validations:
+      required: false
+
+  - type: textarea
+    id: card
+    attributes:
+      label: What the card looks like there
+      description: >
+        If it is about a system, a folder or artwork, the output of
+        `degauss --audit` for it, or just how the folder is laid out.
+      render: text
+    validations:
+      required: false
