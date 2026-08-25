@@ -53,11 +53,16 @@ jobs:
         run: |
           make BASE=arm-linux-gnueabihf \
             CC="arm-linux-gnueabihf-gcc -mcpu=cortex-a9 -mfpu=neon -mfloat-abi=hard"
-          mv MiSTer MiSTer_Degauss
+          # The Makefile writes into bin/, not the working directory.
+          mv bin/MiSTer MiSTer_Degauss
 
       - name: Check it is what it should be
+        # MiSTer Main links against the glibc on the device, so unlike the
+        # frontend it is dynamically linked, and it builds as a PIE: `file`
+        # says "LSB pie executable" rather than "LSB executable".
         run: |
-          file MiSTer_Degauss | tee /dev/stderr | grep -q "ELF 32-bit LSB executable, ARM"
+          file MiSTer_Degauss | tee /dev/stderr \
+            | grep -qE "ELF 32-bit LSB (pie )?executable, ARM"
 
       - name: Carry the revision to the packaging job
         env:

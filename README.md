@@ -26,6 +26,34 @@ Source available, written in Rust and using Slint, and licensed for non-commerci
 > worth continuing! If you want something changed or something is broken,
 > [open an issue](../../issues/new/choose) and if you starred it I'll know it matters to someone beyond just fixing things :-)
 
+## Watch it in action
+
+<!-- ONE thing to change when the upload finishes: replace both copies of
+     VIDEO_ID below with the id from the YouTube URL. For
+     https://youtu.be/dQw4w9WgXcQ the id is dQw4w9WgXcQ. -->
+
+<p align="center">
+  <a href="https://www.youtube.com/watch?v=w4dGS4kX35Q">
+    <img src="https://img.youtube.com/vi/w4dGS4kX35Q/maxresdefault.jpg"
+         alt="Degauss in motion" width="640">
+  </a>
+</p>
+
+## Screenshots
+
+| | | |
+|---|---|---|
+| <img src="docs/screenshots/crt-01-root.png" alt="The root menu" height="200"> | <img src="docs/screenshots/crt-02-neogeo.png" alt="A system's folders" height="200"> | <img src="docs/screenshots/crt-05-favorites-inside.png" alt="Inside the favourites" height="200"> |
+| The root menu | A system's folders | Inside the favourites |
+| <img src="docs/screenshots/crt-07-list.png" alt="List view" height="200"> | <img src="docs/screenshots/crt-03-psx-meta.png" alt="Details view, with metadata from gamelist.xml" height="200"> | <img src="docs/screenshots/crt-06-tiled.png" alt="Tiled view" height="200"> |
+| List view | Details view, with metadata from gamelist.xml | Tiled view |
+| <img src="docs/screenshots/crt-14-arcade-hearts.png" alt="Favourites are marked wherever they appear" height="200"> | <img src="docs/screenshots/crt-15-carousel.png" alt="Carousel view" height="200"> | <img src="docs/screenshots/crt-08-letters.png" alt="Jump to letter" height="200"> |
+| Favourites are marked wherever they appear | Carousel view | Jump to letter |
+| <img src="docs/screenshots/crt-11-search.png" alt="Search inside a folder" height="200"> | <img src="docs/screenshots/crt-16-context.png" alt="Contextual actions" height="200"> | <img src="docs/screenshots/crt-09-options.png" alt="Options" height="200"> |
+| Search inside a folder | Contextual actions | Options |
+| <img src="docs/screenshots/crt-12-advanced.png" alt="Advanced options" height="200"> | <img src="docs/screenshots/crt-13-saver.png" alt="The screensaver slideshow" height="200"> |
+| Advanced options | The screensaver slideshow |
+
 ## Using it
 
 | Control | Does |
@@ -78,34 +106,6 @@ Enter, Escape, Space and Tab.
 
 Measured on the DE10-Nano's own hardware, with a large multi-system
 collection indexed.
-
-## Watch it in action
-
-<!-- ONE thing to change when the upload finishes: replace both copies of
-     VIDEO_ID below with the id from the YouTube URL. For
-     https://youtu.be/dQw4w9WgXcQ the id is dQw4w9WgXcQ. -->
-
-<p align="center">
-  <a href="https://www.youtube.com/watch?v=w4dGS4kX35Q">
-    <img src="https://img.youtube.com/vi/w4dGS4kX35Q/maxresdefault.jpg"
-         alt="Degauss in motion" width="640">
-  </a>
-</p>
-
-## Screenshots
-
-| | | |
-|---|---|---|
-| <img src="docs/screenshots/crt-01-root.png" alt="The root menu" height="200"> | <img src="docs/screenshots/crt-02-neogeo.png" alt="A system's folders" height="200"> | <img src="docs/screenshots/crt-05-favorites-inside.png" alt="Inside the favourites" height="200"> |
-| The root menu | A system's folders | Inside the favourites |
-| <img src="docs/screenshots/crt-07-list.png" alt="List view" height="200"> | <img src="docs/screenshots/crt-03-psx-meta.png" alt="Details view, with metadata from gamelist.xml" height="200"> | <img src="docs/screenshots/crt-06-tiled.png" alt="Tiled view" height="200"> |
-| List view | Details view, with metadata from gamelist.xml | Tiled view |
-| <img src="docs/screenshots/crt-14-arcade-hearts.png" alt="Favourites are marked wherever they appear" height="200"> | <img src="docs/screenshots/crt-15-carousel.png" alt="Carousel view" height="200"> | <img src="docs/screenshots/crt-08-letters.png" alt="Jump to letter" height="200"> |
-| Favourites are marked wherever they appear | Carousel view | Jump to letter |
-| <img src="docs/screenshots/crt-11-search.png" alt="Search inside a folder" height="200"> | <img src="docs/screenshots/crt-16-context.png" alt="Contextual actions" height="200"> | <img src="docs/screenshots/crt-09-options.png" alt="Options" height="200"> |
-| Search inside a folder | Contextual actions | Options |
-| <img src="docs/screenshots/crt-12-advanced.png" alt="Advanced options" height="200"> | <img src="docs/screenshots/crt-13-saver.png" alt="The screensaver slideshow" height="200"> |
-| Advanced options | The screensaver slideshow |
 
 ## Installing
 
