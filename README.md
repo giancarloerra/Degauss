@@ -139,7 +139,7 @@ To remove Degauss, delete the `main=` line and the files above. Nothing
 else on the card is touched.
 
 The first run reads the card and writes an index, about a minute for a
-full one of 90k+ games. It never does that again on its own: **Options → Rebuild lists**
+full one of 97k+ games. It never does that again on its own: **Options → Rebuild lists**
 is how you tell it the card has changed (for example after adding new games). New images and metadata are read on the fly.
 
 ### Staying up to date

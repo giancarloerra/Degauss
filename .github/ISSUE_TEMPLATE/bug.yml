@@ -14,7 +14,7 @@ body:
     attributes:
       label: Degauss version
       description: The release you are on, or the commit if you built it yourself. **About** in the main menu shows it.
-      placeholder: v0.1.0
+      placeholder: v0.2.0
     validations:
       required: true
 
