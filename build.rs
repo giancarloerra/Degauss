@@ -11,6 +11,15 @@ fn main() {
     // size the tube asks for, and the renderer takes the largest that does
     // not exceed the request, so adding them leaves a tube byte for byte
     // as it was.
+    // The typeface is named, not inherited from whatever the machine doing
+    // the build happens to have installed. Without this, Slint asks the host
+    // for a default: a Mac produced Helvetica and the CI runner produced
+    // DejaVu Sans, so the same commit shipped two different-looking builds
+    // and a release never matched a local one.
+    std::env::set_var(
+        "SLINT_DEFAULT_FONT",
+        concat!(env!("CARGO_MANIFEST_DIR"), "/assets/fonts/DejaVuSans.ttf"),
+    );
     std::env::set_var("SLINT_FONT_SIZES", "12,26,34,44,56");
 
     let config = slint_build::CompilerConfiguration::new()
