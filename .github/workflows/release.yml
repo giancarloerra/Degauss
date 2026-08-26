@@ -138,14 +138,30 @@ jobs:
           Degauss itself is a separate program under the PolyForm Noncommercial
           License 1.0.0. See LICENSE beside this file.
           EOF
-          (cd dist && zip -qr "${NAME}.zip" "${NAME}")
-          sha256sum "dist/${NAME}.zip" > "dist/${NAME}.zip.sha256"
+          # Both from inside dist, so the checksum file names the archive
+          # and nothing else. Hashing it from up here would record
+          # "dist/degauss-x.y.z-mister.zip", and `sha256sum -c` next to a
+          # downloaded archive would then look for a dist folder that only
+          # ever existed on the machine that built it.
+          (cd dist \
+            && zip -qr "${NAME}.zip" "${NAME}" \
+            && sha256sum "${NAME}.zip" > "${NAME}.zip.sha256")
           echo "name=${NAME}" >> "$GITHUB_OUTPUT"
 
       - name: Check the archive holds both binaries
         run: |
           unzip -l dist/*.zip | grep -q "degauss/MiSTer_Degauss"
           unzip -l dist/*.zip | grep -q "Scripts/.degauss/degauss"
+
+      # Where somebody who downloaded the two files stands, which is the only
+      # place the checksum is ever used.
+      - name: Check the checksum verifies beside the archive
+        env:
+          NAME: ${{ steps.package.outputs.name }}
+        run: |
+          mkdir -p verify
+          cp "dist/${NAME}.zip" "dist/${NAME}.zip.sha256" verify/
+          cd verify && sha256sum -c "${NAME}.zip.sha256"
 
       # The Downloader database, so `update_all` can keep Degauss current.
       # It names every file with its hash and where to fetch it, which is why
