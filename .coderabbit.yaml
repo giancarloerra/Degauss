@@ -1,0 +1,26 @@
+# yaml-language-server: $schema=https://storage.googleapis.com/coderabbit_public_assets/schema.v2.json
+#
+# What this repository asks a review to know about itself.
+
+language: en-GB
+
+reviews:
+  pre_merge_checks:
+    # Off, because the measure does not fit the convention here rather than
+    # because the convention is loose. Every public item carries a doc
+    # comment saying what it is for. A test does not: its name is the
+    # sentence, in full, and what needs explaining is why the behaviour
+    # matters, which goes in a comment inside the body where the reader is
+    # looking. Counting both together reports a number that says nothing,
+    # and reaching a threshold would mean writing `/// Tests that ...` above
+    # a function already called
+    # `a_size_under_the_ladder_gets_the_smallest_rather_than_nothing`.
+    docstrings:
+      mode: "off"
+
+  path_filters:
+    # Vendored verbatim and not ours to change: the fonts' own licence texts.
+    # The font files themselves are already left alone.
+    - '!assets/fonts/*-LICENSE.txt'
+    - '!deploy/Scripts/.degauss/*-LICENSE.txt'
+    - '!LICENSE'
