@@ -153,6 +153,7 @@ impl PresentMode {
         }
     }
 
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     pub fn next(self) -> Self {
         match self {
             PresentMode::Direct => PresentMode::Staged,
@@ -203,6 +204,7 @@ impl Presenter {
         }
     }
 
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     pub fn mode(&self) -> PresentMode {
         self.mode
     }
@@ -211,6 +213,7 @@ impl Presenter {
     /// assumes the target already holds the previous frame, and after a
     /// switch it does not. Without this the screen keeps whatever stale
     /// pixels it had and only the parts that happen to change get updated.
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     pub fn set_mode(&mut self, mode: PresentMode, window: &MinimalSoftwareWindow) {
         if mode != self.mode {
             self.mode = mode;

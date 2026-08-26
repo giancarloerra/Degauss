@@ -76,10 +76,11 @@ Enter, Escape, Space and Tab.
 - **Nothing resident.** No service, no daemon, no port, no background
   process, nothing at boot. One program, running only while you are
   looking at it.
-- **Small.** A 2.7 MB program, and no runtime, toolkit or library to
-  install beside it. The index it builds costs about 300 bytes a game, so
-  it stays in the low megabytes for an ordinary collection and is the only
-  thing that grows with the size of yours.
+- **Self-contained.** One program, with no runtime, toolkit or library to
+  install beside it, and 33 MB resident while it runs. The index it builds
+  costs about 300 bytes a game, so it stays in the low megabytes for an
+  ordinary collection and is the only thing that grows with the size of
+  yours.
 - **CRT-optimised.** 352x240, 1:1 with the analog output, no scaler in
   between. Overscan margins and screen position are settings. Larger
   framebuffers are laid out from their own size, so HDMI works too.
@@ -535,3 +536,7 @@ Two typefaces are baked into the binary:
   [CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/)
   ([text](assets/fonts/Px437-LICENSE.txt)). Unmodified; its glyphs are
   rasterised at fixed sizes.
+
+Names are drawn in the Latin, Greek and Cyrillic alphabets, with the accents
+and marks of each. A name in Japanese or Chinese draws as a gap: neither
+typeface has those characters.

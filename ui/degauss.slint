@@ -12,6 +12,11 @@
 // the renderer falls back to.
 import "../assets/fonts/Px437_DOS-V_re_JPN12.ttf";
 
+// Which characters get glyphs. Written by build.rs, because the answer is
+// "whatever the two fonts above can draw" and that is read off the font
+// files rather than written down.
+import { Charset } from "charset.slint";
+
 // A title that is elided when it is not the one you are looking at, and
 // walks itself sideways when it is.
 //
@@ -257,6 +262,11 @@ export component DegaussWindow inherits Window {
     in property <bool> show-stats;
 
     default-font-family: root.font-family;
+
+    // Never drawn. It exists so that the characters it names are ones the
+    // compiler has seen written down, which is the only thing that makes
+    // their glyphs part of the binary.
+    Charset { }
     background: root.screen == 3 ? #000000 : root.c-background;
 
     // Everything lives inside the safe rectangle.

@@ -87,6 +87,7 @@ impl Screen {
 
 /// How long the wordmark stays up before browsing starts. Long enough to
 /// read, short enough that nobody waits for it; any button skips it.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 const SPLASH_MS: u64 = 1400;
 
 /// Something waiting on a yes or no.
@@ -199,6 +200,7 @@ const LICENCE: &str = "PolyForm Noncommercial 1.0.0";
 /// How fast the strip of pictures drifts across, in pixels per second.
 /// Slow enough to read a screenshot, fast enough that no part of the
 /// picture sits on the same phosphor for long.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 const SAVER_PIXELS_PER_SECOND: f32 = 24.0;
 
 /// How long to wait before looking again, when a look found nothing.
@@ -1313,6 +1315,7 @@ impl App {
         }
     }
 
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     fn speed_ms(&self) -> u64 {
         SPEED_STEPS[self.speed.min(SPEED_STEPS.len() - 1)].1
     }
@@ -1417,6 +1420,7 @@ impl App {
     /// It never stops on its own: pictures that have scrolled off the left
     /// are dropped, the queue refills the strip, and a fresh system is drawn
     /// on whenever the queue runs dry.
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     fn advance_saver(&mut self, now: Instant) {
         let elapsed = now.duration_since(self.saver_stepped).as_secs_f32();
         self.saver_stepped = now;
@@ -3897,6 +3901,7 @@ impl App {
         PresentMode::parse(self.present_label).unwrap_or(PresentMode::Direct)
     }
 
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     pub fn run(
         &mut self,
         surface: &mut dyn Surface,

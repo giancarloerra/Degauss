@@ -135,10 +135,12 @@ pub struct Status {
     pub clock: String,
     pub wifi: bool,
     pub bluetooth: bool,
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     checked: Instant,
 }
 
 impl Status {
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     const EVERY: Duration = Duration::from_secs(5);
 
     pub fn read() -> Self {
@@ -151,6 +153,7 @@ impl Status {
     }
 
     /// True when anything changed, so the caller knows to redraw.
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     pub fn refresh(&mut self, now: Instant) -> bool {
         if now.duration_since(self.checked) < Self::EVERY {
             return false;

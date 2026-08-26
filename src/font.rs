@@ -191,6 +191,38 @@ mod tests {
     }
 
     #[test]
+    fn a_name_off_a_card_has_a_glyph_for_every_letter_in_it() {
+        // Nothing is drawn for a character whose glyph was not baked: not a
+        // box, not a question mark, nothing. A name loses the letter and
+        // reads as though it had a space there. These are the accents and
+        // marks that real releases and fan translations put in a filename.
+        let generated = generated_ui();
+        let names = [
+            "Astérix - Le Défi",         // French
+            "Märchen Adventure Cotton",  // German
+            "Pokémon Café",              // the one everybody has
+            "Zażółć gęślą jaźń",         // Polish
+            "Příliš žluťoučký kůň",      // Czech
+            "Árvíztűrő tükörfúrógép",    // Hungarian
+            "Güneş Şafağı",              // Turkish
+            "Ș Ț în România",            // Romanian
+            "Tiếng Việt",                // Vietnamese
+            "Контра",                    // Cyrillic, from a translation
+            "Ελλάδα",                    // Greek
+            "½ ¼ ⅓ ° ™ € № — ' ' \" \"", // what a title puts around a name
+        ];
+        for name in names {
+            for character in name.chars() {
+                assert!(
+                    generated.contains(&format!("code_point : {character:?}")),
+                    "{character:?} (U+{:04X}), in {name:?}, has no glyph and would draw as a gap",
+                    character as u32
+                );
+            }
+        }
+    }
+
+    #[test]
     fn the_glyphs_baked_by_the_build_cover_both_ladders() {
         // build.rs names the sizes to bake and this names the sizes to ask
         // for. They are the same list only because both come from

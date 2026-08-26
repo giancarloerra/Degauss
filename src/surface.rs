@@ -68,6 +68,7 @@ pub trait Surface {
     /// so drawing whenever a frame happens to be ready tears. Waiting here
     /// puts each frame between scans and stops the loop spinning through
     /// frames the tube will never show.
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     fn wait_for_vsync(&mut self) -> bool {
         false
     }
