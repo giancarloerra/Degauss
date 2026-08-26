@@ -14,6 +14,7 @@ mod config;
 mod covers;
 mod error;
 mod favorites;
+mod font;
 mod gamelist;
 mod input;
 mod launch;

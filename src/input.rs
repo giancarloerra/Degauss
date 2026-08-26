@@ -88,6 +88,7 @@ pub const SPEED_START: usize = 1;
 
 /// Held-key repeat cadence.
 #[derive(Debug, Clone, Copy)]
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 pub struct RepeatConfig {
     /// Wait after the first press before repeating.
     pub delay: Duration,
@@ -108,6 +109,7 @@ impl Default for RepeatConfig {
 
 /// Tracks one held action and decides when it should fire again.
 #[derive(Debug)]
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 struct Held {
     action: Action,
     pressed_at: Instant,
@@ -118,6 +120,7 @@ struct Held {
 /// Turns key up/down transitions into a stream of actions, including
 /// repeats while a key stays down.
 #[derive(Debug)]
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 pub struct Repeater {
     config: RepeatConfig,
     held: Vec<Held>,
@@ -133,15 +136,18 @@ impl Repeater {
 
     /// Change the repeat interval while a key may already be held, so a
     /// speed change takes effect mid-scroll rather than at the next press.
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     pub fn set_interval(&mut self, interval: Duration) {
         self.config.interval = interval;
     }
 
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     pub fn interval(&self) -> Duration {
         self.config.interval
     }
 
     /// A key went down. Returns the action to perform immediately.
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     pub fn press(&mut self, action: Action, now: Instant) -> Option<Action> {
         if self.held.iter().any(|h| h.action == action) {
             return None;
@@ -157,11 +163,13 @@ impl Repeater {
         Some(action)
     }
 
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     pub fn release(&mut self, action: Action) {
         self.held.retain(|h| h.action != action);
     }
 
     /// Actions due because a key is still held.
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     pub fn tick(&mut self, now: Instant) -> Vec<Action> {
         let mut due = Vec::new();
         for held in &mut self.held {
@@ -179,6 +187,7 @@ impl Repeater {
         due
     }
 
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     pub fn anything_held(&self) -> bool {
         !self.held.is_empty()
     }

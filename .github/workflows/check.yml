@@ -5,6 +5,11 @@ on:
     branches: [ main ]
   pull_request:
 
+# Checking out and building needs nothing else. Without this the token takes
+# whatever the repository defaults grant, which a build script could spend.
+permissions:
+  contents: read
+
 jobs:
   test:
     runs-on: ubuntu-latest

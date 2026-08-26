@@ -86,6 +86,18 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
+      # The About screen reports the version compiled into the binary, and
+      # the archive and the database are named after the tag. Nothing else
+      # ties the two together, so a tag that does not match the crate ships
+      # a binary that misreports which release it is.
+      - name: Check the tag and the crate say the same version
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          CRATE=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)
+          TAG="${GITHUB_REF_NAME#v}"
+          echo "Cargo.toml says ${CRATE}, the tag says ${TAG}"
+          test "${CRATE}" = "${TAG}"
+
       - name: Install the ARM target
         run: rustup target add armv7-unknown-linux-musleabihf
 

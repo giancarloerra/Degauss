@@ -19,21 +19,12 @@ the box, and can be tuned to your liking.
 
 Source available, written in Rust and using Slint, and licensed for non-commercial use.
 
-> ### Star this repository to support it ⭐️
+> ### Feature request or bug report? Star this repository as well to support it ⭐️
 >
 > Degauss is written and maintained by one person in his own time. A star is
 > the whole of what it costs you and the clearest signal that the work is
 > worth continuing! If you want something changed or something is broken,
-> [open an issue](../../issues/new/choose) and if you starred it I'll know it matters to someone beyond just fixing things :-)
-
-## Watch it in action
-
-<p align="center">
-  <a href="https://www.youtube.com/watch?v=w4dGS4kX35Q">
-    <img src="https://img.youtube.com/vi/w4dGS4kX35Q/maxresdefault.jpg"
-         alt="Degauss in motion" width="640">
-  </a>
-</p>
+> [open an issue](../../issues/new/choose) and if you starred it I'll know it matters to you beyond just requesting things :-)
 
 ## Screenshots
 
@@ -49,6 +40,15 @@ Source available, written in Rust and using Slint, and licensed for non-commerci
 | Search inside a folder | Contextual actions | Options |
 | <img src="docs/screenshots/crt-12-advanced.png" alt="Advanced options" height="200"> | <img src="docs/screenshots/crt-13-saver.png" alt="The screensaver slideshow" height="200"> |
 | Advanced options | The screensaver slideshow |
+
+## Watch it in action
+
+<p align="center">
+  <a href="https://www.youtube.com/watch?v=w4dGS4kX35Q">
+    <img src="https://img.youtube.com/vi/w4dGS4kX35Q/maxresdefault.jpg"
+         alt="Degauss in motion" width="640">
+  </a>
+</p>
 
 ## Using it
 
@@ -76,10 +76,11 @@ Enter, Escape, Space and Tab.
 - **Nothing resident.** No service, no daemon, no port, no background
   process, nothing at boot. One program, running only while you are
   looking at it.
-- **Small.** A 2.7 MB program, and no runtime, toolkit or library to
-  install beside it. The index it builds costs about 300 bytes a game, so
-  it stays in the low megabytes for an ordinary collection and is the only
-  thing that grows with the size of yours.
+- **Self-contained.** One program, with no runtime, toolkit or library to
+  install beside it, and 33 MB resident while it runs. The index it builds
+  costs about 300 bytes a game, so it stays in the low megabytes for an
+  ordinary collection and is the only thing that grows with the size of
+  yours.
 - **CRT-optimised.** 352x240, 1:1 with the analog output, no scaler in
   between. Overscan margins and screen position are settings. Larger
   framebuffers are laid out from their own size, so HDMI works too.
@@ -138,7 +139,7 @@ To remove Degauss, delete the `main=` line and the files above. Nothing
 else on the card is touched.
 
 The first run reads the card and writes an index, about a minute for a
-full one of 90k+ games. It never does that again on its own: **Options → Rebuild lists**
+full one of 97k+ games. It never does that again on its own: **Options → Rebuild lists**
 is how you tell it the card has changed (for example after adding new games). New images and metadata are read on the fly.
 
 ### Staying up to date
@@ -210,6 +211,7 @@ card.
 | Skip artwork faster than | Above this speed, pictures wait until the list stops |
 | Rebuild lists | Read the card again. Run it after adding games, cores or artwork |
 | View | Details, Tiled, List or Carousel |
+| Text | The typeface: Smooth, or Pixel, a DOS font drawn on whole pixels |
 | Bottom bar while browsing | The strip with the time and the buttons. Menus always keep it |
 | Artwork | Turn pictures off entirely |
 | Favourites first | Gather a folder's favourites at its top, in the same alphabet |
@@ -472,6 +474,43 @@ named after the system. The 89 files in `assets/logos/` are copied from
 lehcimcramtrebor/es-theme-forever (`CUSTOMIZE/logos`). The marks themselves 
 are the trademarks of their owners, used here only to identify the systems.
 
+## Tips
+
+### Making the gamelists
+
+Degauss reads the gamelists; it does not write them. There are mainly two ways to get them, and the last one is what I actually use and works very well.
+
+**On a computer, with the card in it.** Any scraper written for
+EmulationStation produces exactly the file Degauss reads.
+
+- [Skraper](https://www.skraper.net) is free. It is a .NET application and
+  Windows is the only native build; Linux and macOS go through WINE. Set its
+  output to RecalBox or RetroPie mode, which is the setting that writes
+  `gamelist.xml` rather than a frontend's own database. It already knows
+  MiSTer's folder names, so you can point it straight at the card or at a
+  share.
+- [Skyscraper](https://github.com/Gemba/skyscraper) is a C++ command line
+  scraper, Linux first, and the one RetroPie uses. It caches everything it
+  fetches and builds the gamelists from that cache, so changing your mind
+  about the artwork costs nothing the second time.
+
+**With an AI, over ssh.** This is what I do, and it is far and away the
+best for me. Put an ssh key on the MiSTer, point an AI coding agent
+at it, and ask. It reads the card as it is, works out which systems are
+there, matches names against what it finds, writes a `gamelist.xml` per
+folder, finds collections containing the images you need, and comes back with what it could not resolve instead of quietly skipping it (and almost always can have a good guess at it!).
+
+The part AI is best at is also managing it all. A gamelist goes stale
+the moment you add a game, and an agent can be told to look at what changed and only touch that, so keeping the lists current after adding games is super quick.
+
+### Keeping the card in order (additional bonus!)
+
+The same thing works for the card itself. After every `update_all` I have an
+agent go over it and tell me what it found: cores that arrived or vanished,
+games with no artwork, artwork with no game, folders that ended up in the
+wrong place, gamelists that no longer match what is on the card, and
+anything a core needs that is missing. It reports; I decide; it executes.
+
 ## The command line (CLI)
 
 Degauss is a normal program, so it can be run over SSH without taking the
@@ -524,3 +563,17 @@ Degauss is under PolyForm Noncommercial 1.0.0. See [`LICENSE`](LICENSE).
 [MiSTer Main](https://github.com/MiSTer-devel/Main_MiSTer) under GPLv3, with
 its source at
 [giancarloerra/Degauss-Main](https://github.com/giancarloerra/Degauss-Main).
+
+Two typefaces are baked into the binary:
+
+- [DejaVu Sans](https://dejavu-fonts.github.io), under the Bitstream Vera and
+  Arev licences ([text](assets/fonts/DejaVuSans-LICENSE.txt)).
+- [Px437 DOS/V re. JPN12](https://int10h.org/oldschool-pc-fonts/), from The
+  Ultimate Oldschool PC Font Pack, © 2016-2020 VileR, under
+  [CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/)
+  ([text](assets/fonts/Px437-LICENSE.txt)). Unmodified; its glyphs are
+  rasterised at fixed sizes.
+
+Names are drawn in the Latin, Greek and Cyrillic alphabets, with the accents
+and marks of each. A name in Japanese or Chinese draws as a gap: neither
+typeface has those characters.

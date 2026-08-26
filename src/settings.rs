@@ -26,6 +26,10 @@ pub struct Settings {
     /// into the speed ladder.
     pub art_limit: Option<usize>,
     pub layout: Option<String>,
+    /// Which typeface the interface is set in. Absent means whatever the
+    /// shipped configuration says.
+    #[serde(default)]
+    pub font: Option<String>,
     /// Whether favourites are gathered at the top of a folder.
     pub favorites_first: Option<bool>,
     /// Whether picking a random game starts it, or only moves the cursor to

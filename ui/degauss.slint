@@ -7,6 +7,16 @@
 // Deliberately plain: no gradients, shadows, animations or rounded corners.
 // Each of those costs the software renderer real time on every frame.
 
+// The second typeface. Importing a font file is what bakes its glyphs into
+// the binary; the first one is named by build.rs, which also makes it the one
+// the renderer falls back to.
+import "../assets/fonts/Px437_DOS-V_re_JPN12.ttf";
+
+// Which characters get glyphs. Written by build.rs, because the answer is
+// "whatever the two fonts above can draw" and that is read off the font
+// files rather than written down.
+import { Charset } from "charset.slint";
+
 // A title that is elided when it is not the one you are looking at, and
 // walks itself sideways when it is.
 //
@@ -163,6 +173,22 @@ export component DegaussWindow inherits Window {
     in property <length> pad: 6px;
     in property <length> chrome-height: 22px;
 
+    // The typeface, and the size to set each kind of text at.
+    //
+    // Two properties for what looks like one thing, because the sizes above
+    // are also measurements: rows are spaced by them and the bar's icons are
+    // built out of them. Glyphs exist only at the sizes they were baked at,
+    // so what is drawn has to be one of those, while what the layout is
+    // measured in stays exactly what it was. Rust decides both.
+    in property <string> font-family;
+    in property <length> body-glyph: 13px;
+    in property <length> small-glyph: 11px;
+    in property <length> bar-glyph: 9px;
+    /// The name of a system standing in for a logo it does not have.
+    in property <length> caption-glyph: 22px;
+    /// The heart standing in for a picture, in the favourites folder.
+    in property <length> heart-glyph: 78px;
+
     // 0 = browse, 1 = a plain list (menu, context, options, advanced, help,
     // favourite folders), 2 = the wordmark (about and splash), 3 = the
     // screensaver, 4 = the grid of letters.
@@ -235,6 +261,12 @@ export component DegaussWindow inherits Window {
     in property <string> stats;
     in property <bool> show-stats;
 
+    default-font-family: root.font-family;
+
+    // Never drawn. It exists so that the characters it names are ones the
+    // compiler has seen written down, which is the only thing that makes
+    // their glyphs part of the binary.
+    Charset { }
     background: root.screen == 3 ? #000000 : root.c-background;
 
     // Everything lives inside the safe rectangle.
@@ -263,7 +295,7 @@ export component DegaussWindow inherits Window {
                 Text {
                     text: root.heading;
                     color: root.c-text;
-                    font-size: root.small-font;
+                    font-size: root.small-glyph;
                     vertical-alignment: center;
                     overflow: elide;
                 }
@@ -273,7 +305,7 @@ export component DegaussWindow inherits Window {
                 ScrollingTitle {
                     text: root.status;
                     text-color: root.c-state;
-                    font-size: root.small-font;
+                    font-size: root.small-glyph;
                     align: right;
                     active: true;
                     at-end: root.marquee-end;
@@ -316,7 +348,7 @@ export component DegaussWindow inherits Window {
                 Text {
                     text: root.about-version;
                     color: root.c-text-dim;
-                    font-size: root.small-font;
+                    font-size: root.small-glyph;
                     horizontal-alignment: center;
                     width: parent.width;
                     y: logo.y + logo.height + root.pad;
@@ -325,7 +357,7 @@ export component DegaussWindow inherits Window {
                 Text {
                     text: root.overlay != "" ? root.overlay : root.about-line;
                     color: root.overlay != "" ? root.c-text : root.c-text-dim;
-                    font-size: root.small-font;
+                    font-size: root.small-glyph;
                     horizontal-alignment: center;
                     width: parent.width;
                     y: logo.y + logo.height + root.pad * 2 + root.small-font;
@@ -334,7 +366,7 @@ export component DegaussWindow inherits Window {
                 Text {
                     text: root.about-copyright;
                     color: root.c-text-dim;
-                    font-size: root.small-font;
+                    font-size: root.small-glyph;
                     horizontal-alignment: center;
                     width: parent.width;
                     y: logo.y + logo.height + root.pad * 3 + root.small-font * 2;
@@ -343,7 +375,7 @@ export component DegaussWindow inherits Window {
                 Text {
                     text: root.about-licence;
                     color: root.c-text-dim;
-                    font-size: root.small-font;
+                    font-size: root.small-glyph;
                     horizontal-alignment: center;
                     width: parent.width;
                     y: logo.y + logo.height + root.pad * 4 + root.small-font * 3;
@@ -368,21 +400,21 @@ export component DegaussWindow inherits Window {
                             // for from Rust alone draws nothing at all.
                             text: row.favorite ? "\u{2665} " : "";
                             color: root.c-favorite;
-                            font-size: root.body-font;
+                            font-size: root.body-glyph;
                             vertical-alignment: center;
                             width: row.favorite ? self.preferred-width : 0px;
                         }
                         ScrollingTitle {
                             text: row.title;
                             text-color: index == root.selected ? root.c-accent-text : root.c-text;
-                            font-size: root.body-font;
+                            font-size: root.body-glyph;
                             active: index == root.selected;
                             at-end: root.marquee-end;
                         }
                         Text {
                             text: row.value;
                             color: index == root.selected ? root.c-accent-text : root.c-text;
-                            font-size: root.body-font;
+                            font-size: root.body-glyph;
                             vertical-alignment: center;
                             horizontal-alignment: right;
                         }
@@ -404,7 +436,7 @@ export component DegaussWindow inherits Window {
                     Text {
                         text: cell.title;
                         color: index == root.selected ? root.c-accent-text : root.c-text;
-                        font-size: root.body-font;
+                        font-size: root.body-glyph;
                         horizontal-alignment: center;
                         vertical-alignment: center;
                         width: parent.width;
@@ -446,21 +478,21 @@ export component DegaussWindow inherits Window {
                                 Text {
                                     text: row.favorite ? "\u{2665} " : "";
                                     color: root.c-favorite;
-                                    font-size: root.body-font;
+                                    font-size: root.body-glyph;
                                     vertical-alignment: center;
                                     width: row.favorite ? self.preferred-width : 0px;
                                 }
                                 ScrollingTitle {
                                     text: row.title;
                                     text-color: index == root.selected ? root.c-accent-text : root.c-text;
-                                    font-size: root.body-font;
+                                    font-size: root.body-glyph;
                                     active: index == root.selected;
                                     at-end: root.marquee-end;
                                 }
                                 Text {
                                     text: row.value;
                                     color: index == root.selected ? root.c-accent-text : root.c-text-dim;
-                                    font-size: root.small-font;
+                                    font-size: root.small-glyph;
                                     vertical-alignment: center;
                                     horizontal-alignment: right;
                                     // A floor, not a width. 34px is what a
@@ -500,7 +532,7 @@ export component DegaussWindow inherits Window {
                         visible: !root.has-art && root.art-heart;
                         text: "\u{2665}";
                         color: root.c-favorite;
-                        font-size: root.body-font * 6;
+                        font-size: root.heart-glyph;
                         horizontal-alignment: center;
                         vertical-alignment: center;
                         x: root.pad;
@@ -515,7 +547,7 @@ export component DegaussWindow inherits Window {
                         visible: !root.has-art && !root.art-heart;
                         text: root.art-caption;
                         color: root.c-text;
-                        font-size: root.body-font * 1.7;
+                        font-size: root.caption-glyph;
                         horizontal-alignment: center;
                         vertical-alignment: center;
                         wrap: word-wrap;
@@ -531,7 +563,7 @@ export component DegaussWindow inherits Window {
                         width: parent.width - root.pad * 2;
                         height: parent.panel;
                         lines: root.detail-lines;
-                        font-size: root.small-font;
+                        font-size: root.small-glyph;
                         line-height: root.detail-line;
                         pad: root.pad;
                         text-color: root.c-text;
@@ -566,14 +598,14 @@ export component DegaussWindow inherits Window {
                     Text {
                         text: row.favorite ? "\u{2665}" : "";
                         color: root.c-favorite;
-                        font-size: root.small-font;
+                        font-size: root.small-glyph;
                         x: 3px;
                         y: 2px;
                     }
                     ScrollingTitle {
                         text: row.title;
                         text-color: index == root.selected ? root.c-accent-text : root.c-text-dim;
-                        font-size: root.small-font;
+                        font-size: root.small-glyph;
                         align: center;
                         active: index == root.selected;
                         at-end: root.marquee-end;
@@ -611,7 +643,7 @@ export component DegaussWindow inherits Window {
                 Text {
                     text: root.clock;
                     color: root.c-text-dim;
-                    font-size: root.bar-font;
+                    font-size: root.bar-glyph;
                     vertical-alignment: center;
                 }
                 // Drawn rather than written. The glyphs are baked into the
@@ -701,7 +733,7 @@ export component DegaussWindow inherits Window {
                             ? "\u{2191}\u{2193} Choose   \u{2190}\u{2192} Speed   A Select   B Back   X This folder   Y Menu"
                             : "A Select  B Back  X Folder  Y Menu");
                 color: root.show-stats ? root.c-state : root.c-text-dim;
-                font-size: root.bar-font;
+                font-size: root.bar-glyph;
                 x: parent.width * 30%;
                 y: 0;
                 width: parent.width * 70% - root.pad;
@@ -729,7 +761,7 @@ export component DegaussWindow inherits Window {
             Text {
                 text: root.overlay;
                 color: root.c-text;
-                font-size: root.body-font;
+                font-size: root.body-glyph;
                 horizontal-alignment: center;
                 vertical-alignment: center;
                 wrap: word-wrap;
@@ -790,7 +822,7 @@ export component DegaussWindow inherits Window {
                     caption := Text {
                         text: row.title;
                         color: root.c-text;
-                        font-size: root.small-font;
+                        font-size: root.small-glyph;
                         x: root.pad;
                         y: root.pad / 2;
                     }
@@ -839,7 +871,7 @@ export component DegaussWindow inherits Window {
                 Text {
                     text: row.has-cover ? "" : row.title;
                     color: root.c-text-dim;
-                    font-size: root.small-font;
+                    font-size: root.small-glyph;
                     x: root.pad;
                     y: root.pad;
                     width: parent.width - root.pad * 2;
@@ -866,14 +898,14 @@ export component DegaussWindow inherits Window {
                 Text {
                     text: row.favorite ? "\u{2665}" : "";
                     color: root.c-favorite;
-                    font-size: root.body-font;
+                    font-size: root.body-glyph;
                     x: root.pad;
                     y: root.pad;
                 }
                 ScrollingTitle {
                     text: row.title;
                     text-color: offset == 0 ? root.c-text : root.c-text-dim;
-                    font-size: root.body-font;
+                    font-size: root.body-glyph;
                     align: center;
                     active: offset == 0;
                     at-end: root.marquee-end;
@@ -892,7 +924,7 @@ export component DegaussWindow inherits Window {
                 width: parent.width - root.pad * 2;
                 height: parent.panel;
                 lines: root.detail-lines;
-                font-size: root.small-font;
+                font-size: root.small-glyph;
                 line-height: root.detail-line;
                 pad: root.pad;
                 text-color: root.c-text;
@@ -915,7 +947,7 @@ export component DegaussWindow inherits Window {
             speed-text := Text {
                 text: root.speed-badge;
                 color: root.c-state;
-                font-size: root.small-font;
+                font-size: root.small-glyph;
                 x: root.pad;
                 y: root.pad / 2;
             }

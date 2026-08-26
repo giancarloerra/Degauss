@@ -30,8 +30,10 @@ if compgen -G "assets/logos/*.png" >/dev/null; then
     cp assets/logos/*.png deploy/Scripts/.degauss/logos/
 fi
 # The licence travels with the program, so a copy on a card is never a copy
-# with no terms attached.
+# with no terms attached. The typefaces are baked into the binary and carry
+# their own terms, so those travel with it too.
 cp LICENSE deploy/Scripts/.degauss/LICENSE
+cp assets/fonts/DejaVuSans-LICENSE.txt assets/fonts/Px437-LICENSE.txt deploy/Scripts/.degauss/
 
 echo
 echo "deploy/ is ready. Copy its contents onto the card:"
