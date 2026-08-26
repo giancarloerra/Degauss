@@ -210,6 +210,7 @@ card.
 | Skip artwork faster than | Above this speed, pictures wait until the list stops |
 | Rebuild lists | Read the card again. Run it after adding games, cores or artwork |
 | View | Details, Tiled, List or Carousel |
+| Text | The typeface: Smooth, or Pixel, a DOS font drawn on whole pixels |
 | Bottom bar while browsing | The strip with the time and the buttons. Menus always keep it |
 | Artwork | Turn pictures off entirely |
 | Favourites first | Gather a folder's favourites at its top, in the same alphabet |
@@ -524,3 +525,13 @@ Degauss is under PolyForm Noncommercial 1.0.0. See [`LICENSE`](LICENSE).
 [MiSTer Main](https://github.com/MiSTer-devel/Main_MiSTer) under GPLv3, with
 its source at
 [giancarloerra/Degauss-Main](https://github.com/giancarloerra/Degauss-Main).
+
+Two typefaces are baked into the binary:
+
+- [DejaVu Sans](https://dejavu-fonts.github.io), under the Bitstream Vera and
+  Arev licences ([text](assets/fonts/DejaVuSans-LICENSE.txt)).
+- [Px437 DOS/V re. JPN12](https://int10h.org/oldschool-pc-fonts/), from The
+  Ultimate Oldschool PC Font Pack, © 2016-2020 VileR, under
+  [CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/)
+  ([text](assets/fonts/Px437-LICENSE.txt)). Unmodified; its glyphs are
+  rasterised at fixed sizes.

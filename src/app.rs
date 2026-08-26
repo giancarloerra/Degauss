@@ -35,6 +35,7 @@ use crate::browse::{self, Library, Place};
 use crate::config::{Color as ConfigColor, Config, SystemConfig};
 use crate::covers::{CoverCache, CoverStats};
 use crate::error::Result;
+use crate::font::Font;
 use crate::input::{
     Action, InputReader, KeyEdge, RepeatConfig, Repeater, SPEED_START, SPEED_STEPS,
 };
@@ -828,6 +829,8 @@ pub struct App {
     favorites: crate::favorites::Favorites,
     /// Whether favourites are gathered at the top of a folder.
     favorites_first: bool,
+    /// The typeface everything is set in.
+    font: Font,
     random_launches: bool,
     /// Whether folders come after the games rather than before them.
     folders_last: bool,
@@ -997,6 +1000,15 @@ impl App {
             empty_systems: None,
             favorites: crate::favorites::Favorites::default(),
             favorites_first: settings.favorites_first.unwrap_or(true),
+            // The file the user edits, then the one Degauss writes, then the
+            // typeface that always exists. A name neither of them recognises
+            // is not worth refusing to start over.
+            font: settings
+                .font
+                .as_deref()
+                .and_then(Font::parse)
+                .or_else(|| Font::parse(&config.app.font))
+                .unwrap_or_default(),
             random_launches: settings.random_launches.unwrap_or(false),
             folders_last: settings.folders_last.unwrap_or(false),
             opened_config: None,
@@ -1195,6 +1207,21 @@ impl App {
         self.ui.set_row_height(geometry.row_height);
         self.ui.set_body_font(geometry.body_font);
         self.ui.set_small_font(geometry.small_font);
+        // The sizes above space the layout; these are the sizes text is
+        // actually drawn at, which have to be sizes the typeface was baked
+        // at. Asking for one it was not is not an error: it quietly draws
+        // the largest smaller one, so the asking is done here instead.
+        self.ui.set_font_family(self.font.family().into());
+        self.ui
+            .set_body_glyph(self.font.quantise(geometry.body_font));
+        self.ui
+            .set_small_glyph(self.font.quantise(geometry.small_font));
+        // A system with no logo, and the mark standing in for a picture in
+        // the favourites folder. Both are set relative to the body text.
+        self.ui
+            .set_caption_glyph(self.font.quantise(geometry.body_font * 1.7));
+        self.ui
+            .set_heart_glyph(self.font.quantise(geometry.body_font * 6.0));
         self.ui.set_pad(geometry.pad);
         self.ui.set_chrome_height(geometry.chrome);
         self.ui.set_bar_height(geometry.bar);
@@ -1211,7 +1238,9 @@ impl App {
             self.screen == Screen::Browse && self.browsing == Browsing::Categories,
         );
         // Small, but never so small the strip is a smudge.
-        self.ui.set_bar_font((geometry.bar * 0.62).floor().max(7.0));
+        let bar_font = (geometry.bar * 0.62).floor().max(7.0);
+        self.ui.set_bar_font(bar_font);
+        self.ui.set_bar_glyph(self.font.quantise(bar_font));
         // The full legend needs room the CRT does not have.
         self.ui.set_wide_bar(self.width >= 480);
         self.ui.set_art_width(geometry.art_width);
@@ -2551,6 +2580,13 @@ impl App {
                 self.remember_view();
                 self.apply_geometry();
             }
+            OptionId::Font => {
+                self.font = self.font.next();
+                self.settings.font = Some(self.font.label().to_string());
+                // Nothing about the layout moves, but every glyph on the
+                // screen is now a different one.
+                self.apply_geometry();
+            }
             OptionId::ShowArt => {
                 self.show_art = !self.show_art;
                 self.settings.show_art = Some(self.show_art);
@@ -2694,6 +2730,7 @@ impl App {
                 }
             }
             OptionId::Layout => capitalised(self.layout.label()),
+            OptionId::Font => capitalised(self.font.label()),
             OptionId::ShowArt => on_off(self.show_art),
             OptionId::ShowStats => on_off(self.show_stats),
             OptionId::Present => capitalised(self.present_label),

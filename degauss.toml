@@ -41,6 +41,15 @@ art_limit = 3
 # Which view to open in: details, tiled, list or carousel.
 layout = "details"
 
+# Which typeface to set the interface in.
+#
+# smooth is DejaVu Sans, anti-aliased. pixel is Px437 DOS/V re. JPN12, drawn
+# on whole pixels with nothing in between, at 12 pixels and multiples of it.
+# On a tube at 240 lines both come out at 12 pixels, where anti-aliasing is
+# grey fringing on letters two pixels wide; on a monitor smooth is the
+# legible one.
+font = "smooth"
+
 # Replace the key hints along the bottom with frame timings.
 show_stats = false
 

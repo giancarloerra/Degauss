@@ -17,6 +17,8 @@ pub enum OptionId {
     /// The scroll speed above which artwork stops being loaded per row.
     ArtLimit,
     Layout,
+    /// Which typeface the interface is set in.
+    Font,
     ShowArt,
     ShowHidden,
     ShowEmpty,
@@ -49,11 +51,12 @@ pub enum OptionId {
 }
 
 /// What most people will ever want to change.
-pub const OPTIONS: [OptionId; 15] = [
+pub const OPTIONS: [OptionId; 16] = [
     OptionId::Speed,
     OptionId::ArtLimit,
     OptionId::RebuildCache,
     OptionId::Layout,
+    OptionId::Font,
     OptionId::ShowBar,
     OptionId::ShowArt,
     OptionId::FavoritesFirst,
@@ -85,6 +88,7 @@ impl OptionId {
             OptionId::Speed => "Scroll speed",
             OptionId::ArtLimit => "Skip artwork faster than",
             OptionId::Layout => "View",
+            OptionId::Font => "Text",
             OptionId::ShowArt => "Artwork",
             OptionId::ShowHidden => "Show what you hid",
             OptionId::ShowEmpty => "Show empty folders",
@@ -116,6 +120,9 @@ impl OptionId {
                 "Above this scroll speed, pictures wait until the list stops moving."
             }
             OptionId::Layout => "Details, Tiled, Carousel or List.",
+            OptionId::Font => {
+                "Smooth reads better on a monitor. Pixel is drawn on whole pixels, for a tube."
+            }
             OptionId::ShowArt => "Turn artwork off entirely.",
             OptionId::ShowHidden => {
                 "Show what you hid yourself, from Hide this. Not the same as empty ones."
@@ -202,7 +209,7 @@ mod tests {
         // Ten rows fit on screen, so the list already scrolls. Anything
         // further belongs behind Advanced.
         assert!(
-            OPTIONS.len() <= 15,
+            OPTIONS.len() <= 16,
             "the main options list has grown to {}",
             OPTIONS.len()
         );

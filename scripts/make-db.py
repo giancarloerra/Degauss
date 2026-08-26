@@ -72,6 +72,8 @@ REPO_SOURCED = {
     "Scripts/.degauss/degauss.toml": "degauss.toml",
     "Scripts/.degauss/systems.toml": "assets/systems.toml",
     "Scripts/.degauss/LICENSE": "LICENSE",
+    "Scripts/.degauss/DejaVuSans-LICENSE.txt": "assets/fonts/DejaVuSans-LICENSE.txt",
+    "Scripts/.degauss/Px437-LICENSE.txt": "assets/fonts/Px437-LICENSE.txt",
 }
 
 

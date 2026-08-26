@@ -224,6 +224,9 @@ pub struct AppSettings {
     /// Which view to open in: "details", "tiled", "list" or "carousel".
     #[serde(default = "default_layout")]
     pub layout: String,
+    /// Which typeface to set the interface in: "smooth" or "pixel".
+    #[serde(default = "default_font")]
+    pub font: String,
     /// How much of the screen edge to keep clear, as a percentage of each
     /// axis.
     ///
@@ -239,6 +242,10 @@ pub struct AppSettings {
 
 fn default_layout() -> String {
     "details".to_string()
+}
+
+fn default_font() -> String {
+    crate::font::Font::default().label().to_string()
 }
 
 fn default_overscan() -> u32 {
@@ -330,6 +337,7 @@ favorite = "#fe2e1d"
         assert_eq!(config.colors.accent, Color::new(0xff, 0xcd, 0x09));
         assert_eq!(config.app.cover_size, 160, "defaults fill in");
         assert_eq!(config.app.layout, "details");
+        assert_eq!(config.app.font, "smooth");
         assert!(
             config.game_roots.iter().any(|r| r == "/media/fat/games"),
             "the usual games root applies without being written out"
