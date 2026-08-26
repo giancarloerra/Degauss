@@ -26,15 +26,6 @@ Source available, written in Rust and using Slint, and licensed for non-commerci
 > worth continuing! If you want something changed or something is broken,
 > [open an issue](../../issues/new/choose) and if you starred it I'll know it matters to you beyond just requesting things :-)
 
-## Watch it in action
-
-<p align="center">
-  <a href="https://www.youtube.com/watch?v=w4dGS4kX35Q">
-    <img src="https://img.youtube.com/vi/w4dGS4kX35Q/maxresdefault.jpg"
-         alt="Degauss in motion" width="640">
-  </a>
-</p>
-
 ## Screenshots
 
 | | | |
@@ -49,6 +40,15 @@ Source available, written in Rust and using Slint, and licensed for non-commerci
 | Search inside a folder | Contextual actions | Options |
 | <img src="docs/screenshots/crt-12-advanced.png" alt="Advanced options" height="200"> | <img src="docs/screenshots/crt-13-saver.png" alt="The screensaver slideshow" height="200"> |
 | Advanced options | The screensaver slideshow |
+
+## Watch it in action
+
+<p align="center">
+  <a href="https://www.youtube.com/watch?v=w4dGS4kX35Q">
+    <img src="https://img.youtube.com/vi/w4dGS4kX35Q/maxresdefault.jpg"
+         alt="Degauss in motion" width="640">
+  </a>
+</p>
 
 ## Using it
 
@@ -478,7 +478,7 @@ are the trademarks of their owners, used here only to identify the systems.
 
 ### Making the gamelists
 
-Degauss reads the gamelists; it does not write them. There mainly tw ways to get them, and the last one is what I actually use and works very well.
+Degauss reads the gamelists; it does not write them. There are mainly two ways to get them, and the last one is what I actually use and works very well.
 
 **On a computer, with the card in it.** Any scraper written for
 EmulationStation produces exactly the file Degauss reads.
