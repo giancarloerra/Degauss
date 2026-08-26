@@ -59,6 +59,8 @@ impl Font {
             .find(|font| font.label().eq_ignore_ascii_case(text))
     }
 
+    /// The next one along, which is what left and right do to the setting.
+    /// There are two, so either direction reaches the other.
     pub fn next(self) -> Font {
         match self {
             Font::Smooth => Font::Pixel,
