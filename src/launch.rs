@@ -376,6 +376,19 @@ pub fn favorite_mgl(system: &SystemConfig, game: &Path) -> Result<Option<String>
     build_mgl_with(&system.rbf, system.setname.as_deref(), &items, "").map(Some)
 }
 
+/// Whether starting this file relies on the system's own core.
+///
+/// A self-describing file names its own core: an `.mra` carries it, a
+/// ready-made `.mgl` names it inside, and a bare `.rbf` is one. Only an MGL
+/// built here writes `system.rbf` into what MiSTer is asked to load, so
+/// only those launches can fail on a core the card does not have.
+pub fn needs_system_core(game: &Path) -> bool {
+    !game
+        .extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|e| matches!(e.to_ascii_lowercase().as_str(), "mra" | "mgl" | "rbf"))
+}
+
 /// Work out how to start one entry.
 ///
 /// Arcade is the exception that needs no MGL: an `.mra` already names its
@@ -835,6 +848,22 @@ mod tests {
     fn a_relative_game_path_is_rejected() {
         let err = MglItem::new(&rule(&["prg"], "f", 1, 1), "games/x.prg").expect_err("must reject");
         assert!(err.to_string().contains("not absolute"), "got: {err}");
+    }
+
+    #[test]
+    fn a_self_describing_file_does_not_need_the_systems_core() {
+        // A favourite or a core file names its own core, so a missing
+        // system core must not block it: only a game that would be wrapped
+        // in an MGL naming system.rbf depends on that core being there.
+        assert!(!needs_system_core(Path::new("/fav/Game.mra")));
+        assert!(!needs_system_core(Path::new("/fav/Game.MRA")));
+        assert!(!needs_system_core(Path::new("/fav/Game.mgl")));
+        assert!(!needs_system_core(Path::new("/fav/Game.MGL")));
+        assert!(!needs_system_core(Path::new("/fav/core.rbf")));
+        assert!(!needs_system_core(Path::new("/fav/core.RBF")));
+        assert!(needs_system_core(Path::new("/games/Game.neo")));
+        assert!(needs_system_core(Path::new("/games/Game.bin")));
+        assert!(needs_system_core(Path::new("/games/Game")));
     }
 
     #[test]

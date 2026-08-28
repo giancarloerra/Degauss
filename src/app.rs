@@ -2239,14 +2239,65 @@ impl App {
         outcome
     }
 
-    /// Ask before launching whatever is selected.
     /// Start the selected game. No question first: choosing a game in a list
     /// of games is not ambiguous, and a confirmation on every launch is a
     /// second press for every game anyone ever plays.
+    ///
+    /// Everything that can fail is decided here, while the interface is
+    /// still up: once the outcome leaves the event loop the process is
+    /// committed to leaving, and a missing core or a bad rule there would
+    /// end Degauss instead of showing a line and staying.
     fn confirm_launch(&mut self) -> Option<Outcome> {
-        let index = self.game_list.selected();
-        self.here.get(index)?;
-        Some(Outcome::Launch(index))
+        let row = self.here.get(self.game_list.selected())?;
+        let name = row.name.clone();
+        let kind = row.kind.clone();
+        let browse::Kind::Play(game) = kind else {
+            self.message = Some("A folder is not a game.".to_string());
+            self.dirty = true;
+            return None;
+        };
+        let config = self.opened_config.clone()?;
+        // A self-describing file names its own core, so a favourite or a
+        // core file must not be blocked on the system's. Everything else
+        // ends up in an MGL naming `config.rbf`, and handing MiSTer a core
+        // it does not have replaces this process with nothing.
+        let self_describing = match &game {
+            browse::Launch::File(path) => !crate::launch::needs_system_core(path),
+            browse::Launch::AmigaVision { .. } => false,
+        };
+        if !self_describing
+            && self
+                .open_system_ref()
+                .is_none_or(|system| system.menu_folder.is_none())
+        {
+            self.message = Some(format!(
+                "{}: core {} is not on the card",
+                config.name, config.rbf
+            ));
+            self.dirty = true;
+            return None;
+        }
+        // Building the plan only decides what would be written and sent;
+        // nothing touches the card until `launch::execute`. So a plan that
+        // cannot be built becomes a message here rather than an exit later.
+        let mgl = Path::new("/tmp/degauss.mgl");
+        let plan = match &game {
+            browse::Launch::File(path) => crate::launch::plan(&config, path, mgl),
+            browse::Launch::AmigaVision { install, title } => {
+                crate::launch::plan_amiga_vision(&config, install, title, mgl)
+            }
+        };
+        match plan {
+            Ok(plan) => Some(Outcome::Launch {
+                plan: Box::new(plan),
+                name,
+            }),
+            Err(e) => {
+                self.message = Some(format!("{e}"));
+                self.dirty = true;
+                None
+            }
+        }
     }
 
     /// Hide a system from the list. Nothing is deleted: it is remembered by
@@ -4308,16 +4359,6 @@ impl App {
     }
 
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
-    /// The rows of the folder on screen, for the launcher.
-    pub fn here(&self) -> &[browse::Row] {
-        &self.here
-    }
-    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
-    pub fn open_system(&self) -> Option<&FoundSystem> {
-        self.open_system_ref()
-    }
-
-    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     pub fn covers(&self) -> &CoverCache {
         &self.covers
     }
@@ -4451,11 +4492,18 @@ impl BenchReport {
 }
 
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Outcome {
     Quit,
 
-    Launch(usize),
+    /// A launch carries its finished plan rather than a row index: the plan
+    /// is built while the interface is still up, so everything that can go
+    /// wrong is a message on screen and never an exit. Boxed because a plan
+    /// carries a whole MGL and an outcome moves by value.
+    Launch {
+        plan: Box<crate::launch::LaunchPlan>,
+        name: String,
+    },
 }
 
 #[cfg(test)]
