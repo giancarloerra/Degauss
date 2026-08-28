@@ -460,6 +460,17 @@ fn row_key(row: &browse::Row) -> String {
     }
 }
 
+/// Where the cursor lands in a freshly listed folder: the remembered row
+/// found again by what it is, or the fallback index when there is nothing
+/// remembered or the row is gone. Identity is asked first because an index
+/// goes stale whenever rows are added, hidden or resorted, and landing on
+/// an arbitrary row looks like the list moved on its own.
+fn reselect(rows: &[browse::Row], remembered: Option<&str>, fallback: usize) -> usize {
+    remembered
+        .and_then(|key| rows.iter().position(|row| row_key(row) == key))
+        .unwrap_or(fallback)
+}
+
 /// A title with the characters MiSTer's favourites script refuses taken
 /// out, so a name made here is one it would have made.
 fn sanitise(name: &str) -> String {
@@ -781,6 +792,13 @@ pub struct App {
     library: Option<Library>,
     names: browse::DisplayNames,
     trail: Vec<Crumb>,
+    /// The row every visited folder was left standing on, by the row's own
+    /// key. The crumbs remember an index for walking straight back out;
+    /// this remembers identity, so a folder that is re-entered later, or
+    /// whose contents changed in between, still comes back to the same
+    /// game. Saved with the position at launch and gone after a power
+    /// cycle, like the rest of where the user was standing.
+    left_at: Vec<crate::state::LeftAt>,
     /// The rows of the folder being shown.
     here: Vec<browse::Row>,
     game_list: ListState,
@@ -1033,6 +1051,7 @@ impl App {
             library: None,
             names,
             trail: Vec::new(),
+            left_at: Vec::new(),
             here: Vec::new(),
             game_list: ListState::new(0, geometry.visible),
             menu_list: ListState::new(0, geometry.visible),
@@ -1714,8 +1733,41 @@ impl App {
         }
     }
 
+    /// Write down the row the folder on screen is standing on, so coming
+    /// back to this folder lands there again.
+    ///
+    /// Keyed by the system as well as the place, because place keys are
+    /// only unique within one system: every system's root shares the same
+    /// key. Nothing to write when no folder is on screen or it is empty.
+    fn remember_here(&mut self) {
+        if self.browsing != Browsing::Games {
+            return;
+        }
+        let Some(system) = self.open_system.clone() else {
+            return;
+        };
+        let Some(crumb) = self.trail.last() else {
+            return;
+        };
+        let Some(row) = self.here.get(self.game_list.selected()) else {
+            return;
+        };
+        crate::state::remember_left_at(
+            &mut self.left_at,
+            crate::state::LeftAt {
+                system,
+                place: crumb.place.key(),
+                row: row_key(row),
+            },
+        );
+    }
+
     /// Walk into a folder and show it.
     fn enter(&mut self, place: Place) {
+        // By identity too: the crumb below keeps an index for walking
+        // straight back out, but a later visit through a changed list
+        // needs the row itself to find the place again.
+        self.remember_here();
         if let Some(crumb) = self.trail.last_mut() {
             // Remember where we were standing, so coming back lands there
             // rather than at the top of a list of thousands.
@@ -1728,6 +1780,10 @@ impl App {
     /// Walk back out. False when there is nothing left to walk out of, and
     /// the caller should leave the system entirely.
     fn leave(&mut self) -> bool {
+        // The folder being left keeps its place. This is the only moment
+        // its cursor is still alive; without it, re-entering starts at the
+        // top every time.
+        self.remember_here();
         self.trail.pop();
         if self.trail.is_empty() {
             return false;
@@ -2127,7 +2183,7 @@ impl App {
         self.correct_system_counts();
         self.screen = Screen::Browse;
         self.apply_geometry();
-        self.show_here();
+        self.relist_here();
         self.dirty = true;
     }
 
@@ -2179,7 +2235,15 @@ impl App {
                 self.all_here.clear();
                 self.here = rows;
                 self.game_list = ListState::new(self.here.len(), self.geometry.visible);
-                self.game_list.select(crumb.selected);
+                // The remembered row first, found again by what it is; the
+                // crumb's index when there is none or it is gone. A fresh
+                // crumb says zero, so a folder never visited starts at the
+                // top, and select() clamps whatever comes out.
+                let remembered = self.open_system.as_deref().and_then(|system| {
+                    crate::state::recall_left_at(&self.left_at, system, &crumb.place.key())
+                });
+                let at = reselect(&self.here, remembered, crumb.selected);
+                self.game_list.select(at);
                 self.browsing = Browsing::Games;
                 self.message = None;
                 self.apply_geometry();
@@ -2195,6 +2259,17 @@ impl App {
                 self.dirty = true;
             }
         }
+    }
+
+    /// List the folder on screen again after something about it changed.
+    ///
+    /// The live cursor is written down first, because `show_here` restores
+    /// the remembered row: re-listing without remembering landed on
+    /// whatever row the folder was entered on, which is how favouriting or
+    /// hiding a game deep in a long list snapped the cursor away from it.
+    fn relist_here(&mut self) {
+        self.remember_here();
+        self.show_here();
     }
 
     /// The system that is open, found by its id.
@@ -2824,18 +2899,18 @@ impl App {
                 // The folder on screen and the list of systems were both
                 // filtered by the old answer.
                 self.rebuild_system_list();
-                self.show_here();
+                self.relist_here();
             }
             OptionId::FoldersLast => {
                 self.folders_last = !self.folders_last;
                 self.settings.folders_last = Some(self.folders_last);
-                self.show_here();
+                self.relist_here();
             }
             OptionId::FavoritesFirst => {
                 self.favorites_first = !self.favorites_first;
                 self.settings.favorites_first = Some(self.favorites_first);
                 // The folder on screen was ordered by the old answer.
-                self.show_here();
+                self.relist_here();
             }
             OptionId::RandomLaunches => {
                 self.random_launches = !self.random_launches;
@@ -2853,7 +2928,7 @@ impl App {
                 self.save_settings();
                 self.corrected_counts.clear();
                 self.rebuild_system_list();
-                self.show_here();
+                self.relist_here();
                 self.message = Some(format!("{held} shown again"));
                 self.dirty = true;
             }
@@ -3272,7 +3347,7 @@ impl App {
             }
             self.screen = Screen::Browse;
             self.apply_geometry();
-            self.show_here();
+            self.relist_here();
             if let Some(error) = refresh_error {
                 // Set after show_here, which clears the message field as
                 // part of its redraw; set before, the error would never be
@@ -3317,7 +3392,7 @@ impl App {
         }
         self.screen = Screen::Browse;
         self.apply_geometry();
-        self.show_here();
+        self.relist_here();
         if let Some(error) = refresh_error {
             // Set after show_here, which clears the message field as
             // part of its redraw; set before, the error would never be
@@ -3349,7 +3424,7 @@ impl App {
         }
         self.screen = Screen::Browse;
         self.apply_geometry();
-        self.show_here();
+        self.relist_here();
         if let Some(error) = refresh_error {
             // Set after show_here, which clears the message field as
             // part of its redraw; set before, the error would never be
@@ -4398,6 +4473,7 @@ impl App {
             self.open_category.as_deref().unwrap_or_default(),
             &trail,
             self.game_list.selected(),
+            &self.left_at,
         )
     }
 
@@ -4431,6 +4507,10 @@ impl App {
         self.system_list.go_first();
         self.system_list.move_items(index as isize);
         self.browsing = Browsing::Systems;
+        // Seeded before the walk, so every folder the walk lists resolves
+        // its remembered row on the way down, and an ordinary re-entry
+        // after the resume agrees with the resume itself.
+        self.left_at = saved.left_at.clone();
         self.open_system_now();
         if self.open_system.is_none() {
             return;
@@ -4449,6 +4529,10 @@ impl App {
         for (crumb, saved_place) in self.trail.iter_mut().zip(saved.trail.iter()) {
             crumb.selected = saved_place.selected();
         }
+        // The walk also wrote places down as it stepped, from cursors that
+        // were the walk's own rather than the user's. The saved memory is
+        // the truthful one, so it goes back in whole.
+        self.left_at = saved.left_at.clone();
         self.game_list.select(saved.selected);
         self.touch_selection();
         self.apply_geometry();
@@ -4940,5 +5024,55 @@ mod tests {
         let plain = Geometry::compute(Layout::List, true, true, true, 352, 240, &config);
         assert_eq!(plain.chrome, 20.0, "title bar height on the tube");
         assert_eq!(plain.small_font, 10.0, "plain small text on the tube");
+    }
+
+    fn listed(names: &[&str]) -> Vec<browse::Row> {
+        names
+            .iter()
+            .map(|name| browse::Row {
+                name: (*name).into(),
+                sort_key: name.to_lowercase(),
+                kind: browse::Kind::Play(browse::Launch::File(PathBuf::from(format!(
+                    "/games/{name}.d64"
+                )))),
+                cover: None,
+                genre: None,
+                favorite: false,
+                below: None,
+                details: browse::Details::default(),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_remembered_row_wins_over_the_crumb_index() {
+        let rows = listed(&["Alpha", "Beta", "Gamma"]);
+        let key = row_key(&rows[1]);
+        assert_eq!(reselect(&rows, Some(&key), 0), 1);
+    }
+
+    #[test]
+    fn a_remembered_row_is_found_where_it_moved_to() {
+        // The folder was resorted since it was left: a favourite gathered
+        // to the top must still be the row the cursor lands on, not the
+        // row now sitting where it used to.
+        let rows = listed(&["Alpha", "Beta", "Gamma"]);
+        let key = row_key(&rows[2]);
+        let resorted = listed(&["Gamma", "Alpha", "Beta"]);
+        assert_eq!(reselect(&resorted, Some(&key), 2), 0);
+    }
+
+    #[test]
+    fn a_row_that_is_gone_falls_back_to_the_crumb_index() {
+        // Gone covers hidden too: a row hidden since the last visit is
+        // dropped before this runs, and the memory must not resurrect it.
+        let rows = listed(&["Alpha", "Beta"]);
+        assert_eq!(reselect(&rows, Some("f:/games/Gone.d64"), 1), 1);
+    }
+
+    #[test]
+    fn a_folder_never_visited_lands_where_the_crumb_says() {
+        let rows = listed(&["Alpha", "Beta"]);
+        assert_eq!(reselect(&rows, None, 0), 0, "the top, for a fresh crumb");
     }
 }

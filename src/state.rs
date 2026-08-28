@@ -92,6 +92,47 @@ impl SavedPlace {
     }
 }
 
+/// The row a folder was left standing on, written down by what the row is
+/// rather than where it sat. An index goes stale the moment the folder's
+/// contents change; the row's own key finds it again wherever it moved.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LeftAt {
+    /// The system the folder belongs to. Part of the identity because two
+    /// systems can hold folders whose keys read the same: every system's
+    /// root, for one, is the same key.
+    pub system: String,
+    /// The folder, by [`Place::key`].
+    pub place: String,
+    /// The selected row, by its own key.
+    pub row: String,
+}
+
+/// How many left-at places are kept. A sitting touches a handful of
+/// folders; two hundred covers that many times over, while a card holding
+/// thousands of folders cannot grow the file without bound.
+pub const LEFT_AT_CAP: usize = 200;
+
+/// Write a place down, most recent last. A folder already in the list
+/// moves to the end rather than appearing twice, and the oldest entry
+/// makes room once the cap is reached. Age is why these live in a Vec and
+/// not a map: a map could not say which entry to let go.
+pub fn remember_left_at(list: &mut Vec<LeftAt>, entry: LeftAt) {
+    list.retain(|held| held.system != entry.system || held.place != entry.place);
+    list.push(entry);
+    if list.len() > LEFT_AT_CAP {
+        let excess = list.len() - LEFT_AT_CAP;
+        list.drain(..excess);
+    }
+}
+
+/// The row this folder was left on, if it was ever written down.
+pub fn recall_left_at<'a>(list: &'a [LeftAt], system: &str, place: &str) -> Option<&'a str> {
+    list.iter()
+        .rev()
+        .find(|held| held.system == system && held.place == place)
+        .map(|held| held.row.as_str())
+}
+
 /// Everything needed to put the user back where they were.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct State {
@@ -106,10 +147,20 @@ pub struct State {
     /// Where the cursor sat in the folder on screen.
     #[serde(default)]
     pub selected: usize,
+    /// The row every visited folder was left on, so coming back to one
+    /// lands where browsing left off, not only after a game.
+    #[serde(default)]
+    pub left_at: Vec<LeftAt>,
 }
 
 impl State {
-    pub fn record(system: &str, category: &str, trail: &[(Place, usize)], selected: usize) -> Self {
+    pub fn record(
+        system: &str,
+        category: &str,
+        trail: &[(Place, usize)],
+        selected: usize,
+        left_at: &[LeftAt],
+    ) -> Self {
         State {
             system: system.to_string(),
             category: category.to_string(),
@@ -118,6 +169,7 @@ impl State {
                 .map(|(place, selected)| SavedPlace::of(place, *selected))
                 .collect(),
             selected,
+            left_at: left_at.to_vec(),
         }
     }
 
@@ -210,6 +262,10 @@ mod tests {
         .unwrap();
         let read = State::load(&path);
         assert_eq!(read.system, "C64");
+        assert!(
+            read.left_at.is_empty(),
+            "a file with no left-at table reads as one with an empty table"
+        );
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -218,7 +274,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("degauss-cold-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("state.toml");
-        State::record("C64", "Computer", &[], 12)
+        State::record("C64", "Computer", &[], 12, &[])
             .save(&path)
             .unwrap();
         assert!(path.exists());
@@ -239,7 +295,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("degauss-warm-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("state.toml");
-        State::record("C64", "Computer", &[], 12)
+        State::record("C64", "Computer", &[], 12, &[])
             .save(&path)
             .unwrap();
 
@@ -251,6 +307,84 @@ mod tests {
             "kept, in case the next game comes from here too"
         );
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    fn place(folder: &str, row: &str) -> LeftAt {
+        LeftAt {
+            system: "C64".into(),
+            place: folder.to_string(),
+            row: row.to_string(),
+        }
+    }
+
+    #[test]
+    fn the_left_at_places_survive_being_written_down() {
+        let dir = std::env::temp_dir().join(format!("degauss-leftat-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("state.toml");
+        let places = vec![place("d:/games/Amiga", "f:/games/Amiga/SuperFrog.lha")];
+        State::record("C64", "Computer", &[], 0, &places)
+            .save(&path)
+            .unwrap();
+
+        let read = State::load(&path);
+        assert_eq!(read.left_at, places);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_full_list_lets_the_oldest_place_go() {
+        let mut list = Vec::new();
+        for n in 0..=LEFT_AT_CAP {
+            remember_left_at(&mut list, place(&format!("d:/{n}"), &format!("f:/{n}")));
+        }
+        assert_eq!(list.len(), LEFT_AT_CAP);
+        assert!(
+            recall_left_at(&list, "C64", "d:/0").is_none(),
+            "the oldest made room"
+        );
+        assert!(recall_left_at(&list, "C64", &format!("d:/{LEFT_AT_CAP}")).is_some());
+    }
+
+    #[test]
+    fn coming_back_to_a_folder_refreshes_its_age_rather_than_doubling_it() {
+        let mut list = Vec::new();
+        remember_left_at(&mut list, place("d:/a", "f:/1"));
+        remember_left_at(&mut list, place("d:/b", "f:/2"));
+        remember_left_at(&mut list, place("d:/a", "f:/3"));
+        assert_eq!(list.len(), 2, "one entry per folder");
+        assert_eq!(recall_left_at(&list, "C64", "d:/a"), Some("f:/3"));
+        assert_eq!(
+            list.last().map(|held| held.place.as_str()),
+            Some("d:/a"),
+            "moved to the back of the queue, so it is the last to be evicted"
+        );
+    }
+
+    #[test]
+    fn two_systems_do_not_share_a_place() {
+        // Every system's root folder carries the same key, so without the
+        // system in the identity, leaving the root of one system would
+        // move the remembered row of every other.
+        let mut list = Vec::new();
+        remember_left_at(
+            &mut list,
+            LeftAt {
+                system: "Amiga".into(),
+                place: "r:".into(),
+                row: "f:/one".into(),
+            },
+        );
+        remember_left_at(
+            &mut list,
+            LeftAt {
+                system: "C64".into(),
+                place: "r:".into(),
+                row: "f:/two".into(),
+            },
+        );
+        assert_eq!(recall_left_at(&list, "Amiga", "r:"), Some("f:/one"));
+        assert_eq!(recall_left_at(&list, "C64", "r:"), Some("f:/two"));
     }
 
     #[test]
