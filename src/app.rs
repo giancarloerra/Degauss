@@ -3091,6 +3091,9 @@ impl App {
             _ => None,
         };
         if let Some((install, title)) = amiga {
+            // The title is already the shown name, so sanitising it keeps
+            // the favourite recognisable while making the name one the
+            // card can hold.
             let outcome =
                 crate::launch::favorite_mgl_amiga(&config, &install, &title).and_then(|mgl| {
                     crate::favorites::add_game(&target, &sanitise(&title), &mgl).map(|_| title)
@@ -3111,13 +3114,17 @@ impl App {
 
         let outcome = match crate::launch::favorite_mgl(&config, &game) {
             Ok(Some(mgl)) => {
-                let stem = game
-                    .file_stem()
-                    .map(|s| s.to_string_lossy().into_owned())
-                    .unwrap_or_else(|| name.clone());
-                crate::favorites::add_game(&target, &stem, &mgl).map(|_| stem)
+                // The favourite is filed under the name the browser showed,
+                // which the gamelist may have set, not under the file's own
+                // stem: a favourite called "mslug" would be a stranger in a
+                // list that has always said "Metal Slug".
+                let fav_name = crate::favorites::favorite_name(&name, &game);
+                crate::favorites::add_game(&target, &fav_name, &mgl).map(|_| fav_name)
             }
-            // A core file is linked to, not described.
+            // A core file is linked to, not described. The link keeps the
+            // real filename, not the shown name: the stock script resolves
+            // a link by its filename, and the browser derives the shown
+            // name from the stem at browse time anyway.
             Ok(None) => {
                 let file = game
                     .file_name()
