@@ -190,6 +190,21 @@ pub fn name_is_usable(name: &str) -> bool {
     !name.is_empty() && name != "." && name != ".." && !name.chars().any(|c| BAD_CHARS.contains(&c))
 }
 
+/// The name a favourite is filed under: the name the browser showed for the
+/// game, so the favourites folder lists it the way its owner has seen it. A
+/// shown name the card cannot hold (empty, ".", "..", any of `BAD_CHARS`)
+/// falls back to the file's own stem rather than being sanitised, so a name
+/// made here is one MiSTer's script would have made.
+pub fn favorite_name(display: &str, path: &Path) -> String {
+    if name_is_usable(display) {
+        display.trim().to_string()
+    } else {
+        path.file_stem()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_default()
+    }
+}
+
 /// Make a folder inside the favourites folder.
 pub fn make_folder(root: &Path, name: &str) -> Result<PathBuf> {
     if !name_is_usable(name) {
@@ -358,6 +373,40 @@ mod tests {
         assert!(!name_is_usable("Shoot/em/ups"));
         assert!(!name_is_usable(""));
         assert!(!name_is_usable("   "));
+    }
+
+    #[test]
+    fn the_shown_name_names_the_favourite_when_the_card_can_hold_it() {
+        // The favourite must be listed under the name the owner has seen,
+        // not under the file's stem.
+        assert_eq!(
+            favorite_name("Blazing Star", Path::new("/x/Blazing Star (blazstar).neo")),
+            "Blazing Star"
+        );
+    }
+
+    #[test]
+    fn a_name_the_card_cannot_hold_falls_back_to_the_files_own() {
+        // MiSTer's script refuses these characters, so a name made here
+        // must be one it would have made: the file's own stem is.
+        let path = Path::new("/x/mslug.neo");
+        assert_eq!(
+            favorite_name("Metal Slug: Super Vehicle-001", path),
+            "mslug"
+        );
+        assert_eq!(favorite_name("A/B", path), "mslug");
+        assert_eq!(favorite_name("", path), "mslug");
+        assert_eq!(favorite_name("  ", path), "mslug");
+    }
+
+    #[test]
+    fn a_shown_name_is_trimmed_before_it_names_a_file() {
+        // A stray space around a gamelist name would otherwise become part
+        // of the filename on the card.
+        assert_eq!(
+            favorite_name("  Blazing Star  ", Path::new("/x/blazstar.neo")),
+            "Blazing Star"
+        );
     }
 
     #[cfg(unix)]
