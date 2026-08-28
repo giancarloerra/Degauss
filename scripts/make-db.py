@@ -22,7 +22,7 @@ OWNER = "giancarloerra"
 REPO = "Degauss"
 
 # Files that ship as release assets because they are built, not committed.
-RELEASE_ASSETS = {"Scripts/.degauss/degauss", "degauss/MiSTer_Degauss"}
+RELEASE_ASSETS = {"Scripts/.config/degauss/degauss", "degauss/MiSTer_Degauss"}
 
 
 def md5(path):
@@ -52,7 +52,7 @@ def url_for(card_path, tag):
     if card_path in RELEASE_ASSETS:
         name = os.path.basename(card_path)
         return f"https://github.com/{OWNER}/{REPO}/releases/download/{quoted(tag)}/{quoted(name)}"
-    if card_path.startswith("Scripts/.degauss/logos/"):
+    if card_path.startswith("Scripts/.config/degauss/logos/"):
         name = os.path.basename(card_path)
         return f"https://raw.githubusercontent.com/{OWNER}/{REPO}/{quoted(tag)}/assets/logos/{quoted(name)}"
     known = REPO_SOURCED
@@ -69,13 +69,13 @@ def url_for(card_path, tag):
 # URL serves makes Downloader fetch the same file forever.
 REPO_SOURCED = {
     "Scripts/degauss.sh": "deploy/Scripts/degauss.sh",
-    "Scripts/.degauss/degauss.toml": "degauss.toml",
-    "Scripts/.degauss/systems.toml": "assets/systems.toml",
-    "Scripts/.degauss/LICENSE": "LICENSE",
-    "Scripts/.degauss/DejaVuSans-LICENSE.txt": "assets/fonts/DejaVuSans-LICENSE.txt",
-    "Scripts/.degauss/Px437-LICENSE.txt": "assets/fonts/Px437-LICENSE.txt",
-    "Scripts/.degauss/RobotoCondensed-LICENSE.txt": "assets/fonts/RobotoCondensed-LICENSE.txt",
-    "Scripts/.degauss/Tamzen-LICENSE.txt": "assets/fonts/Tamzen-LICENSE.txt",
+    "Scripts/.config/degauss/degauss.toml": "degauss.toml",
+    "Scripts/.config/degauss/systems.toml": "assets/systems.toml",
+    "Scripts/.config/degauss/LICENSE": "LICENSE",
+    "Scripts/.config/degauss/DejaVuSans-LICENSE.txt": "assets/fonts/DejaVuSans-LICENSE.txt",
+    "Scripts/.config/degauss/Px437-LICENSE.txt": "assets/fonts/Px437-LICENSE.txt",
+    "Scripts/.config/degauss/RobotoCondensed-LICENSE.txt": "assets/fonts/RobotoCondensed-LICENSE.txt",
+    "Scripts/.config/degauss/Tamzen-LICENSE.txt": "assets/fonts/Tamzen-LICENSE.txt",
 }
 
 
@@ -91,7 +91,7 @@ def main():
         # Hash the file the URL will serve, not the staged copy of it.
         if card_path in REPO_SOURCED:
             real_path = REPO_SOURCED[card_path]
-        elif card_path.startswith("Scripts/.degauss/logos/"):
+        elif card_path.startswith("Scripts/.config/degauss/logos/"):
             real_path = os.path.join("assets/logos", os.path.basename(card_path))
         files[card_path] = {
             "hash": md5(real_path),

@@ -113,11 +113,15 @@ so the files land here:
 ```
 /media/fat/degauss/MiSTer_Degauss
 /media/fat/Scripts/degauss.sh
-/media/fat/Scripts/.degauss/degauss
-/media/fat/Scripts/.degauss/degauss.toml
-/media/fat/Scripts/.degauss/systems.toml
-/media/fat/Scripts/.degauss/logos/
+/media/fat/Scripts/.config/degauss/degauss
+/media/fat/Scripts/.config/degauss/degauss.toml
+/media/fat/Scripts/.config/degauss/systems.toml
+/media/fat/Scripts/.config/degauss/logos/
 ```
+
+Earlier releases lived in `/media/fat/Scripts/.degauss/`; when updating over
+one, `degauss.sh` moves your settings, resume state, index and images into
+the new folder on its next start, so there is nothing to do.
 
 Then add one line to the `[MiSTer]` section of `/media/fat/MiSTer.ini`:
 
@@ -356,7 +360,7 @@ folder gets its own gamelist, and the system is still shown as one:
 Systems that share a folder share its gamelist: Neo Geo and Neo Geo MVS
 both read `/media/fat/games/NEOGEO`.
 
-`/media/fat/Scripts/.degauss/degauss --list-systems` prints where every
+`/media/fat/Scripts/.config/degauss/degauss --list-systems` prints where every
 system resolved on your own card, which is the answer for that card.
 
 <details>
@@ -497,7 +501,7 @@ Degauss reads system and category images from the `logos` folder beside
 `degauss.toml`. In a normal installation this is:
 
 ```text
-/media/fat/Scripts/.degauss/logos/
+/media/fat/Scripts/.config/degauss/logos/
 ```
 
 A system image is named after its system ID, for example `C64.png` or
@@ -638,7 +642,7 @@ card, and seeing what a change looks like without standing in front of the
 machine.
 
 ```bash
-/media/fat/Scripts/.degauss/degauss --help
+/media/fat/Scripts/.config/degauss/degauss --help
 ```
 
 Every flag below needs `--config` and `--systems` pointing at the two files

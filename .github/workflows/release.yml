@@ -106,8 +106,8 @@ jobs:
 
       - name: Check the binary is what it should be
         run: |
-          file deploy/Scripts/.degauss/degauss | tee /dev/stderr | grep -q "ELF 32-bit LSB executable, ARM"
-          file deploy/Scripts/.degauss/degauss | grep -q "statically linked"
+          file deploy/Scripts/.config/degauss/degauss | tee /dev/stderr | grep -q "ELF 32-bit LSB executable, ARM"
+          file deploy/Scripts/.config/degauss/degauss | grep -q "statically linked"
 
       - name: Collect the Main fork
         uses: actions/download-artifact@v7
@@ -151,7 +151,7 @@ jobs:
       - name: Check the archive holds both binaries
         run: |
           unzip -l dist/*.zip | grep -q "degauss/MiSTer_Degauss"
-          unzip -l dist/*.zip | grep -q "Scripts/.degauss/degauss"
+          unzip -l dist/*.zip | grep -q "Scripts/.config/degauss/degauss"
 
       # Where somebody who downloaded the two files stands, which is the only
       # place the checksum is ever used.
@@ -169,7 +169,7 @@ jobs:
       # well as inside the archive.
       - name: Build the Downloader database
         run: |
-          cp deploy/Scripts/.degauss/degauss dist/degauss
+          cp deploy/Scripts/.config/degauss/degauss dist/degauss
           cp fork/MiSTer_Degauss dist/MiSTer_Degauss
           python3 scripts/make-db.py "${GITHUB_REF_NAME}" deploy fork/MiSTer_Degauss dist/degauss.json
           (cd dist && zip -q degauss.json.zip degauss.json && rm degauss.json)

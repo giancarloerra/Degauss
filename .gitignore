@@ -2,13 +2,13 @@
 /target/
 
 # Binaries staged for the card; built, not committed.
-/deploy/Scripts/.degauss/degauss
+/deploy/Scripts/.config/degauss/degauss
 
 # Written by Degauss itself when settings change
 /settings.toml
 
 # Staged for the card at build time from assets/logos; not committed twice.
-/deploy/Scripts/.degauss/logos/
+/deploy/Scripts/.config/degauss/logos/
 
 # Local working directory, not part of the project.
 /internal/
