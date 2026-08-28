@@ -549,6 +549,79 @@ folder, finds collections containing the images you need, and comes back with wh
 The part AI is best at is also managing it all. A gamelist goes stale
 the moment you add a game, and an agent can be told to look at what changed and only touch that, so keeping the lists current after adding games is super quick.
 
+### Working with an agent
+
+Put an ssh key on the MiSTer, point a coding agent at it, get the IP address for the agent, and tell the agent what
+you want. There is nothing to install and nothing in Degauss to configure.
+Any agent that can hold an ssh session will do. I use Claude Code.
+
+The one rule that makes it safe: it looks, it tells you what it found, you
+decide, then it acts. Never let it write to the card on its own initiative.
+
+Everything else your agent can work out or ask you about. To save you both
+the first hour, paste this into it at the start:
+
+```
+You are working on a MiSTer card for the Degauss frontend, over ssh.
+
+https://github.com/giancarloerra/Degauss is the address to get the original README and code if needed.
+
+Before you change anything on the card, tell me what you found and wait.
+
+- Back up any gamelist.xml before you write it, next to the original.
+- After writing one, read it back: check it still parses, and that every
+  picture it names is really on the card.
+- Re-read the card before telling me anything about it. Whatever you read
+  earlier may have changed since.
+- If you cannot find the right picture for a game, leave it without one.
+  Never use a picture of a different game.
+- Before telling me something is missing, search everything rather than the
+  name you expected, and tell me what you searched.
+
+Degauss reads gamelist.xml files straight from the card. It never writes
+them, so keeping them right is your job.
+
+Start from Degauss's own audit rather than forming your own view of the card:
+
+  /media/fat/Scripts/degauss.sh --audit
+
+That prints one line per system with how many games it found and how many
+have artwork, then lists the problems underneath. Also useful:
+--report --system <id> to expand one system, --list-systems when a system
+is missing, --dry-run-launch when a game will not start.
+
+Before editing a gamelist:
+- Entries are either flat, or a parent holding the details with children
+  pointing at it. A child inherits field by field, and its own value wins.
+- Artwork is read as image, then screenshot, then thumbnail, and paths are
+  relative to the folder the gamelist is in.
+- Degauss does not check that those pictures exist. You have to.
+- Degauss caches what it found, and only rebuilds when asked from its menu,
+  so nothing you change appears until I rebuild it.
+```
+
+#### The one thing that catches everyone
+
+Scrapers sometimes file a game under a different game's name. They group by
+their own database record, so an arcade original and its clones can end up
+sharing one entry, and the title you see is whichever one the scraper chose.
+The game is not missing. It is sitting under a name you would never look
+for, which is much harder to spot than an empty row.
+
+If you hit it, ask your agent to detach that entry rather than rename it.
+Renaming fixes the title and leaves the wrong description, publisher and
+year behind it. Detached and left without a name, Degauss simply shows the
+filename as it is on the card, which is usually clearer anyway.
+
+It is worth asking your agent to check the whole card for this once.
+
+#### After any change
+
+Rebuild the cache from the Degauss menu. Artwork is never cached, so
+pictures appear as soon as they are on the card. Favourites are shared with
+MiSTer's own `_@Favorites` folder, so an agent can add one and the stock
+menu will agree with it, and vice versa.
+
 ### Keeping the card in order (additional bonus!)
 
 The same thing works for the card itself. After every `update_all` I have an
