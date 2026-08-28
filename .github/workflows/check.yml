@@ -32,4 +32,7 @@ jobs:
           sudo swapon /mnt/degauss-swap
           free -h
       - run: cargo test
-      - run: cargo clippy --target armv7-unknown-linux-musleabihf --all-targets -- -D warnings
+      # One heavy compile at a time: --all-targets otherwise runs the
+      # library, the binary and the test build together, and three of these
+      # peaks outrun memory and swap combined.
+      - run: cargo clippy --target armv7-unknown-linux-musleabihf --all-targets -j 1 -- -D warnings
