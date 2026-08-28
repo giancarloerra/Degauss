@@ -228,7 +228,7 @@ card.
 | Skip artwork faster than | Above this speed, pictures wait until the list stops |
 | Rebuild lists | Read the card again. Run it after adding games, cores or artwork |
 | View | Details, Tiled, List or Carousel |
-| Text | The typeface: Smooth, or Pixel, a DOS font drawn on whole pixels |
+| Text | The typeface: Smooth, Pixel (a DOS font on whole pixels), and the bolder Smooth 2 and Pixel 2 |
 | Bottom bar while browsing | The strip with the time and the buttons. Menus always keep it |
 | Artwork | Turn pictures off entirely |
 | Favourites first | Gather a folder's favourites at its top, in the same alphabet |
@@ -683,7 +683,7 @@ Degauss is under PolyForm Noncommercial 1.0.0. See [`LICENSE`](LICENSE).
 its source at
 [giancarloerra/Degauss-Main](https://github.com/giancarloerra/Degauss-Main).
 
-Two typefaces are baked into the binary:
+Four typefaces are baked into the binary:
 
 - [DejaVu Sans](https://dejavu-fonts.github.io), under the Bitstream Vera and
   Arev licences ([text](assets/fonts/DejaVuSans-LICENSE.txt)).
@@ -692,6 +692,14 @@ Two typefaces are baked into the binary:
   [CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/)
   ([text](assets/fonts/Px437-LICENSE.txt)). Unmodified; its glyphs are
   rasterised at fixed sizes.
+- [Roboto Condensed Bold](https://github.com/googlefonts/roboto-2) v2.138,
+  © Google, under the
+  [Apache License 2.0](https://www.apache.org/licenses/LICENSE-2.0)
+  ([text](assets/fonts/RobotoCondensed-LICENSE.txt)). Unmodified.
+- [Tamzen 6x12 Bold](https://github.com/sunaku/tamzen-font), © 2011 Suraj
+  N. Kurapati, derived from Tamsyn © 2010 Scott Fial, free to use, copy,
+  modify and distribute ([text](assets/fonts/Tamzen-LICENSE.txt)).
+  Unmodified.
 
 Names are drawn in the Latin, Greek and Cyrillic alphabets, with the accents
 and marks of each. A name in Japanese or Chinese draws as a gap: neither

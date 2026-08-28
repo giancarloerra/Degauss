@@ -33,7 +33,9 @@ fi
 # with no terms attached. The typefaces are baked into the binary and carry
 # their own terms, so those travel with it too.
 cp LICENSE deploy/Scripts/.degauss/LICENSE
-cp assets/fonts/DejaVuSans-LICENSE.txt assets/fonts/Px437-LICENSE.txt deploy/Scripts/.degauss/
+cp assets/fonts/DejaVuSans-LICENSE.txt assets/fonts/Px437-LICENSE.txt \
+   assets/fonts/RobotoCondensed-LICENSE.txt assets/fonts/Tamzen-LICENSE.txt \
+   deploy/Scripts/.degauss/
 
 echo
 echo "deploy/ is ready. Copy its contents onto the card:"

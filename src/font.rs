@@ -17,11 +17,19 @@ pub enum Font {
     Smooth,
     /// Px437 DOS/V re. JPN12, one pixel a pixel.
     Pixel,
+    /// Roboto Condensed Bold: bolder and condensed, still anti-aliased, and
+    /// narrower than Smooth on every real title, so nothing that fits
+    /// stops fitting.
+    Smooth2,
+    /// Tamzen 6x12 Bold: the same six pixel cell as Pixel with two pixel
+    /// strokes where Pixel has one. The letterforms sit smaller in the
+    /// cell, so it reads thicker but smaller.
+    Pixel2,
 }
 
 impl Font {
     /// In the order the option cycles through them.
-    pub const ALL: [Font; 2] = [Font::Smooth, Font::Pixel];
+    pub const ALL: [Font; 4] = [Font::Smooth, Font::Pixel, Font::Smooth2, Font::Pixel2];
 
     /// What `settings.toml` records, and what the options screen shows once
     /// capitalised. Lowercase in the file, like every other name written
@@ -30,6 +38,8 @@ impl Font {
         match self {
             Font::Smooth => "smooth",
             Font::Pixel => "pixel",
+            Font::Smooth2 => "smooth 2",
+            Font::Pixel2 => "pixel 2",
         }
     }
 
@@ -40,14 +50,16 @@ impl Font {
         match self {
             Font::Smooth => "DejaVu Sans",
             Font::Pixel => "Px437 DOS/V re. JPN12",
+            Font::Smooth2 => "Roboto Condensed",
+            Font::Pixel2 => "Tamzen",
         }
     }
 
     /// The sizes this typeface is baked at, ascending.
     pub fn sizes(self) -> &'static [f32] {
         match self {
-            Font::Smooth => &SMOOTH_SIZES,
-            Font::Pixel => &PIXEL_SIZES,
+            Font::Smooth | Font::Smooth2 => &SMOOTH_SIZES,
+            Font::Pixel | Font::Pixel2 => &PIXEL_SIZES,
         }
     }
 
@@ -64,7 +76,9 @@ impl Font {
     pub fn next(self) -> Font {
         match self {
             Font::Smooth => Font::Pixel,
-            Font::Pixel => Font::Smooth,
+            Font::Pixel => Font::Smooth2,
+            Font::Smooth2 => Font::Pixel2,
+            Font::Pixel2 => Font::Smooth,
         }
     }
 
