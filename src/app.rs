@@ -3965,8 +3965,18 @@ impl App {
         self.ui.set_status(SharedString::from(status));
         self.ui.set_show_stats(self.show_stats);
         self.ui.set_stats(SharedString::from(self.stats_line()));
-        self.ui
-            .set_overlay(SharedString::from(self.message.clone().unwrap_or_default()));
+        // A plain message says how to leave, the way the questions already
+        // carry their keys in their own text. Questions keep their "A yes,
+        // B no" and build progress replaces itself every frame, so neither
+        // takes the hint.
+        let overlay = match &self.message {
+            Some(text) if self.pending.is_none() && self.build.is_none() => {
+                format!("{text}\n\nB close")
+            }
+            Some(text) => text.clone(),
+            None => String::new(),
+        };
+        self.ui.set_overlay(SharedString::from(overlay));
     }
     fn stats_line(&self) -> String {
         let summary = self.timer.summary();
