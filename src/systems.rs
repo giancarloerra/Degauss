@@ -348,6 +348,11 @@ pub fn core_file_exists(menu_root: &Path, rbf: &str) -> bool {
     };
     let wanted = core_name(core);
     for item in listing.flatten() {
+        // A directory named like a core would pass the name checks, and
+        // MiSTer cannot load a directory.
+        if !item.path().is_file() {
+            continue;
+        }
         let name = item.file_name().to_string_lossy().into_owned();
         let Some(stem) = name
             .strip_suffix(".rbf")
@@ -490,6 +495,16 @@ extensions = ["md", "bin"]
         std::fs::create_dir_all(root.join("_Arcade/cores")).unwrap();
         std::fs::write(root.join("_Arcade/cores/NES.rbf"), b"x").unwrap();
         assert!(!core_file_exists(&root, "_Console/NES"));
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn a_directory_named_like_a_core_does_not_answer() {
+        // MiSTer cannot load a directory, however it is named. Only a real
+        // file counts as the core being present.
+        let root = temp_dir("core-dir");
+        std::fs::create_dir_all(root.join("_Console/NeoGeo.rbf")).unwrap();
+        assert!(!core_file_exists(&root, "_Console/NeoGeo"));
         std::fs::remove_dir_all(&root).ok();
     }
 

@@ -2289,11 +2289,14 @@ impl App {
             // A favourite that is really an AmigaVision title points at an
             // installation, not at itself; the file that has to exist is
             // the one the rewritten MGL will mount.
+            // An installation is a directory the launch writes into
+            // (shared/ags_boot); a plain file under that name would pass an
+            // existence check and fail after the hand-over.
             browse::Launch::File(path) => match crate::launch::amiga_marker(path) {
-                Some((install, _)) => !install.exists(),
+                Some((install, _)) => !install.is_dir(),
                 None => !path.exists(),
             },
-            browse::Launch::AmigaVision { install, .. } => !install.exists(),
+            browse::Launch::AmigaVision { install, .. } => !install.is_dir(),
         };
         if missing {
             self.message = Some(format!("{name}: its file is gone from the card"));
