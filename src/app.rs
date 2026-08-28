@@ -1797,23 +1797,20 @@ impl App {
     /// exact moment that folder moved, and a shelf that shows yesterday's
     /// favourites until a full rebuild is asked for is wrong. The folder is
     /// small, so reading this one system again costs nothing worth noticing.
-    fn refresh_favorites_system(&mut self) {
+    /// A failure comes back to the caller instead of onto the screen:
+    /// every caller redraws with `show_here`, which clears the message
+    /// field, so a message set here would be wiped before it was drawn.
+    /// The caller shows it after its redraw.
+    fn refresh_favorites_system(&mut self) -> Option<String> {
         // The Favorites system is in the table only when its folder existed
         // at startup. With no folder there is no cache to refresh and
         // nothing is listed, so doing nothing is correct.
-        let Some(system) = self.all_systems.iter().find(|s| s.def.id == FAVORITES_ID) else {
-            return;
-        };
+        let system = self.all_systems.iter().find(|s| s.def.id == FAVORITES_ID)?;
         let config = system.to_config();
         let library = match Library::open_with_names(&config, self.names.clone()) {
             Ok(library) => library,
-            Err(e) => {
-                // Say what went wrong rather than quietly keeping the stale
-                // listing.
-                self.message = Some(format!("Favorites: {e}"));
-                self.dirty = true;
-                return;
-            }
+            // Said out loud rather than quietly keeping the stale listing.
+            Err(e) => return Some(format!("Favorites: {e}")),
         };
         let cache = crate::cache::build_system(&library);
         if let Err(e) = crate::cache::save_system(&self.cache_dir, FAVORITES_ID, &cache) {
@@ -1826,8 +1823,17 @@ impl App {
                 FAVORITES_ID.to_string(),
                 cache.summary(&browse::start_for(&config)),
             );
-            if let Err(e) = crate::cache::save_index(&self.cache_dir, index) {
-                crate::note(&format!("cache        index not written: {e}"));
+            // Written to disk only when no build is running. A forced
+            // build has already emptied the cache folder and is filling a
+            // fresh index one system at a time; writing this one to disk in
+            // the middle of that would leave, after a power cut, an index
+            // whose systems have no cache files, and startup trusts an
+            // index that exists. The running build is told about the change
+            // below and writes the finished index itself.
+            if self.build.is_none() {
+                if let Err(e) = crate::cache::save_index(&self.cache_dir, index) {
+                    crate::note(&format!("cache        index not written: {e}"));
+                }
             }
             // The first favourite ever kept takes the count from nothing to
             // something, and a system holding nothing is hidden at the
@@ -1855,6 +1861,7 @@ impl App {
             self.system_cache = Some(cache);
         }
         self.rebuild_system_list();
+        None
     }
 
     /// Mark what is favourited, and gather it if that is wanted.
@@ -3164,17 +3171,24 @@ impl App {
                 crate::launch::favorite_mgl_amiga(&config, &install, &title).and_then(|mgl| {
                     crate::favorites::add_game(&target, &sanitise(&title), &mgl).map(|_| title)
                 });
+            let mut refresh_error = None;
             match outcome {
                 Ok(what) => {
                     self.message = Some(format!("{what}\n\nkept in {folder}"));
                     self.reread_favorites();
-                    self.refresh_favorites_system();
+                    refresh_error = self.refresh_favorites_system();
                 }
                 Err(e) => self.message = Some(format!("{e}")),
             }
             self.screen = Screen::Browse;
             self.apply_geometry();
             self.show_here();
+            if let Some(error) = refresh_error {
+                // Set after show_here, which clears the message field as
+                // part of its redraw; set before, the error would never be
+                // seen.
+                self.message = Some(error);
+            }
             self.dirty = true;
             return;
         }
@@ -3198,17 +3212,24 @@ impl App {
             Err(e) => Err(e),
         };
 
+        let mut refresh_error = None;
         match outcome {
             Ok(what) => {
                 self.message = Some(format!("{what}\n\nkept in {folder}"));
                 self.reread_favorites();
-                self.refresh_favorites_system();
+                refresh_error = self.refresh_favorites_system();
             }
             Err(e) => self.message = Some(format!("{e}")),
         }
         self.screen = Screen::Browse;
         self.apply_geometry();
         self.show_here();
+        if let Some(error) = refresh_error {
+            // Set after show_here, which clears the message field as
+            // part of its redraw; set before, the error would never be
+            // seen.
+            self.message = Some(error);
+        }
         self.dirty = true;
     }
 
@@ -3224,16 +3245,23 @@ impl App {
         let Some(file) = self.favorites.file_for(&game).map(Path::to_path_buf) else {
             return;
         };
+        let mut refresh_error = None;
         match crate::favorites::remove(&file) {
             Ok(()) => {
                 self.reread_favorites();
-                self.refresh_favorites_system();
+                refresh_error = self.refresh_favorites_system();
             }
             Err(e) => self.message = Some(format!("{e}")),
         }
         self.screen = Screen::Browse;
         self.apply_geometry();
         self.show_here();
+        if let Some(error) = refresh_error {
+            // Set after show_here, which clears the message field as
+            // part of its redraw; set before, the error would never be
+            // seen.
+            self.message = Some(error);
+        }
         self.dirty = true;
     }
 
