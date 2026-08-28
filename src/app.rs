@@ -1814,8 +1814,13 @@ impl App {
         };
         let cache = crate::cache::build_system(&library);
         if let Err(e) = crate::cache::save_system(&self.cache_dir, FAVORITES_ID, &cache) {
+            // Stop before the index learns the new summary: an index saying
+            // one count while the cache file on disk holds another survives
+            // a restart as a listing that disagrees with itself.
             crate::note(&format!("cache        {FAVORITES_ID} not written: {e}"));
+            return Some(format!("Favorites not written: {e}"));
         }
+        let mut error = None;
         if let Some(index) = self.index.as_mut() {
             // Only this system's summary is replaced. The index carries
             // every other system's too, and those are still right.
@@ -1832,7 +1837,12 @@ impl App {
             // below and writes the finished index itself.
             if self.build.is_none() {
                 if let Err(e) = crate::cache::save_index(&self.cache_dir, index) {
+                    // The listing in memory is right either way, so the rest
+                    // of the propagation still runs; only the disk is stale,
+                    // and the user is told rather than left to find out at
+                    // the next start.
                     crate::note(&format!("cache        index not written: {e}"));
+                    error = Some(format!("Favorites index not written: {e}"));
                 }
             }
             // The first favourite ever kept takes the count from nothing to
@@ -1861,7 +1871,7 @@ impl App {
             self.system_cache = Some(cache);
         }
         self.rebuild_system_list();
-        None
+        error
     }
 
     /// Mark what is favourited, and gather it if that is wanted.
