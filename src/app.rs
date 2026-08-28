@@ -1788,6 +1788,64 @@ impl App {
         PathBuf::from(&self.config.menu_root).join(crate::favorites::FAVORITES_DIR)
     }
 
+    /// Write the Favorites system's cache again, from the folder as it is
+    /// now.
+    ///
+    /// Favourites is a system like any other, so its listing comes from the
+    /// cache, and the cache is only rebuilt from the menu. But favouriting
+    /// is the one change to the card Degauss makes itself, so it knows the
+    /// exact moment that folder moved, and a shelf that shows yesterday's
+    /// favourites until a full rebuild is asked for is wrong. The folder is
+    /// small, so reading this one system again costs nothing worth noticing.
+    fn refresh_favorites_system(&mut self) {
+        // The Favorites system is in the table only when its folder existed
+        // at startup. With no folder there is no cache to refresh and
+        // nothing is listed, so doing nothing is correct.
+        let Some(system) = self.all_systems.iter().find(|s| s.def.id == FAVORITES_ID) else {
+            return;
+        };
+        let config = system.to_config();
+        let library = match Library::open_with_names(&config, self.names.clone()) {
+            Ok(library) => library,
+            Err(e) => {
+                // Say what went wrong rather than quietly keeping the stale
+                // listing.
+                self.message = Some(format!("Favorites: {e}"));
+                self.dirty = true;
+                return;
+            }
+        };
+        let cache = crate::cache::build_system(&library);
+        if let Err(e) = crate::cache::save_system(&self.cache_dir, FAVORITES_ID, &cache) {
+            crate::note(&format!("cache        {FAVORITES_ID} not written: {e}"));
+        }
+        if let Some(index) = self.index.as_mut() {
+            // Only this system's summary is replaced. The index carries
+            // every other system's too, and those are still right.
+            index.systems.insert(
+                FAVORITES_ID.to_string(),
+                cache.summary(&browse::start_for(&config)),
+            );
+            if let Err(e) = crate::cache::save_index(&self.cache_dir, index) {
+                crate::note(&format!("cache        index not written: {e}"));
+            }
+            // The first favourite ever kept takes the count from nothing to
+            // something, and a system holding nothing is hidden at the
+            // root. The emptiness answers come from the index, so they are
+            // worked out again.
+            self.apply_index();
+        }
+        if self.open_system.as_deref() == Some(FAVORITES_ID) {
+            // The rows on screen are answered from this while a system is
+            // open. Removing a favourite from inside Favourites redraws
+            // straight after, and must not redraw from the old copy. When
+            // some other system is open its own cache is the one loaded
+            // here, and replacing it would be wrong.
+            self.system_cache = Some(cache);
+        }
+        self.rebuild_system_list();
+    }
+
     /// Mark what is favourited, and gather it if that is wanted.
     ///
     /// The card decides, not the gamelist: a favourite is a file MiSTer's
@@ -3099,6 +3157,7 @@ impl App {
                 Ok(what) => {
                     self.message = Some(format!("{what}\n\nkept in {folder}"));
                     self.reread_favorites();
+                    self.refresh_favorites_system();
                 }
                 Err(e) => self.message = Some(format!("{e}")),
             }
@@ -3132,6 +3191,7 @@ impl App {
             Ok(what) => {
                 self.message = Some(format!("{what}\n\nkept in {folder}"));
                 self.reread_favorites();
+                self.refresh_favorites_system();
             }
             Err(e) => self.message = Some(format!("{e}")),
         }
@@ -3154,7 +3214,10 @@ impl App {
             return;
         };
         match crate::favorites::remove(&file) {
-            Ok(()) => self.reread_favorites(),
+            Ok(()) => {
+                self.reread_favorites();
+                self.refresh_favorites_system();
+            }
             Err(e) => self.message = Some(format!("{e}")),
         }
         self.screen = Screen::Browse;

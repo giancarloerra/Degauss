@@ -340,6 +340,79 @@ mod tests {
     }
 
     #[test]
+    fn refreshing_one_system_leaves_the_rest_of_the_index_alone() {
+        // Favouriting rewrites one system's summary in the index that is
+        // already there. The refresh must never be built from Index::new(),
+        // which would wipe every other system: the untouched summaries have
+        // to survive the trip through the file identical.
+        let store = temp("index-refresh");
+        let mut index = Index::new();
+        index.systems.insert(
+            "A".into(),
+            Summary {
+                games: 3,
+                folders: 1,
+            },
+        );
+        index.systems.insert(
+            "Favorites".into(),
+            Summary {
+                games: 0,
+                folders: 1,
+            },
+        );
+        save_index(&store, &index).unwrap();
+
+        let mut index = load_index(&store).expect("reads back");
+        index.systems.insert(
+            "Favorites".into(),
+            Summary {
+                games: 1,
+                folders: 1,
+            },
+        );
+        save_index(&store, &index).unwrap();
+
+        let read = load_index(&store).expect("reads back again");
+        assert_eq!(
+            read.systems.get("A"),
+            Some(&Summary {
+                games: 3,
+                folders: 1
+            }),
+            "the system that was not touched"
+        );
+        assert_eq!(
+            read.systems.get("Favorites"),
+            Some(&Summary {
+                games: 1,
+                folders: 1
+            }),
+            "the system that was"
+        );
+        std::fs::remove_dir_all(&store).ok();
+    }
+
+    #[test]
+    fn a_rebuilt_system_cache_counts_a_file_written_after_the_first_build() {
+        // Adding a favourite is the one moment Degauss knows a folder on
+        // the card changed, and the answer to that is building this one
+        // system's cache again. The rebuilt cache has to see the new file,
+        // or the shelf keeps showing yesterday's favourites.
+        let dir = temp("rebuild-sees-more");
+        std::fs::write(dir.join("one.d64"), b"x").unwrap();
+        let library = Library::open(&system(&dir)).unwrap();
+        let before = build_system(&library).summary(&library.start()).games;
+
+        std::fs::write(dir.join("two.d64"), b"x").unwrap();
+        let library = Library::open(&system(&dir)).unwrap();
+        let after = build_system(&library).summary(&library.start()).games;
+
+        assert_eq!(after, before + 1);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
     fn a_file_written_by_another_version_is_ignored_rather_than_misread() {
         let store = temp("wrong-format");
         let stale = SystemCache {
