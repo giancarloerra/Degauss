@@ -132,8 +132,7 @@ returns to it.
 Its source is at
 [giancarloerra/Degauss-Main](https://github.com/giancarloerra/Degauss-Main)
 (branch `degauss`), under GPLv3 like MiSTer Main itself.
-`degauss.sh` is how it starts the frontend (it's not meant to be launched from the
-Scripts menu yourself).
+`degauss.sh` is how it starts the frontend.
 
 To remove Degauss, delete the `main=` line and the files above. Nothing
 else on the card is touched.
@@ -141,6 +140,24 @@ else on the card is touched.
 The first run reads the card and writes an index, about a minute for a
 full one of 97k+ games. It never does that again on its own: **Options → Rebuild lists**
 is how you tell it the card has changed (for example after adding new games). New images and metadata are read on the fly.
+
+### Optional: starting Degauss from the stock menu on-demand
+
+The installation above is the recommended way to use Degauss. It opens Degauss automatically on boot, returns to it after leaving a game, and adds a **Frontend** entry to the System menu while a game is running.
+
+If you prefer to keep the stock MiSTer menu as the default, leave the `main=` line as it is in `MiSTer.ini`. You can then start Degauss when wanted by opening the OSD and selecting **Scripts → degauss**.
+
+This requires MiSTer's framebuffer terminal to be enabled:
+
+```ini
+fb_terminal=1
+```
+
+It is enabled by default in the standard MiSTer configuration.
+
+Degauss can browse the collection and launch games normally when started this way. However, after leaving a game/core, MiSTer will return to the stock menu instead of reopening Degauss automatically. There's not going to be the Frontend option anymore in the cores menu, and you'll need to re-launch Degauss from the OSD if you want to go back to it.
+
+Doing it in this way, the installed `/media/fat/degauss/MiSTer_Degauss` file is not used.
 
 ### Staying up to date
 
@@ -473,6 +490,35 @@ System logos are read from the `logos` folder beside `degauss.toml`,
 named after the system. The 89 files in `assets/logos/` are copied from
 lehcimcramtrebor/es-theme-forever (`CUSTOMIZE/logos`). The marks themselves 
 are the trademarks of their owners, used here only to identify the systems.
+
+### System and category images
+
+Degauss reads system and category images from the `logos` folder beside
+`degauss.toml`. In a normal installation this is:
+
+```text
+/media/fat/Scripts/.degauss/logos/
+```
+
+A system image is named after its system ID, for example `C64.png` or
+`PSX.jpg`.
+
+To give a category a fixed image, name the file exactly after the category:
+
+```text
+Arcade.png
+Console.png
+Computer.png
+Utility.png
+Other.png
+```
+
+If no category image exists, Degauss chooses the logo of one of the systems
+in that category at random. Lowercase `.png` and `.jpg` extensions are
+supported. Restart Degauss after adding or replacing an image.
+
+`Arcade.png` is already included as the default fixed image for the Arcade
+category.
 
 ## Tips
 
