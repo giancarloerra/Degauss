@@ -1835,6 +1835,17 @@ impl App {
             // worked out again.
             self.apply_index();
         }
+        if let Some(build) = self.build.as_mut() {
+            // A build runs a system per frame with the controls still
+            // live, and what it finishes with replaces the index outright.
+            // A favourite changed after the build already passed Favorites
+            // would be overwritten by the summary the build saw, so the
+            // build's copy is told too.
+            build.index.systems.insert(
+                FAVORITES_ID.to_string(),
+                cache.summary(&browse::start_for(&config)),
+            );
+        }
         if self.open_system.as_deref() == Some(FAVORITES_ID) {
             // The rows on screen are answered from this while a system is
             // open. Removing a favourite from inside Favourites redraws
