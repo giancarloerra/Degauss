@@ -2325,14 +2325,91 @@ impl App {
         outcome
     }
 
-    /// Ask before launching whatever is selected.
     /// Start the selected game. No question first: choosing a game in a list
     /// of games is not ambiguous, and a confirmation on every launch is a
     /// second press for every game anyone ever plays.
+    ///
+    /// Everything that can fail is decided here, while the interface is
+    /// still up: once the outcome leaves the event loop the process is
+    /// committed to leaving, and a missing core or a bad rule there would
+    /// end Degauss instead of showing a line and staying.
     fn confirm_launch(&mut self) -> Option<Outcome> {
-        let index = self.game_list.selected();
-        self.here.get(index)?;
-        Some(Outcome::Launch(index))
+        let row = self.here.get(self.game_list.selected())?;
+        let name = row.name.clone();
+        let kind = row.kind.clone();
+        let browse::Kind::Play(game) = kind else {
+            self.message = Some("A folder is not a game.".to_string());
+            self.dirty = true;
+            return None;
+        };
+        let config = self.opened_config.clone()?;
+        // A self-describing file names its own core, so a favourite or a
+        // core file must not be blocked on the system's. Everything else
+        // ends up in an MGL naming `config.rbf`, and handing MiSTer a core
+        // it does not have replaces this process with nothing.
+        let self_describing = match &game {
+            browse::Launch::File(path) => !crate::launch::needs_system_core(path),
+            browse::Launch::AmigaVision { .. } => false,
+        };
+        // Checked where MiSTer will look, not in the index the menu
+        // grouping keeps. That index matches a core name anywhere at the
+        // top of the card, so a support copy under _Arcade/cores or a
+        // favourite's dangling link would answer for a core whose real
+        // file is gone, and the launch would still end in MiSTer's own
+        // "No rbf found!" with Degauss already gone.
+        if !self_describing
+            && !crate::systems::core_file_exists(Path::new(&self.config.menu_root), &config.rbf)
+        {
+            self.message = Some(format!(
+                "{}: core {} is not on the card",
+                config.name, config.rbf
+            ));
+            self.dirty = true;
+            return None;
+        }
+        // A gamelist can name a file that was deleted or renamed since it
+        // was written. The plan would build anyway and MiSTer would fail
+        // after this process had already handed over, so the absence has to
+        // become a line on screen here or never.
+        let missing = match &game {
+            // A favourite that is really an AmigaVision title points at an
+            // installation, not at itself; the file that has to exist is
+            // the one the rewritten MGL will mount.
+            // An installation is a directory the launch writes into
+            // (shared/ags_boot); a plain file under that name would pass an
+            // existence check and fail after the hand-over.
+            browse::Launch::File(path) => match crate::launch::amiga_marker(path) {
+                Some((install, _)) => !install.is_dir(),
+                None => !path.exists(),
+            },
+            browse::Launch::AmigaVision { install, .. } => !install.is_dir(),
+        };
+        if missing {
+            self.message = Some(format!("{name}: its file is gone from the card"));
+            self.dirty = true;
+            return None;
+        }
+        // Building the plan only decides what would be written and sent;
+        // nothing touches the card until `launch::execute`. So a plan that
+        // cannot be built becomes a message here rather than an exit later.
+        let mgl = Path::new("/tmp/degauss.mgl");
+        let plan = match &game {
+            browse::Launch::File(path) => crate::launch::plan(&config, path, mgl),
+            browse::Launch::AmigaVision { install, title } => {
+                crate::launch::plan_amiga_vision(&config, install, title, mgl)
+            }
+        };
+        match plan {
+            Ok(plan) => Some(Outcome::Launch {
+                plan: Box::new(plan),
+                name,
+            }),
+            Err(e) => {
+                self.message = Some(format!("{e}"));
+                self.dirty = true;
+                None
+            }
+        }
     }
 
     /// Hide a system from the list. Nothing is deleted: it is remembered by
@@ -3342,6 +3419,18 @@ impl App {
             }
         }
 
+        // A plain message follows the same rule as a question: the next
+        // press dismisses it and is spent on the dismissing, so nothing can
+        // be typed through it and pressing A twice on an unlaunchable game
+        // re-raises the message instead of looking stuck. Build progress is
+        // the exception: it repaints its own text every frame and the
+        // controls stay live under it.
+        if self.message.is_some() && self.build.is_none() {
+            self.message = None;
+            self.dirty = true;
+            return None;
+        }
+
         match action {
             Action::Up => {
                 if self.screen == Screen::Find {
@@ -3995,8 +4084,18 @@ impl App {
         self.ui.set_status(SharedString::from(status));
         self.ui.set_show_stats(self.show_stats);
         self.ui.set_stats(SharedString::from(self.stats_line()));
-        self.ui
-            .set_overlay(SharedString::from(self.message.clone().unwrap_or_default()));
+        // A plain message says how to leave, the way the questions already
+        // carry their keys in their own text. Questions keep their "A yes,
+        // B no" and build progress replaces itself every frame, so neither
+        // takes the hint.
+        let overlay = match &self.message {
+            Some(text) if self.pending.is_none() && self.build.is_none() => {
+                format!("{text}\n\nB close")
+            }
+            Some(text) => text.clone(),
+            None => String::new(),
+        };
+        self.ui.set_overlay(SharedString::from(overlay));
     }
     fn stats_line(&self) -> String {
         let summary = self.timer.summary();
@@ -4427,16 +4526,6 @@ impl App {
     }
 
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
-    /// The rows of the folder on screen, for the launcher.
-    pub fn here(&self) -> &[browse::Row] {
-        &self.here
-    }
-    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
-    pub fn open_system(&self) -> Option<&FoundSystem> {
-        self.open_system_ref()
-    }
-
-    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     pub fn covers(&self) -> &CoverCache {
         &self.covers
     }
@@ -4570,11 +4659,18 @@ impl BenchReport {
 }
 
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Outcome {
     Quit,
 
-    Launch(usize),
+    /// A launch carries its finished plan rather than a row index: the plan
+    /// is built while the interface is still up, so everything that can go
+    /// wrong is a message on screen and never an exit. Boxed because a plan
+    /// carries a whole MGL and an outcome moves by value.
+    Launch {
+        plan: Box<crate::launch::LaunchPlan>,
+        name: String,
+    },
 }
 
 #[cfg(test)]

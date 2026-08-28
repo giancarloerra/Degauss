@@ -968,7 +968,7 @@ fn run_on_framebuffer(
 
     match outcome {
         Outcome::Quit => note("ended        user quit"),
-        Outcome::Launch(index) => {
+        Outcome::Launch { plan, name } => {
             // Written before the core is asked for: once the command goes
             // into the FIFO, MiSTer replaces this process and there is no
             // later moment to save anything in.
@@ -976,28 +976,7 @@ fn run_on_framebuffer(
                 note(&format!("state        not saved: {e}"));
             }
             state::mark_resuming();
-            let system = app
-                .open_system()
-                .ok_or_else(|| DegaussError::unsupported("launch", "no system open".to_string()))?
-                .to_config();
-            let entry = app
-                .here()
-                .get(index)
-                .ok_or_else(|| DegaussError::unsupported("launch", "no entry".to_string()))?;
-            let mgl = Path::new("/tmp/degauss.mgl");
-            let plan = match &entry.kind {
-                browse::Kind::Play(browse::Launch::File(path)) => launch::plan(&system, path, mgl)?,
-                browse::Kind::Play(browse::Launch::AmigaVision { install, title }) => {
-                    launch::plan_amiga_vision(&system, install, title, mgl)?
-                }
-                browse::Kind::Enter(_) => {
-                    return Err(DegaussError::unsupported(
-                        "launch",
-                        "a folder is not a game".to_string(),
-                    ))
-                }
-            };
-            note(&format!("ended        launching {}", entry.name));
+            note(&format!("ended        launching {name}"));
             launch::execute(&plan, Path::new(launch::CMD_FIFO))?;
         }
     }

@@ -376,6 +376,32 @@ pub fn favorite_mgl(system: &SystemConfig, game: &Path) -> Result<Option<String>
     build_mgl_with(&system.rbf, system.setname.as_deref(), &items, "").map(Some)
 }
 
+/// Whether starting this file relies on the system's own core.
+///
+/// A self-describing file names its own core: an `.mra` carries it, a
+/// ready-made `.mgl` names it inside, and a bare `.rbf` is one. Only an MGL
+/// built here writes `system.rbf` into what MiSTer is asked to load, so
+/// only those launches can fail on a core the card does not have.
+///
+/// The exception among `.mgl` files is an AmigaVision favourite: it holds
+/// a title marker rather than a playable shortcut, and `plan` rewrites it
+/// into a fresh MGL naming the system's core, so it needs that core after
+/// all.
+pub fn needs_system_core(game: &Path) -> bool {
+    let Some(extension) = game
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(str::to_ascii_lowercase)
+    else {
+        return true;
+    };
+    match extension.as_str() {
+        "mra" | "rbf" => false,
+        "mgl" => amiga_marker(game).is_some(),
+        _ => true,
+    }
+}
+
 /// Work out how to start one entry.
 ///
 /// Arcade is the exception that needs no MGL: an `.mra` already names its
@@ -835,6 +861,37 @@ mod tests {
     fn a_relative_game_path_is_rejected() {
         let err = MglItem::new(&rule(&["prg"], "f", 1, 1), "games/x.prg").expect_err("must reject");
         assert!(err.to_string().contains("not absolute"), "got: {err}");
+    }
+
+    #[test]
+    fn a_self_describing_file_does_not_need_the_systems_core() {
+        // A favourite or a core file names its own core, so a missing
+        // system core must not block it: only a game that would be wrapped
+        // in an MGL naming system.rbf depends on that core being there.
+        assert!(!needs_system_core(Path::new("/fav/Game.mra")));
+        assert!(!needs_system_core(Path::new("/fav/Game.MRA")));
+        assert!(!needs_system_core(Path::new("/fav/Game.mgl")));
+        assert!(!needs_system_core(Path::new("/fav/Game.MGL")));
+        // An AmigaVision favourite is an .mgl in name only: it carries a
+        // title marker and plan() rewrites it into a fresh MGL naming
+        // system.rbf, so it depends on that core like any plain game.
+        let dir = std::env::temp_dir().join(format!("degauss-marker-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let marker = dir.join("Zool 2.mgl");
+        std::fs::write(
+            &marker,
+            "<mistergamedescription>\n\t<rbf>_Computer/Minimig</rbf>\n\t\
+             <degauss kind=\"amigavision\" install=\"/games/Amiga/AV.hdf\" title=\"Zool 2\"/>\n\
+             </mistergamedescription>\n",
+        )
+        .unwrap();
+        assert!(needs_system_core(&marker));
+        std::fs::remove_dir_all(&dir).ok();
+        assert!(!needs_system_core(Path::new("/fav/core.rbf")));
+        assert!(!needs_system_core(Path::new("/fav/core.RBF")));
+        assert!(needs_system_core(Path::new("/games/Game.neo")));
+        assert!(needs_system_core(Path::new("/games/Game.bin")));
+        assert!(needs_system_core(Path::new("/games/Game")));
     }
 
     #[test]
