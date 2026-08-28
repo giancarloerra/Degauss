@@ -121,7 +121,7 @@ impl OptionId {
             }
             OptionId::Layout => "Details, Tiled, Carousel or List.",
             OptionId::Font => {
-                "Smooth reads better on a monitor. Pixel is drawn on whole pixels, for a tube."
+                "Smooth for a monitor, Pixel on whole pixels for a tube. The 2s are bolder."
             }
             OptionId::ShowArt => "Turn artwork off entirely.",
             OptionId::ShowHidden => {

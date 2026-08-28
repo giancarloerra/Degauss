@@ -48,6 +48,11 @@ layout = "details"
 # On a tube at 240 lines both come out at 12 pixels, where anti-aliasing is
 # grey fringing on letters two pixels wide; on a monitor smooth is the
 # legible one.
+#
+# "smooth 2" is Roboto Condensed Bold: bolder, condensed, and narrower than
+# smooth on every real title. "pixel 2" is Tamzen 6x12 Bold: the same six
+# pixel cell as pixel with two pixel strokes where pixel has one, letters
+# sitting smaller in the cell.
 font = "smooth"
 
 # Replace the key hints along the bottom with frame timings.
