@@ -193,8 +193,11 @@ pub fn name_is_usable(name: &str) -> bool {
 /// The name a favourite is filed under: the name the browser showed for the
 /// game, so the favourites folder lists it the way its owner has seen it. A
 /// shown name the card cannot hold (empty, ".", "..", any of `BAD_CHARS`)
-/// falls back to the file's own stem rather than being sanitised, so a name
-/// made here is one MiSTer's script would have made.
+/// falls back to the file's own stem rather than being sanitised, which is
+/// the name MiSTer's own script files a game under. The stem is not
+/// validated: it names a file that already exists, and in the rare case a
+/// foreign mount let it hold a character the card refuses, writing the
+/// favourite fails loudly, exactly as the stock script would.
 pub fn favorite_name(display: &str, path: &Path) -> String {
     if name_is_usable(display) {
         display.trim().to_string()
