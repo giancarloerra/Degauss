@@ -20,13 +20,16 @@ jobs:
       - run: cargo fmt --check
       # Four baked typefaces make the generated interface source about
       # 258 MB, and one rustc peaks near 13 GB compiling it. The runner has
-      # 16 GB and --all-targets runs several rustc jobs at once, so without
-      # swap the ARM lint is killed with exit 143 partway through.
+      # 16 GB of memory plus its own 4 GB swapfile, and --all-targets runs
+      # several rustc jobs at once, so the ARM lint was killed with exit 143
+      # partway through. More swap goes on the runner's spare disk under its
+      # own name, because /swapfile is already active and cannot be grown.
       - name: Add swap for the big generated source
         run: |
-          sudo fallocate -l 12G /swapfile
-          sudo chmod 600 /swapfile
-          sudo mkswap /swapfile
-          sudo swapon /swapfile
+          sudo fallocate -l 16G /mnt/degauss-swap
+          sudo chmod 600 /mnt/degauss-swap
+          sudo mkswap /mnt/degauss-swap
+          sudo swapon /mnt/degauss-swap
+          free -h
       - run: cargo test
       - run: cargo clippy --target armv7-unknown-linux-musleabihf --all-targets -- -D warnings
