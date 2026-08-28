@@ -18,5 +18,15 @@ jobs:
       - run: rustup component add clippy rustfmt
       - run: rustup target add armv7-unknown-linux-musleabihf
       - run: cargo fmt --check
+      # Four baked typefaces make the generated interface source about
+      # 258 MB, and one rustc peaks near 13 GB compiling it. The runner has
+      # 16 GB and --all-targets runs several rustc jobs at once, so without
+      # swap the ARM lint is killed with exit 143 partway through.
+      - name: Add swap for the big generated source
+        run: |
+          sudo fallocate -l 12G /swapfile
+          sudo chmod 600 /swapfile
+          sudo mkswap /swapfile
+          sudo swapon /swapfile
       - run: cargo test
       - run: cargo clippy --target armv7-unknown-linux-musleabihf --all-targets -- -D warnings
