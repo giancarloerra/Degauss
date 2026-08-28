@@ -320,6 +320,48 @@ impl CoreIndex {
     }
 }
 
+/// True when the core an MGL naming `rbf` would load is really on the card.
+///
+/// `rbf` is MiSTer's own reference, e.g. `_Console/NeoGeo`, and MiSTer
+/// resolves it against the top of the card: that folder, that name, with
+/// the dated builds updaters install answering for the plain name. The
+/// index the menu grouping keeps is not usable for this: it matches a core
+/// name anywhere at the top of the card, so a support copy under
+/// `_Arcade/cores` or a favourite's dangling link would answer for a core
+/// whose real file is gone. This looks only where MiSTer will look, and
+/// compares through the same `core_name` the walk uses, so a dated file
+/// counts and a different core that merely shares a prefix does not.
+pub fn core_file_exists(menu_root: &Path, rbf: &str) -> bool {
+    let (folder, core) = match rbf.rsplit_once('/') {
+        Some((folder, core)) => (Some(folder), core),
+        None => (None, rbf),
+    };
+    if core.is_empty() {
+        return false;
+    }
+    let dir = match folder {
+        Some(folder) => menu_root.join(folder),
+        None => menu_root.to_path_buf(),
+    };
+    let Ok(listing) = std::fs::read_dir(dir) else {
+        return false;
+    };
+    let wanted = core_name(core);
+    for item in listing.flatten() {
+        let name = item.file_name().to_string_lossy().into_owned();
+        let Some(stem) = name
+            .strip_suffix(".rbf")
+            .or_else(|| name.strip_suffix(".RBF"))
+        else {
+            continue;
+        };
+        if core_name(stem).eq_ignore_ascii_case(&wanted) {
+            return true;
+        }
+    }
+    false
+}
+
 /// A core's name reduced to what identifies it: no date stamp, no
 /// punctuation, no case.
 ///
@@ -412,6 +454,52 @@ extensions = ["md", "bin"]
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).expect("temp dir");
         dir
+    }
+
+    #[test]
+    fn a_dated_core_build_answers_for_the_plain_name() {
+        // Updaters install cores as NeoGeo_20260101.rbf, and MiSTer loads
+        // that file for an MGL saying _Console/NeoGeo. Presence has to be
+        // judged the way MiSTer resolves, or every updated card looks like
+        // it has no cores at all.
+        let root = temp_dir("core-dated");
+        std::fs::create_dir_all(root.join("_Console")).unwrap();
+        std::fs::write(root.join("_Console/NeoGeo_20260101.rbf"), b"x").unwrap();
+        assert!(core_file_exists(&root, "_Console/NeoGeo"));
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn a_core_that_merely_shares_a_prefix_does_not_answer() {
+        // NeoGeoPocket.rbf sitting beside a missing NeoGeo.rbf must not
+        // make Neo Geo launchable: a bare prefix match would say it is.
+        let root = temp_dir("core-prefix");
+        std::fs::create_dir_all(root.join("_Console")).unwrap();
+        std::fs::write(root.join("_Console/NeoGeoPocket.rbf"), b"x").unwrap();
+        assert!(!core_file_exists(&root, "_Console/NeoGeo"));
+        assert!(core_file_exists(&root, "_Console/NeoGeoPocket"));
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn a_copy_of_the_core_somewhere_else_does_not_answer() {
+        // _Arcade/cores holds support copies of console cores for .mra
+        // loading. MiSTer resolves an MGL's rbf against the named folder
+        // only, so a copy elsewhere must not make the launch look safe.
+        let root = temp_dir("core-elsewhere");
+        std::fs::create_dir_all(root.join("_Arcade/cores")).unwrap();
+        std::fs::write(root.join("_Arcade/cores/NES.rbf"), b"x").unwrap();
+        assert!(!core_file_exists(&root, "_Console/NES"));
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn a_missing_folder_means_the_core_is_missing_not_a_crash() {
+        let root = temp_dir("core-nofolder");
+        assert!(!core_file_exists(&root, "_Console/NeoGeo"));
+        assert!(!core_file_exists(&root, ""));
+        assert!(!core_file_exists(&root, "_Console/"));
+        std::fs::remove_dir_all(&root).ok();
     }
 
     #[test]

@@ -2265,15 +2265,38 @@ impl App {
             browse::Launch::File(path) => !crate::launch::needs_system_core(path),
             browse::Launch::AmigaVision { .. } => false,
         };
+        // Checked where MiSTer will look, not in the index the menu
+        // grouping keeps. That index matches a core name anywhere at the
+        // top of the card, so a support copy under _Arcade/cores or a
+        // favourite's dangling link would answer for a core whose real
+        // file is gone, and the launch would still end in MiSTer's own
+        // "No rbf found!" with Degauss already gone.
         if !self_describing
-            && self
-                .open_system_ref()
-                .is_none_or(|system| system.menu_folder.is_none())
+            && !crate::systems::core_file_exists(Path::new(&self.config.menu_root), &config.rbf)
         {
             self.message = Some(format!(
                 "{}: core {} is not on the card",
                 config.name, config.rbf
             ));
+            self.dirty = true;
+            return None;
+        }
+        // A gamelist can name a file that was deleted or renamed since it
+        // was written. The plan would build anyway and MiSTer would fail
+        // after this process had already handed over, so the absence has to
+        // become a line on screen here or never.
+        let missing = match &game {
+            // A favourite that is really an AmigaVision title points at an
+            // installation, not at itself; the file that has to exist is
+            // the one the rewritten MGL will mount.
+            browse::Launch::File(path) => match crate::launch::amiga_marker(path) {
+                Some((install, _)) => !install.exists(),
+                None => !path.exists(),
+            },
+            browse::Launch::AmigaVision { install, .. } => !install.exists(),
+        };
+        if missing {
+            self.message = Some(format!("{name}: its file is gone from the card"));
             self.dirty = true;
             return None;
         }

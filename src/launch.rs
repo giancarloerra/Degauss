@@ -382,11 +382,24 @@ pub fn favorite_mgl(system: &SystemConfig, game: &Path) -> Result<Option<String>
 /// ready-made `.mgl` names it inside, and a bare `.rbf` is one. Only an MGL
 /// built here writes `system.rbf` into what MiSTer is asked to load, so
 /// only those launches can fail on a core the card does not have.
+///
+/// The exception among `.mgl` files is an AmigaVision favourite: it holds
+/// a title marker rather than a playable shortcut, and `plan` rewrites it
+/// into a fresh MGL naming the system's core, so it needs that core after
+/// all.
 pub fn needs_system_core(game: &Path) -> bool {
-    !game
+    let Some(extension) = game
         .extension()
         .and_then(|e| e.to_str())
-        .is_some_and(|e| matches!(e.to_ascii_lowercase().as_str(), "mra" | "mgl" | "rbf"))
+        .map(str::to_ascii_lowercase)
+    else {
+        return true;
+    };
+    match extension.as_str() {
+        "mra" | "rbf" => false,
+        "mgl" => amiga_marker(game).is_some(),
+        _ => true,
+    }
 }
 
 /// Work out how to start one entry.
@@ -859,6 +872,21 @@ mod tests {
         assert!(!needs_system_core(Path::new("/fav/Game.MRA")));
         assert!(!needs_system_core(Path::new("/fav/Game.mgl")));
         assert!(!needs_system_core(Path::new("/fav/Game.MGL")));
+        // An AmigaVision favourite is an .mgl in name only: it carries a
+        // title marker and plan() rewrites it into a fresh MGL naming
+        // system.rbf, so it depends on that core like any plain game.
+        let dir = std::env::temp_dir().join(format!("degauss-marker-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let marker = dir.join("Zool 2.mgl");
+        std::fs::write(
+            &marker,
+            "<mistergamedescription>\n\t<rbf>_Computer/Minimig</rbf>\n\t\
+             <degauss kind=\"amigavision\" install=\"/games/Amiga/AV.hdf\" title=\"Zool 2\"/>\n\
+             </mistergamedescription>\n",
+        )
+        .unwrap();
+        assert!(needs_system_core(&marker));
+        std::fs::remove_dir_all(&dir).ok();
         assert!(!needs_system_core(Path::new("/fav/core.rbf")));
         assert!(!needs_system_core(Path::new("/fav/core.RBF")));
         assert!(needs_system_core(Path::new("/games/Game.neo")));
