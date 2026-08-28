@@ -3300,6 +3300,18 @@ impl App {
             }
         }
 
+        // A plain message follows the same rule as a question: the next
+        // press dismisses it and is spent on the dismissing, so nothing can
+        // be typed through it and pressing A twice on an unlaunchable game
+        // re-raises the message instead of looking stuck. Build progress is
+        // the exception: it repaints its own text every frame and the
+        // controls stay live under it.
+        if self.message.is_some() && self.build.is_none() {
+            self.message = None;
+            self.dirty = true;
+            return None;
+        }
+
         match action {
             Action::Up => {
                 if self.screen == Screen::Find {
