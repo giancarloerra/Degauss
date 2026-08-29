@@ -87,7 +87,7 @@ Enter, Escape, Space and Tab.
 - **The card is the truth.** Reorganise, rename or move files with any
   tool and the browser follows: nothing has to be re-imported or re-tagged.
   The index it keeps is only a copy of what the card already says, and
-  **Options -> Rebuild all systems lists** brings it back in step,
+  **Options -> Rebuild all system lists** brings it back in step,
   and the contextual menu's **Rebuild this system** does one system alone.
 - **Full metadata.** Description, publisher, developer, release date,
   players and language, read from `gamelist.xml`.
@@ -165,7 +165,7 @@ To remove Degauss, delete the `main=` line and the files above. Nothing
 else on the card is touched.
 
 The first run reads the card and writes an index, about a minute for a
-full one of 97k+ games. It never does that again on its own: **Options → Rebuild all systems lists**
+full one of 97k+ games. It never does that again on its own: **Options → Rebuild all system lists**
 is how you tell it the card has changed (for example after adding new games). New images and metadata are read on the fly.
 Adding games to one system does not need the whole card read again:
 **X → Rebuild this system** inside that system reads just its folders.
@@ -255,7 +255,7 @@ card.
 |---|---|
 | Scroll speed | How fast a held direction moves through the list |
 | Skip artwork faster than | Above this speed, pictures wait until the list stops |
-| Rebuild all systems lists | Read the whole card again. Run it after adding games, cores or artwork; for one system, the contextual menu's **Rebuild this system** is quicker |
+| Rebuild all system lists | Read the whole card again. Run it after adding games, cores or artwork; for one system, the contextual menu's **Rebuild this system** is quicker |
 | View | Details, Tiled, List or Carousel |
 | Text | The typeface: Smooth, Pixel (a DOS font on whole pixels), and the bolder Smooth 2 and Pixel 2 |
 | Bottom bar while browsing | The strip with the time and the buttons. Menus always keep it |

@@ -3681,7 +3681,7 @@ impl App {
             .open_system_ref()
             .map(|system| system.name().to_string())
             .unwrap_or_default();
-        self.message = Some(format!("Rebuilding list {name}"));
+        self.message = Some(format!("Rebuilding {name} list"));
         self.refreshing = Some(id);
     }
 

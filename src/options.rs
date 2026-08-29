@@ -95,7 +95,7 @@ impl OptionId {
             OptionId::ShowOther => "Show Other",
             OptionId::ShowUtility => "Show Utility",
             OptionId::ShowBar => "Bottom bar while browsing",
-            OptionId::RebuildCache => "Rebuild all systems lists",
+            OptionId::RebuildCache => "Rebuild all system lists",
             OptionId::FavoritesFirst => "Favourites first",
             OptionId::RandomLaunches => "Random",
             OptionId::FoldersLast => "Folders",
