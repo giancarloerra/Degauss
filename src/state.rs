@@ -151,6 +151,10 @@ pub struct State {
     /// lands where browsing left off, not only after a game.
     #[serde(default)]
     pub left_at: Vec<LeftAt>,
+    /// The system each group was left standing on, by the group's name and
+    /// the system's id. The groups are few, so no cap is needed.
+    #[serde(default)]
+    pub category_system: std::collections::BTreeMap<String, String>,
 }
 
 impl State {
@@ -160,10 +164,12 @@ impl State {
         trail: &[(Place, usize)],
         selected: usize,
         left_at: &[LeftAt],
+        category_system: &std::collections::BTreeMap<String, String>,
     ) -> Self {
         State {
             system: system.to_string(),
             category: category.to_string(),
+            category_system: category_system.clone(),
             trail: trail
                 .iter()
                 .map(|(place, selected)| SavedPlace::of(place, *selected))
@@ -274,9 +280,16 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("degauss-cold-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("state.toml");
-        State::record("C64", "Computer", &[], 12, &[])
-            .save(&path)
-            .unwrap();
+        State::record(
+            "C64",
+            "Computer",
+            &[],
+            12,
+            &[],
+            &std::collections::BTreeMap::new(),
+        )
+        .save(&path)
+        .unwrap();
         assert!(path.exists());
 
         assert!(
@@ -295,9 +308,16 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("degauss-warm-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("state.toml");
-        State::record("C64", "Computer", &[], 12, &[])
-            .save(&path)
-            .unwrap();
+        State::record(
+            "C64",
+            "Computer",
+            &[],
+            12,
+            &[],
+            &std::collections::BTreeMap::new(),
+        )
+        .save(&path)
+        .unwrap();
 
         let saved = take_position(true, &path).expect("a position");
         assert_eq!(saved.system, "C64");
@@ -318,14 +338,39 @@ mod tests {
     }
 
     #[test]
+    fn the_system_each_group_was_left_on_survives_being_written_down() {
+        // Walking out of Console and into Computer must not cost Console
+        // its place: each group remembers its own system, by id, across
+        // an exit and a restart.
+        let dir = std::env::temp_dir().join(format!("degauss-groups-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("state.toml");
+        let mut groups = std::collections::BTreeMap::new();
+        groups.insert("Console".to_string(), "NeoGeo".to_string());
+        groups.insert("Computer".to_string(), "AO486".to_string());
+        let state = State::record("NeoGeo", "Console", &[], 3, &[], &groups);
+        state.save(&path).unwrap();
+        let read = State::load(&path);
+        assert_eq!(read.category_system, groups);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
     fn the_left_at_places_survive_being_written_down() {
         let dir = std::env::temp_dir().join(format!("degauss-leftat-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("state.toml");
         let places = vec![place("d:/games/Amiga", "f:/games/Amiga/SuperFrog.lha")];
-        State::record("C64", "Computer", &[], 0, &places)
-            .save(&path)
-            .unwrap();
+        State::record(
+            "C64",
+            "Computer",
+            &[],
+            0,
+            &places,
+            &std::collections::BTreeMap::new(),
+        )
+        .save(&path)
+        .unwrap();
 
         let read = State::load(&path);
         assert_eq!(read.left_at, places);

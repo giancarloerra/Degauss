@@ -799,6 +799,10 @@ pub struct App {
     /// game. Saved with the position at launch and gone after a power
     /// cycle, like the rest of where the user was standing.
     left_at: Vec<crate::state::LeftAt>,
+    /// The system each group was left standing on, by the group's name.
+    /// By id, not index: the list is rebuilt per group, and a position
+    /// taken in Computer points at a different machine in Console.
+    category_system: std::collections::BTreeMap<String, String>,
     /// The rows of the folder being shown.
     here: Vec<browse::Row>,
     game_list: ListState,
@@ -1052,6 +1056,7 @@ impl App {
             names,
             trail: Vec::new(),
             left_at: Vec::new(),
+            category_system: std::collections::BTreeMap::new(),
             here: Vec::new(),
             game_list: ListState::new(0, geometry.visible),
             menu_list: ListState::new(0, geometry.visible),
@@ -1687,6 +1692,7 @@ impl App {
     /// still screen with no explanation, so the message is drawn first and
     /// the work happens after it is on screen.
     fn open_selected_system(&mut self) {
+        self.remember_system_here();
         let Some(system) = self.systems.get(self.system_list.selected()) else {
             return;
         };
@@ -1760,6 +1766,20 @@ impl App {
                 row: row_key(row),
             },
         );
+    }
+
+    /// Write down the system the open group is standing on, so coming
+    /// back to this group lands there again, whatever was visited in
+    /// between: the systems list is one ListState shared by every group,
+    /// and its bare index means a different machine in each one.
+    fn remember_system_here(&mut self) {
+        let Some(category) = self.open_category.clone() else {
+            return;
+        };
+        let Some(system) = self.systems.get(self.system_list.selected()) else {
+            return;
+        };
+        self.category_system.insert(category, system.def.id.clone());
     }
 
     /// Walk into a folder and show it.
@@ -2792,8 +2812,17 @@ impl App {
         let Some((name, _)) = self.categories.get(self.category_list.selected()) else {
             return;
         };
+        let name = name.clone();
         self.open_category = Some(name.clone());
         self.rebuild_system_list();
+        // Back to the system this group was left on, found by id in the
+        // freshly filtered list; a group never left keeps the clamped
+        // index the rebuild produced, exactly as before.
+        if let Some(id) = self.category_system.get(name.as_str()) {
+            if let Some(at) = self.systems.iter().position(|s| &s.def.id == id) {
+                self.system_list.select(at);
+            }
+        }
         self.browsing = Browsing::Systems;
 
         // A group holding one system is a door with a corridor behind it.
@@ -3106,6 +3135,7 @@ impl App {
                     if self.skipped_systems {
                         // We stepped through this group on the way in.
                         self.skipped_systems = false;
+                        self.remember_system_here();
                         self.browsing = Browsing::Categories;
                         self.open_category = None;
                         self.rebuild_system_list();
@@ -3119,6 +3149,7 @@ impl App {
                     self.touch_selection();
                 }
                 Browsing::Systems => {
+                    self.remember_system_here();
                     self.browsing = Browsing::Categories;
                     self.open_category = None;
                     self.rebuild_system_list();
@@ -4484,6 +4515,7 @@ impl App {
             &trail,
             self.game_list.selected(),
             &self.left_at,
+            &self.category_system,
         )
     }
 
@@ -4497,6 +4529,9 @@ impl App {
         if saved.system.is_empty() {
             return;
         }
+        // Each group's own memory first, so backing out of the restored
+        // system recalls the other groups exactly as before the exit.
+        self.category_system = saved.category_system.clone();
         if !saved.category.is_empty() {
             self.open_category = Some(saved.category.clone());
             self.rebuild_system_list();
