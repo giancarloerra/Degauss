@@ -3,10 +3,11 @@
 //! One `.toml` per theme, in `themes/` beside `degauss.toml`, the file stem
 //! being the name shown in Options. Each file names any subset of the
 //! colour roles the `[colors]` block of `degauss.toml` takes, plus one
-//! more, `logo`, which paints the wordmark as a flat silhouette. A theme is
-//! an overlay over the user's configured palette: what it does not name
-//! shows through from `degauss.toml`, never from whichever theme was on
-//! before.
+//! more, `logo`, which paints the wordmark as a flat silhouette. The roles
+//! go in as bare keys or under a `[colors]` header, so that block pastes
+//! over from `degauss.toml` unchanged. A theme is an overlay over the
+//! user's configured palette: what it does not name shows through from
+//! `degauss.toml`, never from whichever theme was on before.
 //!
 //! Read, never written. Choosing a colour with a stick and four buttons is
 //! a poor interface for a job a text editor does well, and the card is
@@ -23,8 +24,7 @@ use crate::config::{Color, Colors};
 /// alone. Unknown keys are rejected, exactly as in `degauss.toml`: a
 /// typo'd role that silently did nothing would read as a theme that does
 /// not work.
-#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct ThemeFile {
     pub background: Option<Color>,
     pub panel: Option<Color>,
@@ -41,9 +41,77 @@ pub struct ThemeFile {
     pub logo: Option<Color>,
 }
 
+/// The colour roles as they may appear under a `[colors]` header: the
+/// exact set that block takes in `degauss.toml`, so it pastes in
+/// unchanged. `logo` is not among them there and is not here either.
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ColorsTable {
+    background: Option<Color>,
+    panel: Option<Color>,
+    surface: Option<Color>,
+    bar: Option<Color>,
+    text: Option<Color>,
+    text_dim: Option<Color>,
+    accent: Option<Color>,
+    accent_text: Option<Color>,
+    state: Option<Color>,
+    favorite: Option<Color>,
+}
+
+/// A theme file as written: the roles as bare keys, or the same roles
+/// under a `[colors]` header, whichever the author reached for.
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawTheme {
+    background: Option<Color>,
+    panel: Option<Color>,
+    surface: Option<Color>,
+    bar: Option<Color>,
+    text: Option<Color>,
+    text_dim: Option<Color>,
+    accent: Option<Color>,
+    accent_text: Option<Color>,
+    state: Option<Color>,
+    favorite: Option<Color>,
+    logo: Option<Color>,
+    colors: Option<ColorsTable>,
+}
+
 impl ThemeFile {
     pub fn parse(text: &str) -> std::result::Result<Self, String> {
-        toml::from_str(text).map_err(|e| e.to_string())
+        let raw: RawTheme = toml::from_str(text).map_err(|e| e.to_string())?;
+        let table = raw.colors.unwrap_or_default();
+        // A role named both bare and under [colors] is refused rather
+        // than one copy quietly winning: whichever the author meant, the
+        // other is a lie in the file.
+        let mut twice = Vec::new();
+        let mut pick = |role: &str, bare: Option<Color>, tabled: Option<Color>| {
+            if bare.is_some() && tabled.is_some() {
+                twice.push(role.to_string());
+            }
+            bare.or(tabled)
+        };
+        let file = ThemeFile {
+            background: pick("background", raw.background, table.background),
+            panel: pick("panel", raw.panel, table.panel),
+            surface: pick("surface", raw.surface, table.surface),
+            bar: pick("bar", raw.bar, table.bar),
+            text: pick("text", raw.text, table.text),
+            text_dim: pick("text_dim", raw.text_dim, table.text_dim),
+            accent: pick("accent", raw.accent, table.accent),
+            accent_text: pick("accent_text", raw.accent_text, table.accent_text),
+            state: pick("state", raw.state, table.state),
+            favorite: pick("favorite", raw.favorite, table.favorite),
+            logo: raw.logo,
+        };
+        if !twice.is_empty() {
+            return Err(format!(
+                "{} set both bare and under [colors]; keep one",
+                twice.join(" and ")
+            ));
+        }
+        Ok(file)
     }
 
     /// The palette this theme puts on screen: its own colours where it
@@ -240,6 +308,47 @@ mod tests {
     fn a_typo_in_a_role_name_is_rejected_with_the_key() {
         let err = ThemeFile::parse(r##"textt = "#ffffff""##).expect_err("must reject a typo");
         assert!(err.contains("textt"), "got: {err}");
+        let err = ThemeFile::parse("[colors]\ntextt = \"#ffffff\"")
+            .expect_err("must reject a typo under the header too");
+        assert!(err.contains("textt"), "got: {err}");
+    }
+
+    #[test]
+    fn the_colors_block_from_the_config_pastes_in_unchanged() {
+        // The readme sends people to copy their [colors] block into a
+        // theme file. Copied with its header, it has to mean exactly what
+        // the bare keys mean, logo still alongside.
+        let theme = ThemeFile::parse(
+            r##"
+            logo = "#ffb000"
+
+            [colors]
+            background = "#000000"
+            text = "#33ff33"
+            "##,
+        )
+        .expect("a pasted block parses");
+        assert_eq!(theme.background, Some(Color::new(0, 0, 0)));
+        assert_eq!(theme.text, Some(Color::new(0x33, 0xff, 0x33)));
+        assert_eq!(theme.logo, Some(Color::new(0xff, 0xb0, 0x00)));
+        assert_eq!(theme.panel, None, "unnamed roles stay unnamed");
+    }
+
+    #[test]
+    fn a_role_set_both_bare_and_under_the_header_is_refused_by_name() {
+        // Two values for one role cannot both be meant. Refused with the
+        // role's name, not resolved by a precedence rule nobody wrote
+        // down.
+        let err = ThemeFile::parse(
+            r##"
+            text = "#ffffff"
+
+            [colors]
+            text = "#000000"
+            "##,
+        )
+        .expect_err("must refuse the double");
+        assert!(err.contains("text"), "got: {err}");
     }
 
     #[test]

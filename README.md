@@ -309,11 +309,13 @@ Every colour Degauss draws with is a role in the `[colors]` block of
 
 A theme is one `.toml` file in the `themes/` folder beside `degauss.toml`
 (`Scripts/.config/degauss/themes/` on a card), naming any of those ten
-roles at the top level, and its file stem is its name in the **Theme**
-row of Options. A theme overlays your `[colors]`: roles it does not name
-show through from `degauss.toml`. One more key, `logo`, draws the
-wordmark as a flat silhouette in that colour; leave it out and the
-wordmark keeps its own three colours.
+roles, and its file stem is its name in the **Theme** row of Options.
+The roles go in as bare keys or under a `[colors]` header, so the block
+from `degauss.toml` pastes in unchanged. A theme overlays your
+`[colors]`: roles it does not name show through from `degauss.toml`. One
+more key, `logo`, at the top level, draws the wordmark as a flat
+silhouette in that colour; leave it out and the wordmark keeps its own
+three colours.
 
 Three themes ship as starting points: `amber` and `green` after the two
 monochrome phosphors, and `mono`, the standard greys with the colour
