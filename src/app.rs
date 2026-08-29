@@ -3616,11 +3616,20 @@ impl App {
     }
 
     /// Take a favourite away, by removing the file that makes it one.
+    ///
+    /// Everywhere else the file is looked up by the game it points at; on
+    /// the Favourites shelf the row under the cursor IS that file, and
+    /// the lookup, keyed by targets, would find nothing for it.
     fn remove_favorite(&mut self) {
         let Some(game) = self.selected_game() else {
             return;
         };
-        let Some(file) = self.favorites.file_for(&game).map(Path::to_path_buf) else {
+        let file = if self.open_system.as_deref() == Some(FAVORITES_ID) {
+            Some(game.clone())
+        } else {
+            self.favorites.file_for(&game).map(Path::to_path_buf)
+        };
+        let Some(file) = file else {
             return;
         };
         let mut refresh_error = None;
@@ -3645,10 +3654,19 @@ impl App {
 
     /// What can be done with the folder on screen.
     fn open_context(&mut self) {
+        // Inside the Favourites shelf the rows ARE the favourite files, so
+        // the target-keyed lookup below answers false for every one of
+        // them and the menu offered to Add what is already there. On the
+        // shelf the answer is known without asking.
+        let favorite = if self.open_system.as_deref() == Some(FAVORITES_ID) {
+            self.selected_game().map(|_| true)
+        } else {
+            self.selected_game().map(|path| self.favorites.holds(&path))
+        };
         self.menu = context_entries(
             self.browsing,
             !self.filter.is_empty(),
-            self.selected_game().map(|path| self.favorites.holds(&path)),
+            favorite,
             self.selected_hidden(),
         );
         if self.menu.is_empty() {
