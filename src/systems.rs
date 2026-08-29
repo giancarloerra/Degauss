@@ -400,7 +400,11 @@ fn core_name(stem: &str) -> String {
 /// All of them, not just the first: a system's games are routinely spread
 /// across the folders it names, and stopping at the first one loses whatever
 /// is in the rest.
-fn existing_folders(def: &SystemDef, roots: &[PathBuf]) -> Vec<PathBuf> {
+/// Which of a system's configured folders are on the card right now.
+///
+/// `discover` asks this for every system; the single-system rebuild asks
+/// it again for one, because a folder can appear or go after discovery.
+pub fn existing_folders(def: &SystemDef, roots: &[PathBuf]) -> Vec<PathBuf> {
     let mut found: Vec<PathBuf> = Vec::new();
     for folder in &def.folders {
         for root in roots {
@@ -583,6 +587,42 @@ extensions = ["md", "bin"]
         assert_eq!(found.len(), 1, "Genesis has no folder here");
         assert_eq!(found[0].name(), "Commodore 64");
         assert_eq!(found[0].path(), root.join("C64"));
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn a_second_discovery_sees_systems_and_cores_added_after_the_first() {
+        // Discovery answers from the card, never from an earlier answer.
+        // The full rebuild depends on exactly this: it runs discovery
+        // again so a folder or core added while Degauss was running is
+        // picked up without a restart.
+        let root = temp_dir("rediscover");
+        std::fs::create_dir_all(root.join("C64")).unwrap();
+        let table = parse_table(TABLE, Path::new("systems.toml")).unwrap();
+        let found = discover(
+            &table,
+            std::slice::from_ref(&root),
+            None,
+            &CoreIndex::read(&root),
+        );
+        assert_eq!(found.len(), 1);
+
+        std::fs::create_dir_all(root.join("Genesis")).unwrap();
+        std::fs::create_dir_all(root.join("_Retro")).unwrap();
+        std::fs::write(root.join("_Retro/MegaDrive.rbf"), b"core").unwrap();
+        let found = discover(
+            &table,
+            std::slice::from_ref(&root),
+            None,
+            &CoreIndex::read(&root),
+        );
+        assert_eq!(found.len(), 2, "the new folder is a system now");
+        let genesis = found.iter().find(|s| s.def.id == "Genesis").expect("found");
+        assert_eq!(
+            genesis.category(),
+            "Retro",
+            "the group comes from where the new core actually sits"
+        );
         std::fs::remove_dir_all(&root).ok();
     }
 

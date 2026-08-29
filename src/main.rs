@@ -340,6 +340,8 @@ fn load_everything(args: &Args) -> Result<Loaded> {
         settings_path,
         systems,
         names,
+        table,
+        logo_dir,
     })
 }
 

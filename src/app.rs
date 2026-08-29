@@ -45,7 +45,7 @@ use crate::options::{speed_badge, speed_label, OptionId, ADVANCED, OPTIONS};
 use crate::render::{FrameWork, PresentMode, Presenter};
 use crate::settings::Settings;
 use crate::surface::Surface;
-use crate::systems::FoundSystem;
+use crate::systems::{FoundSystem, SystemDef};
 use crate::{DegaussWindow, DetailLine, Row};
 
 /// Which screen is in front.
@@ -266,6 +266,10 @@ const FAVORITES_ID: &str = "Favorites";
 /// Take this row out of the list until it is asked for again.
 const HIDE_THIS: &str = "Hide this";
 
+/// Read the system being browsed off the card again, leaving every other
+/// system's listing as it was.
+const REBUILD_SYSTEM: &str = "Rebuild this system";
+
 /// Put it back.
 const SHOW_THIS: &str = "Show this";
 
@@ -315,6 +319,11 @@ fn context_entries(
         } else {
             HIDE_THIS.to_string()
         }]);
+    }
+    // Only inside a system: at the levels above there is no one system
+    // to read again.
+    if browsing == Browsing::Games {
+        groups.push(vec![REBUILD_SYSTEM.to_string()]);
     }
     groups.push(vec![CHANGE_VIEW.to_string()]);
 
@@ -831,6 +840,11 @@ pub struct App {
     /// Every system found, before hiding is applied. `systems` is the
     /// visible projection of this.
     all_systems: Vec<FoundSystem>,
+    /// The full table of known systems, kept so a rebuild can ask the
+    /// card again which of them are there.
+    table: Vec<SystemDef>,
+    /// Where system logos live, for the same second look.
+    logo_dir: Option<PathBuf>,
     /// The folder on screen before a search narrowed it. Empty while
     /// nothing is being searched for, so the usual case pays nothing.
     all_here: Vec<browse::Row>,
@@ -893,6 +907,15 @@ pub struct App {
     pending_present_switch: bool,
     /// A system whose metadata is to be read after the next frame is drawn.
     opening: Option<usize>,
+    /// A system whose cache is to be written again after the next frame
+    /// is drawn, so the message saying so is on screen before the read
+    /// starts. A press in that one frame can dismiss the message early;
+    /// the read still happens.
+    refreshing: Option<String>,
+    /// A line to show when the running build finishes. The build repaints
+    /// its progress every frame and takes the message down when it is
+    /// done, so anything that must be read afterwards waits here.
+    message_after_build: Option<String>,
     /// True when a group held one system and was stepped straight through.
     skipped_systems: bool,
     show_empty: bool,
@@ -938,6 +961,11 @@ pub struct Loaded {
     pub systems: Vec<FoundSystem>,
     /// The display names the card itself applies to cores and shortcuts.
     pub names: browse::DisplayNames,
+    /// The full table of known systems, so a rebuild can ask the card
+    /// again which of them are there.
+    pub table: Vec<SystemDef>,
+    /// Where system logos live, for the same second look.
+    pub logo_dir: Option<PathBuf>,
 }
 
 impl App {
@@ -959,6 +987,8 @@ impl App {
             settings_path,
             systems,
             names,
+            table,
+            logo_dir,
         } = loaded;
         let layout = settings
             .layout
@@ -1017,6 +1047,8 @@ impl App {
             show_stats: settings.show_stats.unwrap_or(config.app.show_stats),
             show_hidden: settings.show_hidden.unwrap_or(false),
             all_systems: Vec::new(),
+            table,
+            logo_dir,
             all_here: Vec::new(),
             filter: String::new(),
             find_mode: FindMode::Jump,
@@ -1103,6 +1135,8 @@ impl App {
             seed: seed_from_clock(),
             pending_present_switch: false,
             opening: None,
+            refreshing: None,
+            message_after_build: None,
             skipped_systems: false,
             message: None,
             dirty: true,
@@ -1873,37 +1907,67 @@ impl App {
     /// exact moment that folder moved, and a shelf that shows yesterday's
     /// favourites until a full rebuild is asked for is wrong. The folder is
     /// small, so reading this one system again costs nothing worth noticing.
+    fn refresh_favorites_system(&mut self) -> Option<String> {
+        self.refresh_system(FAVORITES_ID)
+    }
+
+    /// Write one system's cache again, from the card as it is now. Only
+    /// that system's file and its line in the index change: everything
+    /// else written down stays as it was.
+    ///
     /// A failure comes back to the caller instead of onto the screen:
     /// every caller redraws with `show_here`, which clears the message
     /// field, so a message set here would be wiped before it was drawn.
     /// The caller shows it after its redraw.
-    fn refresh_favorites_system(&mut self) -> Option<String> {
-        // The Favorites system is in the table only when its folder existed
-        // at startup. With no folder there is no cache to refresh and
+    fn refresh_system(&mut self, id: &str) -> Option<String> {
+        // A system is in the table only when its folder existed at
+        // discovery. With no folder there is no cache to refresh and
         // nothing is listed, so doing nothing is correct.
-        let system = self.all_systems.iter().find(|s| s.def.id == FAVORITES_ID)?;
+        let system = self.all_systems.iter().find(|s| s.def.id == id)?;
+        let name = system.name().to_string();
+        // The folders the system was found under were fixed at discovery,
+        // and a configured folder can have appeared since: a rebuild that
+        // reads the card as it is must read all of it. Only the folders
+        // are asked again; which menu folder the core sits in is a
+        // full-rebuild question.
+        let roots: Vec<PathBuf> = self.config.game_roots.iter().map(PathBuf::from).collect();
+        let paths = crate::systems::existing_folders(&system.def, &roots);
+        if paths.is_empty() {
+            // Every folder gone. Said out loud, and the cache is left as
+            // it was: what to do about a vanished system is the full
+            // rebuild's decision, not this one's.
+            return Some(format!("{name}: no folder for it is on the card"));
+        }
+        let system = {
+            let entry = self
+                .all_systems
+                .iter_mut()
+                .find(|s| s.def.id == id)
+                .expect("found above");
+            entry.paths = paths;
+            entry.clone()
+        };
         let config = system.to_config();
         let library = match Library::open_with_names(&config, self.names.clone()) {
             Ok(library) => library,
             // Said out loud rather than quietly keeping the stale listing.
-            Err(e) => return Some(format!("Favorites: {e}")),
+            Err(e) => return Some(format!("{name}: {e}")),
         };
         let cache = crate::cache::build_system(&library);
-        if let Err(e) = crate::cache::save_system(&self.cache_dir, FAVORITES_ID, &cache) {
+        if let Err(e) = crate::cache::save_system(&self.cache_dir, id, &cache) {
             // Stop before the index learns the new summary: an index saying
             // one count while the cache file on disk holds another survives
             // a restart as a listing that disagrees with itself.
-            crate::note(&format!("cache        {FAVORITES_ID} not written: {e}"));
-            return Some(format!("Favorites not written: {e}"));
+            crate::note(&format!("cache        {id} not written: {e}"));
+            return Some(format!("{name} not written: {e}"));
         }
         let mut error = None;
         if let Some(index) = self.index.as_mut() {
             // Only this system's summary is replaced. The index carries
             // every other system's too, and those are still right.
-            index.systems.insert(
-                FAVORITES_ID.to_string(),
-                cache.summary(&browse::start_for(&config)),
-            );
+            index
+                .systems
+                .insert(id.to_string(), cache.summary(&browse::start_for(&config)));
             // Written to disk only when no build is running. A forced
             // build has already emptied the cache folder and is filling a
             // fresh index one system at a time; writing this one to disk in
@@ -1918,27 +1982,27 @@ impl App {
                     // and the user is told rather than left to find out at
                     // the next start.
                     crate::note(&format!("cache        index not written: {e}"));
-                    error = Some(format!("Favorites index not written: {e}"));
+                    error = Some(format!("{name} index not written: {e}"));
                 }
             }
-            // The first favourite ever kept takes the count from nothing to
-            // something, and a system holding nothing is hidden at the
-            // root. The emptiness answers come from the index, so they are
-            // worked out again.
+            // A refresh can take a system's count from nothing to
+            // something or back, and a system holding nothing is hidden
+            // at the root. The emptiness answers come from the index, so
+            // they are worked out again.
             self.apply_index();
         }
         if let Some(build) = self.build.as_mut() {
             // A build runs a system per frame with the controls still
             // live, and what it finishes with replaces the index outright.
-            // A favourite changed after the build already passed Favorites
-            // would be overwritten by the summary the build saw, so the
-            // build's copy is told too.
-            build.index.systems.insert(
-                FAVORITES_ID.to_string(),
-                cache.summary(&browse::start_for(&config)),
-            );
+            // A system refreshed after the build already passed it would
+            // be overwritten by the summary the build saw, so the build's
+            // copy is told too.
+            build
+                .index
+                .systems
+                .insert(id.to_string(), cache.summary(&browse::start_for(&config)));
         }
-        if self.open_system.as_deref() == Some(FAVORITES_ID) {
+        if self.open_system.as_deref() == Some(id) {
             // The rows on screen are answered from this while a system is
             // open. Removing a favourite from inside Favourites redraws
             // straight after, and must not redraw from the old copy. When
@@ -1946,6 +2010,10 @@ impl App {
             // here, and replacing it would be wrong.
             self.system_cache = Some(cache);
         }
+        // Whatever is hidden under this system was counted against the
+        // old cache, so the corrected counts are worked out again. Costs
+        // nothing when nothing is hidden.
+        self.correct_system_counts();
         self.rebuild_system_list();
         error
     }
@@ -2604,12 +2672,72 @@ impl App {
         }
     }
 
+    /// Look at the card again for which systems and cores are there.
+    ///
+    /// Discovery normally happens once, before the interface exists. A
+    /// full rebuild exists to pick up whatever changed behind Degauss's
+    /// back, and part of what can change is which systems there are at
+    /// all, so it walks the same ground startup walked: the menu folders
+    /// for cores, then the game folders against the table.
+    fn rediscover_systems(&mut self) {
+        let roots: Vec<PathBuf> = self.config.game_roots.iter().map(PathBuf::from).collect();
+        let cores = crate::systems::CoreIndex::read(Path::new(&self.config.menu_root));
+        let open = self.open_system.clone();
+        let open_name = open.as_deref().and_then(|id| {
+            self.all_systems
+                .iter()
+                .find(|s| s.def.id == id)
+                .map(|s| s.name().to_string())
+        });
+        self.all_systems =
+            crate::systems::discover(&self.table, &roots, self.logo_dir.as_deref(), &cores);
+        // The screensaver's shortlist holds positions into the list that
+        // was just replaced, so it is built again on next use.
+        self.saver_candidates = None;
+        // The system being browsed can be among what vanished. Its trail
+        // points into folders nothing can list any more, so browsing
+        // walks back to the top rather than failing folder by folder.
+        if let (Some(id), Some(name)) = (open.as_deref(), open_name) {
+            if !self.all_systems.iter().any(|s| s.def.id == id) {
+                self.close_vanished_system(&name);
+            }
+        }
+        self.rebuild_system_list();
+    }
+
+    /// Leave the system that just stopped existing, the way walking out
+    /// of it would.
+    ///
+    /// Everything held about it points at folders that are no longer
+    /// listed anywhere. Said when the build finishes rather than now:
+    /// the build repaints its progress every frame, so a line shown here
+    /// would be painted over before anyone read it.
+    fn close_vanished_system(&mut self, name: &str) {
+        self.open_system = None;
+        self.here.clear();
+        self.library = None;
+        self.system_cache = None;
+        self.opened_config = None;
+        self.trail.clear();
+        self.skipped_systems = false;
+        self.open_category = None;
+        self.browsing = Browsing::Categories;
+        self.message_after_build = Some(format!("{name} is no longer on the card"));
+    }
+
     /// Begin reading the card into the cache.
     ///
     /// `forced` throws away what is already written down. Without it a
     /// system whose file is already there is left alone, which is what
     /// makes a second run cheap.
     fn start_build(&mut self, forced: bool) {
+        // One at a time. Replacing a build in flight would lose the
+        // progress made and, when forced, clear the folder a second
+        // time; the progress message already on screen says what is
+        // happening, so the press needs no other answer.
+        if self.build.is_some() {
+            return;
+        }
         if forced {
             crate::cache::clear(&self.cache_dir);
         }
@@ -2644,8 +2772,24 @@ impl App {
             }
             self.index = Some(index);
             self.apply_index();
+            // The corrected counts were worked out against the caches
+            // this build just replaced.
+            self.correct_system_counts();
             self.rebuild_system_list();
-            self.message = None;
+            // The progress comes down; anything that had to outlive the
+            // build goes up in its place. Only set when the open system
+            // vanished, in which case the re-listing below has nothing
+            // to do, so the two never fight over the field.
+            self.message = self.message_after_build.take();
+            // The folder on screen was listed from the cache as it was
+            // before the build, and its rows keep answering from the
+            // copy in memory. Both are behind the card now.
+            if let Some(id) = self.open_system.clone() {
+                self.system_cache = crate::cache::load_system(&self.cache_dir, &id);
+                if self.browsing == Browsing::Games {
+                    self.relist_here();
+                }
+            }
             self.dirty = true;
             return;
         };
@@ -2956,9 +3100,21 @@ impl App {
                 self.settings.random_launches = Some(self.random_launches);
             }
             OptionId::RebuildCache => {
-                // Everything again, from the card: the point of asking for
-                // it is that something changed that nothing noticed.
-                self.start_build(true);
+                // One rebuild at a time: a second ask would swap the
+                // system list from under the running build, whose work
+                // list holds positions into it. The progress message
+                // already on screen is the answer to the press.
+                if self.build.is_none() {
+                    // Everything again, from the card: the point of asking
+                    // for it is that something changed that nothing
+                    // noticed. Which systems and cores exist at all is
+                    // discovered once at startup, so that is asked again
+                    // first; without it a core or folder added while
+                    // Degauss runs would stay invisible however often its
+                    // games were read.
+                    self.rediscover_systems();
+                    self.start_build(true);
+                }
             }
             OptionId::ResetHidden => {
                 let held = self.settings.hidden.len() + self.settings.hidden_paths.len();
@@ -3491,6 +3647,32 @@ impl App {
         self.apply_geometry();
     }
 
+    /// Read the open system off the card again, from the contextual menu.
+    ///
+    /// Say what is about to happen, then do it on the next frame, exactly
+    /// as opening an unread system does: the read takes seconds on a big
+    /// system, and a still screen with no explanation looks hung.
+    fn rebuild_open_system(&mut self) {
+        self.screen = Screen::Browse;
+        self.apply_geometry();
+        self.dirty = true;
+        // A full build is already reading every system, this one
+        // included, and its progress message is on screen; a second read
+        // of the same folders would be the same work twice.
+        if self.build.is_some() {
+            return;
+        }
+        let Some(id) = self.open_system.clone() else {
+            return;
+        };
+        let name = self
+            .open_system_ref()
+            .map(|system| system.name().to_string())
+            .unwrap_or_default();
+        self.message = Some(format!("Reading {name}"));
+        self.refreshing = Some(id);
+    }
+
     pub fn handle(&mut self, action: Action) -> Option<Outcome> {
         // Anything at all counts as somebody being here.
         self.last_input = Instant::now();
@@ -3696,6 +3878,8 @@ impl App {
                         self.open_favorite_folders();
                     } else if choice == REMOVE_FAVORITE {
                         self.remove_favorite();
+                    } else if choice == REBUILD_SYSTEM {
+                        self.rebuild_open_system();
                     } else if choice == CLEAR_SEARCH {
                         self.clear_filter();
                         self.screen = Screen::Browse;
@@ -4351,7 +4535,8 @@ impl App {
                 }
                 true
             } else {
-                if !repeater.anything_held() && self.opening.is_none() {
+                if !repeater.anything_held() && self.opening.is_none() && self.refreshing.is_none()
+                {
                     std::thread::sleep(Duration::from_millis(2));
                 }
                 false
@@ -4370,6 +4555,25 @@ impl App {
             // The message is on screen now, so the reading can happen.
             if self.opening.take().is_some() {
                 self.open_system_now();
+            }
+            // The same deferment for reading one system again. A press in
+            // the frame between can already have dismissed the message;
+            // the read still happens, only its explanation went early.
+            if let Some(id) = self.refreshing.take() {
+                let error = self.refresh_system(&id);
+                if self.browsing == Browsing::Games
+                    && self.open_system.as_deref() == Some(id.as_str())
+                {
+                    // The rows on screen came from the cache that was
+                    // just replaced.
+                    self.relist_here();
+                }
+                if let Some(error) = error {
+                    // Set after the redraw, which clears the message
+                    // field; set before, the error would never be seen.
+                    self.message = Some(error);
+                }
+                self.dirty = true;
             }
             // One system per frame, so the count on screen keeps moving.
             // After the wordmark, not over it: the first thing anybody sees
@@ -4937,6 +5141,19 @@ mod tests {
     }
 
     #[test]
+    fn rebuilding_one_system_is_offered_only_inside_a_system() {
+        // The entry names no system because the one meant is the one
+        // being browsed. On the levels above there is no such system,
+        // so offering it there would be a question with no answer.
+        let games = context_entries(Browsing::Games, false, None, None);
+        assert!(games.iter().any(|entry| entry == REBUILD_SYSTEM));
+        let systems = context_entries(Browsing::Systems, false, None, None);
+        assert!(!systems.iter().any(|entry| entry == REBUILD_SYSTEM));
+        let groups = context_entries(Browsing::Categories, false, None, None);
+        assert!(!groups.iter().any(|entry| entry == REBUILD_SYSTEM));
+    }
+
+    #[test]
     fn a_jump_lands_on_the_letter_itself_wherever_it_sits() {
         // Folders first, then files, each sorted on its own: the first
         // letters climb twice, which is what broke this.
@@ -5034,13 +5251,14 @@ mod tests {
             "{entries:?}"
         );
         // The order of the groups: chance, then keeping, then finding,
-        // then hiding, then how it looks.
+        // then hiding, then reading again, then how it looks.
         let seen: Vec<&str> = entries.iter().map(String::as_str).collect();
         let at = |what: &str| seen.iter().position(|e| *e == what).expect(what);
         assert!(at(RANDOM) < at(ADD_FAVORITE));
         assert!(at(ADD_FAVORITE) < at(JUMP));
         assert!(at(JUMP) < at(HIDE_THIS));
-        assert!(at(HIDE_THIS) < at(CHANGE_VIEW));
+        assert!(at(HIDE_THIS) < at(REBUILD_SYSTEM));
+        assert!(at(REBUILD_SYSTEM) < at(CHANGE_VIEW));
         // Both ways of picking something at random sit together.
         assert_eq!(at(RANDOM) + 1, at(RANDOM_FAVORITE));
     }

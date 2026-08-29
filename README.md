@@ -58,7 +58,7 @@ Source available, written in Rust and using Slint, and licensed for non-commerci
 | **left / right** | scroll speed, 0.5x to 12x. In a menu, change the setting |
 | **A** (enter) | open a folder, launch a game |
 | **B** (escape) | back, out of the folder |
-| **X** (tab) | context menu: random game, random favourite, keep or drop a favourite, jump to letter, search, hide a row, change view, etc. |
+| **X** (tab) | context menu: random game, random favourite, keep or drop a favourite, jump to letter, search, hide a row, rebuild this system, change view, etc. |
 | **Y** (space) | menu: options, help, about, exit |
 
 A gamepad needs no setup and a keyboard is never needed. While Degauss
@@ -166,6 +166,8 @@ else on the card is touched.
 The first run reads the card and writes an index, about a minute for a
 full one of 97k+ games. It never does that again on its own: **Options → Rebuild lists**
 is how you tell it the card has changed (for example after adding new games). New images and metadata are read on the fly.
+Adding games to one system does not need the whole card read again:
+**X → Rebuild this system** inside that system reads just its folders.
 
 ### Optional: starting Degauss from the stock menu on-demand
 
@@ -643,7 +645,8 @@ It is worth asking your agent to check the whole card for this once.
 
 #### After any change
 
-Rebuild the cache from the Degauss menu. Artwork is never cached, so
+Rebuild the cache from the Degauss menu, or just the changed system with
+**X → Rebuild this system** while inside it. Artwork is never cached, so
 pictures appear as soon as they are on the card. Favourites are shared with
 MiSTer's own `_@Favorites` folder, so an agent can add one and the stock
 menu will agree with it, and vice versa.
