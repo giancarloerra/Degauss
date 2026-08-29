@@ -2267,8 +2267,18 @@ impl App {
     /// the remembered row: re-listing without remembering landed on
     /// whatever row the folder was entered on, which is how favouriting or
     /// hiding a game deep in a long list snapped the cursor away from it.
+    ///
+    /// The crumb's index is refreshed too, because it is the fallback when
+    /// the remembered row cannot be found again, and the action being
+    /// re-listed for can be the one that removed that very row: hiding the
+    /// game under the cursor must leave the cursor where it stood, on
+    /// whatever slid into its place, not send it back to where the folder
+    /// was entered.
     fn relist_here(&mut self) {
         self.remember_here();
+        if let Some(crumb) = self.trail.last_mut() {
+            crumb.selected = self.game_list.selected();
+        }
         self.show_here();
     }
 
@@ -5074,5 +5084,23 @@ mod tests {
     fn a_folder_never_visited_lands_where_the_crumb_says() {
         let rows = listed(&["Alpha", "Beta"]);
         assert_eq!(reselect(&rows, None, 0), 0, "the top, for a fresh crumb");
+    }
+
+    #[test]
+    fn hiding_the_row_under_the_cursor_leaves_the_cursor_in_place() {
+        // relist_here refreshes the crumb to the live cursor before
+        // re-listing, so when the remembered row is the very one that
+        // vanished, the fallback is where the cursor stood: the row that
+        // slid into its place, not the row the folder was entered on.
+        let before = listed(&["Alpha", "Beta", "Gamma"]);
+        let key = row_key(&before[1]);
+        let after = listed(&["Alpha", "Gamma"]);
+        assert_eq!(reselect(&after, Some(&key), 1), 1, "Gamma slid into place");
+
+        // Hiding the last row parks that fallback one past the end; the
+        // clamp in select() is what keeps it on the new last row.
+        let mut list = ListState::new(2, 10);
+        list.select(reselect(&after, Some("f:/games/Gone.d64"), 2));
+        assert_eq!(list.selected(), 1, "clamped to the new last row");
     }
 }
