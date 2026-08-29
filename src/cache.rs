@@ -394,6 +394,20 @@ mod tests {
     }
 
     #[test]
+    fn a_card_that_was_never_indexed_offers_no_index_to_fold_into() {
+        // A single-system refresh folds its summary into the index that
+        // is already there, and refresh_system asks this exact question
+        // first. With no index on disk the answer must stay None on every
+        // asking: an index conjured here would reach the disk holding one
+        // system, and startup trusts an index that exists, so every other
+        // system would come up missing after a restart.
+        let store = temp("index-none");
+        assert!(load_index(&store).is_none(), "nothing to fold into");
+        assert!(load_index(&store).is_none(), "and asking created nothing");
+        std::fs::remove_dir_all(&store).ok();
+    }
+
+    #[test]
     fn a_rebuilt_system_cache_counts_a_file_written_after_the_first_build() {
         // Adding a favourite is the one moment Degauss knows a folder on
         // the card changed, and the answer to that is building this one
