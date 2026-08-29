@@ -19,6 +19,10 @@ fi
 echo "building"
 cargo build --release --target "${TARGET}"
 
+# The staged asset folders are rebuilt from scratch: a plain copy over
+# last time's staging keeps files the repository no longer ships, and a
+# stale theme or logo would ride every local deploy from then on.
+rm -rf deploy/Scripts/.config/degauss/logos deploy/Scripts/.config/degauss/themes
 mkdir -p deploy/Scripts/.config/degauss/logos
 cp "target/${TARGET}/release/degauss" deploy/Scripts/.config/degauss/degauss
 cp degauss.toml deploy/Scripts/.config/degauss/degauss.toml
