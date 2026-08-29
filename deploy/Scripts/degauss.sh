@@ -44,6 +44,10 @@ if [ -d "${OLD}" ]; then
         exit 1
     fi
 
+    # The console is what is on screen while this runs, and a blank pause
+    # with no words looks like a machine that stopped.
+    echo "Migrating Degauss data to Scripts/.config/degauss..."
+
     # md5sum on the MiSTer's busybox; md5 where this is rehearsed on a desk.
     hash_of() {
         if command -v md5sum >/dev/null 2>&1; then

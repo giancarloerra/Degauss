@@ -95,6 +95,7 @@ run_shim() { # $1 = Scripts dir; stdout+stderr captured separately
 expect_silent_and_gone() { # $1 = Scripts dir, $2 = case name
     [ ! -e "$1/.degauss" ] || fail "$2: .degauss still exists: $(ls -A "$1/.degauss")"
     [ ! -s "$1/.stderr" ] || fail "$2: stderr not empty: $(cat "$1/.stderr")"
+    grep -q "Migrating Degauss data" "$1/.stdout" || fail "$2: no migration message shown"
     grep -q "Starting Degauss" "$1/.stdout" || fail "$2: frontend did not start"
 }
 
@@ -118,7 +119,10 @@ echo "0 table matches the shipped set (${want} hashes): ok"
 # ---- 1: fresh install ----------------------------------------------------
 S=$(sandbox fresh); stage_new "$S"
 run_shim "$S" || fail "fresh: exit $?"
-expect_silent_and_gone "$S" fresh
+[ ! -e "$S/.degauss" ] || fail "fresh: old folder appeared"
+[ ! -s "$S/.stderr" ] || fail "fresh: stderr not empty"
+grep -q "Migrating" "$S/.stdout" && fail "fresh: migration message with nothing to migrate"
+grep -q "Starting Degauss" "$S/.stdout" || fail "fresh: frontend did not start"
 echo "1 fresh install: ok"
 
 # ---- 2: pristine v0.2.0 upgrade ------------------------------------------
@@ -194,7 +198,9 @@ rm "$S/.degauss/LICENSE" "$S/.degauss/degauss.toml"
 run_shim "$S" || fail "rerun: exit $?"
 expect_silent_and_gone "$S" rerun
 run_shim "$S" || fail "rerun2: exit $?"
-expect_silent_and_gone "$S" rerun2
+[ ! -e "$S/.degauss" ] || fail "rerun2: old folder back"
+grep -q "Migrating" "$S/.stdout" && fail "rerun2: migration message with nothing left to migrate"
+grep -q "Starting Degauss" "$S/.stdout" || fail "rerun2: frontend did not start"
 echo "7 interruption rerun converges, then no-ops: ok"
 
 # ---- 8: an interrupted install keeps the only binary ----------------------
