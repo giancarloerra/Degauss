@@ -26,6 +26,11 @@ pub struct Settings {
     /// into the speed ladder.
     pub art_limit: Option<usize>,
     pub layout: Option<String>,
+    /// What left and right do while browsing: "speed", "letter", "page"
+    /// or "direction". Absent means speed, which is how Degauss always
+    /// behaved.
+    #[serde(default)]
+    pub left_right: Option<String>,
     /// Which typeface the interface is set in. Absent means whatever the
     /// shipped configuration says.
     #[serde(default)]
@@ -139,6 +144,7 @@ mod tests {
             hidden: vec!["PSX".to_string()],
             art_limit: Some(0),
             layout: Some("covers".into()),
+            left_right: Some("letter".into()),
             show_stats: Some(true),
             overscan_x: Some(24),
             ..Default::default()

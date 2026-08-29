@@ -182,6 +182,85 @@ impl Layout {
     }
 }
 
+/// What left and right do while browsing.
+///
+/// Speed is how Degauss always behaved and stays the default. The other
+/// three exist because the two most reachable directions on the stick were
+/// permanently spent on a value many people set once: in a folder of
+/// twelve thousand games a letter or a page is worth more than a speed
+/// change.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Horizontal {
+    /// Step the scroll speed up and down the ladder.
+    #[default]
+    Speed,
+    /// Jump to the previous or next first letter in the list.
+    Letter,
+    /// Move a screenful at a time.
+    Page,
+    /// Move the cursor itself. In the Tiled view this frees up and down to
+    /// move a whole row, which is how a grid wants to be driven.
+    Direction,
+}
+
+impl Horizontal {
+    /// Every mode, in the order the option steps through them.
+    pub const ALL: [Horizontal; 4] = [
+        Horizontal::Speed,
+        Horizontal::Letter,
+        Horizontal::Page,
+        Horizontal::Direction,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Horizontal::Speed => "speed",
+            Horizontal::Letter => "letter",
+            Horizontal::Page => "page",
+            Horizontal::Direction => "direction",
+        }
+    }
+
+    pub fn parse(text: &str) -> Option<Self> {
+        match text {
+            "speed" => Some(Horizontal::Speed),
+            "letter" => Some(Horizontal::Letter),
+            "page" => Some(Horizontal::Page),
+            "direction" => Some(Horizontal::Direction),
+            _ => None,
+        }
+    }
+
+    fn index(self) -> usize {
+        Horizontal::ALL
+            .iter()
+            .position(|&mode| mode == self)
+            .unwrap_or(0)
+    }
+
+    /// The word after the arrows in the wide bottom bar, which must say
+    /// what the keys actually do now that it depends on a setting.
+    fn legend_word(self) -> &'static str {
+        match self {
+            Horizontal::Speed => "Speed",
+            Horizontal::Letter => "Letter",
+            Horizontal::Page => "Page",
+            Horizontal::Direction => "Move",
+        }
+    }
+
+    /// The Help line for the stick's sideways travel, filled into HELP at
+    /// draw time because what it describes depends on this setting.
+    fn help_line(self) -> &'static str {
+        match self {
+            Horizontal::Speed => "Stick left/right: change speed or setting",
+            Horizontal::Letter => "Stick left/right: letter jump or setting",
+            Horizontal::Page => "Stick left/right: page jump or setting",
+            Horizontal::Direction => "Stick left/right: move or change setting",
+        }
+    }
+}
+
 /// How long a title sits still before it starts to walk, and how long the
 /// walk takes. Both are also written into the interface, which does the
 /// animation; these are here to say when to turn it round.
@@ -426,6 +505,59 @@ fn jump_target(entries: &[(char, bool)], key: char) -> Option<usize> {
         .or_else(|| entries.iter().position(|(first, _)| *first > key))
 }
 
+/// Where stepping a letter at a time lands: the first row of the next or
+/// previous run of rows sharing a first letter.
+///
+/// The runs are taken in the order the list shows them, not in an
+/// alphabet: folders sort before files, so the first letters climb twice,
+/// and a step that sorted them would jump between the two climbs. Past
+/// either end the step wraps to the run at the other end, the way a move
+/// from the edge of the list already does.
+///
+/// The caller guarantees a non-empty list and a selection inside it.
+fn letter_target(letters: &[char], selected: usize, delta: isize) -> usize {
+    let current = letters[selected];
+    if delta > 0 {
+        (selected + 1..letters.len())
+            .find(|&at| letters[at] != current)
+            .unwrap_or(0)
+    } else {
+        // Back over the rest of the current run, then over the whole of
+        // the run before it, to land on that run's first row.
+        let mut start = selected;
+        while start > 0 && letters[start - 1] == current {
+            start -= 1;
+        }
+        let end = if start == 0 {
+            letters.len() - 1
+        } else {
+            start - 1
+        };
+        let target = letters[end];
+        let mut at = end;
+        while at > 0 && letters[at - 1] == target {
+            at -= 1;
+        }
+        at
+    }
+}
+
+/// How far one press of up or down moves.
+///
+/// One row everywhere, except in a grid it depends on what left and right
+/// are doing. While they move the cursor sideways, up and down can step a
+/// whole visual row, which is how a grid reads. In every other mode they
+/// step one cover at a time, because left and right are spent on the
+/// setting and a whole-row step would leave the covers beside the
+/// selected one with no key that reaches them.
+fn vertical_step(grid: bool, direction_mode: bool, stride: usize) -> isize {
+    if grid && !direction_mode {
+        1
+    } else {
+        stride as isize
+    }
+}
+
 /// The path inside a row's written-down name.
 ///
 /// The name carries what kind of thing it is, because a folder and a game
@@ -554,6 +686,11 @@ fn menu_entries(browsing: Browsing, system: Option<&str>) -> Vec<String> {
     entries
 }
 
+/// Which HELP row describes the stick's sideways travel. What that row
+/// says depends on the Left and right setting, so it is filled in when
+/// the screen is drawn rather than written into the array.
+const HELP_LR_ROW: usize = 4;
+
 /// Kept to about forty characters a line: the narrowest screen this runs on
 /// is 352 pixels, and anything longer is silently cut off.
 const HELP: [&str; 10] = [
@@ -561,7 +698,8 @@ const HELP: [&str; 10] = [
     "buttons. No keyboard needed.",
     "",
     "Stick up/down: move through the list",
-    "Stick left/right: change speed or setting",
+    // HELP_LR_ROW: replaced at draw time by Horizontal::help_line().
+    "",
     "",
     "A                open a folder, play a game",
     "B                go back, out of a folder",
@@ -824,6 +962,8 @@ pub struct App {
     screen: Screen,
     browsing: Browsing,
     layout: Layout,
+    /// What left and right do while browsing.
+    horizontal: Horizontal,
     geometry: Geometry,
     width: u32,
     height: u32,
@@ -996,6 +1136,12 @@ impl App {
             .and_then(Layout::parse)
             .or_else(|| Layout::parse(&config.app.layout))
             .unwrap_or(Layout::Details);
+        let horizontal = settings
+            .left_right
+            .as_deref()
+            .and_then(Horizontal::parse)
+            .or_else(|| Horizontal::parse(&config.app.left_right))
+            .unwrap_or_default();
         // Margins are saved when changed and read back here. Without this the
         // Options screen would show the saved figure while the screen kept
         // the one from the config file, and the two would disagree.
@@ -1099,6 +1245,7 @@ impl App {
             screen: Screen::Splash,
             browsing: Browsing::Categories,
             layout,
+            horizontal,
             geometry,
             width,
             height,
@@ -1378,6 +1525,14 @@ impl App {
         SPEED_STEPS[self.speed.min(SPEED_STEPS.len() - 1)].1
     }
 
+    /// True while a held left or right should scroll: browsing in the
+    /// Direction setting, where the two keys are movement rather than a
+    /// ladder to step.
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    fn horizontal_scrolls(&self) -> bool {
+        self.screen == Screen::Browse && self.horizontal == Horizontal::Direction
+    }
+
     fn shift_x(&self) -> i32 {
         self.settings.shift_x.unwrap_or(0).clamp(-64, 64)
     }
@@ -1409,19 +1564,16 @@ impl App {
         self.dirty = true;
     }
 
-    /// How far up and down move.
-    ///
-    /// One row in a list, and one cover in a grid. A grid is read the way a
-    /// page is: along the row, then down to the start of the next. Moving a
-    /// whole row at a time would leave the covers beside this one with no
-    /// key that reaches them, since left and right are the scroll speed
-    /// here as they are everywhere else.
+    /// How far up and down move. The decision itself lives in
+    /// [`vertical_step`]: whether a grid steps one cover or a whole row
+    /// depends on whether left and right are free to reach the covers
+    /// either side of the selected one.
     fn browse_step(&self) -> isize {
-        if self.screen == Screen::Browse && self.layout.is_grid() {
-            1
-        } else {
-            self.active_list().stride() as isize
-        }
+        vertical_step(
+            self.screen == Screen::Browse && self.layout.is_grid(),
+            self.horizontal == Horizontal::Direction,
+            self.active_list().stride(),
+        )
     }
 
     /// A picture for a group: whichever system lent its logo this time, or
@@ -3028,6 +3180,11 @@ impl App {
                 self.remember_view();
                 self.apply_geometry();
             }
+            OptionId::LeftRight => {
+                let at = step(self.horizontal.index(), delta, Horizontal::ALL.len());
+                self.horizontal = Horizontal::ALL[at];
+                self.settings.left_right = Some(self.horizontal.label().to_string());
+            }
             OptionId::Font => {
                 self.font = self.font.next();
                 self.settings.font = Some(self.font.label().to_string());
@@ -3190,6 +3347,7 @@ impl App {
                 }
             }
             OptionId::Layout => capitalised(self.layout.label()),
+            OptionId::LeftRight => capitalised(self.horizontal.label()),
             OptionId::Font => capitalised(self.font.label()),
             OptionId::ShowArt => on_off(self.show_art),
             OptionId::ShowStats => on_off(self.show_stats),
@@ -3422,6 +3580,45 @@ impl App {
             }
             #[allow(unreachable_patterns)]
             _ => {}
+        }
+    }
+
+    /// Move to the previous or next run of rows sharing a first letter,
+    /// in whatever list is on screen, narrowed or not.
+    fn letter_step(&mut self, delta: isize) {
+        let letters: Vec<char> = match self.browsing {
+            Browsing::Games => self
+                .here
+                .iter()
+                .map(|row| first_letter(&row.sort_key))
+                .collect(),
+            Browsing::Systems => self
+                .systems
+                .iter()
+                .map(|system| first_letter(&system.name().to_lowercase()))
+                .collect(),
+            // The groups are a handful of fixed names; the letter grid
+            // does not offer them either.
+            Browsing::Categories => return,
+        };
+        if letters.is_empty() {
+            return;
+        }
+        let target = letter_target(&letters, self.active_list().selected(), delta);
+        if target != self.active_list().selected() {
+            self.active_list_mut().select(target);
+            self.touch_selection();
+        }
+    }
+
+    /// Move a screenful at a time. From the middle of the list this stops
+    /// at the ends and wraps only from them, which is the edge rule
+    /// [`ListState::move_items`] already applies to every move.
+    fn page_step(&mut self, delta: isize) {
+        let visible = self.active_list().visible() as isize;
+        if self.active_list_mut().move_items(delta * visible) {
+            self.skip_blank_menu(delta);
+            self.touch_selection();
         }
     }
 
@@ -3763,7 +3960,9 @@ impl App {
         // be typed through it and pressing A twice on an unlaunchable game
         // re-raises the message instead of looking stuck. Build progress is
         // the exception: it repaints its own text every frame and the
-        // controls stay live under it.
+        // controls stay live under it. The Left and right modes in the
+        // dispatch below depend on this return coming first: a press that
+        // dismisses a message must not also jump a letter or a page.
         if self.message.is_some() && self.build.is_none() {
             self.message = None;
             self.dirty = true;
@@ -3809,10 +4008,53 @@ impl App {
                 } else if self.screen == Screen::Context {
                     self.adjust_context(delta);
                 } else {
-                    self.speed = step(self.speed, delta, SPEED_STEPS.len());
-                    self.settings.speed_step = Some(self.speed);
-                    self.speed_shown_at = Some(Instant::now());
+                    // The Left and right setting applies only while
+                    // browsing. The other screens that fall through to
+                    // here, Menu, Help, About and the favourite folder
+                    // picker, keep changing the speed as they always have.
+                    let mode = if self.screen == Screen::Browse {
+                        self.horizontal
+                    } else {
+                        Horizontal::Speed
+                    };
+                    match mode {
+                        Horizontal::Speed => {
+                            self.speed = step(self.speed, delta, SPEED_STEPS.len());
+                            self.settings.speed_step = Some(self.speed);
+                            // The badge answers "what speed is it now".
+                            // The other modes move the list, which is its
+                            // own confirmation, so this is the only arm
+                            // that raises it.
+                            self.speed_shown_at = Some(Instant::now());
+                            self.dirty = true;
+                        }
+                        Horizontal::Letter => self.letter_step(delta),
+                        Horizontal::Page => self.page_step(delta),
+                        Horizontal::Direction => {
+                            if self.active_list_mut().move_items(delta) {
+                                self.touch_selection();
+                            }
+                        }
+                    }
+                }
+            }
+            Action::PageUp | Action::PageDown => {
+                // Keyboard only, and always a page whatever Left and right
+                // is set to: two keys named after the movement should not
+                // change meaning under a setting about the stick.
+                let delta = if matches!(action, Action::PageDown) {
+                    1
+                } else {
+                    -1
+                };
+                if self.screen == Screen::Find {
+                    // The letter grid has no pages. One cell is what these
+                    // keys moved when they shared the left and right
+                    // actions, and it stays.
+                    self.find_list.move_items(delta);
                     self.dirty = true;
+                } else {
+                    self.page_step(delta);
                 }
             }
             Action::Home => {
@@ -4261,7 +4503,12 @@ impl App {
             }
             Screen::Help => {
                 for index in range {
-                    rows.push(plain_row(HELP[index], ""));
+                    let line = if index == HELP_LR_ROW {
+                        self.horizontal.help_line()
+                    } else {
+                        HELP[index]
+                    };
+                    rows.push(plain_row(line, ""));
                 }
             }
         }
@@ -4365,6 +4612,10 @@ impl App {
             self.speed_shown_at
                 .is_some_and(|at| at.elapsed() < Duration::from_millis(Self::SPEED_BADGE_MS)),
         );
+        // Only the word travels to the interface; the arrows beside it are
+        // written in the .slint file so their glyphs get embedded.
+        self.ui
+            .set_lr_word(SharedString::from(self.horizontal.legend_word()));
 
         let list = self.active_list();
         let (heading, status) = match self.screen {
@@ -4481,6 +4732,13 @@ impl App {
 
             slint::platform::update_timers_and_animations();
 
+            // A held left or right scrolls only where it moves the cursor:
+            // while browsing in the Direction setting. Everywhere else,
+            // and in every other setting, one press stays one step. Decided
+            // before the presses so the first press of a hold is retained,
+            // and again before the repeats so a screen opened under a held
+            // stick stops the repeat instead of taking one more step there.
+            repeater.set_horizontal_repeats(self.horizontal_scrolls());
             for edge in input.poll() {
                 let action = match edge {
                     KeyEdge::Down(action) => repeater.press(action, now),
@@ -4496,6 +4754,7 @@ impl App {
                     }
                 }
             }
+            repeater.set_horizontal_repeats(self.horizontal_scrolls());
             for action in repeater.tick(now) {
                 if let Some(outcome) = self.handle(action) {
                     self.save_settings();
@@ -5138,6 +5397,101 @@ mod tests {
         for one in all {
             assert_eq!(Layout::parse(one.label()), Some(one));
         }
+    }
+
+    #[test]
+    fn every_left_right_mode_is_reachable_and_round_trips() {
+        // The option only ever steps through ALL, so a mode missing from
+        // it could never be chosen, and a label that does not parse back
+        // would silently reset the setting on the next start.
+        for (at, mode) in Horizontal::ALL.iter().copied().enumerate() {
+            assert_eq!(mode.index(), at);
+            assert_eq!(Horizontal::parse(mode.label()), Some(mode));
+        }
+        assert_eq!(Horizontal::parse("nonsense"), None);
+        assert_eq!(
+            Horizontal::default(),
+            Horizontal::Speed,
+            "nothing may change for anyone who does not go looking"
+        );
+    }
+
+    #[test]
+    fn the_stick_line_of_the_help_fits_every_mode() {
+        for mode in Horizontal::ALL {
+            let line = mode.help_line();
+            assert!(
+                line.starts_with("Stick left/right:"),
+                "the line must still say which control it explains: {line:?}"
+            );
+            // The narrowest screen this runs on is 352 pixels wide.
+            assert!(line.len() <= 46, "too long to fit: {line:?}");
+        }
+        assert_eq!(
+            HELP[HELP_LR_ROW], "",
+            "the row is filled in at draw time, not written twice"
+        );
+    }
+
+    #[test]
+    fn a_letter_step_lands_on_the_start_of_the_next_run() {
+        let letters = ['a', 'a', 'b', 'b', 'c'];
+        assert_eq!(letter_target(&letters, 0, 1), 2);
+        assert_eq!(letter_target(&letters, 1, 1), 2, "from inside a run too");
+        assert_eq!(letter_target(&letters, 2, 1), 4);
+    }
+
+    #[test]
+    fn a_letter_step_back_lands_on_the_start_of_the_previous_run() {
+        let letters = ['a', 'a', 'b', 'b', 'c'];
+        assert_eq!(letter_target(&letters, 4, -1), 2);
+        assert_eq!(
+            letter_target(&letters, 3, -1),
+            0,
+            "back from inside a run skips over its own start"
+        );
+        assert_eq!(letter_target(&letters, 2, -1), 0);
+    }
+
+    #[test]
+    fn a_letter_step_wraps_at_either_end_of_the_list() {
+        // The stick has no way to say "start again"; standing at an end
+        // and pressing on is unambiguous, like a move from the list edge.
+        let letters = ['a', 'b', 'b', 'c', 'c'];
+        assert_eq!(letter_target(&letters, 3, 1), 0);
+        assert_eq!(letter_target(&letters, 4, 1), 0);
+        assert_eq!(letter_target(&letters, 0, -1), 3);
+    }
+
+    #[test]
+    fn a_letter_step_follows_the_list_even_where_letters_climb_twice() {
+        // Folders sort before files, so first letters climb through the
+        // folders and again through the files. The step walks the list as
+        // it stands on screen rather than a merged alphabet.
+        let letters = ['a', 'c', 'a', 'b'];
+        assert_eq!(letter_target(&letters, 1, 1), 2);
+        assert_eq!(letter_target(&letters, 2, -1), 1);
+    }
+
+    #[test]
+    fn a_list_of_one_letter_steps_to_its_start_rather_than_spinning() {
+        let letters = ['m', 'm', 'm'];
+        assert_eq!(letter_target(&letters, 2, 1), 0);
+        assert_eq!(letter_target(&letters, 0, -1), 0);
+        assert_eq!(letter_target(&['x'], 0, 1), 0);
+    }
+
+    #[test]
+    fn a_grid_steps_one_cover_until_the_sideways_keys_are_free() {
+        // In every mode but Direction, left and right are spent on the
+        // setting, so a whole-row step would leave the covers beside the
+        // selected one unreachable. Direction frees them, and the grid
+        // can be driven the way a grid reads.
+        assert_eq!(vertical_step(true, false, 5), 1);
+        assert_eq!(vertical_step(true, true, 5), 5);
+        // A plain list moves a row at a time whatever the setting says.
+        assert_eq!(vertical_step(false, false, 1), 1);
+        assert_eq!(vertical_step(false, true, 1), 1);
     }
 
     #[test]

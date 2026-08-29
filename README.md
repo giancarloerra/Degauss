@@ -55,7 +55,7 @@ Source available, written in Rust and using Slint, and licensed for non-commerci
 | Control | Does |
 |---|---|
 | **up / down** | move through lists |
-| **left / right** | scroll speed, 0.5x to 12x. In a menu, change the setting |
+| **left / right** | scroll speed, 0.5x to 12x, or what the **Left and right** setting says: letter jumps, page jumps, or plain movement. In a menu, change the setting |
 | **A** (enter) | open a folder, launch a game |
 | **B** (escape) | back, out of the folder |
 | **X** (tab) | context menu: random game, random favourite, keep or drop a favourite, jump to letter, search, hide a row, rebuild this system, change view, etc. |
@@ -254,6 +254,7 @@ card.
 | Setting | Does |
 |---|---|
 | Scroll speed | How fast a held direction moves through the list |
+| Left and right | What left and right do while browsing: Speed (the default), Letter, Page or Direction. Direction frees up and down to move a whole row in Tiled |
 | Skip artwork faster than | Above this speed, pictures wait until the list stops |
 | Rebuild all system lists | Read the whole card again. Run it after adding games, cores or artwork; for one system, the contextual menu's **Rebuild this system** is quicker |
 | View | Details, Tiled, List or Carousel |

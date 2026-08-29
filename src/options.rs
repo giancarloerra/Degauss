@@ -14,6 +14,9 @@ use crate::input::SPEED_STEPS;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OptionId {
     Speed,
+    /// What left and right do while browsing: speed, letter, page or
+    /// direction.
+    LeftRight,
     /// The scroll speed above which artwork stops being loaded per row.
     ArtLimit,
     Layout,
@@ -51,8 +54,9 @@ pub enum OptionId {
 }
 
 /// What most people will ever want to change.
-pub const OPTIONS: [OptionId; 16] = [
+pub const OPTIONS: [OptionId; 17] = [
     OptionId::Speed,
+    OptionId::LeftRight,
     OptionId::ArtLimit,
     OptionId::RebuildCache,
     OptionId::Layout,
@@ -86,6 +90,7 @@ impl OptionId {
     pub fn label(self) -> &'static str {
         match self {
             OptionId::Speed => "Scroll speed",
+            OptionId::LeftRight => "Left and right",
             OptionId::ArtLimit => "Skip artwork faster than",
             OptionId::Layout => "View",
             OptionId::Font => "Text",
@@ -116,6 +121,9 @@ impl OptionId {
     pub fn help(self) -> &'static str {
         match self {
             OptionId::Speed => "How fast a held direction moves through the list.",
+            OptionId::LeftRight => {
+                "What left and right do in a folder. Direction lets up and down move a whole row in Tiled."
+            }
             OptionId::ArtLimit => {
                 "Above this scroll speed, pictures wait until the list stops moving."
             }
@@ -206,10 +214,12 @@ mod tests {
         // Options nobody uses push out the ones people do. Anything that
         // exists for measurement belongs behind Advanced.
         //
-        // Ten rows fit on screen, so the list already scrolls. Anything
-        // further belongs behind Advanced.
+        // Ten rows fit on screen, so the list already scrolls. The cap was
+        // moved from 16 to 17 deliberately when Left and right arrived: a
+        // browse control belongs beside Scroll speed, not behind Advanced.
+        // The next addition should go behind Advanced instead.
         assert!(
-            OPTIONS.len() <= 16,
+            OPTIONS.len() <= 17,
             "the main options list has grown to {}",
             OPTIONS.len()
         );

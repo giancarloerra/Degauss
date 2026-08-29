@@ -236,6 +236,10 @@ export component DegaussWindow inherits Window {
     /// Shown for a moment after it changes, then gone again.
     in property <string> speed-badge;
     in property <bool> speed-visible;
+    /// The word after the arrows in the wide legend: what left and right
+    /// do while browsing. Only the word comes from Rust; the arrows must
+    /// stay written in this file or their glyphs are never embedded.
+    in property <string> lr-word: "Speed";
     in property <bool> wide-bar;
     in property <bool> show-bar;
     /// True on the master list, which is short enough to look stranded
@@ -719,7 +723,9 @@ export component DegaussWindow inherits Window {
             // One literal per form, because the glyphs that end up in the
             // binary are the ones the compiler finds written here. A string
             // built in Rust can ask for an arrow that was never embedded,
-            // and a missing glyph draws nothing at all.
+            // and a missing glyph draws nothing at all. The word spliced in
+            // after the arrows is safe: it is plain ASCII, which every
+            // other literal already embeds.
             Text {
                 text: root.show-stats
                     ? root.stats
@@ -732,7 +738,7 @@ export component DegaussWindow inherits Window {
                             ? "\u{2191}\u{2193} Choose   \u{2190}\u{2192} Change   A Select   B Back"
                             : "\u{2190}\u{2192} Change  A Select  B Back")
                         : (root.wide-bar
-                            ? "\u{2191}\u{2193} Choose   \u{2190}\u{2192} Speed   A Select   B Back   X This folder   Y Menu"
+                            ? "\u{2191}\u{2193} Choose   \u{2190}\u{2192} " + root.lr-word + "   A Select   B Back   X This folder   Y Menu"
                             : "A Select  B Back  X Folder  Y Menu");
                 color: root.show-stats ? root.c-state : root.c-text-dim;
                 font-size: root.bar-glyph;

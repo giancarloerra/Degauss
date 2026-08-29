@@ -41,6 +41,19 @@ art_limit = 3
 # Which view to open in: details, tiled, list or carousel.
 layout = "details"
 
+# What left and right do while browsing: speed, letter, page or direction.
+#
+# speed changes the scroll speed, exactly as before. letter jumps to the
+# previous or next first letter in the folder. page moves a screenful at a
+# time. direction moves the selection itself, and in the Tiled view frees
+# up and down to move a whole row.
+#
+# Left commented out on purpose: versions of Degauss from before this key
+# existed refuse settings they do not know, so an active line here would
+# stop an older build from starting after a downgrade. Change it from the
+# Options screen instead, which writes it to settings.toml.
+#left_right = "speed"
+
 # Which typeface to set the interface in.
 #
 # smooth is DejaVu Sans, anti-aliased. pixel is Px437 DOS/V re. JPN12, drawn

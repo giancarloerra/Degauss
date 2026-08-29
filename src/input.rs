@@ -43,6 +43,11 @@ pub enum Action {
     /// matters, because the question is how fast the list can move before it
     /// stops looking smooth.
     Faster,
+    /// A screenful back. Keyboard only, and always a page whatever the
+    /// Left and right setting makes of the stick.
+    PageUp,
+    /// A screenful on.
+    PageDown,
     Home,
     End,
     /// Launch the selected entry.
@@ -60,9 +65,11 @@ pub enum Action {
 }
 
 impl Action {
-    /// Whether holding the key should repeat. Only movement repeats:
+    /// Whether holding the key always repeats. Only movement repeats:
     /// repeating "launch" would be dangerous, and repeating a speed change
-    /// would run the whole ladder off one press.
+    /// would run the whole ladder off one press. Left and right join in
+    /// only through the [`Repeater`]'s own flag, while the Direction
+    /// setting turns them into movement too.
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     fn repeats(self) -> bool {
         matches!(self, Action::Up | Action::Down)
@@ -124,6 +131,11 @@ struct Held {
 pub struct Repeater {
     config: RepeatConfig,
     held: Vec<Held>,
+    /// Whether holding left or right repeats. In the Direction setting
+    /// they move the cursor, and a held stick should scroll the way a held
+    /// up or down does. In every other setting they step a ladder or a
+    /// choice, where one press must mean one step.
+    horizontal_repeats: bool,
 }
 
 impl Repeater {
@@ -131,6 +143,21 @@ impl Repeater {
         Repeater {
             config,
             held: Vec::new(),
+            horizontal_repeats: false,
+        }
+    }
+
+    /// Turn held-key repeat for left and right on or off. Turning it off
+    /// also drops either of them if it is held right now, so a key pressed
+    /// while browsing cannot keep firing into a screen opened under it.
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    pub fn set_horizontal_repeats(&mut self, enabled: bool) {
+        if self.horizontal_repeats == enabled {
+            return;
+        }
+        self.horizontal_repeats = enabled;
+        if !enabled {
+            self.held.retain(|held| held.action.repeats());
         }
     }
 
@@ -152,7 +179,9 @@ impl Repeater {
         if self.held.iter().any(|h| h.action == action) {
             return None;
         }
-        if action.repeats() {
+        let repeats = action.repeats()
+            || (self.horizontal_repeats && matches!(action, Action::Slower | Action::Faster));
+        if repeats {
             self.held.push(Held {
                 action,
                 pressed_at: now,
@@ -219,11 +248,14 @@ pub fn action_for_key(code: u16) -> Option<Action> {
     Some(match code {
         KEY_UP => Action::Up,
         KEY_DOWN => Action::Down,
-        // Left and right change the SCROLL SPEED rather than jumping a
-        // page. Paging is not what is being tested: the question is how
-        // fast a continuous scroll can run and still look smooth.
-        KEY_LEFT | KEY_PAGEUP => Action::Slower,
-        KEY_RIGHT | KEY_PAGEDOWN => Action::Faster,
+        // Left and right change the scroll speed unless the Left and right
+        // setting says otherwise. PageUp and PageDown are their own
+        // actions rather than aliases of these, so a keyboard keeps two
+        // keys that always page whatever the stick is set to do.
+        KEY_LEFT => Action::Slower,
+        KEY_RIGHT => Action::Faster,
+        KEY_PAGEUP => Action::PageUp,
+        KEY_PAGEDOWN => Action::PageDown,
         KEY_HOME => Action::Home,
         KEY_END => Action::End,
         KEY_ENTER | KEY_KPENTER => Action::Accept,
@@ -697,6 +729,16 @@ mod tests {
         assert_eq!(action_for_key(108), Some(Action::Down));
         assert_eq!(action_for_key(105), Some(Action::Slower));
         assert_eq!(action_for_key(106), Some(Action::Faster));
+        assert_eq!(
+            action_for_key(104),
+            Some(Action::PageUp),
+            "PageUp pages on its own, not as an alias of left"
+        );
+        assert_eq!(
+            action_for_key(109),
+            Some(Action::PageDown),
+            "PageDown pages on its own, not as an alias of right"
+        );
         assert_eq!(action_for_key(28), Some(Action::Accept));
         assert_eq!(action_for_key(1), Some(Action::Quit));
         assert_eq!(
@@ -771,6 +813,46 @@ mod tests {
         let t0 = Instant::now();
         assert_eq!(repeater.press(Action::Faster, t0), Some(Action::Faster));
         assert!(repeater.tick(t0 + Duration::from_secs(1)).is_empty());
+    }
+
+    #[test]
+    fn left_and_right_repeat_while_held_only_when_they_move_the_cursor() {
+        // In the Direction setting a held left or right is a scroll, and
+        // must repeat the way a held up or down does.
+        let mut repeater = Repeater::new(RepeatConfig {
+            delay: Duration::from_millis(10),
+            interval: Duration::from_millis(10),
+        });
+        let t0 = Instant::now();
+        repeater.set_horizontal_repeats(true);
+        assert_eq!(repeater.press(Action::Faster, t0), Some(Action::Faster));
+        assert_eq!(
+            repeater.tick(t0 + Duration::from_millis(10)),
+            vec![Action::Faster],
+            "a held right must keep scrolling"
+        );
+        repeater.release(Action::Faster);
+        assert!(repeater.tick(t0 + Duration::from_secs(1)).is_empty());
+    }
+
+    #[test]
+    fn turning_horizontal_repeat_off_drops_a_left_or_right_still_held() {
+        // Leaving the browse screen with the stick held must not keep
+        // firing speed changes into whatever screen opened under it.
+        let mut repeater = Repeater::new(RepeatConfig {
+            delay: Duration::from_millis(10),
+            interval: Duration::from_millis(10),
+        });
+        let t0 = Instant::now();
+        repeater.set_horizontal_repeats(true);
+        repeater.press(Action::Slower, t0);
+        repeater.press(Action::Down, t0);
+        repeater.set_horizontal_repeats(false);
+        assert_eq!(
+            repeater.tick(t0 + Duration::from_millis(10)),
+            vec![Action::Down],
+            "only the key that always repeats may keep firing"
+        );
     }
 
     #[test]

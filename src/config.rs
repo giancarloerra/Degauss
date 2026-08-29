@@ -224,6 +224,16 @@ pub struct AppSettings {
     /// Which view to open in: "details", "tiled", "list" or "carousel".
     #[serde(default = "default_layout")]
     pub layout: String,
+    /// What left and right do while browsing: "speed", "letter", "page" or
+    /// "direction".
+    ///
+    /// The shipped degauss.toml documents this key as a commented line
+    /// rather than an active one: `[app]` rejects keys it does not know,
+    /// so an active key that older versions never heard of would stop
+    /// them from starting after a downgrade. The live value is written to
+    /// settings.toml by the Options screen, which tolerates unknown keys.
+    #[serde(default = "default_left_right")]
+    pub left_right: String,
     /// Which typeface to set the interface in: "smooth" or "pixel".
     #[serde(default = "default_font")]
     pub font: String,
@@ -242,6 +252,10 @@ pub struct AppSettings {
 
 fn default_layout() -> String {
     "details".to_string()
+}
+
+fn default_left_right() -> String {
+    "speed".to_string()
 }
 
 fn default_font() -> String {
@@ -361,6 +375,7 @@ favorite = "#fe2e1d"
         assert_eq!(config.colors.accent, Color::new(0xff, 0xcd, 0x09));
         assert_eq!(config.app.cover_size, 160, "defaults fill in");
         assert_eq!(config.app.layout, "details");
+        assert_eq!(config.app.left_right, "speed");
         assert_eq!(config.app.font, "smooth");
         assert!(
             config.game_roots.iter().any(|r| r == "/media/fat/games"),
