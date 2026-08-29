@@ -123,6 +123,7 @@ so the files land here:
 /media/fat/Scripts/.config/degauss/degauss.toml
 /media/fat/Scripts/.config/degauss/systems.toml
 /media/fat/Scripts/.config/degauss/logos/
+/media/fat/Scripts/.config/degauss/themes/
 ```
 
 ### Upgrading from an earlier release
@@ -318,6 +319,19 @@ from `degauss.toml` pastes in unchanged. A theme overlays your
 more key, `logo`, at the top level, draws the wordmark as a flat
 silhouette in that colour; leave it out and the wordmark keeps its own
 three colours.
+
+A complete theme can be three lines. `themes/Night.toml`:
+
+```toml
+background = "#101318"
+accent = "#33FF33"
+logo = "#33FF33"
+```
+
+picks a darker ground, a green selection bar and a green wordmark, and
+every other colour shows through from your `[colors]`. Copying the whole
+`[colors]` block out of `degauss.toml` and pasting it in, header and
+all, is also a valid theme, ready to be edited.
 
 Three themes ship as starting points: `Amber` after the amber phosphor,
 `Mono`, the standard greys with the colour taken out, and `Blue-Orange`,

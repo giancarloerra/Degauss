@@ -459,6 +459,13 @@ fn check_install(config_path: &Path) -> Result<()> {
         Some(n) => println!("logos        {n} files"),
         None => println!("logos        no folder (names are drawn instead)"),
     }
+    let themes = theme::load(&dir.join("themes"));
+    println!("themes       {} loaded", themes.themes.len());
+    for problem in &themes.problems {
+        println!("             {problem}");
+        problems.push(format!("a theme did not load: {problem}"));
+    }
+
     let mut missing_licences: Vec<&str> = Vec::new();
     for lic in [
         "LICENSE",
