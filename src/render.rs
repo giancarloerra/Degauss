@@ -223,6 +223,16 @@ impl Presenter {
         }
     }
 
+    /// Draw the next frame in full, whether or not anything is dirty. A
+    /// theme change recolours pixels partial rendering considers untouched,
+    /// so the difference against the previous frame is not the truth of
+    /// what changed.
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    pub fn force_repaint(&mut self, window: &MinimalSoftwareWindow) {
+        self.force_full = true;
+        window.request_redraw();
+    }
+
     /// Draw a frame if one is needed. `Ok(None)` means Slint decided nothing
     /// changed, which is not an error and not a frame.
     pub fn draw(
@@ -412,6 +422,21 @@ mod tests {
         assert!(
             work.dirty_pixels > 0,
             "a full redraw must report dirty pixels"
+        );
+
+        // A theme change recolours pixels no property change touched, so
+        // the presenter can be told to draw the next frame in full. Nothing
+        // about the window changed here: without the forced repaint there
+        // would be no frame at all, let alone a complete one.
+        staged.force_repaint(&window);
+        let work = staged
+            .draw(&window, &mut staged_surface)
+            .expect("forced frame renders")
+            .expect("a forced repaint must produce a frame");
+        assert_eq!(
+            work.dirty_pixels,
+            8 * 4,
+            "a forced repaint must cover every pixel on the screen"
         );
     }
 }

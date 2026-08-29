@@ -55,6 +55,9 @@ def url_for(card_path, tag):
     if card_path.startswith("Scripts/.config/degauss/logos/"):
         name = os.path.basename(card_path)
         return f"https://raw.githubusercontent.com/{OWNER}/{REPO}/{quoted(tag)}/assets/logos/{quoted(name)}"
+    if card_path.startswith("Scripts/.config/degauss/themes/"):
+        name = os.path.basename(card_path)
+        return f"https://raw.githubusercontent.com/{OWNER}/{REPO}/{quoted(tag)}/assets/themes/{quoted(name)}"
     known = REPO_SOURCED
     if card_path not in known:
         # Loudly, because a file nobody can fetch would install as a silent
@@ -93,6 +96,8 @@ def main():
             real_path = REPO_SOURCED[card_path]
         elif card_path.startswith("Scripts/.config/degauss/logos/"):
             real_path = os.path.join("assets/logos", os.path.basename(card_path))
+        elif card_path.startswith("Scripts/.config/degauss/themes/"):
+            real_path = os.path.join("assets/themes", os.path.basename(card_path))
         files[card_path] = {
             "hash": md5(real_path),
             "size": os.path.getsize(real_path),

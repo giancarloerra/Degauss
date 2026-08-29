@@ -11,6 +11,9 @@
 # Staged for the card at build time from assets/logos; not committed twice.
 /deploy/Scripts/.config/degauss/logos/
 
+# The same for the shipped themes, staged from assets/themes.
+/deploy/Scripts/.config/degauss/themes/
+
 # Local working directory, not part of the project.
 /internal/
 

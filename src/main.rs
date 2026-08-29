@@ -27,6 +27,7 @@ mod state;
 mod status;
 mod surface;
 mod systems;
+mod theme;
 mod zip;
 
 use std::path::{Path, PathBuf};
@@ -326,6 +327,11 @@ fn load_everything(args: &Args) -> Result<Loaded> {
     let roots: Vec<PathBuf> = config.game_roots.iter().map(PathBuf::from).collect();
     // Logos live beside the configuration, named after the system.
     let logo_dir = config_path.parent().map(|dir| dir.join("logos"));
+    // Themes too, so wherever the configuration goes, its themes follow.
+    let themes = config_path
+        .parent()
+        .map(|dir| theme::load(&dir.join("themes")))
+        .unwrap_or_default();
     // Which group each system belongs to comes from where its core
     // actually is on this card, not from what the table guessed.
     let cores = systems::CoreIndex::read(Path::new(&config.menu_root));
@@ -342,6 +348,7 @@ fn load_everything(args: &Args) -> Result<Loaded> {
         names,
         table,
         logo_dir,
+        themes,
     })
 }
 

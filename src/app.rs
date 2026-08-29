@@ -32,7 +32,7 @@ use slint::platform::software_renderer::MinimalSoftwareWindow;
 use slint::{ComponentHandle, ModelRc, SharedPixelBuffer, SharedString, VecModel};
 
 use crate::browse::{self, Library, Place};
-use crate::config::{Color as ConfigColor, Config, SystemConfig};
+use crate::config::{Color as ConfigColor, Colors, Config, SystemConfig};
 use crate::covers::{CoverCache, CoverStats};
 use crate::error::Result;
 use crate::font::Font;
@@ -46,6 +46,7 @@ use crate::render::{FrameWork, PresentMode, Presenter};
 use crate::settings::Settings;
 use crate::surface::Surface;
 use crate::systems::{FoundSystem, SystemDef};
+use crate::theme::{Theme, ThemeSet};
 use crate::{DegaussWindow, DetailLine, Row};
 
 /// Which screen is in front.
@@ -922,6 +923,28 @@ fn to_slint(color: ConfigColor) -> slint::Color {
     slint::Color::from_rgb_u8(color.r, color.g, color.b)
 }
 
+/// Push a palette into every Slint colour property, and tint the wordmark
+/// while at it: the two travel together, or the wordmark would keep a
+/// theme's colour after the theme went away.
+fn push_palette(ui: &DegaussWindow, palette: &Colors, logo: Option<ConfigColor>) {
+    ui.set_c_background(to_slint(palette.background));
+    ui.set_c_panel(to_slint(palette.panel));
+    ui.set_c_bar(to_slint(palette.bar));
+    ui.set_c_surface(to_slint(palette.surface));
+    ui.set_c_text(to_slint(palette.text));
+    ui.set_c_text_dim(to_slint(palette.text_dim));
+    ui.set_c_accent(to_slint(palette.accent));
+    ui.set_c_accent_text(to_slint(palette.accent_text));
+    ui.set_c_state(to_slint(palette.state));
+    ui.set_c_favorite(to_slint(palette.favorite));
+    // Transparent is the software renderer's own word for "leave the
+    // picture's colours alone", so no theme means the original wordmark.
+    ui.set_logo_tint(match logo {
+        Some(color) => to_slint(color),
+        None => slint::Color::from_argb_u8(0, 0, 0, 0),
+    });
+}
+
 fn to_image(image: &crate::covers::RgbImage) -> slint::Image {
     let mut buffer = SharedPixelBuffer::<slint::Rgb8Pixel>::new(image.width, image.height);
     buffer.make_mut_bytes().copy_from_slice(&image.rgb);
@@ -1021,6 +1044,16 @@ pub struct App {
     favorites_first: bool,
     /// The typeface everything is set in.
     font: Font,
+    /// The themes the folder held at startup, in the order the Options row
+    /// cycles them.
+    themes: Vec<Theme>,
+    /// Which of them is on, as an index into `themes`. [`None`] is the
+    /// standard palette: the `[colors]` block the user configured.
+    active_theme: Option<usize>,
+    /// Set when the next frame must cover the whole screen. A theme change
+    /// recolours pixels no property change touches, so the usual partial
+    /// redraw would leave stale colour anywhere Slint saw nothing move.
+    pending_full_repaint: bool,
     random_launches: bool,
     /// Whether folders come after the games rather than before them.
     folders_last: bool,
@@ -1118,6 +1151,9 @@ pub struct Loaded {
     pub table: Vec<SystemDef>,
     /// Where system logos live, for the same second look.
     pub logo_dir: Option<PathBuf>,
+    /// What the themes folder held, with a line for each file that did
+    /// not load.
+    pub themes: ThemeSet,
 }
 
 impl App {
@@ -1141,7 +1177,30 @@ impl App {
             names,
             table,
             logo_dir,
+            themes,
         } = loaded;
+        let ThemeSet {
+            themes,
+            problems: mut theme_problems,
+        } = themes;
+        // The saved theme is looked up by name. A name the folder no longer
+        // answers to, whatever the reason, falls back to the standard
+        // palette with a line saying so: silently picking another theme
+        // would repaint the screen in colours nobody chose. The name stays
+        // in settings.toml untouched, so putting the file back is enough.
+        let active_theme = match settings.theme.as_deref() {
+            None => None,
+            Some(name) => {
+                let found = themes.iter().position(|theme| theme.name == name);
+                if found.is_none() {
+                    // "Did not load" rather than "is missing": the file may
+                    // be there and broken, in which case the folder's own
+                    // problem line above this one says what is wrong.
+                    theme_problems.push(format!("Theme {name} did not load; using standard."));
+                }
+                found
+            }
+        };
         let layout = settings
             .layout
             .as_deref()
@@ -1177,17 +1236,15 @@ impl App {
         let rows = Rc::new(VecModel::from(Vec::<Row>::new()));
         ui.set_rows(ModelRc::from(rows.clone()));
 
-        let palette = &config.colors;
-        ui.set_c_background(to_slint(palette.background));
-        ui.set_c_panel(to_slint(palette.panel));
-        ui.set_c_bar(to_slint(palette.bar));
-        ui.set_c_surface(to_slint(palette.surface));
-        ui.set_c_text(to_slint(palette.text));
-        ui.set_c_text_dim(to_slint(palette.text_dim));
-        ui.set_c_accent(to_slint(palette.accent));
-        ui.set_c_accent_text(to_slint(palette.accent_text));
-        ui.set_c_state(to_slint(palette.state));
-        ui.set_c_favorite(to_slint(palette.favorite));
+        // Applied over the user's configured colours, so the splash is
+        // already in the saved theme rather than flashing the base palette
+        // for a frame.
+        let palette = match active_theme {
+            Some(at) => themes[at].file.apply(&config.colors),
+            None => config.colors.clone(),
+        };
+        let logo = active_theme.and_then(|at| themes[at].file.logo);
+        push_palette(&ui, &palette, logo);
 
         let cover_size = config.app.cover_size.max(width.max(height) / 2);
         // Artwork with transparency is composited onto the colour it is
@@ -1223,6 +1280,9 @@ impl App {
                 .and_then(Font::parse)
                 .or_else(|| Font::parse(&config.app.font))
                 .unwrap_or_default(),
+            themes,
+            active_theme,
+            pending_full_repaint: false,
             random_launches: settings.random_launches.unwrap_or(false),
             folders_last: settings.folders_last.unwrap_or(false),
             opened_config: None,
@@ -1330,6 +1390,11 @@ impl App {
             }));
         app.ui.set_about_copyright(SharedString::from(COPYRIGHT));
         app.ui.set_about_licence(SharedString::from(LICENCE));
+        // A theme file that did not load, or a saved theme that is gone, is
+        // said out loud on the first screen. Any press takes it down.
+        if !theme_problems.is_empty() {
+            app.message = Some(theme_problems.join("\n"));
+        }
         app.apply_geometry();
         app
     }
@@ -3173,6 +3238,48 @@ impl App {
         self.touch_selection();
     }
 
+    /// The palette on screen: the active theme laid over the `[colors]`
+    /// the user configured. Always the base underneath, never the previous
+    /// theme, so cycling forward and back lands exactly where it started.
+    fn effective_palette(&self) -> Colors {
+        match self.active_theme {
+            Some(at) => self.themes[at].file.apply(&self.config.colors),
+            None => self.config.colors.clone(),
+        }
+    }
+
+    /// Where the Theme row stands in its ring: standard first, then the
+    /// themes in folder order.
+    fn theme_position(&self) -> usize {
+        self.active_theme.map_or(0, |at| at + 1)
+    }
+
+    /// A cover cache with nothing in it, composited against the surface
+    /// colour that is actually on screen.
+    fn fresh_cover_cache(&self) -> CoverCache {
+        let palette = self.effective_palette();
+        CoverCache::new(
+            self.config
+                .app
+                .cover_size
+                .max(self.width.max(self.height) / 2),
+            self.config.app.art_cache.max(8),
+            [palette.surface.r, palette.surface.g, palette.surface.b],
+        )
+    }
+
+    /// Put the effective palette everywhere colour lives: the Slint
+    /// properties, the wordmark tint, and the cover cache, whose decoded
+    /// pictures were composited against the old surface colour and would
+    /// keep it in their corners until evicted.
+    fn apply_palette(&mut self) {
+        let palette = self.effective_palette();
+        let logo = self.active_theme.and_then(|at| self.themes[at].file.logo);
+        push_palette(&self.ui, &palette, logo);
+        self.covers = self.fresh_cover_cache();
+        self.touch_selection();
+    }
+
     fn adjust_option(&mut self, delta: isize) {
         let list = self.option_ids();
         let selected = self.active_list().selected();
@@ -3205,6 +3312,17 @@ impl App {
                 // Nothing about the layout moves, but every glyph on the
                 // screen is now a different one.
                 self.apply_geometry();
+            }
+            OptionId::Theme => {
+                // One ring: standard, then the folder in name order.
+                let at = step(self.theme_position(), delta, self.themes.len() + 1);
+                self.active_theme = at.checked_sub(1);
+                self.settings.theme = self.active_theme.map(|at| self.themes[at].name.clone());
+                self.apply_palette();
+                // Colour lives in corners no ordinary frame touches, so
+                // the whole screen is drawn again rather than only what
+                // Slint saw change.
+                self.pending_full_repaint = true;
             }
             OptionId::ShowArt => {
                 self.show_art = !self.show_art;
@@ -3363,6 +3481,12 @@ impl App {
             OptionId::Layout => capitalised(self.layout.label()),
             OptionId::LeftRight => self.horizontal.shown().to_string(),
             OptionId::Font => capitalised(self.font.label()),
+            // The names are file names, shown as the user wrote them; only
+            // the built-in state has a word of its own.
+            OptionId::Theme => match self.active_theme {
+                Some(at) => self.themes[at].name.clone(),
+                None => "standard".to_string(),
+            },
             OptionId::ShowArt => on_off(self.show_art),
             OptionId::ShowStats => on_off(self.show_stats),
             OptionId::Present => capitalised(self.present_label),
@@ -3469,6 +3593,12 @@ impl App {
             Screen::Menu | Screen::Context => {
                 self.screen = Screen::Browse;
                 self.apply_geometry();
+                // Asked for again on the way back in: a theme change in
+                // Options rebuilt the cover cache while a menu screen was
+                // up, and load_art drops the pending ask on screens that
+                // show no artwork, so without this the details panel would
+                // keep a picture composited against the old surface colour.
+                self.touch_selection();
             }
             Screen::Browse => match self.browsing {
                 Browsing::Games => {
@@ -4821,6 +4951,15 @@ impl App {
                 self.dirty = true;
             }
 
+            // A theme change asked for the whole screen, the same way a
+            // drawing-path switch does: through the presenter, which is
+            // only reachable from here.
+            if self.pending_full_repaint {
+                self.pending_full_repaint = false;
+                presenter.force_repaint(&self.window);
+                self.dirty = true;
+            }
+
             // Timed from here: fetching artwork and building rows happen on
             // the way to a frame, and timing only the draw would report fast
             // frames while the screen visibly hitched.
@@ -4934,18 +5073,7 @@ impl App {
         frames: u32,
     ) -> Result<BenchReport> {
         self.active_list_mut().go_first();
-        self.covers = CoverCache::new(
-            self.config
-                .app
-                .cover_size
-                .max(self.width.max(self.height) / 2),
-            self.config.app.art_cache.max(8),
-            [
-                self.config.colors.surface.r,
-                self.config.colors.surface.g,
-                self.config.colors.surface.b,
-            ],
-        );
+        self.covers = self.fresh_cover_cache();
         self.timer = FrameTimer::new();
         self.art = ArtStats::default();
         self.dirty = true;
@@ -5225,8 +5353,6 @@ fn capitalised(value: &str) -> String {
     }
 }
 
-/// Move along a list of choices without wrapping: running off either end
-/// should stop, not jump to the other extreme.
 /// Move through a setting's choices, round the ends.
 ///
 /// A setting that stops at its last choice can only be walked one way, and
