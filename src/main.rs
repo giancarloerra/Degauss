@@ -60,6 +60,8 @@ degauss - a fast game browser for MiSTer FPGA
   --report            read one system, print what was found, and exit
   --audit             read every system and print a table of games and
                       artwork, so nothing has to be checked by hand
+  --check-install     look over the installation itself and report what is
+                      present, missing or half-migrated, then exit
   --dry-run-launch    print the MGL that would launch the first game, and exit
   --import-favorites <file>
                       write a favourite for each line of a list, in the
@@ -126,6 +128,7 @@ struct Args {
     list_systems: bool,
     report: bool,
     audit: bool,
+    check_install: bool,
     dry_run_launch: bool,
     render: Option<PathBuf>,
     bench: Option<u32>,
@@ -154,6 +157,7 @@ impl Default for Args {
             list_systems: false,
             report: false,
             audit: false,
+            check_install: false,
             dry_run_launch: false,
             render: None,
             bench: None,
@@ -185,6 +189,7 @@ fn parse_from<I: Iterator<Item = String>>(argv: I) -> std::result::Result<Option
             "--help" | "-h" => return Ok(None),
             "--report" => args.report = true,
             "--audit" => args.audit = true,
+            "--check-install" => args.check_install = true,
             "--list-systems" => args.list_systems = true,
             "--dry-run-launch" => args.dry_run_launch = true,
             "--selftest" => args.selftest = Some(DEFAULT_SELFTEST_FRAMES),
@@ -338,6 +343,187 @@ fn load_everything(args: &Args) -> Result<Loaded> {
     })
 }
 
+/// Look over the installation itself: what is present, what is missing,
+/// what a half-finished upgrade left behind. Reads everything, loads
+/// nothing into a UI, refuses nothing: the whole point is to keep working
+/// on the installation that does not come up.
+fn check_install(config_path: &Path) -> Result<()> {
+    let dir = config_path.parent().unwrap_or(Path::new(".")).to_path_buf();
+    let mut problems: Vec<String> = Vec::new();
+
+    println!("build        {}", build_description());
+    println!("folder       {}", dir.display());
+
+    let binary = dir.join("degauss");
+    match std::fs::metadata(&binary) {
+        Ok(meta) => {
+            #[cfg(unix)]
+            let runnable = {
+                use std::os::unix::fs::PermissionsExt;
+                meta.permissions().mode() & 0o111 != 0
+            };
+            #[cfg(not(unix))]
+            let runnable = true;
+            if runnable {
+                println!("binary       present, {} bytes", meta.len());
+            } else {
+                println!("binary       PRESENT BUT NOT EXECUTABLE");
+                problems.push("the binary is not executable: chmod +x it".into());
+            }
+        }
+        Err(_) => {
+            println!("binary       MISSING");
+            problems.push("no binary in the folder: the install did not finish".into());
+        }
+    }
+
+    match std::fs::read_to_string(config_path) {
+        Ok(text) => match Config::parse(&text, config_path) {
+            Ok(_) => println!("degauss.toml present, parses"),
+            Err(e) => {
+                println!("degauss.toml PRESENT BUT BROKEN");
+                problems.push(format!("degauss.toml does not parse: {e}"));
+            }
+        },
+        Err(_) => {
+            println!("degauss.toml MISSING");
+            problems.push("degauss.toml is missing: Degauss will not start without it".into());
+        }
+    }
+
+    let systems_path = dir.join("systems.toml");
+    match std::fs::read_to_string(&systems_path) {
+        Ok(text) => match systems::parse_table(&text, &systems_path) {
+            Ok(table) => println!("systems.toml present, parses, {} systems", table.len()),
+            Err(e) => {
+                println!("systems.toml PRESENT BUT BROKEN");
+                problems.push(format!("systems.toml does not parse: {e}"));
+            }
+        },
+        Err(_) => {
+            println!("systems.toml MISSING");
+            problems.push("systems.toml is missing: Degauss will not start without it".into());
+        }
+    }
+
+    let settings_path = dir.join("settings.toml");
+    match Settings::load(&settings_path) {
+        Ok(_) => {
+            if settings_path.exists() {
+                println!("settings     present, parses");
+            } else {
+                println!("settings     none yet (fresh defaults)");
+            }
+        }
+        Err(e) => {
+            println!("settings     PRESENT BUT BROKEN");
+            problems.push(format!("settings.toml does not parse: {e}"));
+        }
+    }
+
+    // State cannot fail by design: a broken file reads as a fresh one.
+    let state_path = dir.join("state.toml");
+    println!(
+        "state        {}",
+        if state_path.exists() {
+            "present"
+        } else {
+            "none yet"
+        }
+    );
+
+    let cache_dir = cache::dir_for(&settings_path);
+    match cache::load_index(&cache_dir) {
+        Some(index) => println!(
+            "cache        index present, {} systems written down",
+            index.systems.len()
+        ),
+        None => println!("cache        none yet (built on the first run, or after Rebuild)"),
+    }
+
+    let count_files = |sub: &str| -> Option<usize> {
+        std::fs::read_dir(dir.join(sub))
+            .ok()
+            .map(|entries| entries.filter_map(|e| e.ok()).count())
+    };
+    match count_files("logos") {
+        Some(n) => println!("logos        {n} files"),
+        None => println!("logos        no folder (names are drawn instead)"),
+    }
+    let mut missing_licences: Vec<&str> = Vec::new();
+    for lic in [
+        "LICENSE",
+        "DejaVuSans-LICENSE.txt",
+        "Px437-LICENSE.txt",
+        "RobotoCondensed-LICENSE.txt",
+        "Tamzen-LICENSE.txt",
+    ] {
+        if !dir.join(lic).exists() {
+            missing_licences.push(lic);
+        }
+    }
+    if missing_licences.is_empty() {
+        println!("licences     all 5 present");
+    } else {
+        println!("licences     missing: {}", missing_licences.join(" "));
+    }
+
+    // The folder releases before this one installed to. Present means the
+    // migration in degauss.sh has not finished, and the files in it are
+    // the user's answers about what went wrong.
+    let old = dir
+        .parent()
+        .and_then(Path::parent)
+        .map(|scripts| scripts.join(".degauss"));
+    match old {
+        Some(old) if old.is_dir() => {
+            let names: Vec<String> = std::fs::read_dir(&old)
+                .map(|entries| {
+                    entries
+                        .filter_map(|e| e.ok())
+                        .map(|e| e.file_name().to_string_lossy().into_owned())
+                        .collect()
+                })
+                .unwrap_or_default();
+            println!(
+                "old folder   {} STILL PRESENT: {}",
+                old.display(),
+                names.join(" ")
+            );
+            problems.push(
+                "the old folder has not migrated: start Degauss once from the Scripts menu and read its console line"
+                    .into(),
+            );
+        }
+        Some(old) => println!(
+            "old folder   {} gone (migrated or never there)",
+            old.display()
+        ),
+        None => println!("old folder   not applicable here"),
+    }
+
+    if problems.is_empty() {
+        println!(
+            "
+verdict      ok"
+        );
+        Ok(())
+    } else {
+        println!(
+            "
+verdict      {} problem(s):",
+            problems.len()
+        );
+        for problem in &problems {
+            println!("  - {problem}");
+        }
+        Err(DegaussError::unsupported(
+            "check-install",
+            format!("{} problem(s) found", problems.len()),
+        ))
+    }
+}
+
 fn run() -> Result<()> {
     let args = match parse_args() {
         Ok(Some(args)) => args,
@@ -350,6 +536,17 @@ fn run() -> Result<()> {
             return Err(DegaussError::unsupported("arguments", message));
         }
     };
+
+    if args.check_install {
+        // Deliberately before anything is loaded: this flag exists for
+        // the installation that does NOT come up, so it must not depend
+        // on a config that parses or a table that reads.
+        let config_path = args
+            .config
+            .clone()
+            .unwrap_or_else(|| beside_binary("degauss.toml"));
+        return check_install(&config_path);
+    }
 
     let started = Instant::now();
     let loaded = load_everything(&args)?;

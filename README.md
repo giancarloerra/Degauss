@@ -119,12 +119,25 @@ so the files land here:
 /media/fat/Scripts/.config/degauss/logos/
 ```
 
+### Upgrading from an earlier release
+
 Earlier releases lived in `/media/fat/Scripts/.degauss/`. When updating
 over one, `degauss.sh` moves everything into the new folder on its next
-start and removes the old one: your settings, resume state and index carry
-over, a `degauss.toml`, `systems.toml` or logo you edited stays the active
-copy, and any other file you kept in the folder follows the move
+start, says `Migrating Degauss data...` on the console while it does,
+and removes the old folder: your settings, resume state and index carry
+over, a `degauss.toml`, `systems.toml` or logo you edited stays the
+active copy, and any other file you kept in the folder follows the move
 untouched. There is nothing to do.
+
+If anything about an install or upgrade looks wrong, the binary can look
+itself over:
+
+```bash
+/media/fat/Scripts/.config/degauss/degauss --check-install
+```
+
+It reports what is present, missing, broken or still waiting in the old
+folder, and says ok when there is nothing to say.
 
 Then add one line to the `[MiSTer]` section of `/media/fat/MiSTer.ini`:
 
@@ -658,6 +671,7 @@ to point somewhere else. `degauss.sh` passes them explicitly.
 |---|---|
 | `--audit` | Every system, one line each: games found, artwork bound, folders. A system with a `gamelist.xml` but no artwork bound, or with no games at all, is listed again underneath as a problem. A whole card checked without opening a hundred systems by hand. |
 | `--list-systems` | Which systems this card actually has, and where each one resolved. The answer to "why is my system missing". |
+| `--check-install` | The installation itself: what is present, missing, broken or left half-migrated. The first thing to run when something looks wrong. |
 | `--report` | One system in detail, with `--system <id>`. |
 | `--dry-run-launch` | The MGL that *would* be written to start a game, printed instead of run. The answer to "why does this game not start". |
 
