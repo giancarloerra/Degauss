@@ -291,8 +291,10 @@ Delete `settings.toml` to go back to the documented defaults.
 
 ### Themes and colours
 
-Every colour Degauss draws with is a role in the `[colors]` block of
-`degauss.toml`, validated as `#rrggbb` when the file is read:
+The ten palette colours Degauss draws with are roles in the `[colors]`
+block of `degauss.toml`, validated as `#rrggbb` when the file is read
+(the wordmark's `logo` colour, below, is the one colour that lives
+outside it):
 
 | Role | Does |
 |---|---|
@@ -324,7 +326,7 @@ overwritten on the next update; copy one under a new file name to make it
 your own. The folder is read once at startup, so a file added while
 Degauss is running appears after the next start, and the chosen theme is
 remembered by name in `settings.toml`. If the file it names is missing or
-broken the standard palette is used and a message says so.
+broken, Degauss uses the standard palette and a message says so.
 
 ## Artwork and metadata
 
