@@ -394,25 +394,34 @@ fn core_name(stem: &str) -> String {
         .collect()
 }
 
-/// Every folder of this system's that exists, in the order the table lists
-/// them, without duplicates.
+/// Where each of a system's configured folders is, right now.
 ///
-/// All of them, not just the first: a system's games are routinely spread
-/// across the folders it names, and stopping at the first one loses whatever
-/// is in the rest.
-/// Which of a system's configured folders are on the card right now.
+/// Every folder NAME the table lists is looked for, because a system's
+/// games are routinely spread across its aliases (MegaDrive and Genesis
+/// both). For one name, the FIRST root that has it wins and the rest are
+/// not consulted: that is the priority MiSTer's own loader applies, and
+/// it is what the configuration has always promised. Different names may
+/// resolve under different roots.
 ///
 /// `discover` asks this for every system; the single-system rebuild asks
 /// it again for one, because a folder can appear or go after discovery.
 pub fn existing_folders(def: &SystemDef, roots: &[PathBuf]) -> Vec<PathBuf> {
+    // Unmounted roots are dropped before the folder walk, so a missing
+    // mount costs one failed stat per system rather than one per folder
+    // name: with six USB slots in the defaults, most of this list does
+    // not exist on most machines.
+    let live: Vec<&PathBuf> = roots.iter().filter(|root| root.is_dir()).collect();
     let mut found: Vec<PathBuf> = Vec::new();
     for folder in &def.folders {
-        for root in roots {
+        for root in &live {
             // An absolute folder in the table stands on its own; joining
             // replaces the root, which is what we want.
             let candidate = root.join(folder);
-            if candidate.is_dir() && !found.contains(&candidate) {
-                found.push(candidate);
+            if candidate.is_dir() {
+                if !found.contains(&candidate) {
+                    found.push(candidate);
+                }
+                break;
             }
         }
     }
@@ -467,6 +476,102 @@ folders = ["MegaDrive", "Genesis"]
 rbf = "_Console/MegaDrive"
 extensions = ["md", "bin"]
 "#;
+
+    fn one_system(folders: &[&str]) -> SystemDef {
+        SystemDef {
+            name: "Test".into(),
+            id: "Test".into(),
+            folders: folders.iter().map(|f| f.to_string()).collect(),
+            rbf: "_Console/Test".into(),
+            extensions: vec!["bin".into()],
+            launch: Vec::new(),
+            logo: None,
+            category: None,
+            skip_folders: Vec::new(),
+            setname: None,
+        }
+    }
+
+    #[test]
+    fn the_first_root_holding_a_folder_wins_over_the_later_ones() {
+        // MiSTer's own loader searches the USB sticks before the card, so
+        // a system present on both is the USB one. Collecting both
+        // instead showed one list stitched from two places, and
+        // contradicted what the configuration promises.
+        let base = temp_dir("root-priority");
+        std::fs::create_dir_all(base.join("usb0/games/SNES")).unwrap();
+        std::fs::create_dir_all(base.join("fat/games/SNES")).unwrap();
+        let roots = [base.join("usb0/games"), base.join("fat/games")];
+        let found = existing_folders(&one_system(&["SNES"]), &roots);
+        assert_eq!(found, vec![base.join("usb0/games/SNES")]);
+        std::fs::remove_dir_all(&base).ok();
+    }
+
+    #[test]
+    fn a_folder_the_earlier_roots_lack_falls_back_to_the_card() {
+        let base = temp_dir("root-fallback");
+        std::fs::create_dir_all(base.join("usb0/games")).unwrap();
+        std::fs::create_dir_all(base.join("fat/games/SNES")).unwrap();
+        let roots = [base.join("usb0/games"), base.join("fat/games")];
+        let found = existing_folders(&one_system(&["SNES"]), &roots);
+        assert_eq!(found, vec![base.join("fat/games/SNES")]);
+        std::fs::remove_dir_all(&base).ok();
+    }
+
+    #[test]
+    fn each_folder_alias_resolves_on_its_own_root() {
+        // Priority is per NAME, not per system: a card keeping MegaDrive
+        // on the stick and Genesis on the card still browses both. This
+        // is the Atari 2600 lesson in root form: games are routinely
+        // spread across a system's aliases.
+        let base = temp_dir("root-aliases");
+        std::fs::create_dir_all(base.join("usb0/games/MegaDrive")).unwrap();
+        std::fs::create_dir_all(base.join("fat/games/Genesis")).unwrap();
+        let roots = [base.join("usb0/games"), base.join("fat/games")];
+        let found = existing_folders(&one_system(&["MegaDrive", "Genesis"]), &roots);
+        assert_eq!(
+            found,
+            vec![
+                base.join("usb0/games/MegaDrive"),
+                base.join("fat/games/Genesis")
+            ]
+        );
+        std::fs::remove_dir_all(&base).ok();
+    }
+
+    #[test]
+    fn roots_that_are_not_mounted_are_quietly_ignored() {
+        // Six USB slots sit in the defaults and most machines have none
+        // of them: an absent mount must cost nothing and change nothing.
+        let base = temp_dir("root-unmounted");
+        std::fs::create_dir_all(base.join("fat/games/SNES")).unwrap();
+        let roots = [
+            base.join("usb0/games"),
+            base.join("usb1/games"),
+            base.join("network/games"),
+            base.join("fat/games"),
+        ];
+        let found = existing_folders(&one_system(&["SNES"]), &roots);
+        assert_eq!(found, vec![base.join("fat/games/SNES")]);
+        std::fs::remove_dir_all(&base).ok();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_folder_reached_through_a_symlink_still_counts() {
+        // Cards really do this: a folder on the stick linked under the
+        // card's own games folder. The link answers as a directory and
+        // must keep doing so.
+        let base = temp_dir("root-symlink");
+        std::fs::create_dir_all(base.join("elsewhere/SNES")).unwrap();
+        std::fs::create_dir_all(base.join("fat/games")).unwrap();
+        std::os::unix::fs::symlink(base.join("elsewhere/SNES"), base.join("fat/games/SNES"))
+            .unwrap();
+        let roots = [base.join("fat/games")];
+        let found = existing_folders(&one_system(&["SNES"]), &roots);
+        assert_eq!(found, vec![base.join("fat/games/SNES")]);
+        std::fs::remove_dir_all(&base).ok();
+    }
 
     fn temp_dir(tag: &str) -> PathBuf {
         let dir =

@@ -301,11 +301,17 @@ fn default_menu_root() -> String {
 }
 
 fn default_roots() -> Vec<String> {
-    vec![
-        "/media/fat/games".to_string(),
-        // Arcade lives at /media/fat/_Arcade, outside the games folder.
-        "/media/fat".to_string(),
-    ]
+    // The order MiSTer's own core loader searches (findPrefixDir in
+    // Main's file_io.cpp): USB sticks first, then the network share, then
+    // the CIFS mount, then the card. A root that is not mounted costs one
+    // failed stat and nothing else.
+    let mut roots: Vec<String> = (0..6).map(|n| format!("/media/usb{n}/games")).collect();
+    roots.push("/media/network/games".to_string());
+    roots.push("/media/fat/cifs/games".to_string());
+    roots.push("/media/fat/games".to_string());
+    // Arcade lives at /media/fat/_Arcade, outside the games folder.
+    roots.push("/media/fat".to_string());
+    roots
 }
 
 impl Config {
