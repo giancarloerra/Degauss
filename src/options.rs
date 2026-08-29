@@ -56,8 +56,8 @@ pub enum OptionId {
 /// What most people will ever want to change.
 pub const OPTIONS: [OptionId; 17] = [
     OptionId::Speed,
-    OptionId::LeftRight,
     OptionId::ArtLimit,
+    OptionId::LeftRight,
     OptionId::RebuildCache,
     OptionId::Layout,
     OptionId::Font,

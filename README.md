@@ -254,7 +254,7 @@ card.
 | Setting | Does |
 |---|---|
 | Scroll speed | How fast a held direction moves through the list |
-| Left and right | What left and right do while browsing: Speed (the default), Letter, Page or Direction. Direction frees up and down to move a whole row in Tiled |
+| Left and right | What left and right do while browsing: Scroll speed change (the default), Letter, Page or Direction. Letter and Page repeat while held; Direction frees up and down to move a whole row in Tiled |
 | Skip artwork faster than | Above this speed, pictures wait until the list stops |
 | Rebuild all system lists | Read the whole card again. Run it after adding games, cores or artwork; for one system, the contextual menu's **Rebuild this system** is quicker |
 | View | Details, Tiled, List or Carousel |

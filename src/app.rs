@@ -221,6 +221,18 @@ impl Horizontal {
         }
     }
 
+    /// The name the Options row shows. Separate from `label`, which is
+    /// the token settings.toml stores: the stored word must never change,
+    /// or a written-down choice stops meaning anything on the next start.
+    pub fn shown(self) -> &'static str {
+        match self {
+            Horizontal::Speed => "Scroll speed change",
+            Horizontal::Letter => "Letter",
+            Horizontal::Page => "Page",
+            Horizontal::Direction => "Direction",
+        }
+    }
+
     pub fn parse(text: &str) -> Option<Self> {
         match text {
             "speed" => Some(Horizontal::Speed),
@@ -1525,12 +1537,14 @@ impl App {
         SPEED_STEPS[self.speed.min(SPEED_STEPS.len() - 1)].1
     }
 
-    /// True while a held left or right should scroll: browsing in the
-    /// Direction setting, where the two keys are movement rather than a
-    /// ladder to step.
+    /// True while a held left or right should repeat: browsing in every
+    /// setting except the speed ladder. Direction scrolls like a held
+    /// stick, and a held Letter or Page walks on at the same cadence;
+    /// only the ladder stays one step per press, because a held repeat
+    /// would run the whole ladder off one touch.
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     fn horizontal_scrolls(&self) -> bool {
-        self.screen == Screen::Browse && self.horizontal == Horizontal::Direction
+        self.screen == Screen::Browse && self.horizontal != Horizontal::Speed
     }
 
     fn shift_x(&self) -> i32 {
@@ -3347,7 +3361,7 @@ impl App {
                 }
             }
             OptionId::Layout => capitalised(self.layout.label()),
-            OptionId::LeftRight => capitalised(self.horizontal.label()),
+            OptionId::LeftRight => self.horizontal.shown().to_string(),
             OptionId::Font => capitalised(self.font.label()),
             OptionId::ShowArt => on_off(self.show_art),
             OptionId::ShowStats => on_off(self.show_stats),
