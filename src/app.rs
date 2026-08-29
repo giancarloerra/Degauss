@@ -2817,7 +2817,9 @@ impl App {
         let name = system.name().to_string();
         let config = system.to_config();
 
-        self.message = Some(format!("Caching the card\n\n{name}   {done} of {total}"));
+        self.message = Some(format!(
+            "Rebuilding all systems\n\n{name}   {done} of {total}"
+        ));
 
         // Already written down and not being forced: nothing to read.
         let start = browse::start_for(&config);
