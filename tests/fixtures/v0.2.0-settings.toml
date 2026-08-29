@@ -1,0 +1,30 @@
+# A settings.toml as v0.2.0 could have written it, every key it knew set.
+# The compat test parses this with the current code: a key the current
+# version renamed or removed, or a type it changed, fails there before it
+# can ship, which is what lets a migrated card keep its settings forever.
+speed_step = 5
+art_limit = 7
+layout = "details"
+font = "pixel"
+favorites_first = true
+random_launches = false
+folders_last = true
+hidden_paths = ["/media/fat/games/SNES/hacks", "/media/fat/_Utility"]
+show_stats = false
+show_art = true
+present = "sharp"
+hidden = ["PDP1", "VC4000"]
+show_hidden = false
+show_other = true
+show_utility = false
+show_bar = true
+show_empty = false
+overscan_x = 5
+overscan_y = 5
+screensaver_after = 300
+shift_x = -2
+shift_y = 1
+
+[folder_views]
+"dir:/media/fat/games/NES" = "list"
+"dir:/media/fat/games/PSX" = "carousel"

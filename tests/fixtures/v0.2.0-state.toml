@@ -1,0 +1,19 @@
+# A state.toml as v0.2.0 could have written it. State loading is
+# unwrap_or_default, so this fixture pins something softer than the
+# settings one: that a v0.2.0 resume state still RESUMES, rather than
+# being silently thrown away as unreadable.
+system = "SNES"
+category = "Console"
+selected = 42
+
+[[trail]]
+kind = "dir"
+path = "/media/fat/games/SNES"
+install = ""
+selected = 3
+
+[[trail]]
+kind = "dir"
+path = "/media/fat/games/SNES/1 US A-Z"
+install = ""
+selected = 42

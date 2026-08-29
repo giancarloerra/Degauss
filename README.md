@@ -119,9 +119,12 @@ so the files land here:
 /media/fat/Scripts/.config/degauss/logos/
 ```
 
-Earlier releases lived in `/media/fat/Scripts/.degauss/`; when updating over
-one, `degauss.sh` moves your settings, resume state, index and images into
-the new folder on its next start, so there is nothing to do.
+Earlier releases lived in `/media/fat/Scripts/.degauss/`. When updating
+over one, `degauss.sh` moves everything into the new folder on its next
+start and removes the old one: your settings, resume state and index carry
+over, a `degauss.toml`, `systems.toml` or logo you edited stays the active
+copy, and any other file you kept in the folder follows the move
+untouched. There is nothing to do.
 
 Then add one line to the `[MiSTer]` section of `/media/fat/MiSTer.ini`:
 
@@ -645,8 +648,9 @@ machine.
 /media/fat/Scripts/.config/degauss/degauss --help
 ```
 
-Every flag below needs `--config` and `--systems` pointing at the two files
-beside the binary, which is what `degauss.sh` does for you.
+`--config` and `--systems` default to `degauss.toml` and `systems.toml`
+beside the binary, which is where they live, so the flags are only needed
+to point somewhere else. `degauss.sh` passes them explicitly.
 
 ### Checking a card
 

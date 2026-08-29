@@ -417,6 +417,17 @@ fn existing_folders(def: &SystemDef, roots: &[PathBuf]) -> Vec<PathBuf> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_systems_table_both_old_releases_shipped_still_parses() {
+        // The migration keeps a user-edited systems.toml as the active
+        // one, so the table format v0.1.0 and v0.2.0 wrote for must stay
+        // valid. One fixture: both releases shipped identical bytes.
+        let text = include_str!("../tests/fixtures/v0.1.0-and-v0.2.0-systems.toml");
+        let table = parse_table(text, Path::new("v0.1.0-and-v0.2.0"))
+            .expect("the old shipped systems.toml must keep parsing");
+        assert!(table.len() > 100, "the full table, not a stub");
+    }
+
     /// A core file named in anything but ASCII used to take the whole
     /// frontend down before it drew a frame: the date-stamp test sliced the
     /// string at byte eight, and the card is read at startup.

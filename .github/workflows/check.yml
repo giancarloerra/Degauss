@@ -32,6 +32,11 @@ jobs:
           sudo swapon /mnt/degauss-swap
           free -h
       - run: cargo test
+      # Every upgrade shape a card can arrive in, rehearsed against the
+      # launcher's migration block with fake binaries. Fails if the shim's
+      # pristine-hash table drifts from the committed fixtures, or any
+      # upgrade path stops converging.
+      - run: ./scripts/rehearse-migration.sh
       # One heavy compile at a time: --all-targets otherwise runs the
       # library, the binary and the test build together, and three of these
       # peaks outrun memory and swap combined.

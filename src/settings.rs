@@ -103,6 +103,20 @@ impl Settings {
 mod tests {
     use super::*;
 
+    #[test]
+    fn settings_written_by_v0_2_0_still_load_with_every_key_meant() {
+        // Migration carries settings.toml over as it is. A key the current
+        // code renamed or retyped would go back to its default silently,
+        // which reads as the user's choices being forgotten.
+        let text = include_str!("../tests/fixtures/v0.2.0-settings.toml");
+        let settings: Settings = toml::from_str(text).expect("v0.2.0 settings must keep parsing");
+        assert_eq!(settings.font.as_deref(), Some("pixel"));
+        assert_eq!(settings.layout.as_deref(), Some("details"));
+        assert_eq!(settings.overscan_x, Some(5));
+        assert_eq!(settings.hidden, ["PDP1", "VC4000"]);
+        assert_eq!(settings.folder_views.len(), 2);
+    }
+
     fn temp_path(tag: &str) -> std::path::PathBuf {
         std::env::temp_dir().join(format!(
             "degauss-settings-{tag}-{}.toml",

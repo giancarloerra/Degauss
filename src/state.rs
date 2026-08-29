@@ -187,6 +187,18 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_resume_state_written_by_v0_2_0_still_resumes() {
+        // State loading is unwrap_or_default, so a schema break here does
+        // not crash: it silently throws the user's place away. This pins
+        // that a v0.2.0 state still RESUMES rather than merely loading.
+        let text = include_str!("../tests/fixtures/v0.2.0-state.toml");
+        let state: State = toml::from_str(text).expect("v0.2.0 state must keep parsing");
+        assert_eq!(state.system, "SNES");
+        assert_eq!(state.selected, 42);
+        assert_eq!(state.trail.len(), 2, "the walked path survives");
+    }
+
+    #[test]
     fn a_state_file_written_before_this_existed_still_reads() {
         let dir = std::env::temp_dir().join("degauss-state-old");
         std::fs::create_dir_all(&dir).unwrap();
