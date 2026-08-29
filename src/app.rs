@@ -2818,7 +2818,7 @@ impl App {
         let config = system.to_config();
 
         self.message = Some(format!(
-            "Rebuilding all systems\n\n{name}   {done} of {total}"
+            "Indexing all systems\n\n{name}   {done} of {total}"
         ));
 
         // Already written down and not being forced: nothing to read.
@@ -3701,7 +3701,7 @@ impl App {
             .open_system_ref()
             .map(|system| system.name().to_string())
             .unwrap_or_default();
-        self.message = Some(format!("Rebuilding {name} list"));
+        self.message = Some(format!("Indexing {name} list"));
         self.refreshing = Some(id);
     }
 
