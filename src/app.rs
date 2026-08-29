@@ -2276,13 +2276,25 @@ impl App {
     }
 
     fn mark_favorites(&self, rows: &mut [browse::Row]) {
-        for row in rows.iter_mut() {
-            // By what the row launches, not by whether it is a file. An
-            // AmigaVision title is not a file, and asking about it as one
-            // meant every Amiga favourite was marked nowhere.
-            if let Some(target) = row_target(row) {
-                if self.favorites.holds(&target) {
+        if self.open_system.as_deref() == Some(FAVORITES_ID) {
+            // Everything playable on this shelf is a favourite by
+            // definition, but the lookup below is keyed by what a
+            // favourite points AT, and these rows are the favourite files
+            // themselves: asked the usual way, the shelf showed no hearts.
+            for row in rows.iter_mut() {
+                if matches!(row.kind, browse::Kind::Play(_)) {
                     row.favorite = true;
+                }
+            }
+        } else {
+            for row in rows.iter_mut() {
+                // By what the row launches, not by whether it is a file. An
+                // AmigaVision title is not a file, and asking about it as one
+                // meant every Amiga favourite was marked nowhere.
+                if let Some(target) = row_target(row) {
+                    if self.favorites.holds(&target) {
+                        row.favorite = true;
+                    }
                 }
             }
         }
@@ -3669,7 +3681,7 @@ impl App {
             .open_system_ref()
             .map(|system| system.name().to_string())
             .unwrap_or_default();
-        self.message = Some(format!("Reading {name}"));
+        self.message = Some(format!("Rebuilding list {name}"));
         self.refreshing = Some(id);
     }
 
