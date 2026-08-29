@@ -1,7 +1,8 @@
 # Mono: the standard greys with every colour taken out, wordmark included.
 # These values are starting points, meant to be tuned on a real tube.
 # Edits to this file are overwritten by the updater; copy it under a new
-# name to keep your own version.
+# name to keep your own version. No favorite colour on purpose: the
+# hearts keep the standard red, whatever the palette.
 
 background = "#6C6C6C"
 panel = "#3A3A3A"
@@ -12,5 +13,4 @@ text_dim = "#C4C4C4"
 accent = "#E8E8E8"
 accent_text = "#111111"
 state = "#BBBBBB"
-favorite = "#F0F0F0"
 logo = "#FFFFFF"

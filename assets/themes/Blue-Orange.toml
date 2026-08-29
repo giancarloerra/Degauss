@@ -1,0 +1,16 @@
+# Blue-Orange: slate blue in the quiet places, orange where the yellow
+# was. These values are starting points, meant to be tuned on a real
+# tube. Edits to this file are overwritten by the updater; copy it under
+# a new name to keep your own version. No favorite colour on purpose:
+# the hearts keep the standard red, whatever the palette.
+
+background = "#56677A"
+panel = "#2C3947"
+surface = "#3A4A5C"
+bar = "#1E2833"
+text = "#F2F7FF"
+text_dim = "#B7C6D6"
+accent = "#FF8C1A"
+accent_text = "#1A1208"
+state = "#FF9E40"
+logo = "#FF8C1A"

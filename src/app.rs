@@ -1191,7 +1191,12 @@ impl App {
         let active_theme = match settings.theme.as_deref() {
             None => None,
             Some(name) => {
-                let found = themes.iter().position(|theme| theme.name == name);
+                // Without regard to case: the card's filesystem cannot
+                // tell Amber from amber, so the remembered name must not
+                // either.
+                let found = themes
+                    .iter()
+                    .position(|theme| theme.name.eq_ignore_ascii_case(name));
                 if found.is_none() {
                     // "Did not load" rather than "is missing": the file may
                     // be there and broken, in which case the folder's own
@@ -3485,7 +3490,7 @@ impl App {
             // the built-in state has a word of its own.
             OptionId::Theme => match self.active_theme {
                 Some(at) => self.themes[at].name.clone(),
-                None => "standard".to_string(),
+                None => "Standard".to_string(),
             },
             OptionId::ShowArt => on_off(self.show_art),
             OptionId::ShowStats => on_off(self.show_stats),

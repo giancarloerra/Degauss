@@ -319,11 +319,12 @@ more key, `logo`, at the top level, draws the wordmark as a flat
 silhouette in that colour; leave it out and the wordmark keeps its own
 three colours.
 
-Three themes ship as starting points: `amber` and `green` after the two
-monochrome phosphors, and `mono`, the standard greys with the colour
-taken out. The updater manages those three files, so edits to them are
-overwritten on the next update; copy one under a new file name to make it
-your own. The folder is read once at startup, so a file added while
+Three themes ship as starting points: `Amber` after the amber phosphor,
+`Mono`, the standard greys with the colour taken out, and `Blue-Orange`,
+slate blue with an orange highlight. None of them names `favorite`, so
+the hearts stay the standard red in all of them. The updater manages
+those three files, so edits to them are overwritten on the next update;
+copy one under a new file name to make it your own. The folder is read once at startup, so a file added while
 Degauss is running appears after the next start, and the chosen theme is
 remembered by name in `settings.toml`. If the file it names is missing or
 broken, Degauss uses the standard palette and a message says so.
