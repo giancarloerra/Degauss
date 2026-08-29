@@ -98,8 +98,9 @@ Enter, Escape, Space and Tab.
   small `state.toml` remembering where you were: every folder you visit
   keeps the row you left it on until the machine is powered off, found
   again by the game itself rather than by its position, so a folder whose
-  contents changed still comes back to the same game. AmigaVision titles
-  also need its own `shared/ags_boot` written to start the right game.
+  contents changed still comes back to the same game. An AmigaVision
+  title also needs its `shared/ags_boot` file written, which is how those
+  games are started.
   Gamelists and artwork are read, never modified.
 - **Awkward systems handled** without hassle: AmigaVision, DOS,
   Neo Geo, Arcade, X68000, and cores that are several machines.

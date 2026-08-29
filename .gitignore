@@ -4,8 +4,9 @@
 # Binaries staged for the card; built, not committed.
 /deploy/Scripts/.config/degauss/degauss
 
-# Written by Degauss itself when settings change
+# Written by Degauss itself: options, and where you were
 /settings.toml
+/state.toml
 
 # Staged for the card at build time from assets/logos; not committed twice.
 /deploy/Scripts/.config/degauss/logos/
