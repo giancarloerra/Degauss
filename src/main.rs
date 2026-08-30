@@ -875,7 +875,19 @@ fn render_once(loaded: Loaded, args: Args, chosen: usize, path: &Path) -> Result
     // throw the query away.
     match args.find.as_deref() {
         Some(text) => app.search_for(text),
-        None => app.set_screen(args.screen),
+        None => {
+            app.set_screen(args.screen);
+            // The choice above moved the cursor in the folder, which is
+            // what a context menu needs. The screens carrying lists of
+            // their own take the choice themselves, or --select could
+            // never reach past their first visible rows.
+            if matches!(
+                args.screen,
+                Screen::Options | Screen::Advanced | Screen::Help
+            ) {
+                app.select(args.select);
+            }
+        }
     }
 
     let mut surface = MemorySurface::new(width, height, args.format);
