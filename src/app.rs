@@ -1948,6 +1948,15 @@ impl App {
             entry.clone()
         };
         let config = system.to_config();
+        // The open system's config decides where its listing starts and
+        // what an on-demand read walks; both moved with the folders just
+        // asked again. Kept in step, or a rebuilt system whose first
+        // folder changed kept showing the old start until it was left
+        // and reopened.
+        if self.open_system.as_deref() == Some(id) {
+            self.opened_config = Some(config.clone());
+            self.library = None;
+        }
         let library = match Library::open_with_names(&config, self.names.clone()) {
             Ok(library) => library,
             // Said out loud rather than quietly keeping the stale listing.
