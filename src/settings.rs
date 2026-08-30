@@ -35,6 +35,10 @@ pub struct Settings {
     /// shipped configuration says.
     #[serde(default)]
     pub font: Option<String>,
+    /// The theme the palette comes from, by file stem. Absent means the
+    /// standard palette: the `[colors]` block of `degauss.toml`.
+    #[serde(default)]
+    pub theme: Option<String>,
     /// Whether favourites are gathered at the top of a folder.
     pub favorites_first: Option<bool>,
     /// Whether picking a random game starts it, or only moves the cursor to
@@ -145,6 +149,7 @@ mod tests {
             art_limit: Some(0),
             layout: Some("covers".into()),
             left_right: Some("letter".into()),
+            theme: Some("amber".into()),
             show_stats: Some(true),
             overscan_x: Some(24),
             ..Default::default()

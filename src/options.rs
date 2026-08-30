@@ -22,6 +22,8 @@ pub enum OptionId {
     Layout,
     /// Which typeface the interface is set in.
     Font,
+    /// Which named palette from the themes folder is on, if any.
+    Theme,
     ShowArt,
     ShowHidden,
     ShowEmpty,
@@ -54,13 +56,14 @@ pub enum OptionId {
 }
 
 /// What most people will ever want to change.
-pub const OPTIONS: [OptionId; 17] = [
+pub const OPTIONS: [OptionId; 18] = [
     OptionId::Speed,
     OptionId::ArtLimit,
     OptionId::LeftRight,
     OptionId::RebuildCache,
     OptionId::Layout,
     OptionId::Font,
+    OptionId::Theme,
     OptionId::ShowBar,
     OptionId::ShowArt,
     OptionId::FavoritesFirst,
@@ -94,6 +97,7 @@ impl OptionId {
             OptionId::ArtLimit => "Skip artwork faster than",
             OptionId::Layout => "View",
             OptionId::Font => "Text",
+            OptionId::Theme => "Theme",
             OptionId::ShowArt => "Artwork",
             OptionId::ShowHidden => "Show what you hid",
             OptionId::ShowEmpty => "Show empty folders",
@@ -130,6 +134,9 @@ impl OptionId {
             OptionId::Layout => "Details, Tiled, Carousel or List.",
             OptionId::Font => {
                 "Smooth for a monitor, Pixel on whole pixels for a tube. The 2s are bolder."
+            }
+            OptionId::Theme => {
+                "A palette from the themes folder, read at start. Standard is degauss.toml."
             }
             OptionId::ShowArt => "Turn artwork off entirely.",
             OptionId::ShowHidden => {
@@ -215,11 +222,13 @@ mod tests {
         // exists for measurement belongs behind Advanced.
         //
         // Ten rows fit on screen, so the list already scrolls. The cap was
-        // moved from 16 to 17 deliberately when Left and right arrived: a
-        // browse control belongs beside Scroll speed, not behind Advanced.
+        // moved from 16 to 17 deliberately when Left and right arrived (a
+        // browse control belongs beside Scroll speed), and from 17 to 18
+        // when Theme arrived (what the screen looks like is everyday use,
+        // and it sits beside Text, which changes the screen the same way).
         // The next addition should go behind Advanced instead.
         assert!(
-            OPTIONS.len() <= 17,
+            OPTIONS.len() <= 18,
             "the main options list has grown to {}",
             OPTIONS.len()
         );

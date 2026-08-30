@@ -161,6 +161,9 @@ export component DegaussWindow inherits Window {
     in property <color> c-accent-text;
     in property <color> c-state;
     in property <color> c-favorite;
+    // The wordmark as a flat silhouette in this colour; transparent means
+    // the renderer leaves its own three colours alone.
+    in property <color> logo-tint: transparent;
 
     // Safe area, so nothing lands under the bezel.
     in property <length> inset-left;
@@ -344,6 +347,7 @@ export component DegaussWindow inherits Window {
 
                 logo := Image {
                     source: @image-url("../assets/degauss-logo.png");
+                    colorize: root.logo-tint;
                     image-fit: contain;
                     width: parent.width * 70%;
                     height: parent.height * 38%;
@@ -465,6 +469,7 @@ export component DegaussWindow inherits Window {
                     Image {
                         visible: root.show-brand;
                         source: @image-url("../assets/degauss-logo.png");
+                        colorize: root.logo-tint;
                         image-fit: contain;
                         width: parent.width * 70%;
                         height: root.chrome-height;

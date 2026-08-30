@@ -33,6 +33,10 @@ cp assets/systems.toml deploy/Scripts/.config/degauss/systems.toml
 if compgen -G "assets/logos/*.png" >/dev/null; then
     cp assets/logos/*.png deploy/Scripts/.config/degauss/logos/
 fi
+# The shipped themes, staged beside the configuration where Degauss reads
+# them from.
+mkdir -p deploy/Scripts/.config/degauss/themes
+cp assets/themes/*.toml deploy/Scripts/.config/degauss/themes/
 # The licence travels with the program, so a copy on a card is never a copy
 # with no terms attached. The typefaces are baked into the binary and carry
 # their own terms, so those travel with it too.

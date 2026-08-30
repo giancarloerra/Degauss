@@ -123,6 +123,7 @@ so the files land here:
 /media/fat/Scripts/.config/degauss/degauss.toml
 /media/fat/Scripts/.config/degauss/systems.toml
 /media/fat/Scripts/.config/degauss/logos/
+/media/fat/Scripts/.config/degauss/themes/
 ```
 
 ### Upgrading from an earlier release
@@ -259,6 +260,7 @@ card.
 | Rebuild all system lists | Read the whole card again. Run it after adding games, cores or artwork; for one system, the contextual menu's **Rebuild this system** is quicker |
 | View | Details, Tiled, List or Carousel |
 | Text | The typeface: Smooth, Pixel (a DOS font on whole pixels), and the bolder Smooth 2 and Pixel 2 |
+| Theme | A palette from the `themes/` folder, or Standard for the colours in `degauss.toml`. See [Themes and colours](#themes-and-colours) |
 | Bottom bar while browsing | The strip with the time and the buttons. Menus always keep it |
 | Artwork | Turn pictures off entirely |
 | Favourites first | Gather a folder's favourites at its top, in the same alphabet |
@@ -287,6 +289,60 @@ card.
 explains itself. Anything changed from the Options screen is written to
 `settings.toml` beside it, so your changes never overwrite those notes.
 Delete `settings.toml` to go back to the documented defaults.
+
+### Themes and colours
+
+The ten palette colours Degauss draws with are roles in the `[colors]`
+block of `degauss.toml`, validated as `#rrggbb` when the file is read
+(the wordmark's `logo` colour, below, is the one colour that lives
+outside it):
+
+| Role | Does |
+|---|---|
+| `background` | The ground behind everything |
+| `panel` | The title strip across the top of menu screens |
+| `surface` | Raised surfaces: cards, the artwork plate, modal panels |
+| `bar` | The strip along the bottom, darker so its small text reads |
+| `text` | Ordinary text |
+| `text_dim` | Secondary text: counts, hints, the clock |
+| `accent` | The selection bar and focus ring |
+| `accent_text` | Text drawn on top of `accent` |
+| `state` | Toggles, progress, anything that is "on" |
+| `favorite` | The favourite markers |
+
+A theme is one `.toml` file in the `themes/` folder beside `degauss.toml`
+(`Scripts/.config/degauss/themes/` on a card), naming any of those ten
+roles, and its file stem is its name in the **Theme** row of Options.
+The roles go in as bare keys or under a `[colors]` header, so the block
+from `degauss.toml` pastes in unchanged. A theme overlays your
+`[colors]`: roles it does not name show through from `degauss.toml`. One
+more key, `logo`, at the top level, draws the wordmark as a flat
+silhouette in that colour; leave it out and the wordmark keeps its own
+three colours.
+
+A complete theme can be three lines. `themes/Night.toml`:
+
+```toml
+background = "#101318"
+accent = "#33FF33"
+logo = "#33FF33"
+```
+
+picks a darker ground, a green selection bar and a green wordmark, and
+every other colour shows through from your `[colors]`. Copying the whole
+`[colors]` block out of `degauss.toml` and pasting it in, header and
+all, is also a valid theme, ready to be edited.
+
+Three themes ship as starting points: `Amber` after the amber phosphor,
+`Mono`, the standard greys with the colour taken out, and `Blue-Orange`,
+slate blue with an orange highlight. None of them names `favorite`, so
+the hearts keep your own favourite colour under every palette: red,
+unless you changed it in `[colors]`. The updater manages
+those three files, so edits to them are overwritten on the next update;
+copy one under a new file name to make it your own. The folder is read once at startup, so a file added while
+Degauss is running appears after the next start, and the chosen theme is
+remembered by name in `settings.toml`. If the file it names is missing or
+broken, Degauss uses the standard palette and a message says so.
 
 ## Artwork and metadata
 

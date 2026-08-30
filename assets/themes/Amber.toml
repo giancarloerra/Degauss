@@ -1,0 +1,16 @@
+# Amber: the orange phosphor of a monochrome terminal, on a warm dark
+# ground. These values are starting points, meant to be tuned on a real
+# tube. Edits to this file are overwritten by the updater; copy it under a
+# new name to keep your own version. No favorite colour on purpose: the
+# hearts keep your own favourite colour, whatever the palette.
+
+background = "#4A3A18"
+panel = "#2E2410"
+surface = "#5C4A20"
+bar = "#20180A"
+text = "#FFD07A"
+text_dim = "#B8905A"
+accent = "#FFB000"
+accent_text = "#241A08"
+state = "#E09000"
+logo = "#FFB000"
