@@ -15,7 +15,7 @@
 # is not mounted is skipped. /media/fat is listed too because Arcade lives
 # at /media/fat/_Arcade rather than under games. Storage must be mounted
 # before Degauss starts: what appears later is picked up on the next
-# start, or by Rebuild this system.
+# start, or by Rebuild this system list.
 game_roots = [
     "/media/usb0/games",
     "/media/usb1/games",
@@ -47,11 +47,11 @@ cover_size = 320
 art_cache = 200
 
 # The fastest scroll speed that still loads a picture for every row, as a
-# step on the speed ladder: 0 is the slowest, 6 the fastest, 3 is 3x. Above
+# step on the speed ladder: 0 is the slowest, 6 the fastest, 4 is 6x. Above
 # it, pictures wait for the list to stop moving. Decoding a screenshot costs
 # milliseconds, so past a certain rate fetching one per row is what stops the
 # scrolling being smooth, and nothing is readable at that speed anyway.
-art_limit = 3
+art_limit = 4
 
 # Which view to open in: details, tiled, list or carousel.
 layout = "details"

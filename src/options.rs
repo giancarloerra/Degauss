@@ -51,63 +51,72 @@ pub enum OptionId {
     ShiftY,
     /// How long the machine is left alone before pictures take the screen.
     Screensaver,
-    /// Not a setting: the door to the advanced list.
+    /// Not a setting: the door to the developer list.
     Advanced,
+    /// Not a setting: a blank line separating one group from the next.
+    /// There to be read, never chosen; the cursor steps over it.
+    Spacer,
 }
 
-/// What most people will ever want to change.
-pub const OPTIONS: [OptionId; 18] = [
+/// Everything on the one screen, in groups a blank row apart: moving
+/// through lists, what the screen looks like, how a folder is ordered,
+/// what is shown at all, fitting the physical screen, the machine-wide
+/// acts, and the door to the diagnostics.
+pub const OPTIONS: [OptionId; 29] = [
     OptionId::Speed,
     OptionId::ArtLimit,
     OptionId::LeftRight,
-    OptionId::RebuildCache,
+    OptionId::Spacer,
+    OptionId::Theme,
     OptionId::Layout,
     OptionId::Font,
-    OptionId::Theme,
-    OptionId::ShowBar,
     OptionId::ShowArt,
+    OptionId::ShowBar,
+    OptionId::Spacer,
     OptionId::FavoritesFirst,
-    OptionId::RandomLaunches,
     OptionId::FoldersLast,
-    OptionId::ShowEmpty,
-    OptionId::ResetHidden,
-    OptionId::ShowHidden,
+    OptionId::RandomLaunches,
+    OptionId::Spacer,
     OptionId::ShowOther,
     OptionId::ShowUtility,
+    OptionId::ShowEmpty,
+    OptionId::ShowHidden,
+    OptionId::ResetHidden,
+    OptionId::Spacer,
+    OptionId::OverscanX,
+    OptionId::OverscanY,
+    OptionId::ShiftX,
+    OptionId::ShiftY,
+    OptionId::Spacer,
+    OptionId::Screensaver,
+    OptionId::RebuildCache,
+    OptionId::Spacer,
     OptionId::Advanced,
 ];
 
 /// Tuning and diagnostics: things you set once, or only while measuring.
 /// Kept behind a door so the main list stays about using the thing.
-pub const ADVANCED: [OptionId; 7] = [
-    OptionId::Screensaver,
-    OptionId::OverscanX,
-    OptionId::OverscanY,
-    OptionId::ShiftX,
-    OptionId::ShiftY,
-    OptionId::Present,
-    OptionId::ShowStats,
-];
+pub const ADVANCED: [OptionId; 2] = [OptionId::Present, OptionId::ShowStats];
 
 impl OptionId {
     pub fn label(self) -> &'static str {
         match self {
             OptionId::Speed => "Scroll speed",
-            OptionId::LeftRight => "Left and right",
+            OptionId::LeftRight => "Left and right behaviour",
             OptionId::ArtLimit => "Skip artwork faster than",
             OptionId::Layout => "View",
             OptionId::Font => "Text",
             OptionId::Theme => "Theme",
             OptionId::ShowArt => "Artwork",
             OptionId::ShowHidden => "Show what you hid",
-            OptionId::ShowEmpty => "Show empty folders",
-            OptionId::ShowOther => "Show Other",
-            OptionId::ShowUtility => "Show Utility",
+            OptionId::ShowEmpty => "Show systems with no games",
+            OptionId::ShowOther => "Show Other folder",
+            OptionId::ShowUtility => "Show Utility folder",
             OptionId::ShowBar => "Bottom bar while browsing",
             OptionId::RebuildCache => "Rebuild all system lists",
             OptionId::FavoritesFirst => "Favourites first",
-            OptionId::RandomLaunches => "Random",
-            OptionId::FoldersLast => "Folders",
+            OptionId::RandomLaunches => "Random game behaviour",
+            OptionId::FoldersLast => "Folders before games",
             OptionId::ResetHidden => "Unhide everything",
             OptionId::ShowStats => "Performance readout",
             OptionId::Present => "Drawing path",
@@ -116,7 +125,8 @@ impl OptionId {
             OptionId::ShiftX => "Screen position, sideways",
             OptionId::ShiftY => "Screen position, up and down",
             OptionId::Screensaver => "Screensaver",
-            OptionId::Advanced => "Advanced",
+            OptionId::Advanced => "Developer",
+            OptionId::Spacer => "",
         }
     }
 
@@ -149,7 +159,7 @@ impl OptionId {
             OptionId::ShowUtility => "Show the Utility group: test patterns and measurement cores.",
             OptionId::ShowBar => "The strip with the time and the buttons. Menus always keep it.",
             OptionId::FoldersLast => {
-                "Where folders sit inside a system: before the games or after them."
+                "On, folders lead a system's listing; off, the games come first."
             }
             OptionId::ResetHidden => {
                 "Put back everything you hid yourself, in every folder and every system."
@@ -174,7 +184,8 @@ impl OptionId {
             OptionId::Screensaver => {
                 "How long to wait, with nothing pressed, before showing pictures."
             }
-            OptionId::Advanced => "Tuning and diagnostics.",
+            OptionId::Advanced => "Diagnostics: the drawing path and the readout.",
+            OptionId::Spacer => "",
         }
     }
 }
@@ -217,24 +228,23 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_main_list_stays_short_enough_to_be_useful() {
-        // Options nobody uses push out the ones people do. Anything that
-        // exists for measurement belongs behind Advanced.
-        //
-        // Ten rows fit on screen, so the list already scrolls. The cap was
-        // moved from 16 to 17 deliberately when Left and right arrived (a
-        // browse control belongs beside Scroll speed), and from 17 to 18
-        // when Theme arrived (what the screen looks like is everyday use,
-        // and it sits beside Text, which changes the screen the same way).
-        // The next addition should go behind Advanced instead.
+    fn the_list_is_grouped_and_the_groups_are_well_formed() {
+        // The one screen holds everything, kept readable by blank rows
+        // between groups. A spacer at either end or two in a row would
+        // draw as dead space; the door sits last; the developer list
+        // holds only the diagnostics.
+        assert!(OPTIONS.first() != Some(&OptionId::Spacer));
+        assert!(OPTIONS.last() == Some(&OptionId::Advanced));
+        for pair in OPTIONS.windows(2) {
+            assert!(
+                pair[0] != OptionId::Spacer || pair[1] != OptionId::Spacer,
+                "two spacers in a row"
+            );
+        }
+        let rows = OPTIONS.iter().filter(|o| **o != OptionId::Spacer).count();
         assert!(
-            OPTIONS.len() <= 18,
-            "the main options list has grown to {}",
-            OPTIONS.len()
-        );
-        assert!(
-            OPTIONS.contains(&OptionId::Advanced),
-            "the door must be in the list"
+            rows <= 23,
+            "the options list has grown to {rows} real rows; new diagnostics belong behind Developer"
         );
         for option in ADVANCED {
             assert!(!OPTIONS.contains(&option), "{option:?} is in both lists");
@@ -244,6 +254,9 @@ mod tests {
     #[test]
     fn every_option_has_a_label_and_an_explanation() {
         for option in OPTIONS.iter().chain(ADVANCED.iter()).copied() {
+            if option == OptionId::Spacer {
+                continue;
+            }
             assert!(!option.label().is_empty());
             assert!(
                 option.help().len() > 20,
@@ -257,16 +270,21 @@ mod tests {
     fn the_options_list_has_no_duplicates() {
         let mut seen = Vec::new();
         for option in OPTIONS.iter().chain(ADVANCED.iter()).copied() {
+            if option == OptionId::Spacer {
+                continue;
+            }
             assert!(!seen.contains(&option), "{option:?} listed twice");
             seen.push(option);
         }
     }
 
     #[test]
-    fn the_speed_reads_as_a_multiple_of_the_baseline() {
-        let baseline = crate::input::SPEED_START;
-        assert!(speed_badge(baseline).contains("1x"));
-        assert!(speed_label(baseline).contains("90 ms"));
+    fn the_speed_reads_as_a_multiple_of_the_familiar_rate() {
+        // 1x is the rate a conventional frontend scrolls at, whatever the
+        // fresh-start default is set to; the fresh start sits at 3x.
+        assert!(speed_badge(1).contains("1x"));
+        assert!(speed_label(1).contains("90 ms"));
+        assert!(speed_badge(crate::input::SPEED_START).contains("3x"));
 
         let fastest = SPEED_STEPS.len() - 1;
         assert!(speed_badge(fastest).contains("12x"));
