@@ -113,11 +113,32 @@ so the files land here:
 ```
 /media/fat/degauss/MiSTer_Degauss
 /media/fat/Scripts/degauss.sh
-/media/fat/Scripts/.degauss/degauss
-/media/fat/Scripts/.degauss/degauss.toml
-/media/fat/Scripts/.degauss/systems.toml
-/media/fat/Scripts/.degauss/logos/
+/media/fat/Scripts/.config/degauss/degauss
+/media/fat/Scripts/.config/degauss/degauss.toml
+/media/fat/Scripts/.config/degauss/systems.toml
+/media/fat/Scripts/.config/degauss/logos/
 ```
+
+### Upgrading from an earlier release
+
+Earlier releases lived in `/media/fat/Scripts/.degauss/`. When updating
+over one, `degauss.sh` moves everything into the new folder on its next
+start, says `Migrating Degauss data to Scripts/.config/degauss...` on the
+console while it does,
+and removes the old folder: your settings, resume state and index carry
+over, a `degauss.toml`, `systems.toml` or logo you edited stays the
+active copy, and any other file you kept in the folder follows the move
+untouched. There is nothing to do.
+
+If anything about an install or upgrade looks wrong, the binary can look
+itself over:
+
+```bash
+/media/fat/Scripts/.config/degauss/degauss --check-install
+```
+
+It reports what is present, missing, broken or still waiting in the old
+folder, and says ok when there is nothing to say.
 
 Then add one line to the `[MiSTer]` section of `/media/fat/MiSTer.ini`:
 
@@ -356,7 +377,7 @@ folder gets its own gamelist, and the system is still shown as one:
 Systems that share a folder share its gamelist: Neo Geo and Neo Geo MVS
 both read `/media/fat/games/NEOGEO`.
 
-`/media/fat/Scripts/.degauss/degauss --list-systems` prints where every
+`/media/fat/Scripts/.config/degauss/degauss --list-systems` prints where every
 system resolved on your own card, which is the answer for that card.
 
 <details>
@@ -497,7 +518,7 @@ Degauss reads system and category images from the `logos` folder beside
 `degauss.toml`. In a normal installation this is:
 
 ```text
-/media/fat/Scripts/.degauss/logos/
+/media/fat/Scripts/.config/degauss/logos/
 ```
 
 A system image is named after its system ID, for example `C64.png` or
@@ -638,11 +659,12 @@ card, and seeing what a change looks like without standing in front of the
 machine.
 
 ```bash
-/media/fat/Scripts/.degauss/degauss --help
+/media/fat/Scripts/.config/degauss/degauss --help
 ```
 
-Every flag below needs `--config` and `--systems` pointing at the two files
-beside the binary, which is what `degauss.sh` does for you.
+`--config` and `--systems` default to `degauss.toml` and `systems.toml`
+beside the binary, which is where they live, so the flags are only needed
+to point somewhere else. `degauss.sh` passes them explicitly.
 
 ### Checking a card
 
@@ -650,6 +672,7 @@ beside the binary, which is what `degauss.sh` does for you.
 |---|---|
 | `--audit` | Every system, one line each: games found, artwork bound, folders. A system with a `gamelist.xml` but no artwork bound, or with no games at all, is listed again underneath as a problem. A whole card checked without opening a hundred systems by hand. |
 | `--list-systems` | Which systems this card actually has, and where each one resolved. The answer to "why is my system missing". |
+| `--check-install` | The installation itself: what is present, missing, broken or left half-migrated. The first thing to run when something looks wrong. |
 | `--report` | One system in detail, with `--system <id>`. |
 | `--dry-run-launch` | The MGL that *would* be written to start a game, printed instead of run. The answer to "why does this game not start". |
 

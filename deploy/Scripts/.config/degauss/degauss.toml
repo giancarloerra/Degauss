@@ -1,0 +1,87 @@
+# Degauss configuration.
+#
+# This file is documentation as much as configuration: every value says what
+# it does and why. Anything you change from the Options screen is written to
+# settings.toml next to this file, so your changes never overwrite these
+# notes. Delete settings.toml to come back to exactly what is written here.
+#
+# Which core runs which system, and which slot a file goes into, lives in
+# systems.toml. That file is generated from public community data and is
+# yours to edit.
+
+# Where to look for games. The first root that has a system's folder wins.
+# /media/fat is listed too because Arcade lives at /media/fat/_Arcade
+# rather than under games.
+game_roots = ["/media/fat/games", "/media/fat"]
+
+# The top of the card, where the _-prefixed menu folders live. Read once at
+# startup to find which group each installed core belongs to, so systems are
+# grouped the way your own MiSTer menu groups them.
+menu_root = "/media/fat"
+
+[app]
+# Longest edge artwork is decoded to. The picture view draws it at roughly
+# half the screen, so this wants to be at least that big.
+cover_size = 320
+
+# How many decoded pictures to keep in memory. Memory only, never the card.
+#
+# A small cache makes a walk through one folder re-decode pictures it has
+# already seen on the way back. 200 holds a large folder outright and costs
+# tens of megabytes at the cover size above.
+art_cache = 200
+
+# The fastest scroll speed that still loads a picture for every row, as a
+# step on the speed ladder: 0 is the slowest, 6 the fastest, 3 is 3x. Above
+# it, pictures wait for the list to stop moving. Decoding a screenshot costs
+# milliseconds, so past a certain rate fetching one per row is what stops the
+# scrolling being smooth, and nothing is readable at that speed anyway.
+art_limit = 3
+
+# Which view to open in: details, tiled, list or carousel.
+layout = "details"
+
+# Which typeface to set the interface in.
+#
+# smooth is DejaVu Sans, anti-aliased. pixel is Px437 DOS/V re. JPN12, drawn
+# on whole pixels with nothing in between, at 12 pixels and multiples of it.
+# On a tube at 240 lines both come out at 12 pixels, where anti-aliasing is
+# grey fringing on letters two pixels wide; on a monitor smooth is the
+# legible one.
+#
+# "smooth 2" is Roboto Condensed Bold: bolder, condensed, and narrower than
+# smooth on every real title. "pixel 2" is Tamzen 6x12 Bold: the same six
+# pixel cell as pixel with two pixel strokes where pixel has one, letters
+# sitting smaller in the cell.
+font = "smooth"
+
+# Replace the key hints along the bottom with frame timings.
+show_stats = false
+
+# How much of each screen edge to keep clear, as a percentage.
+#
+# A television crops the picture. Without a margin the top and bottom bars
+# land under the bezel and the only fix is turning on underscan, which
+# shrinks everything. Set these to 0 on a display that shows every pixel.
+overscan_x = 5
+overscan_y = 5
+
+# The Degauss palette: a neutral greyscale interface carrying the three
+# colours of the wordmark, each doing exactly one job.
+#
+# Grey rather than black: on a CRT over analog RGB a black interface gives
+# the tube nothing to key off, panel edges vanish into the background and
+# large black areas bloom. A lifted ground keeps the layout readable.
+[colors]
+background = "#6C6C6C"
+panel = "#3A3A3A"
+surface = "#494949"
+text = "#FFFFFF"
+text_dim = "#C4C4C4"
+# Yellow marks what is selected.
+accent = "#FFCD09"
+accent_text = "#111111"
+# Teal marks state and activity.
+state = "#03A49D"
+# Red marks favourites.
+favorite = "#FE2E1D"

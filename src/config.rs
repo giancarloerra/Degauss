@@ -312,6 +312,30 @@ impl Config {
 mod tests {
     use super::*;
 
+    #[test]
+    fn a_config_from_every_release_that_used_the_old_folder_still_parses() {
+        // The migration moves a user-edited degauss.toml over the shipped
+        // one, so a config first written for v0.1.0 or v0.2.0 must stay
+        // valid in every later version. These are the exact shipped bytes;
+        // an edited file differs only in values and in keys REMOVED, and
+        // removals only make it more permissive. What this pins is the
+        // other direction: renaming or deleting a key in the current code
+        // fails here before it can ship.
+        for (tag, text) in [
+            (
+                "v0.1.0",
+                include_str!("../tests/fixtures/v0.1.0-degauss.toml"),
+            ),
+            (
+                "v0.2.0",
+                include_str!("../tests/fixtures/v0.2.0-degauss.toml"),
+            ),
+        ] {
+            Config::parse(text, Path::new(tag))
+                .unwrap_or_else(|e| panic!("{tag} degauss.toml must keep parsing: {e}"));
+        }
+    }
+
     const SAMPLE: &str = r##"
 [app]
 overscan_x = 4

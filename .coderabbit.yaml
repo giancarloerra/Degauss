@@ -22,5 +22,5 @@ reviews:
     # Vendored verbatim and not ours to change: the fonts' own licence texts.
     # The font files themselves are already left alone.
     - '!assets/fonts/*-LICENSE.txt'
-    - '!deploy/Scripts/.degauss/*-LICENSE.txt'
+    - '!deploy/Scripts/.config/degauss/*-LICENSE.txt'
     - '!LICENSE'
