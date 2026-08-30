@@ -318,13 +318,41 @@ impl Config {
     pub fn parse(text: &str, origin: &Path) -> Result<Self> {
         let config: Config = toml::from_str(text)
             .map_err(|e| DegaussError::malformed("config", origin, e.to_string()))?;
+        // Validated like the colours: a value nothing answers to would
+        // otherwise silently mean the default, which reads as the
+        // setting not working.
+        if !LEFT_RIGHT_VALUES.contains(&config.app.left_right.as_str()) {
+            return Err(DegaussError::malformed(
+                "config",
+                origin,
+                format!(
+                    "left_right {:?}: the choices are speed, letter, page and direction",
+                    config.app.left_right
+                ),
+            ));
+        }
         Ok(config)
     }
 }
 
+/// The words `left_right` accepts, the config-side twin of the modes the
+/// interface steps through; a test in app.rs holds the two together.
+pub const LEFT_RIGHT_VALUES: [&str; 4] = ["speed", "letter", "page", "direction"];
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_left_right_value_nothing_answers_to_is_refused_by_name() {
+        // Silently meaning the default would read as the setting not
+        // working; the refusal names the word and the choices.
+        let err = Config::parse("[app]\nleft_right = \"leftr\"\n", Path::new("t"))
+            .expect_err("a typo'd mode must not parse");
+        let text = format!("{err}");
+        assert!(text.contains("leftr"), "got: {text}");
+        assert!(text.contains("letter"), "the choices are named: {text}");
+    }
 
     #[test]
     fn a_config_from_every_release_that_used_the_old_folder_still_parses() {

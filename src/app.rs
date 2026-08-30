@@ -5335,6 +5335,26 @@ mod tests {
     use super::*;
 
     #[test]
+    fn the_config_accepts_exactly_the_left_right_modes_that_exist() {
+        // The config validates left_right against its own word list, so
+        // that list and the interface's modes must never drift apart: a
+        // mode the config refused could not be written down, and a word
+        // the interface ignores would pass validation and mean nothing.
+        assert_eq!(
+            crate::config::LEFT_RIGHT_VALUES.len(),
+            Horizontal::ALL.len()
+        );
+        for mode in Horizontal::ALL {
+            assert!(
+                crate::config::LEFT_RIGHT_VALUES.contains(&mode.label()),
+                "{} is not in the config's list",
+                mode.label()
+            );
+            assert!(Horizontal::parse(mode.label()).is_some());
+        }
+    }
+
+    #[test]
     fn a_setting_cycles_round_its_choices() {
         // Left and right are the only controls a setting has. One that
         // stopped at its last choice could be walked one way and never
