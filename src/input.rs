@@ -90,8 +90,9 @@ pub const SPEED_STEPS: [(f32, u64); 7] = [
     (12.0, 7),
 ];
 
-/// A fresh start sits at 1x, so the first thing felt is the familiar rate.
-pub const SPEED_START: usize = 1;
+/// A fresh start sits at 3x: quick enough to feel the point of the
+/// exercise, slow enough to read on the way past.
+pub const SPEED_START: usize = 3;
 
 /// Held-key repeat cadence.
 #[derive(Debug, Clone, Copy)]

@@ -88,7 +88,7 @@ Enter, Escape, Space and Tab.
   tool and the browser follows: nothing has to be re-imported or re-tagged.
   The index it keeps is only a copy of what the card already says, and
   **Options -> Rebuild all system lists** brings it back in step,
-  and the contextual menu's **Rebuild this system** does one system alone.
+  and the contextual menu's **Rebuild this system list** does one system alone.
 - **Full metadata.** Description, publisher, developer, release date,
   players and language, read from `gamelist.xml`.
 - **Favourites are MiSTer's favourites**, written into `_@Favorites` in
@@ -185,7 +185,7 @@ The first run reads the card and writes an index, about a minute for a
 full one of 97k+ games. It never does that again on its own: **Options → Rebuild all system lists**
 is how you tell it the card has changed (for example after adding new games). New images and metadata are read on the fly.
 Adding games to one system does not need the whole card read again:
-**X → Rebuild this system** inside that system reads just its folders.
+**X → Rebuild this system list** inside that system reads just its folders.
 
 ### Optional: starting Degauss from the stock menu on-demand
 
@@ -257,7 +257,7 @@ top of their folder.
 **Hide this**, in the contextual menu, takes any row out of the list: a
 game, a folder, or a whole system while you are looking at the system
 list. That is separate from the folders and systems left out because they
-hold no games at all, which **Show empty folders** governs. **Show what
+hold no games at all, which **Show systems with no games** governs. **Show what
 you hid** shows the rows you hid without unhiding them, and **Unhide
 everything** puts them all back.
 
@@ -268,36 +268,38 @@ card.
 
 **Options**
 
+One screen holds everything, in groups a blank row apart, top to bottom:
+
 | Setting | Does |
 |---|---|
-| Scroll speed | How fast a held direction moves through the list |
-| Left and right | What left and right do while browsing: Scroll speed change (the default), Letter, Page or Direction. Letter and Page repeat while held; Direction frees up and down to move a whole row in Tiled |
-| Skip artwork faster than | Above this speed, pictures wait until the list stops |
-| Rebuild all system lists | Read the whole card again. Run it after adding games, cores or artwork; for one system, the contextual menu's **Rebuild this system** is quicker |
+| Scroll speed | How fast a held direction moves through the list. 3x out of the box |
+| Skip artwork faster than | Above this speed, pictures wait until the list stops. 6x out of the box |
+| Left and right behaviour | What left and right do while browsing: Scroll speed change (the default), Letter, Page or Direction. Letter and Page repeat while held; Direction frees up and down to move a whole row in Tiled |
+| Theme | A palette from the `themes/` folder, or Standard for the colours in `degauss.toml`. See [Themes and colours](#themes-and-colours) |
 | View | Details, Tiled, List or Carousel |
 | Text | The typeface: Smooth, Pixel (a DOS font on whole pixels), and the bolder Smooth 2 and Pixel 2 |
-| Theme | A palette from the `themes/` folder, or Standard for the colours in `degauss.toml`. See [Themes and colours](#themes-and-colours) |
-| Bottom bar while browsing | The strip with the time and the buttons. Menus always keep it |
 | Artwork | Turn pictures off entirely |
+| Bottom bar while browsing | The strip with the time and the buttons. Menus always keep it |
 | Favourites first | Gather a folder's favourites at its top, in the same alphabet |
-| Random | Whether a random pick starts the game, or only moves to it so you can look first |
-| Folders | Where folders sit inside a system: first, or after the games |
-| Show empty folders | Show folders and systems with no games in them. These are left out on their own. Off by default |
+| Folders before games | On, folders lead a system's listing; off, the games come first |
+| Random game behaviour | Whether a random pick starts the game, or only moves to it so you can look first |
+| Show Other folder | Show the Other group, the cores that are not games |
+| Show Utility folder | Show the Utility group, test patterns and measurement cores |
+| Show systems with no games | Systems and folders holding nothing are left out on their own; this shows them. Off by default |
 | Show what you hid | Show what you hid yourself with **Hide this** |
 | Unhide everything | Put back everything you hid yourself, in every folder and every system |
-| Show Other | Shows Others folder, usually the group holding cores that are not games |
-| Show Utility | Shows the Utility folder, usually the group holding tests and measurement cores |
-| Advanced | The screen below |
-
-**Advanced**
-
-| Setting | Does |
-|---|---|
-| Screensaver | How long with nothing pressed before pictures start |
 | Edge margin, sides | Keep this much of each side clear of the bezel |
 | Edge margin, top and bottom | The same, vertically |
 | Screen position, sideways | Nudge the picture, for a screen that sits off centre |
 | Screen position, up and down | The same, vertically |
+| Screensaver | How long with nothing pressed before pictures start |
+| Rebuild all system lists | Read the whole card again. Run it after adding games, cores or artwork; for one system, the contextual menu's **Rebuild this system list** is quicker |
+| Developer | The screen below |
+
+**Developer**
+
+| Setting | Does |
+|---|---|
 | Drawing path | Draw into the screen directly, or into memory first |
 | Performance readout | Replace the key hints with frame timings |
 
@@ -720,7 +722,7 @@ It is worth asking your agent to check the whole card for this once.
 #### After any change
 
 Rebuild the cache from the Degauss menu, or just the changed system with
-**X → Rebuild this system** while inside it. Artwork is never cached, so
+**X → Rebuild this system list** while inside it. Artwork is never cached, so
 pictures appear as soon as they are on the card. Favourites are shared with
 MiSTer's own `_@Favorites` folder, so an agent can add one and the stock
 menu will agree with it, and vice versa.

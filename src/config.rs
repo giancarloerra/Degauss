@@ -278,7 +278,8 @@ fn default_art_cache() -> usize {
 /// enough to cover normal browsing with a picture on every row, slow enough
 /// that the decoding keeps up.
 fn default_art_limit() -> usize {
-    3
+    // The 6x step: artwork keeps up to there on the measured hardware.
+    4
 }
 
 #[derive(Debug, Clone, Deserialize)]

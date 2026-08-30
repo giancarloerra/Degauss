@@ -360,7 +360,7 @@ const HIDE_THIS: &str = "Hide this";
 
 /// Read the system being browsed off the card again, leaving every other
 /// system's listing as it was.
-const REBUILD_SYSTEM: &str = "Rebuild this system";
+const REBUILD_SYSTEM: &str = "Rebuild this system list";
 
 /// Put it back.
 const SHOW_THIS: &str = "Show this";
@@ -2302,20 +2302,33 @@ impl App {
         }
     }
 
-    /// Step over the blank lines that separate groups in a menu.
+    /// Step over the blank lines that separate groups in a menu, and the
+    /// spacer rows that do the same on the options screen.
     ///
     /// They are there to be read, not chosen. Bounded by the number of
-    /// entries, so a menu that somehow held nothing else cannot spin.
+    /// entries, so a list that somehow held nothing else cannot spin.
     fn skip_blank_menu(&mut self, delta: isize) {
-        if !matches!(self.screen, Screen::Menu | Screen::Context) {
-            return;
-        }
-        for _ in 0..self.menu.len() {
-            let at = self.menu_list.selected();
-            if self.menu.get(at).is_none_or(|entry| !entry.is_empty()) {
-                return;
+        match self.screen {
+            Screen::Menu | Screen::Context => {
+                for _ in 0..self.menu.len() {
+                    let at = self.menu_list.selected();
+                    if self.menu.get(at).is_none_or(|entry| !entry.is_empty()) {
+                        return;
+                    }
+                    self.menu_list.move_items(delta);
+                }
             }
-            self.menu_list.move_items(delta);
+            Screen::Options | Screen::Advanced => {
+                let ids = self.option_ids();
+                for _ in 0..ids.len() {
+                    let at = self.active_list().selected();
+                    if ids.get(at) != Some(&OptionId::Spacer) {
+                        return;
+                    }
+                    self.active_list_mut().move_items(delta);
+                }
+            }
+            _ => {}
         }
     }
 
@@ -3292,6 +3305,9 @@ impl App {
             return;
         };
         match option {
+            // The cursor never rests on one, but a stale index after a
+            // screen change must do nothing rather than something.
+            OptionId::Spacer => {}
             OptionId::Speed => {
                 self.speed = step(self.speed, delta, SPEED_STEPS.len());
                 self.settings.speed_step = Some(self.speed);
@@ -3507,12 +3523,9 @@ impl App {
                 "Selects"
             }
             .to_string(),
-            OptionId::FoldersLast => if self.folders_last {
-                "After games"
-            } else {
-                "First"
-            }
-            .to_string(),
+            // The label reads Folders before games, so On is the leading
+            // position and the stored folders_last flag inverts.
+            OptionId::FoldersLast => on_off(!self.folders_last),
             OptionId::ResetHidden => {
                 match self.settings.hidden.len() + self.settings.hidden_paths.len() {
                     0 => "Nothing hidden".to_string(),
@@ -3531,6 +3544,7 @@ impl App {
             OptionId::ShiftX => format!("{:+} px", self.shift_x()),
             OptionId::ShiftY => format!("{:+} px", self.shift_y()),
             OptionId::Advanced => ">".to_string(),
+            OptionId::Spacer => String::new(),
             OptionId::OverscanX => format!(
                 "{}%",
                 self.settings
