@@ -96,7 +96,8 @@ Enter, Escape, Space and Tab.
 - **Nothing written to your card** except favourites you ask for, its own
   index, the `settings.toml` holding what you changed in Options, and a
   small `state.toml` remembering where you were: every folder you visit
-  keeps the row you left it on until the machine is powered off, found
+  keeps the row you left it on for the whole sitting, riding along when
+  a game takes the screen and starting fresh on a cold start, found
   again by the game itself rather than by its position, so a folder whose
   contents changed still comes back to the same game. An AmigaVision
   title also needs its `shared/ags_boot` file written, which is how those

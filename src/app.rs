@@ -4564,7 +4564,9 @@ impl App {
         // The first place is the one opening the system already reached.
         // `places` stops at anything the card no longer has, so a renamed
         // folder lands on its parent instead of an error screen.
-        for place in saved.places().into_iter().skip(1) {
+        let places = saved.places();
+        let walked_everything = places.len() == saved.trail.len();
+        for place in places.into_iter().skip(1) {
             self.enter(place);
         }
         // Every level keeps the row it was left on. `enter` above wrote the
@@ -4578,7 +4580,15 @@ impl App {
         // were the walk's own rather than the user's. The saved memory is
         // the truthful one, so it goes back in whole.
         self.left_at = saved.left_at.clone();
-        self.game_list.select(saved.selected);
+        if walked_everything {
+            self.game_list.select(saved.selected);
+        } else {
+            // The walk stopped short of the folder the cursor position
+            // belongs to; that number means a row in a folder that was
+            // not reached. Re-list where the walk DID land, whose own
+            // remembered row is the honest answer.
+            self.show_here();
+        }
         self.touch_selection();
         self.apply_geometry();
     }
