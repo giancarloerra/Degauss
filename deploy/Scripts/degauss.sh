@@ -212,7 +212,13 @@ if [ -d "${OLD}" ]; then
                 elif [ -f "${entry}" ] && [ -f "${DIR}/${name}" ]; then
                     mv -f "${entry}" "${DIR}/${name}" || migrate_failed "${name}"
                 else
-                    mv "${entry}" "${DIR}/${name}.old" || migrate_failed "${name}"
+                    aside="${name}.old"
+                    n=2
+                    while [ -e "${DIR}/${aside}" ]; do
+                        aside="${name}.old.${n}"
+                        n=$((n + 1))
+                    done
+                    mv "${entry}" "${DIR}/${aside}" || migrate_failed "${name}"
                 fi
             done
             # Empty in every real case now. If something landed in it

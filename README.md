@@ -123,7 +123,8 @@ so the files land here:
 
 Earlier releases lived in `/media/fat/Scripts/.degauss/`. When updating
 over one, `degauss.sh` moves everything into the new folder on its next
-start, says `Migrating Degauss data...` on the console while it does,
+start, says `Migrating Degauss data to Scripts/.config/degauss...` on the
+console while it does,
 and removes the old folder: your settings, resume state and index carry
 over, a `degauss.toml`, `systems.toml` or logo you edited stays the
 active copy, and any other file you kept in the folder follows the move
