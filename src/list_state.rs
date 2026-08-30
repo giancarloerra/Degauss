@@ -33,7 +33,6 @@ impl ListState {
         self.selected = index.min(self.count.saturating_sub(1));
     }
 
-    #[allow(dead_code)]
     pub fn visible(&self) -> usize {
         self.visible
     }

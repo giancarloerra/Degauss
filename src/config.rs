@@ -224,6 +224,16 @@ pub struct AppSettings {
     /// Which view to open in: "details", "tiled", "list" or "carousel".
     #[serde(default = "default_layout")]
     pub layout: String,
+    /// What left and right do while browsing: "speed", "letter", "page" or
+    /// "direction".
+    ///
+    /// The shipped degauss.toml documents this key as a commented line
+    /// rather than an active one: `[app]` rejects keys it does not know,
+    /// so an active key that older versions never heard of would stop
+    /// them from starting after a downgrade. The live value is written to
+    /// settings.toml by the Options screen, which tolerates unknown keys.
+    #[serde(default = "default_left_right")]
+    pub left_right: String,
     /// Which typeface to set the interface in: "smooth" or "pixel".
     #[serde(default = "default_font")]
     pub font: String,
@@ -242,6 +252,10 @@ pub struct AppSettings {
 
 fn default_layout() -> String {
     "details".to_string()
+}
+
+fn default_left_right() -> String {
+    "speed".to_string()
 }
 
 fn default_font() -> String {
@@ -304,13 +318,41 @@ impl Config {
     pub fn parse(text: &str, origin: &Path) -> Result<Self> {
         let config: Config = toml::from_str(text)
             .map_err(|e| DegaussError::malformed("config", origin, e.to_string()))?;
+        // Validated like the colours: a value nothing answers to would
+        // otherwise silently mean the default, which reads as the
+        // setting not working.
+        if !LEFT_RIGHT_VALUES.contains(&config.app.left_right.as_str()) {
+            return Err(DegaussError::malformed(
+                "config",
+                origin,
+                format!(
+                    "left_right {:?}: the choices are speed, letter, page and direction",
+                    config.app.left_right
+                ),
+            ));
+        }
         Ok(config)
     }
 }
 
+/// The words `left_right` accepts, the config-side twin of the modes the
+/// interface steps through; a test in app.rs holds the two together.
+pub const LEFT_RIGHT_VALUES: [&str; 4] = ["speed", "letter", "page", "direction"];
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_left_right_value_nothing_answers_to_is_refused_by_name() {
+        // Silently meaning the default would read as the setting not
+        // working; the refusal names the word and the choices.
+        let err = Config::parse("[app]\nleft_right = \"leftr\"\n", Path::new("t"))
+            .expect_err("a typo'd mode must not parse");
+        let text = format!("{err}");
+        assert!(text.contains("leftr"), "got: {text}");
+        assert!(text.contains("letter"), "the choices are named: {text}");
+    }
 
     #[test]
     fn a_config_from_every_release_that_used_the_old_folder_still_parses() {
@@ -361,6 +403,7 @@ favorite = "#fe2e1d"
         assert_eq!(config.colors.accent, Color::new(0xff, 0xcd, 0x09));
         assert_eq!(config.app.cover_size, 160, "defaults fill in");
         assert_eq!(config.app.layout, "details");
+        assert_eq!(config.app.left_right, "speed");
         assert_eq!(config.app.font, "smooth");
         assert!(
             config.game_roots.iter().any(|r| r == "/media/fat/games"),
