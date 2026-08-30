@@ -77,7 +77,7 @@ Enter, Escape, Space and Tab.
   process, nothing at boot. One program, running only while you are
   looking at it.
 - **Self-contained.** One program, with no runtime, toolkit or library to
-  install beside it, and 33 MB resident while it runs. The index it builds
+  install beside it, and small footprint while it runs. The index it builds
   costs about 300 bytes a game, so it stays in the low megabytes for an
   ordinary collection and is the only thing that grows with the size of
   yours.
@@ -87,23 +87,13 @@ Enter, Escape, Space and Tab.
 - **The card is the truth.** Reorganise, rename or move files with any
   tool and the browser follows: nothing has to be re-imported or re-tagged.
   The index it keeps is only a copy of what the card already says, and
-  **Options -> Rebuild all system lists** brings it back in step,
+  **Options -> Rebuild all system lists** quickly updates all systems after an update,
   and the contextual menu's **Rebuild this system list** does one system alone.
 - **Full metadata.** Description, publisher, developer, release date,
   players and language, read from `gamelist.xml`.
 - **Favourites are MiSTer's favourites**, written into `_@Favorites` in
   MiSTer's own format. One made here works in the stock menu; one made
   anywhere else appears here.
-- **Nothing written to your card** except favourites you ask for, its own
-  index, the `settings.toml` holding what you changed in Options, and a
-  small `state.toml` remembering where you were: every folder you visit
-  keeps the row you left it on for the whole sitting, riding along when
-  a game takes the screen and starting fresh on a cold start, found
-  again by the game itself rather than by its position, so a folder whose
-  contents changed still comes back to the same game. An AmigaVision
-  title also needs its `shared/ags_boot` file written, which is how those
-  games are started.
-  Gamelists and artwork are read, never modified.
 - **Awkward systems handled** without hassle: AmigaVision, DOS,
   Neo Geo, Arcade, X68000, and cores that are several machines.
 
@@ -126,6 +116,34 @@ so the files land here:
 /media/fat/Scripts/.config/degauss/themes/
 ```
 
+Then add one line to the `[MiSTer]` section of `/media/fat/MiSTer.ini`:
+
+```ini
+main=degauss/MiSTer_Degauss
+```
+
+Reboot. Degauss comes up in place of the stock menu, and leaving a game
+returns to it.
+
+To remove Degauss, delete the `main=` line and the files above. Nothing
+else on the card is touched. 
+
+### Installing and staying up to date automatically via update_all script
+
+Degauss publishes a Downloader database, so `update_all` can keep it current
+with everything else on the card. Add two lines to the bottom of
+`/media/fat/downloader.ini`:
+
+```ini
+[degauss]
+db_url = 'https://github.com/giancarloerra/Degauss/releases/latest/download/degauss.json.zip'
+```
+
+Then run `update_all` or `downloader` as usual, and both binaries and the
+files beside them come down and stay updated.
+
+The `main=` line still has to be added by hand, once.
+
 ### Upgrading from an earlier release
 
 Earlier releases lived in `/media/fat/Scripts/.degauss/`. When updating
@@ -147,25 +165,25 @@ itself over:
 It reports what is present, missing, broken or still waiting in the old
 folder, and says ok when there is nothing to say.
 
-Then add one line to the `[MiSTer]` section of `/media/fat/MiSTer.ini`:
+### Optional: starting Degauss from the stock menu on-demand
+
+The installation above is the recommended way to use Degauss. It opens Degauss automatically on boot, returns to it after leaving a game, and adds a **Frontend** entry to the System menu while a game is running.
+
+If you prefer to keep the stock MiSTer menu as the default, leave the `main=` line as it is in `MiSTer.ini`. You can then start Degauss when wanted by opening the OSD and selecting **Scripts → degauss**.
+
+This requires MiSTer's framebuffer terminal to be enabled:
 
 ```ini
-main=degauss/MiSTer_Degauss
+fb_terminal=1
 ```
 
-Reboot. Degauss comes up in place of the stock menu, and leaving a game
-returns to it.
+It is enabled by default in the standard MiSTer configuration.
 
-`MiSTer_Degauss` is a small fork of MiSTer Main that hands the screen over.
-Its source is at
-[giancarloerra/Degauss-Main](https://github.com/giancarloerra/Degauss-Main)
-(branch `degauss`), under GPLv3 like MiSTer Main itself.
-`degauss.sh` is how it starts the frontend.
+Degauss can browse the collection and launch games normally when started this way. However, after leaving a game/core, MiSTer will return to the stock menu instead of reopening Degauss automatically. There's not going to be the Frontend option anymore in the cores menu, and you'll need to re-launch Degauss from the OSD if you want to go back to it.
 
-To remove Degauss, delete the `main=` line and the files above. Nothing
-else on the card is touched.
+Doing it in this way, the installed `/media/fat/degauss/MiSTer_Degauss` file is not used.
 
-### External storage
+### External storage support
 
 Games on a USB stick, the network share or the CIFS mount are found
 without any setup, in the order MiSTer's own loader searches:
@@ -186,60 +204,6 @@ full one of 97k+ games. It never does that again on its own: **Options → Rebui
 is how you tell it the card has changed (for example after adding new games). New images and metadata are read on the fly.
 Adding games to one system does not need the whole card read again:
 **X → Rebuild this system list** inside that system reads just its folders.
-
-### Optional: starting Degauss from the stock menu on-demand
-
-The installation above is the recommended way to use Degauss. It opens Degauss automatically on boot, returns to it after leaving a game, and adds a **Frontend** entry to the System menu while a game is running.
-
-If you prefer to keep the stock MiSTer menu as the default, leave the `main=` line as it is in `MiSTer.ini`. You can then start Degauss when wanted by opening the OSD and selecting **Scripts → degauss**.
-
-This requires MiSTer's framebuffer terminal to be enabled:
-
-```ini
-fb_terminal=1
-```
-
-It is enabled by default in the standard MiSTer configuration.
-
-Degauss can browse the collection and launch games normally when started this way. However, after leaving a game/core, MiSTer will return to the stock menu instead of reopening Degauss automatically. There's not going to be the Frontend option anymore in the cores menu, and you'll need to re-launch Degauss from the OSD if you want to go back to it.
-
-Doing it in this way, the installed `/media/fat/degauss/MiSTer_Degauss` file is not used.
-
-### Staying up to date
-
-Degauss publishes a Downloader database, so `update_all` can keep it current
-with everything else on the card. Add two lines to the bottom of
-`/media/fat/downloader.ini`:
-
-```ini
-[degauss]
-db_url = 'https://github.com/giancarloerra/Degauss/releases/latest/download/degauss.json.zip'
-```
-
-Then run `update_all` or `downloader` as usual, and both binaries and the
-files beside them come down and stay updated.
-
-The `main=` line still has to be added by hand, once. 
-
-## Building it yourself
-
-Every release carries a ready binary, so building is optional.
-
-The dependency tree is pure Rust, so a cross build needs nothing but
-rustup: no Docker, no C cross-compiler, no `arm-linux-gnueabihf-gcc`. Rust's
-own linker and its self-contained musl do the work, and `.cargo/config.toml`
-already selects them.
-
-```bash
-rustup target add armv7-unknown-linux-musleabihf
-./scripts/build-arm.sh
-```
-
-That writes the binary and everything beside it into `deploy/Scripts`, ready
-to copy onto the card. It builds on Linux, macOS and Windows alike.
-
-`MiSTer_Degauss` is built from its own repository, which carries the script
-that does it. That one is C++ and does need a cross-compiler.
 
 ## Views
 
@@ -780,6 +744,26 @@ first pays for a cold card.
 
 `--import-favorites <file>` writes a favourite per line of a list, in
 MiSTer's own format, for moving a collection over in one go.
+
+## Building it yourself
+
+Every release carries a ready binary, so building is optional.
+
+The dependency tree is pure Rust, so a cross build needs nothing but
+rustup: no Docker, no C cross-compiler, no `arm-linux-gnueabihf-gcc`. Rust's
+own linker and its self-contained musl do the work, and `.cargo/config.toml`
+already selects them.
+
+```bash
+rustup target add armv7-unknown-linux-musleabihf
+./scripts/build-arm.sh
+```
+
+That writes the binary and everything beside it into `deploy/Scripts`, ready
+to copy onto the card. It builds on Linux, macOS and Windows alike.
+
+`MiSTer_Degauss` is built from its own repository, which carries the script
+that does it. That one is C++ and does need a cross-compiler.
 
 ## Licence
 
