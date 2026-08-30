@@ -2,7 +2,7 @@
 # was. These values are starting points, meant to be tuned on a real
 # tube. Edits to this file are overwritten by the updater; copy it under
 # a new name to keep your own version. No favorite colour on purpose:
-# the hearts keep the standard red, whatever the palette.
+# the hearts keep your own favourite colour, whatever the palette.
 
 background = "#56677A"
 panel = "#2C3947"

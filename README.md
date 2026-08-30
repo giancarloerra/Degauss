@@ -336,7 +336,8 @@ all, is also a valid theme, ready to be edited.
 Three themes ship as starting points: `Amber` after the amber phosphor,
 `Mono`, the standard greys with the colour taken out, and `Blue-Orange`,
 slate blue with an orange highlight. None of them names `favorite`, so
-the hearts stay the standard red in all of them. The updater manages
+the hearts keep your own favourite colour under every palette: red,
+unless you changed it in `[colors]`. The updater manages
 those three files, so edits to them are overwritten on the next update;
 copy one under a new file name to make it your own. The folder is read once at startup, so a file added while
 Degauss is running appears after the next start, and the chosen theme is
