@@ -165,6 +165,22 @@ Its source is at
 To remove Degauss, delete the `main=` line and the files above. Nothing
 else on the card is touched.
 
+### External storage
+
+Games on a USB stick, the network share or the CIFS mount are found
+without any setup, in the order MiSTer's own loader searches:
+`/media/usb0` to `usb5`, then `/media/network`, then `/media/fat/cifs`,
+then the card, each under its `games` folder. For each system folder the
+first place that has it wins, so a system kept on both the stick and the
+card browses from the stick, exactly as the stock menu would load it.
+Different folders of one system may resolve in different places.
+
+Two things to know. Storage is looked for when Degauss starts, so plug
+the stick in first (or restart after); and moving a system between
+storages changes its paths, so its listing is stale until **Rebuild this
+system** or a full rebuild. A layout the defaults do not cover is one
+`game_roots` edit in `degauss.toml` away.
+
 The first run reads the card and writes an index, about a minute for a
 full one of 97k+ games. It never does that again on its own: **Options → Rebuild all system lists**
 is how you tell it the card has changed (for example after adding new games). New images and metadata are read on the fly.

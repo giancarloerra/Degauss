@@ -9,10 +9,25 @@
 # systems.toml. That file is generated from public community data and is
 # yours to edit.
 
-# Where to look for games. The first root that has a system's folder wins.
-# /media/fat is listed too because Arcade lives at /media/fat/_Arcade
-# rather than under games.
-game_roots = ["/media/fat/games", "/media/fat"]
+# Where to look for games, in the order MiSTer's own loader searches:
+# USB sticks first, then the network share, then the CIFS mount, then the
+# card. For each folder name the first root that has it wins; a root that
+# is not mounted is skipped. /media/fat is listed too because Arcade lives
+# at /media/fat/_Arcade rather than under games. Storage must be mounted
+# before Degauss starts: what appears later is picked up on the next
+# start, or by Rebuild this system.
+game_roots = [
+    "/media/usb0/games",
+    "/media/usb1/games",
+    "/media/usb2/games",
+    "/media/usb3/games",
+    "/media/usb4/games",
+    "/media/usb5/games",
+    "/media/network/games",
+    "/media/fat/cifs/games",
+    "/media/fat/games",
+    "/media/fat",
+]
 
 # The top of the card, where the _-prefixed menu folders live. Read once at
 # startup to find which group each installed core belongs to, so systems are
