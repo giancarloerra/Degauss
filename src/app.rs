@@ -1645,7 +1645,7 @@ impl App {
         if self.screen == Screen::Advanced {
             &ADVANCED
         } else {
-            &OPTIONS
+            OPTIONS
         }
     }
 

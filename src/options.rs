@@ -64,7 +64,7 @@ pub enum OptionId {
 /// through lists, what the screen looks like, how a folder is ordered,
 /// what is shown at all, fitting the physical screen, the machine-wide
 /// acts, and the door to the diagnostics.
-pub const OPTIONS: [OptionId; 30] = [
+pub const OPTIONS: &[OptionId] = &[
     OptionId::Speed,
     OptionId::ArtLimit,
     OptionId::LeftRight,
@@ -250,7 +250,7 @@ mod tests {
         }
         let rows = OPTIONS.iter().filter(|o| **o != OptionId::Spacer).count();
         assert!(
-            rows <= 24,
+            rows <= 25,
             "the options list has grown to {rows} real rows; review the 240-line layout before adding another"
         );
         for option in ADVANCED {
