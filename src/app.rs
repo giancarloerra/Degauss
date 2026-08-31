@@ -503,11 +503,11 @@ const FIND_COLUMNS: usize = 9;
 /// folders nearly every time, which makes the jump useless in any system
 /// whose folder names span the alphabet.
 ///
-/// When favourites have been gathered at the top, they are a second copy of
-/// titles that still sit in the alphabetical body of the list. A jump skips
-/// that leading copy so it lands where browsing can continue alphabetically.
-/// The Favourites system passes `false`: its rows are not duplicates and
-/// there may be no non-favourite body to use.
+/// When favourites have been gathered at the top, their rows sit outside the
+/// alphabetical non-favourite body of the list. A jump skips that leading
+/// group so it lands where browsing can continue alphabetically.
+/// The Favourites system passes `false`: its favourite rows are the body
+/// itself and there may be no non-favourite body to use.
 ///
 /// So: an eligible entry that actually begins with the letter, wherever it
 /// is; failing that the first eligible file after it, since the files are the
@@ -3799,10 +3799,10 @@ impl App {
     /// Move the selection to the letter picked.
     fn jump_to(&mut self, letter: char) {
         let key = letter.to_ascii_lowercase();
-        // A pinned favourite is a shortcut to a title that remains in the
-        // alphabetical body. Skip shortcuts only when that body exists in
-        // the current, possibly filtered list. Inside Favourites every game
-        // is a favourite and is therefore the body itself.
+        // Rows gathered into the leading favourite group sit outside the
+        // alphabetical non-favourite body. Skip that group only when the body
+        // exists in the current, possibly filtered list. Inside Favourites
+        // every game is a favourite and is therefore the body itself.
         let skip_favorites = self.browsing == Browsing::Games
             && self.favorites_first
             && !self.in_favorites()
@@ -5797,7 +5797,7 @@ mod tests {
     }
 
     #[test]
-    fn a_jump_skips_the_favourite_copy_when_favourites_lead() {
+    fn a_jump_skips_favourites_when_they_lead() {
         let list = [
             ('a', false, true),
             ('m', false, true),
