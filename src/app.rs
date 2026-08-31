@@ -492,8 +492,8 @@ const FIND_CELLS: &str = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
 /// How many across.
 const FIND_COLUMNS: usize = 9;
 
-/// Where picking a letter should land, given each entry's first character
-/// and whether it is a folder.
+/// Where picking a letter should land, given each entry's first character,
+/// whether it is a folder, and whether it is a favourite.
 ///
 /// Not a scan for the first entry at or after the letter. A folder is
 /// listed before every file whatever it is called, so the first letters do
@@ -503,19 +503,30 @@ const FIND_COLUMNS: usize = 9;
 /// folders nearly every time, which makes the jump useless in any system
 /// whose folder names span the alphabet.
 ///
-/// So: an entry that actually begins with the letter, wherever it is;
-/// failing that the first file after it, since the files are the body of
-/// the list; failing that the first entry after it at all.
-fn jump_target(entries: &[(char, bool)], key: char) -> Option<usize> {
+/// When favourites have been gathered at the top, their rows sit outside the
+/// alphabetical non-favourite body of the list. A jump skips that leading
+/// group so it lands where browsing can continue alphabetically.
+/// The Favourites system passes `false`: its favourite rows are the body
+/// itself and there may be no non-favourite body to use.
+///
+/// So: an eligible entry that actually begins with the letter, wherever it
+/// is; failing that the first eligible file after it, since the files are the
+/// body of the list; failing that the first eligible entry after it at all.
+fn jump_target(entries: &[(char, bool, bool)], key: char, skip_favorites: bool) -> Option<usize> {
+    let eligible = |favorite: bool| !skip_favorites || !favorite;
     entries
         .iter()
-        .position(|(first, _)| *first == key)
+        .position(|(first, _, favorite)| *first == key && eligible(*favorite))
+        .or_else(|| {
+            entries.iter().position(|(first, folder, favorite)| {
+                !*folder && *first > key && eligible(*favorite)
+            })
+        })
         .or_else(|| {
             entries
                 .iter()
-                .position(|(first, folder)| !*folder && *first > key)
+                .position(|(first, _, favorite)| *first > key && eligible(*favorite))
         })
-        .or_else(|| entries.iter().position(|(first, _)| *first > key))
 }
 
 /// Where stepping a letter at a time lands: the first row of the next or
@@ -3788,20 +3799,31 @@ impl App {
     /// Move the selection to the letter picked.
     fn jump_to(&mut self, letter: char) {
         let key = letter.to_ascii_lowercase();
-        let entries: Vec<(char, bool)> = match self.browsing {
+        // Rows gathered into the leading favourite group sit outside the
+        // alphabetical non-favourite body. Skip that group only when the body
+        // exists in the current, possibly filtered list. Inside Favourites
+        // every game is a favourite and is therefore the body itself.
+        let skip_favorites = self.browsing == Browsing::Games
+            && self.favorites_first
+            && !self.in_favorites()
+            && self
+                .here
+                .iter()
+                .any(|row| !row.is_folder() && !row.favorite);
+        let entries: Vec<(char, bool, bool)> = match self.browsing {
             Browsing::Games => self
                 .here
                 .iter()
-                .map(|row| (first_letter(&row.sort_key), row.is_folder()))
+                .map(|row| (first_letter(&row.sort_key), row.is_folder(), row.favorite))
                 .collect(),
             Browsing::Systems => self
                 .systems
                 .iter()
-                .map(|system| (first_letter(&system.name().to_lowercase()), false))
+                .map(|system| (first_letter(&system.name().to_lowercase()), false, false))
                 .collect(),
             Browsing::Categories => return,
         };
-        match jump_target(&entries, key) {
+        match jump_target(&entries, key, skip_favorites) {
             Some(at) => self.active_list_mut().select(at),
             // Past the end of the alphabet as this list has it: the last
             // entry is the nearest thing to what was asked for.
@@ -5732,41 +5754,67 @@ mod tests {
         // Folders first, then files, each sorted on its own: the first
         // letters climb twice, which is what broke this.
         let list = [
-            ('_', true),
-            ('a', true),
-            ('c', true),
-            ('s', true),
-            ('a', false),
-            ('b', false),
-            ('m', false),
-            ('z', false),
+            ('_', true, false),
+            ('a', true, false),
+            ('c', true, false),
+            ('s', true, false),
+            ('a', false, false),
+            ('b', false, false),
+            ('m', false, false),
+            ('z', false, false),
         ];
         // A letter the files have and the folders do not.
-        assert_eq!(jump_target(&list, 'b'), Some(5));
-        assert_eq!(jump_target(&list, 'm'), Some(6));
-        assert_eq!(jump_target(&list, 'z'), Some(7));
+        assert_eq!(jump_target(&list, 'b', false), Some(5));
+        assert_eq!(jump_target(&list, 'm', false), Some(6));
+        assert_eq!(jump_target(&list, 'z', false), Some(7));
         // A letter both have: the first one in the list, which is the
         // folder, because that is what is on screen first.
-        assert_eq!(jump_target(&list, 'a'), Some(1));
+        assert_eq!(jump_target(&list, 'a', false), Some(1));
     }
 
     #[test]
     fn a_jump_to_a_missing_letter_lands_after_it_among_the_files() {
-        let list = [('c', true), ('s', true), ('a', false), ('m', false)];
+        let list = [
+            ('c', true, false),
+            ('s', true, false),
+            ('a', false, false),
+            ('m', false, false),
+        ];
         // No D anywhere. The next file is M, not the S folder above it.
-        assert_eq!(jump_target(&list, 'd'), Some(3));
+        assert_eq!(jump_target(&list, 'd', false), Some(3));
         // Past everything.
-        assert_eq!(jump_target(&list, 'z'), None);
+        assert_eq!(jump_target(&list, 'z', false), None);
     }
 
     #[test]
     fn a_jump_works_where_every_entry_is_a_folder() {
         // Neo Geo keeps its games as folders, so there is no file run to
         // fall back to and the folders have to answer.
-        let list = [('a', true), ('k', true), ('m', true)];
-        assert_eq!(jump_target(&list, 'k'), Some(1));
-        assert_eq!(jump_target(&list, 'l'), Some(2));
-        assert_eq!(jump_target(&list, 'z'), None);
+        let list = [('a', true, false), ('k', true, false), ('m', true, false)];
+        assert_eq!(jump_target(&list, 'k', false), Some(1));
+        assert_eq!(jump_target(&list, 'l', false), Some(2));
+        assert_eq!(jump_target(&list, 'z', false), None);
+    }
+
+    #[test]
+    fn a_jump_skips_favourites_when_they_lead() {
+        let list = [
+            ('a', false, true),
+            ('m', false, true),
+            ('a', false, false),
+            ('m', false, false),
+            ('z', false, false),
+        ];
+        assert_eq!(jump_target(&list, 'a', true), Some(2));
+        assert_eq!(jump_target(&list, 'm', true), Some(3));
+        assert_eq!(jump_target(&list, 'b', true), Some(3));
+    }
+
+    #[test]
+    fn a_jump_keeps_favourites_eligible_on_the_favourites_shelf() {
+        let list = [('a', false, true), ('m', false, true)];
+        assert_eq!(jump_target(&list, 'a', false), Some(0));
+        assert_eq!(jump_target(&list, 'm', false), Some(1));
     }
 
     #[test]
