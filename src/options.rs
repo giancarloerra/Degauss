@@ -25,6 +25,9 @@ pub enum OptionId {
     /// Which named palette from the themes folder is on, if any.
     Theme,
     ShowArt,
+    /// Correct game artwork for the physical aspect ratio of a display
+    /// whose framebuffer pixels are not square.
+    ArtworkScale,
     ShowHidden,
     ShowEmpty,
     /// Show the group holding the cores that are not games.
@@ -62,7 +65,7 @@ pub enum OptionId {
 /// through lists, what the screen looks like, how a folder is ordered,
 /// what is shown at all, fitting the physical screen, the machine-wide
 /// acts, and the door to the diagnostics.
-pub const OPTIONS: [OptionId; 29] = [
+pub const OPTIONS: &[OptionId] = &[
     OptionId::Speed,
     OptionId::ArtLimit,
     OptionId::LeftRight,
@@ -71,6 +74,7 @@ pub const OPTIONS: [OptionId; 29] = [
     OptionId::Layout,
     OptionId::Font,
     OptionId::ShowArt,
+    OptionId::ArtworkScale,
     OptionId::ShowBar,
     OptionId::Spacer,
     OptionId::FavoritesFirst,
@@ -108,6 +112,7 @@ impl OptionId {
             OptionId::Font => "Text",
             OptionId::Theme => "Theme",
             OptionId::ShowArt => "Artwork",
+            OptionId::ArtworkScale => "Artwork scale factor",
             OptionId::ShowHidden => "Show what you hid",
             OptionId::ShowEmpty => "Show systems with no games",
             OptionId::ShowOther => "Show Other folder",
@@ -149,6 +154,9 @@ impl OptionId {
                 "A palette from the themes folder, read at start. Standard is degauss.toml."
             }
             OptionId::ShowArt => "Turn artwork off entirely.",
+            OptionId::ArtworkScale => {
+                "Correct game artwork for a 4:3 or 16:9 display. Logos and the screensaver stay unchanged."
+            }
             OptionId::ShowHidden => {
                 "Show what you hid yourself, from Hide this. Not the same as empty ones."
             }
@@ -243,7 +251,7 @@ mod tests {
         }
         let rows = OPTIONS.iter().filter(|o| **o != OptionId::Spacer).count();
         assert!(
-            rows <= 23,
+            rows <= 25,
             "the options list has grown to {rows} real rows; new diagnostics belong behind Developer"
         );
         for option in ADVANCED {

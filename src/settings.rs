@@ -57,6 +57,11 @@ pub struct Settings {
     pub hidden_paths: Vec<String>,
     pub show_stats: Option<bool>,
     pub show_art: Option<bool>,
+    /// How game artwork is horizontally corrected for the physical display:
+    /// "framebuffer", "4:3" or "16:9". Absent keeps the original
+    /// framebuffer-pixel behaviour.
+    #[serde(default)]
+    pub artwork_scale: Option<String>,
     pub present: Option<String>,
     /// Systems the user has hidden, by id. Hiding is per-system and
     /// reversible; nothing is ever removed from the table.
@@ -121,6 +126,7 @@ mod tests {
         let settings: Settings = toml::from_str(text).expect("v0.2.0 settings must keep parsing");
         assert_eq!(settings.font.as_deref(), Some("pixel"));
         assert_eq!(settings.layout.as_deref(), Some("details"));
+        assert!(settings.artwork_scale.is_none());
         assert_eq!(settings.overscan_x, Some(5));
         assert_eq!(settings.hidden, ["PDP1", "VC4000"]);
         assert_eq!(settings.folder_views.len(), 2);
@@ -148,6 +154,7 @@ mod tests {
             hidden: vec!["PSX".to_string()],
             art_limit: Some(0),
             layout: Some("covers".into()),
+            artwork_scale: Some("4:3".into()),
             left_right: Some("letter".into()),
             theme: Some("amber".into()),
             show_stats: Some(true),

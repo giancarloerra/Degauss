@@ -272,6 +272,7 @@ One screen holds everything, in groups a blank row apart, top to bottom:
 | View | Details, Tiled, List or Carousel |
 | Text | The typeface: Smooth, Pixel (a DOS font on whole pixels), and the bolder Smooth 2 and Pixel 2 |
 | Artwork | Turn pictures off entirely |
+| Artwork scale factor | Framebuffer keeps the original square-pixel fit and is the default. 4:3 and 16:9 correct game artwork for that physical display shape in Details, Tiled and Carousel. Category logos, system logos and the screensaver are unchanged |
 | Bottom bar while browsing | The strip with the time and the buttons. Menus always keep it |
 | Favourites first | Gather a folder's favourites at its top, in the same alphabet |
 | Folders before games | On, folders lead a system's listing; off, the games come first |

@@ -183,6 +183,74 @@ impl Layout {
     }
 }
 
+/// How game artwork is corrected when framebuffer pixels are not square on
+/// the physical display. The stored names are part of the settings format.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ArtworkScale {
+    /// Preserve the original behaviour: fit artwork in framebuffer pixels.
+    #[default]
+    Framebuffer,
+    /// Correct artwork for a display whose physical picture is 4:3.
+    FourThree,
+    /// Correct artwork for a display whose physical picture is 16:9.
+    SixteenNine,
+}
+
+impl ArtworkScale {
+    const ALL: [ArtworkScale; 3] = [
+        ArtworkScale::Framebuffer,
+        ArtworkScale::FourThree,
+        ArtworkScale::SixteenNine,
+    ];
+
+    fn setting(self) -> &'static str {
+        match self {
+            ArtworkScale::Framebuffer => "framebuffer",
+            ArtworkScale::FourThree => "4:3",
+            ArtworkScale::SixteenNine => "16:9",
+        }
+    }
+
+    fn shown(self) -> &'static str {
+        match self {
+            ArtworkScale::Framebuffer => "Framebuffer",
+            ArtworkScale::FourThree => "4:3",
+            ArtworkScale::SixteenNine => "16:9",
+        }
+    }
+
+    fn parse(text: &str) -> Option<Self> {
+        match text {
+            "framebuffer" => Some(ArtworkScale::Framebuffer),
+            "4:3" => Some(ArtworkScale::FourThree),
+            "16:9" => Some(ArtworkScale::SixteenNine),
+            _ => None,
+        }
+    }
+
+    fn index(self) -> usize {
+        ArtworkScale::ALL
+            .iter()
+            .position(|&scale| scale == self)
+            .expect("every artwork scale is listed")
+    }
+
+    /// Horizontal scale in framebuffer coordinates that makes source
+    /// artwork retain its own aspect ratio on the selected physical display.
+    fn horizontal(self, width: u32, height: u32) -> f32 {
+        let display_aspect = match self {
+            ArtworkScale::Framebuffer => return 1.0,
+            ArtworkScale::FourThree => 4.0 / 3.0,
+            ArtworkScale::SixteenNine => 16.0 / 9.0,
+        };
+        assert!(
+            width > 0 && height > 0,
+            "framebuffer dimensions are non-zero"
+        );
+        (width as f32 / height as f32) / display_aspect
+    }
+}
+
 /// What left and right do while browsing.
 ///
 /// Speed is how Degauss always behaved and stays the default. The other
@@ -1021,6 +1089,7 @@ pub struct App {
 
     speed: usize,
     show_art: bool,
+    artwork_scale: ArtworkScale,
     show_stats: bool,
     show_hidden: bool,
     /// Every system found, before hiding is applied. `systems` is the
@@ -1229,6 +1298,11 @@ impl App {
             .and_then(Horizontal::parse)
             .or_else(|| Horizontal::parse(&config.app.left_right))
             .unwrap_or_default();
+        let artwork_scale = settings
+            .artwork_scale
+            .as_deref()
+            .and_then(ArtworkScale::parse)
+            .unwrap_or_default();
         // Margins are saved when changed and read back here. Without this the
         // Options screen would show the saved figure while the screen kept
         // the one from the config file, and the two would disagree.
@@ -1275,6 +1349,7 @@ impl App {
                 .unwrap_or(SPEED_START)
                 .min(SPEED_STEPS.len() - 1),
             show_art: settings.show_art.unwrap_or(true),
+            artwork_scale,
             show_stats: settings.show_stats.unwrap_or(config.app.show_stats),
             show_hidden: settings.show_hidden.unwrap_or(false),
             all_systems: Vec::new(),
@@ -1609,7 +1684,7 @@ impl App {
         if self.screen == Screen::Advanced {
             &ADVANCED
         } else {
-            &OPTIONS
+            OPTIONS
         }
     }
 
@@ -3361,6 +3436,12 @@ impl App {
                 self.settings.show_art = Some(self.show_art);
                 self.touch_selection();
             }
+            OptionId::ArtworkScale => {
+                let at = step(self.artwork_scale.index(), delta, ArtworkScale::ALL.len());
+                self.artwork_scale = ArtworkScale::ALL[at];
+                self.settings.artwork_scale = Some(self.artwork_scale.setting().to_string());
+                self.touch_selection();
+            }
             OptionId::ShowStats => {
                 self.show_stats = !self.show_stats;
                 self.settings.show_stats = Some(self.show_stats);
@@ -3520,6 +3601,7 @@ impl App {
                 None => "Standard".to_string(),
             },
             OptionId::ShowArt => on_off(self.show_art),
+            OptionId::ArtworkScale => self.artwork_scale.shown().to_string(),
             OptionId::ShowStats => on_off(self.show_stats),
             OptionId::Present => capitalised(self.present_label),
             OptionId::ShowHidden => on_off(self.show_hidden),
@@ -4411,9 +4493,9 @@ impl App {
         self.open_system.as_deref() == Some(FAVORITES_ID)
     }
 
-    /// The picture, the words under it, and whether the heart should stand
-    /// in for both.
-    fn current_art(&self) -> (Option<PathBuf>, String, bool) {
+    /// The picture, the words under it, whether the heart should stand in
+    /// for both, and whether the picture is game artwork rather than a logo.
+    fn current_art(&self) -> (Option<PathBuf>, String, bool, bool) {
         match (self.screen, self.browsing) {
             (Screen::Browse, Browsing::Games) => {
                 match self.here.get(self.game_list.selected()) {
@@ -4423,6 +4505,8 @@ impl App {
                         // name is already the row: the mark says more.
                         let heart =
                             self.in_favorites() && matches!(row.kind, browse::Kind::Enter(_));
+                        let game_art =
+                            matches!(&row.kind, browse::Kind::Play(_)) && row.cover.is_some();
                         (
                             row.cover.clone().or_else(|| {
                                 if heart {
@@ -4434,9 +4518,10 @@ impl App {
                             }),
                             row.name.clone(),
                             heart,
+                            game_art,
                         )
                     }
-                    None => (None, String::new(), false),
+                    None => (None, String::new(), false, false),
                 }
             }
             (Screen::Browse, Browsing::Systems) => {
@@ -4444,9 +4529,9 @@ impl App {
                     Some(system) => {
                         let heart = system.def.id == FAVORITES_ID;
                         let logo = if heart { None } else { system.logo() };
-                        (logo, system.name().to_string(), heart)
+                        (logo, system.name().to_string(), heart, false)
                     }
-                    None => (None, String::new(), false),
+                    None => (None, String::new(), false, false),
                 }
             }
             (Screen::Browse, Browsing::Categories) => {
@@ -4458,12 +4543,12 @@ impl App {
                         } else {
                             self.category_logo(name)
                         };
-                        (logo, name.clone(), heart)
+                        (logo, name.clone(), heart, false)
                     }
-                    None => (None, String::new(), false),
+                    None => (None, String::new(), false, false),
                 }
             }
-            _ => (None, String::new(), false),
+            _ => (None, String::new(), false, false),
         }
     }
 
@@ -4489,9 +4574,15 @@ impl App {
         }
 
         let started = Instant::now();
-        let (path, caption, heart) = self.current_art();
+        let (path, caption, heart, game_art) = self.current_art();
         self.ui.set_art_caption(SharedString::from(caption));
         self.ui.set_art_heart(heart);
+        self.ui.set_art_scale_x(artwork_horizontal(
+            self.artwork_scale,
+            self.width,
+            self.height,
+            game_art,
+        ));
         match path.and_then(|path| self.cover_for(&path)) {
             Some(image) => {
                 self.ui.set_art(image);
@@ -4521,6 +4612,7 @@ impl App {
                         favorite: false,
                         cover: slint::Image::default(),
                         has_cover: false,
+                        art_scale_x: 1.0,
                         value: SharedString::new(),
                     });
                 }
@@ -4545,6 +4637,7 @@ impl App {
                             favorite: false,
                             cover,
                             has_cover,
+                            art_scale_x: 1.0,
                             value: SharedString::new(),
                         });
                     }
@@ -4573,6 +4666,7 @@ impl App {
                                 favorite: false,
                                 cover,
                                 has_cover,
+                                art_scale_x: 1.0,
                                 value: SharedString::new(),
                             });
                         }
@@ -4597,6 +4691,7 @@ impl App {
                                 favorite: false,
                                 cover,
                                 has_cover,
+                                art_scale_x: 1.0,
                                 value: match held {
                                     Some(games) => SharedString::from(games.to_string()),
                                     None => SharedString::new(),
@@ -4615,6 +4710,15 @@ impl App {
                             None
                         };
                         for index in range {
+                            let game_art = with_art
+                                && matches!(&self.here[index].kind, browse::Kind::Play(_))
+                                && self.here[index].cover.is_some();
+                            let art_scale_x = artwork_horizontal(
+                                self.artwork_scale,
+                                self.width,
+                                self.height,
+                                game_art,
+                            );
                             let wanted = if with_art {
                                 // Inside favourites a folder is a shelf the
                                 // user made, and the panel marks it with a
@@ -4651,6 +4755,7 @@ impl App {
                                 favorite: row.favorite,
                                 cover,
                                 has_cover,
+                                art_scale_x,
                                 // How much is in there, where somebody has
                                 // counted. Folders only: a game is one game.
                                 value: match row.below {
@@ -5373,12 +5478,24 @@ fn plain_row(title: &str, value: &str) -> Row {
         favorite: false,
         cover: slint::Image::default(),
         has_cover: false,
+        art_scale_x: 1.0,
         value: SharedString::from(value),
     }
 }
 
 fn on_off(value: bool) -> String {
     if value { "On" } else { "Off" }.to_string()
+}
+
+/// Apply display correction only to real game artwork. System and category
+/// logos, folder stand-ins and screensaver pictures retain their existing
+/// framebuffer geometry.
+fn artwork_horizontal(scale: ArtworkScale, width: u32, height: u32, is_game_art: bool) -> f32 {
+    if is_game_art {
+        scale.horizontal(width, height)
+    } else {
+        1.0
+    }
 }
 
 /// A setting's value with its first letter raised.
@@ -5598,6 +5715,55 @@ mod tests {
         for one in all {
             assert_eq!(Layout::parse(one.label()), Some(one));
         }
+    }
+
+    #[test]
+    fn every_artwork_scale_is_reachable_and_round_trips() {
+        // The option cycles only through ALL and persists the setting token.
+        // Missing either side would make a choice unreachable or forget it
+        // at the next start.
+        for (at, scale) in ArtworkScale::ALL.iter().copied().enumerate() {
+            assert_eq!(scale.index(), at);
+            assert_eq!(ArtworkScale::parse(scale.setting()), Some(scale));
+        }
+        assert_eq!(ArtworkScale::parse("nonsense"), None);
+        assert_eq!(
+            ArtworkScale::default(),
+            ArtworkScale::Framebuffer,
+            "an absent setting must retain the original geometry"
+        );
+    }
+
+    #[test]
+    fn artwork_scale_preserves_source_aspect_on_the_selected_display() {
+        // A 400x200 framebuffer has 2:1 pixel geometry. On a 4:3 display its
+        // pixels are narrower, so 4:3 source art needs a 1.5x raw width; on a
+        // 16:9 display it needs 1.125x. Both must appear physically 4:3.
+        let source_aspect = 4.0 / 3.0;
+        for (scale, display_aspect) in [
+            (ArtworkScale::FourThree, 4.0 / 3.0),
+            (ArtworkScale::SixteenNine, 16.0 / 9.0),
+        ] {
+            let raw_aspect = source_aspect * scale.horizontal(400, 200);
+            let physical_aspect = raw_aspect * display_aspect / 2.0;
+            assert!((physical_aspect - source_aspect).abs() < 0.0001);
+        }
+        assert!((ArtworkScale::FourThree.horizontal(400, 200) - 1.5).abs() < 0.0001);
+        assert!((ArtworkScale::SixteenNine.horizontal(400, 200) - 1.125).abs() < 0.0001);
+    }
+
+    #[test]
+    fn artwork_scale_does_not_change_logos_or_screensaver_geometry() {
+        // Callers classify only browse game covers as game artwork. Every
+        // logo, folder stand-in and screensaver picture passes false and
+        // keeps the same one-to-one framebuffer geometry in every mode.
+        for scale in ArtworkScale::ALL {
+            assert_eq!(artwork_horizontal(scale, 400, 200, false), 1.0);
+        }
+        assert_eq!(
+            artwork_horizontal(ArtworkScale::FourThree, 400, 200, true),
+            1.5
+        );
     }
 
     #[test]
