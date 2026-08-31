@@ -371,6 +371,39 @@ const ADD_FAVORITE: &str = "Add to favourites";
 /// Take it out again.
 const REMOVE_FAVORITE: &str = "Remove from favourites";
 
+/// What the optional held-X gesture can do to the selected row.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FavoriteChange {
+    Add,
+    Remove,
+}
+
+/// Decide the held-X operation without touching the card, so the boundaries
+/// that protect folders, other screens and the master Favourites system can
+/// be pinned by tests.
+fn favorite_change(
+    enabled: bool,
+    screen: Screen,
+    browsing: Browsing,
+    in_favorites: bool,
+    has_game: bool,
+    favorite: bool,
+) -> Option<FavoriteChange> {
+    if !enabled
+        || screen != Screen::Browse
+        || browsing != Browsing::Games
+        || in_favorites
+        || !has_game
+    {
+        return None;
+    }
+    Some(if favorite {
+        FavoriteChange::Remove
+    } else {
+        FavoriteChange::Add
+    })
+}
+
 /// The entry that spells out a folder name rather than picking one.
 const NEW_FOLDER: &str = "New folder...";
 
@@ -1053,6 +1086,8 @@ pub struct App {
     favorites: crate::favorites::Favorites,
     /// Whether favourites are gathered at the top of a folder.
     favorites_first: bool,
+    /// Whether a one-second X hold adds or removes the selected favourite.
+    hold_x_favorite: bool,
     /// The typeface everything is set in.
     font: Font,
     /// The themes the folder held at startup, in the order the Options row
@@ -1287,6 +1322,7 @@ impl App {
             empty_systems: None,
             favorites: crate::favorites::Favorites::default(),
             favorites_first: settings.favorites_first.unwrap_or(true),
+            hold_x_favorite: settings.hold_x_favorite.unwrap_or(false),
             // The file the user edits, then the one Degauss writes, then the
             // typeface that always exists. A name neither of them recognises
             // is not worth refusing to start over.
@@ -1609,7 +1645,7 @@ impl App {
         if self.screen == Screen::Advanced {
             &ADVANCED
         } else {
-            &OPTIONS
+            OPTIONS
         }
     }
 
@@ -3439,6 +3475,10 @@ impl App {
                 // The folder on screen was ordered by the old answer.
                 self.relist_here();
             }
+            OptionId::HoldXFavorite => {
+                self.hold_x_favorite = !self.hold_x_favorite;
+                self.settings.hold_x_favorite = Some(self.hold_x_favorite);
+            }
             OptionId::RandomLaunches => {
                 self.random_launches = !self.random_launches;
                 self.settings.random_launches = Some(self.random_launches);
@@ -3528,6 +3568,7 @@ impl App {
             OptionId::ShowUtility => on_off(self.show_utility),
             OptionId::ShowBar => on_off(self.show_bar),
             OptionId::FavoritesFirst => on_off(self.favorites_first),
+            OptionId::HoldXFavorite => on_off(self.hold_x_favorite),
             OptionId::RandomLaunches => if self.random_launches {
                 "Launches"
             } else {
@@ -3887,10 +3928,37 @@ impl App {
         }
     }
 
+    /// The operation a held X would perform now. The same answer enables the
+    /// timer and handles its result, so a row that cannot be changed never
+    /// acquires a delayed X press.
+    fn favorite_change(&self) -> Option<FavoriteChange> {
+        let selected = self.selected_game();
+        let favorite = selected
+            .as_deref()
+            .is_some_and(|game| self.favorites.holds(game));
+        favorite_change(
+            self.hold_x_favorite,
+            self.screen,
+            self.browsing,
+            self.in_favorites(),
+            selected.is_some(),
+            favorite,
+        )
+    }
+
     /// Offer the folders MiSTer's favourites are already kept in, and the
     /// chance to name another.
     fn open_favorite_folders(&mut self) {
-        let mut entries = crate::favorites::folders(&self.favorites_root());
+        let mut entries = match crate::favorites::folders(&self.favorites_root()) {
+            Ok(entries) => entries,
+            Err(e) => {
+                self.screen = Screen::Browse;
+                self.apply_geometry();
+                self.message = Some(format!("{e}"));
+                self.dirty = true;
+                return;
+            }
+        };
         entries.push(NEW_FOLDER.to_string());
         self.menu = entries;
         self.menu_list = ListState::new(self.menu.len(), self.geometry.visible);
@@ -4290,6 +4358,11 @@ impl App {
                     return self.go_back();
                 }
             }
+            Action::FavoriteShortcut => match self.favorite_change() {
+                Some(FavoriteChange::Add) => self.open_favorite_folders(),
+                Some(FavoriteChange::Remove) => self.remove_favorite(),
+                None => {}
+            },
             Action::CyclePresent => self.pending_present_switch = true,
             Action::Accept => match self.screen {
                 Screen::Screensaver => self.leave_screensaver(),
@@ -4924,13 +4997,11 @@ impl App {
             // and again before the repeats so a screen opened under a held
             // stick stops the repeat instead of taking one more step there.
             repeater.set_horizontal_repeats(self.horizontal_scrolls());
+            repeater.set_favorite_hold(self.favorite_change().is_some());
             for edge in input.poll() {
                 let action = match edge {
                     KeyEdge::Down(action) => repeater.press(action, now),
-                    KeyEdge::Up(action) => {
-                        repeater.release(action);
-                        None
-                    }
+                    KeyEdge::Up(action) => repeater.release(action, now),
                 };
                 if let Some(action) = action {
                     if let Some(outcome) = self.handle(action) {
@@ -4940,6 +5011,7 @@ impl App {
                 }
             }
             repeater.set_horizontal_repeats(self.horizontal_scrolls());
+            repeater.set_favorite_hold(self.favorite_change().is_some());
             for action in repeater.tick(now) {
                 if let Some(outcome) = self.handle(action) {
                     self.save_settings();
@@ -5849,6 +5921,41 @@ mod tests {
         let over_favourite = context_entries(Browsing::Games, false, Some(true), None);
         assert!(over_favourite.iter().any(|e| e == REMOVE_FAVORITE));
         assert!(!over_favourite.iter().any(|e| e == ADD_FAVORITE));
+    }
+
+    #[test]
+    fn the_held_x_shortcut_is_opt_in_and_only_changes_games_outside_favourites() {
+        // Existing installations have no setting, so the shortcut is absent.
+        assert_eq!(
+            favorite_change(false, Screen::Browse, Browsing::Games, false, true, false),
+            None
+        );
+        // A normal game adds through the existing folder chooser; one already
+        // held removes through the existing contextual-menu operation.
+        assert_eq!(
+            favorite_change(true, Screen::Browse, Browsing::Games, false, true, false),
+            Some(FavoriteChange::Add)
+        );
+        assert_eq!(
+            favorite_change(true, Screen::Browse, Browsing::Games, false, true, true),
+            Some(FavoriteChange::Remove)
+        );
+        // The master shelf owns favourite files rather than source games;
+        // only its ordinary contextual menu is allowed to change them.
+        assert_eq!(
+            favorite_change(true, Screen::Browse, Browsing::Games, true, true, true),
+            None
+        );
+        assert_eq!(
+            favorite_change(true, Screen::Browse, Browsing::Games, false, false, false),
+            None,
+            "folders are not games"
+        );
+        assert_eq!(
+            favorite_change(true, Screen::Context, Browsing::Games, false, true, false),
+            None,
+            "the shortcut exists only while browsing"
+        );
     }
 
     #[test]

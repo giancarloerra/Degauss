@@ -37,6 +37,8 @@ pub enum OptionId {
     RebuildCache,
     /// Gather favourites at the top of a folder.
     FavoritesFirst,
+    /// Add or remove a favourite by holding X for one second.
+    HoldXFavorite,
     RandomLaunches,
     /// List folders after the games rather than before them.
     FoldersLast,
@@ -62,7 +64,7 @@ pub enum OptionId {
 /// through lists, what the screen looks like, how a folder is ordered,
 /// what is shown at all, fitting the physical screen, the machine-wide
 /// acts, and the door to the diagnostics.
-pub const OPTIONS: [OptionId; 29] = [
+pub const OPTIONS: &[OptionId] = &[
     OptionId::Speed,
     OptionId::ArtLimit,
     OptionId::LeftRight,
@@ -74,6 +76,7 @@ pub const OPTIONS: [OptionId; 29] = [
     OptionId::ShowBar,
     OptionId::Spacer,
     OptionId::FavoritesFirst,
+    OptionId::HoldXFavorite,
     OptionId::FoldersLast,
     OptionId::RandomLaunches,
     OptionId::Spacer,
@@ -115,6 +118,7 @@ impl OptionId {
             OptionId::ShowBar => "Bottom bar while browsing",
             OptionId::RebuildCache => "Rebuild all system lists",
             OptionId::FavoritesFirst => "Favourites first",
+            OptionId::HoldXFavorite => "Hold X (1s) to add/remove fav",
             OptionId::RandomLaunches => "Random game behaviour",
             OptionId::FoldersLast => "Folders before games",
             OptionId::ResetHidden => "Unhide everything",
@@ -166,6 +170,9 @@ impl OptionId {
             }
             OptionId::FavoritesFirst => {
                 "Gather a folder's favourites at its top, in the same alphabet."
+            }
+            OptionId::HoldXFavorite => {
+                "Hold X for one second over a game to add or remove it. Off in the master Favourites system."
             }
             OptionId::RandomLaunches => {
                 "Whether a random pick starts the game, or only moves to it so you can look first."
@@ -243,8 +250,8 @@ mod tests {
         }
         let rows = OPTIONS.iter().filter(|o| **o != OptionId::Spacer).count();
         assert!(
-            rows <= 23,
-            "the options list has grown to {rows} real rows; new diagnostics belong behind Developer"
+            rows <= 25,
+            "the options list has grown to {rows} real rows; review the 240-line layout before adding another"
         );
         for option in ADVANCED {
             assert!(!OPTIONS.contains(&option), "{option:?} is in both lists");
@@ -276,6 +283,22 @@ mod tests {
             assert!(!seen.contains(&option), "{option:?} listed twice");
             seen.push(option);
         }
+    }
+
+    #[test]
+    fn the_held_x_option_follows_favourites_first() {
+        // Both settings govern favourites while browsing. Keeping the
+        // shortcut here, rather than behind Developer, makes the placement
+        // part of the Options contract instead of an incidental array order.
+        let favourites = OPTIONS
+            .iter()
+            .position(|option| *option == OptionId::FavoritesFirst)
+            .expect("Favourites first is in Options");
+        assert_eq!(OPTIONS.get(favourites + 1), Some(&OptionId::HoldXFavorite));
+        assert_eq!(
+            OptionId::HoldXFavorite.label(),
+            "Hold X (1s) to add/remove fav"
+        );
     }
 
     #[test]

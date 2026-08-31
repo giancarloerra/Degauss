@@ -41,6 +41,11 @@ pub struct Settings {
     pub theme: Option<String>,
     /// Whether favourites are gathered at the top of a folder.
     pub favorites_first: Option<bool>,
+    /// Whether holding X for one second adds or removes the selected game.
+    /// Absent is off, preserving the immediate X behaviour from releases
+    /// before the shortcut existed.
+    #[serde(default)]
+    pub hold_x_favorite: Option<bool>,
     /// Whether picking a random game starts it, or only moves the cursor to
     /// it. Absent means only moving the cursor.
     #[serde(default)]
@@ -124,6 +129,10 @@ mod tests {
         assert_eq!(settings.overscan_x, Some(5));
         assert_eq!(settings.hidden, ["PDP1", "VC4000"]);
         assert_eq!(settings.folder_views.len(), 2);
+        assert_eq!(
+            settings.hold_x_favorite, None,
+            "an older settings file must leave the opt-in shortcut off"
+        );
     }
 
     fn temp_path(tag: &str) -> std::path::PathBuf {
@@ -150,6 +159,7 @@ mod tests {
             layout: Some("covers".into()),
             left_right: Some("letter".into()),
             theme: Some("amber".into()),
+            hold_x_favorite: Some(true),
             show_stats: Some(true),
             overscan_x: Some(24),
             ..Default::default()
