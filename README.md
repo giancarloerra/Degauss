@@ -87,7 +87,7 @@ Video showing version 0.2.0 (themes/looks/options changed since then, but the sp
 | **left / right** | scroll speed, 0.5x to 12x, or what the **Left and right** setting says: letter jumps, page jumps, or plain movement. In a menu, change the setting |
 | **A** (enter) | open a folder, launch a game |
 | **B** (escape) | back, out of the folder |
-| **X** (tab) | context menu: random game, random favourite, keep or drop a favourite, jump to letter, search, hide a row, rebuild this system, change view, etc. |
+| **X** (tab) | context menu: random game, random favourite, keep or drop a favourite, jump to letter, search, hide a row, rebuild this system, change view, etc. With **Hold X (1s) to add/remove fav** enabled, hold X for one second over a game to use the favourite shortcut |
 | **Y** (space) | menu: options, help, about, exit |
 
 A gamepad needs no setup and a keyboard is never needed. While Degauss
@@ -274,6 +274,7 @@ One screen holds everything, in groups a blank row apart, top to bottom:
 | Artwork | Turn pictures off entirely |
 | Bottom bar while browsing | The strip with the time and the buttons. Menus always keep it |
 | Favourites first | Gather a folder's favourites at its top, in the same alphabet |
+| Hold X (1s) to add/remove fav | Off by default. Hold X for one second over a game to open the normal favourite-folder chooser, or to remove it when it is already a favourite. The shortcut does nothing in the master Favourites system |
 | Folders before games | On, folders lead a system's listing; off, the games come first |
 | Random game behaviour | Whether a random pick starts the game, or only moves to it so you can look first |
 | Show Other folder | Show the Other group, the cores that are not games |

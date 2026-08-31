@@ -165,18 +165,28 @@ fn target_of_mgl(path: &Path) -> Option<PathBuf> {
 }
 
 /// The folders inside the favourites folder, as somebody would read them.
-pub fn folders(root: &Path) -> Vec<String> {
-    let Ok(listing) = std::fs::read_dir(root) else {
-        return Vec::new();
+pub fn folders(root: &Path) -> Result<Vec<String>> {
+    let listing = match std::fs::read_dir(root) {
+        Ok(listing) => listing,
+        // A card with no favourites yet has no root. The New folder entry is
+        // how the first one is created, so absence is an empty collection.
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => return Err(DegaussError::io("reading favourite folders", root, e)),
     };
-    let mut names: Vec<String> = listing
-        .flatten()
-        .filter(|item| item.file_type().is_ok_and(|kind| kind.is_dir()))
-        .map(|item| item.file_name().to_string_lossy().into_owned())
-        .filter(|name| !name.starts_with('.'))
-        .collect();
+    let mut names = Vec::new();
+    for item in listing {
+        let item = item.map_err(|e| DegaussError::io("reading favourite folders", root, e))?;
+        let path = item.path();
+        let kind = item
+            .file_type()
+            .map_err(|e| DegaussError::io("reading a favourite folder", &path, e))?;
+        let name = item.file_name().to_string_lossy().into_owned();
+        if kind.is_dir() && !name.starts_with('.') {
+            names.push(name);
+        }
+    }
     names.sort_by_key(|name| name.to_lowercase());
-    names
+    Ok(names)
 }
 
 /// Characters MiSTer's own script refuses in a favourite's name, so a name
@@ -281,6 +291,44 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("degauss-fav-{name}-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    #[test]
+    fn a_card_with_no_favourites_root_offers_an_empty_folder_list() {
+        // The folder chooser appends New folder. Treating a genuinely absent
+        // root as empty is what lets the first favourite create it.
+        let root = std::env::temp_dir().join(format!("degauss-fav-missing-{}", std::process::id()));
+        std::fs::remove_dir_all(&root).ok();
+        assert_eq!(
+            folders(&root).expect("absence is a new card"),
+            Vec::<String>::new()
+        );
+    }
+
+    #[test]
+    fn favourite_folders_are_sorted_and_non_folders_are_not_offered() {
+        let root = temp("folder-list");
+        std::fs::create_dir_all(root.join("zeta")).unwrap();
+        std::fs::create_dir_all(root.join("Arcade")).unwrap();
+        std::fs::create_dir_all(root.join(".private")).unwrap();
+        std::fs::write(root.join("loose.mgl"), "x").unwrap();
+
+        assert_eq!(
+            folders(&root).expect("folder list reads"),
+            ["Arcade".to_string(), "zeta".to_string()]
+        );
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn a_favourites_path_that_cannot_be_a_directory_is_reported() {
+        // A storage/path failure must not look like an empty collection and
+        // offer New folder as if nothing were wrong.
+        let root = temp("folder-error");
+        let file = root.join("not-a-directory");
+        std::fs::write(&file, "x").unwrap();
+        assert!(folders(&file).is_err());
+        std::fs::remove_dir_all(&root).ok();
     }
 
     /// A game that needs a companion disc has the disc written into the MGL

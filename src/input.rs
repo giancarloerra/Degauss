@@ -62,6 +62,8 @@ pub enum Action {
     Menu,
     /// Open the contextual menu: what can be done with the folder on screen.
     Context,
+    /// Add or remove the selected game as a favourite after X is held.
+    FavoriteShortcut,
 }
 
 impl Action {
@@ -93,6 +95,9 @@ pub const SPEED_STEPS: [(f32, u64); 7] = [
 /// A fresh start sits at 3x: quick enough to feel the point of the
 /// exercise, slow enough to read on the way past.
 pub const SPEED_START: usize = 3;
+
+/// How long X is held before the optional favourite shortcut fires.
+pub const FAVORITE_HOLD: Duration = Duration::from_secs(1);
 
 /// Held-key repeat cadence.
 #[derive(Debug, Clone, Copy)]
@@ -137,6 +142,10 @@ pub struct Repeater {
     /// up or down does. In every other setting they step a ladder or a
     /// choice, where one press must mean one step.
     horizontal_repeats: bool,
+    /// Whether X is being treated as a short/long gesture. This is enabled
+    /// only while the optional favourite shortcut can act on the selected
+    /// row, leaving X immediate everywhere else.
+    favorite_hold: bool,
 }
 
 impl Repeater {
@@ -145,6 +154,22 @@ impl Repeater {
             config,
             held: Vec::new(),
             horizontal_repeats: false,
+            favorite_hold: false,
+        }
+    }
+
+    /// Delay X until release so a one-second hold can be distinguished from
+    /// the ordinary contextual-menu press. Disabling the gesture also drops
+    /// an X still held, so a shortcut that opened another screen cannot fire
+    /// the short action when the button is released there.
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    pub fn set_favorite_hold(&mut self, enabled: bool) {
+        if self.favorite_hold == enabled {
+            return;
+        }
+        self.favorite_hold = enabled;
+        if !enabled {
+            self.held.retain(|held| held.action != Action::Context);
         }
     }
 
@@ -158,7 +183,9 @@ impl Repeater {
         }
         self.horizontal_repeats = enabled;
         if !enabled {
-            self.held.retain(|held| held.action.repeats());
+            self.held.retain(|held| {
+                held.action.repeats() || (self.favorite_hold && held.action == Action::Context)
+            });
         }
     }
 
@@ -177,12 +204,28 @@ impl Repeater {
     /// A key went down. Returns the action to perform immediately.
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     pub fn press(&mut self, action: Action, now: Instant) -> Option<Action> {
+        if self.favorite_hold && action != Action::Context {
+            // The shortcut acts on the selected row. Moving or pressing
+            // anything else while X is down cancels it, so the eventual
+            // hold cannot add or remove a different row.
+            self.held.retain(|held| held.action != Action::Context);
+        }
+        if self.favorite_hold
+            && action == Action::Context
+            && self.held.iter().any(|held| held.action != Action::Context)
+        {
+            // A direction already held can move the cursor during the next
+            // second. Keep X as the immediate contextual-menu action rather
+            // than arming a shortcut whose target would no longer be fixed.
+            return Some(Action::Context);
+        }
         if self.held.iter().any(|h| h.action == action) {
             return None;
         }
-        let repeats = action.repeats()
-            || (self.horizontal_repeats && matches!(action, Action::Slower | Action::Faster));
-        if repeats {
+        let retained = action.repeats()
+            || (self.horizontal_repeats && matches!(action, Action::Slower | Action::Faster))
+            || (self.favorite_hold && action == Action::Context);
+        if retained {
             self.held.push(Held {
                 action,
                 pressed_at: now,
@@ -190,12 +233,30 @@ impl Repeater {
                 repeating: false,
             });
         }
-        Some(action)
+        if self.favorite_hold && action == Action::Context {
+            None
+        } else {
+            Some(action)
+        }
     }
 
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
-    pub fn release(&mut self, action: Action) {
-        self.held.retain(|h| h.action != action);
+    pub fn release(&mut self, action: Action, now: Instant) -> Option<Action> {
+        let held = self
+            .held
+            .iter()
+            .position(|held| held.action == action)
+            .map(|at| self.held.remove(at));
+        let held = held?;
+        if self.favorite_hold && action == Action::Context && !held.repeating {
+            if now.duration_since(held.pressed_at) >= FAVORITE_HOLD {
+                Some(Action::FavoriteShortcut)
+            } else {
+                Some(Action::Context)
+            }
+        } else {
+            None
+        }
     }
 
     /// Actions due because a key is still held.
@@ -203,6 +264,13 @@ impl Repeater {
     pub fn tick(&mut self, now: Instant) -> Vec<Action> {
         let mut due = Vec::new();
         for held in &mut self.held {
+            if self.favorite_hold && held.action == Action::Context {
+                if !held.repeating && now.duration_since(held.pressed_at) >= FAVORITE_HOLD {
+                    held.repeating = true;
+                    due.push(Action::FavoriteShortcut);
+                }
+                continue;
+            }
             let ready = if held.repeating {
                 now.duration_since(held.last_fired) >= self.config.interval
             } else {
@@ -832,7 +900,10 @@ mod tests {
             vec![Action::Faster],
             "a held right must keep scrolling"
         );
-        repeater.release(Action::Faster);
+        assert_eq!(
+            repeater.release(Action::Faster, t0 + Duration::from_millis(10)),
+            None
+        );
         assert!(repeater.tick(t0 + Duration::from_secs(1)).is_empty());
     }
 
@@ -886,9 +957,143 @@ mod tests {
         let mut repeater = Repeater::new(RepeatConfig::default());
         let t0 = Instant::now();
         repeater.press(Action::Down, t0);
-        repeater.release(Action::Down);
+        assert_eq!(
+            repeater.release(Action::Down, t0 + Duration::from_millis(1)),
+            None
+        );
         assert!(repeater.tick(t0 + Duration::from_secs(5)).is_empty());
         assert!(!repeater.anything_held());
+    }
+
+    #[test]
+    fn x_stays_immediate_when_the_favourite_shortcut_is_off() {
+        // Off is the upgrade default. A user who never enables the setting
+        // must keep the exact press-time contextual-menu behaviour.
+        let mut repeater = Repeater::new(RepeatConfig::default());
+        let t0 = Instant::now();
+        assert_eq!(repeater.press(Action::Context, t0), Some(Action::Context));
+        assert!(repeater.tick(t0 + FAVORITE_HOLD).is_empty());
+        assert_eq!(repeater.release(Action::Context, t0 + FAVORITE_HOLD), None);
+    }
+
+    #[test]
+    fn a_short_x_release_keeps_the_contextual_menu() {
+        // Enabling the shortcut adds a long gesture; it must not take away
+        // the ordinary X action used throughout Degauss.
+        let mut repeater = Repeater::new(RepeatConfig::default());
+        repeater.set_favorite_hold(true);
+        let t0 = Instant::now();
+        assert_eq!(repeater.press(Action::Context, t0), None);
+        assert!(repeater
+            .tick(t0 + FAVORITE_HOLD - Duration::from_millis(1))
+            .is_empty());
+        assert_eq!(
+            repeater.release(
+                Action::Context,
+                t0 + FAVORITE_HOLD - Duration::from_millis(1)
+            ),
+            Some(Action::Context)
+        );
+    }
+
+    #[test]
+    fn x_held_for_one_second_fires_the_favourite_shortcut_once() {
+        // A destructive removal must not repeat while X remains down.
+        let mut repeater = Repeater::new(RepeatConfig::default());
+        repeater.set_favorite_hold(true);
+        let t0 = Instant::now();
+        assert_eq!(repeater.press(Action::Context, t0), None);
+        assert_eq!(
+            repeater.tick(t0 + FAVORITE_HOLD),
+            vec![Action::FavoriteShortcut]
+        );
+        assert!(repeater
+            .tick(t0 + FAVORITE_HOLD + Duration::from_secs(2))
+            .is_empty());
+        assert_eq!(
+            repeater.release(Action::Context, t0 + FAVORITE_HOLD + Duration::from_secs(2)),
+            None,
+            "release after a long hold must not open the context menu"
+        );
+    }
+
+    #[test]
+    fn release_at_the_threshold_cannot_turn_a_long_hold_into_a_short_press() {
+        // Input edges are drained before timed actions. If X comes up exactly
+        // at one second, release itself has to emit the long action.
+        let mut repeater = Repeater::new(RepeatConfig::default());
+        repeater.set_favorite_hold(true);
+        let t0 = Instant::now();
+        assert_eq!(repeater.press(Action::Context, t0), None);
+        assert_eq!(
+            repeater.release(Action::Context, t0 + FAVORITE_HOLD),
+            Some(Action::FavoriteShortcut)
+        );
+    }
+
+    #[test]
+    fn leaving_an_eligible_row_cancels_x_without_leaking_a_context_press() {
+        // A long hold can open the folder chooser. Disabling the gesture on
+        // that new screen must consume the eventual button release there.
+        let mut repeater = Repeater::new(RepeatConfig::default());
+        repeater.set_favorite_hold(true);
+        let t0 = Instant::now();
+        assert_eq!(repeater.press(Action::Context, t0), None);
+        assert_eq!(
+            repeater.tick(t0 + FAVORITE_HOLD),
+            vec![Action::FavoriteShortcut]
+        );
+        repeater.set_favorite_hold(false);
+        assert_eq!(repeater.release(Action::Context, t0 + FAVORITE_HOLD), None);
+    }
+
+    #[test]
+    fn another_button_cancels_the_held_x_target() {
+        // The favourite action belongs to the row selected when X went down.
+        // A movement while it is held must not apply it to the new row.
+        let mut repeater = Repeater::new(RepeatConfig::default());
+        repeater.set_favorite_hold(true);
+        let t0 = Instant::now();
+        assert_eq!(repeater.press(Action::Context, t0), None);
+        assert_eq!(
+            repeater.press(Action::Down, t0 + Duration::from_millis(100)),
+            Some(Action::Down)
+        );
+        assert!(
+            !repeater
+                .tick(t0 + FAVORITE_HOLD)
+                .contains(&Action::FavoriteShortcut),
+            "movement may repeat, but the cancelled favourite action must not fire"
+        );
+        assert_eq!(repeater.release(Action::Context, t0 + FAVORITE_HOLD), None);
+    }
+
+    #[test]
+    fn x_does_not_arm_the_shortcut_while_movement_is_already_held() {
+        // The reverse input order has the same target risk: a held direction
+        // can move after X goes down. X remains available as the ordinary
+        // context action, but no delayed favourite action may be retained.
+        let mut repeater = Repeater::new(RepeatConfig::default());
+        repeater.set_favorite_hold(true);
+        let t0 = Instant::now();
+        assert_eq!(repeater.press(Action::Down, t0), Some(Action::Down));
+        assert_eq!(
+            repeater.press(Action::Context, t0 + Duration::from_millis(100)),
+            Some(Action::Context)
+        );
+        assert!(
+            !repeater
+                .tick(t0 + FAVORITE_HOLD + Duration::from_millis(100))
+                .contains(&Action::FavoriteShortcut),
+            "X pressed during movement must not retain a changing target"
+        );
+        assert_eq!(
+            repeater.release(
+                Action::Context,
+                t0 + FAVORITE_HOLD + Duration::from_millis(100)
+            ),
+            None
+        );
     }
 
     #[test]
