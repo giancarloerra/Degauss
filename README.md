@@ -14,8 +14,7 @@ same folders the stock menu reads, so it agrees with the rest of your setup and 
 construction.
 
 It runs without background processes and without replacing the stock system. It is optimised for
-speed and for CRTs, with several views, a screensaver and a full set of options: it works out of
-the box, and can be tuned to your liking.
+speed and for CRTs, with several views, custom theming, different fonts, many features for favourites, browsing, lists, random discovery, a screensaver and a full set of options: it works out of the box, and can be tuned to your liking.
 
 Source available, written in Rust and using Slint, and licensed for non-commercial use.
 
@@ -30,18 +29,18 @@ Source available, written in Rust and using Slint, and licensed for non-commerci
 
 | | | |
 |---|---|---|
-| <img src="docs/screenshots/crt-01-root.png" alt="The root menu" height="200"> | <img src="docs/screenshots/crt-02-neogeo.png" alt="A system's folders" height="200"> | <img src="docs/screenshots/crt-05-favorites-inside.png" alt="Inside the favourites" height="200"> |
-| The root menu | A system's folders | Inside the favourites |
-| <img src="docs/screenshots/crt-07-list.png" alt="List view" height="200"> | <img src="docs/screenshots/crt-03-psx-meta.png" alt="Details view, with metadata from gamelist.xml" height="200"> | <img src="docs/screenshots/crt-06-tiled.png" alt="Tiled view" height="200"> |
-| List view | Details view, with metadata from gamelist.xml | Tiled view |
-| <img src="docs/screenshots/crt-14-arcade-hearts.png" alt="Favourites are marked wherever they appear" height="200"> | <img src="docs/screenshots/crt-15-carousel.png" alt="Carousel view" height="200"> | <img src="docs/screenshots/crt-08-letters.png" alt="Jump to letter" height="200"> |
-| Favourites are marked wherever they appear | Carousel view | Jump to letter |
-| <img src="docs/screenshots/crt-11-search.png" alt="Search inside a folder" height="200"> | <img src="docs/screenshots/crt-16-context.png" alt="Contextual actions" height="200"> | <img src="docs/screenshots/crt-09-options.png" alt="Options" height="200"> |
-| Search inside a folder | Contextual actions | Options |
-| <img src="docs/screenshots/crt-12-advanced.png" alt="Advanced options" height="200"> | <img src="docs/screenshots/crt-13-saver.png" alt="The screensaver slideshow" height="200"> |
-| Advanced options | The screensaver slideshow |
+| <img src="docs/screenshots/crt-root.png" alt="The root menu" height="200"> | <img src="docs/screenshots/crt-details.png" alt="Details view" height="200"> | <img src="docs/screenshots/crt-tiled.png" alt="Tiled view" height="200"> |
+| The root menu | Details view | Tiled view |
+| <img src="docs/screenshots/crt-carousel.png" alt="Carousel view" height="200"> | <img src="docs/screenshots/crt-theme-blueorange-root.png" alt="Blue-Orange theme, Pixel font" height="200"> | <img src="docs/screenshots/crt-theme-blueorange-tiled.png" alt="Blue-Orange theme, tiled" height="200"> |
+| Carousel view | Blue-Orange theme, Pixel font | Blue-Orange theme, tiled |
+| <img src="docs/screenshots/crt-theme-amber-folders.png" alt="Amber theme example" height="200"> | <img src="docs/screenshots/crt-theme-amber-details.png" alt="Amber theme, Smooth 2 text" height="200"> | <img src="docs/screenshots/crt-favourites.png" alt="Inside the favourites" height="200"> |
+| Amber theme, a system's folders | Amber theme, Smooth 2 text | Inside the favourites |
+| <img src="docs/screenshots/crt-context.png" alt="Contextual actions" height="200"> | <img src="docs/screenshots/crt-options-top.png" alt="Options" height="200"> | <img src="docs/screenshots/crt-options-middle.png" alt="Options, further down" height="200"> |
+| Contextual actions | Options | Options, further down |
+| <img src="docs/screenshots/crt-letters.png" alt="Jump to letter" height="200"> | <img src="docs/screenshots/crt-search.png" alt="Search inside a folder" height="200"> | <img src="docs/screenshots/crt-saver.png" alt="The screensaver slideshow" height="200"> |
+| Jump to letter | Search inside a folder | The screensaver slideshow |
 
-## Watch it in action
+## Watch Degauss speed in action (v0.2.0)
 
 <p align="center">
   <a href="https://www.youtube.com/watch?v=w4dGS4kX35Q">
@@ -49,6 +48,36 @@ Source available, written in Rust and using Slint, and licensed for non-commerci
          alt="Degauss in motion" width="640">
   </a>
 </p>
+
+Video showing version 0.2.0 (themes/looks/options changed since then, but the speed is the same!). Click the image to watch it on YouTube.
+
+## Table of contents
+
+- [Using it](#using-it)
+- [Why Degauss](#why-degauss)
+- [Installing](#installing)
+  - [Installing and staying up to date automatically via update_all script](#installing-and-staying-up-to-date-automatically-via-update_all-script)
+  - [Upgrading from an earlier release](#upgrading-from-an-earlier-release)
+  - [Optional: starting Degauss from the stock menu on-demand](#optional-starting-degauss-from-the-stock-menu-on-demand)
+  - [External storage support](#external-storage-support)
+- [Views](#views)
+- [Settings](#settings)
+  - [Themes and colours](#themes-and-colours)
+- [Artwork and metadata](#artwork-and-metadata)
+  - [Where the gamelist goes](#where-the-gamelist-goes)
+  - [System and category images](#system-and-category-images)
+- [Tips](#tips)
+  - [Making the gamelists](#making-the-gamelists)
+  - [Working with an agent](#working-with-an-agent)
+    - [The one thing that catches everyone](#the-one-thing-that-catches-everyone)
+    - [After any change](#after-any-change)
+  - [Keeping the card in order (additional bonus!)](#keeping-the-card-in-order-additional-bonus)
+- [The command line (CLI)](#the-command-line-cli)
+  - [Checking a card](#checking-a-card)
+  - [Seeing it without the screen](#seeing-it-without-the-screen)
+  - [Measuring it](#measuring-it)
+- [Building it yourself](#building-it-yourself)
+- [Licence](#licence)
 
 ## Using it
 
