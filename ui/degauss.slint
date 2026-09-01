@@ -138,11 +138,49 @@ component DetailPanel inherits Rectangle {
     }
 }
 
+// Game artwork can be corrected for a physical display whose framebuffer
+// pixels are not square. A factor of one retains the original contain path;
+// other factors alter only the fitted width, without cropping the source.
+component ArtworkImage inherits Rectangle {
+    in property <image> source;
+    in property <bool> has-source;
+    in property <float> horizontal-scale: 1.0;
+
+    clip: true;
+    property <float> source-aspect: source.height > 0
+        ? (source.width / source.height) * horizontal-scale
+        : 1.0;
+    property <float> box-aspect: root.height > 0px ? root.width / root.height : 1.0;
+
+    if root.horizontal-scale == 1.0: Image {
+        source: root.source;
+        visible: root.has-source;
+        image-fit: contain;
+        width: parent.width;
+        height: parent.height;
+    }
+
+    if root.horizontal-scale != 1.0: Image {
+        source: root.source;
+        visible: root.has-source;
+        image-fit: fill;
+        width: root.source-aspect >= root.box-aspect
+            ? parent.width
+            : parent.height * root.source-aspect;
+        height: root.source-aspect >= root.box-aspect
+            ? parent.width / root.source-aspect
+            : parent.height;
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+    }
+}
+
 struct Row {
     title: string,
     favorite: bool,
     cover: image,
     has-cover: bool,
+    art-scale-x: float,
     // Options rows carry their current value here; browse rows leave it empty.
     value: string,
 }
@@ -216,6 +254,7 @@ export component DegaussWindow inherits Window {
     // The large artwork: a screenshot, a system logo, or nothing.
     in property <image> art;
     in property <bool> has-art;
+    in property <float> art-scale-x: 1.0;
     in property <length> art-width;
     // Drawn in the artwork panel when there is no picture for this row and
     // no logo in the logos folder: the system or game name, set large.
@@ -528,10 +567,10 @@ export component DegaussWindow inherits Window {
                     background: root.c-surface;
                     property <length> panel: root.detail-height;
 
-                    Image {
+                    ArtworkImage {
                         source: root.art;
-                        visible: root.has-art;
-                        image-fit: contain;
+                        has-source: root.has-art;
+                        horizontal-scale: root.art-scale-x;
                         x: 1px;
                         y: 1px;
                         width: parent.width - 2px;
@@ -595,10 +634,10 @@ export component DegaussWindow inherits Window {
                     width: root.tile-width;
                     height: root.tile-height;
                     background: index == root.selected ? root.c-accent : root.c-background;
-                    Image {
+                    ArtworkImage {
                         source: row.cover;
-                        visible: row.has-cover;
-                        image-fit: contain;
+                        has-source: row.has-cover;
+                        horizontal-scale: row.art-scale-x;
                         x: 2px;
                         y: 2px;
                         width: parent.width - 4px;
@@ -871,10 +910,10 @@ export component DegaussWindow inherits Window {
                 width: root.tile-width;
                 height: parent.height - parent.panel;
 
-                Image {
+                ArtworkImage {
                     source: row.cover;
-                    visible: row.has-cover;
-                    image-fit: contain;
+                    has-source: row.has-cover;
+                    horizontal-scale: row.art-scale-x;
                     x: root.pad;
                     y: root.pad;
                     width: parent.width - root.pad * 2;
