@@ -953,8 +953,9 @@ category.
 ### Making the gamelists
 
 Degauss's built-in ScreenScraper tool can create and update gamelists directly
-on MiSTer. The computer and SSH methods below remain compatible if you prefer
-to prepare or curate them elsewhere.
+on MiSTer and is the simplest choice when MiSTer is online. The computer tools
+below are alternatives for preparing or curating them while the card is mounted
+in a computer, or through a local or network location.
 
 **On a computer, with the card in it.** Any scraper written for
 EmulationStation produces exactly the file Degauss reads.
@@ -965,6 +966,11 @@ EmulationStation produces exactly the file Degauss reads.
   `gamelist.xml` rather than a frontend's own database. It already knows
   MiSTer's folder names, so you can point it straight at the card or at a
   share.
+- [MiSTer Companion](https://mistercompanion.org/downloads/) includes
+  ZapScraper for Windows, Linux and macOS. Select **Recalbox Compatible**, then
+  point it at the inserted MiSTer card or a local or network MiSTer location.
+  It writes the `gamelist.xml` and media files Degauss reads, with support for
+  consoles, handhelds, Arcade and AmigaVision.
 - [Skyscraper](https://github.com/Gemba/skyscraper) is a C++ command line
   scraper, Linux first, and the one RetroPie uses. It caches everything it
   fetches and builds the gamelists from that cache, so changing your mind
