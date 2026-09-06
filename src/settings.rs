@@ -6,11 +6,55 @@
 //! `settings.toml` that overlays it. Delete that file and everything returns
 //! to the documented defaults.
 
-use std::path::Path;
+use std::collections::BTreeMap;
+use std::ffi::OsString;
+use std::io::Write;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
 use crate::error::{DegaussError, Result};
+
+/// Views chosen for exact places in the browser. The shape is deliberately
+/// nested rather than encoded into one string key: category names, system ids
+/// and filesystem paths are user-controlled and must not be able to collide.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct CustomViews {
+    /// The master Categories screen.
+    #[serde(default)]
+    pub categories: Option<String>,
+    /// One Systems screen per category name.
+    #[serde(default)]
+    pub systems: std::collections::BTreeMap<String, String>,
+    /// One map per stable system id, keyed by the existing `Place::key()`.
+    #[serde(default)]
+    pub games: std::collections::BTreeMap<String, std::collections::BTreeMap<String, String>>,
+}
+
+impl CustomViews {
+    pub fn is_empty(&self) -> bool {
+        self.categories.is_none() && self.systems.is_empty() && self.games.is_empty()
+    }
+
+    pub fn len(&self) -> usize {
+        usize::from(self.categories.is_some())
+            + self.systems.len()
+            + self
+                .games
+                .values()
+                .map(std::collections::BTreeMap::len)
+                .sum::<usize>()
+    }
+}
+
+/// A settings replacement can be installed before the filesystem reports a
+/// directory-flush failure. That state is not a failed install: callers must
+/// keep the installed file and surface the durability warning.
+#[derive(Debug)]
+pub enum SaveOutcome {
+    Durable,
+    InstalledWithWarning(DegaussError),
+}
 
 /// Every value the options screen can change. All optional: an absent field
 /// means "whatever the shipped configuration says".
@@ -35,6 +79,11 @@ pub struct Settings {
     /// shipped configuration says.
     #[serde(default)]
     pub font: Option<String>,
+    /// Whether the user changed Text after selecting the current theme. This
+    /// keeps that explicit choice across a restart without allowing one
+    /// theme's default to become the next theme's system font.
+    #[serde(default)]
+    pub theme_font_override: Option<bool>,
     /// The theme the palette comes from, by file stem. Absent means the
     /// standard palette: the `[colors]` block of `degauss.toml`.
     #[serde(default)]
@@ -52,10 +101,15 @@ pub struct Settings {
     pub random_launches: Option<bool>,
     /// Whether folders are listed after the games rather than before.
     pub folders_last: Option<bool>,
-    /// The view each folder was last looked at in, where one was chosen
-    /// for it. Only folders the view was changed in are here.
+    /// Views written by releases through v0.3.0, keyed only by `Place::key()`.
+    /// Migrated at startup only when one installed system can safely own the
+    /// key; retained here so existing settings files continue to deserialize.
     #[serde(default)]
     pub folder_views: std::collections::BTreeMap<String, String>,
+    /// Optional views for exact browse places. Missing means the global
+    /// `layout` applies there.
+    #[serde(default, skip_serializing_if = "CustomViews::is_empty")]
+    pub custom_views: CustomViews,
     /// Folders and games hidden one at a time, by the name each is known
     /// by. Systems are hidden by id in `hidden`; this is everything else.
     #[serde(default)]
@@ -91,6 +145,11 @@ pub struct Settings {
     /// Nudge the whole picture, in pixels. Screens are not all centred.
     pub shift_x: Option<i32>,
     pub shift_y: Option<i32>,
+    /// Local MiSTer Artwork Pack installations explicitly selected per
+    /// supported data-source group. An absent entry keeps the established
+    /// gamelist behaviour.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub artwork_pack_roots: BTreeMap<String, String>,
 }
 
 impl Settings {
@@ -106,7 +165,17 @@ impl Settings {
         }
     }
 
-    pub fn save(&self, path: &Path) -> Result<()> {
+    pub fn save(&self, path: &Path) -> Result<SaveOutcome> {
+        self.save_with_directory_sync(path, |parent| {
+            std::fs::File::open(parent).and_then(|directory| directory.sync_all())
+        })
+    }
+
+    fn save_with_directory_sync(
+        &self,
+        path: &Path,
+        sync_directory: impl FnOnce(&Path) -> std::io::Result<()>,
+    ) -> Result<SaveOutcome> {
         let text = toml::to_string_pretty(self)
             .map_err(|e| DegaussError::malformed("settings", path, e.to_string()))?;
         let body = format!(
@@ -114,8 +183,87 @@ impl Settings {
              # The documented defaults live in degauss.toml; delete this file\n\
              # to go back to them.\n\n{text}"
         );
-        std::fs::write(path, body).map_err(|e| DegaussError::io("writing settings", path, e))
+
+        let parent = path
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+            .unwrap_or_else(|| Path::new("."));
+        let file_name = path.file_name().ok_or_else(|| {
+            DegaussError::unsupported("writing settings", "settings path has no file name")
+        })?;
+        let (temporary, mut handle) = temporary_file(parent, file_name)?;
+
+        let write_result: Result<()> = (|| {
+            handle.write_all(body.as_bytes()).map_err(|error| {
+                DegaussError::io("writing temporary settings", &temporary, error)
+            })?;
+            handle.sync_all().map_err(|error| {
+                DegaussError::io("flushing temporary settings", &temporary, error)
+            })?;
+            Ok(())
+        })();
+        if let Err(error) = write_result {
+            drop(handle);
+            return Err(cleanup_temporary(&temporary, error));
+        }
+        drop(handle);
+
+        if let Err(error) = std::fs::rename(&temporary, path) {
+            let error = DegaussError::io("installing settings", path, error);
+            return Err(cleanup_temporary(&temporary, error));
+        }
+
+        match sync_directory(parent) {
+            Ok(()) => Ok(SaveOutcome::Durable),
+            Err(error) => Ok(SaveOutcome::InstalledWithWarning(DegaussError::io(
+                "flushing settings directory",
+                parent,
+                error,
+            ))),
+        }
     }
+}
+
+fn cleanup_temporary(path: &Path, error: DegaussError) -> DegaussError {
+    match std::fs::remove_file(path) {
+        Ok(()) => error,
+        Err(cleanup) if cleanup.kind() == std::io::ErrorKind::NotFound => error,
+        Err(cleanup) => DegaussError::unsupported(
+            "writing settings",
+            format!(
+                "{error}; removing the temporary file {} also failed: {cleanup}",
+                path.display()
+            ),
+        ),
+    }
+}
+
+fn temporary_file(parent: &Path, file_name: &std::ffi::OsStr) -> Result<(PathBuf, std::fs::File)> {
+    for attempt in 0..1000 {
+        let mut temporary_name = OsString::from(".");
+        temporary_name.push(file_name);
+        temporary_name.push(format!(".degauss-{}-{attempt}.tmp", std::process::id()));
+        let temporary = parent.join(temporary_name);
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temporary)
+        {
+            Ok(file) => return Ok((temporary, file)),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => {
+                return Err(DegaussError::io(
+                    "creating temporary settings",
+                    &temporary,
+                    error,
+                ));
+            }
+        }
+    }
+    Err(DegaussError::unsupported(
+        "writing settings",
+        "could not reserve a temporary settings file",
+    ))
 }
 
 #[cfg(test)]
@@ -130,14 +278,41 @@ mod tests {
         let text = include_str!("../tests/fixtures/v0.2.0-settings.toml");
         let settings: Settings = toml::from_str(text).expect("v0.2.0 settings must keep parsing");
         assert_eq!(settings.font.as_deref(), Some("pixel"));
+        assert_eq!(settings.theme_font_override, None);
         assert_eq!(settings.layout.as_deref(), Some("details"));
         assert!(settings.artwork_scale.is_none());
         assert_eq!(settings.overscan_x, Some(5));
         assert_eq!(settings.hidden, ["PDP1", "VC4000"]);
         assert_eq!(settings.folder_views.len(), 2);
+        assert!(settings.custom_views.is_empty());
         assert_eq!(
             settings.hold_x_favorite, None,
             "an older settings file must leave the opt-in shortcut off"
+        );
+        assert!(
+            settings.artwork_pack_roots.is_empty(),
+            "v0.2.0 installations must remain on Gamelist"
+        );
+    }
+
+    #[test]
+    fn settings_written_by_v0_3_0_still_load_without_freezing_new_defaults() {
+        let text = include_str!("../tests/fixtures/v0.3.0-settings.toml");
+        let settings: Settings = toml::from_str(text).expect("v0.3.0 settings must keep parsing");
+        assert_eq!(settings.font.as_deref(), Some("pixel 2"));
+        assert_eq!(settings.theme_font_override, None);
+        assert_eq!(settings.theme.as_deref(), Some("Blue-Orange"));
+        assert_eq!(settings.left_right.as_deref(), Some("page"));
+        assert_eq!(settings.layout.as_deref(), Some("carousel"));
+        assert_eq!(settings.overscan_x, Some(4));
+        assert_eq!(settings.hidden, ["PDP1"]);
+        assert_eq!(settings.folder_views.len(), 2);
+        assert!(settings.custom_views.is_empty());
+        assert!(settings.artwork_scale.is_none());
+        assert_eq!(settings.hold_x_favorite, None);
+        assert!(
+            settings.artwork_pack_roots.is_empty(),
+            "v0.3.0 installations must remain on Gamelist"
         );
     }
 
@@ -165,10 +340,26 @@ mod tests {
             layout: Some("covers".into()),
             artwork_scale: Some("4:3".into()),
             left_right: Some("letter".into()),
+            font: Some("pixel".into()),
+            theme_font_override: Some(true),
             theme: Some("amber".into()),
             hold_x_favorite: Some(true),
+            custom_views: CustomViews {
+                categories: Some("list".into()),
+                systems: [("Console".into(), "tiled".into())].into(),
+                games: [(
+                    "PSX".into(),
+                    [(
+                        "d:/media/fat/games/PSX".into(),
+                        "unknown-future-view".into(),
+                    )]
+                    .into(),
+                )]
+                .into(),
+            },
             show_stats: Some(true),
             overscan_x: Some(24),
+            artwork_pack_roots: [("SuperGrafx".into(), "/media/fat/docs".into())].into(),
             ..Default::default()
         };
         settings.save(&path).expect("saved");
@@ -179,6 +370,89 @@ mod tests {
         // applying rather than being frozen at whatever they were today.
         assert!(read.present.is_none());
         std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn replacing_settings_is_atomic_and_leaves_no_temporary_file() {
+        let path = temp_path("replace");
+        std::fs::write(&path, "show_stats = false\n").unwrap();
+        Settings {
+            show_stats: Some(true),
+            ..Default::default()
+        }
+        .save(&path)
+        .expect("replacement succeeds");
+
+        assert_eq!(Settings::load(&path).unwrap().show_stats, Some(true));
+        let parent = path.parent().unwrap();
+        let prefix = format!(
+            ".{}.degauss-{}-",
+            path.file_name().unwrap().to_string_lossy(),
+            std::process::id()
+        );
+        assert!(!std::fs::read_dir(parent).unwrap().any(|entry| {
+            entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .starts_with(&prefix)
+        }));
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn a_directory_flush_failure_reports_an_installed_file_without_rolling_it_back() {
+        let path = temp_path("directory-flush");
+        let settings = Settings {
+            theme: Some("Saved Theme".to_string()),
+            ..Default::default()
+        };
+        let outcome = settings
+            .save_with_directory_sync(&path, |_| {
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::Unsupported,
+                    "directory sync unavailable",
+                ))
+            })
+            .expect("the replacement itself completed");
+
+        match outcome {
+            SaveOutcome::InstalledWithWarning(error) => {
+                assert!(error.to_string().contains("flushing settings directory"));
+            }
+            SaveOutcome::Durable => panic!("the injected flush failure must be reported"),
+        }
+        assert_eq!(
+            Settings::load(&path).expect("installed settings remain readable"),
+            settings,
+            "a post-install warning must not roll back the installed file"
+        );
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn a_failed_atomic_install_preserves_the_occupied_destination() {
+        let root = std::env::temp_dir().join(format!(
+            "degauss-settings-install-failure-{}",
+            std::process::id()
+        ));
+        std::fs::remove_dir_all(&root).ok();
+        std::fs::create_dir(&root).unwrap();
+        let path = root.join("settings.toml");
+        std::fs::create_dir(&path).unwrap();
+        std::fs::write(path.join("marker"), "unchanged").unwrap();
+
+        assert!(Settings::default().save(&path).is_err());
+        assert_eq!(
+            std::fs::read_to_string(path.join("marker")).unwrap(),
+            "unchanged"
+        );
+        assert_eq!(
+            std::fs::read_dir(&root).unwrap().count(),
+            1,
+            "a failed install must remove its temporary file only"
+        );
+        std::fs::remove_dir_all(&root).ok();
     }
 
     #[test]

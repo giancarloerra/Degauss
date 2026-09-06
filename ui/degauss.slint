@@ -73,6 +73,30 @@ component ScrollingTitle inherits Rectangle {
     }
 }
 
+// The original wordmark stays fully visible. The second copy adds a flat
+// colour from zero percent (original artwork) to 100 percent (monochrome).
+component BlendedLogo inherits Rectangle {
+    in property <color> tint: transparent;
+    in property <float> tint-mix: 1.0;
+    in property <bool> tint-enabled: false;
+
+    Image {
+        source: @image-url("../assets/degauss-logo.png");
+        image-fit: contain;
+        width: parent.width;
+        height: parent.height;
+    }
+    Image {
+        visible: root.tint-enabled;
+        source: @image-url("../assets/degauss-logo.png");
+        colorize: root.tint;
+        opacity: root.tint-mix;
+        image-fit: contain;
+        width: parent.width;
+        height: parent.height;
+    }
+}
+
 struct DetailLine {
     label: string,
     value: string,
@@ -199,9 +223,12 @@ export component DegaussWindow inherits Window {
     in property <color> c-accent-text;
     in property <color> c-state;
     in property <color> c-favorite;
-    // The wordmark as a flat silhouette in this colour; transparent means
-    // the renderer leaves its own three colours alone.
+    // The colour mixed over the original wordmark; transparent leaves its
+    // original three colours alone.
     in property <color> logo-tint: transparent;
+    in property <bool> logo-tint-enabled: false;
+    // Zero is the original artwork and one is the flat logo-tint colour.
+    in property <float> logo-tint-mix: 1.0;
 
     // Safe area, so nothing lands under the bezel.
     in property <length> inset-left;
@@ -211,6 +238,9 @@ export component DegaussWindow inherits Window {
 
     // Geometry, computed from the framebuffer size.
     in property <length> row-height: 20px;
+    // Context-menu groups stay visually distinct without spending a full
+    // text row on an intentionally empty separator.
+    in property <bool> compact-separators;
     in property <length> body-font: 13px;
     in property <length> small-font: 11px;
     in property <length> pad: 6px;
@@ -234,13 +264,14 @@ export component DegaussWindow inherits Window {
 
     // 0 = browse, 1 = a plain list (menu, context, options, advanced, help,
     // favourite folders), 2 = the wordmark (about and splash), 3 = the
-    // screensaver, 4 = the grid of letters.
+    // screensaver, 4 = the grid of letters, 5 = the theme editor.
     in property <int> screen: 0;
     in property <string> about-version;
     in property <string> about-line;
     in property <string> about-copyright;
     in property <string> about-licence;
-    // Within browse: 0 = details, 1 = tiled, 2 = list, 3 = carousel.
+    // Within browse: 0 = details, 1 = tiled, 2 = list, 3 = carousel,
+    // 4 = multi list, 5 = gallery.
     in property <int> layout: 0;
 
     in property <[Row]> rows;
@@ -250,6 +281,8 @@ export component DegaussWindow inherits Window {
     /// The same for the lines under the picture, which travel at half the
     /// pace and so turn round on their own, slower clock.
     in property <bool> detail-end;
+    in property <string> gallery-title;
+    in property <bool> gallery-title-visible;
 
     // The large artwork: a screenshot, a system logo, or nothing.
     in property <image> art;
@@ -284,6 +317,11 @@ export component DegaussWindow inherits Window {
     in property <string> lr-word: "Speed";
     in property <bool> wide-bar;
     in property <bool> show-bar;
+    /// Master-category images use a list beside the highlighted local image.
+    in property <bool> category-image-picker;
+    /// One-game ScreenScraper candidates use a list beside the selected
+    /// candidate's artwork instead of a full-width plain list.
+    in property <bool> scraper-match-picker;
     /// True on the master list, which is short enough to look stranded
     /// against the top of the screen.
     in property <bool> center-rows;
@@ -302,6 +340,24 @@ export component DegaussWindow inherits Window {
     /// True when the grid is narrowing a list rather than jumping down it,
     /// which is the only time the two spare buttons edit anything.
     in property <bool> find-search;
+    // Theme editor sub-screen: 0 roles, 1 hex, 2 swap, 3 name, 4 discard,
+    // 5 continuous RGB picker.
+    in property <int> theme-editor-mode: 0;
+    in property <int> theme-selected-role: -1;
+    in property <[string]> theme-hex-digits;
+    in property <int> theme-hex-cursor: 0;
+    in property <color> theme-edit-color;
+    in property <string> theme-edit-hex;
+    in property <int> theme-picker-channel: 0;
+    in property <string> theme-name;
+    in property <int> theme-name-save-index: -1;
+    in property <int> theme-name-cancel-index: -1;
+    /// Screen-specific controls for a grid. Empty keeps the established
+    /// jump/search legend above.
+    in property <string> grid-help;
+    /// Screen-specific controls for a plain list. Empty keeps the established
+    /// menu/settings legend below.
+    in property <string> plain-help;
     in property <length> saver-cell;
     in property <length> saver-offset;
     in property <string> overlay;
@@ -329,7 +385,7 @@ export component DegaussWindow inherits Window {
         // Only on the settings and menu screens. Browsing does not need a
         // strip of chrome naming what is plainly on the screen, and the
         // option explanation has nowhere else to live.
-        if root.screen == 1 || root.screen == 4: Rectangle {
+        if root.screen == 1 || root.screen == 4 || root.screen == 5: Rectangle {
             x: 0; y: 0;
             width: parent.width;
             height: root.chrome-height;
@@ -365,12 +421,12 @@ export component DegaussWindow inherits Window {
         // ---- body --------------------------------------------------------
         Rectangle {
             x: 0;
-            y: root.screen == 1 || root.screen == 4 ? root.chrome-height : 0px;
+            y: root.screen == 1 || root.screen == 4 || root.screen == 5 ? root.chrome-height : 0px;
             width: parent.width;
             height: root.screen == 3
                 ? parent.height
                 : parent.height
-                    - (root.screen == 1 || root.screen == 4 ? root.chrome-height : 0px)
+                    - (root.screen == 1 || root.screen == 4 || root.screen == 5 ? root.chrome-height : 0px)
                     - (root.show-bar ? root.bar-height : 0px);
             clip: true;
 
@@ -384,10 +440,10 @@ export component DegaussWindow inherits Window {
                 height: parent.height;
                 background: root.c-background;
 
-                logo := Image {
-                    source: @image-url("../assets/degauss-logo.png");
-                    colorize: root.logo-tint;
-                    image-fit: contain;
+                logo := BlendedLogo {
+                    tint: root.logo-tint;
+                    tint-mix: root.logo-tint-mix;
+                    tint-enabled: root.logo-tint-enabled;
                     width: parent.width * 70%;
                     height: parent.height * 38%;
                     x: (parent.width - self.width) / 2;
@@ -432,11 +488,16 @@ export component DegaussWindow inherits Window {
             }
 
             // A plain list: menus, options, help, and the browse "list" layout.
-            if root.screen == 1 || (root.screen == 0 && root.layout == 2): VerticalLayout {
+            if (root.screen == 1
+                && !root.category-image-picker
+                && !root.scraper-match-picker)
+                || (root.screen == 0 && root.layout == 2): VerticalLayout {
                 alignment: root.center-rows ? LayoutAlignment.center : LayoutAlignment.start;
                 spacing: 0px;
                 for row[index] in root.rows: Rectangle {
-                    height: root.row-height;
+                    height: root.compact-separators && row.title == ""
+                        ? root.row-height / 2
+                        : root.row-height;
                     background: index == root.selected ? root.c-accent : transparent;
                     HorizontalLayout {
                         padding-left: root.pad;
@@ -472,6 +533,180 @@ export component DegaussWindow inherits Window {
                 }
             }
 
+            // Browse, multi list: two text columns in reading order.
+            if root.screen == 0 && root.layout == 4: Rectangle {
+                background: root.c-background;
+                for row[index] in root.rows: Rectangle {
+                    property <length> cell-width: parent.width / 2;
+                    x: mod(index, 2) * self.cell-width;
+                    y: floor(index / 2) * root.row-height;
+                    width: self.cell-width;
+                    height: root.row-height;
+                    background: index == root.selected ? root.c-accent : transparent;
+
+                    HorizontalLayout {
+                        padding-left: root.pad;
+                        padding-right: root.pad;
+                        spacing: root.pad / 2;
+                        Text {
+                            text: row.favorite ? "\u{2665} " : "";
+                            color: root.c-favorite;
+                            font-size: root.body-glyph;
+                            vertical-alignment: center;
+                            width: row.favorite ? self.preferred-width : 0px;
+                        }
+                        ScrollingTitle {
+                            text: row.title;
+                            text-color: index == root.selected ? root.c-accent-text : root.c-text;
+                            font-size: root.body-glyph;
+                            active: index == root.selected;
+                            at-end: root.marquee-end;
+                        }
+                        Text {
+                            text: row.value;
+                            color: index == root.selected ? root.c-accent-text : root.c-text-dim;
+                            font-size: root.small-glyph;
+                            vertical-alignment: center;
+                            horizontal-alignment: right;
+                            width: row.value == "" ? 0px : max(28px, self.preferred-width);
+                        }
+                    }
+                }
+            }
+
+            // Category-image chooser: keep the normal full-height menu rows
+            // on the left and show the highlighted file on the right. The
+            // preview is the selection itself, so it changes while moving
+            // through the list rather than only after A installs the file.
+            if root.screen == 1 && root.category-image-picker: HorizontalLayout {
+                spacing: 0px;
+
+                Rectangle {
+                    width: parent.width * 56%;
+                    background: root.c-background;
+                    clip: true;
+                    VerticalLayout {
+                        alignment: LayoutAlignment.start;
+                        spacing: 0px;
+                        for row[index] in root.rows: Rectangle {
+                            height: root.row-height;
+                            background: index == root.selected ? root.c-accent : transparent;
+                            ScrollingTitle {
+                                x: root.pad;
+                                width: parent.width - root.pad * 2;
+                                height: parent.height;
+                                text: row.title;
+                                text-color: index == root.selected
+                                    ? root.c-accent-text
+                                    : root.c-text;
+                                font-size: root.body-glyph;
+                                active: index == root.selected;
+                                at-end: root.marquee-end;
+                            }
+                        }
+                    }
+                }
+
+                Rectangle {
+                    background: root.c-surface;
+                    ArtworkImage {
+                        source: root.art;
+                        has-source: root.has-art;
+                        horizontal-scale: 1.0;
+                        x: 1px;
+                        y: 1px;
+                        width: parent.width - 2px;
+                        height: parent.height - 2px;
+                    }
+                    Text {
+                        visible: !root.has-art;
+                        text: root.art-caption;
+                        color: root.c-text-dim;
+                        font-size: root.small-glyph;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                        wrap: word-wrap;
+                        overflow: elide;
+                        x: root.pad;
+                        y: root.pad;
+                        width: parent.width - root.pad * 2;
+                        height: parent.height - root.pad * 2;
+                    }
+                }
+            }
+
+            // Manual matching is intentionally a one-game screen. Candidate
+            // names remain scrollable on the left; the highlighted result's
+            // screenshot is previewed on the right before it can be applied.
+            if root.screen == 1 && root.scraper-match-picker: HorizontalLayout {
+                spacing: 0px;
+
+                Rectangle {
+                    width: parent.width * 58%;
+                    background: root.c-background;
+                    clip: true;
+                    VerticalLayout {
+                        alignment: LayoutAlignment.start;
+                        spacing: 0px;
+                        for row[index] in root.rows: Rectangle {
+                            height: root.row-height;
+                            background: index == root.selected ? root.c-accent : transparent;
+                            HorizontalLayout {
+                                padding-left: root.pad;
+                                padding-right: root.pad;
+                                spacing: root.pad / 2;
+                                ScrollingTitle {
+                                    text: row.title;
+                                    text-color: index == root.selected
+                                        ? root.c-accent-text
+                                        : root.c-text;
+                                    font-size: root.body-glyph;
+                                    active: index == root.selected;
+                                    at-end: root.marquee-end;
+                                }
+                                Text {
+                                    text: row.value;
+                                    color: index == root.selected
+                                        ? root.c-accent-text
+                                        : root.c-text-dim;
+                                    font-size: root.small-glyph;
+                                    vertical-alignment: center;
+                                    horizontal-alignment: right;
+                                    width: row.value == "" ? 0px : self.preferred-width;
+                                }
+                            }
+                        }
+                    }
+                }
+
+                Rectangle {
+                    background: root.c-surface;
+                    ArtworkImage {
+                        source: root.art;
+                        has-source: root.has-art;
+                        horizontal-scale: 1.0;
+                        x: 1px;
+                        y: 1px;
+                        width: parent.width - 2px;
+                        height: parent.height - 2px;
+                    }
+                    Text {
+                        visible: !root.has-art;
+                        text: root.art-caption;
+                        color: root.c-text-dim;
+                        font-size: root.small-glyph;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                        wrap: word-wrap;
+                        overflow: elide;
+                        x: root.pad;
+                        y: root.pad;
+                        width: parent.width - root.pad * 2;
+                        height: parent.height - root.pad * 2;
+                    }
+                }
+            }
+
             // A grid of letters: jump down a long list, or narrow it.
             if root.screen == 4: Rectangle {
                 for cell[index] in root.rows: Rectangle {
@@ -494,6 +729,472 @@ export component DegaussWindow inherits Window {
                 }
             }
 
+            // Theme editor: controls on the left, the effective palette on
+            // the right. The preview uses the same root colour properties
+            // as every other screen, so each change is the real rendering.
+            if root.screen == 5: theme-screen := Rectangle {
+                x: 0px;
+                y: 0px;
+                width: parent.width;
+                height: parent.height;
+
+                editor-side := Rectangle {
+                    x: 0px;
+                    y: 0px;
+                    width: theme-screen.width * 55%;
+                    height: theme-screen.height;
+                    background: root.c-panel;
+                    clip: true;
+
+                    if root.theme-editor-mode != 1
+                        && root.theme-editor-mode != 3
+                        && root.theme-editor-mode != 5: VerticalLayout {
+                        x: 0px;
+                        y: 0px;
+                        width: editor-side.width;
+                        height: editor-side.height;
+                        spacing: 0px;
+                        cross-axis-alignment: stretch;
+                        for row[index] in root.rows: Rectangle {
+                            min-width: editor-side.width;
+                            max-width: editor-side.width;
+                            horizontal-stretch: 1;
+                            height: root.row-height;
+                            background: index == root.selected ? root.c-accent : transparent;
+                            ScrollingTitle {
+                                x: root.pad;
+                                width: editor-side.width * 56% - root.pad;
+                                height: parent.height;
+                                text: row.title;
+                                text-color: index == root.selected ? root.c-accent-text : root.c-text;
+                                font-size: root.body-glyph;
+                                active: index == root.selected;
+                                at-end: root.marquee-end;
+                            }
+                            Text {
+                                x: editor-side.width * 56%;
+                                y: 0px;
+                                width: editor-side.width * 44% - root.pad;
+                                height: parent.height;
+                                text: row.value;
+                                color: index == root.selected ? root.c-accent-text : root.c-text-dim;
+                                font-size: root.body-glyph;
+                                horizontal-alignment: right;
+                                vertical-alignment: center;
+                                overflow: elide;
+                            }
+                        }
+                    }
+
+                    if root.theme-editor-mode == 1: Rectangle {
+                        x: 0px;
+                        y: 0px;
+                        width: editor-side.width;
+                        height: editor-side.height;
+
+                        hex-entry := Rectangle {
+                            property <length> cell-width: min(root.body-glyph * 1.7,
+                                editor-side.width / 8);
+                            width: self.cell-width * 6;
+                            height: root.row-height * 2;
+                            x: (parent.width - self.width) / 2;
+                            y: parent.height * 24%;
+
+                            for digit[index] in root.theme-hex-digits: Rectangle {
+                                x: index * hex-entry.cell-width;
+                                width: hex-entry.cell-width;
+                                height: parent.height;
+                                Text {
+                                    text: digit;
+                                    color: root.c-text;
+                                    font-size: root.body-glyph * 2;
+                                    horizontal-alignment: center;
+                                    vertical-alignment: center;
+                                }
+                                Rectangle {
+                                    visible: index == root.theme-hex-cursor;
+                                    x: 1px;
+                                    y: parent.height - 3px;
+                                    width: parent.width - 2px;
+                                    height: 3px;
+                                    background: root.c-accent;
+                                }
+                            }
+                        }
+                        Text {
+                            text: "# Hex colour";
+                            color: root.c-text-dim;
+                            font-size: root.body-glyph;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                            width: parent.width;
+                            height: root.row-height;
+                            y: hex-entry.y + hex-entry.height + root.pad;
+                        }
+                        Text {
+                            text: "R   R   G   G   B   B";
+                            color: root.c-text-dim;
+                            font-size: root.small-glyph;
+                            horizontal-alignment: center;
+                            width: parent.width;
+                            height: root.row-height;
+                            y: hex-entry.y + hex-entry.height + root.pad + root.row-height;
+                        }
+                    }
+
+                    if root.theme-editor-mode == 5: Rectangle {
+                        x: 0px;
+                        y: 0px;
+                        width: editor-side.width;
+                        height: editor-side.height;
+
+                        Rectangle {
+                            x: parent.width * 20%;
+                            y: parent.height * 6%;
+                            width: parent.width * 20%;
+                            height: parent.height * 16%;
+                            background: root.theme-edit-color;
+                            border-width: 2px;
+                            border-color: root.c-text;
+                        }
+                        Text {
+                            x: parent.width * 44%;
+                            y: parent.height * 6%;
+                            width: parent.width * 42%;
+                            height: parent.height * 16%;
+                            text: root.theme-edit-hex;
+                            color: root.c-text;
+                            font-size: root.body-glyph;
+                            horizontal-alignment: left;
+                            vertical-alignment: center;
+                        }
+
+                        red-picker := Rectangle {
+                            x: root.pad;
+                            y: parent.height * 30%;
+                            width: parent.width - root.pad * 2;
+                            height: parent.height * 16%;
+                            border-width: root.theme-picker-channel == 0 ? 2px : 1px;
+                            border-color: root.theme-picker-channel == 0 ? root.c-accent : root.c-text-dim;
+                            Text {
+                                x: root.pad;
+                                width: parent.width * 12%;
+                                height: parent.height;
+                                text: "R";
+                                color: root.c-text;
+                                font-size: root.body-glyph;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
+                            red-bar := Rectangle {
+                                x: parent.width * 16%;
+                                y: parent.height * 22%;
+                                width: parent.width * 80%;
+                                height: parent.height * 56%;
+                                background: @linear-gradient(90deg,
+                                    rgb(0, root.theme-edit-color.green, root.theme-edit-color.blue) 0%,
+                                    rgb(255, root.theme-edit-color.green, root.theme-edit-color.blue) 100%);
+                                Rectangle {
+                                    x: (red-bar.width - 3px) * root.theme-edit-color.red / 255;
+                                    y: -2px;
+                                    width: 3px;
+                                    height: parent.height + 4px;
+                                    background: root.c-text;
+                                    border-width: 1px;
+                                    border-color: root.c-background;
+                                }
+                            }
+                        }
+
+                        green-picker := Rectangle {
+                            x: root.pad;
+                            y: parent.height * 50%;
+                            width: parent.width - root.pad * 2;
+                            height: parent.height * 16%;
+                            border-width: root.theme-picker-channel == 1 ? 2px : 1px;
+                            border-color: root.theme-picker-channel == 1 ? root.c-accent : root.c-text-dim;
+                            Text {
+                                x: root.pad;
+                                width: parent.width * 12%;
+                                height: parent.height;
+                                text: "G";
+                                color: root.c-text;
+                                font-size: root.body-glyph;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
+                            green-bar := Rectangle {
+                                x: parent.width * 16%;
+                                y: parent.height * 22%;
+                                width: parent.width * 80%;
+                                height: parent.height * 56%;
+                                background: @linear-gradient(90deg,
+                                    rgb(root.theme-edit-color.red, 0, root.theme-edit-color.blue) 0%,
+                                    rgb(root.theme-edit-color.red, 255, root.theme-edit-color.blue) 100%);
+                                Rectangle {
+                                    x: (green-bar.width - 3px) * root.theme-edit-color.green / 255;
+                                    y: -2px;
+                                    width: 3px;
+                                    height: parent.height + 4px;
+                                    background: root.c-text;
+                                    border-width: 1px;
+                                    border-color: root.c-background;
+                                }
+                            }
+                        }
+
+                        blue-picker := Rectangle {
+                            x: root.pad;
+                            y: parent.height * 70%;
+                            width: parent.width - root.pad * 2;
+                            height: parent.height * 16%;
+                            border-width: root.theme-picker-channel == 2 ? 2px : 1px;
+                            border-color: root.theme-picker-channel == 2 ? root.c-accent : root.c-text-dim;
+                            Text {
+                                x: root.pad;
+                                width: parent.width * 12%;
+                                height: parent.height;
+                                text: "B";
+                                color: root.c-text;
+                                font-size: root.body-glyph;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
+                            blue-bar := Rectangle {
+                                x: parent.width * 16%;
+                                y: parent.height * 22%;
+                                width: parent.width * 80%;
+                                height: parent.height * 56%;
+                                background: @linear-gradient(90deg,
+                                    rgb(root.theme-edit-color.red, root.theme-edit-color.green, 0) 0%,
+                                    rgb(root.theme-edit-color.red, root.theme-edit-color.green, 255) 100%);
+                                Rectangle {
+                                    x: (blue-bar.width - 3px) * root.theme-edit-color.blue / 255;
+                                    y: -2px;
+                                    width: 3px;
+                                    height: parent.height + 4px;
+                                    background: root.c-text;
+                                    border-width: 1px;
+                                    border-color: root.c-background;
+                                }
+                            }
+                        }
+                    }
+
+                    if root.theme-editor-mode == 3: Rectangle {
+                        x: 0px;
+                        y: 0px;
+                        width: editor-side.width;
+                        height: editor-side.height;
+
+                        Rectangle {
+                            x: root.pad;
+                            y: root.pad;
+                            width: parent.width - root.pad * 2;
+                            height: root.row-height * 2;
+                            background: root.c-surface;
+                            border-width: 1px;
+                            border-color: root.c-accent;
+                            Text {
+                                text: root.theme-name == "" ? "Theme name" : root.theme-name;
+                                color: root.theme-name == "" ? root.c-text-dim : root.c-text;
+                                font-size: root.body-glyph;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
+                        }
+                        Rectangle {
+                            x: 0;
+                            y: root.row-height * 2 + root.pad * 2;
+                            width: parent.width;
+                            height: parent.height - self.y;
+                            for cell[index] in root.rows: Rectangle {
+                                property <length> cell-width: parent.width / root.columns;
+                                property <length> cell-height: parent.height / root.grid-rows;
+                                width: self.cell-width;
+                                height: self.cell-height;
+                                x: Math.mod(index, root.columns) * self.cell-width;
+                                y: Math.floor(index / root.columns) * self.cell-height;
+                                background: index == root.selected ? root.c-accent : transparent;
+                                if index != root.theme-name-save-index
+                                    && index != root.theme-name-cancel-index: Text {
+                                    text: cell.title;
+                                    color: index == root.selected ? root.c-accent-text : root.c-text;
+                                    font-size: root.small-glyph;
+                                    horizontal-alignment: center;
+                                    vertical-alignment: center;
+                                }
+                                if index == root.theme-name-save-index: Rectangle {
+                                    property <length> dot: max(2px, root.small-glyph * 0.16);
+                                    width: self.dot * 7;
+                                    height: self.dot * 5;
+                                    x: (parent.width - self.width) / 2;
+                                    y: (parent.height - self.height) / 2;
+                                    for point in [
+                                        {x: 0, y: 2}, {x: 1, y: 3}, {x: 2, y: 4},
+                                        {x: 3, y: 3}, {x: 4, y: 2}, {x: 5, y: 1},
+                                        {x: 6, y: 0},
+                                    ]: Rectangle {
+                                        x: point.x * parent.dot;
+                                        y: point.y * parent.dot;
+                                        width: parent.dot;
+                                        height: parent.dot;
+                                        background: #33ff66;
+                                    }
+                                }
+                                if index == root.theme-name-cancel-index: Text {
+                                    text: "X";
+                                    color: #ff3232;
+                                    font-size: root.small-glyph;
+                                    horizontal-alignment: center;
+                                    vertical-alignment: center;
+                                }
+                            }
+                        }
+                    }
+                }
+
+                preview := Rectangle {
+                    x: theme-screen.width * 56%;
+                    y: 0px;
+                    width: theme-screen.width * 44%;
+                    height: theme-screen.height;
+                    background: root.c-background;
+                    border-width: root.theme-selected-role == 0 ? 2px : 0px;
+                    border-color: root.c-accent;
+
+                    panel-sample := Rectangle {
+                        x: root.pad;
+                        y: root.pad;
+                        width: parent.width - root.pad * 2;
+                        height: parent.height * 23%;
+                        background: root.c-panel;
+                        border-width: root.theme-selected-role == 1 ? 2px : 0px;
+                        border-color: root.c-accent;
+                        BlendedLogo {
+                            tint: root.logo-tint;
+                            tint-mix: root.logo-tint-mix;
+                            tint-enabled: root.logo-tint-enabled;
+                            x: root.pad;
+                            y: root.pad;
+                            width: parent.width - root.pad * 2;
+                            height: parent.height - root.pad * 2;
+                        }
+                    }
+
+                    surface-sample := Rectangle {
+                        x: root.pad;
+                        y: parent.height * 27%;
+                        width: parent.width - root.pad * 2;
+                        height: parent.height * 40%;
+                        background: root.c-surface;
+                        border-width: root.theme-selected-role == 2 ? 2px : 0px;
+                        border-color: root.c-accent;
+
+                        text-sample := Rectangle {
+                            x: root.pad;
+                            y: root.pad;
+                            width: parent.width - root.pad * 2;
+                            height: root.row-height;
+                            border-width: root.theme-selected-role == 4 ? 2px : 0px;
+                            border-color: root.c-accent;
+                            Text {
+                                text: "Ordinary text";
+                                color: root.c-text;
+                                font-size: root.small-glyph;
+                                vertical-alignment: center;
+                                x: root.pad / 2;
+                            }
+                        }
+                        dim-sample := Rectangle {
+                            x: root.pad;
+                            y: root.pad + root.row-height;
+                            width: parent.width - root.pad * 2;
+                            height: root.row-height;
+                            border-width: root.theme-selected-role == 5 ? 2px : 0px;
+                            border-color: root.c-accent;
+                            Text {
+                                text: "Dim text";
+                                color: root.c-text-dim;
+                                font-size: root.small-glyph;
+                                vertical-alignment: center;
+                                x: root.pad / 2;
+                            }
+                        }
+                        selection-sample := Rectangle {
+                            x: root.pad;
+                            y: root.pad + root.row-height * 2;
+                            width: parent.width - root.pad * 2;
+                            height: root.row-height;
+                            background: root.c-accent;
+                            border-width: root.theme-selected-role == 6 ? 2px : 0px;
+                            border-color: root.c-text;
+                            Rectangle {
+                                x: root.pad / 2;
+                                width: parent.width - root.pad;
+                                height: parent.height;
+                                border-width: root.theme-selected-role == 7 ? 2px : 0px;
+                                border-color: root.c-state;
+                                Text {
+                                    text: "Selected text";
+                                    color: root.c-accent-text;
+                                    font-size: root.small-glyph;
+                                    vertical-alignment: center;
+                                    x: root.pad / 2;
+                                }
+                            }
+                        }
+                        state-sample := Rectangle {
+                            x: root.pad;
+                            y: root.pad + root.row-height * 3;
+                            width: (parent.width - root.pad * 3) / 2;
+                            height: root.row-height;
+                            border-width: root.theme-selected-role == 8 ? 2px : 0px;
+                            border-color: root.c-accent;
+                            Text {
+                                text: "On";
+                                color: root.c-state;
+                                font-size: root.small-glyph;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
+                        }
+                        favourite-sample := Rectangle {
+                            x: parent.width / 2;
+                            y: root.pad + root.row-height * 3;
+                            width: (parent.width - root.pad * 3) / 2;
+                            height: root.row-height;
+                            border-width: root.theme-selected-role == 9 ? 2px : 0px;
+                            border-color: root.c-accent;
+                            Text {
+                                text: "\u{2665} Favourite";
+                                color: root.c-favorite;
+                                font-size: root.small-glyph;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
+                        }
+                    }
+
+                    Rectangle {
+                        x: root.pad;
+                        y: parent.height * 70%;
+                        width: parent.width - root.pad * 2;
+                        height: parent.height * 28%;
+                        background: root.c-bar;
+                        border-width: root.theme-selected-role == 3 ? 2px : 0px;
+                        border-color: root.c-accent;
+                        Text {
+                            text: "Bottom bar";
+                            color: root.c-text-dim;
+                            font-size: root.small-glyph;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                        }
+                    }
+                }
+            }
+
             // Browse, preview: titles on the left, a big picture on the right.
             if root.screen == 0 && root.layout == 0: HorizontalLayout {
                 spacing: 0px;
@@ -505,11 +1206,11 @@ export component DegaussWindow inherits Window {
                     // The list of groups is three or four entries in a
                     // column with room for ten, so the wordmark goes in the
                     // space rather than leaving it blank.
-                    Image {
+                    BlendedLogo {
                         visible: root.show-brand;
-                        source: @image-url("../assets/degauss-logo.png");
-                        colorize: root.logo-tint;
-                        image-fit: contain;
+                        tint: root.logo-tint;
+                        tint-mix: root.logo-tint-mix;
+                        tint-enabled: root.logo-tint-enabled;
                         width: parent.width * 70%;
                         height: root.chrome-height;
                         x: (parent.width - self.width) / 2;
@@ -666,6 +1367,80 @@ export component DegaussWindow inherits Window {
                     }
                 }
             }
+
+
+            // Browse, gallery: dense thumbnails, with the selected title
+            // shown separately rather than reserving a caption in every cell.
+            if root.screen == 0 && root.layout == 5: Rectangle {
+                background: root.c-background;
+                for row[index] in root.rows: Rectangle {
+                    x: mod(index, root.columns) * root.tile-width;
+                    y: floor(index / root.columns) * root.tile-height;
+                    width: root.tile-width;
+                    height: root.tile-height;
+                    background: root.c-background;
+
+                    ArtworkImage {
+                        source: row.cover;
+                        has-source: row.has-cover;
+                        horizontal-scale: row.art-scale-x;
+                        x: 3px;
+                        y: 3px;
+                        width: parent.width - 6px;
+                        height: parent.height - 6px;
+                    }
+
+                    Text {
+                        visible: !row.has-cover;
+                        text: row.title;
+                        color: index == root.selected ? root.c-text : root.c-text-dim;
+                        font-size: root.small-glyph;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                        wrap: word-wrap;
+                        overflow: elide;
+                        x: root.pad / 2;
+                        y: root.pad / 2;
+                        width: parent.width - root.pad;
+                        height: parent.height - root.pad;
+                    }
+
+                    Text {
+                        text: row.favorite ? "\u{2665}" : "";
+                        color: root.c-favorite;
+                        font-size: root.small-glyph;
+                        x: 4px;
+                        y: 3px;
+                    }
+
+                    // Four overlay strips preserve the two-pixel selection
+                    // outline without changing this cell or any neighbour.
+                    Rectangle {
+                        visible: index == root.selected;
+                        background: root.c-accent;
+                        x: 0px; y: 0px;
+                        width: parent.width; height: 2px;
+                    }
+                    Rectangle {
+                        visible: index == root.selected;
+                        background: root.c-accent;
+                        x: 0px; y: parent.height - 2px;
+                        width: parent.width; height: 2px;
+                    }
+                    Rectangle {
+                        visible: index == root.selected;
+                        background: root.c-accent;
+                        x: 0px; y: 0px;
+                        width: 2px; height: parent.height;
+                    }
+                    Rectangle {
+                        visible: index == root.selected;
+                        background: root.c-accent;
+                        x: parent.width - 2px; y: 0px;
+                        width: 2px; height: parent.height;
+                    }
+                }
+            }
         }
 
         // ---- bottom bar ---------------------------------------------------
@@ -774,13 +1549,23 @@ export component DegaussWindow inherits Window {
                 text: root.show-stats
                     ? root.stats
                     : root.screen == 4
-                    ? (root.find-search
-                        ? "A Pick   B Back   X Delete   Y Clear"
-                        : "A Pick   B Back")
+                    ? (root.grid-help != ""
+                        ? root.grid-help
+                        : (root.find-search
+                            ? "A Pick   B Back   X Delete   Y Clear"
+                            : "A Pick   B Back"))
+                    : root.screen == 5
+                    ? root.status
                     : root.screen == 1
-                        ? (root.wide-bar
-                            ? "\u{2191}\u{2193} Choose   \u{2190}\u{2192} Change   A Select   B Back"
-                            : "\u{2190}\u{2192} Change  A Select  B Back")
+                        ? (root.plain-help != ""
+                            ? root.plain-help
+                            : root.category-image-picker
+                            ? (root.wide-bar
+                                ? "\u{2191}\u{2193} Choose   \u{2190}\u{2192} Page   A Select   B Back"
+                                : "A Select  B Back")
+                            : (root.wide-bar
+                                ? "\u{2191}\u{2193} Choose   \u{2190}\u{2192} Change   A Select   B Back"
+                                : "\u{2190}\u{2192} Change  A Select  B Back"))
                         : (root.wide-bar
                             ? "\u{2191}\u{2193} Choose   \u{2190}\u{2192} " + root.lr-word + "   A Select   B Back   X This folder   Y Menu"
                             : "A Select  B Back  X Folder  Y Menu");
@@ -801,7 +1586,7 @@ export component DegaussWindow inherits Window {
         // moving anything or waiting for anything.
 
 
-        if root.overlay != "" && root.screen < 2: Rectangle {
+        if root.overlay != "" && (root.screen < 2 || root.screen == 5): Rectangle {
             background: root.c-surface;
             height: root.row-height * 3;
             y: (parent.height - self.height) / 2;
@@ -992,8 +1777,9 @@ export component DegaussWindow inherits Window {
             border-radius: 2px;
             width: speed-text.preferred-width + root.pad * 2;
             height: speed-text.preferred-height + root.pad;
-            x: (parent.width - self.width) / 2;
-            y: parent.height - self.height - root.pad
+            x: root.inset-left
+                + (parent.width - root.inset-left - root.inset-right - self.width) / 2;
+            y: parent.height - root.inset-bottom - self.height - root.pad
                 - (root.show-bar ? root.bar-height : 0px);
 
             speed-text := Text {
@@ -1002,6 +1788,29 @@ export component DegaussWindow inherits Window {
                 font-size: root.small-glyph;
                 x: root.pad;
                 y: root.pad / 2;
+            }
+        }
+
+
+        if root.gallery-title-visible && !root.speed-visible: Rectangle {
+            background: root.c-bar;
+            width: Math.min(
+                parent.width - root.inset-left - root.inset-right - root.pad * 2,
+                gallery-title-text.preferred-width + root.pad * 2);
+            height: gallery-title-text.preferred-height + root.pad;
+            x: root.inset-left
+                + (parent.width - root.inset-left - root.inset-right - self.width) / 2;
+            y: parent.height - root.inset-bottom - self.height - root.pad
+                - (root.show-bar ? root.bar-height : 0px);
+
+            gallery-title-text := Text {
+                text: root.gallery-title;
+                color: root.c-text;
+                font-size: root.small-glyph;
+                x: root.pad;
+                y: root.pad / 2;
+                width: parent.width - root.pad * 2;
+                overflow: elide;
             }
         }
     }

@@ -50,7 +50,7 @@ impl<'de> Deserialize<'de> for Color {
 }
 
 /// Palette. Names are roles, not hues, so a theme can invert freely.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Colors {
     pub background: Color,
@@ -221,7 +221,8 @@ pub struct AppSettings {
     /// Show the performance readout instead of the key hints.
     #[serde(default)]
     pub show_stats: bool,
-    /// Which view to open in: "details", "tiled", "list" or "carousel".
+    /// Which view to open in: "details", "tiled", "list", "carousel",
+    /// "multi-list" or "gallery".
     #[serde(default = "default_layout")]
     pub layout: String,
     /// What left and right do while browsing: "speed", "letter", "page" or

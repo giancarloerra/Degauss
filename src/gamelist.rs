@@ -35,7 +35,7 @@
 //!   into it. Four maps each owning a clone would multiply that memory for
 //!   a large gamelist, on a board with a few hundred megabytes of RAM.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use quick_xml::events::Event;
@@ -45,6 +45,8 @@ use crate::error::{DegaussError, Result};
 
 /// The largest `gamelist.xml` worth reading.
 const MAX_GAMELIST_BYTES: u64 = 256 * 1024 * 1024;
+const MAX_STRUCTURAL_ART_PATH_BYTES: usize = 4 * 1024;
+const MAX_STRUCTURAL_ART_DIRECTORIES: usize = 100_000;
 
 /// A release date as somebody would write it.
 ///
@@ -309,7 +311,7 @@ fn digits_for_words(value: &str) -> String {
 /// A scraped library keys its metadata on the game's title while the files
 /// on disk carry dump tags, so one name has to be tried several ways or
 /// most of a library's artwork never binds.
-fn slug_candidates(stem: &str) -> Vec<String> {
+pub(crate) fn slug_candidates(stem: &str) -> Vec<String> {
     let mut out = Vec::with_capacity(4);
     let mut push = |value: String| {
         if !value.is_empty() && !out.contains(&value) {
@@ -325,6 +327,112 @@ fn slug_candidates(stem: &str) -> Vec<String> {
 }
 
 impl Gamelist {
+    /// Read only the directories named by artwork fields. This is used by a
+    /// source-neutral library scan and deliberately retains no game names or
+    /// metadata.
+    pub fn structural_art_directories(path: &Path, folder: &Path) -> Result<Vec<PathBuf>> {
+        let size = std::fs::metadata(path)
+            .map_err(|e| DegaussError::io("reading gamelist", path, e))?
+            .len();
+        if size > MAX_GAMELIST_BYTES {
+            return Err(DegaussError::unsupported(
+                "gamelist structural scan",
+                format!(
+                    "{} is {size} bytes, past the {MAX_GAMELIST_BYTES} limit",
+                    path.display()
+                ),
+            ));
+        }
+        let file = std::fs::File::open(path)
+            .map_err(|e| DegaussError::io("opening gamelist.xml", path, e))?;
+        let mut reader = Reader::from_reader(std::io::BufReader::new(file));
+        let mut buffer = Vec::new();
+        let mut field: Option<String> = None;
+        let mut value = String::new();
+        let mut dirs = HashSet::new();
+
+        loop {
+            match reader.read_event_into(&mut buffer) {
+                Err(error) => {
+                    return Err(DegaussError::malformed(
+                        "gamelist.xml",
+                        path,
+                        format!("at position {}: {error}", reader.buffer_position()),
+                    ));
+                }
+                Ok(Event::Eof) => break,
+                Ok(Event::Start(event)) => {
+                    let tag = event.name().as_ref().to_ascii_lowercase();
+                    if matches!(tag.as_str(), "image" | "screenshot" | "thumbnail") {
+                        field = Some(tag);
+                        value.clear();
+                    }
+                }
+                Ok(Event::Text(text)) if field.is_some() => {
+                    value.push_str(&text.xml10_content());
+                    validate_structural_art_value(path, &value)?;
+                }
+                Ok(Event::CData(text)) if field.is_some() => {
+                    value.push_str(&text.into_inner());
+                    validate_structural_art_value(path, &value)?;
+                }
+                Ok(Event::GeneralRef(entity)) if field.is_some() => {
+                    let name = entity.into_inner();
+                    if let Some(text) = quick_xml::escape::resolve_predefined_entity(&name) {
+                        value.push_str(text);
+                    } else if let Some(character) = resolve_numeric_entity(&name) {
+                        value.push(character);
+                    } else {
+                        return Err(DegaussError::malformed(
+                            "gamelist structural scan",
+                            path,
+                            format!("unknown entity &{name}; in an artwork path"),
+                        ));
+                    }
+                    validate_structural_art_value(path, &value)?;
+                }
+                Ok(Event::End(event))
+                    if field
+                        .as_deref()
+                        .is_some_and(|field| field.eq_ignore_ascii_case(event.name().as_ref())) =>
+                {
+                    let rel = normalise_rel(value.trim());
+                    if !rel.is_empty() {
+                        let relative = Path::new(&rel);
+                        let safe = relative.components().all(|component| {
+                            matches!(
+                                component,
+                                std::path::Component::Normal(_) | std::path::Component::CurDir
+                            )
+                        });
+                        if safe {
+                            if let Some(parent) = folder.join(relative).parent() {
+                                dirs.insert(parent.to_path_buf());
+                                if dirs.len() > MAX_STRUCTURAL_ART_DIRECTORIES {
+                                    return Err(DegaussError::unsupported(
+                                        "gamelist structural scan",
+                                        format!(
+                                            "{} names more than {MAX_STRUCTURAL_ART_DIRECTORIES} artwork directories",
+                                            path.display()
+                                        ),
+                                    ));
+                                }
+                            }
+                        }
+                    }
+                    field = None;
+                    value.clear();
+                }
+                _ => {}
+            }
+            buffer.clear();
+        }
+
+        let mut dirs: Vec<PathBuf> = dirs.into_iter().collect();
+        dirs.sort();
+        Ok(dirs)
+    }
+
     /// Look up metadata for a file, from strictest to loosest key. Returns
     /// which key matched so the caller can report the mix.
     pub fn lookup(&self, rel_path: &str) -> Option<(&GameMeta, MatchKind)> {
@@ -655,6 +763,19 @@ impl Gamelist {
     }
 }
 
+fn validate_structural_art_value(path: &Path, value: &str) -> Result<()> {
+    if value.len() > MAX_STRUCTURAL_ART_PATH_BYTES {
+        return Err(DegaussError::unsupported(
+            "gamelist structural scan",
+            format!(
+                "{} contains an artwork path longer than {MAX_STRUCTURAL_ART_PATH_BYTES} bytes",
+                path.display()
+            ),
+        ));
+    }
+    Ok(())
+}
+
 /// Which key bound a metadata entry to a file. Reported so a run that only
 /// matches loosely is visible rather than assumed correct.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -825,6 +946,36 @@ mod tests {
             MatchKind::FileName,
             "a moved file should still find its metadata, but the looser match must be reported"
         );
+    }
+
+    #[test]
+    fn structural_scan_bounds_artwork_paths_and_rejects_unknown_entities() {
+        let dir = std::env::temp_dir().join(format!(
+            "degauss-gamelist-structural-{}-{:p}",
+            std::process::id(),
+            &FOLDER
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let gamelist = dir.join("gamelist.xml");
+        std::fs::write(
+            &gamelist,
+            format!(
+                "<gameList><game><image>./{}.png</image></game></gameList>",
+                "a".repeat(MAX_STRUCTURAL_ART_PATH_BYTES + 1)
+            ),
+        )
+        .unwrap();
+        let error = Gamelist::structural_art_directories(&gamelist, &dir).unwrap_err();
+        assert!(error.to_string().contains("artwork path longer"));
+
+        std::fs::write(
+            &gamelist,
+            "<gameList><game><image>./media/a&unknown;.png</image></game></gameList>",
+        )
+        .unwrap();
+        let error = Gamelist::structural_art_directories(&gamelist, &dir).unwrap_err();
+        assert!(error.to_string().contains("unknown entity"));
+        std::fs::remove_dir_all(dir).ok();
     }
 
     #[test]

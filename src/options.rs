@@ -4,9 +4,10 @@
 //! setting means adding one entry rather than touching a screen, a config
 //! struct and a persistence path separately.
 //!
-//! Values are changed with left and right, the same keys that change scroll
-//! speed while browsing, so nothing new has to be learned. Changes are
-//! written to `settings.toml` when leaving the screen.
+//! For ordered values left chooses the previous value and right or A chooses
+//! the next; Boolean and two-choice values toggle with any of them. Action
+//! rows respond only to A. Changes are written to `settings.toml` when leaving
+//! the screen.
 
 use crate::input::SPEED_STEPS;
 
@@ -20,6 +21,8 @@ pub enum OptionId {
     /// The scroll speed above which artwork stops being loaded per row.
     ArtLimit,
     Layout,
+    /// Remove every place-specific view after confirmation.
+    ResetCustomViews,
     /// Which typeface the interface is set in.
     Font,
     /// Which named palette from the themes folder is on, if any.
@@ -38,6 +41,8 @@ pub enum OptionId {
     ShowBar,
     /// Read the card again into the written-down copy of it.
     RebuildCache,
+    /// Open ScreenScraper for every supported system on the card.
+    ScrapeAll,
     /// Gather favourites at the top of a folder.
     FavoritesFirst,
     /// Add or remove a favourite by holding X for one second.
@@ -74,6 +79,7 @@ pub const OPTIONS: &[OptionId] = &[
     OptionId::Spacer,
     OptionId::Theme,
     OptionId::Layout,
+    OptionId::ResetCustomViews,
     OptionId::Font,
     OptionId::ShowArt,
     OptionId::ArtworkScale,
@@ -97,6 +103,7 @@ pub const OPTIONS: &[OptionId] = &[
     OptionId::Spacer,
     OptionId::Screensaver,
     OptionId::RebuildCache,
+    OptionId::ScrapeAll,
     OptionId::Spacer,
     OptionId::Advanced,
 ];
@@ -112,6 +119,7 @@ impl OptionId {
             OptionId::LeftRight => "Left and right behaviour",
             OptionId::ArtLimit => "Skip artwork faster than",
             OptionId::Layout => "View",
+            OptionId::ResetCustomViews => "Reset all custom views",
             OptionId::Font => "Text",
             OptionId::Theme => "Theme",
             OptionId::ShowArt => "Artwork",
@@ -122,6 +130,7 @@ impl OptionId {
             OptionId::ShowUtility => "Show Utility folder",
             OptionId::ShowBar => "Bottom bar while browsing",
             OptionId::RebuildCache => "Rebuild all system lists",
+            OptionId::ScrapeAll => "Scrape All Systems",
             OptionId::FavoritesFirst => "Favourites first",
             OptionId::HoldXFavorite => "Hold X (1s) to add/remove fav",
             OptionId::RandomLaunches => "Random game behaviour",
@@ -145,17 +154,20 @@ impl OptionId {
         match self {
             OptionId::Speed => "How fast a held direction moves through the list.",
             OptionId::LeftRight => {
-                "What left and right do in a folder. Direction lets up and down move a whole row in Tiled."
+                "What left and right do in a folder. Direction moves whole rows in grid views."
             }
             OptionId::ArtLimit => {
                 "Above this scroll speed, pictures wait until the list stops moving."
             }
-            OptionId::Layout => "Details, Tiled, Carousel or List.",
+            OptionId::Layout => "Details, Tiled, Carousel, List, Multi list or Gallery.",
+            OptionId::ResetCustomViews => {
+                "Remove every place-specific view and use the global View setting."
+            }
             OptionId::Font => {
                 "Smooth for a monitor, Pixel on whole pixels for a tube. The 2s are bolder."
             }
             OptionId::Theme => {
-                "A palette from the themes folder, read at start. Standard is degauss.toml."
+                "Left and right choose a palette and its optional default text. A opens the theme editor."
             }
             OptionId::ShowArt => "Turn artwork off entirely.",
             OptionId::ArtworkScale => {
@@ -174,7 +186,7 @@ impl OptionId {
                 "On, folders lead a system's listing; off, the games come first."
             }
             OptionId::ResetHidden => {
-                "Put back everything you hid yourself, in every folder and every system."
+                "Press A, then confirm, to put back everything you hid yourself."
             }
             OptionId::FavoritesFirst => {
                 "Gather a folder's favourites at its top, in the same alphabet."
@@ -186,7 +198,10 @@ impl OptionId {
                 "Whether a random pick starts the game, or only moves to it so you can look first."
             }
             OptionId::RebuildCache => {
-                "Read the card again. Do this after adding games, cores or artwork."
+                "Press A to read the card again after adding games, cores or artwork."
+            }
+            OptionId::ScrapeAll => {
+                "Press A to open ScreenScraper settings for every supported system."
             }
             OptionId::ShowStats => "Replace the key hints with frame timings.",
             OptionId::Present => "Draw into the screen directly, or into memory first.",
@@ -199,7 +214,7 @@ impl OptionId {
             OptionId::Screensaver => {
                 "How long to wait, with nothing pressed, before showing pictures."
             }
-            OptionId::Advanced => "Diagnostics: the drawing path and the readout.",
+            OptionId::Advanced => "Press A for diagnostics: the drawing path and the readout.",
             OptionId::Spacer => "",
         }
     }
@@ -258,8 +273,8 @@ mod tests {
         }
         let rows = OPTIONS.iter().filter(|o| **o != OptionId::Spacer).count();
         assert!(
-            rows <= 25,
-            "the options list has grown to {rows} real rows; review the 240-line layout before adding another"
+            rows <= 32,
+            "the options list has grown to {rows} real rows; review navigation and grouping"
         );
         for option in ADVANCED {
             assert!(!OPTIONS.contains(&option), "{option:?} is in both lists");
@@ -307,6 +322,15 @@ mod tests {
             OptionId::HoldXFavorite.label(),
             "Hold X (1s) to add/remove fav"
         );
+    }
+
+    #[test]
+    fn scrape_all_follows_rebuild_all_system_lists() {
+        let rebuild = OPTIONS
+            .iter()
+            .position(|option| *option == OptionId::RebuildCache)
+            .expect("Rebuild all system lists is in Options");
+        assert_eq!(OPTIONS.get(rebuild + 1), Some(&OptionId::ScrapeAll));
     }
 
     #[test]
