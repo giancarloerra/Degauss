@@ -1,0 +1,20 @@
+# Degauss theme proposal template.
+#
+# Change every value below, then copy this file to
+# /media/fat/Scripts/.config/degauss/themes/ under a new name to test it.
+# The file name, without .toml, is the name shown in Options.
+
+background = "#6c6c6c"
+panel = "#3a3a3a"
+surface = "#494949"
+bar = "#2a2a2a"
+text = "#ffffff"
+text_dim = "#c4c4c4"
+accent = "#ffcd09"
+accent_text = "#111111"
+state = "#03a49d"
+favorite = "#fe2e1d"
+
+# Uncomment this line to draw the Degauss wordmark as a flat colour.
+# Leave it commented to retain the original three-colour wordmark.
+# logo = "#ffcd09"

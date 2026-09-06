@@ -174,6 +174,7 @@ struct ArtIndex {
     names: HashSet<String>,
     directories: HashSet<String>,
     files: usize,
+    structural_only: bool,
 }
 
 impl ArtIndex {
@@ -195,6 +196,14 @@ impl ArtIndex {
         index
     }
 
+    fn structural(dirs: &[PathBuf]) -> Self {
+        ArtIndex {
+            directories: dirs.iter().map(|dir| key(dir)).collect(),
+            structural_only: true,
+            ..ArtIndex::default()
+        }
+    }
+
     fn contains(&self, path: &Path) -> bool {
         self.names.contains(&key(path))
     }
@@ -204,6 +213,20 @@ impl ArtIndex {
     /// card it holds tens of thousands of pictures.
     fn is_art_directory(&self, path: &Path) -> bool {
         self.directories.contains(&key(path))
+    }
+
+    /// Whether a source-neutral structural exclusion sits anywhere below this
+    /// folder. The caller still proves that no launchable content shares the
+    /// subtree before hiding it, so a custom media parent can also hold games
+    /// without those games disappearing.
+    fn has_structural_art_below(&self, path: &Path) -> bool {
+        if !self.structural_only {
+            return false;
+        }
+        let path = PathBuf::from(key(path));
+        self.directories
+            .iter()
+            .any(|directory| Path::new(directory).starts_with(&path))
     }
 }
 
@@ -284,11 +307,22 @@ struct Root {
     art: ArtIndex,
 }
 
+/// Which presentation source is allowed to influence filesystem rows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LibraryDataMode {
+    Gamelist,
+    SourceNeutral,
+}
+
 /// One system's folders, ready to browse.
 pub struct Library {
     config: SystemConfig,
     roots: Vec<Root>,
     names: DisplayNames,
+    /// A malformed gamelist does not prevent source-neutral Pack browsing,
+    /// but it must remain visible to the diagnostic paths rather than being
+    /// reduced to a log line that `--audit` cannot report.
+    structural_problems: Vec<(PathBuf, String)>,
     /// What reading this system's metadata cost, so the answer to "why did
     /// that take a moment" is measured rather than guessed.
     pub cost: OpenCost,
@@ -331,24 +365,57 @@ impl Library {
 
     /// As [`Library::open`], with the card's own display names applied.
     pub fn open_with_names(config: &SystemConfig, names: DisplayNames) -> Result<Self> {
+        Self::open_in_mode(config, names, LibraryDataMode::Gamelist)
+    }
+
+    /// Open a library without binding any gamelist presentation. A bounded
+    /// structural scan still identifies media directories so switching data
+    /// source cannot expose a scraped artwork tree as folders of games.
+    pub fn open_source_neutral(config: &SystemConfig, names: DisplayNames) -> Result<Self> {
+        Self::open_in_mode(config, names, LibraryDataMode::SourceNeutral)
+    }
+
+    fn open_in_mode(
+        config: &SystemConfig,
+        names: DisplayNames,
+        mode: LibraryDataMode,
+    ) -> Result<Self> {
         let mut roots = Vec::new();
         let mut cost = OpenCost::default();
+        let mut structural_problems = Vec::new();
         for path in std::iter::once(config.path.clone()).chain(config.extra_paths.iter().cloned()) {
             let path = PathBuf::from(path);
             let gamelist_path = path.join("gamelist.xml");
             let started = std::time::Instant::now();
-            let gamelist = if gamelist_path.is_file() {
-                Some(Gamelist::load(&gamelist_path, &path)?)
-            } else {
-                None
+            let (gamelist, art_dirs) = match mode {
+                LibraryDataMode::Gamelist if gamelist_path.is_file() => {
+                    let list = Gamelist::load(&gamelist_path, &path)?;
+                    let dirs = list.art_directories();
+                    (Some(list), dirs)
+                }
+                LibraryDataMode::SourceNeutral if gamelist_path.is_file() => {
+                    let dirs = match Gamelist::structural_art_directories(&gamelist_path, &path) {
+                        Ok(dirs) => dirs,
+                        Err(error) => {
+                            crate::note(&format!(
+                                "pack scan    {}: {error}",
+                                gamelist_path.display()
+                            ));
+                            structural_problems.push((gamelist_path.clone(), error.to_string()));
+                            fallback_media_directories(&path, config)
+                        }
+                    };
+                    (None, dirs)
+                }
+                _ => (None, Vec::new()),
             };
             cost.gamelist_ms += started.elapsed().as_millis();
-            let art_dirs = gamelist
-                .as_ref()
-                .map(|list| list.art_directories())
-                .unwrap_or_default();
             let started = std::time::Instant::now();
-            let art = ArtIndex::read(&art_dirs);
+            let art = if mode == LibraryDataMode::Gamelist {
+                ArtIndex::read(&art_dirs)
+            } else {
+                ArtIndex::structural(&art_dirs)
+            };
             cost.art_ms += started.elapsed().as_millis();
             cost.art_files += art.files;
             roots.push(Root {
@@ -361,6 +428,7 @@ impl Library {
             config: config.clone(),
             roots,
             names,
+            structural_problems,
             cost,
         })
     }
@@ -473,7 +541,10 @@ impl Library {
                 if listings_here.as_deref() == Some(path.as_path()) {
                     continue;
                 }
-                if self.is_art_directory(&path, root) || self.is_skipped(&name) {
+                if self.is_art_directory(&path, root)
+                    || self.is_structural_art_subtree(&path, root)
+                    || self.is_skipped(&name)
+                {
                     continue;
                 }
                 // A folder with nothing to reach inside it is a dead end,
@@ -699,6 +770,15 @@ impl Library {
     /// up at the first dead end finds nothing on the many systems whose
     /// games sit one folder in and whose top level holds only artwork.
     pub fn covers(&self, folders: usize, want: usize) -> Vec<(PathBuf, String)> {
+        self.covers_projected(folders, want, &mut |_| {})
+    }
+
+    pub fn covers_projected(
+        &self,
+        folders: usize,
+        want: usize,
+        project: &mut dyn FnMut(&mut [Row]),
+    ) -> Vec<(PathBuf, String)> {
         let mut found = Vec::new();
         let mut queue = std::collections::VecDeque::from([self.start()]);
         let mut looked = 0;
@@ -708,9 +788,10 @@ impl Library {
                 break;
             }
             looked += 1;
-            let Ok((rows, _)) = self.list(&place, false) else {
+            let Ok((mut rows, _)) = self.list(&place, false) else {
                 continue;
             };
+            project(&mut rows);
             for row in &rows {
                 if found.len() >= want {
                     break;
@@ -802,12 +883,85 @@ impl Library {
         root.is_some_and(|index| self.roots[index].art.is_art_directory(path))
     }
 
+    fn is_structural_art_subtree(&self, path: &Path, root: Option<usize>) -> bool {
+        root.is_some_and(|index| {
+            self.roots[index].art.has_structural_art_below(path)
+                && self.shows_nothing(path, root, 0)
+        })
+    }
+
     fn is_skipped(&self, name: &str) -> bool {
         self.config
             .skip_folders
             .iter()
             .any(|skip| skip.eq_ignore_ascii_case(name))
     }
+}
+
+const MEDIA_CLASSIFIER_ENTRY_LIMIT: usize = 100_000;
+
+/// Conservative source-independent fallback for a malformed gamelist. It
+/// suppresses only non-root subtrees that contain image media and no file the
+/// system could launch. Hitting a bound is treated as possible game content,
+/// so uncertainty leaves a folder visible rather than hiding games.
+fn fallback_media_directories(root: &Path, config: &SystemConfig) -> Vec<PathBuf> {
+    struct Scan<'a> {
+        config: &'a SystemConfig,
+        seen: HashSet<PathBuf>,
+        entries: usize,
+        excluded: HashSet<PathBuf>,
+    }
+
+    fn walk(scan: &mut Scan<'_>, root: &Path, dir: &Path, depth: usize) -> (bool, bool) {
+        if depth > MAX_DEPTH || scan.entries >= MEDIA_CLASSIFIER_ENTRY_LIMIT {
+            return (false, true);
+        }
+        let identity = std::fs::canonicalize(dir).unwrap_or_else(|_| dir.to_path_buf());
+        if !scan.seen.insert(identity) {
+            return (false, true);
+        }
+        let Ok(listing) = std::fs::read_dir(dir) else {
+            return (false, true);
+        };
+        let mut media = false;
+        let mut launchable = false;
+        for item in listing {
+            if scan.entries >= MEDIA_CLASSIFIER_ENTRY_LIMIT {
+                launchable = true;
+                break;
+            }
+            scan.entries += 1;
+            let Ok(item) = item else {
+                launchable = true;
+                continue;
+            };
+            let path = item.path();
+            if entry_is_dir(&item) {
+                let (below_media, below_launchable) = walk(scan, root, &path, depth + 1);
+                media |= below_media;
+                launchable |= below_launchable;
+                continue;
+            }
+            let extension = extension_of(&path);
+            media |= matches!(extension.as_str(), "jpg" | "jpeg" | "png");
+            launchable |= extension == "zip" || scan.config.accepts(&path);
+        }
+        if dir != root && media && !launchable {
+            scan.excluded.insert(dir.to_path_buf());
+        }
+        (media, launchable)
+    }
+
+    let mut scan = Scan {
+        config,
+        seen: HashSet::new(),
+        entries: 0,
+        excluded: HashSet::new(),
+    };
+    let _ = walk(&mut scan, root, root, 0);
+    let mut excluded: Vec<PathBuf> = scan.excluded.into_iter().collect();
+    excluded.sort();
+    excluded
 }
 
 fn folder_row(name: String, place: Place) -> Row {
@@ -934,7 +1088,14 @@ const AUDIT_LIMIT: usize = 20_000;
 impl Library {
     /// Walk everything this system holds and count it.
     pub fn audit(&self, show_empty: bool) -> Audit {
-        let mut audit = Audit::default();
+        self.audit_projected(show_empty, &mut |_| {})
+    }
+
+    pub fn audit_projected(&self, show_empty: bool, project: &mut dyn FnMut(&mut [Row])) -> Audit {
+        let mut audit = Audit {
+            unreadable: self.structural_problems.clone(),
+            ..Audit::default()
+        };
         let mut stack: Vec<(Place, usize)> = self
             .roots
             .iter()
@@ -959,7 +1120,17 @@ impl Library {
             audit.deepest = audit.deepest.max(depth);
 
             match self.list(&place, show_empty) {
-                Ok((rows, _)) => {
+                Ok((mut rows, _)) => {
+                    project(&mut rows);
+                    // Projection can replace a game's display name and sort
+                    // key. CLI report, audit and dry-run must therefore walk
+                    // the same effective order as the interactive browser.
+                    rows.sort_by(|left, right| {
+                        right
+                            .is_folder()
+                            .cmp(&left.is_folder())
+                            .then_with(|| left.sort_key.cmp(&right.sort_key))
+                    });
                     for row in rows {
                         match row.kind {
                             Kind::Enter(inner) => {
@@ -992,7 +1163,11 @@ impl Library {
     pub fn gamelists(&self) -> Vec<(PathBuf, bool)> {
         self.roots
             .iter()
-            .map(|root| (root.path.clone(), root.gamelist.is_some()))
+            .map(|root| {
+                let path = root.path.clone();
+                let present = path.join("gamelist.xml").is_file();
+                (path, present)
+            })
             .collect()
     }
 }
@@ -1297,6 +1472,73 @@ mod tests {
 
         // The art directory is not a folder of games and must not be shown.
         assert!(!rows.iter().any(|row| row.name == "media"));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn source_neutral_mode_uses_only_gamelist_structure() {
+        let dir = temp("source-neutral-structure");
+        std::fs::create_dir_all(dir.join("custom/captures")).unwrap();
+        std::fs::write(dir.join("Disk Name.d64"), b"x").unwrap();
+        std::fs::write(dir.join("custom/captures/red.png"), b"x").unwrap();
+        std::fs::write(
+            dir.join("gamelist.xml"),
+            r#"<gameList><game><path>./Disk Name.d64</path><name>Gamelist Name</name>
+               <image>./custom/captures/red.png</image><genre>Gamelist Genre</genre>
+               </game></gameList>"#,
+        )
+        .unwrap();
+
+        let library = Library::open_source_neutral(&system(&dir), DisplayNames::default()).unwrap();
+        for show_empty in [false, true] {
+            let (rows, _) = library.list(&library.start(), show_empty).unwrap();
+            assert_eq!(names_of(&rows), vec!["Disk Name.d64"]);
+            let game = rows.first().expect("source-neutral game");
+            assert_eq!(game.cover, None);
+            assert_eq!(game.genre, None);
+            assert_eq!(game.details, Details::default());
+        }
+        assert_eq!(library.gamelists(), vec![(dir.clone(), true)]);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn malformed_gamelist_falls_back_conservatively_and_is_audited() {
+        let dir = temp("source-neutral-malformed");
+        std::fs::create_dir_all(dir.join("media/screenshots")).unwrap();
+        std::fs::write(dir.join("media/screenshots/red.png"), b"x").unwrap();
+        std::fs::write(dir.join("Real.d64"), b"x").unwrap();
+        std::fs::write(
+            dir.join("gamelist.xml"),
+            "<gameList><game><image>./media/screenshots/red.png</gameList>",
+        )
+        .unwrap();
+
+        let library = Library::open_source_neutral(&system(&dir), DisplayNames::default()).unwrap();
+        for show_empty in [false, true] {
+            let (rows, _) = library.list(&library.start(), show_empty).unwrap();
+            assert_eq!(names_of(&rows), vec!["Real.d64"]);
+        }
+        let audit = library.audit(false);
+        assert_eq!(audit.games, 1);
+        assert!(audit
+            .unreadable
+            .iter()
+            .any(|(path, _)| path == &dir.join("gamelist.xml")));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn malformed_gamelist_fallback_never_hides_a_media_folder_with_games() {
+        let dir = temp("source-neutral-media-games");
+        std::fs::create_dir_all(dir.join("media")).unwrap();
+        std::fs::write(dir.join("media/cover.png"), b"x").unwrap();
+        std::fs::write(dir.join("media/Playable.d64"), b"x").unwrap();
+        std::fs::write(dir.join("gamelist.xml"), "<gameList><broken>").unwrap();
+
+        let library = Library::open_source_neutral(&system(&dir), DisplayNames::default()).unwrap();
+        let (rows, _) = library.list(&library.start(), false).unwrap();
+        assert_eq!(names_of(&rows), vec!["media"]);
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -1617,6 +1859,27 @@ mod tests {
         // One listing: the top level only, which holds folders and no
         // pictures. It must return rather than descend.
         assert!(library.covers(1, 4).is_empty());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn projected_audit_uses_the_effective_display_order() {
+        let dir = temp("projected-audit-order");
+        std::fs::write(dir.join("Alpha.d64"), b"a").unwrap();
+        std::fs::write(dir.join("Zulu.d64"), b"z").unwrap();
+        let library = Library::open_source_neutral(&system(&dir), DisplayNames::default()).unwrap();
+
+        let audit = library.audit_projected(false, &mut |rows| {
+            let row = rows.iter_mut().find(|row| row.name == "Zulu.d64").unwrap();
+            row.name = "Aardvark from provider".to_string();
+            row.sort_key = row.name.to_lowercase();
+        });
+
+        assert_eq!(
+            audit.first_game.unwrap().name,
+            "Aardvark from provider",
+            "CLI report and dry-run must choose the first game shown by the effective source"
+        );
         std::fs::remove_dir_all(&dir).ok();
     }
 }

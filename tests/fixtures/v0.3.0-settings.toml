@@ -1,0 +1,31 @@
+# A settings.toml as v0.3.0 could have written it, with every setting that
+# release knew populated. Current builds parse this verbatim so an already
+# migrated installation keeps its choices without another migration.
+speed_step = 6
+art_limit = 4
+layout = "carousel"
+left_right = "page"
+font = "pixel 2"
+theme = "Blue-Orange"
+favorites_first = false
+random_launches = true
+folders_last = false
+hidden_paths = ["d:/media/fat/games/SNES/Hacks"]
+show_stats = true
+show_art = true
+present = "sharp"
+hidden = ["PDP1"]
+show_hidden = true
+show_other = false
+show_utility = false
+show_bar = true
+show_empty = false
+overscan_x = 4
+overscan_y = 6
+screensaver_after = 600
+shift_x = 1
+shift_y = -1
+
+[folder_views]
+"d:/media/fat/games/NES" = "list"
+"d:/media/fat/games/PSX" = "carousel"

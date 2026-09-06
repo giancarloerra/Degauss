@@ -54,8 +54,6 @@ pub enum Action {
     Accept,
     /// Go back: out of a folder, out of a screen, or to the menu at the top.
     Quit,
-    /// Switch view: details, tiled, list or carousel.
-    CycleLayout,
     /// Switch between the presentation paths being compared.
     CyclePresent,
     /// Open the menu.
@@ -302,7 +300,6 @@ pub fn action_for_key(code: u16) -> Option<Action> {
     const KEY_SPACE: u16 = 57;
     const KEY_TAB: u16 = 15;
     const KEY_Q: u16 = 16;
-    const KEY_V: u16 = 47;
     const KEY_P: u16 = 25;
     const KEY_KPENTER: u16 = 96;
     const KEY_UP: u16 = 103;
@@ -334,9 +331,6 @@ pub fn action_for_key(code: u16) -> Option<Action> {
         // menu, X asks what can be done where you are standing.
         KEY_SPACE => Action::Menu,
         KEY_TAB => Action::Context,
-        // Keyboard only. Switching view is a setting, and a gamepad button
-        // is too scarce to spend on it.
-        KEY_V => Action::CycleLayout,
         KEY_P => Action::CyclePresent,
         _ => return None,
     })
@@ -822,9 +816,8 @@ mod tests {
         );
         assert_eq!(
             action_for_key(47),
-            Some(Action::CycleLayout),
-            "switching view is a keyboard shortcut: a face button is too \
-             scarce to spend on a setting"
+            None,
+            "V is intentionally unmapped: view scope is chosen explicitly"
         );
         assert_eq!(action_for_key(200), None, "unmapped keys must be ignored");
     }

@@ -121,21 +121,48 @@ pub fn load_scaled(
 /// actually starts with, not by its name, because a mislabelled extension
 /// is common in scraped art.
 pub fn decode(bytes: &[u8], origin: &Path, ground: [u8; 3]) -> Result<RgbImage> {
+    decode_with_limit(bytes, origin, ground, None)
+}
+
+/// Decode an externally downloaded image while limiting each dimension.
+/// Existing local artwork keeps the established decoder limits through
+/// [`decode`]; the scraper uses this narrower boundary before persisting an
+/// untrusted response on a memory-constrained MiSTer.
+pub fn decode_bounded(
+    bytes: &[u8],
+    origin: &Path,
+    ground: [u8; 3],
+    max_dimension: usize,
+) -> Result<RgbImage> {
+    decode_with_limit(bytes, origin, ground, Some(max_dimension))
+}
+
+fn decode_with_limit(
+    bytes: &[u8],
+    origin: &Path,
+    ground: [u8; 3],
+    max_dimension: Option<usize>,
+) -> Result<RgbImage> {
     const JPEG_MAGIC: [u8; 2] = [0xff, 0xd8];
     if bytes.starts_with(&JPEG_MAGIC) {
         // JPEG has no transparency, so there is nothing to composite.
-        return decode_jpeg(bytes, origin);
+        return decode_jpeg(bytes, origin, max_dimension);
     }
-    decode_png(bytes, origin, ground)
+    decode_png(bytes, origin, ground, max_dimension)
 }
 
 /// Decode a JPEG into 8-bit RGB.
-fn decode_jpeg(bytes: &[u8], origin: &Path) -> Result<RgbImage> {
+fn decode_jpeg(bytes: &[u8], origin: &Path, max_dimension: Option<usize>) -> Result<RgbImage> {
     use zune_jpeg::zune_core::colorspace::ColorSpace;
+    use zune_jpeg::zune_core::options::DecoderOptions;
 
     // Same reader trait as the PNG side: a plain slice cannot seek.
     let source = zune_jpeg::zune_core::bytestream::ZCursor::new(bytes);
-    let mut decoder = zune_jpeg::JpegDecoder::new(source);
+    let mut options = DecoderOptions::default();
+    if let Some(maximum) = max_dimension {
+        options = options.set_max_width(maximum).set_max_height(maximum);
+    }
+    let mut decoder = zune_jpeg::JpegDecoder::new_with_options(source, options);
     let pixels = decoder
         .decode()
         .map_err(|e| DegaussError::malformed("cover JPEG", origin, e.to_string()))?;
@@ -195,12 +222,20 @@ fn over(rgb: &[u8], alpha: u8, ground: [u8; 3]) -> [u8; 3] {
 /// carried in the alpha channel: every palette entry white, the letters and
 /// the background separated only by opacity. Discard alpha there and every
 /// logo on the screen becomes an identical solid white rectangle.
-pub fn decode_png(bytes: &[u8], origin: &Path, ground: [u8; 3]) -> Result<RgbImage> {
+pub fn decode_png(
+    bytes: &[u8],
+    origin: &Path,
+    ground: [u8; 3],
+    max_dimension: Option<usize>,
+) -> Result<RgbImage> {
     use zune_png::zune_core::colorspace::ColorSpace;
     use zune_png::zune_core::options::DecoderOptions;
 
     // 8-bit output keeps 16-bit PNGs from doubling every buffer.
-    let options = DecoderOptions::default().png_set_strip_to_8bit(true);
+    let mut options = DecoderOptions::default().png_set_strip_to_8bit(true);
+    if let Some(maximum) = max_dimension {
+        options = options.set_max_width(maximum).set_max_height(maximum);
+    }
     // ZCursor is zune's own no-std reader; a plain &[u8] does not satisfy
     // the reader trait because it cannot seek.
     let source = zune_png::zune_core::bytestream::ZCursor::new(bytes);
@@ -316,6 +351,17 @@ pub struct CoverCache {
     pub stats: CoverStats,
 }
 
+/// A cache lookup that may defer first-time decoding to a later frame.
+///
+/// Gallery asks for many images at once. Distinguishing a cached result from
+/// a new decode keeps its frame budget exact without making callers inspect
+/// the cache's internal maps.
+pub enum BudgetedCover<'a> {
+    Image(&'a RgbImage),
+    Unavailable,
+    Deferred,
+}
+
 impl CoverCache {
     pub fn new(max_edge: u32, capacity: usize, ground: [u8; 3]) -> Self {
         CoverCache {
@@ -354,6 +400,56 @@ impl CoverCache {
                 None
             }
         }
+    }
+
+    /// Art for a path, spending one unit only when the path has never been
+    /// decoded or failed before. A zero budget leaves new work for a later
+    /// frame; cached images and remembered failures never consume it.
+    pub fn get_budgeted<'a>(&'a mut self, path: &Path, remaining: &mut usize) -> BudgetedCover<'a> {
+        let known = self.images.contains_key(path) || self.failed.contains_key(path);
+        if !known {
+            if *remaining == 0 {
+                return BudgetedCover::Deferred;
+            }
+            *remaining -= 1;
+        }
+        match self.get(path) {
+            Some(image) => BudgetedCover::Image(image),
+            None => BudgetedCover::Unavailable,
+        }
+    }
+
+    /// Whether a path has already produced either an image or a remembered
+    /// failure. Used to put Gallery's selected first-time decode ahead of
+    /// the rest without recording a synthetic cache hit every frame.
+    pub fn knows(&self, path: &Path) -> bool {
+        self.images.contains_key(path) || self.failed.contains_key(path)
+    }
+
+    pub fn max_edge(&self) -> u32 {
+        self.max_edge
+    }
+
+    pub fn capacity(&self) -> usize {
+        self.capacity
+    }
+
+    /// Forget only artwork beneath one provider-owned directory. A Pack
+    /// style update can replace bytes at unchanged paths; unrelated gamelist,
+    /// logo and other Pack entries remain warm.
+    pub fn invalidate_under(&mut self, root: &Path) {
+        let mut removed_bytes = 0usize;
+        self.images.retain(|path, image| {
+            if path.starts_with(root) {
+                removed_bytes = removed_bytes.saturating_add(image.rgb.len());
+                false
+            } else {
+                true
+            }
+        });
+        self.order.retain(|path| !path.starts_with(root));
+        self.failed.retain(|path, _| !path.starts_with(root));
+        self.stats.bytes_held = self.stats.bytes_held.saturating_sub(removed_bytes);
     }
 
     /// Every cover that could not be loaded, with the reason. Reported at
@@ -448,6 +544,30 @@ mod tests {
             corners.iter().any(|px| px != &[0xff, 0xff, 0xff]),
             "a logo that comes back all white is the bug this guards"
         );
+    }
+
+    #[test]
+    fn invalidating_one_provider_directory_keeps_unrelated_cached_artwork() {
+        let root =
+            std::env::temp_dir().join(format!("degauss-cover-invalidate-{}", std::process::id()));
+        std::fs::remove_dir_all(&root).ok();
+        let first = root.join("docs/NES/Artwork/First.jpg");
+        let second = root.join("media/Second.jpg");
+        std::fs::create_dir_all(first.parent().unwrap()).unwrap();
+        std::fs::create_dir_all(second.parent().unwrap()).unwrap();
+        std::fs::write(&first, JPEG_16).unwrap();
+        std::fs::write(&second, JPEG_16).unwrap();
+        let mut cache = CoverCache::new(32, 4, OPAQUE);
+        assert!(cache.get(&first).is_some());
+        assert!(cache.get(&second).is_some());
+        let bytes_before = cache.stats.bytes_held;
+
+        cache.invalidate_under(&root.join("docs/NES/Artwork"));
+
+        assert!(!cache.knows(&first));
+        assert!(cache.knows(&second));
+        assert!(cache.stats.bytes_held < bytes_before);
+        std::fs::remove_dir_all(root).ok();
     }
 
     #[test]
@@ -690,6 +810,62 @@ mod tests {
             path.as_path(),
             "the failing file must be named"
         );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_frame_budget_is_spent_only_on_previously_unseen_files() {
+        // A dense page can contain dozens of thumbnails. New files must be
+        // bounded per frame, while a cached page must remain immediately
+        // drawable even when no decode budget remains.
+        let dir = std::env::temp_dir().join(format!("degauss-budget-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let first = dir.join("first.png");
+        let second = dir.join("second.png");
+        std::fs::write(&first, PNG_2X2).unwrap();
+        std::fs::write(&second, PNG_2X2).unwrap();
+
+        let mut cache = CoverCache::new(64, 4, OPAQUE);
+        let mut budget = 1;
+        assert!(matches!(
+            cache.get_budgeted(&first, &mut budget),
+            BudgetedCover::Image(_)
+        ));
+        assert_eq!(budget, 0);
+        assert_eq!(cache.stats.decoded, 1);
+
+        assert!(matches!(
+            cache.get_budgeted(&second, &mut budget),
+            BudgetedCover::Deferred
+        ));
+        assert_eq!(cache.stats.decoded, 1, "no work past the frame budget");
+
+        assert!(matches!(
+            cache.get_budgeted(&first, &mut budget),
+            BudgetedCover::Image(_)
+        ));
+        assert_eq!(budget, 0, "a cache hit spends no decode budget");
+
+        budget = 1;
+        assert!(matches!(
+            cache.get_budgeted(&second, &mut budget),
+            BudgetedCover::Image(_)
+        ));
+        assert_eq!(cache.stats.decoded, 2);
+
+        let missing = dir.join("missing.png");
+        budget = 1;
+        assert!(matches!(
+            cache.get_budgeted(&missing, &mut budget),
+            BudgetedCover::Unavailable
+        ));
+        assert_eq!(budget, 0, "the first failed attempt is still bounded work");
+        assert!(cache.knows(&missing));
+        assert!(matches!(
+            cache.get_budgeted(&missing, &mut budget),
+            BudgetedCover::Unavailable
+        ));
+        assert_eq!(budget, 0, "a remembered failure spends no later budget");
         std::fs::remove_dir_all(&dir).ok();
     }
 }

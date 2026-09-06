@@ -26,5 +26,5 @@ shift_x = -2
 shift_y = 1
 
 [folder_views]
-"dir:/media/fat/games/NES" = "list"
-"dir:/media/fat/games/PSX" = "carousel"
+"d:/media/fat/games/NES" = "list"
+"d:/media/fat/games/PSX" = "carousel"

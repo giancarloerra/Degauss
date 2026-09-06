@@ -1,6 +1,6 @@
 [package]
 name = "degauss"
-version = "0.3.0"
+version = "0.4.0"
 edition = "2021"
 rust-version = "1.96"
 description = "A fast, software-rendered frontend for MiSTer FPGA"
@@ -24,6 +24,8 @@ slint = { version = "1.17", default-features = false, features = [
     "unsafe-single-threaded",
 ] }
 bytemuck = "1"
+crc32fast = "1.5"
+md-5 = "0.11"
 quick-xml = "0.42"
 zune-png = "0.5"
 serde = { version = "1.0", features = ["derive"] }
@@ -32,6 +34,7 @@ serde = { version = "1.0", features = ["derive"] }
 # pkg-config, no target sysroot.
 postcard = { version = "1", features = ["use-std"] }
 toml = "1.1"
+sha1 = "0.11"
 zune-jpeg = "0.5.15"
 
 [target.'cfg(target_os = "linux")'.dependencies]

@@ -14,6 +14,7 @@
 
 use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::error::{DegaussError, Result};
 
@@ -40,12 +41,39 @@ fn u32_at(bytes: &[u8], offset: usize) -> Option<u64> {
     Some(u32::from_le_bytes([slice[0], slice[1], slice[2], slice[3]]) as u64)
 }
 
+/// Identity already present in one central-directory record.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Entry {
+    pub name: String,
+    pub crc32: u32,
+    pub size: u64,
+}
+
 /// The names of the files inside an archive, in the order the archive lists
 /// them. Directory entries are left out: only files can be launched.
 ///
 /// A damaged archive yields an error rather than an empty list, so a corrupt
 /// file is never mistaken for an empty one.
 pub fn list(path: &Path) -> Result<Vec<String>> {
+    entries(path).map(|entries| entries.into_iter().map(|entry| entry.name).collect())
+}
+
+/// The files inside an archive with their CRC32 and uncompressed byte size.
+/// No member is extracted.
+pub fn entries(path: &Path) -> Result<Vec<Entry>> {
+    let cancelled = AtomicBool::new(false);
+    entries_controlled(path, &cancelled)?.ok_or_else(|| {
+        DegaussError::unsupported("zip archive", "archive listing was cancelled unexpectedly")
+    })
+}
+
+/// The files inside an archive, with cooperative cancellation between
+/// central-directory entries. `None` is a cancellation, never an empty or
+/// damaged archive.
+pub fn entries_controlled(path: &Path, cancelled: &AtomicBool) -> Result<Option<Vec<Entry>>> {
+    if cancelled.load(Ordering::Relaxed) {
+        return Ok(None);
+    }
     let mut file =
         std::fs::File::open(path).map_err(|e| DegaussError::io("opening archive", path, e))?;
     let size = file
@@ -61,6 +89,9 @@ pub fn list(path: &Path) -> Result<Vec<String>> {
     let mut tail = vec![0u8; tail_len];
     file.read_exact(&mut tail)
         .map_err(|e| DegaussError::io("reading archive", path, e))?;
+    if cancelled.load(Ordering::Relaxed) {
+        return Ok(None);
+    }
 
     let eocd = tail
         .windows(4)
@@ -119,13 +150,16 @@ pub fn list(path: &Path) -> Result<Vec<String>> {
         buffer
     };
 
-    let mut names = Vec::with_capacity(entry_count.min(1024));
+    let mut entries = Vec::with_capacity(entry_count.min(1024));
     let mut cursor = 0usize;
     // Counted separately from `names`, which leaves directory entries out: the
     // record says how many headers there are, and every one of them must be
     // found or the directory is damaged.
     let mut seen = 0usize;
     while seen < entry_count {
+        if cancelled.load(Ordering::Relaxed) {
+            return Ok(None);
+        }
         if directory.get(cursor..cursor + 4) != Some(&CENTRAL_SIGNATURE) {
             return Err(DegaussError::malformed(
                 "zip archive",
@@ -151,16 +185,21 @@ pub fn list(path: &Path) -> Result<Vec<String>> {
                 DegaussError::malformed("zip archive", path, "directory entry runs past the end")
             })?;
         let name = String::from_utf8_lossy(name).into_owned();
+        let crc32 = u32_at(&directory, cursor + 16)
+            .ok_or_else(|| DegaussError::malformed("zip archive", path, "truncated CRC field"))?
+            as u32;
+        let size = u32_at(&directory, cursor + 24)
+            .ok_or_else(|| DegaussError::malformed("zip archive", path, "truncated size field"))?;
 
         // A trailing slash marks a directory, which is not launchable.
         if !name.ends_with('/') && !name.is_empty() {
-            names.push(name);
+            entries.push(Entry { name, crc32, size });
         }
 
         cursor = name_start + name_len + extra_len + comment_len;
     }
 
-    Ok(names)
+    Ok(Some(entries))
 }
 
 /// The test archive, shared with the catalog's tests so both exercise the
@@ -223,6 +262,17 @@ mod tests {
             ]
         );
         std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn a_pre_cancelled_archive_read_does_not_open_the_file() {
+        let missing = std::env::temp_dir().join(format!(
+            "degauss-zip-cancelled-missing-{}.zip",
+            std::process::id()
+        ));
+        std::fs::remove_file(&missing).ok();
+        let cancelled = AtomicBool::new(true);
+        assert_eq!(entries_controlled(&missing, &cancelled).unwrap(), None);
     }
 
     #[test]

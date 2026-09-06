@@ -84,6 +84,55 @@ impl ListState {
         (top..end, self.selected.saturating_sub(top))
     }
 
+    /// The visible window when entries have different fixed heights.
+    ///
+    /// `weights` and `capacity` use the same arbitrary unit. Context menus
+    /// pass two units for a written row and one for a blank separator. The
+    /// chosen item stays near the middle where possible, while every window
+    /// leaves less than one ordinary row unused. Ordinary lists continue to
+    /// use [`Self::window`] and retain their established behaviour.
+    pub fn weighted_window(
+        &self,
+        weights: &[usize],
+        capacity: usize,
+    ) -> (std::ops::Range<usize>, usize) {
+        if self.count == 0 {
+            return (0..0, 0);
+        }
+
+        let selected = self.selected.min(self.count - 1);
+        let weight = |index: usize| weights.get(index).copied().unwrap_or(1).max(1);
+        let capacity = capacity.max(weight(selected));
+        let mut best: Option<(usize, usize, usize, usize)> = None;
+
+        for start in 0..=selected {
+            let mut end = start;
+            let mut used = 0usize;
+            while end < self.count {
+                let next = weight(end);
+                if used.saturating_add(next) > capacity {
+                    break;
+                }
+                used += next;
+                end += 1;
+            }
+            if selected >= end {
+                continue;
+            }
+
+            let before_selected: usize = (start..selected).map(weight).sum();
+            let selected_centre_twice = before_selected * 2 + weight(selected);
+            let centre_distance = selected_centre_twice.abs_diff(capacity);
+            let candidate = (capacity - used, centre_distance, start, end);
+            if best.is_none_or(|current| candidate < current) {
+                best = Some(candidate);
+            }
+        }
+
+        let (_, _, start, end) = best.expect("the selected weighted row always fits");
+        (start..end, selected - start)
+    }
+
     /// Move by whole visual rows. Returns true when something changed.
     #[cfg_attr(not(test), allow(dead_code))]
     pub fn move_rows(&mut self, rows: isize) -> bool {
@@ -147,6 +196,59 @@ mod tests {
             state.selected()
         );
         assert!(index < state.visible(), "index {index} outside the window");
+    }
+
+    #[test]
+    fn a_two_column_last_partial_row_remains_selectable() {
+        let mut state = ListState::new(5, 4);
+        state.reshape(4, 2);
+        state.go_last();
+        let (range, index) = state.window();
+        assert_eq!(state.stride(), 2);
+        assert_eq!(range.start + index, 4);
+        assert!(range.contains(&4));
+    }
+
+    #[test]
+    fn a_two_column_grid_reaches_and_wraps_from_its_partial_last_row() {
+        let mut state = ListState::new(5, 4);
+        state.reshape(4, 2);
+        state.select(3);
+        assert!(state.move_rows(1));
+        assert_eq!(
+            state.selected(),
+            4,
+            "row movement reaches the lone final cell"
+        );
+        assert!(state.move_rows(1));
+        assert_eq!(
+            state.selected(),
+            0,
+            "another row movement wraps from the edge"
+        );
+        assert!(state.move_items(-1));
+        assert_eq!(
+            state.selected(),
+            4,
+            "one-item movement wraps back to that cell"
+        );
+    }
+
+    #[test]
+    fn a_grid_page_keeps_its_column_until_the_partial_end() {
+        let mut state = ListState::new(11, 6);
+        state.reshape(6, 2);
+        state.select(1);
+        assert!(state.move_items(state.visible() as isize));
+        assert_eq!(state.selected(), 7, "one complete page keeps the column");
+        assert!(state.move_items(state.visible() as isize));
+        assert_eq!(
+            state.selected(),
+            10,
+            "the next page stops at the partial end"
+        );
+        assert!(state.move_items(state.visible() as isize));
+        assert_eq!(state.selected(), 0, "only a page from the edge wraps");
     }
 
     use super::*;
@@ -297,5 +399,47 @@ mod tests {
             before,
             "switching layout must not lose your place in the library"
         );
+    }
+
+    #[test]
+    fn weighted_window_uses_half_rows_without_hiding_fitting_entries() {
+        // Ten full-row slots. Four blank group separators cost half a row,
+        // so twelve entries fit exactly and all twelve must be handed to
+        // the UI rather than stopping after the first ten by item count.
+        let weights = [2, 2, 1, 2, 2, 1, 2, 2, 1, 2, 2, 1];
+        let mut state = ListState::new(weights.len(), 10);
+        state.select(5);
+        let (range, selected) = state.weighted_window(&weights, 20);
+        assert_eq!(range, 0..weights.len());
+        assert_eq!(range.start + selected, 5);
+        assert_eq!(range.map(|index| weights[index]).sum::<usize>(), 20);
+    }
+
+    #[test]
+    fn weighted_window_keeps_each_edge_selected_and_fills_the_viewport() {
+        let weights = [2, 2, 1, 2, 2, 1, 2, 2, 1, 2, 2, 1, 2, 2, 1, 2];
+        let mut state = ListState::new(weights.len(), 10);
+
+        for selected in [0, 7, weights.len() - 1] {
+            state.select(selected);
+            let (range, offset) = state.weighted_window(&weights, 20);
+            let used: usize = range.clone().map(|index| weights[index]).sum();
+            assert_eq!(range.start + offset, selected);
+            assert!(range.contains(&selected));
+            assert!(used <= 20);
+            assert!(
+                20 - used < 2,
+                "at most a half-height separator can remain unused: {range:?} uses {used}"
+            );
+        }
+    }
+
+    #[test]
+    fn weighted_window_does_not_change_the_ordinary_window() {
+        let mut state = ListState::new(30, 10);
+        state.select(15);
+        let ordinary = state.window();
+        let weighted = state.weighted_window(&[2; 30], 20);
+        assert_eq!(weighted, ordinary);
     }
 }

@@ -31,15 +31,25 @@ impl Font {
     /// In the order the option cycles through them.
     pub const ALL: [Font; 4] = [Font::Smooth, Font::Pixel, Font::Smooth2, Font::Pixel2];
 
-    /// What `settings.toml` records, and what the options screen shows once
-    /// capitalised. Lowercase in the file, like every other name written
-    /// there.
+    /// What `settings.toml` and theme files record. Lowercase in the file,
+    /// like every other name written there.
     pub fn label(self) -> &'static str {
         match self {
             Font::Smooth => "smooth",
             Font::Pixel => "pixel",
             Font::Smooth2 => "smooth 2",
             Font::Pixel2 => "pixel 2",
+        }
+    }
+
+    /// What a menu row shows. Kept beside the persisted label so theme
+    /// editing and the main Text option cannot drift in spelling.
+    pub fn shown(self) -> &'static str {
+        match self {
+            Font::Smooth => "Smooth",
+            Font::Pixel => "Pixel",
+            Font::Smooth2 => "Smooth 2",
+            Font::Pixel2 => "Pixel 2",
         }
     }
 
@@ -71,14 +81,23 @@ impl Font {
             .find(|font| font.label().eq_ignore_ascii_case(text))
     }
 
-    /// The next one along, which is what left and right do to the setting.
-    /// There are two, so either direction reaches the other.
+    /// The next one along, used by right and A in Options.
     pub fn next(self) -> Font {
         match self {
             Font::Smooth => Font::Pixel,
             Font::Pixel => Font::Smooth2,
             Font::Smooth2 => Font::Pixel2,
             Font::Pixel2 => Font::Smooth,
+        }
+    }
+
+    /// The previous one, used by left in Options.
+    pub fn prev(self) -> Font {
+        match self {
+            Font::Smooth => Font::Pixel2,
+            Font::Pixel => Font::Smooth,
+            Font::Smooth2 => Font::Pixel,
+            Font::Pixel2 => Font::Smooth2,
         }
     }
 
@@ -151,6 +170,7 @@ mod tests {
     fn what_is_written_to_settings_is_what_comes_back() {
         for font in Font::ALL {
             assert_eq!(Font::parse(font.label()), Some(font));
+            assert_eq!(Font::parse(font.shown()), Some(font));
         }
         assert_eq!(Font::parse("Smooth"), Some(Font::Smooth), "case is ignored");
         assert_eq!(
@@ -158,6 +178,16 @@ mod tests {
             None,
             "an unknown name is not a font"
         );
+    }
+
+    #[test]
+    fn previous_and_next_are_exact_inverses_for_every_font() {
+        for font in Font::ALL {
+            assert_eq!(font.prev().next(), font);
+            assert_eq!(font.next().prev(), font);
+        }
+        assert_eq!(Font::Smooth.prev(), Font::Pixel2, "left wraps backward");
+        assert_eq!(Font::Pixel2.next(), Font::Smooth, "right wraps forward");
     }
 
     #[test]

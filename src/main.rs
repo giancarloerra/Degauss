@@ -2,14 +2,17 @@
 //!
 //! Draws straight to the Linux framebuffer with a software renderer, reads
 //! what is on the card, and launches games the way MiSTer itself does. It
-//! installs nothing, runs no service, and duplicates nothing the main menu
-//! already provides.
+//! runs no service and duplicates nothing the main menu already provides.
+//! Its optional, user-started scraper can add artwork and metadata to the
+//! existing EmulationStation gamelists on the card.
 
 slint::include_modules!();
 
 mod app;
+mod artwork_pack;
 mod browse;
 mod cache;
+mod category_images;
 mod config;
 mod covers;
 mod error;
@@ -21,13 +24,17 @@ mod launch;
 mod list_state;
 mod metrics;
 mod options;
+mod provider_job;
 mod render;
+mod scraper;
 mod settings;
+mod source_cache;
 mod state;
 mod status;
 mod surface;
 mod systems;
 mod theme;
+mod theme_editor;
 mod zip;
 
 use std::path::{Path, PathBuf};
@@ -73,9 +80,14 @@ degauss - a fast game browser for MiSTer FPGA
   --bench <frames>    scroll for N frames into memory and report the cost
   --selftest          compare both drawing paths against the real framebuffer
   --frames <n>        frames per run for --bench and --selftest
-  --layout <name>     details (default), tiled, list or carousel
-  --screen <name>     browse (default), menu, options, advanced, help,
-                      about, splash, find, context or screensaver, for --render
+  --layout <name>     details (default), tiled, list, carousel, multi-list
+                      or gallery
+  --screen <name>     browse (default), menu, options, advanced, theme-editor,
+                      help, about, splash, find, context, category-image,
+                      screensaver, scraper, scraper-keyboard,
+                      scraper-progress, game-data-source,
+                      artwork-pack-location, artwork-pack-directory or
+                      source-progress, for --render
   --select <n>        which entry to highlight in --render
   --find <text>       a search already typed, with --screen find
   --geometry <WxH>    geometry for --render and --bench
@@ -236,12 +248,21 @@ fn parse_from<I: Iterator<Item = String>>(argv: I) -> std::result::Result<Option
                     "menu" => Screen::Menu,
                     "options" => Screen::Options,
                     "advanced" => Screen::Advanced,
+                    "theme-editor" => Screen::ThemeEditor,
                     "help" => Screen::Help,
                     "about" => Screen::About,
                     "find" => Screen::Find,
                     "context" => Screen::Context,
+                    "category-image" => Screen::CategoryImage,
                     "splash" => Screen::Splash,
                     "screensaver" => Screen::Screensaver,
+                    "scraper" => Screen::Scraper,
+                    "scraper-keyboard" => Screen::ScraperKeyboard,
+                    "scraper-progress" => Screen::ScraperProgress,
+                    "game-data-source" => Screen::GameDataSource,
+                    "artwork-pack-location" => Screen::ArtworkPackLocation,
+                    "artwork-pack-directory" => Screen::ArtworkPackDirectory,
+                    "source-progress" => Screen::SourceProgress,
                     other => return Err(format!("unknown screen {other:?}")),
                 }
             }
@@ -328,10 +349,11 @@ fn load_everything(args: &Args) -> Result<Loaded> {
     // Logos live beside the configuration, named after the system.
     let logo_dir = config_path.parent().map(|dir| dir.join("logos"));
     // Themes too, so wherever the configuration goes, its themes follow.
-    let themes = config_path
+    let themes_dir = config_path
         .parent()
-        .map(|dir| theme::load(&dir.join("themes")))
-        .unwrap_or_default();
+        .map(|dir| dir.join("themes"))
+        .unwrap_or_else(|| PathBuf::from("themes"));
+    let themes = theme::load_available(&themes_dir);
     // Which group each system belongs to comes from where its core
     // actually is on this card, not from what the table guessed.
     let cores = systems::CoreIndex::read(Path::new(&config.menu_root));
@@ -348,6 +370,7 @@ fn load_everything(args: &Args) -> Result<Loaded> {
         names,
         table,
         logo_dir,
+        themes_dir,
         themes,
     })
 }
@@ -416,17 +439,36 @@ fn check_install(config_path: &Path) -> Result<()> {
     }
 
     let settings_path = dir.join("settings.toml");
-    match Settings::load(&settings_path) {
-        Ok(_) => {
+    let loaded_settings = match Settings::load(&settings_path) {
+        Ok(settings) => {
             if settings_path.exists() {
                 println!("settings     present, parses");
             } else {
                 println!("settings     none yet (fresh defaults)");
             }
+            Some(settings)
         }
         Err(e) => {
             println!("settings     PRESENT BUT BROKEN");
             problems.push(format!("settings.toml does not parse: {e}"));
+            None
+        }
+    };
+
+    if let Some(settings) = loaded_settings.as_ref() {
+        if settings.artwork_pack_roots.is_empty() {
+            println!("artwork pack no systems selected");
+        } else {
+            for (group, root) in &settings.artwork_pack_roots {
+                let provider = artwork_pack::Provider::load(group, Path::new(root), None);
+                println!(
+                    "artwork pack {group}: {} at {root}",
+                    provider.health.label()
+                );
+                if !provider.health.usable() {
+                    problems.push(format!("Artwork Pack {group}: {}", provider.status_line()));
+                }
+            }
         }
     }
 
@@ -459,7 +501,7 @@ fn check_install(config_path: &Path) -> Result<()> {
         Some(n) => println!("logos        {n} files"),
         None => println!("logos        no folder (names are drawn instead)"),
     }
-    let themes = theme::load(&dir.join("themes"));
+    let themes = theme::load_available(&dir.join("themes"));
     println!("themes       {} loaded", themes.themes.len());
     for problem in &themes.problems {
         println!("             {problem}");
@@ -615,9 +657,9 @@ fn run() -> Result<()> {
         let system = &loaded.systems[chosen.unwrap_or(0)];
         println!("build        {}", build_description());
         println!("reading      {} ...", system.path().display());
-        let library = browse::Library::open_with_names(&system.to_config(), loaded.names.clone())?;
-        let audit = library.audit(false);
-        print_report(system, &library, &audit);
+        let effective = effective_library(&loaded, system)?;
+        let audit = effective.audit(false);
+        print_report(system, &effective, &audit);
 
         if args.dry_run_launch {
             let entry = audit.first_game.as_ref().ok_or_else(|| {
@@ -859,7 +901,10 @@ fn state_path_for(settings: &Path) -> PathBuf {
 
 fn render_once(loaded: Loaded, args: Args, chosen: usize, path: &Path) -> Result<()> {
     let (width, height) = args.geometry;
-    let mut app = build_app(loaded, width, height, RepaintBufferType::NewBuffer)?;
+    // MemorySurface retains the previous frame, exactly like the framebuffer.
+    // ReusedBuffer lets the second pass update chrome without discarding the
+    // complete first pass from the image that is written below.
+    let mut app = build_app(loaded, width, height, RepaintBufferType::ReusedBuffer)?;
     app.set_layout(args.layout.unwrap_or(Layout::Details));
     if args.system.is_some() {
         app.open_system_by_index(chosen);
@@ -883,7 +928,19 @@ fn render_once(loaded: Loaded, args: Args, chosen: usize, path: &Path) -> Result
             // never reach past their first visible rows.
             if matches!(
                 args.screen,
-                Screen::Options | Screen::Advanced | Screen::Help
+                Screen::Context
+                    | Screen::Options
+                    | Screen::Advanced
+                    | Screen::ThemeEditor
+                    | Screen::Help
+                    | Screen::CategoryImage
+                    | Screen::Scraper
+                    | Screen::ScraperKeyboard
+                    | Screen::ScraperProgress
+                    | Screen::GameDataSource
+                    | Screen::ArtworkPackLocation
+                    | Screen::ArtworkPackDirectory
+                    | Screen::SourceProgress
             ) {
                 app.select(args.select);
             }
@@ -1180,14 +1237,16 @@ fn run_on_framebuffer(
     ));
     let art = app.art_stats();
     let covers = app.covers();
+    let thumbnails = app.gallery_covers();
     note(&format!(
-        "art          {} loads, {} skipped by scrolling, worst {} us, {} held",
+        "art          {} loads, {} skipped by scrolling, worst {} us, {} large and {} thumbnails held",
         art.loads,
         art.deferred,
         art.worst_load_us,
-        covers.len()
+        covers.len(),
+        thumbnails.len()
     ));
-    if let Some(text) = app::report_cover_failures(covers) {
+    if let Some(text) = app::report_art_failures(covers, thumbnails) {
         note(&text);
     }
 
@@ -1208,13 +1267,104 @@ fn run_on_framebuffer(
     Ok(())
 }
 
-fn print_report(system: &FoundSystem, library: &browse::Library, audit: &browse::Audit) {
+struct EffectiveLibrary {
+    library: browse::Library,
+    provider: Option<artwork_pack::Provider>,
+    fingerprints: cache::ContentFingerprints,
+    notes: Vec<String>,
+}
+
+impl EffectiveLibrary {
+    fn audit(&self, show_empty: bool) -> browse::Audit {
+        match self.provider.as_ref() {
+            Some(provider) => self.library.audit_projected(show_empty, &mut |rows| {
+                let _ = provider.apply_with_fingerprints(rows, &self.fingerprints);
+            }),
+            None => self.library.audit(show_empty),
+        }
+    }
+}
+
+fn effective_library(loaded: &Loaded, system: &FoundSystem) -> Result<EffectiveLibrary> {
+    let id = &system.def.id;
+    let Some(root) = artwork_pack::selected_root(&loaded.settings.artwork_pack_roots, id) else {
+        return Ok(EffectiveLibrary {
+            library: browse::Library::open_with_names(&system.to_config(), loaded.names.clone())?,
+            provider: None,
+            fingerprints: cache::ContentFingerprints::new(),
+            notes: Vec::new(),
+        });
+    };
+
+    let (language, notes) = match scraper::ScraperSettings::load(
+        &scraper::ScraperSettings::path_beside(&loaded.settings_path),
+    ) {
+        Ok(settings) => (settings.language, Vec::new()),
+        Err(error) => (
+            None,
+            vec![format!(
+                "ScreenScraper settings could not supply the preferred synopsis language: {error}"
+            )],
+        ),
+    };
+    let provider = artwork_pack::Provider::load(id, root, language.as_deref());
+    let library = browse::Library::open_source_neutral(&system.to_config(), loaded.names.clone())?;
+    let cancelled = std::sync::atomic::AtomicBool::new(false);
+    let cached = cache::load_artwork_pack_data(&cache::dir_for(&loaded.settings_path), id);
+    let cached_is_current = match cached.as_ref() {
+        Some(data) => provider
+            .cached_fingerprints_are_current(
+                &data.cache,
+                &data.fingerprints,
+                data.fingerprints_complete,
+                &cancelled,
+            )?
+            .unwrap_or(false),
+        None => false,
+    };
+    let fingerprints = if cached_is_current {
+        cached.map(|data| data.fingerprints).unwrap_or_default()
+    } else if provider.health.usable() {
+        let source_cache = cached
+            .map(|data| data.cache)
+            .unwrap_or_else(|| cache::build_system(&library));
+        provider
+            .fingerprints_for_cache(&source_cache, &cancelled, &mut |_, _| {})?
+            .unwrap_or_default()
+    } else {
+        cache::ContentFingerprints::new()
+    };
+    Ok(EffectiveLibrary {
+        library,
+        provider: Some(provider),
+        fingerprints,
+        notes,
+    })
+}
+
+fn print_report(system: &FoundSystem, effective: &EffectiveLibrary, audit: &browse::Audit) {
+    let library = &effective.library;
     println!("system       {} ({})", system.name(), system.category());
+    match effective.provider.as_ref() {
+        Some(provider) => {
+            println!("source       Artwork Pack ({})", provider.health.label());
+            println!("pack root    {}", provider.docs_root.display());
+            for diagnostic in &provider.diagnostics {
+                println!("pack note    {diagnostic}");
+            }
+        }
+        None => println!("source       Gamelist"),
+    }
+    for note in &effective.notes {
+        println!("source note  {note}");
+    }
     for (folder, has_gamelist) in library.gamelists() {
         println!(
             "folder       {} [{}]",
             folder.display(),
-            if has_gamelist {
+            if has_gamelist && effective.provider.is_some() {
+                "gamelist.xml ignored"
+            } else if has_gamelist {
                 "gamelist.xml"
             } else {
                 "no gamelist"
@@ -1243,6 +1393,30 @@ fn print_report(system: &FoundSystem, library: &browse::Library, audit: &browse:
     }
     if let Some(first) = &audit.first_game {
         println!("first game   {}", first.name);
+        if let (Some(provider), browse::Kind::Play(launch)) =
+            (effective.provider.as_ref(), &first.kind)
+        {
+            match provider
+                .presentation_for_launch_with_fingerprints(launch, &effective.fingerprints)
+            {
+                Ok(Some(presentation)) => {
+                    if let Some(diagnostic) = presentation.diagnostic {
+                        println!(
+                            "pack match   {} / {} by {}{}",
+                            diagnostic.pack_folder,
+                            diagnostic.key,
+                            diagnostic.method.label(),
+                            diagnostic
+                                .synopsis_language
+                                .map(|language| format!(", synopsis {language}"))
+                                .unwrap_or_default()
+                        );
+                    }
+                }
+                Ok(None) => println!("pack match   none"),
+                Err(error) => println!("pack match   FAILED: {error}"),
+            }
+        }
     }
 }
 
@@ -1271,16 +1445,15 @@ fn audit_everything(loaded: &Loaded) -> Result<()> {
     let mut problems: Vec<String> = Vec::new();
 
     for system in &loaded.systems {
-        let config = system.to_config();
-        let library = match browse::Library::open_with_names(&config, loaded.names.clone()) {
-            Ok(library) => library,
+        let effective = match effective_library(loaded, system) {
+            Ok(effective) => effective,
             Err(e) => {
                 println!("{:<26} FAILED: {e}", system.name());
                 problems.push(format!("{}: {e}", system.name()));
                 continue;
             }
         };
-        let audit = library.audit(false);
+        let audit = effective.audit(false);
         total_games += audit.games;
         total_art += audit.with_art;
 
@@ -1294,10 +1467,34 @@ fn audit_everything(loaded: &Loaded) -> Result<()> {
             audit.folders
         );
 
-        let has_gamelist = library.gamelists().iter().any(|(_, present)| *present);
+        let has_gamelist = effective
+            .library
+            .gamelists()
+            .iter()
+            .any(|(_, present)| *present);
+        if let Some(provider) = effective.provider.as_ref() {
+            if provider.health != artwork_pack::ProviderHealth::Ready {
+                problems.push(format!(
+                    "{}: Artwork Pack {}",
+                    system.name(),
+                    provider.status_line()
+                ));
+            }
+        }
         if audit.games == 0 {
             problems.push(format!("{}: no games found", system.name()));
-        } else if has_gamelist && audit.with_art == 0 {
+        } else if effective
+            .provider
+            .as_ref()
+            .is_some_and(|provider| provider.health.usable())
+            && audit.with_art == 0
+        {
+            problems.push(format!(
+                "{}: Artwork Pack resolved no pictures for {} games",
+                system.name(),
+                audit.games
+            ));
+        } else if effective.provider.is_none() && has_gamelist && audit.with_art == 0 {
             problems.push(format!(
                 "{}: has a gamelist but not one picture bound",
                 system.name()
@@ -1356,6 +1553,25 @@ mod tests {
     }
 
     #[test]
+    fn screen_help_uses_one_separator_before_the_final_choice() {
+        let section = USAGE
+            .split("  --screen <name>")
+            .nth(1)
+            .and_then(|rest| rest.split("  --select <n>").next())
+            .expect("screen help section exists");
+        assert_eq!(
+            section
+                .split_whitespace()
+                .filter(|word| *word == "or")
+                .count(),
+            1
+        );
+        assert!(
+            section.contains("artwork-pack-directory or\n                      source-progress")
+        );
+    }
+
+    #[test]
     fn without_the_flag_no_view_is_forced() {
         // The view is a setting the user changes in Options and expects to
         // still be there next time. If the parser defaulted to a real
@@ -1371,6 +1587,14 @@ mod tests {
             Some(Layout::Carousel)
         );
         assert_eq!(parse(&["--layout", "list"]).layout, Some(Layout::List));
+        assert_eq!(
+            parse(&["--layout", "multi-list"]).layout,
+            Some(Layout::MultiList)
+        );
+        assert_eq!(
+            parse(&["--layout", "gallery"]).layout,
+            Some(Layout::Gallery)
+        );
     }
 
     #[test]
@@ -1381,6 +1605,14 @@ mod tests {
             Some(Layout::Details)
         );
         assert_eq!(parse(&["--layout", "covers"]).layout, Some(Layout::Tiled));
+    }
+
+    #[test]
+    fn the_category_image_picker_can_be_rendered_for_visual_checks() {
+        assert_eq!(
+            parse(&["--screen", "category-image"]).screen,
+            Screen::CategoryImage
+        );
     }
 
     #[test]
@@ -1402,5 +1634,265 @@ mod tests {
         // to sort first, which is what --system C64 once did.
         assert_eq!(parse(&[]).system, None);
         assert_eq!(parse(&["--system", "C64"]).system, Some("C64".to_string()));
+    }
+
+    #[test]
+    fn every_scraper_screen_can_be_rendered_for_visual_checks() {
+        assert_eq!(parse(&["--screen", "scraper"]).screen, Screen::Scraper);
+        assert_eq!(
+            parse(&["--screen", "scraper-keyboard"]).screen,
+            Screen::ScraperKeyboard
+        );
+        assert_eq!(
+            parse(&["--screen", "scraper-progress"]).screen,
+            Screen::ScraperProgress
+        );
+    }
+
+    #[test]
+    fn every_artwork_pack_screen_can_be_rendered_for_visual_checks() {
+        assert_eq!(
+            parse(&["--screen", "game-data-source"]).screen,
+            Screen::GameDataSource
+        );
+        assert_eq!(
+            parse(&["--screen", "artwork-pack-location"]).screen,
+            Screen::ArtworkPackLocation
+        );
+        assert_eq!(
+            parse(&["--screen", "artwork-pack-directory"]).screen,
+            Screen::ArtworkPackDirectory
+        );
+        assert_eq!(
+            parse(&["--screen", "source-progress"]).screen,
+            Screen::SourceProgress
+        );
+    }
+
+    fn visual_match(id: &str, name: &str, year: &str) -> scraper::Match {
+        scraper::Match {
+            id: id.to_string(),
+            name: name.to_string(),
+            names: vec![name.to_string()],
+            metadata: scraper::Metadata {
+                releasedate: Some(format!("{year}0101T000000")),
+                ..Default::default()
+            },
+            media: None,
+            rom_crc32: None,
+            rom_md5: None,
+            rom_sha1: None,
+        }
+    }
+
+    fn visual_preview(seed: u8) -> covers::RgbImage {
+        let width = 320u32;
+        let height = 180u32;
+        let mut rgb = Vec::with_capacity(width as usize * height as usize * 3);
+        for y in 0..height {
+            for x in 0..width {
+                rgb.extend_from_slice(&[
+                    seed.wrapping_add((x * 155 / width) as u8),
+                    35u8.wrapping_add((y * 190 / height) as u8),
+                    225u8.wrapping_sub((x * 120 / width) as u8),
+                ]);
+            }
+        }
+        covers::RgbImage::new(width, height, rgb).expect("visual preview dimensions agree")
+    }
+
+    fn write_scraper_visual(
+        app: &mut App,
+        surface: &mut MemorySurface,
+        presenter: &mut Presenter,
+        folder: &Path,
+        stem: &str,
+    ) {
+        app.render_once(surface, presenter)
+            .expect("visual state renders");
+        surface
+            .write_bmp(&folder.join(format!(
+                "{stem}-{}x{}.bmp",
+                surface.geometry().width,
+                surface.geometry().height
+            )))
+            .expect("visual capture writes");
+    }
+
+    #[test]
+    #[ignore = "writes explicitly requested manual-match visual QA captures"]
+    fn render_manual_scraper_match_acceptance_states() {
+        let output = std::env::var_os("DEGAUSS_VISUAL_DIR")
+            .map(PathBuf::from)
+            .expect("DEGAUSS_VISUAL_DIR names the private capture folder");
+        std::fs::create_dir_all(&output).expect("capture folder exists");
+        let geometry =
+            std::env::var("DEGAUSS_VISUAL_GEOMETRY").unwrap_or_else(|_| "352x240".to_string());
+        let (width, height) = geometry
+            .split_once('x')
+            .and_then(|(width, height)| Some((width.parse().ok()?, height.parse().ok()?)))
+            .expect("DEGAUSS_VISUAL_GEOMETRY is WIDTHxHEIGHT");
+
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let scratch = output.join(format!(".runtime-{}", std::process::id()));
+        std::fs::create_dir(&scratch).expect("private visual runtime folder is new");
+        std::fs::copy(root.join("degauss.toml"), scratch.join("degauss.toml"))
+            .expect("visual fixture configuration is copied");
+        let args = Args {
+            config: Some(scratch.join("degauss.toml")),
+            systems: Some(root.join("assets/systems.toml")),
+            geometry: (width, height),
+            ..Default::default()
+        };
+        let loaded = load_everything(&args).expect("visual fixture configuration loads");
+        let mut app = build_app(loaded, width, height, RepaintBufferType::ReusedBuffer)
+            .expect("visual fixture interface builds");
+        let mut surface = MemorySurface::new(width, height, PixelFormat::Rgb565);
+        let mut presenter = Presenter::new(surface.geometry(), PresentMode::Direct);
+        let scope = "Adventure Island (USA, Europe) [Rev A]";
+        let candidates = vec![
+            visual_match("101", "Adventure Island", "1986"),
+            visual_match("102", "Adventure Island Classic", "1992"),
+            visual_match(
+                "103",
+                "Adventure Island - The Beginning of an Exceptionally Long Candidate Name",
+                "2008",
+            ),
+            visual_match("104", "Hudson's Adventure Island II", "1991"),
+            visual_match("105", "Super Adventure Island", "1992"),
+            visual_match("106", "New Adventure Island", "1992"),
+        ];
+
+        app.set_scraper_match_visual_fixture(
+            scope,
+            candidates.clone(),
+            0,
+            "6 Matches",
+            Some(visual_preview(24)),
+            "",
+        );
+        write_scraper_visual(
+            &mut app,
+            &mut surface,
+            &mut presenter,
+            &output,
+            "scraper-match-first",
+        );
+
+        app.set_scraper_match_visual_fixture(
+            scope,
+            candidates.clone(),
+            3,
+            "6 Matches",
+            Some(visual_preview(96)),
+            "",
+        );
+        write_scraper_visual(
+            &mut app,
+            &mut surface,
+            &mut presenter,
+            &output,
+            "scraper-match-later",
+        );
+
+        app.set_scraper_match_visual_fixture(
+            scope,
+            candidates.clone(),
+            2,
+            "6 Matches",
+            None,
+            "Loading Image...",
+        );
+        write_scraper_visual(
+            &mut app,
+            &mut surface,
+            &mut presenter,
+            &output,
+            "scraper-match-loading",
+        );
+
+        app.set_scraper_match_visual_fixture(
+            scope,
+            candidates.clone(),
+            4,
+            "6 Matches",
+            None,
+            "No Image",
+        );
+        write_scraper_visual(
+            &mut app,
+            &mut surface,
+            &mut presenter,
+            &output,
+            "scraper-match-no-art",
+        );
+
+        app.set_scraper_match_visual_fixture(
+            scope,
+            Vec::new(),
+            0,
+            "No Matches for Adventure Isles",
+            None,
+            "No Matches",
+        );
+        write_scraper_visual(
+            &mut app,
+            &mut surface,
+            &mut presenter,
+            &output,
+            "scraper-match-no-result",
+        );
+
+        app.set_scraper_match_visual_fixture(
+            scope,
+            candidates.clone(),
+            1,
+            "ScreenScraper timed out",
+            None,
+            "Preview Unavailable",
+        );
+        write_scraper_visual(
+            &mut app,
+            &mut surface,
+            &mut presenter,
+            &output,
+            "scraper-match-failure",
+        );
+
+        app.set_scraper_match_visual_fixture(
+            scope,
+            candidates.clone(),
+            1,
+            "6 Matches",
+            Some(visual_preview(56)),
+            "",
+        );
+        app.handle(input::Action::Accept);
+        write_scraper_visual(
+            &mut app,
+            &mut surface,
+            &mut presenter,
+            &output,
+            "scraper-match-confirm",
+        );
+
+        app.set_scraper_match_visual_fixture(
+            scope,
+            candidates,
+            1,
+            "6 Matches",
+            Some(visual_preview(56)),
+            "",
+        );
+        app.handle(input::Action::Context);
+        write_scraper_visual(
+            &mut app,
+            &mut surface,
+            &mut presenter,
+            &output,
+            "scraper-match-edit-search",
+        );
+        drop(app);
+        std::fs::remove_dir_all(scratch).expect("private visual runtime folder is removed");
     }
 }

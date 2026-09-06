@@ -157,11 +157,16 @@ echo my-art > "$S/.degauss/logos/NES.png"
 echo extra-art > "$S/.degauss/logos/My System.png"
 mkdir -p "$S/.degauss/themes"
 echo 'text = "#33ff33"' > "$S/.degauss/themes/mine.toml"
+mkdir -p "$S/.degauss/logos/.category-images" "$S/.degauss/logos/.system-images"
+echo category-choice > "$S/.degauss/logos/.category-images/Computer.png"
+echo system-choice > "$S/.degauss/logos/.system-images/416d696761.png"
 run_shim "$S" || fail "art: exit $?"
 expect_silent_and_gone "$S" art
 grep -q my-art "$S/.config/degauss/logos/NES.png" || fail "art: custom logo lost"
 grep -q extra-art "$S/.config/degauss/logos/My System.png" || fail "art: extra logo lost"
 grep -q 33ff33 "$S/.config/degauss/themes/mine.toml" || fail "art: user theme lost"
+grep -q category-choice "$S/.config/degauss/logos/.category-images/Computer.png" || fail "art: category choice lost"
+grep -q system-choice "$S/.config/degauss/logos/.system-images/416d696761.png" || fail "art: system choice lost"
 echo "5 user art and themes stay active: ok"
 
 # ---- 6: unknown files follow the move, nothing destroyed ------------------
@@ -210,4 +215,34 @@ run_shim "$S" && fail "nobinary: started without a binary"
 [ -e "$S/.degauss/degauss" ] || fail "nobinary: the only binary was deleted"
 echo "8 interrupted install keeps the only binary and refuses: ok"
 
-echo "ALL 9 REHEARSALS PASS"
+# ---- 9: an already-migrated v0.3.0 install stays exactly where it is ------
+S=$(sandbox existing030); stage_new "$S"
+d="$S/.config/degauss"
+cp "${HERE}/tests/fixtures/v0.3.0-settings.toml" "$d/settings.toml"
+echo 'system = "PSX"' > "$d/state.toml"
+mkdir -p "$d/cache"
+echo existing-cache > "$d/cache/index.bin"
+echo 'font = "pixel"' > "$d/themes/My-v0.3-theme.toml"
+mkdir -p "$d/logos/.category-images" "$d/logos/.system-images"
+echo category-choice > "$d/logos/.category-images/Computer.png"
+echo system-choice > "$d/logos/.system-images/416d696761.png"
+settings_before=$(hash_of "$d/settings.toml")
+state_before=$(hash_of "$d/state.toml")
+cache_before=$(hash_of "$d/cache/index.bin")
+theme_before=$(hash_of "$d/themes/My-v0.3-theme.toml")
+category_image_before=$(hash_of "$d/logos/.category-images/Computer.png")
+system_image_before=$(hash_of "$d/logos/.system-images/416d696761.png")
+run_shim "$S" || fail "existing030: exit $?"
+[ ! -e "$S/.degauss" ] || fail "existing030: obsolete folder appeared"
+[ ! -s "$S/.stderr" ] || fail "existing030: stderr not empty"
+grep -q "Migrating" "$S/.stdout" && fail "existing030: migration ran again"
+grep -q "Starting Degauss" "$S/.stdout" || fail "existing030: frontend did not start"
+[ "$(hash_of "$d/settings.toml")" = "$settings_before" ] || fail "existing030: settings changed"
+[ "$(hash_of "$d/state.toml")" = "$state_before" ] || fail "existing030: state changed"
+[ "$(hash_of "$d/cache/index.bin")" = "$cache_before" ] || fail "existing030: cache changed"
+[ "$(hash_of "$d/themes/My-v0.3-theme.toml")" = "$theme_before" ] || fail "existing030: theme changed"
+[ "$(hash_of "$d/logos/.category-images/Computer.png")" = "$category_image_before" ] || fail "existing030: category choice changed"
+[ "$(hash_of "$d/logos/.system-images/416d696761.png")" = "$system_image_before" ] || fail "existing030: system choice changed"
+echo "9 existing v0.3.0 installation starts untouched: ok"
+
+echo "ALL 10 REHEARSALS PASS"

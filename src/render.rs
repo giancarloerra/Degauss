@@ -438,5 +438,76 @@ mod tests {
             8 * 4,
             "a forced repaint must cover every pixel on the screen"
         );
+
+        // The tint is a second Image over the original. Verify the actual
+        // software-renderer bytes: zero mix is the original, half mix is
+        // between the endpoints, and a disabled tint never hides it.
+        ui.set_screen(2);
+        ui.set_c_background(slint::Color::from_rgb_u8(0, 0, 0));
+        window.set_size(PhysicalSize::new(320, 240));
+        let render_logo = |enabled: bool, tint: slint::Color, mix: f32| {
+            ui.set_logo_tint_enabled(enabled);
+            ui.set_logo_tint(tint);
+            ui.set_logo_tint_mix(mix);
+            window.request_redraw();
+            let mut surface = MemorySurface::new(320, 240, PixelFormat::Xrgb8888);
+            let mut presenter = Presenter::new(surface.geometry(), PresentMode::Direct);
+            presenter
+                .draw(&window, &mut surface)
+                .expect("logo frame renders")
+                .expect("logo property change redraws");
+            surface.bytes().to_vec()
+        };
+        let rgb_sum = |frame: &[u8]| {
+            frame
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .map(|pixel| pixel[0] as u64 + pixel[1] as u64 + pixel[2] as u64)
+                .sum::<u64>()
+        };
+        let visible_pixels = |frame: &[u8]| {
+            frame
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .filter(|pixel| pixel[0] != 0 || pixel[1] != 0 || pixel[2] != 0)
+                .count()
+        };
+        let original = slint::Color::from_argb_u8(0, 0, 0, 0);
+        let tinted = slint::Color::from_rgb_u8(0xff, 0x20, 0x80);
+        let original_zero = render_logo(false, original, 0.0);
+        let original_full = render_logo(false, tinted, 1.0);
+        let tinted_zero = render_logo(true, tinted, 0.0);
+        let tinted_half = render_logo(true, tinted, 0.5);
+        let tinted_full = render_logo(true, tinted, 1.0);
+        assert!(
+            rgb_sum(&original_zero) > 0,
+            "the original logo must be visible"
+        );
+        assert!(
+            original_full == original_zero,
+            "a disabled tint must preserve the original at every mix"
+        );
+        assert!(
+            tinted_zero == original_zero,
+            "zero tint mix must be the original logo"
+        );
+        assert_ne!(
+            tinted_full, original_zero,
+            "full tint mix must produce the selected monochrome colour"
+        );
+        assert_ne!(
+            tinted_half, original_zero,
+            "half tint mix must differ from the original"
+        );
+        assert_ne!(
+            tinted_half, tinted_full,
+            "half tint mix must differ from the monochrome endpoint"
+        );
+        assert!(
+            visible_pixels(&tinted_half) >= visible_pixels(&original_zero),
+            "mixing a colour must not make any part of the logo disappear"
+        );
     }
 }

@@ -1,0 +1,46 @@
+name: Theme proposal
+description: Propose a theme for possible inclusion in an official release
+title: "[Theme]: "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Start with the [complete theme template](https://github.com/giancarloerra/Degauss/blob/main/docs/theme-template.toml), test it in Degauss, and attach at least one screenshot from Degauss.
+
+        A proposal becomes eligible for release review after three distinct GitHub accounts other than the submitter each post a comment whose complete voting line is `Vote: include`. Reactions, duplicate comments from one account, the submitter's own comment, and other wording do not count. Eligibility does not guarantee inclusion.
+
+  - type: input
+    id: theme-name
+    attributes:
+      label: Theme name
+      description: The proposed name shown in Degauss Options.
+      placeholder: Example theme
+    validations:
+      required: true
+
+  - type: textarea
+    id: theme-description
+    attributes:
+      label: Theme description
+      description: State the intended display style and any display type used while testing it.
+    validations:
+      required: true
+
+  - type: textarea
+    id: theme-source
+    attributes:
+      label: Complete theme TOML
+      description: Paste the tested theme, including all ten colour roles. The optional top-level logo colour may be included.
+      render: toml
+    validations:
+      required: true
+
+  - type: upload
+    id: screenshots
+    attributes:
+      label: Degauss screenshot
+      description: Attach at least one screenshot showing the theme in Degauss. Do not include private information.
+    validations:
+      required: true
+      accept: ".png,.jpg,.jpeg,.webp"

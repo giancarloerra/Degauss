@@ -16,6 +16,7 @@
 
 # Local working directory, not part of the project.
 /internal/
+/.claude/
 
 # What macOS leaves behind in any folder opened in Finder. No leading slash,
 # so each one matches at every depth rather than only at the root.
@@ -29,3 +30,8 @@
 .TemporaryItems
 .DocumentRevisions-V100
 
+# ScreenScraper user and developer credentials, when a source checkout is
+# run directly. These files must never be committed.
+screenscraper.toml
+screenscraper-developer.toml
+.screenscraper.toml.*.part

@@ -1,6 +1,31 @@
 include!("src/font_sizes.rs");
 
+fn valid_screenscraper_credential(value: Option<&str>, max: usize) -> bool {
+    value.is_some_and(|value| {
+        !value.is_empty() && value.chars().count() <= max && !value.chars().any(char::is_control)
+    })
+}
+
 fn main() {
+    println!("cargo:rerun-if-env-changed=DEGAUSS_SCREENSCRAPER_DEVID");
+    println!("cargo:rerun-if-env-changed=DEGAUSS_SCREENSCRAPER_DEVPASSWORD");
+
+    // Every distributable MiSTer build must contain the application
+    // credentials ScreenScraper issued for Degauss. Host builds remain usable
+    // for tests and development, but the release script cannot accidentally
+    // produce an ARM package whose scraper is incomplete.
+    let degauss_arm_release = std::env::var("PROFILE").as_deref() == Ok("release")
+        && std::env::var("CARGO_CFG_TARGET_ARCH").as_deref() == Ok("arm");
+    if degauss_arm_release {
+        let degauss_developer_id = std::env::var("DEGAUSS_SCREENSCRAPER_DEVID").ok();
+        let degauss_developer_password = std::env::var("DEGAUSS_SCREENSCRAPER_DEVPASSWORD").ok();
+        if !valid_screenscraper_credential(degauss_developer_id.as_deref(), 128)
+            || !valid_screenscraper_credential(degauss_developer_password.as_deref(), 256)
+        {
+            panic!("the MiSTer release build requires valid Degauss ScreenScraper credentials");
+        }
+    }
+
     // Resources and glyphs are baked into the binary: the software renderer
     // has no system font stack to fall back on, and the MiSTer has no fonts
     // installed that we would want to depend on anyway.
