@@ -67,7 +67,9 @@ Click the image to watch Degauss 0.4.0 on YouTube.
 - [Using it](#using-it)
 - [Why Degauss](#why-degauss)
 - [Installing](#installing)
-  - [Installing and staying up to date automatically via update_all script](#installing-and-staying-up-to-date-automatically-via-update_all-script)
+  - [Installing through Update All (recommended)](#installing-through-update-all-recommended)
+  - [Installing through Downloader](#installing-through-downloader)
+  - [Installing manually](#installing-manually)
   - [Upgrading from an earlier release](#upgrading-from-an-earlier-release)
   - [Returning to Degauss from a running core](#returning-to-degauss-from-a-running-core)
   - [Optional: starting Degauss from the stock menu on-demand](#optional-starting-degauss-from-the-stock-menu-on-demand)
@@ -149,6 +151,61 @@ collection indexed.
 
 ## Installing
 
+### Installing through Update All (recommended)
+
+Degauss is available directly in the official
+[Update All](https://github.com/theypsilon/Update_All_MiSTer) settings. To
+install it and keep it updated:
+
+1. Run **Scripts → update_all** on MiSTer.
+2. Press **up** during the opening countdown to enter Settings.
+3. Open **Frontends**.
+4. Select **Degauss** so it shows **On**.
+5. If Update All offers its optional Game Artwork DBs, choose the ones you want
+   or select **No**.
+6. Return to the main Settings screen, choose **SAVE**, then **EXIT and RUN
+   UPDATE ALL**.
+
+<p align="center">
+  <img src="docs/screenshots/install/update-all-settings-frontends.png" alt="Update All Settings with Frontends highlighted" width="720">
+</p>
+
+<p align="center"><em>Open Frontends in Update All Settings.</em></p>
+
+<p align="center">
+  <img src="docs/screenshots/install/update-all-degauss.png" alt="Update All Frontends menu with Degauss enabled" width="720">
+</p>
+
+<p align="center"><em>Select Degauss so it shows On.</em></p>
+
+Update All downloads the Degauss files, sets
+`main=degauss/MiSTer_Degauss` in `MiSTer.ini`, and keeps the installation
+current on later runs. MiSTer can use only one `main=` frontend, so selecting
+Degauss switches any other frontend off.
+
+To remove an installation managed by Update All, return to **Settings →
+Frontends**, highlight **Degauss**, and choose **Uninstall**.
+
+### Installing through Downloader
+
+If you use MiSTer's Downloader without Update All, add these lines to the
+bottom of `/media/fat/downloader.ini`:
+
+```ini
+[degauss]
+db_url = 'https://github.com/giancarloerra/Degauss/releases/latest/download/degauss.json.zip'
+```
+
+Then run `downloader` as usual. Both binaries and the files beside them come
+down and stay updated. Add this line to the `[MiSTer]` section of
+`/media/fat/MiSTer.ini` once:
+
+```ini
+main=degauss/MiSTer_Degauss
+```
+
+### Installing manually
+
 Download the archive from the
 [latest release](../../releases/latest) and copy its contents onto the card,
 so the files land here:
@@ -176,22 +233,6 @@ To remove Degauss, delete the `main=` line and the files above. If a return
 shortcut was configured, also delete
 `/media/fat/config/degauss/frontend_shortcut.bin` to remove its saved
 assignment. Nothing else on the card is touched.
-
-### Installing and staying up to date automatically via update_all script
-
-Degauss publishes a Downloader database, so `update_all` can keep it current
-with everything else on the card. Add two lines to the bottom of
-`/media/fat/downloader.ini`:
-
-```ini
-[degauss]
-db_url = 'https://github.com/giancarloerra/Degauss/releases/latest/download/degauss.json.zip'
-```
-
-Then run `update_all` or `downloader` as usual, and both binaries and the
-files beside them come down and stay updated.
-
-The `main=` line still has to be added by hand, once.
 
 ### Upgrading from an earlier release
 
