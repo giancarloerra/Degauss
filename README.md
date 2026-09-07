@@ -130,8 +130,8 @@ Enter, Escape, Space and Tab.
   costs about 300 bytes a game, so it stays in the low megabytes for an
   ordinary collection and is the only thing that grows with the size of
   yours.
-- **CRT-optimised.** 352x240, 1:1 with the analog output, no scaler in
-  between. Overscan margins and screen position are settings. Larger
+- **CRT-optimised.** 352×240 with 1:1 pixel mapping to a 15 kHz analog output.
+  Overscan margins and screen position are settings. Larger
   framebuffers are laid out from their own size, so HDMI works too.
 - **The card is the truth.** Reorganise, rename or move files with any
   tool and the browser follows: nothing has to be re-imported or re-tagged.
