@@ -1201,3 +1201,62 @@ index 0000000..64a4e88
 +	echo "Frontend shortcut UI still uses the ambiguous set/capture label" >&2
 +	exit 1
 +fi
+--- a/menu.cpp
++++ b/menu.cpp
+@@ -7489,6 +7489,7 @@
+ 				if (degauss_running)
+ 				{
+ 					degauss_running = false;
++					video_chvt(1);
+ 					video_menu_bg(user_io_status_get("[3:1]"));
+ 					video_fb_enable(0);
+ 					menustate = MENU_SYSTEM1;
+--- a/tests/run-degauss-shortcut-tests.sh
++++ b/tests/run-degauss-shortcut-tests.sh
+@@ -62,3 +62,5 @@
+ 	echo "Frontend shortcut UI still uses the ambiguous set/capture label" >&2
+ 	exit 1
+ fi
++
++python3 tests/run-degauss-vt-test.py
+--- /dev/null
++++ b/tests/run-degauss-vt-test.py
+@@ -0,0 +1,38 @@
++#!/usr/bin/env python3
++"""Compile the actual frontend exit block and verify it leaves the script VT."""
++import pathlib
++import subprocess
++import tempfile
++
++root = pathlib.Path(__file__).resolve().parent.parent
++text = (root / 'menu.cpp').read_text()
++start = text.index('degauss_running = false;', text.index('case MENU_SCRIPTS_FB2:'))
++end = text.index('\n\t\t\t\t}', start)
++body = text[start:end]
++source = r'''
++#include <cassert>
++static bool degauss_running = true;
++static int vt = 2, menustate = 0, menusub = 0;
++static bool osd = false, framebuffer = true;
++enum { MENU_SYSTEM1 = 1, DISABLE_KEYBOARD = 1 };
++void video_chvt(int value) { vt = value; }
++int user_io_status_get(const char*) { return 0; }
++void video_menu_bg(int) {}
++void video_fb_enable(int value) { assert(vt == 1); framebuffer = value; }
++void OsdClear() {}
++void OsdEnable(int) { osd = true; }
++void cleanup() {
++''' + body + r'''
++}
++int main() {
++    cleanup();
++    assert(!degauss_running && vt == 1 && !framebuffer);
++    assert(menustate == MENU_SYSTEM1 && menusub == 3 && osd);
++}
++'''
++with tempfile.TemporaryDirectory() as temporary:
++    path = pathlib.Path(temporary)
++    (path / 'test.cpp').write_text(source)
++    subprocess.run(['c++', '-std=c++11', '-Wall', '-Wextra', '-Werror', str(path / 'test.cpp'), '-o', str(path / 'test')], check=True)
++    subprocess.run([str(path / 'test')], check=True)
++print('Frontend completion restores VT1 before disabling script framebuffer')

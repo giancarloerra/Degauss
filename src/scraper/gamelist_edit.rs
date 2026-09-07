@@ -734,7 +734,7 @@ fn xml_attributes(element: &BytesStart<'_>, origin: &Path) -> Result<Vec<(String
                     ),
                 )
             })?;
-            let key = attribute.key.as_ref().to_ascii_lowercase();
+            let key = attribute.key.as_ref().to_owned();
             let value = attribute
                 .normalized_value(XmlVersion::Implicit1_0)
                 .map_err(|error| {
@@ -1082,7 +1082,7 @@ fn append_member_from_legacy(
     {
         let mut opening = String::from("<game");
         for (key, value) in xml_attributes(&start, folder)? {
-            if key != "id" {
+            if !key.eq_ignore_ascii_case("id") {
                 opening.push_str(&format!(
                     " {key}=\"{}\"",
                     escape(&value).replace('"', "&quot;")
@@ -2034,7 +2034,7 @@ mod tests {
     fn single_member_fill_preserves_legacy_fields_and_materializes_exact_entry() {
         let folder = temp("zip-legacy-fill");
         let path = folder.join("gamelist.xml");
-        let original = r#"<game id="old"><path>Only.zip</path><name>Keep name</name><custom>Keep custom</custom></game>"#;
+        let original = r#"<game ID="old" customFlag="Keep &amp; exact"><path>Only.zip</path><name>Keep name</name><custom>Keep custom</custom></game>"#;
         std::fs::write(&path, format!("<gameList>{original}</gameList>")).unwrap();
         let update = Update {
             relative_game_path: "./Only.zip/Game.rom".into(),
@@ -2050,7 +2050,12 @@ mod tests {
             .unwrap();
         let text = std::fs::read_to_string(&path).unwrap();
         assert!(text.contains(original));
-        assert_eq!(text.matches("id=\"old\"").count(), 1);
+        assert_eq!(text.matches("ID=\"old\"").count(), 1);
+        assert_eq!(text.matches("customFlag=\"Keep &amp; exact\"").count(), 2);
+        assert!(
+            !text.contains("customflag="),
+            "XML attribute names are case-sensitive"
+        );
         let list = crate::gamelist::Gamelist::load(&path, &folder).unwrap();
         let (member, _) = list.lookup_exact("./Only.zip/Game.rom").unwrap();
         assert_eq!(member.name.as_deref(), Some("Keep name"));

@@ -25,6 +25,10 @@ def package(build):
         info.uid = info.gid = 0
         info.uname = info.gname = ""
         info.mtime = 0
+        if info.isdir():
+            info.mode = 0o755
+        elif info.isfile() or info.islnk():
+            info.mode = 0o755 if info.mode & 0o111 else 0o644
         return info
     with archive.open('wb') as output, gzip.GzipFile(filename='', fileobj=output, mode='wb', mtime=0) as compressed:
         with tarfile.open(fileobj=compressed, mode='w') as tar:

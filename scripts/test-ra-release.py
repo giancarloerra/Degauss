@@ -3,6 +3,7 @@
 import hashlib
 import importlib.util
 import json
+import os
 import pathlib
 import subprocess
 import sys
@@ -51,6 +52,40 @@ class ReleaseTests(unittest.TestCase):
             failed = subprocess.run(command + ['--ra-dir', str(ra)], cwd=ROOT, capture_output=True)
             self.assertNotEqual(failed.returncode, 0)
             self.assertFalse(out.exists(), 'Incomplete RA package must not produce a successful database')
+
+    def test_source_archive_is_identical_across_umasks_and_preserves_executability(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            archives = []
+            for mask in (0o022, 0o077):
+                root = pathlib.Path(tmp) / str(mask)
+                required = ('MiSTer_RA_Degauss', 'MiSTer_RA_Degauss.cacert.pem', 'SOURCE-PINS.txt',
+                            'source/LICENSE', 'source/Makefile', 'source/ra_http.cpp',
+                            'rebuild/scripts/build-ra-main.sh', 'rebuild/scripts/package-ra-main.py',
+                            'rebuild/support/ra-main/frontend.patch', 'rebuild/support/ra-main/tls.patch',
+                            'rebuild/support/ra-main/controller.patch', 'rebuild/support/ra-main/Dockerfile')
+                previous_mask = os.umask(mask)
+                try:
+                    for name in required:
+                        target = root / name
+                        target.parent.mkdir(parents=True, exist_ok=True)
+                        target.write_text(name)
+                    executable = root / 'rebuild/scripts/build-ra-main.sh'
+                    executable.chmod(0o777 & ~mask)
+                    os.link(root / 'source/LICENSE', root / 'source/LICENSE-link')
+                    package_ra.package(root)
+                finally:
+                    os.umask(previous_mask)
+                archive = root / 'MiSTer_RA_Degauss-source.tar.gz'
+                archives.append(archive.read_bytes())
+                with tarfile.open(archive) as tar:
+                    for member in tar:
+                        expected = 0o755 if member.isdir() or member.name.endswith('/build-ra-main.sh') else 0o644
+                        self.assertEqual(member.mode, expected, member.name)
+                    self.assertTrue(tar.getmember('ra-main-source/source/LICENSE-link').islnk())
+                self.assertEqual(executable.stat().st_mode & 0o777, 0o777 & ~mask,
+                                 'Packaging must not change the build tree permissions')
+            self.assertEqual(archives[0], archives[1],
+                             'Equivalent source trees must produce byte-identical release archives')
 
     def test_source_archive_retains_build_inputs_and_excludes_build_products(self):
         with tempfile.TemporaryDirectory() as tmp:

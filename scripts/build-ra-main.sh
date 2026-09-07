@@ -33,7 +33,7 @@ patch --fuzz=0 -p1 < "$here/support/ra-main/tls.patch"
 patch --fuzz=0 -p1 < "$here/support/ra-main/controller.patch"
 python3 tests/run-ra-controller-tests.py
 bash tests/run-degauss-shortcut-tests.sh
-image=degauss-ra-main-build:bullseye
+image=degauss-ra-main-build:bookworm-gcc10
 # Rebuild from the checked-in recipe (Docker may reuse matching layers), rather
 # than trusting whatever an existing local image tag happens to reference.
 docker build -t "$image" "$here/support/ra-main"
@@ -41,7 +41,7 @@ python3 tests/run-ra-http-tests.py
 docker run --rm --network none -v "$PWD:/src" -w /src \
     -u "$(id -u):$(id -g)" "$image" \
     make BASE=arm-linux-gnueabihf \
-    CC="arm-linux-gnueabihf-gcc -mcpu=cortex-a9 -mfpu=neon -mfloat-abi=hard" \
+    CC="arm-linux-gnueabihf-gcc-10 -mcpu=cortex-a9 -mfpu=neon -mfloat-abi=hard" \
     V=1 2>&1 | tee "$build_root/build.log"
 grep -q -- '-DHAS_RCHEEVOS=1' "$build_root/build.log"
 test -s bin/lib/rcheevos/src/rc_client.c.o
@@ -51,6 +51,19 @@ for symbol in ' T rc_client_create$' ' T achievements_init\(\)$' \
     ' T degauss_should_take_menu\(' ' T degauss_shortcut_handle_keyboard_event\('; do
     grep -Eq "$symbol" "$build_root/symbols.txt"
 done
+docker run --rm --network none -v "$PWD:/src:ro" "$image" \
+    arm-linux-gnueabihf-readelf --version-info /src/bin/MiSTer.elf > "$build_root/abi-versions.txt"
+python3 - "$build_root/abi-versions.txt" <<'PYABI'
+import pathlib
+import re
+import sys
+text = pathlib.Path(sys.argv[1]).read_text()
+for namespace, limit in (("GLIBC", (2, 31)), ("GLIBCXX", (3, 4, 28))):
+    versions = {tuple(map(int, value.split(".")))
+                for value in re.findall(namespace + r"_([0-9]+(?:\.[0-9]+)+)", text)}
+    if not versions or max(versions) > limit:
+        raise SystemExit(f"RA Main ABI check failed: {namespace} requirements {sorted(versions)} exceed {limit} or are missing")
+PYABI
 cp bin/MiSTer "$build_root/MiSTer_RA_Degauss"
 shasum -a 256 "$build_root/MiSTer_RA_Degauss"
 printf 'RA Main source: %s\nDegauss integration: 0651979d53f570c29f8772e124ae603297830954\n' \

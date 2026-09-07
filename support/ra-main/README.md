@@ -66,10 +66,14 @@ The existing protocol already sends both words after any high-bit button input.
 A separate `tls.patch` changes only the active HTTP transport and
 adds a real-curl host test. It removes certificate-verification bypass, requires
 HTTPS even for redirects, ignores curl startup configuration, and reports
-transport errors without URLs or credential contents. The existing 16-byte version 1 shortcut configuration at
+transport errors without URLs or credential contents. Curl is started directly;
+request values pass through an anonymous stdin connection, never shell/process
+arguments or request files. This uses curl 7.43 or newer (`data-raw`). The existing 16-byte version 1 shortcut configuration at
 `config/degauss/frontend_shortcut.bin` is shared unchanged. There is no second
 shortcut setting. Frontend and the configured keyboard key load `menu.rbf`;
 normal Main profile selection determines the executable used after that load.
+When a frontend exits from RA Main Scripts mode, cleanup explicitly returns to
+VT1 before disabling its script framebuffer.
 
 Unstable cores using Degauss Main already use that integration. This build is
 needed for an RA Main executable selected through an RA profile. It does not
@@ -79,10 +83,14 @@ modify any FPGA core.
 
 Requires Bash, curl, tar, patch, shasum, Python 3, OpenSSL, a host C++ compiler,
 and Docker. Host TLS tests bind a temporary loopback server. The build
-builds `degauss-ra-main-build:bullseye` from the included Dockerfile, allowing
-Docker to reuse matching layers but never trusting an arbitrary existing tag. It compiles for Cortex-A9 with NEON and the ARM hard-float
-ABI. Container compilation has networking disabled. The source archive is
-checksum-verified and the integration must apply with zero fuzz.
+builds `degauss-ra-main-build:bookworm-gcc10` from the included Dockerfile,
+allowing Docker to reuse matching layers but never trusting an arbitrary
+existing tag. Debian Bookworm provides the maintained host libraries and tools;
+low-priority Bullseye packages supply GCC 10 and the ARM glibc 2.31 sysroot for
+MiSTer compatibility. It compiles for Cortex-A9 with NEON and the ARM hard-float
+ABI, then rejects GLIBC requirements above 2.31 or GLIBCXX requirements above
+3.4.28 before packaging. Container compilation has networking disabled. The
+source archive is checksum-verified and the integration must apply with zero fuzz.
 
 Controller tests compile the actual serialization function and initial polling
 block against the HPS word-update contract, covering stale high bits, zero-input
