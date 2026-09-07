@@ -151,6 +151,9 @@ pub struct LaunchRule {
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct SystemConfig {
+    /// Runtime collection presentation; never part of user configuration.
+    #[serde(skip)]
+    pub preserve_rbf_stem: bool,
     pub name: String,
     /// Absolute path to the folder holding the games.
     pub path: String,
@@ -437,6 +440,7 @@ favorite = "#fe2e1d"
     #[test]
     fn extension_matching_is_case_insensitive_both_ways() {
         let system = SystemConfig {
+            preserve_rbf_stem: false,
             name: "C64".into(),
             path: "/games/C64".into(),
             extensions: vec!["d64".into(), "prg".into()],
@@ -455,6 +459,7 @@ favorite = "#fe2e1d"
     #[test]
     fn the_launch_rule_for_a_file_comes_from_its_extension() {
         let system = SystemConfig {
+            preserve_rbf_stem: false,
             name: "C64".into(),
             path: "/games/C64".into(),
             extensions: vec!["d64".into(), "prg".into()],

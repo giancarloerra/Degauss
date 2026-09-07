@@ -50,6 +50,8 @@ pub struct Target {
     pub match_path: Option<PathBuf>,
     pub folder: PathBuf,
     pub relative_path: String,
+    /// Only a single supported ZIP member can inherit archive-level metadata.
+    pub metadata_fallback: bool,
 }
 
 impl Target {
@@ -162,7 +164,13 @@ pub fn collect(
             on_progress(&system.def.name);
             check_cancelled(cancelled)?;
             Ok(TargetBatch {
-                targets: vec![target_for(system, platform, launch, title)?],
+                targets: vec![target_for(
+                    system,
+                    platform,
+                    launch,
+                    title,
+                    &mut crate::zip::ArchiveCache::default(),
+                )?],
                 ..Default::default()
             })
         }
@@ -306,6 +314,7 @@ fn walk(
     cancelled: &AtomicBool,
 ) -> Result<Walked> {
     let mut walked = Walked::default();
+    let mut archives = crate::zip::ArchiveCache::default();
     let mut queue = VecDeque::from([(start, 0usize)]);
     let mut seen = HashSet::new();
     while let Some((place, depth)) = queue.pop_front() {
@@ -340,13 +349,15 @@ fn walk(
             check_cancelled(cancelled)?;
             match &row.kind {
                 Kind::Enter(next) => queue.push_back((next.clone(), depth + 1)),
-                Kind::Play(launch) => match target_for(system, platform, launch, &row.name) {
-                    Ok(target) => walked.targets.push(target),
-                    Err(error) => walked.issues.push(TargetIssue {
-                        system: system.def.name.clone(),
-                        detail: error.to_string(),
-                    }),
-                },
+                Kind::Play(launch) => {
+                    match target_for(system, platform, launch, &row.name, &mut archives) {
+                        Ok(target) => walked.targets.push(target),
+                        Err(error) => walked.issues.push(TargetIssue {
+                            system: system.def.name.clone(),
+                            detail: error.to_string(),
+                        }),
+                    }
+                }
             }
         }
     }
@@ -361,7 +372,13 @@ fn check_cancelled(cancelled: &AtomicBool) -> Result<()> {
     }
 }
 
-fn target_for(system: &FoundSystem, platform: u32, launch: &Launch, title: &str) -> Result<Target> {
+fn target_for(
+    system: &FoundSystem,
+    platform: u32,
+    launch: &Launch,
+    title: &str,
+    archives: &mut crate::zip::ArchiveCache,
+) -> Result<Target> {
     let (folder, relative_path, match_path, query) = match launch {
         Launch::File(path) => {
             let folder = root_for(system, path).ok_or_else(|| {
@@ -393,7 +410,26 @@ fn target_for(system: &FoundSystem, platform: u32, launch: &Launch, title: &str)
             (folder, format!("./Games/{title}"), None, title.to_string())
         }
     };
+    let metadata_fallback = if let Launch::File(path) = launch {
+        if let Some((archive, _)) = crate::zip::split_member_path(path) {
+            let contents = archives
+                .read(&archive)
+                .map_err(|error| Error::local(error.to_string()))?;
+            let config = system.to_config();
+            contents
+                .entries
+                .iter()
+                .filter(|entry| config.accepts(Path::new(&entry.name)))
+                .count()
+                == 1
+        } else {
+            true
+        }
+    } else {
+        true
+    };
     Ok(Target {
+        metadata_fallback,
         system_id: system.def.id.clone(),
         affected_system_ids: vec![system.def.id.clone()],
         system_name: system.def.name.clone(),
@@ -529,6 +565,7 @@ fn remove_ambiguous(batch: &mut TargetBatch) {
             target.screen_scraper_system_id,
         );
         if let Some(existing) = positions.get(&key).copied() {
+            merged[existing].metadata_fallback &= target.metadata_fallback;
             for system_id in target.affected_system_ids {
                 if !merged[existing].affected_system_ids.contains(&system_id) {
                     merged[existing].affected_system_ids.push(system_id);
@@ -794,6 +831,7 @@ mod tests {
     #[test]
     fn case_sensitive_storage_keeps_distinct_paths_distinct() {
         let target = |folder: &str, system: &str| Target {
+            metadata_fallback: true,
             system_id: system.into(),
             affected_system_ids: vec![system.into()],
             system_name: system.into(),
@@ -827,6 +865,7 @@ mod tests {
         std::fs::create_dir(&root).unwrap();
         std::os::unix::fs::symlink(&root, &alias).unwrap();
         let target = |folder: PathBuf, system: &str| Target {
+            metadata_fallback: true,
             system_id: system.into(),
             affected_system_ids: vec![system.into()],
             system_name: system.into(),

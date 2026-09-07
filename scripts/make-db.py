@@ -8,13 +8,13 @@ where to fetch it. Adding one line to `downloader.ini` therefore makes
 A database can only place files. It cannot edit `MiSTer.ini`, so the `main=`
 line stays a one-off by hand, and it cannot run anything after installing.
 
-Usage: make-db.py <tag> <deploy-dir> <mister-degauss-binary> <out.json>
+Usage: make-db.py <tag> <deploy-dir> <mister-degauss-binary> <out.json> [--ra-dir BUILD_DIR]
 """
 
+import argparse
 import hashlib
 import json
 import os
-import sys
 import urllib.parse
 import time
 
@@ -22,7 +22,9 @@ OWNER = "giancarloerra"
 REPO = "Degauss"
 
 # Files that ship as release assets because they are built, not committed.
+RA_ASSETS = ("MiSTer_RA_Degauss", "MiSTer_RA_Degauss.cacert.pem", "MiSTer_RA_Degauss.SOURCE.txt")
 RELEASE_ASSETS = {"Scripts/.config/degauss/degauss", "degauss/MiSTer_Degauss"}
+RELEASE_ASSETS.update("degauss/" + name for name in RA_ASSETS)
 
 
 def md5(path):
@@ -83,9 +85,14 @@ REPO_SOURCED = {
 
 
 def main():
-    if len(sys.argv) != 5:
-        sys.exit(__doc__)
-    tag, deploy, fork_binary, out = sys.argv[1:]
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("tag")
+    parser.add_argument("deploy")
+    parser.add_argument("fork_binary")
+    parser.add_argument("out")
+    parser.add_argument("--ra-dir", help="Completed RA build with binary, CA bundle and source notice")
+    args = parser.parse_args()
+    tag, deploy, fork_binary, out = args.tag, args.deploy, args.fork_binary, args.out
 
     files = {}
     folders = {}
@@ -115,6 +122,9 @@ def main():
             add(card, real)
 
     add("degauss/MiSTer_Degauss", fork_binary)
+    if args.ra_dir:
+        for name in RA_ASSETS:
+            add("degauss/" + name, os.path.join(args.ra_dir, name))
 
     database = {
         "v": 1,

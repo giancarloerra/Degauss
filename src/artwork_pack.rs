@@ -24,7 +24,8 @@ const MAX_ROWS: usize = 250_000;
 const MAX_LINE_BYTES: usize = 64 * 1024;
 const MAX_VALUE_BYTES: usize = 1_024;
 const MAX_JPEGS: usize = 100_000;
-const MAX_IDENTITY_XML_BYTES: u64 = 1024 * 1024;
+// XML metadata stays bounded; embedded ROM bytes do not belong to that budget.
+const MAX_IDENTITY_XML_BYTES: usize = 1024 * 1024;
 const MAX_MGL_REDIRECTS: usize = 8;
 const MAX_HASH_BYTES: u64 = 64 * 1024 * 1024;
 const HASH_BUFFER_BYTES: usize = 128 * 1024;
@@ -267,9 +268,21 @@ pub struct Provider {
     /// prepared by a background worker so browse projection performs no game
     /// descriptor, archive, ROM, or Pack filesystem I/O.
     prepared: Option<Arc<HashMap<String, PackPresentation>>>,
+    archive_cache: Arc<std::sync::Mutex<crate::zip::ArchiveCache>>,
 }
 
 impl Provider {
+    fn identity_for_launch(
+        &self,
+        launch: &Launch,
+        cancelled: &AtomicBool,
+    ) -> Result<Option<GameIdentity>> {
+        let mut archives = self.archive_cache.lock().map_err(|_| {
+            DegaussError::unsupported("archive lookup", "archive cache lock was poisoned")
+        })?;
+        identity_for_launch_controlled(launch, cancelled, &mut archives)
+    }
+
     pub fn load(system_id: &str, docs_root: &Path, language: Option<&str>) -> Self {
         let cancelled = AtomicBool::new(false);
         Self::load_controlled(system_id, docs_root, language, &cancelled)
@@ -319,6 +332,7 @@ impl Provider {
                 snapshot: None,
                 synopsis_language: normalized_language(language),
                 prepared: None,
+                archive_cache: Arc::new(std::sync::Mutex::new(crate::zip::ArchiveCache::default())),
             });
         };
 
@@ -376,6 +390,7 @@ impl Provider {
                     snapshot: None,
                     synopsis_language: normalized_language(language),
                     prepared: None,
+            archive_cache: Arc::new(std::sync::Mutex::new(crate::zip::ArchiveCache::default())),
                 });
             }
         }
@@ -438,6 +453,7 @@ impl Provider {
             snapshot: None,
             synopsis_language: normalized_language(language),
             prepared: None,
+            archive_cache: Arc::new(std::sync::Mutex::new(crate::zip::ArchiveCache::default())),
         })
     }
 
@@ -471,6 +487,7 @@ impl Provider {
     /// an older source-neutral cache across a new worker validation pass.
     pub fn clear_prepared(&mut self) {
         self.prepared = None;
+        self.archive_cache = Arc::new(std::sync::Mutex::new(crate::zip::ArchiveCache::default()));
     }
 
     #[cfg(test)]
@@ -492,6 +509,7 @@ impl Provider {
     /// rebuilt cache.
     pub(crate) fn discard_catalogue(&mut self) {
         self.directories = Arc::new(Vec::new());
+        self.archive_cache = Arc::new(std::sync::Mutex::new(crate::zip::ArchiveCache::default()));
     }
 
     #[cfg(test)]
@@ -516,7 +534,7 @@ impl Provider {
         if !self.health.usable() {
             return Ok(None);
         }
-        let Some(mut identity) = identity_for_launch_controlled(launch, cancelled)? else {
+        let Some(mut identity) = self.identity_for_launch(launch, cancelled)? else {
             return Ok(None);
         };
         let cheap = self.resolve(&identity);
@@ -648,7 +666,7 @@ impl Provider {
         if !self.health.usable() || cancelled.load(Ordering::Relaxed) {
             return Ok(None);
         }
-        let Some(identity) = identity_for_launch_controlled(launch, cancelled)? else {
+        let Some(identity) = self.identity_for_launch(launch, cancelled)? else {
             return Ok(None);
         };
         if self
@@ -758,7 +776,7 @@ impl Provider {
                 if !inspected.insert(launch_cache_key(launch)) {
                     continue;
                 }
-                let identity = identity_for_launch_controlled(launch, cancelled)?;
+                let identity = self.identity_for_launch(launch, cancelled)?;
                 if cancelled.load(Ordering::Relaxed) {
                     return Ok(None);
                 }
@@ -2108,6 +2126,7 @@ fn first_line(value: &str) -> String {
 fn identity_for_launch_controlled(
     launch: &Launch,
     cancelled: &AtomicBool,
+    archives: &mut crate::zip::ArchiveCache,
 ) -> Result<Option<GameIdentity>> {
     if cancelled.load(Ordering::Relaxed) {
         return Ok(None);
@@ -2121,7 +2140,9 @@ fn identity_for_launch_controlled(
             extension: None,
             hash_path: None,
         })),
-        Launch::File(path) => identity_for_path_controlled(path, cancelled),
+        Launch::File(path) => {
+            identity_for_path_redirected(path, cancelled, 0, &mut HashSet::new(), archives)
+        }
     }
 }
 
@@ -2130,11 +2151,18 @@ fn identity_for_path(path: &Path) -> Result<Option<GameIdentity>> {
     identity_for_path_controlled(path, &AtomicBool::new(false))
 }
 
+#[cfg(test)]
 fn identity_for_path_controlled(
     path: &Path,
     cancelled: &AtomicBool,
 ) -> Result<Option<GameIdentity>> {
-    identity_for_path_redirected(path, cancelled, 0, &mut HashSet::new())
+    identity_for_path_redirected(
+        path,
+        cancelled,
+        0,
+        &mut HashSet::new(),
+        &mut crate::zip::ArchiveCache::default(),
+    )
 }
 
 fn identity_for_path_redirected(
@@ -2142,16 +2170,18 @@ fn identity_for_path_redirected(
     cancelled: &AtomicBool,
     redirects: usize,
     visited_mgls: &mut HashSet<PathBuf>,
+    archives: &mut crate::zip::ArchiveCache,
 ) -> Result<Option<GameIdentity>> {
     if cancelled.load(Ordering::Relaxed) {
         return Ok(None);
     }
     if let Some((archive, member)) = archive_member(path) {
-        let Some(entries) = crate::zip::entries_controlled(&archive, cancelled)? else {
+        let Some(entries) = archives.read_controlled(&archive, cancelled)? else {
             return Ok(None);
         };
         let Some(entry) = entries
-            .into_iter()
+            .entries
+            .iter()
             .find(|entry| Path::new(&entry.name) == member)
         else {
             return Ok(None);
@@ -2179,7 +2209,7 @@ fn identity_for_path_redirected(
         .unwrap_or("")
         .to_ascii_lowercase();
     if extension == "mra" {
-        let Some(setname) = xml_text(path, "setname")? else {
+        let Some(setname) = xml_text(path, "setname", cancelled)? else {
             return Ok(None);
         };
         if cancelled.load(Ordering::Relaxed) {
@@ -2216,7 +2246,13 @@ fn identity_for_path_redirected(
         if cancelled.load(Ordering::Relaxed) {
             return Ok(None);
         }
-        return identity_for_path_redirected(&target, cancelled, redirects + 1, visited_mgls);
+        return identity_for_path_redirected(
+            &target,
+            cancelled,
+            redirects + 1,
+            visited_mgls,
+            archives,
+        );
     }
     let name = path
         .file_stem()
@@ -2327,27 +2363,97 @@ fn fingerprint_key(path: &Path) -> String {
     path.to_string_lossy().into_owned()
 }
 
-fn xml_text(path: &Path, wanted: &str) -> Result<Option<String>> {
-    let size = std::fs::metadata(path)
-        .map_err(|error| DegaussError::io("reading game descriptor", path, error))?
-        .len();
-    if size > MAX_IDENTITY_XML_BYTES {
-        return Err(DegaussError::unsupported(
-            "game descriptor",
-            format!(
-                "{} is larger than {MAX_IDENTITY_XML_BYTES} bytes",
-                path.display()
-            ),
-        ));
+/// Bound retained XML metadata without rejecting large embedded ROM payloads.
+struct IdentityXmlInput<'a, R> {
+    inner: R,
+    cancelled: &'a AtomicBool,
+    metadata_bytes: usize,
+}
+
+impl<R: BufRead> Read for IdentityXmlInput<'_, R> {
+    fn read(&mut self, output: &mut [u8]) -> std::io::Result<usize> {
+        let available = self.fill_buf()?;
+        let count = output.len().min(available.len());
+        output[..count].copy_from_slice(&available[..count]);
+        self.consume(count);
+        Ok(count)
     }
+}
+
+impl<R: BufRead> BufRead for IdentityXmlInput<'_, R> {
+    fn fill_buf(&mut self) -> std::io::Result<&[u8]> {
+        if self.cancelled.load(Ordering::Relaxed) {
+            return Err(std::io::Error::other("game descriptor reading cancelled"));
+        }
+        let available = self.inner.fill_buf()?;
+        let remaining = MAX_IDENTITY_XML_BYTES.saturating_sub(self.metadata_bytes);
+        if remaining == 0 && !available.is_empty() {
+            return Err(std::io::Error::other(format!(
+                "XML metadata exceeds {MAX_IDENTITY_XML_BYTES} bytes"
+            )));
+        }
+        Ok(&available[..available.len().min(remaining)])
+    }
+
+    fn consume(&mut self, count: usize) {
+        self.metadata_bytes += count;
+        self.inner.consume(count);
+    }
+}
+
+fn xml_text(path: &Path, wanted: &str, cancelled: &AtomicBool) -> Result<Option<String>> {
     let file = File::open(path)
         .map_err(|error| DegaussError::io("opening game descriptor", path, error))?;
-    let mut reader = Reader::from_reader(BufReader::new(file));
+    xml_text_from_reader(BufReader::new(file), path, wanted, cancelled)
+}
+
+fn xml_text_from_reader<R: BufRead>(
+    input: R,
+    path: &Path,
+    wanted: &str,
+    cancelled: &AtomicBool,
+) -> Result<Option<String>> {
+    let mut reader = Reader::from_reader(IdentityXmlInput {
+        inner: input,
+        cancelled,
+        metadata_bytes: 0,
+    });
     let mut buffer = Vec::new();
     let mut active = false;
     let mut value = String::new();
+    let mut embedded_payload = false;
     loop {
+        if cancelled.load(Ordering::Relaxed) {
+            return Ok(None);
+        }
+        if embedded_payload {
+            // Native MRA parts, patches and cheats carry hexadecimal data. Consume
+            // those bytes through quick-xml's stream API, retaining neither a
+            // text event nor a copy. Leave markup and other content to the XML
+            // parser, including its existing malformed-document diagnostics.
+            loop {
+                let available = match reader.stream().fill_buf() {
+                    Ok(bytes) => bytes
+                        .iter()
+                        .take_while(|byte| {
+                            byte.is_ascii_hexdigit() || byte.is_ascii_whitespace() || **byte == b','
+                        })
+                        .count(),
+                    Err(_) if cancelled.load(Ordering::Relaxed) => return Ok(None),
+                    Err(error) => {
+                        return Err(DegaussError::io("reading game descriptor", path, error))
+                    }
+                };
+                if available == 0 {
+                    break;
+                }
+                reader.stream().consume(available);
+                reader.get_mut().metadata_bytes -= available;
+            }
+            embedded_payload = false;
+        }
         match reader.read_event_into(&mut buffer) {
+            Err(_) if cancelled.load(Ordering::Relaxed) => return Ok(None),
             Err(error) => {
                 return Err(DegaussError::malformed(
                     "game descriptor",
@@ -2358,6 +2464,10 @@ fn xml_text(path: &Path, wanted: &str) -> Result<Option<String>> {
             Ok(Event::Eof) => break,
             Ok(Event::Start(event)) => {
                 active = event.name().as_ref().eq_ignore_ascii_case(wanted);
+                embedded_payload = !active
+                    && ["part", "patch", "cheat"]
+                        .iter()
+                        .any(|tag| event.name().as_ref().eq_ignore_ascii_case(tag));
                 if active {
                     value.clear();
                 }
@@ -2524,6 +2634,7 @@ mod tests {
         )
         .unwrap();
         let config = crate::config::SystemConfig {
+            preserve_rbf_stem: false,
             name: "SuperGrafx".to_string(),
             path: games.to_string_lossy().into_owned(),
             extensions: vec!["sgx".to_string()],
@@ -3156,6 +3267,166 @@ mod tests {
         std::fs::remove_dir_all(dir).ok();
     }
 
+    fn embedded_mra(size: usize, setname_first: bool) -> Vec<u8> {
+        let identity = "<setname>embedded</setname>";
+        let mut bytes = b"<misterromdescription>".to_vec();
+        if setname_first {
+            bytes.extend_from_slice(identity.as_bytes());
+        }
+        bytes.extend_from_slice(b"<rom index=\"0\"><part>");
+        bytes.resize(bytes.len() + size, b'A');
+        bytes.extend_from_slice(b"</part></rom>");
+        if !setname_first {
+            bytes.extend_from_slice(identity.as_bytes());
+        }
+        bytes.extend_from_slice(b"</misterromdescription>");
+        bytes
+    }
+
+    #[test]
+    fn large_embedded_mra_matches_before_or_after_rom_data_and_through_mgl() {
+        let dir = temp("large-embedded-mra");
+        let mra = dir.join("Game.mra");
+        for first in [true, false] {
+            for payload in [
+                MAX_IDENTITY_XML_BYTES - 1,
+                MAX_IDENTITY_XML_BYTES + 1,
+                3 * MAX_IDENTITY_XML_BYTES,
+            ] {
+                std::fs::write(&mra, embedded_mra(payload, first)).unwrap();
+                let identity = identity_for_path(&mra).unwrap().unwrap();
+                assert_eq!(identity.name, "embedded");
+                assert_eq!(identity.setname.as_deref(), Some("embedded"));
+            }
+        }
+        let mgl = dir.join("Favorite.mgl");
+        std::fs::write(
+            &mgl,
+            "<mistergamedescription><file path=\"Game.mra\"/></mistergamedescription>",
+        )
+        .unwrap();
+        assert_eq!(identity_for_path(&mgl).unwrap().unwrap().name, "embedded");
+        // The background preparation path must also complete, even when there
+        // is no matching image and it considers a fingerprint for this MRA.
+        let docs = dir.join("docs");
+        ready_directory(&docs, "Arcade", "other", "Other", "Other");
+        let provider = Provider::load("Arcade", &docs, None);
+        assert!(provider.health.usable(), "{:?}", provider.diagnostics);
+        assert!(provider
+            .fingerprint_for_launch(&Launch::File(mra), &AtomicBool::new(false), &mut |_| {})
+            .unwrap()
+            .is_none());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn mra_native_payload_tags_accept_large_comma_separated_hex() {
+        let cancelled = AtomicBool::new(false);
+        for tag in ["part", "patch", "cheat"] {
+            let document = format!(
+                "<misterromdescription><{tag}>{}</{tag}><setname>kept</setname></misterromdescription>",
+                "AA, BB\n".repeat(MAX_IDENTITY_XML_BYTES / 4)
+            );
+            // Small chunks force tag, payload, and comma boundaries through
+            // the real buffered reader rather than a single borrowed slice.
+            let reader = BufReader::with_capacity(13, std::io::Cursor::new(document));
+            assert_eq!(
+                xml_text_from_reader(reader, Path::new("payload.mra"), "setname", &cancelled)
+                    .unwrap()
+                    .as_deref(),
+                Some("kept"),
+                "native {tag} payload must not consume the XML metadata budget"
+            );
+        }
+    }
+
+    #[test]
+    fn mra_identity_keeps_metadata_limits_and_existing_xml_errors() {
+        let path = Path::new("descriptor.mra");
+        let cancelled = AtomicBool::new(false);
+        let oversized = format!(
+            "<misterromdescription><setname>{}</setname></misterromdescription>",
+            "x".repeat(MAX_IDENTITY_XML_BYTES + 1)
+        );
+        let error =
+            xml_text_from_reader(std::io::Cursor::new(oversized), path, "setname", &cancelled)
+                .unwrap_err();
+        assert!(
+            error.to_string().contains("XML metadata exceeds"),
+            "{error}"
+        );
+        let malformed = b"<misterromdescription><rom></wrong><setname>bad</setname>";
+        assert!(
+            xml_text_from_reader(std::io::Cursor::new(malformed), path, "setname", &cancelled)
+                .is_err()
+        );
+        assert_eq!(
+            xml_text_from_reader(
+                std::io::Cursor::new(b"<misterromdescription/>"),
+                path,
+                "setname",
+                &cancelled
+            )
+            .unwrap(),
+            None
+        );
+        // Matching never validated bytes after the first complete setname.
+        assert_eq!(
+            xml_text_from_reader(
+                std::io::Cursor::new(b"<root><setname>  kept  </setname><broken"),
+                path,
+                "setname",
+                &cancelled
+            )
+            .unwrap()
+            .as_deref(),
+            Some("kept")
+        );
+    }
+
+    #[test]
+    fn embedded_mra_stream_checks_cancellation_and_propagates_read_errors() {
+        struct ControlledInput<'a> {
+            bytes: std::io::Cursor<Vec<u8>>,
+            cancelled: &'a AtomicBool,
+            fail: bool,
+        }
+        impl Read for ControlledInput<'_> {
+            fn read(&mut self, output: &mut [u8]) -> std::io::Result<usize> {
+                if self.bytes.position() >= 4096 {
+                    if self.fail {
+                        return Err(std::io::Error::other("injected descriptor read failure"));
+                    }
+                    self.cancelled.store(true, Ordering::Relaxed);
+                }
+                self.bytes.read(output)
+            }
+        }
+        for fail in [false, true] {
+            let cancelled = AtomicBool::new(false);
+            let input = ControlledInput {
+                bytes: std::io::Cursor::new(embedded_mra(3 * MAX_IDENTITY_XML_BYTES, false)),
+                cancelled: &cancelled,
+                fail,
+            };
+            let result = xml_text_from_reader(
+                BufReader::with_capacity(128, input),
+                Path::new("embedded.mra"),
+                "setname",
+                &cancelled,
+            );
+            if fail {
+                assert!(result
+                    .unwrap_err()
+                    .to_string()
+                    .contains("injected descriptor read failure"));
+            } else {
+                assert_eq!(result.unwrap(), None);
+                assert!(cancelled.load(Ordering::Relaxed));
+            }
+        }
+    }
+
     #[test]
     fn loose_crc_is_cancellable_and_resolves_only_with_matching_size() {
         let (root, art) = pack("loose-crc");
@@ -3233,6 +3504,47 @@ mod tests {
             .unwrap();
         assert_eq!(result, None);
         std::fs::remove_dir_all(root.parent().unwrap()).ok();
+    }
+
+    #[test]
+    fn completed_provider_clones_release_operation_archive_listings() {
+        let root = temp("provider-archive-lifecycle");
+        let archive = root.join("empty.zip");
+        let mut bytes = vec![0; 22];
+        bytes[..4].copy_from_slice(b"PK\x05\x06");
+        std::fs::write(&archive, bytes).unwrap();
+        let mut provider = Provider::load("NES", &root, None);
+        let contents = provider
+            .archive_cache
+            .lock()
+            .unwrap()
+            .read(&archive)
+            .unwrap();
+        let listing = Arc::downgrade(&contents);
+        drop(contents);
+        let mut worker = provider.clone();
+
+        provider.discard_catalogue();
+        assert!(
+            listing.upgrade().is_some(),
+            "an active worker keeps its own listing"
+        );
+        assert!(!Arc::ptr_eq(&provider.archive_cache, &worker.archive_cache));
+        worker.clear_prepared();
+        assert!(
+            listing.upgrade().is_none(),
+            "completed clones release the previous listing"
+        );
+
+        let contents = worker.archive_cache.lock().unwrap().read(&archive).unwrap();
+        let listing = Arc::downgrade(&contents);
+        drop(contents);
+        worker.discard_catalogue();
+        assert!(
+            listing.upgrade().is_none(),
+            "a UI snapshot retains no archive listing"
+        );
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

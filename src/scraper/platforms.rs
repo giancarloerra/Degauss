@@ -141,6 +141,8 @@ mod tests {
     fn an_unreviewed_system_is_not_guessed() {
         assert_eq!(id_for("AppleLisa", &BTreeMap::new()), None);
         assert_eq!(id_for("OtherCores", &BTreeMap::new()), None);
+        // This collection contains core builds, not one scrapeable game system.
+        assert_eq!(id_for("UnstableCores", &BTreeMap::new()), None);
         assert_eq!(id_for("Laser", &BTreeMap::new()), None);
         assert_eq!(id_for("TomyTutor", &BTreeMap::new()), None);
     }
@@ -196,6 +198,7 @@ mod tests {
             "TatungEinstein",
             "TomyTutor",
             "UK101",
+            "UnstableCores",
             "UtilityCores",
             "Vector06C",
             "ZXNext",

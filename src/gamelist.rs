@@ -433,6 +433,15 @@ impl Gamelist {
         Ok(dirs)
     }
 
+    /// An archive containing several supported games cannot inherit a sibling's
+    /// or the archive's metadata through filename/title fallback matching.
+    pub fn lookup_exact(&self, rel_path: &str) -> Option<(&GameMeta, MatchKind)> {
+        let rel = normalise_rel(rel_path);
+        self.by_rel_path
+            .get(&rel)
+            .map(|&index| (&self.entries[index], MatchKind::RelPath))
+    }
+
     /// Look up metadata for a file, from strictest to loosest key. Returns
     /// which key matched so the caller can report the mix.
     pub fn lookup(&self, rel_path: &str) -> Option<(&GameMeta, MatchKind)> {

@@ -15,6 +15,31 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::{DegaussError, Result};
 
+/// Preference applies only when both supported launch variants are installed.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum CorePreference {
+    #[default]
+    StandardFirst,
+    RetroAchievementsFirst,
+}
+
+impl CorePreference {
+    pub fn next(self) -> Self {
+        match self {
+            Self::StandardFirst => Self::RetroAchievementsFirst,
+            Self::RetroAchievementsFirst => Self::StandardFirst,
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::StandardFirst => "Standard first",
+            Self::RetroAchievementsFirst => "RetroAchievements first",
+        }
+    }
+}
+
 /// Views chosen for exact places in the browser. The shape is deliberately
 /// nested rather than encoded into one string key: category names, system ids
 /// and filesystem paths are user-controlled and must not be able to collide.
@@ -132,6 +157,14 @@ pub struct Settings {
     pub show_other: Option<bool>,
     /// Show the Utility group: test patterns and measurement cores.
     pub show_utility: Option<bool>,
+    /// Nightly cores are visible unless explicitly switched off.
+    pub show_unstable: Option<bool>,
+    /// Absent preserves standard-first launches.
+    pub core_preference: Option<CorePreference>,
+    /// Explicit per-system core version. Absence uses the global preference.
+    /// Values are standard, ra, or an exact menu-relative Unstable RBF path.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub core_choices: BTreeMap<String, String>,
     /// The strip along the bottom. Off by default: the screen is 240 lines
     /// and the list is what it is for.
     pub show_bar: Option<bool>,
@@ -492,5 +525,65 @@ mod tests {
             "must point at the documented file"
         );
         std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn old_settings_keep_standard_preference_and_show_nightlies() {
+        let old: Settings =
+            toml::from_str(include_str!("../tests/fixtures/v0.2.0-settings.toml")).unwrap();
+        assert!(old.show_other.unwrap());
+        assert!(!Settings::default().show_other.unwrap_or(false));
+        for settings in [Settings::default(), old] {
+            assert!(settings.show_unstable.unwrap_or(true));
+            assert_eq!(
+                settings.core_preference.unwrap_or_default(),
+                CorePreference::StandardFirst
+            );
+            assert!(!settings.show_utility.unwrap_or(false));
+        }
+    }
+
+    #[test]
+    fn nightly_visibility_and_core_preference_round_trip_without_hiding_items() {
+        let settings = Settings {
+            show_unstable: Some(false),
+            core_preference: Some(CorePreference::RetroAchievementsFirst),
+            hidden: vec!["NES".into()],
+            hidden_paths: vec!["d:/games/example".into()],
+            ..Settings::default()
+        };
+        let encoded = toml::to_string(&settings).unwrap();
+        let decoded: Settings = toml::from_str(&encoded).unwrap();
+        assert_eq!(decoded.show_unstable, Some(false));
+        assert_eq!(
+            decoded.core_preference,
+            Some(CorePreference::RetroAchievementsFirst)
+        );
+        assert_eq!(decoded.hidden, settings.hidden);
+        assert_eq!(decoded.hidden_paths, settings.hidden_paths);
+        assert_eq!(
+            CorePreference::StandardFirst.next().next(),
+            CorePreference::StandardFirst
+        );
+    }
+
+    #[test]
+    fn per_system_core_choices_preserve_legacy_defaults_and_exact_nightly_paths() {
+        let old: Settings =
+            toml::from_str(include_str!("../tests/fixtures/v0.2.0-settings.toml")).unwrap();
+        assert!(old.core_choices.is_empty());
+        assert!(!toml::to_string(&Settings::default())
+            .unwrap()
+            .contains("core_choices"));
+        let mut settings = Settings::default();
+        settings.core_choices.insert(
+            "NES".into(),
+            "_Unstable/NES_unstable_20260907_a1b2.rbf".into(),
+        );
+        settings.core_choices.insert("SMS".into(), "ra".into());
+        let encoded = toml::to_string(&settings).unwrap();
+        let decoded: Settings = toml::from_str(&encoded).unwrap();
+        assert_eq!(decoded.core_choices, settings.core_choices);
+        assert_eq!(decoded.core_preference, None);
     }
 }

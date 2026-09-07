@@ -14,6 +14,8 @@ mod browse;
 mod cache;
 mod category_images;
 mod config;
+mod core_choices;
+mod core_variants;
 mod covers;
 mod error;
 mod favorites;
@@ -343,7 +345,10 @@ fn load_everything(args: &Args) -> Result<Loaded> {
         .systems
         .clone()
         .unwrap_or_else(|| beside_binary("systems.toml"));
-    let table = systems::load_table(&systems_path)?;
+    let table = systems::prepare_table(
+        systems::load_table(&systems_path)?,
+        Path::new(&config.menu_root),
+    )?;
 
     let roots: Vec<PathBuf> = config.game_roots.iter().map(PathBuf::from).collect();
     // Logos live beside the configuration, named after the system.
@@ -357,7 +362,7 @@ fn load_everything(args: &Args) -> Result<Loaded> {
     // Which group each system belongs to comes from where its core
     // actually is on this card, not from what the table guessed.
     let cores = systems::CoreIndex::read(Path::new(&config.menu_root));
-    let systems = systems::discover(&table, &roots, logo_dir.as_deref(), &cores);
+    let systems = systems::discover_checked(&table, &roots, logo_dir.as_deref(), &cores)?;
     // The names the stock menu shows for cores, arcade boards and
     // shortcuts, when the card carries the file that defines them.
     let names = browse::DisplayNames::read(&Path::new(&config.menu_root).join("names.txt"));
@@ -379,6 +384,97 @@ fn load_everything(args: &Args) -> Result<Loaded> {
 /// what a half-finished upgrade left behind. Reads everything, loads
 /// nothing into a UI, refuses nothing: the whole point is to keep working
 /// on the installation that does not come up.
+fn select_system(systems: &[FoundSystem], name: &str) -> Result<usize> {
+    if let Some(index) = systems.iter().position(|system| {
+        system.def.id.eq_ignore_ascii_case(name) || system.name().eq_ignore_ascii_case(name)
+    }) {
+        return Ok(index);
+    }
+    let aliases: Vec<usize> = systems
+        .iter()
+        .enumerate()
+        .filter_map(|(index, system)| {
+            system
+                .def
+                .folders
+                .iter()
+                .any(|folder| {
+                    Path::new(folder)
+                        .file_name()
+                        .is_some_and(|part| part.eq_ignore_ascii_case(name))
+                })
+                .then_some(index)
+        })
+        .collect();
+    match aliases.as_slice() {
+        [index] => Ok(*index),
+        [] => Err(DegaussError::unsupported(
+            "system",
+            format!("{name:?} is not on this machine"),
+        )),
+        _ => Err(DegaussError::unsupported(
+            "system",
+            format!(
+                "{name:?} is ambiguous; use {}",
+                aliases
+                    .iter()
+                    .map(|&i| systems[i].def.id.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+        )),
+    }
+}
+
+/// Diagnostic launches share ownership and current virtual-target checks with
+/// the interactive path so their reported core choice is the one users select.
+fn diagnostic_launch_plan(
+    loaded: &Loaded,
+    system: &FoundSystem,
+    path: &Path,
+    mgl: &Path,
+) -> Result<launch::LaunchPlan> {
+    if zip::split_member_path(path).is_some() {
+        zip::validate_member_for_launch(path)?;
+    }
+    let reference = if system.category() == "Favorites" {
+        favorites::reference_of_with_systems(path, &loaded.systems)
+    } else {
+        None
+    };
+    if let Some(reference) = &reference {
+        if zip::split_member_path(&reference.owner_target).is_some() {
+            zip::validate_member_for_launch(&reference.owner_target)?;
+        }
+    }
+    let owner = if system.category() == "Favorites" {
+        reference
+            .and_then(|reference| app::owner_of_favorite(&loaded.systems, &reference))
+            .and_then(|id| {
+                loaded
+                    .systems
+                    .iter()
+                    .find(|candidate| candidate.def.id == id)
+            })
+            .unwrap_or(system)
+    } else {
+        system
+    };
+    launch::plan_with_choice(
+        &owner.to_config(),
+        path,
+        mgl,
+        Path::new(&loaded.config.menu_root),
+        loaded.settings.core_preference.unwrap_or_default()
+            == settings::CorePreference::RetroAchievementsFirst,
+        loaded
+            .settings
+            .core_choices
+            .get(&owner.def.id)
+            .map(String::as_str),
+    )
+}
+
 fn check_install(config_path: &Path) -> Result<()> {
     let dir = config_path.parent().unwrap_or(Path::new(".")).to_path_buf();
     let mut problems: Vec<String> = Vec::new();
@@ -635,17 +731,7 @@ fn run() -> Result<()> {
     // Which system was asked for, if any. `None` is not the same as the
     // first one: without the flag the browser opens where it always would.
     let chosen: Option<usize> = match &args.system {
-        Some(id) => Some(
-            loaded
-                .systems
-                .iter()
-                .position(|s| {
-                    s.def.id.eq_ignore_ascii_case(id) || s.name().eq_ignore_ascii_case(id)
-                })
-                .ok_or_else(|| {
-                    DegaussError::unsupported("system", format!("{id:?} is not on this machine"))
-                })?,
-        ),
+        Some(id) => Some(select_system(&loaded.systems, id)?),
         None => None,
     };
 
@@ -668,7 +754,7 @@ fn run() -> Result<()> {
             let mgl = Path::new("/tmp/degauss.mgl");
             let plan = match &entry.kind {
                 browse::Kind::Play(browse::Launch::File(path)) => {
-                    launch::plan(&system.to_config(), path, mgl)?
+                    diagnostic_launch_plan(&loaded, system, path, mgl)?
                 }
                 browse::Kind::Play(browse::Launch::AmigaVision { install, title }) => {
                     launch::plan_amiga_vision(&system.to_config(), install, title, mgl)?
@@ -771,7 +857,7 @@ fn import_favorites(loaded: &Loaded, list: &Path) -> Result<()> {
     let text = std::fs::read_to_string(list)
         .map_err(|e| error::DegaussError::io("reading the list", list, e))?;
     let root = PathBuf::from(&loaded.config.menu_root).join(favorites::FAVORITES_DIR);
-    let already = favorites::Favorites::read(&root);
+    let already = favorites::Favorites::read_with_systems(&root, &loaded.systems);
 
     let (mut written, mut skipped, mut missing, mut failed) = (0, 0, 0, 0);
     for line in text.lines() {
@@ -803,22 +889,42 @@ fn import_favorites(loaded: &Loaded, list: &Path) -> Result<()> {
         let path = PathBuf::from(path);
         let into = root.join(folder);
 
-        // Which system it belongs to, by the folder it sits in. The
-        // deepest match wins, so a system inside another system's folder
-        // is not answered by the outer one.
-        let owner = loaded
-            .systems
-            .iter()
-            .filter(|system| system.paths.iter().any(|dir| path.starts_with(dir)))
-            .max_by_key(|system| {
-                system
-                    .paths
-                    .iter()
-                    .filter(|dir| path.starts_with(dir))
-                    .map(|dir| dir.as_os_str().len())
-                    .max()
-                    .unwrap_or(0)
-            });
+        if title.is_empty() {
+            if zip::split_member_path(&path).is_some() {
+                if let Err(error) = zip::validate_member_for_launch(&path) {
+                    println!("failed       {}: {error}", path.display());
+                    failed += 1;
+                    continue;
+                }
+            } else if !path.exists() {
+                println!("gone         {}", path.display());
+                missing += 1;
+                continue;
+            }
+        }
+        let reference = if title.is_empty() {
+            favorites::reference_of_with_systems(&path, &loaded.systems)
+        } else {
+            None
+        };
+        if let Some(reference) = &reference {
+            if zip::split_member_path(&reference.owner_target).is_some() {
+                if let Err(error) = zip::validate_member_for_launch(&reference.owner_target) {
+                    println!("failed       {}: {error}", path.display());
+                    failed += 1;
+                    continue;
+                }
+            }
+        }
+        let owner_id = if title.is_empty() {
+            reference
+                .and_then(|reference| app::owner_of_favorite(&loaded.systems, &reference))
+                .or_else(|| app::owner_of_path(&loaded.systems, &path))
+        } else {
+            app::owner_of_path(&loaded.systems, &favorites::amiga_key(&path, title))
+        };
+        let owner =
+            owner_id.and_then(|id| loaded.systems.iter().find(|system| system.def.id == id));
         let Some(owner) = owner else {
             println!("skipped      no system owns {}", path.display());
             failed += 1;
@@ -827,16 +933,22 @@ fn import_favorites(loaded: &Loaded, list: &Path) -> Result<()> {
         let config = owner.to_config();
 
         if title.is_empty() {
-            if !path.exists() {
-                println!("gone         {}", path.display());
-                missing += 1;
-                continue;
-            }
             if already.holds(&path) {
                 skipped += 1;
                 continue;
             }
-            let outcome = match launch::favorite_mgl(&config, &path) {
+            let outcome = match launch::favorite_mgl_with_choice(
+                &config,
+                &path,
+                Path::new(&loaded.config.menu_root),
+                loaded.settings.core_preference.unwrap_or_default()
+                    == settings::CorePreference::RetroAchievementsFirst,
+                loaded
+                    .settings
+                    .core_choices
+                    .get(&owner.def.id)
+                    .map(String::as_str),
+            ) {
                 Ok(Some(mgl)) => {
                     let stem = path.file_stem().unwrap_or_default().to_string_lossy();
                     favorites::add_game(&into, &stem, &mgl)
@@ -1325,9 +1437,10 @@ fn effective_library(loaded: &Loaded, system: &FoundSystem) -> Result<EffectiveL
     let fingerprints = if cached_is_current {
         cached.map(|data| data.fingerprints).unwrap_or_default()
     } else if provider.health.usable() {
-        let source_cache = cached
-            .map(|data| data.cache)
-            .unwrap_or_else(|| cache::build_system(&library));
+        let source_cache = match cached {
+            Some(data) => data.cache,
+            None => cache::build_system_checked(&library)?,
+        };
         provider
             .fingerprints_for_cache(&source_cache, &cancelled, &mut |_, _| {})?
             .unwrap_or_default()
@@ -1550,6 +1663,171 @@ mod tests {
         parse_from(words.iter().map(|w| w.to_string()))
             .expect("parses")
             .expect("not --help")
+    }
+
+    fn diagnostic_test_systems(root: &Path) -> Vec<FoundSystem> {
+        let definitions = systems::parse_table(
+            r#"
+[[systems]]
+name = "Nintendo Entertainment System"
+id = "NES"
+folders = ["Shared", "Nintendo"]
+rbf = "_Console/NES"
+extensions = ["nes", "mgl"]
+[[systems.launch]]
+extensions = ["nes"]
+type = "f"
+index = 1
+delay = 1
+[[systems]]
+name = "Famicom Disk System"
+id = "FDS"
+folders = ["Shared", "NES"]
+rbf = "_Console/NES"
+setname = "FDS"
+extensions = ["fds", "mgl"]
+[[systems.launch]]
+extensions = ["fds"]
+type = "f"
+index = 1
+delay = 2
+[[systems]]
+name = "Favorites"
+id = "Favorites"
+folders = ["/media/fat/_@Favorites", "_@Favorites"]
+rbf = ""
+extensions = ["mgl", "rbf"]
+category = "Favorites"
+"#,
+            Path::new("diagnostic fixture"),
+        )
+        .unwrap();
+        definitions
+            .into_iter()
+            .map(|def| {
+                let folder = if def.id == "Favorites" {
+                    "_@Favorites"
+                } else {
+                    "games/NES"
+                };
+                FoundSystem {
+                    def,
+                    paths: vec![root.join(folder)],
+                    logo_dir: None,
+                    menu_folder: None,
+                }
+            })
+            .collect()
+    }
+
+    #[test]
+    fn diagnostic_ids_and_names_take_precedence_over_folder_aliases() {
+        let systems = diagnostic_test_systems(Path::new("/fixture"));
+        assert_eq!(select_system(&systems, "nes").unwrap(), 0);
+        assert_eq!(select_system(&systems, "FAMICOM DISK SYSTEM").unwrap(), 1);
+        assert_eq!(select_system(&systems, "fds").unwrap(), 1);
+        assert_eq!(select_system(&systems, "Nintendo").unwrap(), 0);
+        // Both configured spellings belong to one system, so this is unique.
+        assert_eq!(select_system(&systems, "_@favorites").unwrap(), 2);
+    }
+
+    #[test]
+    fn diagnostic_ambiguous_alias_lists_owner_ids_and_unknown_alias_errors() {
+        let systems = diagnostic_test_systems(Path::new("/fixture"));
+        let error = select_system(&systems, "Shared").unwrap_err().to_string();
+        assert!(error.contains("ambiguous"));
+        assert!(error.contains("NES, FDS"));
+        assert!(!error.contains("Favorites"));
+        assert!(select_system(&systems, "uninstalled")
+            .unwrap_err()
+            .to_string()
+            .contains("not on this machine"));
+    }
+
+    fn diagnostic_fixture(name: &str) -> (PathBuf, Loaded) {
+        let root = std::env::temp_dir().join(format!("degauss-cli-{name}-{}", std::process::id()));
+        if root.exists() {
+            std::fs::remove_dir_all(&root).unwrap();
+        }
+        for folder in ["games/NES", "_@Favorites", "_Console", "_RA_Cores/Cores"] {
+            std::fs::create_dir_all(root.join(folder)).unwrap();
+        }
+        std::fs::write(root.join("_Console/NES.rbf"), b"discovery fixture").unwrap();
+        std::fs::write(root.join("_RA_Cores/Cores/NES.rbf"), b"discovery fixture").unwrap();
+        std::fs::write(root.join("_RA_Cores/NES.mgl"), "<mistergamedescription><rbf>_RA_Cores/Cores/NES</rbf><setname same_dir=\"1\">RA_NES</setname></mistergamedescription>").unwrap();
+        let mut config = Config::parse("[app]\n", Path::new("fixture")).unwrap();
+        config.menu_root = root.to_string_lossy().into_owned();
+        let loaded = Loaded {
+            config,
+            settings: Settings::default(),
+            settings_path: root.join("settings.toml"),
+            systems: diagnostic_test_systems(&root),
+            names: browse::DisplayNames::default(),
+            table: Vec::new(),
+            logo_dir: None,
+            themes_dir: root.join("themes"),
+            themes: theme::ThemeSet::default(),
+        };
+        (root, loaded)
+    }
+
+    #[test]
+    fn diagnostic_favorite_uses_the_owning_system_core_choice() {
+        let (root, mut loaded) = diagnostic_fixture("favorite-owner");
+        std::fs::write(root.join("games/NES/Game.fds"), b"path fixture").unwrap();
+        let favorite = root.join("_@Favorites/Game.mgl");
+        std::fs::write(&favorite, "<mistergamedescription><rbf>_Console/NES</rbf><setname>FDS</setname><file delay=\"2\" type=\"f\" index=\"1\" path=\"Game.fds\"/></mistergamedescription>").unwrap();
+        loaded
+            .settings
+            .core_choices
+            .insert("NES".into(), "standard".into());
+        loaded
+            .settings
+            .core_choices
+            .insert("FDS".into(), "ra".into());
+        let plan = diagnostic_launch_plan(
+            &loaded,
+            &loaded.systems[2],
+            &favorite,
+            &root.join("temp.mgl"),
+        )
+        .unwrap();
+        assert!(plan.mgl.contains("<rbf>_RA_Cores/Cores/NES</rbf>"));
+        assert!(plan
+            .mgl
+            .contains("<setname same_dir=\"1\">RA_NES</setname>"));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn favorites_import_accepts_zip_members_and_uses_shared_system_choice() {
+        let (root, mut loaded) = diagnostic_fixture("zip-import");
+        let archive = root.join("games/NES/library.zip");
+        std::fs::write(&archive, zip::tests_archive(&["Game.fds"], false)).unwrap();
+        let member = archive.join("Game.fds");
+        loaded
+            .settings
+            .core_choices
+            .insert("NES".into(), "standard".into());
+        loaded
+            .settings
+            .core_choices
+            .insert("FDS".into(), "ra".into());
+        let list = root.join("import.tsv");
+        std::fs::write(&list, format!("Test\t{}\n", member.display())).unwrap();
+        import_favorites(&loaded, &list).unwrap();
+        let result = std::fs::read_to_string(root.join("_@Favorites/Test/Game.mgl")).unwrap();
+        assert!(result.contains("<rbf>_RA_Cores/Cores/NES</rbf>"));
+        assert!(result.contains("library.zip/Game.fds"));
+        std::fs::write(&archive, b"corrupt archive").unwrap();
+        assert!(diagnostic_launch_plan(
+            &loaded,
+            &loaded.systems[1],
+            &member,
+            &root.join("temp.mgl")
+        )
+        .is_err());
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

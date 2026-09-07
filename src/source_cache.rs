@@ -313,6 +313,7 @@ mod tests {
 
     fn config(path: &std::path::Path, extension: &str) -> SystemConfig {
         SystemConfig {
+            preserve_rbf_stem: false,
             name: "Test".to_string(),
             path: path.to_string_lossy().into_owned(),
             extensions: vec![extension.to_string()],
@@ -630,6 +631,12 @@ mod tests {
     #[test]
     fn a_pre_cancelled_worker_returns_no_staged_cache() {
         let root = temp("cancelled");
+        let cache_dir = root.join("cache");
+        std::fs::create_dir_all(&cache_dir).unwrap();
+        let cache_path = crate::cache::system_path(&cache_dir, "Test");
+        let index_path = crate::cache::index_path(&cache_dir);
+        std::fs::write(&cache_path, b"previous-cache").unwrap();
+        std::fs::write(&index_path, b"previous-index").unwrap();
         let (sender, receiver) = mpsc::sync_channel(EVENT_QUEUE);
         let cancelled = Arc::new(AtomicBool::new(true));
         run(
@@ -650,6 +657,9 @@ mod tests {
         );
         assert!(matches!(receiver.recv().unwrap(), Event::Cancelled(_)));
         assert!(receiver.try_recv().is_err());
+        assert_eq!(std::fs::read(&cache_path).unwrap(), b"previous-cache");
+        assert_eq!(std::fs::read(&index_path).unwrap(), b"previous-index");
+        assert_eq!(std::fs::read_dir(&cache_dir).unwrap().count(), 2);
         std::fs::remove_dir_all(root).ok();
     }
 }

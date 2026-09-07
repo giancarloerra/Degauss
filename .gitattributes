@@ -1,0 +1,4 @@
+# Unified patch context prefixes are format bytes; validate whitespace in the applied source.
+support/ra-main/frontend.patch whitespace=-blank-at-eol,-space-before-tab
+support/ra-main/tls.patch whitespace=-blank-at-eol,-space-before-tab
+support/ra-main/controller.patch whitespace=-blank-at-eol,-space-before-tab

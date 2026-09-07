@@ -318,6 +318,28 @@ full one of 97k+ games. It never does that again on its own: **Options → Rebui
 is how you tell it the card has changed (for example after adding new games). New images and metadata are read on the fly.
 Adding games to one system does not need the whole card read again:
 **X → Rebuild this system list** inside that system reads just its folders.
+A successful rebuild reflects additions and removals. An unreadable folder or archive
+reports its error and keeps that system's previous complete list.
+
+ZIP archives open as folders, including their internal subfolders. ZIP64 is supported
+within the documented bounds. Metadata for a multi-game archive identifies each game
+by its full archive/member path; single-game archives retain legacy archive-level
+metadata. See [ZIP libraries](docs/zip-libraries.md) for details and launch limits.
+
+For a system with multiple installed core versions, **X → Core Version** chooses
+Default, Standard, RetroAchievements, or a matching Unstable build. The choice is
+saved for that system and applies to its games and recognized favourites.
+**Use Default Core Version** removes that override. Default follows **Core preference**
+and never automatically chooses an Unstable build. A missing explicitly selected
+version produces an error; it does not launch another version.
+
+The **Unstable** group browses installed `_Unstable` cores by their full build names.
+RetroAchievements requires a compatible RA installation, including its Main profile.
+Degauss releases include a separate RA Main that retains Frontend and the saved
+shortcut without being overwritten by the upstream RA updater. Select it in the
+RA Main profile as described in the [RA Main integration](support/ra-main/README.md). See the
+[small hardware test procedure](docs/testing/library-compatibility-hardware.md)
+for setup and launch/return checks.
 
 ## Views
 
@@ -379,6 +401,8 @@ One screen holds everything, in groups a blank row apart, top to bottom:
 | Random game behaviour | Whether a random pick starts the game, or only moves to it so you can look first |
 | Show Other folder | Show the Other group, the cores that are not games |
 | Show Utility folder | Show the Utility group, test patterns and measurement cores |
+| Show Unstable folder | Show installed Unstable cores. On by default |
+| Core preference | Standard first (default) or RetroAchievements first. Used by systems whose Core Version is Default; the other version is used only when the preferred version is absent |
 | Show systems with no games | Systems and folders holding nothing are left out on their own; this shows them. Off by default |
 | Show what you hid | Show what you hid yourself with **Hide this** |
 | Unhide everything | Press A and confirm to put back everything you hid yourself, in every folder and every system. Left and right do nothing |
@@ -658,6 +682,11 @@ filesystem-derived game name and leaves that artwork or field empty. It never
 fills the gap from the gamelist or ScreenScraper. Publisher and game language
 also remain empty because the database format does not provide them. Folder
 rows, system logos and category images remain independent of this choice.
+
+MRA entries are matched by their `<setname>`, including MGLs that point to an
+MRA. Large embedded hexadecimal ROM, patch and cheat payloads do not impose a
+whole-file size limit on that lookup. XML identity metadata remains bounded to
+1 MiB; this is separate from artwork image limits.
 
 Selecting an Artwork Pack never edits or removes the existing gamelist or its
 media. Choose **Gamelist** again to restore them immediately. While Artwork

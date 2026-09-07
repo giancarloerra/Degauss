@@ -1,12 +1,8 @@
 name: release
 
-# Builds both binaries and attaches a ready-to-copy archive to the release
-# for the tag that triggered it.
-#
-# Two binaries, because Degauss is two programs: the frontend, built here,
-# and MiSTer_Degauss, the GPLv3 fork of MiSTer Main that hands it the screen.
-# The fork lives in its own repository under its own licence and is built in
-# its own job below.
+# Build the frontend and both Main integrations, including corresponding RA
+# source and its verified CA bundle. The RA executable has its own name so the
+# upstream RA updater cannot replace it.
 on:
   push:
     tags:
@@ -80,9 +76,29 @@ jobs:
             MiSTer_Degauss
             MiSTer_Degauss.sha
 
+  ra-main:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Build and test pinned RA Main
+        run: ./scripts/build-ra-main.sh ra-build
+      - name: Check the RA binary
+        run: |
+          file ra-build/MiSTer_RA_Degauss | tee /dev/stderr \
+            | grep -qE "ELF 32-bit LSB (pie )?executable, ARM"
+      - uses: actions/upload-artifact@v6
+        with:
+          name: MiSTer_RA_Degauss
+          path: |
+            ra-build/MiSTer_RA_Degauss
+            ra-build/MiSTer_RA_Degauss.cacert.pem
+            ra-build/MiSTer_RA_Degauss.SOURCE.txt
+            ra-build/MiSTer_RA_Degauss-source.tar.gz
+            ra-build/MiSTer_RA_Degauss-source.tar.gz.sha256
+
   mister:
     runs-on: ubuntu-latest
-    needs: main-fork
+    needs: [main-fork, ra-main]
     steps:
       - uses: actions/checkout@v5
 
@@ -118,6 +134,12 @@ jobs:
           name: MiSTer_Degauss
           path: fork
 
+      - name: Collect RA Main and corresponding source
+        uses: actions/download-artifact@v7
+        with:
+          name: MiSTer_RA_Degauss
+          path: ra
+
       - name: Package
         id: package
         run: |
@@ -126,6 +148,9 @@ jobs:
           mkdir -p "dist/${NAME}/degauss"
           cp -R deploy/Scripts "dist/${NAME}/Scripts"
           install -m 0755 fork/MiSTer_Degauss "dist/${NAME}/degauss/MiSTer_Degauss"
+          install -m 0755 ra/MiSTer_RA_Degauss "dist/${NAME}/degauss/MiSTer_RA_Degauss"
+          cp ra/MiSTer_RA_Degauss.cacert.pem ra/MiSTer_RA_Degauss.SOURCE.txt "dist/${NAME}/degauss/"
+          cp ra/MiSTer_RA_Degauss-source.tar.gz ra/MiSTer_RA_Degauss-source.tar.gz.sha256 dist/
           cp README.md LICENSE "dist/${NAME}/"
           # The fork is GPLv3 and its source has to be findable from the
           # thing that ships its binary.
@@ -151,10 +176,14 @@ jobs:
             && sha256sum "${NAME}.zip" > "${NAME}.zip.sha256")
           echo "name=${NAME}" >> "$GITHUB_OUTPUT"
 
-      - name: Check the archive holds both binaries
+      - name: Check the archive holds all binaries and the RA bundle
         run: |
           unzip -l dist/*.zip | grep -q "degauss/MiSTer_Degauss"
           unzip -l dist/*.zip | grep -q "Scripts/.config/degauss/degauss"
+          unzip -l dist/*.zip | grep -q "degauss/MiSTer_RA_Degauss.cacert.pem"
+          unzip -l dist/*.zip | grep -q "degauss/MiSTer_RA_Degauss.SOURCE.txt"
+          unzip -l dist/*.zip | grep -q "degauss/MiSTer_RA_Degauss$"
+          (cd dist && sha256sum -c MiSTer_RA_Degauss-source.tar.gz.sha256)
 
       # Where somebody who downloaded the two files stands, which is the only
       # place the checksum is ever used.
@@ -168,13 +197,14 @@ jobs:
 
       # The Downloader database, so `update_all` can keep Degauss current.
       # It names every file with its hash and where to fetch it, which is why
-      # the two built binaries are attached to the release on their own as
+      # the built binaries and RA bundle are attached to the release on their own as
       # well as inside the archive.
       - name: Build the Downloader database
         run: |
           cp deploy/Scripts/.config/degauss/degauss dist/degauss
           cp fork/MiSTer_Degauss dist/MiSTer_Degauss
-          python3 scripts/make-db.py "${GITHUB_REF_NAME}" deploy fork/MiSTer_Degauss dist/degauss.json
+          cp ra/MiSTer_RA_Degauss ra/MiSTer_RA_Degauss.cacert.pem ra/MiSTer_RA_Degauss.SOURCE.txt dist/
+          python3 scripts/make-db.py "${GITHUB_REF_NAME}" deploy fork/MiSTer_Degauss dist/degauss.json --ra-dir ra
           (cd dist && zip -q degauss.json.zip degauss.json && rm degauss.json)
 
       - name: Check the database is well formed
@@ -186,6 +216,9 @@ jobs:
           assert db["v"] == 1, db["v"]
           assert db["db_id"] == "degauss", db["db_id"]
           assert db["files"], "no files"
+          for name in ("MiSTer_RA_Degauss", "MiSTer_RA_Degauss.cacert.pem", "MiSTer_RA_Degauss.SOURCE.txt"):
+              assert "degauss/" + name in db["files"], name
+          assert "MiSTer_RA" not in db["files"], "must not overwrite upstream RA Main"
           for path, entry in db["files"].items():
               for field in ("hash", "size", "url"):
                   assert field in entry, (path, field)
@@ -206,3 +239,7 @@ jobs:
             dist/*.sha256
             dist/degauss
             dist/MiSTer_Degauss
+            dist/MiSTer_RA_Degauss
+            dist/MiSTer_RA_Degauss.cacert.pem
+            dist/MiSTer_RA_Degauss.SOURCE.txt
+            dist/*.tar.gz

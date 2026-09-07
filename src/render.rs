@@ -509,5 +509,6 @@ mod tests {
             visible_pixels(&tinted_half) >= visible_pixels(&original_zero),
             "mixing a colour must not make any part of the logo disappear"
         );
+        crate::app::test_library_launch_flow(window.clone());
     }
 }
