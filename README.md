@@ -578,6 +578,12 @@ style. Degauss does not download, update, repair, change the style of or
 uninstall these databases; it reads whichever complete local style those
 tools installed.
 
+Databases can also be downloaded directly from the original
+[MiSTer Game Artwork Databases repository](https://github.com/chipster6502/MiSTer_artwork_pack).
+Degauss reads the installed database in place rather than importing or copying it.
+**Game Data Source** is selected separately for each supported system from its
+**X** context menu, not from the global Options menu.
+
 To use one in Degauss:
 
 1. Highlight a supported system, or browse inside it, and press **X**.
