@@ -27,6 +27,11 @@ pub const FAVORITES_DIR: &str = "_@Favorites";
 const MAX_MGL_BYTES: u64 = 1024 * 1024;
 const MAX_MGL_VALUE_BYTES: usize = 4096;
 
+#[cfg(test)]
+thread_local! {
+    static MGL_READS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 /// What a Favorite points at, plus optional descriptor evidence that can
 /// distinguish systems sharing one folder and file extension. `cache_target`
 /// preserves the exact target used by MiSTer's Favorites representation;
@@ -43,6 +48,7 @@ pub struct FavoriteReference {
 #[derive(Debug, Default)]
 struct DescriptorReference {
     target: Option<PathBuf>,
+    raw_target: Option<String>,
     rbf: Option<String>,
     setname: Option<String>,
 }
@@ -110,13 +116,9 @@ impl Favorites {
                 .extension()
                 .is_some_and(|e| e.eq_ignore_ascii_case("mgl"))
             {
-                // A title rather than a path: AmigaVision keeps its
-                // library inside one image, so a favourite for one names
-                // the title and there is no file to point at.
-                if let Some((install, title)) = crate::launch::amiga_marker(&path) {
-                    self.by_target.insert(amiga_key(&install, &title), path);
-                    continue;
-                }
+                // The resolver handles AmigaVision markers too. Checking
+                // here as well would read every ordinary MGL twice for the
+                // same absent marker on each favourite add/remove.
                 if let Some(reference) = reference_of_with_systems(&path, systems) {
                     self.by_target.insert(reference.cache_target, path);
                 }
@@ -152,7 +154,14 @@ pub fn target_of(path: &Path) -> Option<PathBuf> {
 /// Resolve the Favorite target while retaining core/set evidence for callers
 /// that need to identify the owning system. This reads only the same symlink,
 /// MGL or MRA that represents the Favorite and never changes it.
+#[cfg(test)]
 pub fn reference_of(path: &Path) -> Option<FavoriteReference> {
+    reference_with_raw_target(path).map(|(reference, _)| reference)
+}
+
+/// Keep the last raw file attribute from the descriptor parse so system-root
+/// resolution does not reopen and reparse every favourite just to find it.
+fn reference_with_raw_target(path: &Path) -> Option<(FavoriteReference, Option<String>)> {
     if let Ok(target) = std::fs::read_link(path) {
         let cache_target = resolve_link_target(path, target);
         let extension = cache_target
@@ -177,17 +186,23 @@ pub fn reference_of(path: &Path) -> Option<FavoriteReference> {
             .as_ref()
             .and_then(|descriptor| descriptor.target.clone())
             .unwrap_or_else(|| cache_target.clone());
-        return Some(FavoriteReference {
-            cache_target,
-            owner_target,
-            rbf: descriptor
-                .as_ref()
-                .and_then(|descriptor| descriptor.rbf.clone()),
-            setname: descriptor
-                .as_ref()
-                .and_then(|descriptor| descriptor.setname.clone()),
-            mgl: extension == "mgl",
-        });
+        let raw_target = descriptor
+            .as_ref()
+            .and_then(|descriptor| descriptor.raw_target.clone());
+        return Some((
+            FavoriteReference {
+                cache_target,
+                owner_target,
+                rbf: descriptor
+                    .as_ref()
+                    .and_then(|descriptor| descriptor.rbf.clone()),
+                setname: descriptor
+                    .as_ref()
+                    .and_then(|descriptor| descriptor.setname.clone()),
+                mgl: extension == "mgl",
+            },
+            raw_target,
+        ));
     }
     if path
         .extension()
@@ -195,23 +210,29 @@ pub fn reference_of(path: &Path) -> Option<FavoriteReference> {
     {
         if let Some((install, title)) = crate::launch::amiga_marker(path) {
             let target = amiga_key(&install, &title);
-            return Some(FavoriteReference {
-                cache_target: target.clone(),
-                owner_target: target,
-                rbf: None,
-                setname: None,
-                mgl: true,
-            });
+            return Some((
+                FavoriteReference {
+                    cache_target: target.clone(),
+                    owner_target: target,
+                    rbf: None,
+                    setname: None,
+                    mgl: true,
+                },
+                None,
+            ));
         }
         let descriptor = descriptor_reference(path, "favourite MGL").ok()?;
         let target = descriptor.target?;
-        return Some(FavoriteReference {
-            cache_target: target.clone(),
-            owner_target: target,
-            rbf: descriptor.rbf,
-            setname: descriptor.setname,
-            mgl: true,
-        });
+        return Some((
+            FavoriteReference {
+                cache_target: target.clone(),
+                owner_target: target,
+                rbf: descriptor.rbf,
+                setname: descriptor.setname,
+                mgl: true,
+            },
+            descriptor.raw_target,
+        ));
     }
     None
 }
@@ -223,36 +244,9 @@ pub fn reference_of_with_systems(
     path: &Path,
     systems: &[crate::systems::FoundSystem],
 ) -> Option<FavoriteReference> {
-    let mut reference = reference_of(path)?;
+    let (mut reference, raw) = reference_with_raw_target(path)?;
     if !reference.mgl || is_amiga_key(&reference.owner_target) {
         return Some(reference);
-    }
-    let descriptor_path = std::fs::read_link(path)
-        .map(|target| resolve_link_target(path, target))
-        .unwrap_or_else(|_| path.to_path_buf());
-    let text = read_mgl_text(&descriptor_path, "favourite MGL").ok()?;
-    let mut reader = Reader::from_str(&text);
-    let mut raw = None;
-    loop {
-        match reader.read_event() {
-            Ok(Event::Start(e) | Event::Empty(e))
-                if e.name().as_ref().eq_ignore_ascii_case("file") =>
-            {
-                for a in e.attributes() {
-                    let a = a.ok()?;
-                    if a.key.as_ref().eq_ignore_ascii_case("path") {
-                        raw = Some(
-                            a.normalized_value(XmlVersion::Implicit1_0)
-                                .ok()?
-                                .into_owned(),
-                        );
-                    }
-                }
-            }
-            Ok(Event::Eof) => break,
-            Err(_) => return None,
-            _ => {}
-        }
     }
     let raw = raw?;
     if raw.starts_with('/') || raw.starts_with("../") || raw.starts_with("./") {
@@ -438,6 +432,8 @@ pub fn mgl_target(path: &Path) -> Result<Option<PathBuf>> {
 /// Bound the bytes actually consumed, rather than relying on metadata from an
 /// earlier instant. A growing file or symlink target cannot bypass this limit.
 pub(crate) fn read_mgl_text(path: &Path, what: &'static str) -> Result<String> {
+    #[cfg(test)]
+    MGL_READS.with(|reads| reads.set(reads.get() + 1));
     let file = File::open(path).map_err(|error| DegaussError::io(what, path, error))?;
     let mut bytes = Vec::new();
     file.take(MAX_MGL_BYTES + 1)
@@ -462,6 +458,7 @@ fn descriptor_reference(path: &Path, what: &'static str) -> Result<DescriptorRef
     let text = read_mgl_text(path, what)?;
     let mut reader = Reader::from_str(&text);
     let mut target = None;
+    let mut raw_target = None;
     let mut active = None;
     let mut value = String::new();
     let mut rbf = None;
@@ -476,7 +473,10 @@ fn descriptor_reference(path: &Path, what: &'static str) -> Result<DescriptorRef
             Ok(Event::Eof) => break,
             Ok(Event::Start(event)) => {
                 if event.name().as_ref().eq_ignore_ascii_case("file") {
-                    target = file_target(path, what, &event)?.or(target);
+                    if let Some((resolved, raw)) = file_target(path, what, &event)? {
+                        target = Some(resolved);
+                        raw_target = Some(raw);
+                    }
                 } else if event.name().as_ref().eq_ignore_ascii_case("rbf") {
                     active = Some(DescriptorField::Rbf);
                     value.clear();
@@ -486,7 +486,10 @@ fn descriptor_reference(path: &Path, what: &'static str) -> Result<DescriptorRef
                 }
             }
             Ok(Event::Empty(event)) if event.name().as_ref().eq_ignore_ascii_case("file") => {
-                target = file_target(path, what, &event)?.or(target);
+                if let Some((resolved, raw)) = file_target(path, what, &event)? {
+                    target = Some(resolved);
+                    raw_target = Some(raw);
+                }
             }
             Ok(Event::Text(text)) if active.is_some() => {
                 value.push_str(&text.xml10_content());
@@ -545,6 +548,7 @@ fn descriptor_reference(path: &Path, what: &'static str) -> Result<DescriptorRef
     }
     Ok(DescriptorReference {
         target,
+        raw_target,
         rbf: (!rbf_ambiguous).then_some(rbf).flatten(),
         setname: (!setname_ambiguous).then_some(setname).flatten(),
     })
@@ -554,7 +558,7 @@ fn file_target(
     path: &Path,
     what: &'static str,
     event: &quick_xml::events::BytesStart<'_>,
-) -> Result<Option<PathBuf>> {
+) -> Result<Option<(PathBuf, String)>> {
     let mut target = None;
     for attribute in event.attributes() {
         let attribute = attribute.map_err(|error| {
@@ -566,7 +570,7 @@ fn file_target(
                 .map_err(|error| {
                     DegaussError::malformed(what, path, format!("bad path attribute: {error}"))
                 })?;
-            target = Some(resolve_mgl_path(path, &raw));
+            target = Some((resolve_mgl_path(path, &raw), raw.into_owned()));
         }
     }
     Ok(target)
@@ -770,6 +774,29 @@ pub fn remove(path: &Path) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn rereading_favorites_preserves_targets_without_redundant_descriptor_reads() {
+        let root = temp("rescan-read-budget");
+        let normal = root.join("Normal.mgl");
+        let amiga = root.join("Amiga.mgl");
+        std::fs::write(&normal, "<mistergamedescription><rbf>_Console/NES</rbf><file path=\"/games/Normal.nes\"/></mistergamedescription>").unwrap();
+        std::fs::write(&amiga, "<mistergamedescription><degauss kind=\"amigavision\" install=\"/games/Amiga\" title=\"Alien &amp; Space\"/></mistergamedescription>").unwrap();
+        MGL_READS.with(|reads| reads.set(0));
+        let found = Favorites::read_with_systems(&root, &[]);
+        let reads = MGL_READS.with(std::cell::Cell::get);
+        assert_eq!(
+            found.file_for(Path::new("/games/Normal.nes")),
+            Some(normal.as_path())
+        );
+        assert_eq!(
+            found.file_for(&amiga_key(Path::new("/games/Amiga"), "Alien & Space")),
+            Some(amiga.as_path())
+        );
+        assert!(reads <= 3,
+            "a whole-tree favourite reread must preserve the released read budget: at most two reads for an ordinary MGL and one for an Amiga marker, got {reads}");
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
     /// A folder name has to be a name. "." and ".." pass every character
     /// test and then resolve to the favourites root or above it.
     #[test]
