@@ -446,7 +446,7 @@ fn diagnostic_launch_plan(
     if zip::split_member_path(path).is_some() {
         zip::validate_member_for_launch(path)?;
     }
-    let reference = if system.category() == "Favorites" {
+    let reference = if systems::is_favorites(system.category()) {
         favorites::reference_of_with_systems(path, &loaded.systems)
     } else {
         None
@@ -456,7 +456,7 @@ fn diagnostic_launch_plan(
             zip::validate_member_for_launch(&reference.owner_target)?;
         }
     }
-    let owner = if system.category() == "Favorites" {
+    let owner = if systems::is_favorites(system.category()) {
         reference
             .and_then(|reference| app::owner_of_favorite(&loaded.systems, &reference))
             .and_then(|id| {
@@ -1808,17 +1808,20 @@ category = "Favorites"
             .settings
             .core_choices
             .insert("FDS".into(), "ra".into());
-        let plan = diagnostic_launch_plan(
-            &loaded,
-            &loaded.systems[2],
-            &favorite,
-            &root.join("temp.mgl"),
-        )
-        .unwrap();
-        assert!(plan.mgl.contains("<rbf>_RA_Cores/Cores/NES</rbf>"));
-        assert!(plan
-            .mgl
-            .contains("<setname same_dir=\"1\">RA_NES</setname>"));
+        for category in ["Favorites", "favorites", "FAVORITES"] {
+            loaded.systems[2].def.category = Some(category.into());
+            let plan = diagnostic_launch_plan(
+                &loaded,
+                &loaded.systems[2],
+                &favorite,
+                &root.join("temp.mgl"),
+            )
+            .unwrap();
+            assert!(plan.mgl.contains("<rbf>_RA_Cores/Cores/NES</rbf>"));
+            assert!(plan
+                .mgl
+                .contains("<setname same_dir=\"1\">RA_NES</setname>"));
+        }
         std::fs::remove_dir_all(root).unwrap();
     }
 
