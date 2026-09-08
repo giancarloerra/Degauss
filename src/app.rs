@@ -1156,6 +1156,9 @@ fn artwork_pack_health_message(
 fn artwork_pack_error_action(error: &crate::error::DegaussError) -> &'static str {
     match error {
         crate::error::DegaussError::Io { .. } => "Check the selected storage and try again.",
+        crate::error::DegaussError::Malformed { what, .. } if *what == "game descriptor" => {
+            "Repair the game descriptor; see degauss.log."
+        }
         crate::error::DegaussError::Malformed { .. } => "Repair the Artwork Pack and try again.",
         crate::error::DegaussError::Unsupported { .. } => {
             "Check degauss.log for details, then try again."
@@ -11725,6 +11728,17 @@ mod tests {
         let malformed_message = source_change_failure_message(&malformed);
         assert!(malformed_message.contains("Repair the Artwork Pack"));
         assert!(!malformed_message.contains("manifest.tsv"));
+        let descriptor = crate::error::DegaussError::malformed(
+            "game descriptor",
+            "/games/Arcade/Example.mra",
+            "private XML diagnostic",
+        );
+        let descriptor_message = source_change_failure_message(&descriptor);
+        assert!(descriptor_message.contains("Repair the game descriptor"));
+        assert!(descriptor_message.contains("degauss.log"));
+        assert!(!descriptor_message.contains("Artwork Pack"));
+        assert!(!descriptor_message.contains("/games/"));
+        assert!(!descriptor_message.contains("private XML diagnostic"));
         let unsupported_message = source_change_failure_message(&unsupported);
         assert!(unsupported_message.contains("degauss.log"));
         assert!(!unsupported_message.contains("private diagnostic detail"));
