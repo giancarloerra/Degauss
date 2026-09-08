@@ -19,6 +19,11 @@ use serde::Deserialize;
 use crate::config::LaunchRule;
 use crate::error::{DegaussError, Result};
 
+/// Favorites semantics also apply to custom collection names and category casing.
+pub fn is_favorites(category: &str) -> bool {
+    category.eq_ignore_ascii_case("Favorites")
+}
+
 /// One row of the systems table.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]

@@ -45,7 +45,7 @@ use crate::options::{speed_badge, speed_label, OptionId, ADVANCED, OPTIONS};
 use crate::render::{FrameWork, PresentMode, Presenter};
 use crate::settings::{CustomViews, SaveOutcome, Settings};
 use crate::surface::Surface;
-use crate::systems::{FoundSystem, SystemDef};
+use crate::systems::{is_favorites, FoundSystem, SystemDef};
 use crate::theme::{Theme, ThemeSet};
 use crate::theme_editor::{
     EditorEffect, EditorMode, ThemeEditor, EDITOR_ROWS, NAME_CANCEL, NAME_CELLS, NAME_COLUMNS,
@@ -393,7 +393,7 @@ fn owner_candidates<'a>(systems: &'a [FoundSystem], path: &Path) -> Vec<&'a Foun
     }
     let candidates: Vec<(&FoundSystem, usize)> = systems
         .iter()
-        .filter(|system| system.category() != "Favorites")
+        .filter(|system| !is_favorites(system.category()))
         .filter_map(|system| {
             let depth = system
                 .paths
@@ -1382,7 +1382,7 @@ fn scraper_scope_only_artwork_pack(
         crate::scraper::Scope::All => {
             let mut candidates = systems
                 .iter()
-                .filter(|system| !system.category().eq_ignore_ascii_case(FAVORITES_ID));
+                .filter(|system| !is_favorites(system.category()));
             let Some(first) = candidates.next() else {
                 return false;
             };
@@ -1500,7 +1500,7 @@ fn favorite_change(
 /// Suppressing an image unconditionally made `Favorites.png` discoverable
 /// by the category code but impossible to see in the Details view.
 fn logo_or_favorite_heart(category: &str, logo: Option<PathBuf>) -> (Option<PathBuf>, bool) {
-    let heart = category == FAVORITES_ID && logo.is_none();
+    let heart = is_favorites(category) && logo.is_none();
     (logo, heart)
 }
 
@@ -4051,7 +4051,7 @@ impl App {
         let id = self
             .all_systems
             .iter()
-            .find(|system| system.category() == "Favorites")?
+            .find(|system| is_favorites(system.category()))?
             .def
             .id
             .clone();
@@ -5524,7 +5524,7 @@ impl App {
             "Utility",
             "Other",
             "Unstable",
-            "Favorites",
+            FAVORITES_ID,
         ];
         let mut categories: Vec<(String, usize)> = Vec::new();
         for name in ORDER {
@@ -5533,11 +5533,11 @@ impl App {
             if name == "Other" && !self.show_other {
                 continue;
             }
-            // Test patterns and measurement cores. Useful, and not what a
-            // list of games is for.
             if name == "Unstable" && !self.show_unstable {
                 continue;
             }
+            // Test patterns and measurement cores. Useful, and not what a
+            // list of games is for.
             if name == "Utility" && !self.show_utility {
                 continue;
             }
@@ -7923,7 +7923,8 @@ impl App {
                         "Artwork Pack cache refresh for {name} cancelled. Games remain browseable, but some artwork matches may be unavailable until it is refreshed."
                     ),
                     (SourceRecoveryPurpose::RefreshSystem, Some(error)) => format!(
-                        "{name} list was not rebuilt: {error}.\nThe previous complete cache remains in use."
+                        "{name} list was not rebuilt.\n{}\nThe previous complete cache remains in use.",
+                        artwork_pack_error_action(&error)
                     ),
                     (SourceRecoveryPurpose::RefreshSystem, None) if cancelled => format!(
                         "{name} list rebuild cancelled. The previous complete cache remains in use."
@@ -8204,10 +8205,10 @@ impl App {
                 Browsing::Systems => self
                     .systems
                     .get(self.system_list.selected())
-                    .is_some_and(|system| !system.category().eq_ignore_ascii_case(FAVORITES_ID)),
+                    .is_some_and(|system| !is_favorites(system.category())),
                 Browsing::Games => self
                     .open_system_ref()
-                    .is_some_and(|system| !system.category().eq_ignore_ascii_case(FAVORITES_ID)),
+                    .is_some_and(|system| !is_favorites(system.category())),
                 Browsing::Categories => false,
             };
         let scrape_game = scrape_scope
@@ -8253,7 +8254,7 @@ impl App {
         match choice {
             SCRAPE_SYSTEM => {
                 let system = self.systems.get(self.system_list.selected())?;
-                if system.category().eq_ignore_ascii_case(FAVORITES_ID) || system.paths.is_empty() {
+                if is_favorites(system.category()) || system.paths.is_empty() {
                     return None;
                 }
                 let place = if system.paths.len() == 1 {
@@ -9775,7 +9776,7 @@ impl App {
         self.open_system.as_ref().is_some_and(|id| {
             self.all_systems
                 .iter()
-                .any(|system| &system.def.id == id && system.category() == "Favorites")
+                .any(|system| &system.def.id == id && is_favorites(system.category()))
         })
     }
 
@@ -10025,7 +10026,7 @@ impl App {
                                 favorite: browse_row_favorite(
                                     self.layout,
                                     false,
-                                    name == FAVORITES_ID,
+                                    is_favorites(name),
                                 ),
                                 cover,
                                 has_cover,
@@ -10048,7 +10049,7 @@ impl App {
                             let favorite = browse_row_favorite(
                                 self.layout,
                                 false,
-                                self.systems[index].category() == FAVORITES_ID,
+                                is_favorites(self.systems[index].category()),
                             );
                             // How many games are in there, where the card
                             // has been read for it.
@@ -10093,7 +10094,7 @@ impl App {
                                 // user made, and the panel marks it with a
                                 // heart rather than a logo: no stand-in here
                                 // either, so the two views agree.
-                                let bare = self.in_favorites() && self.here[index].is_folder();
+                                let bare = inside_favorites && self.here[index].is_folder();
                                 self.here[index].cover.clone().or_else(|| {
                                     if bare {
                                         None
@@ -12482,6 +12483,53 @@ mod tests {
     }
 
     #[test]
+    fn custom_favorites_casing_never_becomes_a_game_owner_or_scraper_target() {
+        let root = picker_temp("favorite-category-casing");
+        std::fs::create_dir_all(&root).unwrap();
+        let game = root.join("MyShelf/Game.mgl");
+        std::fs::create_dir_all(game.parent().unwrap()).unwrap();
+        std::fs::write(&game, b"game").unwrap();
+        for category in ["Favorites", "favorites", "FAVORITES", "FaVoRiTeS"] {
+            let console = found_system_with_extensions("NES", vec![root.join("MyShelf")], &["mgl"]);
+            let table = format!("[[systems]]\nname = \"Shelf\"\nid = \"CustomShelf\"\ncategory = {category:?}\nrbf = \"\"\nfolders = [\"MyShelf\"]\nextensions = [\"rbf\", \"mra\", \"mgl\"]\n");
+            let table =
+                crate::systems::parse_table(&table, Path::new("custom-systems.toml")).unwrap();
+            let table = crate::systems::prepare_table(table, &root).unwrap();
+            let mut discovered = crate::systems::discover_checked(
+                &table,
+                std::slice::from_ref(&root),
+                None,
+                &crate::systems::CoreIndex::read(&root),
+            )
+            .unwrap();
+            let shelf = discovered.remove(0);
+            assert_eq!(
+                shelf.category(),
+                category,
+                "custom category casing survives discovery"
+            );
+            let systems = vec![console, shelf];
+            assert_eq!(
+                owner_of_path(&systems, &game).as_deref(),
+                Some("NES"),
+                "a Favorites shelf must not make the actual owner ambiguous: {category}"
+            );
+            assert!(
+                scraper_scope_only_artwork_pack(
+                    &crate::scraper::Scope::All,
+                    &systems,
+                    &std::collections::BTreeMap::from([("NES".into(), "/art".into())])
+                ),
+                "a Favorites shelf must not become a scrape candidate: {category}"
+            );
+            assert!(is_favorites(systems[1].category()));
+        }
+        assert!(!is_favorites("NES"));
+        assert!(!is_favorites("FavoritesExtra"));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn favorite_owner_requires_a_live_target_and_never_guesses_an_ambiguous_system() {
         let root = picker_temp("favorite-owner");
         let shared = root.join("shared");
@@ -13479,9 +13527,15 @@ mod tests {
         let chosen = PathBuf::from("Favorites.png");
         assert_eq!(
             logo_or_favorite_heart(FAVORITES_ID, Some(chosen.clone())),
-            (Some(chosen), false)
+            (Some(chosen.clone()), false)
         );
-        assert_eq!(logo_or_favorite_heart(FAVORITES_ID, None), (None, true));
+        for category in [FAVORITES_ID, "favorites", "FAVORITES", "FaVoRiTeS"] {
+            assert_eq!(logo_or_favorite_heart(category, None), (None, true));
+            assert_eq!(
+                logo_or_favorite_heart(category, Some(chosen.clone())),
+                (Some(chosen.clone()), false)
+            );
+        }
         assert_eq!(logo_or_favorite_heart("Console", None), (None, false));
     }
 

@@ -192,7 +192,7 @@ fn expand_affected_systems(
 ) {
     let mut readers: HashMap<PathBuf, Vec<String>> = HashMap::new();
     for system in systems {
-        if system.def.id.eq_ignore_ascii_case("Favorites")
+        if is_favorites_target(system)
             || artwork_pack_system_ids
                 .iter()
                 .any(|id| id.eq_ignore_ascii_case(&system.def.id))
@@ -231,7 +231,7 @@ fn collect_all(
     let mut batch = TargetBatch::default();
     for system in systems {
         check_cancelled(cancelled)?;
-        if system.def.id.eq_ignore_ascii_case("Favorites") {
+        if is_favorites_target(system) {
             continue;
         }
         if artwork_pack_system_ids
@@ -276,12 +276,6 @@ fn collect_system(
     cancelled: &AtomicBool,
     on_progress: &mut dyn FnMut(&str),
 ) -> Result<TargetBatch> {
-    if system.def.id.eq_ignore_ascii_case("Favorites") {
-        return Err(Error::new(
-            ErrorKind::Configuration,
-            "the master Favourites shelf is not a scrape target",
-        ));
-    }
     let platform = platform_id(system, overrides)?;
     on_progress(&system.def.name);
     check_cancelled(cancelled)?;
@@ -449,7 +443,19 @@ fn find_system<'a>(systems: &'a [FoundSystem], id: &str) -> Result<&'a FoundSyst
         .ok_or_else(|| Error::new(ErrorKind::Configuration, format!("unknown system {id}")))
 }
 
+// Retain the reserved-ID exclusion for older custom tables without a category.
+pub(super) fn is_favorites_target(system: &FoundSystem) -> bool {
+    crate::systems::is_favorites(system.category())
+        || system.def.id.eq_ignore_ascii_case("Favorites")
+}
+
 fn platform_id(system: &FoundSystem, overrides: &BTreeMap<String, u32>) -> Result<u32> {
+    if is_favorites_target(system) {
+        return Err(Error::new(
+            ErrorKind::Configuration,
+            "the master Favourites shelf is not a scrape target",
+        ));
+    }
     platforms::id_for(&system.def.id, overrides).ok_or_else(|| {
         Error::new(
             ErrorKind::Configuration,
@@ -954,6 +960,49 @@ mod tests {
         std::fs::write(&ordinary, b"rom bytes").unwrap();
         assert!(hashable(&ordinary));
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn renamed_favourites_are_excluded_from_all_scopes_and_shared_refreshes() {
+        let root = temp("renamed-favorites");
+        let game = root.join("Game.rom");
+        std::fs::write(&game, b"game").unwrap();
+        for category in ["Favorites", "favorites", "FAVORITES"] {
+            let mut favorite = system("MyShelf", "My shelf", &root, &["rom"]);
+            favorite.menu_folder = None;
+            favorite.def.category = Some(category.into());
+            let ordinary = system("NES", "Nintendo", &root, &["rom"]);
+            let systems = [ordinary, favorite];
+            let overrides = BTreeMap::from([("MyShelf".into(), 3)]);
+            let batch =
+                collect_now(&systems, &DisplayNames::default(), &Scope::All, &overrides).unwrap();
+            assert_eq!(batch.targets.len(), 1);
+            assert_eq!(batch.targets[0].affected_system_ids, vec!["NES"]);
+            assert!(batch.unsupported_systems.is_empty());
+            for scope in [
+                Scope::System {
+                    system_id: "MyShelf".into(),
+                    place: Place::Dir(root.clone()),
+                    display_name: "My shelf".into(),
+                },
+                Scope::Folder {
+                    system_id: "MyShelf".into(),
+                    place: Place::Dir(root.clone()),
+                    display_name: "My shelf".into(),
+                },
+                Scope::Game {
+                    system_id: "MyShelf".into(),
+                    launch: Launch::File(game.clone()),
+                    title: "Game".into(),
+                },
+            ] {
+                let error = collect_now(&systems, &DisplayNames::default(), &scope, &overrides)
+                    .unwrap_err();
+                assert_eq!(error.kind, ErrorKind::Configuration);
+                assert!(error.to_string().contains("not a scrape target"));
+            }
+        }
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

@@ -1134,7 +1134,7 @@ fn scope_has_only_artwork_pack_systems(
         Scope::All => {
             let mut candidates = systems
                 .iter()
-                .filter(|system| !system.def.id.eq_ignore_ascii_case("Favorites"));
+                .filter(|system| !super::targets::is_favorites_target(system));
             let Some(first) = candidates.next() else {
                 return false;
             };
@@ -2256,6 +2256,32 @@ mod tests {
             paths: vec![root.to_path_buf()],
             logo_dir: None,
             menu_folder: Some("Console".into()),
+        }
+    }
+
+    #[test]
+    fn all_artwork_pack_scope_ignores_renamed_favourites_categories() {
+        let ordinary = system(Path::new("/games/NES"));
+        for category in ["Favorites", "favorites", "FAVORITES"] {
+            let mut favorite = system(Path::new("/games/MyShelf"));
+            favorite.def.id = "MyShelf".into();
+            favorite.def.category = Some(category.into());
+            favorite.menu_folder = None;
+            assert!(scope_has_only_artwork_pack_systems(
+                &Scope::All,
+                &[ordinary.clone(), favorite.clone()],
+                &HashSet::from(["NES".into()])
+            ));
+            assert!(!scope_has_only_artwork_pack_systems(
+                &Scope::All,
+                &[favorite],
+                &HashSet::from(["MyShelf".into()])
+            ));
+            assert!(!scope_has_only_artwork_pack_systems(
+                &Scope::All,
+                std::slice::from_ref(&ordinary),
+                &HashSet::new()
+            ));
         }
     }
 

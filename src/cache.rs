@@ -446,7 +446,7 @@ impl PreparedCacheGroup {
 
     /// Stage the matching index in the same rollback transaction as its rows.
     pub fn with_index(mut self, dir: &Path, index: &Index) -> Result<Self> {
-        let final_path = dir.join("index.bin");
+        let final_path = index_path(dir);
         if self
             .files
             .iter()
