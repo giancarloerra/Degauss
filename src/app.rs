@@ -1669,20 +1669,21 @@ fn shortened_label(value: &str, room: usize) -> String {
     format!("{}...", kept.trim_end())
 }
 
-/// Reading the card into the cache, one system per frame.
-///
-/// One per frame rather than all at once: reading a system takes seconds,
-/// and a screen that says what it is doing and moves while it does it is
-/// the difference between waiting and wondering.
+/// Reading the card into the cache with one owned worker at a time.
+/// The UI keeps rendering and accepting cancellation during a large system.
 struct Building {
     /// Indices into `all_systems`, in reverse so the next one is popped.
     left: Vec<usize>,
     done: usize,
     total: usize,
     index: crate::cache::Index,
-    /// True when the whole cache was thrown away first, so a system whose
-    /// file is still on the card is read again rather than skipped.
+    /// Re-read existing systems while retaining their last complete caches.
     forced: bool,
+    job: Option<crate::index_job::Job>,
+    current_id: String,
+    current_name: String,
+    cancelling: bool,
+    started: Instant,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -3438,6 +3439,23 @@ impl App {
         self.settings.screensaver_after.unwrap_or(120)
     }
 
+    fn should_start_screensaver(&self, now: Instant) -> bool {
+        let idle = self.screensaver_after();
+        idle > 0
+            && self.build.is_none()
+            && !matches!(
+                self.screen,
+                Screen::Screensaver
+                    | Screen::Splash
+                    | Screen::ScraperProgress
+                    | Screen::ScraperMatches
+                    | Screen::SourceProgress
+            )
+            && !(self.screen == Screen::ScraperKeyboard
+                && self.scraper_keyboard_field == ScraperField::SearchTerm)
+            && now.duration_since(self.last_input) >= Duration::from_secs(idle)
+    }
+
     /// Show something, or stay browsing if there is nothing to show.
     ///
     /// A screensaver that draws a blank screen is worse than none: it looks
@@ -4070,6 +4088,7 @@ impl App {
     /// field, so a message set here would be wiped before it was drawn.
     /// The caller shows it after its redraw.
     fn refresh_system(&mut self, id: &str) -> Option<String> {
+        let started = Instant::now();
         // A system is in the table only when its folder existed at
         // discovery. With no folder there is no cache to refresh and
         // nothing is listed, so doing nothing is correct.
@@ -4129,18 +4148,17 @@ impl App {
             Ok(cache) => cache,
             Err(error) => return Some(format!("{name}: {error}")),
         };
-        let mut next_index = self.index.clone().unwrap_or_default();
-        next_index
+        if let Err(error) = crate::cache::save_system(&self.cache_dir, id, &cache) {
+            return Some(format!("{name}: {error}"));
+        }
+        let index = self.index.get_or_insert_with(crate::cache::Index::new);
+        index
             .systems
             .insert(id.to_string(), cache.summary(&browse::start_for(&config)));
-        let warnings =
-            match crate::cache::save_system_with_index(&self.cache_dir, id, &cache, &next_index) {
-                Ok(warnings) => warnings,
-                Err(error) => return Some(format!("{name}: {error}")),
-            };
-        self.index = Some(next_index);
+        let error = crate::cache::save_index(&self.cache_dir, index)
+            .err()
+            .map(|error| format!("{name}: cache index not written: {error}"));
         self.apply_index();
-        let error = (!warnings.is_empty()).then(|| warnings.join("\n"));
         if let Some(build) = self.build.as_mut() {
             // A build runs a system per frame with the controls still
             // live, and what it finishes with replaces the index outright.
@@ -4166,6 +4184,10 @@ impl App {
         // nothing when nothing is hidden.
         self.correct_system_counts();
         self.rebuild_system_list();
+        crate::note(&format!(
+            "index refresh {id}: {}ms",
+            started.elapsed().as_millis()
+        ));
         error
     }
 
@@ -5323,7 +5345,12 @@ impl App {
     fn start_build(&mut self, forced: bool) {
         // One at a time. Replacing a build in flight would lose its progress;
         // the existing progress message already explains the active work.
-        if self.build.is_some() || self.source_job.is_some() || self.refreshing.is_some() {
+        if self.build.is_some()
+            || self.source_job.is_some()
+            || self.refreshing.is_some()
+            || self.scraper_job.is_some()
+            || self.scraper_cache_refresh_active
+        {
             return;
         }
         if self.provider_job.is_some() {
@@ -5365,20 +5392,94 @@ impl App {
             total,
             index,
             forced,
+            job: None,
+            current_id: String::new(),
+            current_name: String::new(),
+            cancelling: false,
+            started: Instant::now(),
         });
+        crate::note(&format!(
+            "index all    starting {total} systems, forced={forced}"
+        ));
         // Not shown yet: it goes up when the reading starts, which is
         // after the wordmark has had its moment.
         self.dirty = true;
     }
 
-    /// Read one system into the cache, and say so on screen.
+    /// Poll the active system, or dispatch the next one without blocking UI.
     fn build_one_system(&mut self) {
+        for _ in 0..4 {
+            let event = self
+                .build
+                .as_mut()
+                .and_then(|build| build.job.as_mut())
+                .and_then(crate::index_job::Job::try_recv);
+            let Some(event) = event else {
+                break;
+            };
+            let build = self.build.as_mut().expect("active index worker");
+            if let crate::index_job::Event::Progress { folders, games } = event {
+                if !build.cancelling {
+                    self.message = Some(format!(
+                        "Indexing all systems\n{}   {} of {}\n{folders} folders, {games} games\nB Cancel",
+                        build.current_name, build.done, build.total,
+                    ));
+                    self.dirty = true;
+                }
+                continue;
+            }
+            build.job = None;
+            let result = match event {
+                crate::index_job::Event::Ready { summary } => {
+                    // A completed write wins a cancellation that arrived
+                    // during publication: retain its matching summary.
+                    if let Some(summary) = summary {
+                        build
+                            .index
+                            .systems
+                            .insert(build.current_id.clone(), summary);
+                    }
+                    Ok(())
+                }
+                crate::index_job::Event::Failed(error) => Err(error),
+                crate::index_job::Event::Cancelled => {
+                    build.cancelling = true;
+                    build.left.clear();
+                    self.source_recovery_queue.clear();
+                    Ok(())
+                }
+                crate::index_job::Event::Progress { .. } => unreachable!(),
+            };
+            let message = match result {
+                Ok(()) => None,
+                Err(error) => Some(format!("{}: {error}", build.current_name)),
+            };
+            if let Some(message) = message {
+                crate::note(&message);
+                self.message_after_build = Some(match self.message_after_build.take() {
+                    Some(previous) => format!("{previous}\n{message}"),
+                    None => message,
+                });
+            }
+            break;
+        }
         let Some(build) = self.build.as_mut() else {
             return;
         };
+        if build.job.is_some() {
+            return;
+        }
         let Some(index) = build.left.pop() else {
             // Done: write the index down and use it.
             let finished = self.build.take().expect("just checked");
+            let cancelled = finished.cancelling;
+            crate::note(&format!(
+                "index all    {} after {}ms, {} of {} systems visited",
+                if cancelled { "cancelled" } else { "finished" },
+                finished.started.elapsed().as_millis(),
+                finished.done,
+                finished.total,
+            ));
             let index = finished.index;
             if let Err(e) = crate::cache::save_index(&self.cache_dir, &index) {
                 let message = format!("cache index not written: {e}");
@@ -5398,7 +5499,7 @@ impl App {
             // build goes up in its place. Only set when the open system
             // vanished, in which case the re-listing below has nothing
             // to do, so the two never fight over the field.
-            self.message = self.message_after_build.take();
+            self.last_input = Instant::now();
             // The folder on screen was listed from the cache as it was
             // before the build, and its rows keep answering from the
             // copy in memory. Both are behind the card now.
@@ -5413,7 +5514,23 @@ impl App {
                     self.relist_here();
                 }
             }
-            if self.start_next_source_recovery() {
+            self.message = self.message_after_build.take();
+            if cancelled {
+                let stopped = "Indexing cancelled. Completed systems kept.";
+                self.message = Some(match self.message.take() {
+                    Some(message) => format!("{stopped}\n{message}"),
+                    None => stopped.to_string(),
+                });
+            }
+            // Pack progress replaces the modal below. Carry earlier scan or
+            // index-write errors into its final warning state so a successful
+            // Pack group cannot turn a partial rebuild into apparent success.
+            if !cancelled && !self.source_recovery_queue.is_empty() {
+                if let Some(message) = &self.message {
+                    self.source_recovery_warnings.push(message.clone());
+                }
+            }
+            if !cancelled && self.start_next_source_recovery() {
                 self.dirty = true;
                 return;
             }
@@ -5433,69 +5550,46 @@ impl App {
         let config = system.to_config();
 
         self.message = Some(format!(
-            "Indexing all systems\n\n{name}   {done} of {total}"
+            "Indexing all systems\n{name}   {done} of {total}\nReading folders\nB Cancel"
         ));
-
-        // Already written down and not being forced: nothing to read.
-        let start = browse::start_for(&config);
         let pack = self.pack_selected(&id);
-        let summary = if pack {
-            // A Pack rebuild is completed by the cancellable group worker
-            // queued above. Keep using the previous complete cache meanwhile;
-            // never overwrite it with a partial synchronous rebuild.
-            crate::cache::load_artwork_pack_system(&self.cache_dir, &id)
-                .map(|cache| cache.summary(&start))
-        } else if !forced {
-            crate::cache::load_system(&self.cache_dir, &id).map(|cache| cache.summary(&start))
-        } else {
-            None
-        };
-        let summary = match summary {
-            Some(summary) => Some(summary),
-            None if pack => None,
-            None => {
-                let built = (|| -> Result<(crate::cache::Summary, Vec<String>)> {
-                    let library = Library::open_with_names(&config, self.names.clone())?;
-                    let cache = crate::cache::build_system_checked(&library)?;
-                    let summary = cache.summary(&start);
-                    let mut next_index = self.build.as_ref().expect("active build").index.clone();
-                    next_index.systems.insert(id.clone(), summary);
-                    let warnings = crate::cache::save_system_with_index(
-                        &self.cache_dir,
-                        &id,
-                        &cache,
-                        &next_index,
-                    )?;
-                    Ok((summary, warnings))
-                })();
-                match built {
-                    Ok((summary, warnings)) => {
-                        if !warnings.is_empty() {
-                            let message = warnings.join("\n");
-                            self.message_after_build =
-                                Some(match self.message_after_build.take() {
-                                    Some(previous) => format!("{previous}\n{message}"),
-                                    None => message,
-                                });
-                        }
-                        Some(summary)
-                    }
-                    Err(error) => {
-                        let message = format!("{name}: {error}");
-                        crate::note(&message);
-                        self.message_after_build = Some(match self.message_after_build.take() {
-                            Some(previous) => format!("{previous}\n{message}"),
-                            None => message,
-                        });
-                        None
-                    }
-                }
+        let build = self.build.as_mut().expect("active build");
+        build.current_id = id.clone();
+        build.current_name = name.clone();
+        match crate::index_job::start(crate::index_job::Request {
+            id,
+            config,
+            names: self.names.clone(),
+            cache_dir: self.cache_dir.clone(),
+            forced,
+            artwork_pack: pack,
+        }) {
+            Ok(job) => build.job = Some(job),
+            Err(error) => {
+                let message = format!("{name}: {error}");
+                crate::note(&message);
+                self.message_after_build = Some(match self.message_after_build.take() {
+                    Some(previous) => format!("{previous}\n{message}"),
+                    None => message,
+                });
             }
-        };
-        if let (Some(build), Some(summary)) = (self.build.as_mut(), summary) {
-            build.index.systems.insert(id, summary);
         }
 
+        self.dirty = true;
+    }
+
+    fn cancel_build(&mut self) {
+        let Some(build) = self.build.as_mut() else {
+            return;
+        };
+        build.cancelling = true;
+        build.left.clear();
+        self.source_recovery_queue.clear();
+        if let Some(job) = &build.job {
+            job.cancel();
+        }
+        self.message =
+            Some("Stopping indexing safely...\nCompleted systems will be kept.".to_string());
         self.dirty = true;
     }
 
@@ -7869,13 +7963,14 @@ impl App {
                     if cancelled {
                         self.source_recovery_queue.clear();
                         self.message = Some(format!(
-                            "System-list rebuild finished, but the Artwork Pack cache refresh for {name} was cancelled. The previous complete cache remains in use."
+                            "Artwork Pack cache refresh for {name} was cancelled. The previous complete cache remains in use.{}",
+                            if self.source_recovery_warnings.is_empty() { "" } else { "\nEarlier indexing warnings: see degauss.log." },
                         ));
                     } else if error.is_some() {
                         self.source_recovery_warnings.push(name.clone());
                         if !self.start_next_source_recovery() {
                             self.message = Some(
-                                "Library rebuilt; some Pack caches were kept.\nSee degauss.log for details."
+                                "Library rebuild has warnings; previous caches were kept where needed.\nSee degauss.log for details."
                                     .to_string(),
                             );
                         }
@@ -8050,7 +8145,7 @@ impl App {
                     self.message = Some(if self.source_recovery_warnings.is_empty() {
                         "Library rebuild complete.".to_string()
                     } else {
-                        "Library rebuild complete with storage warnings.\nSee degauss.log for details."
+                        "Library rebuild finished with warnings.\nSee degauss.log for details."
                             .to_string()
                     });
                 }
@@ -9350,6 +9445,14 @@ impl App {
             self.leave_splash();
             return None;
         }
+        // Indexing owns the cache writer until its worker stops. Keep input
+        // responsive without allowing a launch or another writer to race it.
+        if self.build.is_some() {
+            if action == Action::Quit {
+                self.cancel_build();
+            }
+            return None;
+        }
         if self.screen == Screen::ThemeEditor {
             self.handle_theme_editor(action);
             return None;
@@ -10641,20 +10744,7 @@ impl App {
             }
 
             // Left alone for long enough, show pictures instead.
-            let idle = self.screensaver_after();
-            if idle > 0
-                && !matches!(
-                    self.screen,
-                    Screen::Screensaver
-                        | Screen::Splash
-                        | Screen::ScraperProgress
-                        | Screen::ScraperMatches
-                        | Screen::SourceProgress
-                )
-                && !(self.screen == Screen::ScraperKeyboard
-                    && self.scraper_keyboard_field == ScraperField::SearchTerm)
-                && now.duration_since(self.last_input) >= Duration::from_secs(idle)
-            {
+            if self.should_start_screensaver(now) {
                 self.enter_screensaver();
             }
             if self.screen == Screen::Screensaver {
@@ -10753,7 +10843,7 @@ impl App {
                 }
                 self.dirty = true;
             }
-            // One system per frame, so the count on screen keeps moving.
+            // Poll the system worker after presenting the current progress.
             // After the wordmark, not over it: the first thing anybody sees
             // should be the thing they started, not a progress message.
             if self.build.is_some() && first_frame_done && self.screen != Screen::Splash {
@@ -11039,6 +11129,7 @@ impl App {
         loop {
             if self.build.is_some() {
                 self.build_one_system();
+                std::thread::sleep(Duration::from_millis(1));
                 continue;
             }
             self.poll_source_cache();
@@ -11480,6 +11571,74 @@ pub(crate) fn test_library_launch_flow(window: Rc<MinimalSoftwareWindow>) {
     let ui = DegaussWindow::new().unwrap();
     let mut app = App::new(loaded, window, ui, StartupTimings::default(), 352, 240);
     app.open_system_by_index(0);
+    assert!(
+        app.build.is_none(),
+        "headless entry waits for initial indexing"
+    );
+    app.set_screen(Screen::Browse);
+    app.settings.screensaver_after = Some(1);
+    app.last_input = Instant::now() - Duration::from_secs(3);
+    assert!(app.should_start_screensaver(Instant::now()));
+    app.start_build(true);
+    assert!(
+        !app.should_start_screensaver(Instant::now()),
+        "indexing must suppress the screensaver even after its idle deadline"
+    );
+    app.build_one_system();
+    assert!(
+        app.build.as_ref().unwrap().job.is_some(),
+        "a system read must be dispatched instead of blocking the UI"
+    );
+    let previous_screen = app.screen;
+    assert!(
+        app.handle(Action::Accept).is_none(),
+        "launch input cannot race the index writer"
+    );
+    assert_eq!(app.screen, previous_screen);
+    app.handle(Action::Quit);
+    assert!(
+        app.build.as_ref().unwrap().cancelling,
+        "B reaches cancellation while the worker is running"
+    );
+    app.finish_background_work_for_headless();
+    assert!(app.build.is_none());
+    assert!(app.message.as_ref().unwrap().contains("Indexing cancelled"));
+    assert!(
+        !app.should_start_screensaver(Instant::now()),
+        "completion resets the idle deadline"
+    );
+    app.start_build(true);
+    app.finish_background_work_for_headless();
+    assert_eq!(app.index.as_ref().unwrap().systems["NES"].games, 2);
+    assert_eq!(
+        crate::cache::load_index(&app.cache_dir).unwrap().systems["NES"].games,
+        2
+    );
+    let previous_cache = std::fs::read(crate::cache::system_path(&app.cache_dir, "NES")).unwrap();
+    let previous_index = std::fs::read(crate::cache::index_path(&app.cache_dir)).unwrap();
+    let valid_archive = std::fs::read(&archive).unwrap();
+    std::fs::write(&archive, b"invalid ZIP fixture").unwrap();
+    app.start_build(true);
+    app.finish_background_work_for_headless();
+    assert_eq!(
+        std::fs::read(crate::cache::system_path(&app.cache_dir, "NES")).unwrap(),
+        previous_cache,
+        "a failed ZIP scan must not replace the last complete system cache"
+    );
+    assert_eq!(
+        std::fs::read(crate::cache::index_path(&app.cache_dir)).unwrap(),
+        previous_index,
+        "a failed system must retain its old summary in the final index"
+    );
+    assert!(
+        app.message
+            .as_ref()
+            .is_some_and(|message| message.to_ascii_lowercase().contains("zip")),
+        "a failed scan must remain visible after relisting the open system"
+    );
+    std::fs::write(&archive, valid_archive).unwrap();
+    app.settings.screensaver_after = None;
+    app.message = None;
     let rules = std::mem::take(&mut app.all_systems[0].def.launch);
     assert_eq!(
         app.core_system_id().as_deref(),
@@ -11514,6 +11673,41 @@ pub(crate) fn test_library_launch_flow(window: Rc<MinimalSoftwareWindow>) {
         _ => panic!("expected launch outcome"),
     };
     assert!(mgl(&mut app).contains("<rbf>_Console/NES</rbf>"));
+    let favorites_root = app.favorites_root();
+    std::fs::create_dir_all(&favorites_root).unwrap();
+    let mut favorites_def = table
+        .iter()
+        .find(|system| system.id == "Favorites")
+        .unwrap()
+        .clone();
+    favorites_def.folders = vec![favorites_root.to_string_lossy().into_owned()];
+    app.all_systems.push(FoundSystem {
+        def: favorites_def,
+        paths: vec![favorites_root],
+        logo_dir: None,
+        menu_folder: None,
+    });
+    let ordinary_cache = std::fs::read(crate::cache::system_path(&app.cache_dir, "NES")).unwrap();
+    app.add_favorite_in("Test");
+    assert_eq!(app.favorites.len(), 1);
+    assert_eq!(
+        crate::cache::load_index(&app.cache_dir).unwrap().systems["Favorites"].games,
+        1,
+        "adding a favourite must refresh its persisted summary immediately"
+    );
+    assert!(crate::cache::load_system(&app.cache_dir, "Favorites").is_some());
+    app.remove_favorite();
+    assert_eq!(app.favorites.len(), 0);
+    assert_eq!(
+        crate::cache::load_index(&app.cache_dir).unwrap().systems["Favorites"].games,
+        0,
+        "removing a favourite must refresh its persisted summary immediately"
+    );
+    assert_eq!(
+        std::fs::read(crate::cache::system_path(&app.cache_dir, "NES")).unwrap(),
+        ordinary_cache,
+        "favourite changes must not rebuild the source system cache"
+    );
     app.open_context();
     assert!(app.menu.iter().any(|row| row == CORE_VERSION));
     app.menu_list

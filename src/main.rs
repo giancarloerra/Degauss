@@ -21,6 +21,7 @@ mod error;
 mod favorites;
 mod font;
 mod gamelist;
+mod index_job;
 mod input;
 mod launch;
 mod list_state;

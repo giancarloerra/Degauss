@@ -208,7 +208,7 @@ impl OptionId {
                 "Whether a random pick starts the game, or only moves to it so you can look first."
             }
             OptionId::RebuildCache => {
-                "Press A to read the card again after adding games, cores or artwork."
+                "Press A to read the card again after adding games, cores or artwork. B cancels; completed systems are kept."
             }
             OptionId::ScrapeAll => {
                 "Press A to open ScreenScraper settings for every supported system."

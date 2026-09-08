@@ -240,7 +240,6 @@ pub fn save_index(dir: &Path, index: &Index) -> Result<()> {
     write(&index_path(dir), &bytes)
 }
 
-#[cfg(test)]
 pub fn save_system(dir: &Path, id: &str, cache: &SystemCache) -> Result<()> {
     let bytes = postcard::to_stdvec(cache)
         .map_err(|e| DegaussError::unsupported("cache", format!("writing {id}: {e}")))?;
@@ -751,6 +750,7 @@ pub fn install_transactional(
 }
 
 /// Commit a complete system scan and its summary together.
+#[cfg(test)]
 pub fn save_system_with_index(
     dir: &Path,
     id: &str,
