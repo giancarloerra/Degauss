@@ -145,6 +145,8 @@ fn walk_nightlies(
 /// Main's MGL loader chooses the greatest original filename among
 /// case-insensitive stem-prefix matches followed by '.' or '_'. Validate
 /// that its native lookup will select the exact saved choice.
+/// Contract: Degauss-Main f8dc68e3dcf4694f5593e6552aea56cd852982af,
+/// support/arcade/mra_loader.cpp::get_rbf (case-insensitive match, strcmp winner).
 fn validate_native_choice(actual: &Path) -> Result<()> {
     let directory = actual.parent().expect("Unstable file has a parent");
     let selected = actual

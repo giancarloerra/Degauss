@@ -11397,8 +11397,21 @@ pub enum Outcome {
 /// Runs within the renderer's single installed Slint platform.
 #[cfg(test)]
 pub(crate) fn test_library_launch_flow(window: Rc<MinimalSoftwareWindow>) {
-    let root = std::env::temp_dir().join(format!("degauss-app-library-{}", std::process::id()));
-    assert!(!root.exists(), "fixture must be isolated");
+    // Atomically claim a fresh directory; a previous interrupted run may have
+    // left a fixture behind, and its contents are not ours to remove.
+    let root = (0_u64..)
+        .find_map(|attempt| {
+            let candidate = std::env::temp_dir().join(format!(
+                "degauss-app-library-{}-{attempt}",
+                std::process::id()
+            ));
+            match std::fs::create_dir(&candidate) {
+                Ok(()) => Some(candidate),
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => None,
+                Err(error) => panic!("creating isolated fixture: {error}"),
+            }
+        })
+        .expect("fixture directory counter exhausted");
     for folder in ["games/NES", "_Console", "_RA_Cores/Cores", "_Unstable"] {
         std::fs::create_dir_all(root.join(folder)).unwrap();
     }

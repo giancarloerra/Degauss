@@ -218,7 +218,9 @@ jobs:
           assert db["files"], "no files"
           for name in ("MiSTer_RA_Degauss", "MiSTer_RA_Degauss.cacert.pem", "MiSTer_RA_Degauss.SOURCE.txt"):
               assert "degauss/" + name in db["files"], name
-          assert "MiSTer_RA" not in db["files"], "must not overwrite upstream RA Main"
+          import posixpath
+          upstream = [p for p in db["files"] if posixpath.basename(p) == "MiSTer_RA"]
+          assert not upstream, ("must not overwrite upstream RA Main", upstream)
           for path, entry in db["files"].items():
               for field in ("hash", "size", "url"):
                   assert field in entry, (path, field)

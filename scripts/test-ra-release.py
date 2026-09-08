@@ -18,6 +18,16 @@ spec.loader.exec_module(package_ra)
 
 
 class ReleaseTests(unittest.TestCase):
+    def test_workflow_rejects_upstream_ra_at_any_card_path(self):
+        workflow = (ROOT / '.github/workflows/release.yml').read_text()
+        start = workflow.index('          import posixpath\n')
+        end = workflow.index('          for path, entry', start)
+        guard = '\n'.join(line[10:] for line in workflow[start:end].splitlines())
+        exec(guard, {'db': {'files': {'degauss/MiSTer_RA_Degauss': {}}}})
+        for path in ('MiSTer_RA', 'degauss/MiSTer_RA', 'nested/core/MiSTer_RA'):
+            with self.subTest(path=path), self.assertRaisesRegex(AssertionError, 'must not overwrite upstream RA Main'):
+                exec(guard, {'db': {'files': {path: {}}}})
+
     def test_database_preserves_legacy_and_adds_separate_ra_assets(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
