@@ -13,18 +13,20 @@ permissions:
   contents: write
 
 jobs:
-  # The MiSTer Main fork. Debian bullseye on purpose: it carries glibc 2.31,
-  # which is what the MiSTer rootfs has. A newer distribution links against
-  # symbols the device does not have and the binary refuses to start.
+  # A maintained Bookworm host with Bullseye's GCC 10 / glibc 2.31 ARM
+  # sysroot, matching the RA Main builder and the MiSTer target ABI.
   main-fork:
     runs-on: ubuntu-latest
-    container: debian:bullseye
+    container: debian:bookworm
     steps:
       - name: Install the cross toolchain
         run: |
+          printf 'deb http://deb.debian.org/debian bullseye main\n' > /etc/apt/sources.list.d/bullseye.list
+          printf 'Package: *\nPin: release n=bullseye\nPin-Priority: 1\n\nPackage: *-armhf-cross\nPin: release n=bullseye\nPin-Priority: 990\n' > /etc/apt/preferences.d/mister-target
           apt-get update
           apt-get install -y --no-install-recommends \
-            crossbuild-essential-armhf make ca-certificates git
+            gcc-10-arm-linux-gnueabihf g++-10-arm-linux-gnueabihf \
+            binutils-arm-linux-gnueabihf make ca-certificates git file
 
       - name: Check out the fork
         uses: actions/checkout@v5
@@ -52,7 +54,7 @@ jobs:
         # take that dead branch, so the architecture is stated here.
         run: |
           make BASE=arm-linux-gnueabihf \
-            CC="arm-linux-gnueabihf-gcc -mcpu=cortex-a9 -mfpu=neon -mfloat-abi=hard"
+            CC="arm-linux-gnueabihf-gcc-10 -mcpu=cortex-a9 -mfpu=neon -mfloat-abi=hard"
           # The Makefile writes into bin/, not the working directory.
           mv bin/MiSTer MiSTer_Degauss
 
