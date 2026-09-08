@@ -2316,6 +2316,16 @@ fn theme_editor_visible_items(mode: EditorMode, total: usize, browse_visible: us
     }
 }
 
+fn initial_present_mode(
+    saved: Option<&str>,
+    default: PresentMode,
+    explicit: Option<PresentMode>,
+) -> PresentMode {
+    explicit
+        .or_else(|| saved.and_then(PresentMode::parse))
+        .unwrap_or(default)
+}
+
 fn resolved_font(setting: Option<&str>, configured: &str) -> Font {
     setting
         .and_then(Font::parse)
@@ -10521,11 +10531,22 @@ impl App {
         )
     }
 
-    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
-    /// The drawing path the settings asked for, so the presenter can be put
-    /// into it before the first frame.
+    #[allow(dead_code)]
+    /// The effective drawing path, including any runtime default or override.
     pub fn present_mode(&self) -> PresentMode {
         PresentMode::parse(self.present_label).unwrap_or(PresentMode::Direct)
+    }
+
+    /// Resolve startup presentation without persisting an implicit device default.
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    pub fn initialize_presentation(
+        &mut self,
+        default: PresentMode,
+        explicit: Option<PresentMode>,
+    ) -> PresentMode {
+        let mode = initial_present_mode(self.settings.present.as_deref(), default, explicit);
+        self.present_label = mode.label();
+        mode
     }
 
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
@@ -11601,6 +11622,37 @@ mod tests {
         std::fs::remove_dir_all(&path).ok();
         std::fs::create_dir_all(&path).unwrap();
         path
+    }
+
+    #[test]
+    fn presentation_startup_preserves_explicit_and_saved_choices() {
+        for default in [PresentMode::Direct, PresentMode::Staged] {
+            assert_eq!(initial_present_mode(None, default, None), default);
+            assert_eq!(
+                initial_present_mode(Some("invalid"), default, None),
+                default
+            );
+            for saved in [PresentMode::Direct, PresentMode::Staged] {
+                assert_eq!(
+                    initial_present_mode(Some(saved.label()), default, None),
+                    saved
+                );
+                for explicit in [PresentMode::Direct, PresentMode::Staged] {
+                    assert_eq!(
+                        initial_present_mode(Some(saved.label()), default, Some(explicit)),
+                        explicit
+                    );
+                    assert_eq!(
+                        initial_present_mode(None, default, Some(explicit)),
+                        explicit
+                    );
+                    assert_eq!(
+                        initial_present_mode(Some("invalid"), default, Some(explicit)),
+                        explicit
+                    );
+                }
+            }
+        }
     }
 
     #[test]

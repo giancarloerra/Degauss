@@ -15,6 +15,12 @@ Normal startup records the mapping source in `/tmp/degauss.log`. The existing
 `--selftest` records it in `/tmp/degauss-selftest.log`. No new setting, Main
 replacement, cache rebuild or settings reset is required for this fix.
 
+When no valid presentation setting or explicit `--present` argument is supplied,
+physical `/dev/mem` mapping uses staged rendering. Native fbdev mapping keeps its
+existing direct default. Saved settings override this default; `--present`
+overrides both. The Options label follows the selected mode, and the runtime
+default is not written to settings.
+
 ## Acceptance checks
 
 Use an isolated library containing a few known-working games. Preserve the
@@ -29,7 +35,12 @@ Kernel installation and reboot require separate device authorization.
    and inspect both direct and staged presentation, including their timings.
 3. On Linux 6.18, independently confirm native mapping returns `ENODEV`.
    Repeat the same launch, rendering, input, return and self-test checks;
-   confirm the diagnostic identifies the `/dev/mem` mapping.
+   confirm the diagnostic identifies the `/dev/mem` mapping. With no saved
+   presentation mode, confirm normal startup uses staged presentation and its
+   Options label agrees. Check saved direct/staged settings and explicit
+   `--present direct` / `--present staged` precedence, including restart; no
+   implicit default should be added to the settings file. On native fbdev,
+   absent settings must continue to select direct presentation.
 4. Exercise each connected output and geometry. Record which pixel format
    the driver actually reports. Host format tests do not establish an
    unavailable physical RGB565 or CRT output.

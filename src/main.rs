@@ -95,7 +95,7 @@ degauss - a fast game browser for MiSTer FPGA
   --geometry <WxH>    geometry for --render and --bench
   --format <fmt>      rgb565 or xrgb8888, for --render and --bench
   --device <path>     framebuffer device (default /dev/fb0)
-  --present <mode>    direct (default) or staged
+  --present <mode>    direct or staged (default depends on framebuffer mapping)
   --help              this text
 
 With no flags it takes over the framebuffer and browses.
@@ -107,6 +107,15 @@ With no flags it takes over the framebuffer and browses.
   tab           this folder: random, favourites, letter, search, view
   space         menu: options, help, about, exit
 ";
+
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn default_present_mode(mapping_source: &str) -> PresentMode {
+    if mapping_source == "/dev/mem fallback" {
+        PresentMode::Staged
+    } else {
+        PresentMode::Direct
+    }
+}
 
 fn main() -> ExitCode {
     // The release build aborts on panic, which skips destructors, so the
@@ -1327,8 +1336,11 @@ fn run_on_framebuffer(
     };
     let mut terminal = input::TerminalGuard::acquire()?;
 
-    // The flag wins if it was given; otherwise the saved setting does.
-    let mut presenter = Presenter::new(geometry, args.present.unwrap_or(app.present_mode()));
+    // Physical framebuffer memory favours staged rendering. Explicit choices
+    // still win, and this runtime default never changes the saved settings.
+    let default = default_present_mode(framebuffer.mapping_source());
+    let mode = app.initialize_presentation(default, args.present);
+    let mut presenter = Presenter::new(geometry, mode);
     let outcome = app.run(&mut framebuffer, &mut input, &mut presenter);
 
     terminal.restore();
@@ -1720,6 +1732,15 @@ category = "Favorites"
                 }
             })
             .collect()
+    }
+
+    #[test]
+    fn physical_mapping_defaults_to_staged_and_native_keeps_direct() {
+        assert_eq!(
+            default_present_mode("/dev/mem fallback"),
+            PresentMode::Staged
+        );
+        assert_eq!(default_present_mode("fbdev"), PresentMode::Direct);
     }
 
     #[test]

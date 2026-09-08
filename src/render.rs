@@ -141,7 +141,7 @@ pub enum PresentMode {
     ///
     /// One extra copy, but every blend read hits cache and an unchanged
     /// screen copies nothing at all. The right answer on hardware whose
-    /// framebuffer reads are slow; on this one it is not the default.
+    /// framebuffer reads are slow; selected by default for physical /dev/mem mappings.
     Staged,
 }
 
