@@ -1134,6 +1134,7 @@ fn selftest(loaded: Loaded, args: Args, chosen: usize, frames: u32) -> Result<()
     app.open_system_by_index(chosen);
 
     let mut log = String::new();
+    let _ = writeln!(log, "mapping      {}", framebuffer.mapping_source());
     let _ = writeln!(
         log,
         "framebuffer  {} {}x{} {:?} stride {}",
@@ -1233,6 +1234,7 @@ fn run_on_framebuffer(
     let vsync = framebuffer.wait_for_vsync()?;
 
     note(&format!("degauss      {}", build_description()));
+    note(&format!("mapping      {}", framebuffer.mapping_source()));
     note(&format!(
         "framebuffer  {} {}x{} {:?} stride {}",
         args.device.display(),

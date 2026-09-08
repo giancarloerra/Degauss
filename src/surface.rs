@@ -184,6 +184,7 @@ pub use linux::Framebuffer;
 mod linux {
     use std::fs::{File, OpenOptions};
     use std::os::fd::AsRawFd;
+    use std::os::unix::fs::OpenOptionsExt;
     use std::path::Path;
 
     use super::{Geometry, PixelFormat, Surface};
@@ -267,11 +268,191 @@ mod linux {
         }
     }
 
+    fn checked_geometry(var: &FbVarScreeninfo, fix: &FbFixScreeninfo) -> Result<(Geometry, usize)> {
+        let format = match var.bits_per_pixel {
+            16 => PixelFormat::Rgb565,
+            32 => PixelFormat::Xrgb8888,
+            other => {
+                return Err(DegaussError::unsupported(
+                    "framebuffer pixel format",
+                    format!("{other} bits per pixel (only 16 and 32 are handled)"),
+                ))
+            }
+        };
+
+        // Channel order is checked, not assumed: a 16bpp surface that is
+        // actually BGR565 would render with red and blue swapped.
+        let (r_off, g_off, b_off) = (var.red.offset, var.green.offset, var.blue.offset);
+        let expected = match format {
+            PixelFormat::Rgb565 => (11, 5, 0),
+            PixelFormat::Xrgb8888 => (16, 8, 0),
+        };
+        if (r_off, g_off, b_off) != expected {
+            return Err(DegaussError::unsupported(
+                "framebuffer channel order",
+                format!(
+                    "red/green/blue offsets {r_off}/{g_off}/{b_off}, expected {}/{}/{}",
+                    expected.0, expected.1, expected.2
+                ),
+            ));
+        }
+
+        let geometry = Geometry {
+            width: var.xres,
+            height: var.yres,
+            line_length: fix.line_length as usize,
+            format,
+        };
+        if geometry.width == 0 || geometry.height == 0 || geometry.line_length == 0 {
+            return Err(DegaussError::unsupported(
+                "framebuffer geometry",
+                format!(
+                    "{}x{} line_length {}",
+                    geometry.width, geometry.height, geometry.line_length
+                ),
+            ));
+        }
+
+        // A row must fit the stride the driver reports, or every write
+        // past the row's width lands in the next line.
+        let row_bytes = (geometry.width as usize)
+            .checked_mul(geometry.format.bytes_per_pixel())
+            .ok_or_else(|| {
+                DegaussError::unsupported("framebuffer geometry", "row size overflow")
+            })?;
+        if geometry.line_length < row_bytes {
+            return Err(DegaussError::unsupported(
+                "framebuffer geometry",
+                format!(
+                    "line_length {} is shorter than a {}px row of {} bytes",
+                    geometry.line_length, geometry.width, row_bytes
+                ),
+            ));
+        }
+
+        // One visible frame is all this driver ever exposes, and the
+        // driver has to actually have that much: mapping more than it
+        // owns turns every later write into a SIGBUS, which on this
+        // machine is the menu disappearing.
+        let map_len = geometry
+            .line_length
+            .checked_mul(geometry.height as usize)
+            .filter(|len| *len <= isize::MAX as usize)
+            .ok_or_else(|| {
+                DegaussError::unsupported("framebuffer memory", "frame size overflow")
+            })?;
+        if (fix.smem_len as usize) < map_len {
+            return Err(DegaussError::unsupported(
+                "framebuffer memory",
+                format!(
+                    "driver reports {} bytes, a {}x{} frame needs {map_len}",
+                    fix.smem_len, geometry.width, geometry.height
+                ),
+            ));
+        }
+        Ok((geometry, map_len))
+    }
+
+    #[derive(Debug, PartialEq, Eq)]
+    struct PhysicalRange {
+        base: u64,
+        delta: usize,
+        len: usize,
+    }
+
+    fn physical_range(
+        start: u64,
+        available: usize,
+        requested: usize,
+        page_size: usize,
+        pixel_bytes: usize,
+    ) -> Result<PhysicalRange> {
+        let invalid = || {
+            DegaussError::unsupported(
+                "framebuffer /dev/mem fallback after fbdev ENODEV",
+                "invalid or overflowing physical framebuffer range",
+            )
+        };
+        if start == 0 || requested == 0 || requested > available || !page_size.is_power_of_two() {
+            return Err(invalid());
+        }
+        if !matches!(pixel_bytes, 2 | 4) || !start.is_multiple_of(pixel_bytes as u64) {
+            return Err(DegaussError::unsupported(
+                "framebuffer /dev/mem fallback after fbdev ENODEV",
+                format!("physical framebuffer address is not aligned to {pixel_bytes}-byte pixels"),
+            ));
+        }
+        start.checked_add(available as u64).ok_or_else(invalid)?;
+        let delta = (start % page_size as u64) as usize;
+        let base = start - delta as u64;
+        let len = requested
+            .checked_add(delta)
+            .filter(|len| *len <= isize::MAX as usize)
+            .ok_or_else(invalid)?;
+        // Linux rounds mmap's length up to full pages. Check that rounding
+        // cannot overflow; the extra tail is only the page containing the
+        // requested framebuffer end, as on the native fbdev mapping.
+        let page_span = len.checked_add(page_size - 1).ok_or_else(invalid)? & !(page_size - 1);
+        base.checked_add(page_span as u64).ok_or_else(invalid)?;
+        // mmap64 accepts a signed offset even on 32-bit ARM.
+        i64::try_from(base).map_err(|_| invalid())?;
+        Ok(PhysicalRange { base, delta, len })
+    }
+
+    fn fallback_error(framebuffer: &Path, operation: &str, error: std::io::Error) -> DegaussError {
+        DegaussError::io(
+            "mapping framebuffer after fbdev ENODEV",
+            Path::new("/dev/mem"),
+            std::io::Error::new(
+                error.kind(),
+                format!(
+                    "{} returned ENODEV; {operation}: {error}",
+                    framebuffer.display()
+                ),
+            ),
+        )
+    }
+
+    fn with_enodev_fallback<T>(
+        native: std::io::Result<T>,
+        path: &Path,
+        fallback: impl FnOnce() -> Result<T>,
+    ) -> Result<T> {
+        match native {
+            Ok(mapping) => Ok(mapping),
+            Err(error) if error.raw_os_error() == Some(libc::ENODEV) => fallback(),
+            Err(error) => Err(DegaussError::io("mapping framebuffer", path, error)),
+        }
+    }
+
+    fn map_device(file: &File, len: usize, offset: u64) -> std::io::Result<*mut libc::c_void> {
+        // SAFETY: length and physical offset are validated before fallback;
+        // the native mapping uses the checked visible-frame length and offset zero.
+        let map = unsafe {
+            libc::mmap64(
+                std::ptr::null_mut(),
+                len,
+                libc::PROT_READ | libc::PROT_WRITE,
+                libc::MAP_SHARED,
+                file.as_raw_fd(),
+                offset as libc::off64_t,
+            )
+        };
+        if map == libc::MAP_FAILED {
+            // Capture errno before any other syscall can change it.
+            Err(std::io::Error::last_os_error())
+        } else {
+            Ok(map)
+        }
+    }
+
     /// The real framebuffer device.
     pub struct Framebuffer {
         file: File,
         map: *mut libc::c_void,
         map_len: usize,
+        pixel_offset: usize,
+        mapping_source: &'static str,
         geometry: Geometry,
     }
 
@@ -279,6 +460,10 @@ mod linux {
     unsafe impl Send for Framebuffer {}
 
     impl Framebuffer {
+        pub fn mapping_source(&self) -> &'static str {
+            self.mapping_source
+        }
+
         pub fn open(path: &Path) -> Result<Self> {
             let file = OpenOptions::new()
                 .read(true)
@@ -302,101 +487,36 @@ mod linux {
                 ));
             }
 
-            let format = match var.bits_per_pixel {
-                16 => PixelFormat::Rgb565,
-                32 => PixelFormat::Xrgb8888,
-                other => {
-                    return Err(DegaussError::unsupported(
-                        "framebuffer pixel format",
-                        format!("{other} bits per pixel (only 16 and 32 are handled)"),
-                    ))
-                }
-            };
-
-            // Channel order is checked, not assumed: a 16bpp surface that is
-            // actually BGR565 would render with red and blue swapped.
-            let (r_off, g_off, b_off) = (var.red.offset, var.green.offset, var.blue.offset);
-            let expected = match format {
-                PixelFormat::Rgb565 => (11, 5, 0),
-                PixelFormat::Xrgb8888 => (16, 8, 0),
-            };
-            if (r_off, g_off, b_off) != expected {
-                return Err(DegaussError::unsupported(
-                    "framebuffer channel order",
-                    format!(
-                        "red/green/blue offsets {r_off}/{g_off}/{b_off}, expected {}/{}/{}",
-                        expected.0, expected.1, expected.2
-                    ),
-                ));
-            }
-
-            let geometry = Geometry {
-                width: var.xres,
-                height: var.yres,
-                line_length: fix.line_length as usize,
-                format,
-            };
-            if geometry.width == 0 || geometry.height == 0 || geometry.line_length == 0 {
-                return Err(DegaussError::unsupported(
-                    "framebuffer geometry",
-                    format!(
-                        "{}x{} line_length {}",
-                        geometry.width, geometry.height, geometry.line_length
-                    ),
-                ));
-            }
-
-            // A row must fit the stride the driver reports, or every write
-            // past the row's width lands in the next line.
-            let row_bytes = geometry.width as usize * geometry.format.bytes_per_pixel();
-            if geometry.line_length < row_bytes {
-                return Err(DegaussError::unsupported(
-                    "framebuffer geometry",
-                    format!(
-                        "line_length {} is shorter than a {}px row of {} bytes",
-                        geometry.line_length, geometry.width, row_bytes
-                    ),
-                ));
-            }
-
-            // One visible frame is all this driver ever exposes, and the
-            // driver has to actually have that much: mapping more than it
-            // owns turns every later write into a SIGBUS, which on this
-            // machine is the menu disappearing.
-            let map_len = geometry.frame_bytes();
-            if (fix.smem_len as usize) < map_len {
-                return Err(DegaussError::unsupported(
-                    "framebuffer memory",
-                    format!(
-                        "driver reports {} bytes, a {}x{} frame needs {map_len}",
-                        fix.smem_len, geometry.width, geometry.height
-                    ),
-                ));
-            }
-            // SAFETY: mapping the device's own memory, length taken from the
-            // driver's reported values, kept alive alongside the file.
-            let map = unsafe {
-                libc::mmap(
-                    std::ptr::null_mut(),
-                    map_len,
-                    libc::PROT_READ | libc::PROT_WRITE,
-                    libc::MAP_SHARED,
-                    file.as_raw_fd(),
-                    0,
-                )
-            };
-            if map == libc::MAP_FAILED {
-                return Err(DegaussError::io(
-                    "mapping framebuffer",
-                    path,
-                    std::io::Error::last_os_error(),
-                ));
-            }
+            let (geometry, frame_len) = checked_geometry(&var, &fix)?;
+            let native = map_device(&file, frame_len, 0);
+            let (map, map_len, pixel_offset, mapping_source) =
+                with_enodev_fallback(native.map(|map| (map, frame_len, 0, "fbdev")), path, || {
+                    let page_size = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
+                    let range = physical_range(
+                        fix.smem_start as u64,
+                        fix.smem_len as usize,
+                        frame_len,
+                        usize::try_from(page_size).unwrap_or(0),
+                        geometry.format.bytes_per_pixel(),
+                    )?;
+                    let mem_path = Path::new("/dev/mem");
+                    let memory = OpenOptions::new()
+                        .read(true)
+                        .write(true)
+                        .custom_flags(libc::O_SYNC | libc::O_CLOEXEC)
+                        .open(mem_path)
+                        .map_err(|error| fallback_error(path, "opening /dev/mem", error))?;
+                    let map = map_device(&memory, range.len, range.base)
+                        .map_err(|error| fallback_error(path, "mapping /dev/mem", error))?;
+                    Ok((map, range.len, range.delta, "/dev/mem fallback"))
+                })?;
 
             Ok(Framebuffer {
                 file,
                 map,
                 map_len,
+                pixel_offset,
+                mapping_source,
                 geometry,
             })
         }
@@ -415,7 +535,9 @@ mod linux {
             // Note this memory is WRITE-COMBINED: writes stream out cheaply
             // but reads are uncached and slow, which is why the staged
             // presentation path exists.
-            unsafe { std::slice::from_raw_parts_mut(self.map as *mut u8, len) }
+            unsafe {
+                std::slice::from_raw_parts_mut((self.map as *mut u8).add(self.pixel_offset), len)
+            }
         }
 
         fn present(&mut self) -> Result<()> {
@@ -451,6 +573,245 @@ mod linux {
             unsafe {
                 libc::munmap(self.map, self.map_len);
             }
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use std::cell::Cell;
+
+        #[test]
+        fn only_enodev_uses_the_physical_mapping() {
+            let calls = Cell::new(0);
+            let fallback = || {
+                calls.set(calls.get() + 1);
+                Ok(42)
+            };
+            assert_eq!(
+                with_enodev_fallback(Ok(7), Path::new("/dev/fb0"), fallback).unwrap(),
+                7
+            );
+            assert_eq!(calls.get(), 0);
+            for errno in [
+                libc::EACCES,
+                libc::EINVAL,
+                libc::ENOMEM,
+                libc::EIO,
+                libc::EPERM,
+            ] {
+                let error = with_enodev_fallback(
+                    Err(std::io::Error::from_raw_os_error(errno)),
+                    Path::new("/dev/fb0"),
+                    fallback,
+                )
+                .unwrap_err();
+                assert!(error
+                    .to_string()
+                    .contains(&std::io::Error::from_raw_os_error(errno).to_string()));
+            }
+            assert_eq!(calls.get(), 0);
+            assert_eq!(
+                with_enodev_fallback(
+                    Err(std::io::Error::from_raw_os_error(libc::ENODEV)),
+                    Path::new("/dev/fb0"),
+                    fallback
+                )
+                .unwrap(),
+                42
+            );
+            assert_eq!(calls.get(), 1);
+        }
+
+        #[test]
+        fn fallback_failures_name_both_device_boundaries() {
+            for operation in ["opening /dev/mem", "mapping /dev/mem"] {
+                let error = fallback_error(
+                    Path::new("/dev/fb9"),
+                    operation,
+                    std::io::Error::from_raw_os_error(libc::EACCES),
+                )
+                .to_string();
+                assert!(error.contains("/dev/fb9 returned ENODEV"));
+                assert!(error.contains(operation));
+                assert!(
+                    error.contains(&std::io::Error::from_raw_os_error(libc::EACCES).to_string())
+                );
+            }
+        }
+
+        #[test]
+        fn physical_mapping_preserves_driver_address_and_checks_bounds() {
+            assert_eq!(
+                physical_range(0x2000, 4096, 1000, 4096, 2).unwrap(),
+                PhysicalRange {
+                    base: 0x2000,
+                    delta: 0,
+                    len: 1000
+                }
+            );
+            assert_eq!(
+                physical_range(0x2082, 4096, 1000, 4096, 2).unwrap(),
+                PhysicalRange {
+                    base: 0x2000,
+                    delta: 130,
+                    len: 1130
+                }
+            );
+            for pixel_bytes in [2, 4] {
+                assert!(physical_range(0x2001, 4096, 1000, 4096, pixel_bytes).is_err());
+                assert!(physical_range(0x2084, 4096, 1000, 4096, pixel_bytes).is_ok());
+            }
+            assert!(physical_range(0x2002, 4096, 1000, 4096, 4).is_err());
+            // The queried ARM physical address may exceed a signed 32-bit offset.
+            assert_eq!(
+                physical_range(0xe0000000, 4096, 1000, 4096, 4)
+                    .unwrap()
+                    .base,
+                0xe0000000
+            );
+            for (start, available, requested, page) in [
+                (0, 4096, 1000, 4096),
+                (0x2000, 999, 1000, 4096),
+                (0x2000, 4096, 0, 4096),
+                (0x2000, 4096, 1000, 0),
+                (0x2000, 4096, 1000, 3),
+                (u64::MAX - 3, 4, 4, 4096),
+                (0x2002, usize::MAX, usize::MAX, 4096),
+                // Requested range fits u64, but the enclosing page does not.
+                (u64::MAX - 4095, 2, 2, 4096),
+                // The adjusted slice would exceed isize::MAX on either target.
+                (0x2002, isize::MAX as usize, isize::MAX as usize, 4096),
+                (1u64 << 63, 4096, 1000, 4096),
+            ] {
+                assert!(physical_range(start, available, requested, page, 2).is_err());
+            }
+        }
+
+        fn screen(format: PixelFormat) -> (FbVarScreeninfo, FbFixScreeninfo) {
+            let (bits, red, green) = match format {
+                PixelFormat::Rgb565 => (16, 11, 5),
+                PixelFormat::Xrgb8888 => (32, 16, 8),
+            };
+            let var = FbVarScreeninfo {
+                xres: 640,
+                yres: 240,
+                bits_per_pixel: bits,
+                red: FbBitfield {
+                    offset: red,
+                    ..Default::default()
+                },
+                green: FbBitfield {
+                    offset: green,
+                    ..Default::default()
+                },
+                ..Default::default()
+            };
+            let stride = 640 * format.bytes_per_pixel() as u32 + 64;
+            (
+                var,
+                FbFixScreeninfo {
+                    line_length: stride,
+                    smem_len: stride * 240,
+                    ..Default::default()
+                },
+            )
+        }
+
+        #[test]
+        fn both_pixel_formats_keep_geometry_stride_and_memory_validation() {
+            for format in [PixelFormat::Rgb565, PixelFormat::Xrgb8888] {
+                let (var, fix) = screen(format);
+                let (geometry, len) = checked_geometry(&var, &fix).unwrap();
+                assert_eq!(geometry.format, format);
+                assert_eq!(geometry.width, 640);
+                assert_eq!(len, fix.line_length as usize * 240);
+                assert!(checked_geometry(&FbVarScreeninfo { xres: 0, ..var }, &fix).is_err());
+                assert!(checked_geometry(
+                    &FbVarScreeninfo {
+                        red: FbBitfield::default(),
+                        ..var
+                    },
+                    &fix
+                )
+                .is_err());
+                assert!(checked_geometry(
+                    &FbVarScreeninfo {
+                        bits_per_pixel: 24,
+                        ..var
+                    },
+                    &fix
+                )
+                .is_err());
+                assert!(checked_geometry(
+                    &var,
+                    &FbFixScreeninfo {
+                        line_length: 1,
+                        ..fix
+                    }
+                )
+                .is_err());
+                assert!(checked_geometry(
+                    &var,
+                    &FbFixScreeninfo {
+                        smem_len: fix.smem_len - 1,
+                        ..fix
+                    }
+                )
+                .is_err());
+                assert!(checked_geometry(
+                    &FbVarScreeninfo {
+                        xres: u32::MAX,
+                        yres: u32::MAX,
+                        ..var
+                    },
+                    &fix
+                )
+                .is_err());
+            }
+        }
+
+        #[test]
+        fn adjusted_pixels_and_drop_use_different_addresses() {
+            let file = OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open("/dev/zero")
+                .unwrap();
+            let page = unsafe { libc::sysconf(libc::_SC_PAGESIZE) } as usize;
+            let map = map_device(&file, page * 2, 0).unwrap();
+            let mut fb = Framebuffer {
+                file,
+                map,
+                map_len: page * 2,
+                pixel_offset: 128,
+                mapping_source: "/dev/mem fallback",
+                geometry: Geometry {
+                    width: 2,
+                    height: 1,
+                    line_length: 8,
+                    format: PixelFormat::Xrgb8888,
+                },
+            };
+            assert_eq!(fb.mapping_source(), "/dev/mem fallback");
+            fb.back_buffer().fill(0xa5);
+            // SAFETY: both regions lie inside this live, exclusively held mapping.
+            unsafe {
+                assert_eq!(*(map as *const u8), 0);
+                assert_eq!(*((map as *const u8).add(128)), 0xa5);
+                assert_eq!(*((map as *const u8).add(136)), 0);
+            }
+            drop(fb);
+            // mincore reports ENOMEM for the now-unmapped original page range.
+            let mut residency = [0u8; 2];
+            assert_eq!(
+                unsafe { libc::mincore(map, page * 2, residency.as_mut_ptr()) },
+                -1
+            );
+            assert_eq!(
+                std::io::Error::last_os_error().raw_os_error(),
+                Some(libc::ENOMEM)
+            );
         }
     }
 }

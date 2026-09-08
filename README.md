@@ -293,6 +293,11 @@ fb_terminal=1
 
 It is enabled by default in the standard MiSTer configuration.
 
+Framebuffer access adapts automatically to MiSTer Linux 5.15 and 6.18. No
+additional setting or data migration is needed. See the
+[framebuffer compatibility checks](docs/testing/framebuffer-compatibility.md)
+for diagnostics and kernel validation.
+
 Degauss can browse the collection and launch games normally when started this way. However, after leaving a game/core, MiSTer will return to the stock menu instead of reopening Degauss automatically. There's not going to be the Frontend option anymore in the cores menu, and you'll need to re-launch Degauss from the OSD if you want to go back to it.
 
 Doing it in this way, the installed `/media/fat/degauss/MiSTer_Degauss` file is not used.
