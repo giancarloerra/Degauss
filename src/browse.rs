@@ -58,6 +58,8 @@ pub enum Place {
     /// all of them, live in `_DOS Games`. Opening only the first folder
     /// hides the entire library.
     Roots,
+    /// An internal ZIP directory. Appended to preserve postcard enum tags.
+    ArchiveDirectory { archive: PathBuf, prefix: String },
 }
 
 impl Place {
@@ -66,6 +68,7 @@ impl Place {
             Place::Dir(path) | Place::Archive(path) => path,
             Place::Listing { file, .. } => file,
             Place::Roots => Path::new(""),
+            Place::ArchiveDirectory { archive, .. } => archive,
         }
     }
 
@@ -82,6 +85,9 @@ impl Place {
                 format!("l:{}|{}", install.display(), file.display())
             }
             Place::Roots => "r:".to_string(),
+            Place::ArchiveDirectory { archive, prefix } => {
+                format!("a:{}/{}", archive.display(), prefix)
+            }
         }
     }
 }
@@ -323,6 +329,7 @@ pub struct Library {
     /// but it must remain visible to the diagnostic paths rather than being
     /// reduced to a log line that `--audit` cannot report.
     structural_problems: Vec<(PathBuf, String)>,
+    archive_cache: std::cell::RefCell<crate::zip::ArchiveCache>,
     /// What reading this system's metadata cost, so the answer to "why did
     /// that take a moment" is measured rather than guessed.
     pub cost: OpenCost,
@@ -342,6 +349,23 @@ pub struct OpenCost {
 /// reached through one reads as an ordinary file and its games disappear.
 /// Collections built out of linked trees are common enough on a card that
 /// the extra call is worth making, and it is only made for links.
+fn entry_is_dir_checked(item: &std::fs::DirEntry) -> Result<bool> {
+    let kind = item
+        .file_type()
+        .map_err(|error| DegaussError::io("reading entry type", item.path(), error))?;
+    if kind.is_symlink() {
+        // Dangling links have no launchable target; preserve that established
+        // case, but permission/device failures must not hide a subtree.
+        match std::fs::metadata(item.path()) {
+            Ok(metadata) => Ok(metadata.is_dir()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+            Err(error) => Err(DegaussError::io("reading link target", item.path(), error)),
+        }
+    } else {
+        Ok(kind.is_dir())
+    }
+}
+
 fn entry_is_dir(item: &std::fs::DirEntry) -> bool {
     match item.file_type() {
         Ok(kind) if kind.is_symlink() => item.path().is_dir(),
@@ -429,6 +453,7 @@ impl Library {
             roots,
             names,
             structural_problems,
+            archive_cache: std::cell::RefCell::new(crate::zip::ArchiveCache::default()),
             cost,
         })
     }
@@ -446,9 +471,12 @@ impl Library {
     /// a person reads them.
     pub fn list(&self, place: &Place, show_empty: bool) -> Result<(Vec<Row>, ListStats)> {
         let (mut rows, stats) = match place {
-            Place::Roots => self.list_roots(show_empty),
+            Place::Roots => self.list_roots(show_empty)?,
             Place::Dir(dir) => self.list_dir(dir, show_empty)?,
-            Place::Archive(archive) => self.list_archive(archive)?,
+            Place::Archive(archive) => self.list_archive(archive, "", show_empty)?,
+            Place::ArchiveDirectory { archive, prefix } => {
+                self.list_archive(archive, prefix, show_empty)?
+            }
             Place::Listing { install, file } => self.list_listing(install, file)?,
         };
         // Folders first, exactly as the stock menu orders them, then by
@@ -462,11 +490,11 @@ impl Library {
     }
 
     /// The system's folders, one row each, named as they are on the card.
-    fn list_roots(&self, show_empty: bool) -> (Vec<Row>, ListStats) {
+    fn list_roots(&self, show_empty: bool) -> Result<(Vec<Row>, ListStats)> {
         let mut rows = Vec::new();
         let mut stats = ListStats::default();
         for (index, root) in self.roots.iter().enumerate() {
-            if !show_empty && self.shows_nothing(&root.path, Some(index), 0) {
+            if !show_empty && self.shows_nothing(&root.path, Some(index), 0)? {
                 stats.empty_folders_hidden += 1;
                 continue;
             }
@@ -478,7 +506,7 @@ impl Library {
             stats.folders += 1;
             rows.push(folder_row(name, Place::Dir(root.path.clone())));
         }
-        (rows, stats)
+        Ok((rows, stats))
     }
 
     fn list_dir(&self, dir: &Path, show_empty: bool) -> Result<(Vec<Row>, ListStats)> {
@@ -498,26 +526,9 @@ impl Library {
         let mut rows = Vec::new();
         let mut stats = ListStats::default();
 
-        // An entry the filesystem refuses is a game that silently is not
-        // there. Dropping it is still the only answer, because one bad entry
-        // must not cost the whole folder, but it is counted and said out
-        // loud: a folder that is quietly short is the harder fault to find.
-        let mut unreadable = 0usize;
-        let entries: Vec<std::fs::DirEntry> = listing
-            .filter_map(|item| match item {
-                Ok(entry) => Some(entry),
-                Err(_) => {
-                    unreadable += 1;
-                    None
-                }
-            })
-            .collect();
-        if unreadable > 0 {
-            crate::note(&format!(
-                "folder       {}: {unreadable} entries could not be read and are missing",
-                dir.display()
-            ));
-        }
+        let entries = listing
+            .collect::<std::io::Result<Vec<_>>>()
+            .map_err(|error| DegaussError::io("reading folder entry", dir, error))?;
         for item in entries {
             let name = item.file_name().to_string_lossy().into_owned();
             // Dotfiles are not content, and a card that has met a Mac is
@@ -525,13 +536,9 @@ impl Library {
             if name.starts_with('.') {
                 continue;
             }
-            // Unreadable entries are skipped rather than guessed at.
-            if item.file_type().is_err() {
-                continue;
-            }
             let path = item.path();
 
-            if entry_is_dir(&item) {
+            if entry_is_dir_checked(&item)? {
                 // Windows leaves this on every card it touches, and the
                 // stock menu does not show it either.
                 if name == "System Volume Information" {
@@ -542,14 +549,14 @@ impl Library {
                     continue;
                 }
                 if self.is_art_directory(&path, root)
-                    || self.is_structural_art_subtree(&path, root)
+                    || self.is_structural_art_subtree(&path, root)?
                     || self.is_skipped(&name)
                 {
                     continue;
                 }
                 // A folder with nothing to reach inside it is a dead end,
                 // and a card accumulates them.
-                if !show_empty && self.shows_nothing(&path, root, 0) {
+                if !show_empty && self.shows_nothing(&path, root, 0)? {
                     stats.empty_folders_hidden += 1;
                     continue;
                 }
@@ -610,19 +617,89 @@ impl Library {
 
     /// The launchable files inside an archive. Only names are read; nothing
     /// is unpacked, because unpacking is the loader's job at launch time.
-    fn list_archive(&self, archive: &Path) -> Result<(Vec<Row>, ListStats)> {
-        let names = crate::zip::list(archive)?;
+    fn list_archive(
+        &self,
+        archive: &Path,
+        prefix: &str,
+        show_empty: bool,
+    ) -> Result<(Vec<Row>, ListStats)> {
+        let contents = self.archive_cache.borrow_mut().read(archive)?;
+        let entries = &contents.entries;
+        let supported: Vec<_> = entries
+            .iter()
+            .filter(|entry| self.config.accepts(Path::new(&entry.name)))
+            .collect();
+        let legacy_metadata = supported.len() == 1;
         let root = self.root_for(archive);
         let mut rows = Vec::new();
         let mut stats = ListStats::default();
-
-        for name in names {
-            let inner = archive.join(&name);
-            if !self.config.accepts(&inner) {
+        let mut folders = HashSet::new();
+        let directory = if prefix.is_empty() {
+            String::new()
+        } else {
+            format!("{prefix}/")
+        };
+        if !prefix.is_empty()
+            && !entries
+                .iter()
+                .any(|entry| entry.name.starts_with(&directory))
+            && !contents
+                .directories
+                .iter()
+                .any(|entry| entry == prefix || entry.starts_with(&directory))
+        {
+            return Err(DegaussError::malformed(
+                "zip archive",
+                archive,
+                format!("virtual directory {prefix:?} is missing or was renamed"),
+            ));
+        }
+        if show_empty {
+            for entry in
+                contents
+                    .directories
+                    .iter()
+                    .map(String::as_str)
+                    .chain(entries.iter().filter_map(|entry| {
+                        entry.name.rsplit_once('/').map(|(directory, _)| directory)
+                    }))
+            {
+                let Some(relative) = entry.strip_prefix(&directory) else {
+                    continue;
+                };
+                let folder = relative.split('/').next().unwrap_or_default();
+                if !folder.is_empty() && folders.insert(folder.to_string()) {
+                    stats.folders += 1;
+                    rows.push(folder_row(
+                        folder.to_string(),
+                        Place::ArchiveDirectory {
+                            archive: archive.to_path_buf(),
+                            prefix: format!("{directory}{folder}"),
+                        },
+                    ));
+                }
+            }
+        }
+        for entry in supported {
+            let Some(relative) = entry.name.strip_prefix(&directory) else {
+                continue;
+            };
+            if let Some((folder, _)) = relative.split_once('/') {
+                if folders.insert(folder.to_string()) {
+                    stats.folders += 1;
+                    rows.push(folder_row(
+                        folder.to_string(),
+                        Place::ArchiveDirectory {
+                            archive: archive.to_path_buf(),
+                            prefix: format!("{directory}{folder}"),
+                        },
+                    ));
+                }
                 continue;
             }
             stats.games += 1;
-            let row = self.game_row(&inner, root);
+            let row =
+                self.game_row_with_metadata(&archive.join(&entry.name), root, legacy_metadata);
             if row.cover.is_some() {
                 stats.with_art += 1;
             }
@@ -674,6 +751,10 @@ impl Library {
     }
 
     fn game_row(&self, path: &Path, root: Option<usize>) -> Row {
+        self.game_row_with_metadata(path, root, true)
+    }
+
+    fn game_row_with_metadata(&self, path: &Path, root: Option<usize>, legacy: bool) -> Row {
         let name = self.display_name(path);
         let mut row = Row {
             sort_key: name.to_lowercase(),
@@ -690,7 +771,7 @@ impl Library {
             .unwrap_or(path)
             .to_string_lossy()
             .into_owned();
-        self.bind(&mut row, &rel, root);
+        self.bind_with_metadata(&mut row, &rel, root, legacy);
         row
     }
 
@@ -713,6 +794,7 @@ impl Library {
             .unwrap_or_else(|| file_name.clone());
 
         match extension_of(path).as_str() {
+            "rbf" if self.config.preserve_rbf_stem => stem,
             "rbf" => {
                 // A core carries the date it was built: NeoGeo_20260603.rbf.
                 // Main cuts it at "_20" when what follows is long enough to
@@ -732,9 +814,19 @@ impl Library {
 
     /// Attach whatever the metadata overlay knows about a row.
     fn bind(&self, row: &mut Row, key: &str, root: Option<usize>) {
+        self.bind_with_metadata(row, key, root, true);
+    }
+
+    fn bind_with_metadata(&self, row: &mut Row, key: &str, root: Option<usize>, legacy: bool) {
         let Some(meta) = root
             .and_then(|index| self.roots[index].gamelist.as_ref())
-            .and_then(|list| list.lookup(key))
+            .and_then(|list| {
+                if legacy {
+                    list.lookup(key)
+                } else {
+                    list.lookup_exact(key)
+                }
+            })
             .map(|(meta, _)| meta.clone())
         else {
             return;
@@ -836,58 +928,58 @@ impl Library {
     /// would show, so a folder of games answers on its first entry; only a
     /// tree that really is empty is walked to the bottom, and an empty tree
     /// is cheap to walk.
-    fn shows_nothing(&self, dir: &Path, root: Option<usize>, depth: usize) -> bool {
+    fn shows_nothing(&self, dir: &Path, root: Option<usize>, depth: usize) -> Result<bool> {
         if depth > MAX_DEPTH {
             // Too deep to keep asking. Say it shows something, so the worst
             // a symlink loop can do is leave one folder visible.
-            return false;
+            return Ok(false);
         }
         // Asked once for the folder, not once per file in it: it is a
         // property of the folder, and answering it rescans the parent.
         let amiga_install = amiga_install_of(dir).is_some();
-        let Ok(listing) = std::fs::read_dir(dir) else {
-            // A folder that cannot be read is not known to be empty, and
-            // hiding it would hide the problem with it.
-            return false;
-        };
-        for item in listing.flatten() {
+        let listing = std::fs::read_dir(dir)
+            .map_err(|error| DegaussError::io("reading folder", dir, error))?;
+        for item in listing {
+            let item =
+                item.map_err(|error| DegaussError::io("reading folder entry", dir, error))?;
             let name = item.file_name().to_string_lossy().into_owned();
             if name.starts_with('.') || name == "System Volume Information" {
                 continue;
             }
             let path = item.path();
-            if entry_is_dir(&item) {
+            if entry_is_dir_checked(&item)? {
                 if self.is_art_directory(&path, root)
                     || self.is_skipped(&name)
-                    || self.shows_nothing(&path, root, depth + 1)
+                    || self.shows_nothing(&path, root, depth + 1)?
                 {
                     continue;
                 }
-                return false;
+                return Ok(false);
             }
             // A file only counts if it is one this system can open, an
             // archive that opens like a folder, or a listing naming titles
             // held inside a disk image.
             let extension = extension_of(&path);
             if extension == "zip" || (self.config.accepts(&path) && !is_not_a_game(&name)) {
-                return false;
+                return Ok(false);
             }
             if extension == "txt" && amiga_install {
-                return false;
+                return Ok(false);
             }
         }
-        true
+        Ok(true)
     }
 
     fn is_art_directory(&self, path: &Path, root: Option<usize>) -> bool {
         root.is_some_and(|index| self.roots[index].art.is_art_directory(path))
     }
 
-    fn is_structural_art_subtree(&self, path: &Path, root: Option<usize>) -> bool {
-        root.is_some_and(|index| {
-            self.roots[index].art.has_structural_art_below(path)
-                && self.shows_nothing(path, root, 0)
-        })
+    fn is_structural_art_subtree(&self, path: &Path, root: Option<usize>) -> Result<bool> {
+        if root.is_some_and(|index| self.roots[index].art.has_structural_art_below(path)) {
+            self.shows_nothing(path, root, 0)
+        } else {
+            Ok(false)
+        }
     }
 
     fn is_skipped(&self, name: &str) -> bool {
@@ -1101,7 +1193,7 @@ impl Library {
             .iter()
             .map(|root| (Place::Dir(root.path.clone()), 0))
             .collect();
-        let mut seen: HashSet<String> = HashSet::new();
+        let mut seen: HashSet<(String, Option<String>)> = HashSet::new();
 
         while let Some((place, depth)) = stack.pop() {
             if audit.places_read >= AUDIT_LIMIT {
@@ -1113,7 +1205,11 @@ impl Library {
             }
             // The same folder reached twice is counted once. Organised
             // collections are built out of links back into the same tree.
-            if !seen.insert(key(place.path())) {
+            let prefix = match &place {
+                Place::ArchiveDirectory { prefix, .. } => Some(prefix.clone()),
+                _ => None,
+            };
+            if !seen.insert((key(place.path()), prefix)) {
                 continue;
             }
             audit.places_read += 1;
@@ -1189,6 +1285,7 @@ mod tests {
 
     fn system(path: &Path) -> SystemConfig {
         SystemConfig {
+            preserve_rbf_stem: false,
             name: "Commodore 64".to_string(),
             path: path.to_string_lossy().into_owned(),
             extensions: vec!["d64".to_string(), "prg".to_string()],
@@ -1576,8 +1673,13 @@ mod tests {
             panic!("an archive must open like a folder");
         };
         let (inside, stats) = library.list(place, false).unwrap();
-        assert_eq!(names_of(&inside), vec!["Another Game", "Metal Slug"]);
-        assert_eq!(stats.games, 2);
+        assert_eq!(names_of(&inside), vec!["sub", "Metal Slug"]);
+        assert_eq!(stats.games, 1);
+        let Kind::Enter(nested) = &inside[0].kind else {
+            panic!("implied directory");
+        };
+        let (nested, _) = library.list(nested, false).unwrap();
+        assert_eq!(names_of(&nested), ["Another Game"]);
         // readme.txt is in the archive but no core loads it.
         assert!(!inside.iter().any(|row| row.name.contains("readme")));
 
@@ -1586,6 +1688,28 @@ mod tests {
         };
         assert_eq!(path, &archive.join("Metal Slug.neo"));
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn audit_visits_nested_archive_directories_with_exact_member_casing() {
+        let dir = temp("audit-nested-zip");
+        // ASCII case aliases are rejected by Main-compatible archive validation.
+        // These UTF-8 prefixes remain distinct and must not be lowercased by audit.
+        std::fs::write(
+            dir.join("library.zip"),
+            crate::zip::tests_archive(&["Ä/One.d64", "ä/Two.d64"], false),
+        )
+        .unwrap();
+        let library = Library::open(&system(&dir)).unwrap();
+        let audit = library.audit(false);
+        assert_eq!(audit.games, 2);
+        assert!(audit.unreadable.is_empty());
+        assert!(audit.first_game.is_some());
+        assert_eq!(
+            audit.places_read, 4,
+            "root, archive and both member directories"
+        );
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
@@ -1881,5 +2005,149 @@ mod tests {
             "CLI report and dry-run must choose the first game shown by the effective source"
         );
         std::fs::remove_dir_all(&dir).ok();
+    }
+    #[test]
+    fn multigame_zip_metadata_is_exact_and_same_basenames_remain_distinct() {
+        let dir = temp("zip-metadata");
+        let archive = dir.join("library.zip");
+        std::fs::write(
+            &archive,
+            crate::zip::tests_archive(&["one/Game.d64", "two/Game.d64", "empty/"], true),
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("gamelist.xml"),
+            r#"<gameList>
+            <game><path>library.zip</path><name>Archive title</name></game>
+            <game><path>Game.d64</path><name>Wrong sibling</name></game>
+            <game><path>./library.zip/one/Game.d64</path><name>Correct one</name></game>
+            </gameList>"#,
+        )
+        .unwrap();
+        let library = Library::open(&system(&dir)).unwrap();
+        let (rows, _) = library
+            .list(&Place::Archive(archive.clone()), true)
+            .unwrap();
+        assert_eq!(names_of(&rows), ["empty", "one", "two"]);
+        let (hidden_empty, _) = library
+            .list(&Place::Archive(archive.clone()), false)
+            .unwrap();
+        assert_eq!(names_of(&hidden_empty), ["one", "two"]);
+        for (prefix, expected) in [("one", "Correct one"), ("two", "Game.d64")] {
+            let place = Place::ArchiveDirectory {
+                archive: archive.clone(),
+                prefix: prefix.into(),
+            };
+            let (rows, _) = library.list(&place, false).unwrap();
+            assert_eq!(names_of(&rows), [expected]);
+            assert_eq!(
+                rows[0].kind,
+                Kind::Play(Launch::File(archive.join(format!("{prefix}/Game.d64"))))
+            );
+        }
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn one_supported_zip_member_preserves_legacy_archive_metadata() {
+        let dir = temp("zip-single-metadata");
+        let archive = dir.join("Only.zip");
+        std::fs::write(
+            &archive,
+            crate::zip::tests_archive(&["folder/Game.d64", "readme.txt"], false),
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("gamelist.xml"),
+            r#"<gameList><game><path>Only.zip</path><name>Legacy name</name></game></gameList>"#,
+        )
+        .unwrap();
+        let library = Library::open(&system(&dir)).unwrap();
+        let (rows, _) = library
+            .list(
+                &Place::ArchiveDirectory {
+                    archive,
+                    prefix: "folder".into(),
+                },
+                false,
+            )
+            .unwrap();
+        assert_eq!(names_of(&rows), ["Legacy name"]);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn existing_place_serialization_tags_do_not_move() {
+        for (place, tag) in [
+            (Place::Dir("x".into()), 0),
+            (Place::Archive("x.zip".into()), 1),
+            (
+                Place::Listing {
+                    install: "i".into(),
+                    file: "f".into(),
+                },
+                2,
+            ),
+            (Place::Roots, 3),
+        ] {
+            let bytes = postcard::to_allocvec(&place).unwrap();
+            assert_eq!(bytes[0], tag);
+            assert_eq!(postcard::from_bytes::<Place>(&bytes).unwrap(), place);
+        }
+        let place = Place::ArchiveDirectory {
+            archive: "x.zip".into(),
+            prefix: "folder".into(),
+        };
+        assert_eq!(postcard::to_allocvec(&place).unwrap()[0], 4);
+    }
+
+    #[test]
+    fn unstable_core_names_keep_build_suffixes_while_stable_names_stay_short() {
+        let dir = temp("nightly-names");
+        let mut config = system(&dir);
+        config.preserve_rbf_stem = true;
+        let library = Library::open(&config).unwrap();
+        assert_eq!(
+            library.display_name(Path::new("Core_20260907_build123.rbf")),
+            "Core_20260907_build123"
+        );
+        config.preserve_rbf_stem = false;
+        let library = Library::open(&config).unwrap();
+        assert_eq!(
+            library.display_name(Path::new("Core_20260907_build123.rbf")),
+            "Core"
+        );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+    #[test]
+    fn long_multiline_description_with_double_escaped_quotes_survives_browse_and_cache() {
+        let dir = temp("description-regression");
+        std::fs::write(dir.join("Race.d64"), b"synthetic test content").unwrap();
+        let opening = "A visiting pilot arrives at an island circuit and joins a friendly race across beaches and hills. The competitors unlock new routes, explore hidden tracks and collect useful items along the way.";
+        let xml = format!("<gameList><game><path>./Race.d64</path><name>Island Race</name><genre>Racing</genre><desc>{opening}\n\nThe second paragraph describes the &amp;quot;Token Challenge&amp;quot;.\n\nAnother paragraph describes multiplayer races.</desc><favorite>true</favorite></game></gameList>");
+        std::fs::write(dir.join("gamelist.xml"), xml).unwrap();
+        let expected = format!(
+            "{}...",
+            opening.chars().take(160).collect::<String>().trim_end()
+        );
+        let library = Library::open(&system(&dir)).unwrap();
+        let (rows, _) = library.list(&library.start(), false).unwrap();
+        assert_eq!(rows[0].details.desc, expected);
+        assert_eq!(rows[0].genre.as_deref(), Some("Racing"));
+        assert!(rows[0].favorite);
+        let cache = crate::cache::build_system_controlled(
+            &library,
+            &std::sync::atomic::AtomicBool::new(false),
+            &mut |_, _| {},
+        )
+        .unwrap()
+        .unwrap();
+        let encoded = postcard::to_allocvec(&cache).unwrap();
+        let decoded: crate::cache::SystemCache = postcard::from_bytes(&encoded).unwrap();
+        assert_eq!(
+            decoded.get(&library.start()).unwrap().rows[0].details.desc,
+            expected
+        );
+        std::fs::remove_dir_all(dir).unwrap();
     }
 }

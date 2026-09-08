@@ -1951,7 +1951,7 @@ delay = 1
 # it is.
 name = "Cores"
 id = "OtherCores"
-folders = ["/media/fat/_Other"]
+folders = ["_Other"]
 rbf = ""
 extensions = ["rbf", "mra", "mgl"]
 category = "Other"
@@ -1964,10 +1964,19 @@ category = "Other"
 # it describes itself.
 name = "Cores"
 id = "UtilityCores"
-folders = ["/media/fat/_Utility"]
+folders = ["_Utility"]
 rbf = ""
 extensions = ["rbf", "mra", "mgl"]
 category = "Utility"
+
+[[systems]]
+# Resolved against menu_root at runtime, including older user-edited tables.
+name = "Cores"
+id = "UnstableCores"
+folders = ["_Unstable"]
+rbf = ""
+extensions = ["rbf", "mra", "mgl"]
+category = "Unstable"
 
 [[systems]]
 # MiSTer's own favourites folder, exactly as its favourites script keeps
@@ -1976,7 +1985,7 @@ category = "Utility"
 # listed last because it is not a machine.
 name = "Favorites"
 id = "Favorites"
-folders = ["/media/fat/_@Favorites"]
+folders = ["_@Favorites"]
 rbf = ""
 extensions = ["mgl", "mra", "rbf"]
 category = "Favorites"

@@ -55,6 +55,12 @@ impl SavedPlace {
                 install: String::new(),
                 selected,
             },
+            Place::ArchiveDirectory { archive, prefix } => SavedPlace {
+                kind: "archive-directory".into(),
+                path: archive.to_string_lossy().into_owned(),
+                install: prefix.clone(),
+                selected,
+            },
             Place::Listing { install, file } => SavedPlace {
                 kind: "listing".into(),
                 path: file.to_string_lossy().into_owned(),
@@ -78,6 +84,14 @@ impl SavedPlace {
             "archive" => PathBuf::from(&self.path)
                 .exists()
                 .then(|| Place::Archive(PathBuf::from(&self.path))),
+            "archive-directory" => {
+                PathBuf::from(&self.path)
+                    .is_file()
+                    .then(|| Place::ArchiveDirectory {
+                        archive: PathBuf::from(&self.path),
+                        prefix: self.install.clone(),
+                    })
+            }
             "listing" => PathBuf::from(&self.path).exists().then(|| Place::Listing {
                 install: PathBuf::from(&self.install),
                 file: PathBuf::from(&self.path),
@@ -147,6 +161,10 @@ pub struct State {
     /// Where the cursor sat in the folder on screen.
     #[serde(default)]
     pub selected: usize,
+    /// Exact selected row identity. A search index belongs to the filtered list,
+    /// while returning from a game lists the whole folder again.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub selected_row: Option<String>,
     /// The row every visited folder was left on, so coming back to one
     /// lands where browsing left off, not only after a game.
     #[serde(default)]
@@ -175,6 +193,7 @@ impl State {
                 .map(|(place, selected)| SavedPlace::of(place, *selected))
                 .collect(),
             selected,
+            selected_row: None,
             left_at: left_at.to_vec(),
         }
     }
@@ -253,6 +272,10 @@ mod tests {
         let state: State = toml::from_str(text).expect("v0.2.0 state must keep parsing");
         assert_eq!(state.system, "SNES");
         assert_eq!(state.selected, 42);
+        assert!(
+            state.selected_row.is_none(),
+            "old states keep their numeric selection"
+        );
         assert_eq!(state.trail.len(), 2, "the walked path survives");
     }
 
@@ -439,5 +462,26 @@ mod tests {
         assert!(take_position(false, &dir.join("state.toml")).is_none());
         assert!(take_position(true, &dir.join("state.toml")).is_none());
         std::fs::remove_dir_all(&dir).ok();
+    }
+    #[test]
+    fn virtual_directory_state_round_trips_without_checking_a_virtual_child_on_disk() {
+        let archive =
+            std::env::temp_dir().join(format!("degauss-state-{}.zip", std::process::id()));
+        std::fs::write(
+            &archive,
+            crate::zip::tests_archive(&["folder/Game.neo"], false),
+        )
+        .unwrap();
+        let place = Place::ArchiveDirectory {
+            archive: archive.clone(),
+            prefix: "folder".into(),
+        };
+        let saved = SavedPlace::of(&place, 3);
+        let text = toml::to_string(&saved).unwrap();
+        let loaded: SavedPlace = toml::from_str(&text).unwrap();
+        assert_eq!(loaded.to_place(), Some(place));
+        assert_eq!(loaded.selected(), 3);
+        std::fs::remove_file(archive).unwrap();
+        assert_eq!(loaded.to_place(), None);
     }
 }

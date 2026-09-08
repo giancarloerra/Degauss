@@ -1,0 +1,1262 @@
+diff --git a/input.cpp b/input.cpp
+index 50f1991..5f251ec 100644
+--- a/input.cpp
++++ b/input.cpp
+@@ -36,10 +36,26 @@
+ #include "frame_timer.h"
+ #include "scaler.h"
+ #include "file_io.h"
++#include "support/degauss/degauss_shortcut.h"
+ 
+ #define NUMDEV 30
+ #define UINPUT_NAME "MiSTer virtual input"
+ 
++static_assert(degauss_shortcut_logic::MAX_KEYBOARD_KEY == KEY_MAX,
++	"Degauss shortcut key range must match Linux KEY_MAX");
++static_assert(degauss_shortcut_logic::PRIMARY_BUTTON_FIRST == BTN_MISC,
++	"Degauss primary-button range must match Linux BTN_MISC");
++static_assert(degauss_shortcut_logic::PRIMARY_BUTTON_LAST == BTN_GEAR_UP,
++	"Degauss primary-button range must match Linux BTN_GEAR_UP");
++static_assert(degauss_shortcut_logic::DPAD_BUTTON_FIRST == BTN_DPAD_UP,
++	"Degauss D-pad range must match Linux BTN_DPAD_UP");
++static_assert(degauss_shortcut_logic::DPAD_BUTTON_LAST == BTN_DPAD_RIGHT,
++	"Degauss D-pad range must match Linux BTN_DPAD_RIGHT");
++static_assert(degauss_shortcut_logic::TRIGGER_BUTTON_FIRST == BTN_TRIGGER_HAPPY1,
++	"Degauss trigger-button range must match Linux BTN_TRIGGER_HAPPY1");
++static_assert(degauss_shortcut_logic::TRIGGER_BUTTON_LAST == BTN_TRIGGER_HAPPY40,
++	"Degauss trigger-button range must match Linux BTN_TRIGGER_HAPPY40");
++
+ bool update_advanced_state(int devnum, uint16_t evcode, int evstate);
+ 
+ char joy_bnames[NUMBUTTONS][32] = {};
+@@ -2971,6 +2987,20 @@ static void input_cb(struct input_event *ev, struct input_absinfo *absinfo, int
+ 		}
+ 	}
+ 
++	// Degauss accepts the complete Linux keyboard-key range before MiSTer's
++	// legacy 256-entry keyboard remap. Linux button ranges and keyboards that
++	// are deliberately configured as joysticks cannot become the shortcut.
++	const bool degauss_keyboard_event = ev->type == EV_KEY
++		&& ev->code
++		&& degauss_shortcut_logic::valid_keyboard_key(ev->code)
++		&& !(mapping && mapping_type == 2)
++		&& !input[dev].force_joy;
++	if (degauss_keyboard_event
++		&& degauss_shortcut_handle_keyboard_event(ev->code, ev->value, menu_event))
++	{
++		return;
++	}
++
+ 	if (ev->type == EV_KEY && ev->code < 256 && !(mapping && mapping_type == 2) && !input[dev].force_joy)
+ 	{
+ 		if (!input[dev].has_kbdmap)
+diff --git a/menu.cpp b/menu.cpp
+index 0c74e21..879f4a8 100644
+--- a/menu.cpp
++++ b/menu.cpp
+@@ -50,6 +50,13 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ #include "osd.h"
+ #include "hardware.h"
+ #include "menu.h"
++#include "support/degauss/degauss_launcher.h"
++#include "support/degauss/degauss_shortcut.h"
++
++// Degauss: true while the frontend, rather than an ordinary script, owns
++// the framebuffer terminal.
++static bool degauss_running = false;
++static bool degauss_shortcut_save_failed = false;
+ #include "user_io.h"
+ #include "debug.h"
+ #include "fpga_io.h"
+@@ -80,6 +87,10 @@ enum MENU
+ 	MENU_SYSTEM2,
+ 	MENU_COMMON1,
+ 	MENU_COMMON2,
++	MENU_DEGAUSS_SHORTCUT1,
++	MENU_DEGAUSS_SHORTCUT2,
++	MENU_DEGAUSS_SHORTCUT_CAPTURE1,
++	MENU_DEGAUSS_SHORTCUT_CAPTURE2,
+ 	MENU_MISC1,
+ 	MENU_MISC2,
+ 
+@@ -567,6 +578,11 @@ void menu_key_set(unsigned int c)
+ 	menu_key = c;
+ }
+ 
++bool menu_osd_is_unlocked(void)
++{
++	return osd_unlocked;
++}
++
+ // get key status
+ static int hold_cnt = 0;
+ static uint32_t menu_key_get(void)
+@@ -1107,6 +1123,17 @@ void HandleUI(void)
+ {
+ 	PROFILE_FUNCTION();
+ 
++	// Degauss: when the menu core comes up, hand the screen to the
++	// frontend instead of showing the stock menu. Done by entering the
++	// Scripts state the OSD itself uses, which is what sets the console to
++	// VT 2 and so makes Main hold its own hotkeys back while the frontend
++	// owns the screen. Exiting the frontend returns here with the stock
++	// menu, and it is not started again until the next core load.
++	if (menustate == MENU_NONE1 && degauss_should_take_menu(selPath, sizeof(selPath)))
++	{
++		menustate = MENU_SCRIPTS_FB;
++	}
++
+ 	if (bt_timer >= 0)
+ 	{
+ 		if (!bt_timer) bt_timer = (int32_t)GetTimer(6000);
+@@ -1582,6 +1609,12 @@ void HandleUI(void)
+ 		break;
+ 	}
+ 
++	if (degauss_shortcut_take_request())
++	{
++		fpga_load_rbf("menu.rbf");
++		return;
++	}
++
+ 	// Switch to current menu screen
+ 	switch (menustate)
+ 	{
+@@ -2862,6 +2895,14 @@ void HandleUI(void)
+ 			helptext_idx = 0;
+ 			reboot_req = 0;
+ 
++			// Degauss: arriving here fresh, start on Frontend. It is the
++			// reason most people open this menu from inside a game, and it
++			// saves walking to it.
++			if (parentstate != MENU_COMMON1 && !menusub && degauss_installed())
++			{
++				menusub = DEGAUSS_MENUSUB;
++			}
++
+ 			OsdSetTitle("System", 0);
+ 			menustate = MENU_COMMON2;
+ 			parentstate = MENU_COMMON1;
+@@ -2875,6 +2916,19 @@ void HandleUI(void)
+ 				if (!menusub) firstmenu = 0;
+ 				adjvisible = 0;
+ 
++				// Degauss: the way back. Inside a game there is otherwise
++				// no route to the frontend short of a reboot, because
++				// leaving a core means loading the menu core and only the
++				// OSD can ask for that.
++				if (degauss_installed())
++				{
++					MenuWrite(n++, " Frontend                  \x16", menusub == DEGAUSS_MENUSUB, 0);
++					MenuWrite(n++, " Frontend shortcut         \x16", menusub == DEGAUSS_SHORTCUT_MENUSUB, 0);
++					MenuWrite(n++);
++					menumask |= (1ULL << DEGAUSS_MENUSUB);
++					menumask |= (1ULL << DEGAUSS_SHORTCUT_MENUSUB);
++				}
++
+ 				MenuWrite(n++, " Core                      \x16", menusub == 0, 0);
+ 				MenuWrite(n++);
+ 
+@@ -3104,6 +3158,18 @@ void HandleUI(void)
+ 				menusub = 0;
+ 				break;
+ 
++			case DEGAUSS_MENUSUB:
++				// Loading the menu core is what makes Main re-execute
++				// itself, and that is where the frontend is started from.
++				// No hold handling: this is not the cold reboot item.
++				reboot_req = 1;
++				break;
++
++			case DEGAUSS_SHORTCUT_MENUSUB:
++				menustate = MENU_DEGAUSS_SHORTCUT1;
++				menusub = 0;
++				break;
++
+ 			case 17:
+ 				{
+ 					reboot_req = 1;
+@@ -3168,6 +3234,126 @@ void HandleUI(void)
+ 		if(!hold_cnt && reboot_req) fpga_load_rbf("menu.rbf");
+ 		break;
+ 
++	case MENU_DEGAUSS_SHORTCUT1:
++		{
++			helptext_idx = 0;
++			firstmenu = 0;
++			adjvisible = 0;
++			OsdSetSize(16);
++			OsdSetTitle("Frontend shortcut", 0);
++			parentstate = MENU_DEGAUSS_SHORTCUT1;
++			menustate = MENU_DEGAUSS_SHORTCUT2;
++
++			int n = 0;
++			const bool invalid = degauss_shortcut_load_state() == DEGAUSS_SHORTCUT_INVALID;
++			if (invalid)
++			{
++				menumask = 0x3;
++				MenuWrite(n++, " Invalid shortcut config", 0, 1);
++				MenuWrite(n++);
++				MenuWrite(n++, " Reset shortcut", menusub == 0);
++				if (degauss_shortcut_save_failed) MenuWrite(n++, " Reset failed", 0, 1);
++				while (n < OsdGetSize() - 1) MenuWrite(n++);
++				MenuWrite(n++, STD_BACK, menusub == 1, 0, OSD_ARROW_LEFT);
++			}
++			else
++			{
++				menumask = 0x3;
++				const uint16_t key = degauss_shortcut_keyboard_key();
++				if (key) snprintf(s, sizeof(s), " Keyboard: key code %u", key);
++				else snprintf(s, sizeof(s), " Keyboard: Off");
++				MenuWrite(n++, s, menusub == 0);
++
++				MenuWrite(n++);
++				MenuWrite(n++, " A: Capture   X: Disable", 0, 1);
++				if (degauss_shortcut_save_failed)
++				{
++					MenuWrite(n++, " Save failed", 0, 1);
++				}
++				while (n < OsdGetSize() - 1) MenuWrite(n++);
++				MenuWrite(n++, STD_BACK, menusub == 1, 0, OSD_ARROW_LEFT);
++			}
++		}
++		break;
++
++	case MENU_DEGAUSS_SHORTCUT2:
++		{
++			const bool invalid = degauss_shortcut_load_state() == DEGAUSS_SHORTCUT_INVALID;
++			if (menu || back || left)
++			{
++				degauss_shortcut_cancel_keyboard_capture();
++				menustate = MENU_COMMON1;
++				menusub = DEGAUSS_SHORTCUT_MENUSUB;
++				break;
++			}
++
++			if (invalid)
++			{
++				if (select && menusub == 0)
++				{
++					degauss_shortcut_save_failed = !degauss_shortcut_reset();
++					menustate = MENU_DEGAUSS_SHORTCUT1;
++				}
++				else if (select && menusub == 1)
++				{
++					menustate = MENU_COMMON1;
++					menusub = DEGAUSS_SHORTCUT_MENUSUB;
++				}
++				break;
++			}
++
++			if (c == KEY_TAB && menusub == 0)
++			{
++				degauss_shortcut_save_failed = !degauss_shortcut_set_keyboard(0);
++				menustate = MENU_DEGAUSS_SHORTCUT1;
++			}
++			else if (select && menusub == 0)
++			{
++				degauss_shortcut_begin_keyboard_capture();
++				menustate = MENU_DEGAUSS_SHORTCUT_CAPTURE1;
++			}
++			else if (select && menusub == 1)
++			{
++				menustate = MENU_COMMON1;
++				menusub = DEGAUSS_SHORTCUT_MENUSUB;
++			}
++		}
++		break;
++
++	case MENU_DEGAUSS_SHORTCUT_CAPTURE1:
++		{
++			firstmenu = 0;
++			menumask = 0;
++			OsdSetSize(16);
++			OsdSetTitle("Keyboard shortcut", 0);
++			MenuWrite(0, "");
++			MenuWrite(1, " Press one keyboard key");
++			MenuWrite(2, "");
++			MenuWrite(3, " Pad Menu/B: cancel", 0, 1);
++			for (int n = 4; n < OsdGetSize(); n++) MenuWrite(n, "");
++			menustate = MENU_DEGAUSS_SHORTCUT_CAPTURE2;
++		}
++		break;
++
++	case MENU_DEGAUSS_SHORTCUT_CAPTURE2:
++		if (menu || back)
++		{
++			degauss_shortcut_cancel_keyboard_capture();
++			menustate = MENU_DEGAUSS_SHORTCUT1;
++			menusub = 0;
++		}
++		else
++		{
++			uint16_t key = 0;
++			if (degauss_shortcut_take_keyboard_capture(&key))
++			{
++				degauss_shortcut_save_failed = !degauss_shortcut_set_keyboard(key);
++				menustate = MENU_DEGAUSS_SHORTCUT1;
++				menusub = 0;
++			}
++		}
++		break;
++
+ 	case MENU_VIDEOPROC1:
+ 		helptext_idx = 0;
+ 		menumask = 0x7FFF;
+@@ -7412,10 +7598,21 @@ void HandleUI(void)
+ 			static char cmd[1024 * 2];
+ 			const char *path = getFullPath(selPath);
+ 			menustate = MENU_SCRIPTS_FB2;
++			// Degauss: a frontend is not a script whose output anyone
++			// reads. Remembered here because the state that ends the run
++			// no longer knows which path started it.
++			degauss_running = degauss_is_frontend_script(selPath);
+ 			video_chvt(2);
+ 			video_fb_enable(1);
+ 			vga_nag();
+-			sprintf(cmd, "#!/bin/bash\nexport LC_ALL=en_US.UTF-8\nexport HOME=/root\ncd $(dirname %s)\n%s\necho \"Press any key to continue\"\n", path, path);
++			if (degauss_running)
++			{
++				sprintf(cmd, "#!/bin/bash\nexport LC_ALL=en_US.UTF-8\nexport HOME=/root\ncd $(dirname %s)\n%s\n", path, path);
++			}
++			else
++			{
++				sprintf(cmd, "#!/bin/bash\nexport LC_ALL=en_US.UTF-8\nexport HOME=/root\ncd $(dirname %s)\n%s\necho \"Press any key to continue\"\n", path, path);
++			}
+ 
+ 			unlink("/tmp/script");
+ 			FileSave("/tmp/script", cmd, strlen(cmd));
+@@ -7423,6 +7620,14 @@ void HandleUI(void)
+ 			ttypid = fork();
+ 			if (!ttypid)
+ 			{
++				if (degauss_running)
++				{
++					// -i drops the issue file, -n the login prompt: between
++					// them they are the "Welcome to MiSTer" and "login: root
++					// (automatic login)" that would otherwise flash up
++					// before the frontend has drawn anything.
++					execl("/sbin/agetty", "/sbin/agetty", "-n", "-i", "-a", "root", "-l", "/tmp/script", "--nohostname", "-L", "tty2", "linux", NULL);
++				}
+ 				execl("/sbin/agetty", "/sbin/agetty", "-a", "root", "-l", "/tmp/script", "--nohostname", "-L", "tty2", "linux", NULL);
+ 				exit(0); //should never be reached
+ 			}
+@@ -7440,6 +7645,19 @@ void HandleUI(void)
+ 			{
+ 				ttypid = 0;
+ 				user_io_osd_key_enable(1);
++				// Degauss: nothing was printed for anyone to read, and the
++				// user already chose to leave, so go straight back rather
++				// than asking them to press something first.
++				if (degauss_running)
++				{
++					degauss_running = false;
++					video_menu_bg(user_io_status_get("[3:1]"));
++					video_fb_enable(0);
++					menustate = MENU_SYSTEM1;
++					menusub = 3;
++					OsdClear();
++					OsdEnable(DISABLE_KEYBOARD);
++				}
+ 			}
+ 		}
+ 		else
+diff --git a/menu.h b/menu.h
+index d85deb4..ce8767c 100644
+--- a/menu.h
++++ b/menu.h
+@@ -7,6 +7,7 @@ void SelectFile(const char* path, const char* pFileExt, int Options, unsigned ch
+ 
+ void HandleUI(void);
+ void menu_key_set(unsigned int c);
++bool menu_osd_is_unlocked(void);
+ void menu_process_save();
+ void PrintDirectory(int expand = 0);
+ void ScrollLongName(void);
+diff --git a/support/degauss/README.md b/support/degauss/README.md
+new file mode 100644
+index 0000000..d601ce1
+--- /dev/null
++++ b/support/degauss/README.md
+@@ -0,0 +1,74 @@
++# Degauss integration in MiSTer Main
++
++This directory contains the Degauss-specific integration maintained by the
++Degauss fork of MiSTer Main. A stock Main build ignores Degauss and does not
++read its shortcut configuration.
++
++## Existing frontend handoff
++
++`degauss_launcher.cpp` retains the existing paths:
++
++- A menu-core start hands the framebuffer terminal to
++  `Scripts/degauss.sh` once per Main process.
++- The System menu contains **Frontend** when `fb_terminal=1` and that script
++  exists.
++- A on **Frontend** loads `menu.rbf`. Main then restarts and uses the same
++  handoff path.
++- Starting `degauss.sh` from the Scripts menu uses the same framebuffer
++  execution path without the console banner or final key prompt.
++- Cards without functional Degauss support keep the stock Main behaviour.
++
++## Optional return shortcut
++
++The System menu's **Frontend shortcut** row, directly below **Frontend**, opens
++the shortcut settings with A. The keyboard assignment defaults to Off.
++
++- **Keyboard** captures one physical Linux key code. A starts capture and X
++  clears it.
++- Menu or B cancels keyboard capture.
++- A malformed or unsupported record is displayed as invalid and can only be
++  replaced by explicitly resetting the shortcut to Off.
++
++The runtime shortcut is accepted only when all of these conditions hold:
++
++- Degauss and the framebuffer terminal are available.
++- A non-menu core is running.
++- OSD lock is unlocked.
++- No framebuffer script owns VT 2.
++- A keyboard trigger occurs while the OSD is hidden.
++
++The configured keyboard make, repeat and break events are consumed.
++
++Input processing records one request. `HandleUI` consumes it and loads
++`menu.rbf`; the input path never starts Degauss or loads a core directly.
++
++## Configuration format
++
++The settings are stored at:
++
++```text
++/media/fat/config/degauss/frontend_shortcut.bin
++```
++
++The version 1 record remains a 16-byte little-endian structure containing
++magic, version, record size, keyboard key, a legacy controller byte, a reserved
++byte and a sentinel. The legacy byte keeps files written by pre-release test
++builds readable, but it is ignored and every new save writes it as zero. A
++missing file means the keyboard shortcut is Off. Wrong size, version, field
++range, reserved value, magic or sentinel is invalid. Deleting the file restores
++the missing-file Off default on the next Main start.
++
++## Local verification
++
++The pure configuration and input-state logic is independent of Main's ARM
++dependencies and can be checked on the host:
++
++```bash
++./tests/run-degauss-shortcut-tests.sh
++```
++
++The complete fork build uses the existing containerised ARM toolchain:
++
++```bash
++./build-degauss-main.sh
++```
+diff --git a/support/degauss/degauss_launcher.cpp b/support/degauss/degauss_launcher.cpp
+new file mode 100644
+index 0000000..e850d41
+--- /dev/null
++++ b/support/degauss/degauss_launcher.cpp
+@@ -0,0 +1,53 @@
++// Degauss: hand the menu core to the Degauss frontend.
++//
++// Copyright (C) 2026 Giancarlo Erra
++// SPDX-License-Identifier: GPL-3.0-or-later
++
++#include <stdio.h>
++#include <string.h>
++
++#include "degauss_launcher.h"
++#include "../../cfg.h"
++#include "../../file_io.h"
++#include "../../user_io.h"
++
++// Where the frontend is installed. The same path the Scripts menu would
++// show, so a card that has Degauss already has this and a card that does
++// not is left alone.
++#define DEGAUSS_SCRIPT "Scripts/degauss.sh"
++
++bool degauss_is_frontend_script(const char *path)
++{
++	if (!path) return false;
++	const char *slash = strrchr(path, '/');
++	const char *name = slash ? slash + 1 : path;
++	return !strcmp(name, "degauss.sh");
++}
++
++bool degauss_installed(void)
++{
++	return cfg.fb_terminal && FileExists(DEGAUSS_SCRIPT);
++}
++
++bool degauss_should_take_menu(char *path, int size)
++{
++	// Once per Main process. Main re-executes itself on every core load
++	// (fpga_io.cpp, app_restart), so this static is fresh every time the
++	// menu core comes back, and stays set if the user quits the frontend
++	// to the stock menu. Quitting therefore means quitting, rather than
++	// the frontend reappearing on top of itself.
++	static bool taken = false;
++	if (taken) return false;
++
++	// Only the menu core. A game core must never have its screen taken.
++	if (!is_menu()) return false;
++
++	// Without the framebuffer terminal there is no way to give a program
++	// the screen at all, and the Scripts menu is equally dead. Leaving the
++	// stock menu up is the honest outcome.
++	if (!degauss_installed()) return false;
++
++	taken = true;
++	snprintf(path, size, "%s", DEGAUSS_SCRIPT);
++	return true;
++}
+diff --git a/support/degauss/degauss_launcher.h b/support/degauss/degauss_launcher.h
+new file mode 100644
+index 0000000..5fe1dd8
+--- /dev/null
++++ b/support/degauss/degauss_launcher.h
+@@ -0,0 +1,45 @@
++// Degauss: hand the menu core to the Degauss frontend.
++//
++// Copyright (C) 2026 Giancarlo Erra
++// SPDX-License-Identifier: GPL-3.0-or-later
++//
++// This file is part of a fork of MiSTer Main and is therefore GPL-3.0, the
++// same as Main itself. The Degauss frontend is a separate program under a
++// different licence; nothing here links against it. All this does is start
++// it the same way the Scripts menu starts any other script.
++
++#ifndef DEGAUSS_LAUNCHER_H
++#define DEGAUSS_LAUNCHER_H
++
++// True when the menu core has just come up and the frontend should be given
++// the screen. Answers true at most once per Main process, and Main re-execs
++// itself on every core load, so that is once per return to the menu.
++//
++// Writes the script path into `path`, in the form the Scripts menu uses:
++// relative to the root directory.
++bool degauss_should_take_menu(char *path, int size);
++
++// Which entries of the core's System menu the Degauss items occupy.
++//
++// menumask bits are menusub values, not line positions, so an item can be
++// drawn anywhere and numbered anything free. The number still decides the
++// order the stick walks through them. These two are deliberately above every
++// upstream entry and consecutive: Frontend walks down to Frontend shortcut,
++// then wraps to Core. Up walks through the same visible order in reverse.
++#define DEGAUSS_MENUSUB 30
++#define DEGAUSS_SHORTCUT_MENUSUB 31
++
++// True when `path` names the frontend's own script.
++//
++// The frontend draws its own screen and leaves on purpose, so it wants
++// neither the console banner on the way in nor the "press any key" on the
++// way out that an ordinary shell script needs. Asking about the path
++// rather than about how it was started covers both routes to it: the
++// automatic handover above, and picking it from the Scripts menu by hand.
++bool degauss_is_frontend_script(const char *path);
++
++// True when the frontend script and framebuffer terminal are available, so
++// the Frontend entry can work. Other cards get the stock menu untouched.
++bool degauss_installed(void);
++
++#endif
+diff --git a/support/degauss/degauss_shortcut.cpp b/support/degauss/degauss_shortcut.cpp
+new file mode 100644
+index 0000000..3615922
+--- /dev/null
++++ b/support/degauss/degauss_shortcut.cpp
+@@ -0,0 +1,188 @@
++// Degauss frontend shortcut integration for MiSTer Main.
++//
++// Copyright (C) 2026 Giancarlo Erra
++// SPDX-License-Identifier: GPL-3.0-or-later
++
++#include <stdio.h>
++#include <string.h>
++
++#include "degauss_shortcut.h"
++#include "degauss_launcher.h"
++#include "../../file_io.h"
++#include "../../menu.h"
++#include "../../user_io.h"
++#include "../../video.h"
++
++namespace
++{
++
++constexpr const char *CONFIG_NAME = "degauss/frontend_shortcut.bin";
++constexpr const char *CONFIG_PATH = CONFIG_DIR "/degauss/frontend_shortcut.bin";
++
++using degauss_shortcut_logic::ConfigV1;
++using degauss_shortcut_logic::KeyboardRuntimeState;
++using degauss_shortcut_logic::RequestState;
++
++ConfigV1 config = degauss_shortcut_logic::make_config(0);
++DegaussShortcutLoadState load_state = DEGAUSS_SHORTCUT_MISSING;
++bool loaded = false;
++RequestState request_state;
++
++bool capture_active = false;
++bool capture_ready = false;
++uint16_t capture_key = 0;
++uint16_t capture_release_key = 0;
++
++KeyboardRuntimeState keyboard_state;
++
++void ensure_loaded()
++{
++	if (loaded) return;
++	loaded = true;
++
++	const bool exists = FileExists(CONFIG_PATH);
++	const int size = FileLoadConfig(CONFIG_NAME, nullptr, 0);
++	ConfigV1 candidate = {};
++	const bool read = size == static_cast<int>(sizeof(candidate))
++		&& FileLoadConfig(CONFIG_NAME, &candidate, sizeof(candidate))
++			== static_cast<int>(sizeof(candidate));
++	const degauss_shortcut_logic::ConfigLoadResult result =
++		degauss_shortcut_logic::classify_config(exists, size,
++			read ? &candidate : nullptr);
++
++	if (result == degauss_shortcut_logic::CONFIG_MISSING) return;
++	if (result == degauss_shortcut_logic::CONFIG_INVALID)
++	{
++		load_state = DEGAUSS_SHORTCUT_INVALID;
++		printf("Degauss shortcut config is invalid or unsupported (size %d): %s\n",
++			size, CONFIG_PATH);
++		return;
++	}
++
++	config = candidate;
++	load_state = DEGAUSS_SHORTCUT_VALID;
++}
++
++bool save_config(const ConfigV1 &candidate)
++{
++	if (!degauss_shortcut_logic::config_valid(candidate)) return false;
++
++	ConfigV1 stored = candidate;
++	if (FileSaveConfig(CONFIG_NAME, &stored, sizeof(stored))
++		!= static_cast<int>(sizeof(stored)))
++	{
++		printf("Degauss shortcut config save failed: %s\n", CONFIG_PATH);
++		return false;
++	}
++
++	config = candidate;
++	load_state = DEGAUSS_SHORTCUT_VALID;
++	loaded = true;
++	return true;
++}
++
++bool runtime_eligible(bool require_hidden_osd)
++{
++	const degauss_shortcut_logic::RuntimeConditions conditions = {
++		degauss_installed(),
++		is_menu() != 0,
++		menu_osd_is_unlocked(),
++		video_fb_state() && video_chvt(0) == 2,
++		user_io_osd_is_visible() != 0
++	};
++	return degauss_shortcut_logic::runtime_eligible(conditions, require_hidden_osd);
++}
++
++} // namespace
++
++DegaussShortcutLoadState degauss_shortcut_load_state(void)
++{
++	ensure_loaded();
++	return load_state;
++}
++
++uint16_t degauss_shortcut_keyboard_key(void)
++{
++	ensure_loaded();
++	return load_state == DEGAUSS_SHORTCUT_INVALID ? 0 : config.keyboard_key;
++}
++
++bool degauss_shortcut_set_keyboard(uint16_t key)
++{
++	ensure_loaded();
++	if (load_state == DEGAUSS_SHORTCUT_INVALID
++		|| !degauss_shortcut_logic::valid_keyboard_key(key))
++	{
++		return false;
++	}
++
++	return save_config(degauss_shortcut_logic::make_config(key));
++}
++
++bool degauss_shortcut_reset(void)
++{
++	return save_config(degauss_shortcut_logic::make_config(0));
++}
++
++void degauss_shortcut_begin_keyboard_capture(void)
++{
++	capture_active = true;
++	capture_ready = false;
++	capture_key = 0;
++}
++
++void degauss_shortcut_cancel_keyboard_capture(void)
++{
++	capture_active = false;
++	capture_ready = false;
++	capture_key = 0;
++}
++
++bool degauss_shortcut_take_keyboard_capture(uint16_t *key)
++{
++	if (!capture_ready) return false;
++	if (key) *key = capture_key;
++	capture_ready = false;
++	return true;
++}
++
++bool degauss_shortcut_handle_keyboard_event(uint16_t key, int value, bool menu_event)
++{
++	ensure_loaded();
++
++	if (!menu_event && capture_active)
++	{
++		if (value == 1 && key)
++		{
++			capture_active = false;
++			capture_ready = true;
++			capture_key = key;
++			capture_release_key = key;
++		}
++		return true;
++	}
++
++	if (!menu_event && capture_release_key && key == capture_release_key)
++	{
++		if (!value) capture_release_key = 0;
++		return true;
++	}
++
++	if (menu_event || load_state == DEGAUSS_SHORTCUT_INVALID) return false;
++
++	const bool needs_eligibility = !keyboard_state.consumed_key
++		&& config.keyboard_key
++		&& key == config.keyboard_key
++		&& value == 1;
++	bool triggered = false;
++	const bool consumed = keyboard_state.event(config.keyboard_key, key, value,
++		needs_eligibility && runtime_eligible(true), triggered);
++	if (triggered) request_state.request();
++	return consumed;
++}
++
++bool degauss_shortcut_take_request(void)
++{
++	if (!request_state.pending) return false;
++	return request_state.take(runtime_eligible(false));
++}
+diff --git a/support/degauss/degauss_shortcut.h b/support/degauss/degauss_shortcut.h
+new file mode 100644
+index 0000000..7dde22f
+--- /dev/null
++++ b/support/degauss/degauss_shortcut.h
+@@ -0,0 +1,38 @@
++// Degauss frontend shortcut integration for MiSTer Main.
++//
++// Copyright (C) 2026 Giancarlo Erra
++// SPDX-License-Identifier: GPL-3.0-or-later
++
++#ifndef DEGAUSS_SHORTCUT_H
++#define DEGAUSS_SHORTCUT_H
++
++#include <stdint.h>
++
++#include "degauss_shortcut_logic.h"
++
++enum DegaussShortcutLoadState
++{
++	DEGAUSS_SHORTCUT_MISSING,
++	DEGAUSS_SHORTCUT_VALID,
++	DEGAUSS_SHORTCUT_INVALID
++};
++
++// Configuration access. A missing file is the documented Off default.
++DegaussShortcutLoadState degauss_shortcut_load_state(void);
++uint16_t degauss_shortcut_keyboard_key(void);
++bool degauss_shortcut_set_keyboard(uint16_t key);
++bool degauss_shortcut_reset(void);
++
++// Keyboard capture is initiated by the OSD and completed by a physical Linux
++// keyboard event. Controller-generated menu events are excluded by the caller.
++void degauss_shortcut_begin_keyboard_capture(void);
++void degauss_shortcut_cancel_keyboard_capture(void);
++bool degauss_shortcut_take_keyboard_capture(uint16_t *key);
++
++// The input hook returns true when the current event must not reach the core.
++bool degauss_shortcut_handle_keyboard_event(uint16_t key, int value, bool menu_event);
++
++// The input path only records a request. HandleUI performs the core load.
++bool degauss_shortcut_take_request(void);
++
++#endif
+diff --git a/support/degauss/degauss_shortcut_logic.h b/support/degauss/degauss_shortcut_logic.h
+new file mode 100644
+index 0000000..bc47972
+--- /dev/null
++++ b/support/degauss/degauss_shortcut_logic.h
+@@ -0,0 +1,173 @@
++// Pure state and file-format logic for the Degauss frontend shortcut.
++//
++// Copyright (C) 2026 Giancarlo Erra
++// SPDX-License-Identifier: GPL-3.0-or-later
++
++#ifndef DEGAUSS_SHORTCUT_LOGIC_H
++#define DEGAUSS_SHORTCUT_LOGIC_H
++
++#include <stddef.h>
++#include <stdint.h>
++
++namespace degauss_shortcut_logic
++{
++
++// Version 1 briefly exposed a controller shortcut before release. Keep its
++// byte range readable so test cards do not need their configuration deleted,
++// but every keyboard-only save writes the field back to zero.
++constexpr uint8_t LEGACY_CONTROLLER_OFF = 0;
++constexpr uint8_t LEGACY_CONTROLLER_COUNT = 9;
++
++enum ConfigLoadResult : uint8_t
++{
++	CONFIG_MISSING,
++	CONFIG_VALID,
++	CONFIG_INVALID
++};
++
++// Stored separately from MiSTer.ini so a stock Main build ignores the feature.
++// Fixed-width fields, size, version, and sentinels make truncated, future, and
++// corrupt records distinguishable from a deliberately disabled configuration.
++struct ConfigV1
++{
++	uint32_t magic;
++	uint16_t version;
++	uint16_t size;
++	uint16_t keyboard_key;
++	uint8_t legacy_controller_button;
++	uint8_t reserved;
++	uint32_t sentinel;
++};
++
++static_assert(sizeof(ConfigV1) == 16, "Degauss shortcut config must remain stable");
++static_assert(offsetof(ConfigV1, magic) == 0, "Config magic offset changed");
++static_assert(offsetof(ConfigV1, version) == 4, "Config version offset changed");
++static_assert(offsetof(ConfigV1, size) == 6, "Config size offset changed");
++static_assert(offsetof(ConfigV1, keyboard_key) == 8, "Config key offset changed");
++static_assert(offsetof(ConfigV1, legacy_controller_button) == 10,
++	"Config legacy controller offset changed");
++static_assert(offsetof(ConfigV1, reserved) == 11, "Config reserved offset changed");
++static_assert(offsetof(ConfigV1, sentinel) == 12, "Config sentinel offset changed");
++
++constexpr uint32_t CONFIG_MAGIC = 0x43534744; // "DGSC" on little-endian ARM
++constexpr uint16_t CONFIG_VERSION = 1;
++constexpr uint32_t CONFIG_SENTINEL = 0xA55A5AA5;
++// Linux input-event-codes.h defines KEY_MAX as 0x2ff. Keep the pure logic
++// header independent of Linux headers so its tests also compile on the host;
++// input.cpp asserts this value against the target toolchain's KEY_MAX.
++constexpr uint16_t MAX_KEYBOARD_KEY = 0x02ff;
++constexpr uint16_t PRIMARY_BUTTON_FIRST = 0x0100;
++constexpr uint16_t PRIMARY_BUTTON_LAST = 0x0151;
++constexpr uint16_t DPAD_BUTTON_FIRST = 0x0220;
++constexpr uint16_t DPAD_BUTTON_LAST = 0x0223;
++constexpr uint16_t TRIGGER_BUTTON_FIRST = 0x02c0;
++constexpr uint16_t TRIGGER_BUTTON_LAST = 0x02e7;
++
++inline bool valid_keyboard_key(uint16_t key)
++{
++	if (key > MAX_KEYBOARD_KEY) return false;
++	return !(key >= PRIMARY_BUTTON_FIRST && key <= PRIMARY_BUTTON_LAST)
++		&& !(key >= DPAD_BUTTON_FIRST && key <= DPAD_BUTTON_LAST)
++		&& !(key >= TRIGGER_BUTTON_FIRST && key <= TRIGGER_BUTTON_LAST);
++}
++
++inline ConfigV1 make_config(uint16_t keyboard_key)
++{
++	return {
++		CONFIG_MAGIC,
++		CONFIG_VERSION,
++		static_cast<uint16_t>(sizeof(ConfigV1)),
++		keyboard_key,
++		LEGACY_CONTROLLER_OFF,
++		0,
++		CONFIG_SENTINEL
++	};
++}
++
++inline bool config_valid(const ConfigV1 &config)
++{
++	return config.magic == CONFIG_MAGIC
++		&& config.version == CONFIG_VERSION
++		&& config.size == sizeof(ConfigV1)
++		&& valid_keyboard_key(config.keyboard_key)
++		&& config.legacy_controller_button < LEGACY_CONTROLLER_COUNT
++		&& config.reserved == 0
++		&& config.sentinel == CONFIG_SENTINEL;
++}
++
++inline ConfigLoadResult classify_config(bool file_exists, uint32_t file_size,
++	const ConfigV1 *record)
++{
++	if (!file_exists) return CONFIG_MISSING;
++	if (file_size != sizeof(ConfigV1) || !record || !config_valid(*record))
++	{
++		return CONFIG_INVALID;
++	}
++	return CONFIG_VALID;
++}
++
++struct RuntimeConditions
++{
++	bool frontend_available;
++	bool menu_core;
++	bool osd_unlocked;
++	bool framebuffer_script;
++	bool osd_visible;
++};
++
++inline bool runtime_eligible(const RuntimeConditions &conditions,
++	bool require_hidden_osd)
++{
++	return conditions.frontend_available
++		&& !conditions.menu_core
++		&& conditions.osd_unlocked
++		&& !conditions.framebuffer_script
++		&& (!require_hidden_osd || !conditions.osd_visible);
++}
++
++struct RequestState
++{
++	bool pending = false;
++
++	void request()
++	{
++		pending = true;
++	}
++
++	bool take(bool eligible)
++	{
++		const bool result = pending && eligible;
++		pending = false;
++		return result;
++	}
++};
++
++struct KeyboardRuntimeState
++{
++	uint16_t consumed_key = 0;
++
++	bool event(uint16_t configured_key, uint16_t key, int value,
++		bool eligible, bool &triggered)
++	{
++		triggered = false;
++
++		if (consumed_key && key == consumed_key)
++		{
++			if (!value) consumed_key = 0;
++			return true;
++		}
++
++		if (!configured_key || key != configured_key || value != 1 || !eligible)
++		{
++			return false;
++		}
++
++		consumed_key = key;
++		triggered = true;
++		return true;
++	}
++};
++
++} // namespace degauss_shortcut_logic
++
++#endif
+diff --git a/tests/degauss_shortcut_logic_test.cpp b/tests/degauss_shortcut_logic_test.cpp
+new file mode 100644
+index 0000000..e627958
+--- /dev/null
++++ b/tests/degauss_shortcut_logic_test.cpp
+@@ -0,0 +1,145 @@
++#include <assert.h>
++#include <stdint.h>
++#include <string.h>
++
++#include "../support/degauss/degauss_shortcut_logic.h"
++
++using namespace degauss_shortcut_logic;
++
++static void test_config_validation()
++{
++	const uint16_t braille_dot_1 = 0x01f1;
++	assert(MAX_KEYBOARD_KEY == 0x02ff);
++	assert(config_valid(make_config(braille_dot_1)));
++	assert(config_valid(make_config(0x02bb)));
++	assert(!config_valid(make_config(PRIMARY_BUTTON_FIRST)));
++	assert(!config_valid(make_config(PRIMARY_BUTTON_LAST)));
++	assert(!config_valid(make_config(DPAD_BUTTON_FIRST)));
++	assert(!config_valid(make_config(DPAD_BUTTON_LAST)));
++	assert(!config_valid(make_config(TRIGGER_BUTTON_FIRST)));
++	assert(!config_valid(make_config(TRIGGER_BUTTON_LAST)));
++
++	ConfigV1 config = make_config(87);
++	assert(config_valid(config));
++
++	config.magic = 0;
++	assert(!config_valid(config));
++	config = make_config(87);
++	config.version++;
++	assert(!config_valid(config));
++	config = make_config(87);
++	config.size--;
++	assert(!config_valid(config));
++	config = make_config(87);
++	config.keyboard_key = MAX_KEYBOARD_KEY + 1;
++	assert(!config_valid(config));
++	config = make_config(87);
++	config.legacy_controller_button = LEGACY_CONTROLLER_COUNT;
++	assert(!config_valid(config));
++	config = make_config(87);
++	config.reserved = 1;
++	assert(!config_valid(config));
++	config = make_config(87);
++	config.sentinel = 0;
++	assert(!config_valid(config));
++
++	config = make_config(87);
++	ConfigV1 reloaded = {};
++	memcpy(&reloaded, &config, sizeof(config));
++	assert(config_valid(reloaded));
++	assert(!memcmp(&config, &reloaded, sizeof(config)));
++	const uint8_t expected_bytes[] = {
++		0x44, 0x47, 0x53, 0x43,
++		0x01, 0x00,
++		0x10, 0x00,
++		0x57, 0x00,
++		LEGACY_CONTROLLER_OFF, 0x00,
++		0xA5, 0x5A, 0x5A, 0xA5
++	};
++	assert(sizeof(expected_bytes) == sizeof(config));
++	assert(!memcmp(&config, expected_bytes, sizeof(config)));
++
++	const ConfigV1 cleared = make_config(0);
++	assert(config_valid(cleared));
++	assert(cleared.keyboard_key == 0);
++	assert(cleared.legacy_controller_button == LEGACY_CONTROLLER_OFF);
++
++	// A file written by the unreleased controller-capable build remains valid,
++	// but every new keyboard-only save clears its legacy controller byte.
++	ConfigV1 legacy = make_config(87);
++	legacy.legacy_controller_button = LEGACY_CONTROLLER_COUNT - 1;
++	assert(config_valid(legacy));
++	const ConfigV1 next_save = make_config(legacy.keyboard_key);
++	assert(next_save.keyboard_key == legacy.keyboard_key);
++	assert(next_save.legacy_controller_button == LEGACY_CONTROLLER_OFF);
++
++	assert(classify_config(false, 0, nullptr) == CONFIG_MISSING);
++	assert(classify_config(true, 0, nullptr) == CONFIG_INVALID);
++	assert(classify_config(true, sizeof(config) - 1, &config) == CONFIG_INVALID);
++	assert(classify_config(true, sizeof(config), nullptr) == CONFIG_INVALID);
++	assert(classify_config(true, sizeof(config), &config) == CONFIG_VALID);
++}
++
++static void test_runtime_conditions_and_request()
++{
++	RuntimeConditions conditions = { true, false, true, false, false };
++	assert(runtime_eligible(conditions, true));
++
++	conditions.frontend_available = false;
++	assert(!runtime_eligible(conditions, false));
++	conditions = { true, true, true, false, false };
++	assert(!runtime_eligible(conditions, false));
++	conditions = { true, false, false, false, false };
++	assert(!runtime_eligible(conditions, false));
++	conditions = { true, false, true, true, false };
++	assert(!runtime_eligible(conditions, false));
++	conditions = { true, false, true, false, true };
++	assert(runtime_eligible(conditions, false));
++	assert(!runtime_eligible(conditions, true));
++
++	RequestState request;
++	assert(!request.take(true));
++	request.request();
++	request.request();
++	assert(request.take(true));
++	assert(!request.take(true));
++	request.request();
++	assert(!request.take(false));
++	assert(!request.take(true));
++}
++
++static void test_keyboard_runtime()
++{
++	KeyboardRuntimeState state;
++	bool triggered = false;
++
++	assert(!state.event(0, 87, 1, true, triggered));
++	assert(!triggered);
++	assert(!state.event(87, 86, 1, true, triggered));
++	assert(!state.event(87, 87, 1, false, triggered));
++
++	assert(state.event(87, 87, 1, true, triggered));
++	assert(triggered);
++	assert(state.event(87, 87, 2, false, triggered));
++	assert(!triggered);
++	assert(state.event(87, 87, 0, false, triggered));
++	assert(!state.event(87, 87, 0, true, triggered));
++
++	// Linux keyboard codes above MiSTer's legacy 256-entry keyboard map remain
++	// valid shortcut keys and retain the same make, repeat and break behavior.
++	const uint16_t braille_dot_1 = 0x01f1;
++	KeyboardRuntimeState high_key_state;
++	assert(high_key_state.event(braille_dot_1, braille_dot_1, 1, true, triggered));
++	assert(triggered);
++	assert(high_key_state.event(braille_dot_1, braille_dot_1, 2, false, triggered));
++	assert(!triggered);
++	assert(high_key_state.event(braille_dot_1, braille_dot_1, 0, false, triggered));
++}
++
++int main()
++{
++	test_config_validation();
++	test_runtime_conditions_and_request();
++	test_keyboard_runtime();
++	return 0;
++}
+diff --git a/tests/run-degauss-shortcut-tests.sh b/tests/run-degauss-shortcut-tests.sh
+new file mode 100755
+index 0000000..64a4e88
+--- /dev/null
++++ b/tests/run-degauss-shortcut-tests.sh
+@@ -0,0 +1,64 @@
++#!/usr/bin/env bash
++set -euo pipefail
++
++cd "$(dirname "$0")/.."
++
++test_binary="$(mktemp -t degauss-shortcut-test.XXXXXX)"
++trap 'rm -f "$test_binary"' EXIT
++
++${CXX:-c++} -std=c++14 -Wall -Wextra -Werror \
++	-I. tests/degauss_shortcut_logic_test.cpp -o "$test_binary"
++"$test_binary"
++
++# The shortcut must use the physical Linux key. Moving its hook below either
++# transformation makes a saved assignment depend on the active keyboard map.
++shortcut_hook_line="$(grep -n 'degauss_shortcut_handle_keyboard_event' input.cpp | cut -d: -f1)"
++keyboard_map_guard_line="$(grep -n 'if (ev->type == EV_KEY && ev->code < 256' input.cpp | head -1 | cut -d: -f1)"
++keyboard_map_line="$(grep -n 'kbdmap\[ev->code\]' input.cpp | cut -d: -f1)"
++keyrah_line="$(grep -n 'ev->code = keyrah_trans' input.cpp | cut -d: -f1)"
++
++test -n "$shortcut_hook_line"
++test "$shortcut_hook_line" -lt "$keyboard_map_guard_line"
++test "$shortcut_hook_line" -lt "$keyboard_map_line"
++test "$shortcut_hook_line" -lt "$keyrah_line"
++grep -B8 'degauss_shortcut_handle_keyboard_event' input.cpp | grep -q 'valid_keyboard_key(ev->code)'
++grep -B8 'degauss_shortcut_handle_keyboard_event' input.cpp | grep -q '!input\[dev\]\.force_joy'
++grep -q 'uint8_t  kbdmap\[256\]' input.cpp
++
++# The two Degauss rows must follow their visible order when Up or Down changes
++# menusub. They stay above every stock System-menu index, with no controller
++# direction required to open the shortcut settings.
++frontend_menusub="$(awk '$2 == "DEGAUSS_MENUSUB" { print $3 }' support/degauss/degauss_launcher.h)"
++shortcut_menusub="$(awk '$2 == "DEGAUSS_SHORTCUT_MENUSUB" { print $3 }' support/degauss/degauss_launcher.h)"
++test "$frontend_menusub" -eq 30
++test "$shortcut_menusub" -eq 31
++
++frontend_row_line="$(grep -n 'MenuWrite(n++, " Frontend ' menu.cpp | head -1 | cut -d: -f1)"
++shortcut_row_line="$(grep -n 'MenuWrite(n++, " Frontend shortcut' menu.cpp | cut -d: -f1)"
++core_row_line="$(grep -n 'MenuWrite(n++, " Core ' menu.cpp | head -1 | cut -d: -f1)"
++test "$frontend_row_line" -lt "$shortcut_row_line"
++test "$shortcut_row_line" -lt "$core_row_line"
++
++if grep -q 'right && menusub == DEGAUSS_MENUSUB' menu.cpp; then
++	echo "Frontend shortcut still depends on Right from the Frontend row" >&2
++	exit 1
++fi
++grep -A4 'case DEGAUSS_SHORTCUT_MENUSUB:' menu.cpp \
++	| grep -q 'menustate = MENU_DEGAUSS_SHORTCUT1'
++
++# The release UI and input path are keyboard-only. Version 1 keeps a legacy
++# byte solely so files written by local pre-release builds remain readable.
++if grep -q ' Controller:' menu.cpp; then
++	echo "Frontend shortcut UI still exposes a controller assignment" >&2
++	exit 1
++fi
++if grep -q 'degauss_shortcut_handle_controller_event' input.cpp; then
++	echo "Frontend shortcut input still handles controller events" >&2
++	exit 1
++fi
++grep -q 'legacy_controller_button' support/degauss/degauss_shortcut_logic.h
++grep -q ' A: Capture   X: Disable' menu.cpp
++if grep -q 'set/capture' menu.cpp; then
++	echo "Frontend shortcut UI still uses the ambiguous set/capture label" >&2
++	exit 1
++fi
+--- a/menu.cpp
++++ b/menu.cpp
+@@ -7489,6 +7489,7 @@
+ 				if (degauss_running)
+ 				{
+ 					degauss_running = false;
++					video_chvt(1);
+ 					video_menu_bg(user_io_status_get("[3:1]"));
+ 					video_fb_enable(0);
+ 					menustate = MENU_SYSTEM1;
+--- a/tests/run-degauss-shortcut-tests.sh
++++ b/tests/run-degauss-shortcut-tests.sh
+@@ -62,3 +62,5 @@
+ 	echo "Frontend shortcut UI still uses the ambiguous set/capture label" >&2
+ 	exit 1
+ fi
++
++python3 tests/run-degauss-vt-test.py
+--- /dev/null
++++ b/tests/run-degauss-vt-test.py
+@@ -0,0 +1,38 @@
++#!/usr/bin/env python3
++"""Compile the actual frontend exit block and verify it leaves the script VT."""
++import pathlib
++import subprocess
++import tempfile
++
++root = pathlib.Path(__file__).resolve().parent.parent
++text = (root / 'menu.cpp').read_text()
++start = text.index('degauss_running = false;', text.index('case MENU_SCRIPTS_FB2:'))
++end = text.index('\n\t\t\t\t}', start)
++body = text[start:end]
++source = r'''
++#include <cassert>
++static bool degauss_running = true;
++static int vt = 2, menustate = 0, menusub = 0;
++static bool osd = false, framebuffer = true;
++enum { MENU_SYSTEM1 = 1, DISABLE_KEYBOARD = 1 };
++void video_chvt(int value) { vt = value; }
++int user_io_status_get(const char*) { return 0; }
++void video_menu_bg(int) {}
++void video_fb_enable(int value) { assert(vt == 1); framebuffer = value; }
++void OsdClear() {}
++void OsdEnable(int) { osd = true; }
++void cleanup() {
++''' + body + r'''
++}
++int main() {
++    cleanup();
++    assert(!degauss_running && vt == 1 && !framebuffer);
++    assert(menustate == MENU_SYSTEM1 && menusub == 3 && osd);
++}
++'''
++with tempfile.TemporaryDirectory() as temporary:
++    path = pathlib.Path(temporary)
++    (path / 'test.cpp').write_text(source)
++    subprocess.run(['c++', '-std=c++11', '-Wall', '-Wextra', '-Werror', str(path / 'test.cpp'), '-o', str(path / 'test')], check=True)
++    subprocess.run([str(path / 'test')], check=True)
++print('Frontend completion restores VT1 before disabling script framebuffer')

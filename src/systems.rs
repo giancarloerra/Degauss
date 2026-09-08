@@ -19,6 +19,11 @@ use serde::Deserialize;
 use crate::config::LaunchRule;
 use crate::error::{DegaussError, Result};
 
+/// Favorites semantics also apply to custom collection names and category casing.
+pub fn is_favorites(category: &str) -> bool {
+    category.eq_ignore_ascii_case("Favorites")
+}
+
 /// One row of the systems table.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -135,6 +140,7 @@ impl FoundSystem {
     /// extensions that count, and how to start each of them.
     pub fn to_config(&self) -> crate::config::SystemConfig {
         crate::config::SystemConfig {
+            preserve_rbf_stem: self.category() == "Unstable",
             name: self.def.name.clone(),
             path: self.path().to_string_lossy().into_owned(),
             extra_paths: self
@@ -193,20 +199,118 @@ pub fn parse_table(text: &str, origin: &Path) -> Result<Vec<SystemDef>> {
     Ok(file.systems)
 }
 
+/// Built-in collection identity is reserved only for the exact legacy path
+/// and raw-core shape. User-authored absolute folders otherwise stay literal.
+const COLLECTIONS: [(&str, &str, &str); 4] = [
+    ("OtherCores", "Other", "_Other"),
+    ("UtilityCores", "Utility", "_Utility"),
+    ("UnstableCores", "Unstable", "_Unstable"),
+    ("Favorites", "Favorites", "_@Favorites"),
+];
+
+fn direct_collection(def: &SystemDef) -> bool {
+    def.rbf.is_empty()
+        && def.launch.is_empty()
+        && def.folders.len() == 1
+        && ["rbf", "mra", "mgl"].iter().all(|extension| {
+            def.extensions
+                .iter()
+                .any(|held| held.eq_ignore_ascii_case(extension))
+        })
+        && def.extensions.len() == 3
+}
+
+/// Resolve shipped collection paths without rewriting the user's table.
+/// Existing equivalent rows keep their IDs, labels, artwork and hidden state.
+pub fn prepare_table(mut table: Vec<SystemDef>, menu_root: &Path) -> Result<Vec<SystemDef>> {
+    for def in &mut table {
+        if !direct_collection(def) {
+            continue;
+        }
+        for (id, category, folder) in COLLECTIONS {
+            if def.id == id
+                && def.category.as_deref() == Some(category)
+                && (def.folders[0] == folder || def.folders[0] == format!("/media/fat/{folder}"))
+            {
+                def.folders[0] = menu_root.join(folder).to_string_lossy().into_owned();
+            }
+        }
+    }
+    // Compare resolved directory identities, including symlink aliases when
+    // present. A missing folder remains a literal identity until discovery.
+    let identity = |path: &Path| -> Result<PathBuf> {
+        match std::fs::canonicalize(path) {
+            Ok(path) => Ok(path),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(path.to_path_buf()),
+            Err(error) => Err(DegaussError::io("resolving collection folder", path, error)),
+        }
+    };
+    let mut targets = Vec::new();
+    for (_, category, folder) in COLLECTIONS {
+        targets.push((category, identity(&menu_root.join(folder))?));
+    }
+    let mut seen = BTreeMap::<&str, usize>::new();
+    let mut prepared: Vec<SystemDef> = Vec::new();
+    for mut def in table {
+        if direct_collection(&def) && Path::new(&def.folders[0]).is_absolute() {
+            let path = identity(Path::new(&def.folders[0]))?;
+            if let Some((category, _)) = targets.iter().find(|(_, target)| *target == path) {
+                def.category = Some((*category).to_string());
+                if let Some(&position) = seen.get(category) {
+                    let builtin_id = COLLECTIONS
+                        .iter()
+                        .find(|(_, label, _)| label == category)
+                        .map(|(id, _, _)| *id)
+                        .expect("known collection");
+                    // Prefer a user's already-existing identity over a newly
+                    // shipped duplicate, regardless of table order.
+                    if prepared[position].id == builtin_id && def.id != builtin_id {
+                        prepared[position] = def;
+                    }
+                    continue;
+                }
+                seen.insert(*category, prepared.len());
+            }
+        }
+        prepared.push(def);
+    }
+    if !seen.contains_key("Unstable") {
+        // A reserved ID used for a different user collection must not collide
+        // with persisted cache and hidden-state keys.
+        let mut id = "UnstableCores".to_string();
+        while prepared.iter().any(|def| def.id == id) {
+            id.push('_');
+        }
+        prepared.push(SystemDef {
+            name: "Cores".into(),
+            id,
+            folders: vec![menu_root.join("_Unstable").to_string_lossy().into_owned()],
+            rbf: String::new(),
+            extensions: vec!["rbf".into(), "mra".into(), "mgl".into()],
+            launch: Vec::new(),
+            logo: None,
+            category: Some("Unstable".into()),
+            skip_folders: Vec::new(),
+            setname: None,
+        });
+    }
+    Ok(prepared)
+}
+
 /// Find the systems whose folders exist under any of the given roots.
 ///
 /// Order follows the table, so the list reads the same on every machine.
 /// A system with several possible folder names contributes once, using the
 /// first that exists.
-pub fn discover(
+pub fn discover_checked(
     table: &[SystemDef],
     roots: &[PathBuf],
     logo_dir: Option<&Path>,
     cores: &CoreIndex,
-) -> Vec<FoundSystem> {
+) -> Result<Vec<FoundSystem>> {
     let mut found = Vec::new();
     for def in table {
-        let paths = existing_folders(def, roots);
+        let paths = existing_folders_checked(def, roots)?;
         if paths.is_empty() {
             continue;
         }
@@ -215,16 +319,30 @@ pub fn discover(
             // the system itself. A table entry can name a core this card
             // does not have: several systems run on more than one core, and
             // the table can only name one of them.
-            menu_folder: cores
-                .folder_of(&def.rbf)
-                .or_else(|| cores.folder_of(&def.id))
-                .map(str::to_string),
+            menu_folder: if direct_collection(def) {
+                None
+            } else {
+                cores
+                    .folder_of(&def.rbf)
+                    .or_else(|| cores.folder_of(&def.id))
+                    .map(str::to_string)
+            },
             def: def.clone(),
             paths,
             logo_dir: logo_dir.map(|d| d.to_path_buf()),
         });
     }
-    found
+    Ok(found)
+}
+
+#[cfg(test)]
+fn discover(
+    table: &[SystemDef],
+    roots: &[PathBuf],
+    logo_dir: Option<&Path>,
+    cores: &CoreIndex,
+) -> Vec<FoundSystem> {
+    discover_checked(table, roots, logo_dir, cores).unwrap()
 }
 
 /// Which menu folder each installed core sits in.
@@ -239,7 +357,21 @@ pub fn discover(
 pub struct CoreIndex {
     /// Lowercased core name, without its date stamp, to the menu folder
     /// holding it and how deep inside that folder it sits.
-    folders: BTreeMap<String, (String, usize)>,
+    folders: BTreeMap<String, Vec<CoreCandidate>>,
+}
+
+#[derive(Debug)]
+struct CoreCandidate {
+    folder: String,
+    depth: usize,
+    relative: Vec<u8>,
+    folded: Vec<u8>,
+}
+
+impl CoreCandidate {
+    fn rank(&self) -> (usize, &[u8], &[u8]) {
+        (self.depth, &self.folded, &self.relative)
+    }
 }
 
 impl CoreIndex {
@@ -252,17 +384,20 @@ impl CoreIndex {
         };
         for item in listing.flatten() {
             let name = item.file_name().to_string_lossy().into_owned();
-            if !name.starts_with('_') || !item.path().is_dir() {
+            if !name.starts_with('_')
+                || name.eq_ignore_ascii_case("_Unstable")
+                || !item.path().is_dir()
+            {
                 continue;
             }
             // What the stock menu prints: the folder without its marker.
             let label = name.trim_start_matches('_').to_string();
-            index.walk(&item.path(), &label, 0);
+            index.walk(root, &item.path(), &label, 0);
         }
         index
     }
 
-    fn walk(&mut self, dir: &Path, label: &str, depth: usize) {
+    fn walk(&mut self, root: &Path, dir: &Path, label: &str, depth: usize) {
         // Cores sit at the top of a menu folder, or one level in, in the
         // `*_extra` folders the community ships. Nothing deeper is a core
         // the menu offers, and going further means reading every genre
@@ -276,29 +411,46 @@ impl CoreIndex {
         for item in listing.flatten() {
             let path = item.path();
             if path.is_dir() {
-                self.walk(&path, label, depth + 1);
+                // RA runtime binaries are support files, not menu entries.
+                if label.eq_ignore_ascii_case("RA_Cores")
+                    && item
+                        .file_name()
+                        .to_string_lossy()
+                        .eq_ignore_ascii_case("Cores")
+                {
+                    continue;
+                }
+                self.walk(root, &path, label, depth + 1);
                 continue;
             }
-            let name = item.file_name().to_string_lossy().into_owned();
-            let Some(stem) = name
-                .strip_suffix(".rbf")
-                .or_else(|| name.strip_suffix(".RBF"))
-            else {
+            if !path.is_file() {
+                continue;
+            }
+            let Some(extension) = path.extension().and_then(|ext| ext.to_str()) else {
                 continue;
             };
-            // The shallowest copy of a core wins. This is not a tie-break:
-            // `_Arcade/cores` holds a copy of several console cores, because
-            // that is where an `.mra` loads its core from. Those are support
-            // files, never shown in the menu, and letting one of them answer
-            // puts the Master System under Arcade.
-            let key = core_name(stem);
-            let better = match self.folders.get(&key) {
-                Some((_, seen)) => depth < *seen,
-                None => true,
-            };
-            if better {
-                self.folders.insert(key, (label.to_string(), depth));
+            if !extension.eq_ignore_ascii_case("rbf") {
+                continue;
             }
+            let Some(stem) = path.file_stem().and_then(|stem| stem.to_str()) else {
+                continue;
+            };
+            let relative = path
+                .strip_prefix(root)
+                .expect("walk stays under root")
+                .as_os_str()
+                .as_encoded_bytes()
+                .to_vec();
+            let folded = relative.iter().map(u8::to_ascii_lowercase).collect();
+            self.folders
+                .entry(core_name(stem))
+                .or_default()
+                .push(CoreCandidate {
+                    folder: label.to_string(),
+                    depth,
+                    relative,
+                    folded,
+                });
         }
     }
 
@@ -309,9 +461,17 @@ impl CoreIndex {
         if core.is_empty() {
             return None;
         }
-        self.folders
-            .get(&core_name(core))
-            .map(|(folder, _)| folder.as_str())
+        let candidates = self.folders.get(&core_name(core))?;
+        let declared = rbf
+            .split_once('/')
+            .map(|(folder, _)| folder.trim_start_matches('_'));
+        let preferred = candidates
+            .iter()
+            .filter(|candidate| declared.is_some_and(|folder| folder == candidate.folder))
+            .min_by(|a, b| a.rank().cmp(&b.rank()));
+        preferred
+            .or_else(|| candidates.iter().min_by(|a, b| a.rank().cmp(&b.rank())))
+            .map(|candidate| candidate.folder.as_str())
     }
 
     #[cfg_attr(not(test), allow(dead_code))]
@@ -331,6 +491,7 @@ impl CoreIndex {
 /// whose real file is gone. This looks only where MiSTer will look, and
 /// compares through the same `core_name` the walk uses, so a dated file
 /// counts and a different core that merely shares a prefix does not.
+#[cfg(test)]
 pub fn core_file_exists(menu_root: &Path, rbf: &str) -> bool {
     let (folder, core) = match rbf.rsplit_once('/') {
         Some((folder, core)) => (Some(folder), core),
@@ -374,7 +535,7 @@ pub fn core_file_exists(menu_root: &Path, rbf: &str) -> bool {
 /// whichever build was installed last. Punctuation goes because the same
 /// system is written `NeoGeoPocket-Color` as a file and `NeoGeoPocketColor`
 /// as an id, and they have to meet.
-fn core_name(stem: &str) -> String {
+pub(crate) fn core_name(stem: &str) -> String {
     let trimmed = match stem.rsplit_once('_') {
         // Compared as bytes, not sliced as a string. A date stamp is eight
         // ASCII digits either way, and `&after[..8]` panics when byte 8 lands
@@ -405,17 +566,26 @@ fn core_name(stem: &str) -> String {
 ///
 /// `discover` asks this for every system; the single-system rebuild asks
 /// it again for one, because a folder can appear or go after discovery.
-pub fn existing_folders(def: &SystemDef, roots: &[PathBuf]) -> Vec<PathBuf> {
-    // Unmounted roots are dropped before the folder walk, so a missing
-    // mount costs one failed stat per system rather than one per folder
-    // name: with six USB slots in the defaults, most of this list does
-    // not exist on most machines.
-    let live: Vec<&PathBuf> = roots.iter().filter(|root| root.is_dir()).collect();
-    let mut found: Vec<PathBuf> = Vec::new();
+pub fn existing_folders_checked(def: &SystemDef, roots: &[PathBuf]) -> Result<Vec<PathBuf>> {
+    fn directory(path: &Path) -> Result<bool> {
+        match std::fs::metadata(path) {
+            Ok(meta) => Ok(meta.is_dir()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+            Err(error) => Err(DegaussError::io("checking system folder", path, error)),
+        }
+    }
+    let mut found = Vec::new();
     for folder in &def.folders {
-        for root in &live {
-            // An absolute folder in the table stands on its own; joining
-            // replaces the root, which is what we want.
+        let path = Path::new(folder);
+        if path.is_absolute() {
+            if directory(path)? && !found.contains(&path.to_path_buf()) {
+                found.push(path.to_path_buf());
+            }
+            continue;
+        }
+        // Preserve ordinary game-root discovery: absent or unavailable
+        // mounts are ignored, and the first existing alias wins.
+        for root in roots.iter().filter(|root| root.is_dir()) {
             let candidate = root.join(folder);
             if candidate.is_dir() {
                 if !found.contains(&candidate) {
@@ -425,7 +595,12 @@ pub fn existing_folders(def: &SystemDef, roots: &[PathBuf]) -> Vec<PathBuf> {
             }
         }
     }
-    found
+    Ok(found)
+}
+
+#[cfg(test)]
+fn existing_folders(def: &SystemDef, roots: &[PathBuf]) -> Vec<PathBuf> {
+    existing_folders_checked(def, roots).unwrap()
 }
 
 #[cfg(test)]
@@ -970,5 +1145,201 @@ extensions = ["ngp"]
         let cores = CoreIndex::read(Path::new("/definitely/not/a/card"));
         assert_eq!(cores.len(), 0);
         assert_eq!(cores.folder_of("_Console/NeoGeo"), None);
+    }
+
+    #[test]
+    fn legacy_collections_follow_menu_root_without_game_mounts() {
+        let menu = temp_dir("legacy-collections");
+        for (_, _, folder) in COLLECTIONS {
+            std::fs::create_dir_all(menu.join(folder)).unwrap();
+            std::fs::write(menu.join(folder).join("Core.rbf"), b"fixture").unwrap();
+        }
+        let legacy = parse_table(
+            include_str!("../tests/fixtures/v0.1.0-and-v0.2.0-systems.toml"),
+            Path::new("legacy"),
+        )
+        .unwrap();
+        let table = prepare_table(legacy, &menu).unwrap();
+        let found = discover_checked(&table, &[], None, &CoreIndex::read(&menu)).unwrap();
+        for (_, category, folder) in COLLECTIONS {
+            let rows: Vec<_> = found
+                .iter()
+                .filter(|row| row.category() == category)
+                .collect();
+            assert_eq!(rows.len(), 1, "one {category} collection");
+            assert_eq!(rows[0].path(), menu.join(folder));
+        }
+        let again = prepare_table(table, &menu).unwrap();
+        assert_eq!(
+            again
+                .iter()
+                .filter(|def| def.category.as_deref() == Some("Unstable"))
+                .count(),
+            1
+        );
+        std::fs::remove_dir_all(menu).unwrap();
+    }
+
+    #[test]
+    fn custom_absolute_collections_keep_their_paths_and_identity() {
+        let menu = temp_dir("custom-collections");
+        let outside = temp_dir("outside-collections");
+        let mut def = one_system(&[outside.to_str().unwrap()]);
+        def.id = "OtherCores".into();
+        def.rbf.clear();
+        def.launch.clear();
+        def.extensions = vec!["rbf".into(), "mra".into(), "mgl".into()];
+        def.category = Some("Other".into());
+        let table = prepare_table(vec![def], &menu).unwrap();
+        assert_eq!(table[0].folders, vec![outside.to_string_lossy()]);
+        assert_eq!(
+            existing_folders_checked(&table[0], &[]).unwrap(),
+            vec![outside.clone()]
+        );
+        std::fs::remove_dir_all(menu).unwrap();
+        std::fs::remove_dir_all(outside).unwrap();
+    }
+
+    #[test]
+    fn equivalent_unstable_collection_keeps_custom_id_without_duplicate() {
+        let menu = temp_dir("deduplicate-unstable");
+        std::fs::create_dir_all(menu.join("_Unstable")).unwrap();
+        let mut table = prepare_table(vec![one_system(&["NES"])], &menu).unwrap();
+        let mut custom = table.last().unwrap().clone();
+        custom.id = "MyNightlies".into();
+        custom.name = "My builds".into();
+        table.push(custom);
+        let prepared = prepare_table(table, &menu).unwrap();
+        let collections: Vec<_> = prepared
+            .iter()
+            .filter(|def| def.category.as_deref() == Some("Unstable"))
+            .collect();
+        assert_eq!(collections.len(), 1);
+        assert_eq!(collections[0].id, "MyNightlies");
+        assert_eq!(collections[0].name, "My builds");
+        std::fs::remove_dir_all(menu).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn collection_symlink_aliases_are_deduplicated() {
+        let menu = temp_dir("collection-symlink");
+        std::fs::create_dir_all(menu.join("_Unstable")).unwrap();
+        std::os::unix::fs::symlink(menu.join("_Unstable"), menu.join("alias")).unwrap();
+        let mut table = prepare_table(vec![one_system(&["NES"])], &menu).unwrap();
+        let mut alias = table.last().unwrap().clone();
+        alias.id = "Alias".into();
+        alias.folders = vec![menu.join("alias").to_string_lossy().into_owned()];
+        table.insert(0, alias);
+        let prepared = prepare_table(table, &menu).unwrap();
+        assert_eq!(
+            prepared
+                .iter()
+                .filter(|def| def.category.as_deref() == Some("Unstable"))
+                .count(),
+            1
+        );
+        assert_eq!(prepared[0].id, "Alias");
+        std::fs::remove_dir_all(menu).unwrap();
+    }
+
+    #[test]
+    fn nightly_and_ra_support_copies_cannot_classify_normal_systems() {
+        for reverse in [false, true] {
+            let menu = temp_dir(if reverse {
+                "collision-reverse"
+            } else {
+                "collision-forward"
+            });
+            let mut files = vec![
+                "_Console/NES.rbf",
+                "_Unstable/NES_20260101.rbf",
+                "_RA_Cores/Cores/NES.rbf",
+            ];
+            if reverse {
+                files.reverse();
+            }
+            for file in files {
+                let path = menu.join(file);
+                std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+                std::fs::write(path, b"fixture").unwrap();
+            }
+            let index = CoreIndex::read(&menu);
+            assert_eq!(index.folder_of("_Console/NES"), Some("Console"));
+            assert_eq!(index.folder_of("NES"), Some("Console"));
+            std::fs::remove_file(menu.join("_Console/NES.rbf")).unwrap();
+            assert_eq!(CoreIndex::read(&menu).folder_of("NES"), None);
+            std::fs::remove_dir_all(menu).unwrap();
+        }
+    }
+
+    #[test]
+    fn declared_folder_wins_then_fallback_is_shallow_and_deterministic() {
+        for reverse in [false, true] {
+            let menu = temp_dir(if reverse {
+                "ordering-reverse"
+            } else {
+                "ordering-forward"
+            });
+            let mut files = vec![
+                "_Zeta/NES.rbf",
+                "_Alpha/extra/NES.rbf",
+                "_Console/extra/NES_20260907.rBf",
+            ];
+            if reverse {
+                files.reverse();
+            }
+            for file in files {
+                let path = menu.join(file);
+                std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+                std::fs::write(path, b"fixture").unwrap();
+            }
+            let index = CoreIndex::read(&menu);
+            assert_eq!(index.folder_of("_Console/NES"), Some("Console"));
+            assert_eq!(index.folder_of("_Missing/NES"), Some("Zeta"));
+            std::fs::write(menu.join("_Alpha/NES.rbf"), b"fixture").unwrap();
+            assert_eq!(
+                CoreIndex::read(&menu).folder_of("_Missing/NES"),
+                Some("Alpha")
+            );
+            std::fs::remove_dir_all(menu).unwrap();
+        }
+        // Exercise case-only ties even on a case-insensitive host filesystem.
+        let first = CoreCandidate {
+            folder: "lower".into(),
+            depth: 0,
+            relative: b"_alpha/NES.rbf".to_vec(),
+            folded: b"_alpha/nes.rbf".to_vec(),
+        };
+        let second = CoreCandidate {
+            folder: "upper".into(),
+            depth: 0,
+            relative: b"_Alpha/NES.rbf".to_vec(),
+            folded: b"_alpha/nes.rbf".to_vec(),
+        };
+        assert!(second.rank() < first.rank());
+    }
+
+    #[test]
+    fn prepared_table_discovers_collection_added_after_startup() {
+        let menu = temp_dir("collection-added-later");
+        let table =
+            prepare_table(load_table(Path::new("assets/systems.toml")).unwrap(), &menu).unwrap();
+        assert!(!discover_checked(&table, &[], None, &CoreIndex::default())
+            .unwrap()
+            .iter()
+            .any(|system| system.category() == "Unstable"));
+        std::fs::create_dir_all(menu.join("_Unstable")).unwrap();
+        let found: Vec<_> = discover_checked(&table, &[], None, &CoreIndex::read(&menu))
+            .unwrap()
+            .into_iter()
+            .filter(|system| system.category() == "Unstable")
+            .collect();
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].category(), "Unstable");
+        // Discovery retains an empty collection; the existing Show Empty
+        // policy owns whether it is displayed after counting its contents.
+        assert_eq!(found[0].path(), menu.join("_Unstable"));
+        std::fs::remove_dir_all(menu).unwrap();
     }
 }

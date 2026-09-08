@@ -1134,7 +1134,7 @@ fn scope_has_only_artwork_pack_systems(
         Scope::All => {
             let mut candidates = systems
                 .iter()
-                .filter(|system| !system.def.id.eq_ignore_ascii_case("Favorites"));
+                .filter(|system| !super::targets::is_favorites_target(system));
             let Some(first) = candidates.next() else {
                 return false;
             };
@@ -1176,10 +1176,14 @@ fn plan_work(
             .iter()
             .map(|target| target.relative_path.clone())
             .collect();
-        let outcomes = gamelist_edit::needs_many(
+        let outcomes = gamelist_edit::needs_many_with_fallback(
             &gamelist_path,
             &targets[0].folder,
             &relative_paths,
+            &targets
+                .iter()
+                .map(|target| target.metadata_fallback)
+                .collect::<Vec<_>>(),
             settings.image_policy,
             settings.metadata_policy,
         );
@@ -1865,7 +1869,16 @@ fn flush_one_gamelist(
             metadata_policy: settings.metadata_policy,
         })
         .collect();
-    match gamelist_edit::apply_many(&gamelist_path, &pending[0].target.folder, &updates, backups) {
+    match gamelist_edit::apply_many_with_fallback(
+        &gamelist_path,
+        &pending[0].target.folder,
+        &updates,
+        &pending
+            .iter()
+            .map(|item| item.target.metadata_fallback)
+            .collect::<Vec<_>>(),
+        backups,
+    ) {
         Ok(outcomes) => {
             for (item, outcome) in pending.iter().zip(outcomes) {
                 progress.current = item.target.title.clone();
@@ -2243,6 +2256,32 @@ mod tests {
             paths: vec![root.to_path_buf()],
             logo_dir: None,
             menu_folder: Some("Console".into()),
+        }
+    }
+
+    #[test]
+    fn all_artwork_pack_scope_ignores_renamed_favourites_categories() {
+        let ordinary = system(Path::new("/games/NES"));
+        for category in ["Favorites", "favorites", "FAVORITES"] {
+            let mut favorite = system(Path::new("/games/MyShelf"));
+            favorite.def.id = "MyShelf".into();
+            favorite.def.category = Some(category.into());
+            favorite.menu_folder = None;
+            assert!(scope_has_only_artwork_pack_systems(
+                &Scope::All,
+                &[ordinary.clone(), favorite.clone()],
+                &HashSet::from(["NES".into()])
+            ));
+            assert!(!scope_has_only_artwork_pack_systems(
+                &Scope::All,
+                &[favorite],
+                &HashSet::from(["MyShelf".into()])
+            ));
+            assert!(!scope_has_only_artwork_pack_systems(
+                &Scope::All,
+                std::slice::from_ref(&ordinary),
+                &HashSet::new()
+            ));
         }
     }
 
@@ -3584,6 +3623,7 @@ mod tests {
     fn a_conflicting_content_named_image_is_never_trusted_or_overwritten() {
         let root = temp("media-conflict");
         let target = Target {
+            metadata_fallback: true,
             system_id: "NES".into(),
             affected_system_ids: vec!["NES".into()],
             system_name: "Nintendo".into(),
@@ -3629,6 +3669,7 @@ mod tests {
         let absolute = directory.join("new.png");
         let relative = "./media/screenscraper/new.png".to_string();
         let target = Target {
+            metadata_fallback: true,
             system_id: "NES".into(),
             affected_system_ids: vec!["NES".into()],
             system_name: "Nintendo".into(),

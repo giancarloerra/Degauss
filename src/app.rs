@@ -45,7 +45,7 @@ use crate::options::{speed_badge, speed_label, OptionId, ADVANCED, OPTIONS};
 use crate::render::{FrameWork, PresentMode, Presenter};
 use crate::settings::{CustomViews, SaveOutcome, Settings};
 use crate::surface::Surface;
-use crate::systems::{FoundSystem, SystemDef};
+use crate::systems::{is_favorites, FoundSystem, SystemDef};
 use crate::theme::{Theme, ThemeSet};
 use crate::theme_editor::{
     EditorEffect, EditorMode, ThemeEditor, EDITOR_ROWS, NAME_CANCEL, NAME_CELLS, NAME_COLUMNS,
@@ -250,6 +250,8 @@ fn option_operation(option: OptionId, input: OptionInput) -> OptionOperation {
         | OptionId::ShowEmpty
         | OptionId::ShowOther
         | OptionId::ShowUtility
+        | OptionId::ShowUnstable
+        | OptionId::CorePreference
         | OptionId::ShowBar
         | OptionId::FavoritesFirst
         | OptionId::HoldXFavorite
@@ -383,12 +385,15 @@ fn migrate_legacy_views(settings: &mut Settings, systems: &[FoundSystem]) {
 }
 
 fn owner_candidates<'a>(systems: &'a [FoundSystem], path: &Path) -> Vec<&'a FoundSystem> {
-    if !path.exists() && !crate::favorites::is_amiga_key(path) {
+    if !path.exists()
+        && !crate::favorites::is_amiga_key(path)
+        && crate::zip::split_member_path(path).is_none()
+    {
         return Vec::new();
     }
     let candidates: Vec<(&FoundSystem, usize)> = systems
         .iter()
-        .filter(|system| system.def.id != FAVORITES_ID)
+        .filter(|system| !is_favorites(system.category()))
         .filter_map(|system| {
             let depth = system
                 .paths
@@ -439,11 +444,11 @@ fn finish_owner(mut candidates: Vec<&FoundSystem>) -> Option<String> {
     None
 }
 
-fn owner_of_path(systems: &[FoundSystem], path: &Path) -> Option<String> {
+pub(crate) fn owner_of_path(systems: &[FoundSystem], path: &Path) -> Option<String> {
     finish_owner(owner_candidates(systems, path))
 }
 
-fn owner_of_favorite(
+pub(crate) fn owner_of_favorite(
     systems: &[FoundSystem],
     reference: &crate::favorites::FavoriteReference,
 ) -> Option<String> {
@@ -526,7 +531,7 @@ fn enrich_favorite_rows(
         let browse::Kind::Play(browse::Launch::File(path)) = &row.kind else {
             continue;
         };
-        let Some(reference) = crate::favorites::reference_of(path) else {
+        let Some(reference) = crate::favorites::reference_of_with_systems(path, systems) else {
             continue;
         };
         wanted
@@ -1000,6 +1005,8 @@ const SCRAPE_SYSTEM: &str = "Scrape This System";
 const SCRAPE_FOLDER: &str = "Scrape This Folder";
 const SCRAPE_GAME: &str = "Scrape This Game";
 const GAME_DATA_SOURCE: &str = "Game Data Source";
+const CORE_VERSION: &str = "Core Version";
+const USE_DEFAULT_CORE_VERSION: &str = "Use Default Core Version";
 const SOURCE_GAMELIST: &str = "Gamelist";
 const SOURCE_ARTWORK_PACK: &str = "Artwork Pack";
 const CHOOSE_PACK_DIRECTORY: &str = "Choose Another Directory...";
@@ -1149,6 +1156,9 @@ fn artwork_pack_health_message(
 fn artwork_pack_error_action(error: &crate::error::DegaussError) -> &'static str {
     match error {
         crate::error::DegaussError::Io { .. } => "Check the selected storage and try again.",
+        crate::error::DegaussError::Malformed { what, .. } if *what == "game descriptor" => {
+            "Repair the game descriptor; see degauss.log."
+        }
         crate::error::DegaussError::Malformed { .. } => "Repair the Artwork Pack and try again.",
         crate::error::DegaussError::Unsupported { .. } => {
             "Check degauss.log for details, then try again."
@@ -1375,7 +1385,7 @@ fn scraper_scope_only_artwork_pack(
         crate::scraper::Scope::All => {
             let mut candidates = systems
                 .iter()
-                .filter(|system| !system.def.id.eq_ignore_ascii_case(FAVORITES_ID));
+                .filter(|system| !is_favorites(system.category()));
             let Some(first) = candidates.next() else {
                 return false;
             };
@@ -1492,8 +1502,8 @@ fn favorite_change(
 /// Favourites keeps its familiar heart only when it has no real image.
 /// Suppressing an image unconditionally made `Favorites.png` discoverable
 /// by the category code but impossible to see in the Details view.
-fn logo_or_favorite_heart(id: &str, logo: Option<PathBuf>) -> (Option<PathBuf>, bool) {
-    let heart = id == FAVORITES_ID && logo.is_none();
+fn logo_or_favorite_heart(category: &str, logo: Option<PathBuf>) -> (Option<PathBuf>, bool) {
+    let heart = is_favorites(category) && logo.is_none();
     (logo, heart)
 }
 
@@ -1509,6 +1519,8 @@ struct ContextActions {
     scrape_game: bool,
     image_override: Option<bool>,
     game_data_source: bool,
+    core_version: bool,
+    core_version_override: bool,
 }
 
 fn category_image_preview(
@@ -1571,6 +1583,13 @@ fn context_entries(
             scrape.push(SCRAPE_GAME.to_string());
         }
         groups.push(scrape);
+    }
+    if actions.core_version {
+        let mut versions = vec![CORE_VERSION.to_string()];
+        if actions.core_version_override {
+            versions.push(USE_DEFAULT_CORE_VERSION.to_string());
+        }
+        groups.push(versions);
     }
     if actions.game_data_source {
         groups.push(vec![GAME_DATA_SOURCE.to_string()]);
@@ -2300,6 +2319,16 @@ fn theme_editor_visible_items(mode: EditorMode, total: usize, browse_visible: us
     }
 }
 
+fn initial_present_mode(
+    saved: Option<&str>,
+    default: PresentMode,
+    explicit: Option<PresentMode>,
+) -> PresentMode {
+    explicit
+        .or_else(|| saved.and_then(PresentMode::parse))
+        .unwrap_or(default)
+}
+
 fn resolved_font(setting: Option<&str>, configured: &str) -> Font {
     setting
         .and_then(Font::parse)
@@ -2617,6 +2646,7 @@ pub struct App {
     show_other: bool,
     /// Show the group holding test and measurement cores.
     show_utility: bool,
+    show_unstable: bool,
     /// Show the strip along the bottom.
     show_bar: bool,
     /// Which logo each group is wearing at the moment.
@@ -2686,6 +2716,7 @@ impl App {
         let show_empty = loaded.settings.show_empty.unwrap_or(false);
         let show_other = loaded.settings.show_other.unwrap_or(false);
         let show_utility = loaded.settings.show_utility.unwrap_or(false);
+        let show_unstable = loaded.settings.show_unstable.unwrap_or(true);
         let show_bar = loaded.settings.show_bar.unwrap_or(false);
         let Loaded {
             config,
@@ -2971,6 +3002,7 @@ impl App {
             show_empty,
             show_other,
             show_utility,
+            show_unstable,
             show_bar,
             category_picks: std::collections::BTreeMap::new(),
             category_image_choices: Vec::new(),
@@ -3941,6 +3973,31 @@ impl App {
                     .then_with(|| left.sort_key.cmp(&right.sort_key))
             });
         }
+        if self
+            .opened_config
+            .as_ref()
+            .is_some_and(|config| config.preserve_rbf_stem)
+        {
+            for row in &mut rows {
+                if let browse::Kind::Play(browse::Launch::File(path)) = &row.kind {
+                    if path
+                        .extension()
+                        .is_some_and(|extension| extension.eq_ignore_ascii_case("rbf"))
+                    {
+                        if let Some(stem) = path.file_stem().and_then(|stem| stem.to_str()) {
+                            row.name = stem.to_string();
+                            row.sort_key = stem.to_ascii_lowercase();
+                        }
+                    }
+                }
+            }
+            rows.sort_by(|left, right| {
+                right
+                    .is_folder()
+                    .cmp(&left.is_folder())
+                    .then_with(|| left.sort_key.cmp(&right.sort_key))
+            });
+        }
         Ok(rows)
     }
 
@@ -3972,7 +4029,7 @@ impl App {
     /// after anything is favourited, never on a timer.
     fn reread_favorites(&mut self) {
         let root = PathBuf::from(&self.config.menu_root).join(crate::favorites::FAVORITES_DIR);
-        self.favorites = crate::favorites::Favorites::read(&root);
+        self.favorites = crate::favorites::Favorites::read_with_systems(&root, &self.all_systems);
         crate::note(&format!(
             "favourites   {} in {}",
             self.favorites.len(),
@@ -3994,7 +4051,14 @@ impl App {
     /// favourites until a full rebuild is asked for is wrong. The folder is
     /// small, so reading this one system again costs nothing worth noticing.
     fn refresh_favorites_system(&mut self) -> Option<String> {
-        self.refresh_system(FAVORITES_ID)
+        let id = self
+            .all_systems
+            .iter()
+            .find(|system| is_favorites(system.category()))?
+            .def
+            .id
+            .clone();
+        self.refresh_system(&id)
     }
 
     /// Write one system's cache again, from the card as it is now. Only
@@ -4017,7 +4081,10 @@ impl App {
         // are asked again; which menu folder the core sits in is a
         // full-rebuild question.
         let roots: Vec<PathBuf> = self.config.game_roots.iter().map(PathBuf::from).collect();
-        let paths = crate::systems::existing_folders(&system.def, &roots);
+        let paths = match crate::systems::existing_folders_checked(&system.def, &roots) {
+            Ok(paths) => paths,
+            Err(error) => return Some(format!("{name}: {error}")),
+        };
         if paths.is_empty() {
             // Every folder gone. Said out loud, and the cache is left as
             // it was: what to do about a vanished system is the full
@@ -4058,45 +4125,22 @@ impl App {
             // Said out loud rather than quietly keeping the stale listing.
             Err(e) => return Some(format!("{name}: {e}")),
         };
-        let cache = crate::cache::build_system(&library);
-        let saved = crate::cache::save_system(&self.cache_dir, id, &cache);
-        if let Err(e) = saved {
-            // Stop before the index learns the new summary: an index saying
-            // one count while the cache file on disk holds another survives
-            // a restart as a listing that disagrees with itself.
-            crate::note(&format!("cache        {id} not written: {e}"));
-            return Some(format!("{name} not written: {e}"));
-        }
-        let mut error = None;
-        if let Some(index) = self.index.as_mut() {
-            // Only this system's summary is replaced. The index carries
-            // every other system's too, and those are still right.
-            index
-                .systems
-                .insert(id.to_string(), cache.summary(&browse::start_for(&config)));
-            // Written to disk only when no build is running. A forced
-            // build has already emptied the cache folder and is filling a
-            // fresh index one system at a time; writing this one to disk in
-            // the middle of that would leave, after a power cut, an index
-            // whose systems have no cache files, and startup trusts an
-            // index that exists. The running build is told about the change
-            // below and writes the finished index itself.
-            if self.build.is_none() {
-                if let Err(e) = crate::cache::save_index(&self.cache_dir, index) {
-                    // The listing in memory is right either way, so the rest
-                    // of the propagation still runs; only the disk is stale,
-                    // and the user is told rather than left to find out at
-                    // the next start.
-                    crate::note(&format!("cache        index not written: {e}"));
-                    error = Some(format!("{name} index not written: {e}"));
-                }
-            }
-            // A refresh can take a system's count from nothing to
-            // something or back, and a system holding nothing is hidden
-            // at the root. The emptiness answers come from the index, so
-            // they are worked out again.
-            self.apply_index();
-        }
+        let cache = match crate::cache::build_system_checked(&library) {
+            Ok(cache) => cache,
+            Err(error) => return Some(format!("{name}: {error}")),
+        };
+        let mut next_index = self.index.clone().unwrap_or_default();
+        next_index
+            .systems
+            .insert(id.to_string(), cache.summary(&browse::start_for(&config)));
+        let warnings =
+            match crate::cache::save_system_with_index(&self.cache_dir, id, &cache, &next_index) {
+                Ok(warnings) => warnings,
+                Err(error) => return Some(format!("{name}: {error}")),
+            };
+        self.index = Some(next_index);
+        self.apply_index();
+        let error = (!warnings.is_empty()).then(|| warnings.join("\n"));
         if let Some(build) = self.build.as_mut() {
             // A build runs a system per frame with the controls still
             // live, and what it finishes with replaces the index outright.
@@ -4583,7 +4627,7 @@ impl App {
     /// written-down listing is walked once for all of them together: a
     /// pass over one system rather than a lookup per row.
     fn enrich_favorites(&mut self, rows: &mut [browse::Row]) {
-        if self.open_system.as_deref() != Some(FAVORITES_ID) {
+        if !self.in_favorites() {
             return;
         }
         // Clone only the small ownership/settings inputs so provider reuse can
@@ -4596,7 +4640,8 @@ impl App {
             let browse::Kind::Play(browse::Launch::File(path)) = &row.kind else {
                 continue;
             };
-            let Some(reference) = crate::favorites::reference_of(path) else {
+            let Some(reference) = crate::favorites::reference_of_with_systems(path, &systems)
+            else {
                 continue;
             };
             let Some(id) = owner_of_favorite(&systems, &reference) else {
@@ -4750,7 +4795,7 @@ impl App {
     }
 
     fn mark_favorites(&self, rows: &mut [browse::Row]) {
-        if self.open_system.as_deref() == Some(FAVORITES_ID) {
+        if self.in_favorites() {
             // Everything playable on this shelf is a favourite by
             // definition, but the lookup below is keyed by what a
             // favourite points AT, and these rows are the favourite files
@@ -5004,7 +5049,31 @@ impl App {
             self.dirty = true;
             return None;
         };
-        let config = self.opened_config.clone()?;
+        let mut config = self.opened_config.clone()?;
+        if self.in_favorites() {
+            if let browse::Launch::File(path) = &game {
+                if let Some(reference) =
+                    crate::favorites::reference_of_with_systems(path, &self.all_systems)
+                {
+                    if let Some(id) = owner_of_favorite(&self.all_systems, &reference) {
+                        if let Some(owner) =
+                            self.all_systems.iter().find(|system| system.def.id == id)
+                        {
+                            config = owner.to_config();
+                        }
+                    }
+                    if crate::zip::split_member_path(&reference.owner_target).is_some() {
+                        if let Err(error) =
+                            crate::zip::validate_member_for_launch(&reference.owner_target)
+                        {
+                            self.message = Some(error.to_string());
+                            self.dirty = true;
+                            return None;
+                        }
+                    }
+                }
+            }
+        }
         // A self-describing file names its own core, so a favourite or a
         // core file must not be blocked on the system's. Everything else
         // ends up in an MGL naming `config.rbf`, and handing MiSTer a core
@@ -5019,20 +5088,38 @@ impl App {
         // favourite's dangling link would answer for a core whose real
         // file is gone, and the launch would still end in MiSTer's own
         // "No rbf found!" with Degauss already gone.
-        if !self_describing
-            && !crate::systems::core_file_exists(Path::new(&self.config.menu_root), &config.rbf)
-        {
-            self.message = Some(format!(
-                "{}: core {} is not on the card",
-                config.name, config.rbf
-            ));
-            self.dirty = true;
-            return None;
+        let core_system = self.core_system_id().or_else(|| self.open_system.clone());
+        let selected_core = core_system
+            .as_ref()
+            .and_then(|id| self.settings.core_choices.get(id))
+            .map(String::as_str);
+        let ra_first = self.settings.core_preference.unwrap_or_default()
+            == crate::settings::CorePreference::RetroAchievementsFirst;
+        if !self_describing {
+            if let Err(error) = crate::core_choices::resolve(
+                &config,
+                Path::new(&self.config.menu_root),
+                selected_core,
+                ra_first,
+            ) {
+                self.message = Some(error.to_string());
+                self.dirty = true;
+                return None;
+            }
         }
         // A gamelist can name a file that was deleted or renamed since it
         // was written. The plan would build anyway and MiSTer would fail
         // after this process had already handed over, so the absence has to
         // become a line on screen here or never.
+        if let browse::Launch::File(path) = &game {
+            if crate::zip::split_member_path(path).is_some() {
+                if let Err(error) = crate::zip::validate_member_for_launch(path) {
+                    self.message = Some(error.to_string());
+                    self.dirty = true;
+                    return None;
+                }
+            }
+        }
         let missing = match &game {
             // A favourite that is really an AmigaVision title points at an
             // installation, not at itself; the file that has to exist is
@@ -5042,7 +5129,7 @@ impl App {
             // existence check and fail after the hand-over.
             browse::Launch::File(path) => match crate::launch::amiga_marker(path) {
                 Some((install, _)) => !install.is_dir(),
-                None => !path.exists(),
+                None => crate::zip::split_member_path(path).is_none() && !path.exists(),
             },
             browse::Launch::AmigaVision { install, .. } => !install.is_dir(),
         };
@@ -5056,7 +5143,14 @@ impl App {
         // cannot be built becomes a message here rather than an exit later.
         let mgl = Path::new("/tmp/degauss.mgl");
         let plan = match &game {
-            browse::Launch::File(path) => crate::launch::plan(&config, path, mgl),
+            browse::Launch::File(path) => crate::launch::plan_with_choice(
+                &config,
+                path,
+                mgl,
+                Path::new(&self.config.menu_root),
+                ra_first,
+                selected_core,
+            ),
             browse::Launch::AmigaVision { install, title } => {
                 crate::launch::plan_amiga_vision(&config, install, title, mgl)
             }
@@ -5168,7 +5262,7 @@ impl App {
     /// back, and part of what can change is which systems there are at
     /// all, so it walks the same ground startup walked: the menu folders
     /// for cores, then the game folders against the table.
-    fn rediscover_systems(&mut self) {
+    fn rediscover_systems(&mut self) -> Result<()> {
         let roots: Vec<PathBuf> = self.config.game_roots.iter().map(PathBuf::from).collect();
         let cores = crate::systems::CoreIndex::read(Path::new(&self.config.menu_root));
         let open = self.open_system.clone();
@@ -5178,8 +5272,12 @@ impl App {
                 .find(|s| s.def.id == id)
                 .map(|s| s.name().to_string())
         });
-        self.all_systems =
-            crate::systems::discover(&self.table, &roots, self.logo_dir.as_deref(), &cores);
+        self.all_systems = crate::systems::discover_checked(
+            &self.table,
+            &roots,
+            self.logo_dir.as_deref(),
+            &cores,
+        )?;
         // The screensaver's shortlist holds positions into the list that
         // was just replaced, so it is built again on next use.
         self.saver_candidates = None;
@@ -5192,6 +5290,7 @@ impl App {
             }
         }
         self.rebuild_system_list();
+        Ok(())
     }
 
     /// Leave the system that just stopped existing, the way walking out
@@ -5219,14 +5318,11 @@ impl App {
 
     /// Begin reading the card into the cache.
     ///
-    /// `forced` throws away what is already written down. Without it a
-    /// system whose file is already there is left alone, which is what
-    /// makes a second run cheap.
+    /// `forced` replaces each system only after a complete successful read.
+    /// Without it an existing cache is reused, keeping a second run cheap.
     fn start_build(&mut self, forced: bool) {
-        // One at a time. Replacing a build in flight would lose the
-        // progress made and, when forced, clear the folder a second
-        // time; the progress message already on screen says what is
-        // happening, so the press needs no other answer.
+        // One at a time. Replacing a build in flight would lose its progress;
+        // the existing progress message already explains the active work.
         if self.build.is_some() || self.source_job.is_some() || self.refreshing.is_some() {
             return;
         }
@@ -5235,9 +5331,7 @@ impl App {
             self.dirty = true;
             return;
         }
-        if forced {
-            crate::cache::clear_for_rebuild(&self.cache_dir);
-        }
+        // Keep the last complete caches until their replacement is committed.
         let total = self.all_systems.len();
         self.source_recovery_queue.clear();
         self.source_recovery_warnings.clear();
@@ -5261,11 +5355,15 @@ impl App {
         // Popped from the end, so reverse to read them in the order they
         // are listed: the name on screen should march forwards.
         left.reverse();
+        let mut index = self.index.clone().unwrap_or_default();
+        index
+            .systems
+            .retain(|id, _| self.all_systems.iter().any(|s| &s.def.id == id));
         self.build = Some(Building {
             left,
             done: 0,
             total,
-            index: crate::cache::Index::new(),
+            index,
             forced,
         });
         // Not shown yet: it goes up when the reading starts, which is
@@ -5283,7 +5381,12 @@ impl App {
             let finished = self.build.take().expect("just checked");
             let index = finished.index;
             if let Err(e) = crate::cache::save_index(&self.cache_dir, &index) {
-                crate::note(&format!("cache        index not written: {e}"));
+                let message = format!("cache index not written: {e}");
+                crate::note(&message);
+                self.message_after_build = Some(match self.message_after_build.take() {
+                    Some(previous) => format!("{previous}\n{message}"),
+                    None => message,
+                });
             }
             self.index = Some(index);
             self.apply_index();
@@ -5347,42 +5450,52 @@ impl App {
         } else {
             None
         };
-        let summary = summary.or_else(|| {
-            if pack {
-                // The queued Pack worker will produce the complete cache and
-                // fold its summary into the index. Walking it here would put
-                // the same potentially large job back on the UI thread.
-                return None;
-            }
-            let library = match Library::open_with_names(&config, self.names.clone()) {
-                Ok(library) => library,
-                Err(e) => {
-                    crate::note(&format!("cache        {id} not read: {e}"));
-                    return None;
+        let summary = match summary {
+            Some(summary) => Some(summary),
+            None if pack => None,
+            None => {
+                let built = (|| -> Result<(crate::cache::Summary, Vec<String>)> {
+                    let library = Library::open_with_names(&config, self.names.clone())?;
+                    let cache = crate::cache::build_system_checked(&library)?;
+                    let summary = cache.summary(&start);
+                    let mut next_index = self.build.as_ref().expect("active build").index.clone();
+                    next_index.systems.insert(id.clone(), summary);
+                    let warnings = crate::cache::save_system_with_index(
+                        &self.cache_dir,
+                        &id,
+                        &cache,
+                        &next_index,
+                    )?;
+                    Ok((summary, warnings))
+                })();
+                match built {
+                    Ok((summary, warnings)) => {
+                        if !warnings.is_empty() {
+                            let message = warnings.join("\n");
+                            self.message_after_build =
+                                Some(match self.message_after_build.take() {
+                                    Some(previous) => format!("{previous}\n{message}"),
+                                    None => message,
+                                });
+                        }
+                        Some(summary)
+                    }
+                    Err(error) => {
+                        let message = format!("{name}: {error}");
+                        crate::note(&message);
+                        self.message_after_build = Some(match self.message_after_build.take() {
+                            Some(previous) => format!("{previous}\n{message}"),
+                            None => message,
+                        });
+                        None
+                    }
                 }
-            };
-            let cache = match crate::cache::build_system_controlled(
-                &library,
-                &std::sync::atomic::AtomicBool::new(false),
-                &mut |_, _| {},
-            ) {
-                Ok(Some(cache)) => cache,
-                Ok(None) => return None,
-                Err(error) => {
-                    crate::note(&format!("cache        {id} not built: {error}"));
-                    return None;
-                }
-            };
-            let summary = cache.summary(&start);
-            if let Err(e) = crate::cache::save_system(&self.cache_dir, &id, &cache) {
-                crate::note(&format!("cache        {id} not written: {e}"));
             }
-            Some(summary)
-        });
-
+        };
         if let (Some(build), Some(summary)) = (self.build.as_mut(), summary) {
             build.index.systems.insert(id, summary);
         }
+
         self.dirty = true;
     }
 
@@ -5407,19 +5520,23 @@ impl App {
         // MiSTer's own menu uses, and only when something is in them.
         // Favourites last: it is not a machine, it is a shelf of things
         // picked off the others.
-        const ORDER: [&str; 6] = [
+        const ORDER: [&str; 7] = [
             "Arcade",
             "Console",
             "Computer",
             "Utility",
             "Other",
-            "Favorites",
+            "Unstable",
+            FAVORITES_ID,
         ];
         let mut categories: Vec<(String, usize)> = Vec::new();
         for name in ORDER {
             // Other holds the cores that are not games, which is not what
             // anyone opened a game browser for. It is one switch away.
             if name == "Other" && !self.show_other {
+                continue;
+            }
+            if name == "Unstable" && !self.show_unstable {
                 continue;
             }
             // Test patterns and measurement cores. Useful, and not what a
@@ -6096,6 +6213,15 @@ impl App {
                 self.settings.show_other = Some(self.show_other);
                 self.rebuild_system_list();
             }
+            OptionId::ShowUnstable => {
+                self.show_unstable = !self.show_unstable;
+                self.settings.show_unstable = Some(self.show_unstable);
+                self.rebuild_system_list();
+            }
+            OptionId::CorePreference => {
+                self.settings.core_preference =
+                    Some(self.settings.core_preference.unwrap_or_default().next());
+            }
             OptionId::ShowUtility => {
                 self.show_utility = !self.show_utility;
                 self.settings.show_utility = Some(self.show_utility);
@@ -6202,6 +6328,13 @@ impl App {
             OptionId::ShowEmpty => on_off(self.show_empty),
             OptionId::ShowOther => on_off(self.show_other),
             OptionId::ShowUtility => on_off(self.show_utility),
+            OptionId::ShowUnstable => on_off(self.show_unstable),
+            OptionId::CorePreference => self
+                .settings
+                .core_preference
+                .unwrap_or_default()
+                .label()
+                .to_string(),
             OptionId::ShowBar => on_off(self.show_bar),
             OptionId::FavoritesFirst => on_off(self.favorites_first),
             OptionId::HoldXFavorite => on_off(self.hold_x_favorite),
@@ -6294,7 +6427,11 @@ impl App {
         }
         // Discovery normally happens only at startup. Repeat it first so a
         // newly added or removed core or folder is included in the rebuild.
-        self.rediscover_systems();
+        if let Err(error) = self.rediscover_systems() {
+            self.message = Some(error.to_string());
+            self.dirty = true;
+            return;
+        }
         self.start_build(true);
         self.dirty = true;
     }
@@ -6459,6 +6596,15 @@ impl App {
     /// rather than an action.
     fn context_value(&self, index: usize) -> String {
         match self.menu.get(index).map(String::as_str) {
+            Some(CORE_VERSION) => self
+                .core_system_id()
+                .and_then(|id| self.settings.core_choices.get(&id))
+                .map(|key| match key.as_str() {
+                    "standard" => "Standard".to_string(),
+                    "ra" => "RetroAchievements".to_string(),
+                    _ => key.clone(),
+                })
+                .unwrap_or_else(|| "Default".to_string()),
             Some(CHANGE_VIEW) => self.layout.shown().to_string(),
             Some(GAME_DATA_SOURCE) => self
                 .context_system_id()
@@ -6480,6 +6626,10 @@ impl App {
     /// rather than hiding it behind a press.
     fn adjust_context(&mut self, delta: isize) {
         let selected = self.menu_list.selected();
+        if self.menu.get(selected).map(String::as_str) == Some(CORE_VERSION) {
+            self.adjust_core_version(delta);
+            return;
+        }
         if self.menu.get(selected).map(String::as_str) != Some(CHANGE_VIEW) {
             return;
         }
@@ -6491,6 +6641,108 @@ impl App {
         self.remember_view();
         self.apply_geometry();
         self.touch_selection();
+        self.dirty = true;
+    }
+
+    fn core_system_id(&self) -> Option<String> {
+        let id = if self.in_favorites() && self.browsing == Browsing::Games {
+            let path = self.selected_game()?;
+            let reference = crate::favorites::reference_of_with_systems(&path, &self.all_systems)?;
+            owner_of_favorite(&self.all_systems, &reference)?
+        } else {
+            self.context_system_id()?.to_string()
+        };
+        self.all_systems
+            .iter()
+            .find(|system| system.def.id == id && !system.def.rbf.is_empty())
+            .map(|_| id)
+    }
+
+    fn adjust_core_version(&mut self, delta: isize) {
+        let Some(id) = self.core_system_id() else {
+            return;
+        };
+        let Some(system) = self.all_systems.iter().find(|system| system.def.id == id) else {
+            return;
+        };
+        let available = match crate::core_choices::available(
+            &system.to_config(),
+            Path::new(&self.config.menu_root),
+        ) {
+            Ok(choices) => choices,
+            Err(error) => {
+                self.message = Some(error.to_string());
+                self.dirty = true;
+                return;
+            }
+        };
+        let mut choices = vec![(String::new(), "Default".to_string())];
+        choices.extend(
+            available
+                .into_iter()
+                .map(|choice| (choice.key, choice.label)),
+        );
+        let current = self
+            .settings
+            .core_choices
+            .get(&id)
+            .map(String::as_str)
+            .unwrap_or("");
+        let at = choices
+            .iter()
+            .position(|(key, _)| key == current)
+            .unwrap_or(0);
+        let next = (at as isize + delta.signum()).rem_euclid(choices.len() as isize) as usize;
+        let (key, label) = &choices[next];
+        let mut settings = self.settings.clone();
+        if key.is_empty() {
+            settings.core_choices.remove(&id);
+        } else {
+            settings.core_choices.insert(id, key.clone());
+        }
+        match settings.save(&self.settings_path) {
+            Ok(outcome) => {
+                self.settings = settings;
+                self.open_context();
+                if let Some(index) = self.menu.iter().position(|entry| entry == CORE_VERSION) {
+                    self.menu_list.select(index);
+                }
+                self.message = match outcome {
+                    crate::settings::SaveOutcome::Durable => None,
+                    crate::settings::SaveOutcome::InstalledWithWarning(warning) => {
+                        Some(format!("Core Version: {label}\n{warning}"))
+                    }
+                };
+            }
+            Err(error) => self.message = Some(error.to_string()),
+        }
+        self.dirty = true;
+    }
+
+    /// Clear the saved override without consulting any mounted core folder.
+    /// This remains usable when enumeration failed or a selected file vanished.
+    fn use_default_core_version(&mut self) {
+        let Some(id) = self.core_system_id() else {
+            return;
+        };
+        let mut settings = self.settings.clone();
+        if settings.core_choices.remove(&id).is_none() {
+            return;
+        }
+        match settings.save(&self.settings_path) {
+            Ok(outcome) => {
+                self.settings = settings;
+                self.screen = Screen::Browse;
+                self.apply_geometry();
+                self.message = Some(match outcome {
+                    crate::settings::SaveOutcome::Durable => "Core Version: Default".to_string(),
+                    crate::settings::SaveOutcome::InstalledWithWarning(warning) => {
+                        format!("Core Version: Default\n{warning}")
+                    }
+                });
+            }
+            Err(error) => self.message = Some(error.to_string()),
+        }
         self.dirty = true;
     }
 
@@ -6768,7 +7020,17 @@ impl App {
             return;
         }
 
-        let outcome = match crate::launch::favorite_mgl(&config, &game) {
+        let outcome = match crate::launch::favorite_mgl_with_choice(
+            &config,
+            &game,
+            Path::new(&self.config.menu_root),
+            self.settings.core_preference.unwrap_or_default()
+                == crate::settings::CorePreference::RetroAchievementsFirst,
+            self.open_system
+                .as_ref()
+                .and_then(|id| self.settings.core_choices.get(id))
+                .map(String::as_str),
+        ) {
             Ok(Some(mgl)) => {
                 // The favourite is filed under the name the browser showed,
                 // which the gamelist may have set, not under the file's own
@@ -6825,7 +7087,7 @@ impl App {
         let Some(game) = self.selected_game() else {
             return;
         };
-        let file = if self.open_system.as_deref() == Some(FAVORITES_ID) {
+        let file = if self.in_favorites() {
             Some(game.clone())
         } else {
             self.favorites.file_for(&game).map(Path::to_path_buf)
@@ -7506,9 +7768,7 @@ impl App {
                             self.apply_geometry();
                             self.dirty = true;
                         }
-                    } else if self.browsing == Browsing::Games
-                        && self.open_system.as_deref() == Some(FAVORITES_ID)
-                    {
+                    } else if self.browsing == Browsing::Games && self.in_favorites() {
                         self.relist_here();
                     }
                     self.start_provider_job_if_ready();
@@ -7665,8 +7925,9 @@ impl App {
                     (SourceRecoveryPurpose::OpenSystem, None) if cancelled => format!(
                         "Artwork Pack cache refresh for {name} cancelled. Games remain browseable, but some artwork matches may be unavailable until it is refreshed."
                     ),
-                    (SourceRecoveryPurpose::RefreshSystem, Some(_)) => format!(
-                        "{name} list was not rebuilt.\nThe previous complete cache remains in use."
+                    (SourceRecoveryPurpose::RefreshSystem, Some(error)) => format!(
+                        "{name} list was not rebuilt.\n{}\nThe previous complete cache remains in use.",
+                        artwork_pack_error_action(&error)
                     ),
                     (SourceRecoveryPurpose::RefreshSystem, None) if cancelled => format!(
                         "{name} list rebuild cancelled. The previous complete cache remains in use."
@@ -7712,7 +7973,12 @@ impl App {
             );
             return;
         };
-        let (caches, install_warnings) = match prepared.install() {
+        let mut next_index = self.index.clone().unwrap_or_default();
+        update_index_summaries(&mut next_index, &self.all_systems, prepared.caches());
+        let (_caches, install_warnings) = match prepared
+            .with_index(&self.cache_dir, &next_index)
+            .and_then(|prepared| prepared.install())
+        {
             Ok(installed) => installed,
             Err(error) => {
                 crate::note(&format!(
@@ -7740,14 +8006,7 @@ impl App {
             self.source_recovery_suppressed.remove(group);
         }
         self.store_source_providers(providers);
-        if let Some(index) = self.index.as_mut() {
-            update_index_summaries(index, &self.all_systems, &caches);
-            if let Err(error) = crate::cache::save_index(&self.cache_dir, index) {
-                crate::note(&format!("cache        recovery index not written: {error}"));
-                self.source_recovery_warnings
-                    .push(format!("the system index was not saved: {error}"));
-            }
-        }
+        self.index = Some(next_index);
         self.correct_system_counts();
         self.rebuild_system_list();
         self.screen = Screen::Browse;
@@ -7935,7 +8194,7 @@ impl App {
         // the target-keyed lookup below answers false for every one of
         // them and the menu offered to Add what is already there. On the
         // shelf the answer is known without asking.
-        let favorite = if self.open_system.as_deref() == Some(FAVORITES_ID) {
+        let favorite = if self.in_favorites() {
             self.selected_game().map(|_| true)
         } else {
             self.selected_game().map(|path| self.favorites.holds(&path))
@@ -7949,11 +8208,10 @@ impl App {
                 Browsing::Systems => self
                     .systems
                     .get(self.system_list.selected())
-                    .is_some_and(|system| !system.def.id.eq_ignore_ascii_case(FAVORITES_ID)),
+                    .is_some_and(|system| !is_favorites(system.category())),
                 Browsing::Games => self
-                    .open_system
-                    .as_deref()
-                    .is_some_and(|system| !system.eq_ignore_ascii_case(FAVORITES_ID)),
+                    .open_system_ref()
+                    .is_some_and(|system| !is_favorites(system.category())),
                 Browsing::Categories => false,
             };
         let scrape_game = scrape_scope
@@ -7981,6 +8239,10 @@ impl App {
                 scrape_game,
                 image_override,
                 game_data_source,
+                core_version: self.core_system_id().is_some(),
+                core_version_override: self
+                    .core_system_id()
+                    .is_some_and(|id| self.settings.core_choices.contains_key(&id)),
             },
         );
         if self.menu.is_empty() {
@@ -7995,7 +8257,7 @@ impl App {
         match choice {
             SCRAPE_SYSTEM => {
                 let system = self.systems.get(self.system_list.selected())?;
-                if system.def.id.eq_ignore_ascii_case(FAVORITES_ID) || system.paths.is_empty() {
+                if is_favorites(system.category()) || system.paths.is_empty() {
                     return None;
                 }
                 let place = if system.paths.len() == 1 {
@@ -8011,7 +8273,7 @@ impl App {
             }
             SCRAPE_FOLDER => {
                 let system_id = self.open_system.clone()?;
-                if system_id.eq_ignore_ascii_case(FAVORITES_ID) {
+                if self.in_favorites() {
                     return None;
                 }
                 let (place, display_name) = match self.here.get(self.game_list.selected()) {
@@ -8031,7 +8293,7 @@ impl App {
             }
             SCRAPE_GAME => {
                 let system_id = self.open_system.clone()?;
-                if system_id.eq_ignore_ascii_case(FAVORITES_ID) {
+                if self.in_favorites() {
                     return None;
                 }
                 let row = self.here.get(self.game_list.selected())?;
@@ -9383,13 +9645,19 @@ impl App {
                     // Any action other than continuing to adjust the view
                     // closes or replaces Context. Persist a view already
                     // chosen there before that path can launch or fail.
-                    if was_context && choice != CHANGE_VIEW && choice != USE_GLOBAL_VIEW {
+                    if was_context
+                        && choice != CHANGE_VIEW
+                        && choice != USE_GLOBAL_VIEW
+                        && choice != USE_DEFAULT_CORE_VERSION
+                    {
                         self.save_settings();
                     }
-                    if choice == CHANGE_VIEW {
+                    if choice == CHANGE_VIEW || choice == CORE_VERSION {
                         // Stays open, like a setting: the point is to see
                         // the view while choosing it.
                         self.adjust_context(1);
+                    } else if choice == USE_DEFAULT_CORE_VERSION {
+                        self.use_default_core_version();
                     } else if choice == USE_GLOBAL_VIEW {
                         self.use_global_view();
                     } else if choice == CHANGE_CATEGORY_IMAGE {
@@ -9508,7 +9776,11 @@ impl App {
     /// Whether the favourites folder is what is being looked at, so the
     /// mark can stand in for a picture nothing here will ever have.
     fn in_favorites(&self) -> bool {
-        self.open_system.as_deref() == Some(FAVORITES_ID)
+        self.open_system.as_ref().is_some_and(|id| {
+            self.all_systems
+                .iter()
+                .any(|system| &system.def.id == id && is_favorites(system.category()))
+        })
     }
 
     /// The picture, the words under it, whether the heart should stand in
@@ -9550,7 +9822,7 @@ impl App {
                 match self.systems.get(self.system_list.selected()) {
                     Some(system) => {
                         let (logo, heart) =
-                            logo_or_favorite_heart(&system.def.id, self.system_logo(system));
+                            logo_or_favorite_heart(system.category(), self.system_logo(system));
                         (logo, system.name().to_string(), heart, false)
                     }
                     None => (None, String::new(), false, false),
@@ -9757,7 +10029,7 @@ impl App {
                                 favorite: browse_row_favorite(
                                     self.layout,
                                     false,
-                                    name == FAVORITES_ID,
+                                    is_favorites(name),
                                 ),
                                 cover,
                                 has_cover,
@@ -9780,7 +10052,7 @@ impl App {
                             let favorite = browse_row_favorite(
                                 self.layout,
                                 false,
-                                self.systems[index].def.id == FAVORITES_ID,
+                                is_favorites(self.systems[index].category()),
                             );
                             // How many games are in there, where the card
                             // has been read for it.
@@ -9825,7 +10097,7 @@ impl App {
                                 // user made, and the panel marks it with a
                                 // heart rather than a logo: no stand-in here
                                 // either, so the two views agree.
-                                let bare = self.in_favorites() && self.here[index].is_folder();
+                                let bare = inside_favorites && self.here[index].is_folder();
                                 self.here[index].cover.clone().or_else(|| {
                                     if bare {
                                         None
@@ -9894,7 +10166,12 @@ impl App {
             Screen::Context => {
                 for index in range {
                     let value = self.context_value(index);
-                    rows.push(plain_row(&self.menu[index], &value));
+                    if self.menu[index] == CORE_VERSION {
+                        // Full nightly paths use the existing title marquee on small screens.
+                        rows.push(plain_row(&format!("{CORE_VERSION}: {value}"), ""));
+                    } else {
+                        rows.push(plain_row(&self.menu[index], &value));
+                    }
                 }
             }
             Screen::Options | Screen::Advanced => {
@@ -10258,11 +10535,22 @@ impl App {
         )
     }
 
-    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
-    /// The drawing path the settings asked for, so the presenter can be put
-    /// into it before the first frame.
+    #[allow(dead_code)]
+    /// The effective drawing path, including any runtime default or override.
     pub fn present_mode(&self) -> PresentMode {
         PresentMode::parse(self.present_label).unwrap_or(PresentMode::Direct)
+    }
+
+    /// Resolve startup presentation without persisting an implicit device default.
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    pub fn initialize_presentation(
+        &mut self,
+        default: PresentMode,
+        explicit: Option<PresentMode>,
+    ) -> PresentMode {
+        let mode = initial_present_mode(self.settings.present.as_deref(), default, explicit);
+        self.present_label = mode.label();
+        mode
     }
 
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
@@ -10623,14 +10911,16 @@ impl App {
             .iter()
             .map(|crumb| (crumb.place.clone(), crumb.selected))
             .collect();
-        crate::state::State::record(
+        let mut saved = crate::state::State::record(
             &system,
             self.open_category.as_deref().unwrap_or_default(),
             &trail,
             self.game_list.selected(),
             &self.left_at,
             &self.category_system,
-        )
+        );
+        saved.selected_row = self.here.get(self.game_list.selected()).map(row_key);
+        saved
     }
 
     /// Put the user back where they were before the game.
@@ -10708,7 +10998,11 @@ impl App {
         // the truthful one, so it goes back in whole.
         self.left_at = saved.left_at.clone();
         if walked_everything {
-            self.game_list.select(saved.selected);
+            self.game_list.select(reselect(
+                &self.here,
+                saved.selected_row.as_deref(),
+                saved.selected,
+            ));
         } else {
             // The walk stopped short of the folder the cursor position
             // belongs to; that number means a row in a folder that was
@@ -11125,6 +11419,203 @@ pub enum Outcome {
     },
 }
 
+/// Runs within the renderer's single installed Slint platform.
+#[cfg(test)]
+pub(crate) fn test_library_launch_flow(window: Rc<MinimalSoftwareWindow>) {
+    // Atomically claim a fresh directory; a previous interrupted run may have
+    // left a fixture behind, and its contents are not ours to remove.
+    let root = (0_u64..)
+        .find_map(|attempt| {
+            let candidate = std::env::temp_dir().join(format!(
+                "degauss-app-library-{}-{attempt}",
+                std::process::id()
+            ));
+            match std::fs::create_dir(&candidate) {
+                Ok(()) => Some(candidate),
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => None,
+                Err(error) => panic!("creating isolated fixture: {error}"),
+            }
+        })
+        .expect("fixture directory counter exhausted");
+    for folder in ["games/NES", "_Console", "_RA_Cores/Cores", "_Unstable"] {
+        std::fs::create_dir_all(root.join(folder)).unwrap();
+    }
+    std::fs::write(root.join("_Console/NES_20260101.rbf"), b"standard").unwrap();
+    std::fs::write(root.join("_RA_Cores/Cores/NES.rbf"), b"ra").unwrap();
+    std::fs::write(root.join("_RA_Cores/NES.mgl"), b"<mistergamedescription><rbf>_RA_Cores/Cores/NES</rbf><setname same_dir=\"1\">RA_NES</setname></mistergamedescription>").unwrap();
+    let nightly = "_Unstable/NES_unstable_20260101_123456.rbf";
+    std::fs::write(root.join(nightly), b"nightly").unwrap();
+    let archive = root.join("games/NES/small.zip");
+    std::fs::write(
+        &archive,
+        crate::zip::tests_archive(&["A/one.nes", "B/two.nes"], false),
+    )
+    .unwrap();
+    let mut config = Config::parse("[app]", &root.join("degauss.toml")).unwrap();
+    config.menu_root = root.to_string_lossy().into_owned();
+    config.game_roots = vec![root.join("games").to_string_lossy().into_owned()];
+    let table = crate::systems::parse_table(
+        include_str!("../assets/systems.toml"),
+        Path::new("systems.toml"),
+    )
+    .unwrap();
+    let def = table.iter().find(|s| s.id == "NES").unwrap().clone();
+    let found = FoundSystem {
+        def: def.clone(),
+        paths: vec![root.join("games/NES")],
+        logo_dir: None,
+        menu_folder: None,
+    };
+    let loaded = Loaded {
+        config,
+        settings: Settings::default(),
+        settings_path: root.join("settings.toml"),
+        systems: vec![found],
+        table: vec![def],
+        names: Default::default(),
+        logo_dir: None,
+        themes_dir: root.join("themes"),
+        themes: Default::default(),
+    };
+    let ui = DegaussWindow::new().unwrap();
+    let mut app = App::new(loaded, window, ui, StartupTimings::default(), 352, 240);
+    app.open_system_by_index(0);
+    let rules = std::mem::take(&mut app.all_systems[0].def.launch);
+    assert_eq!(
+        app.core_system_id().as_deref(),
+        Some("NES"),
+        "an explicitly bound core remains selectable without file launch rules"
+    );
+    assert!(
+        !crate::core_choices::available(&app.all_systems[0].to_config(), &root,)
+            .unwrap()
+            .is_empty()
+    );
+    app.all_systems[0].def.launch = rules;
+    let rbf = std::mem::take(&mut app.all_systems[0].def.rbf);
+    assert!(
+        app.core_system_id().is_none(),
+        "file rules alone do not bind a system core"
+    );
+    app.all_systems[0].def.rbf = rbf;
+    app.enter(Place::Archive(archive.clone()));
+    assert_eq!(app.here.len(), 2, "archive keeps two immediate folders");
+    app.enter(Place::ArchiveDirectory {
+        archive: archive.clone(),
+        prefix: "A".into(),
+    });
+    assert_eq!(app.here.len(), 1);
+    app.game_list.select(0);
+    let mgl = |app: &mut App| match app
+        .confirm_launch()
+        .expect("UI must allow a valid ZIP member")
+    {
+        Outcome::Launch { plan, .. } => plan.mgl,
+        _ => panic!("expected launch outcome"),
+    };
+    assert!(mgl(&mut app).contains("<rbf>_Console/NES</rbf>"));
+    app.open_context();
+    assert!(app.menu.iter().any(|row| row == CORE_VERSION));
+    app.menu_list
+        .select(app.menu.iter().position(|row| row == CORE_VERSION).unwrap());
+    app.handle(Action::Faster);
+    assert!(
+        app.message.is_none(),
+        "successful cycling must not intercept the next input"
+    );
+    assert_eq!(
+        app.settings.core_choices.get("NES").map(String::as_str),
+        Some("standard")
+    );
+    assert_eq!(
+        Settings::load(&app.settings_path).unwrap().core_choices,
+        app.settings.core_choices
+    );
+    app.handle(Action::Faster);
+    assert_eq!(
+        app.settings.core_choices.get("NES").map(String::as_str),
+        Some("ra"),
+        "consecutive inputs must cycle without dismissing a modal"
+    );
+    assert!(app.message.is_none());
+    assert_eq!(
+        Settings::load(&app.settings_path).unwrap().core_choices,
+        app.settings.core_choices
+    );
+    assert!(mgl(&mut app).contains("same_dir=\"1\""));
+    std::fs::remove_file(root.join("_Console/NES_20260101.rbf")).unwrap();
+    assert!(
+        mgl(&mut app).contains("_RA_Cores/Cores/NES"),
+        "RA works without standard"
+    );
+    app.settings
+        .core_choices
+        .insert("NES".into(), nightly.into());
+    assert!(
+        mgl(&mut app).contains(nightly.trim_end_matches(".rbf")),
+        "explicit nightly works without standard"
+    );
+    std::fs::remove_file(root.join(nightly)).unwrap();
+    assert!(
+        app.confirm_launch().is_none(),
+        "missing explicit core must stay in UI"
+    );
+    assert!(app
+        .message
+        .as_ref()
+        .is_some_and(|message| !message.is_empty()));
+    app.settings.core_choices.insert("NES".into(), "ra".into());
+    std::fs::write(
+        &archive,
+        crate::zip::tests_archive(&["A/First.nes", "A/Target.nes", "B/Target.nes"], false),
+    )
+    .unwrap();
+    assert!(app.refresh_system("NES").is_none());
+    app.show_here();
+    app.filter = "TARGET".into();
+    app.apply_filter();
+    assert_eq!(app.here.len(), 1);
+    assert_eq!(
+        app.game_list.selected(),
+        0,
+        "search has its own row indexes"
+    );
+    assert!(mgl(&mut app).contains("small.zip/A/Target.nes"));
+    let state_path = root.join("return-state.toml");
+    app.position().save(&state_path).unwrap();
+    let saved = crate::state::State::load(&state_path);
+    app.restore_position(&saved);
+    assert!(
+        app.filter.is_empty(),
+        "resume preserves existing search-reset behavior"
+    );
+    assert_eq!(
+        app.game_list.selected(),
+        1,
+        "the launched member moved in the full list"
+    );
+    assert_eq!(
+        row_key(&app.here[app.game_list.selected()]),
+        format!("f:{}", archive.join("A/Target.nes").display()),
+        "return must select the exact member, not another folder's same basename"
+    );
+    let mut old_saved = saved.clone();
+    old_saved.selected_row = None;
+    app.restore_position(&old_saved);
+    assert_eq!(
+        app.game_list.selected(),
+        0,
+        "old state files retain numeric selection"
+    );
+    std::fs::write(&archive, b"broken").unwrap();
+    assert!(
+        app.confirm_launch().is_none(),
+        "changed archive must be revalidated at confirmation"
+    );
+    drop(app);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -11135,6 +11626,37 @@ mod tests {
         std::fs::remove_dir_all(&path).ok();
         std::fs::create_dir_all(&path).unwrap();
         path
+    }
+
+    #[test]
+    fn presentation_startup_preserves_explicit_and_saved_choices() {
+        for default in [PresentMode::Direct, PresentMode::Staged] {
+            assert_eq!(initial_present_mode(None, default, None), default);
+            assert_eq!(
+                initial_present_mode(Some("invalid"), default, None),
+                default
+            );
+            for saved in [PresentMode::Direct, PresentMode::Staged] {
+                assert_eq!(
+                    initial_present_mode(Some(saved.label()), default, None),
+                    saved
+                );
+                for explicit in [PresentMode::Direct, PresentMode::Staged] {
+                    assert_eq!(
+                        initial_present_mode(Some(saved.label()), default, Some(explicit)),
+                        explicit
+                    );
+                    assert_eq!(
+                        initial_present_mode(None, default, Some(explicit)),
+                        explicit
+                    );
+                    assert_eq!(
+                        initial_present_mode(Some("invalid"), default, Some(explicit)),
+                        explicit
+                    );
+                }
+            }
+        }
     }
 
     #[test]
@@ -11206,6 +11728,17 @@ mod tests {
         let malformed_message = source_change_failure_message(&malformed);
         assert!(malformed_message.contains("Repair the Artwork Pack"));
         assert!(!malformed_message.contains("manifest.tsv"));
+        let descriptor = crate::error::DegaussError::malformed(
+            "game descriptor",
+            "/games/Arcade/Example.mra",
+            "private XML diagnostic",
+        );
+        let descriptor_message = source_change_failure_message(&descriptor);
+        assert!(descriptor_message.contains("Repair the game descriptor"));
+        assert!(descriptor_message.contains("degauss.log"));
+        assert!(!descriptor_message.contains("Artwork Pack"));
+        assert!(!descriptor_message.contains("/games/"));
+        assert!(!descriptor_message.contains("private XML diagnostic"));
         let unsupported_message = source_change_failure_message(&unsupported);
         assert!(unsupported_message.contains("degauss.log"));
         assert!(!unsupported_message.contains("private diagnostic detail"));
@@ -11412,6 +11945,7 @@ mod tests {
         std::fs::create_dir_all(&games).unwrap();
         std::fs::write(games.join("Game.rom"), b"rom").unwrap();
         let config = SystemConfig {
+            preserve_rbf_stem: false,
             name: "Test".to_string(),
             path: games.to_string_lossy().into_owned(),
             extensions: vec!["rom".to_string()],
@@ -11963,6 +12497,53 @@ mod tests {
     }
 
     #[test]
+    fn custom_favorites_casing_never_becomes_a_game_owner_or_scraper_target() {
+        let root = picker_temp("favorite-category-casing");
+        std::fs::create_dir_all(&root).unwrap();
+        let game = root.join("MyShelf/Game.mgl");
+        std::fs::create_dir_all(game.parent().unwrap()).unwrap();
+        std::fs::write(&game, b"game").unwrap();
+        for category in ["Favorites", "favorites", "FAVORITES", "FaVoRiTeS"] {
+            let console = found_system_with_extensions("NES", vec![root.join("MyShelf")], &["mgl"]);
+            let table = format!("[[systems]]\nname = \"Shelf\"\nid = \"CustomShelf\"\ncategory = {category:?}\nrbf = \"\"\nfolders = [\"MyShelf\"]\nextensions = [\"rbf\", \"mra\", \"mgl\"]\n");
+            let table =
+                crate::systems::parse_table(&table, Path::new("custom-systems.toml")).unwrap();
+            let table = crate::systems::prepare_table(table, &root).unwrap();
+            let mut discovered = crate::systems::discover_checked(
+                &table,
+                std::slice::from_ref(&root),
+                None,
+                &crate::systems::CoreIndex::read(&root),
+            )
+            .unwrap();
+            let shelf = discovered.remove(0);
+            assert_eq!(
+                shelf.category(),
+                category,
+                "custom category casing survives discovery"
+            );
+            let systems = vec![console, shelf];
+            assert_eq!(
+                owner_of_path(&systems, &game).as_deref(),
+                Some("NES"),
+                "a Favorites shelf must not make the actual owner ambiguous: {category}"
+            );
+            assert!(
+                scraper_scope_only_artwork_pack(
+                    &crate::scraper::Scope::All,
+                    &systems,
+                    &std::collections::BTreeMap::from([("NES".into(), "/art".into())])
+                ),
+                "a Favorites shelf must not become a scrape candidate: {category}"
+            );
+            assert!(is_favorites(systems[1].category()));
+        }
+        assert!(!is_favorites("NES"));
+        assert!(!is_favorites("FavoritesExtra"));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn favorite_owner_requires_a_live_target_and_never_guesses_an_ambiguous_system() {
         let root = picker_temp("favorite-owner");
         let shared = root.join("shared");
@@ -12104,6 +12685,7 @@ mod tests {
         .unwrap();
 
         let config = SystemConfig {
+            preserve_rbf_stem: false,
             name: "SuperGrafx".to_string(),
             path: games.to_string_lossy().into_owned(),
             extensions: vec!["sgx".to_string()],
@@ -12790,6 +13372,31 @@ mod tests {
     }
 
     #[test]
+    fn default_core_reset_is_available_from_saved_state_without_enumerating_files() {
+        for override_exists in [false, true] {
+            let entries = context_entries(
+                Browsing::Systems,
+                false,
+                None,
+                None,
+                false,
+                ContextActions {
+                    core_version: true,
+                    core_version_override: override_exists,
+                    ..ContextActions::default()
+                },
+            );
+            assert!(entries.iter().any(|entry| entry == CORE_VERSION));
+            assert_eq!(
+                entries
+                    .iter()
+                    .any(|entry| entry == USE_DEFAULT_CORE_VERSION),
+                override_exists
+            );
+        }
+    }
+
+    #[test]
     fn use_global_view_is_offered_only_where_an_override_exists() {
         let inherited = context_entries(
             Browsing::Categories,
@@ -12934,9 +13541,15 @@ mod tests {
         let chosen = PathBuf::from("Favorites.png");
         assert_eq!(
             logo_or_favorite_heart(FAVORITES_ID, Some(chosen.clone())),
-            (Some(chosen), false)
+            (Some(chosen.clone()), false)
         );
-        assert_eq!(logo_or_favorite_heart(FAVORITES_ID, None), (None, true));
+        for category in [FAVORITES_ID, "favorites", "FAVORITES", "FaVoRiTeS"] {
+            assert_eq!(logo_or_favorite_heart(category, None), (None, true));
+            assert_eq!(
+                logo_or_favorite_heart(category, Some(chosen.clone())),
+                (Some(chosen.clone()), false)
+            );
+        }
         assert_eq!(logo_or_favorite_heart("Console", None), (None, false));
     }
 

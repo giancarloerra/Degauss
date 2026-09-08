@@ -37,6 +37,10 @@ pub enum OptionId {
     ShowOther,
     /// Show the group holding the test and measurement cores.
     ShowUtility,
+    /// Show the collection of nightly cores.
+    ShowUnstable,
+    /// Preferred installed variant for ordinary game launches.
+    CorePreference,
     /// The strip along the bottom of the screen, while browsing.
     ShowBar,
     /// Read the card again into the written-down copy of it.
@@ -89,9 +93,11 @@ pub const OPTIONS: &[OptionId] = &[
     OptionId::HoldXFavorite,
     OptionId::FoldersLast,
     OptionId::RandomLaunches,
+    OptionId::CorePreference,
     OptionId::Spacer,
     OptionId::ShowOther,
     OptionId::ShowUtility,
+    OptionId::ShowUnstable,
     OptionId::ShowEmpty,
     OptionId::ShowHidden,
     OptionId::ResetHidden,
@@ -128,6 +134,8 @@ impl OptionId {
             OptionId::ShowEmpty => "Show systems with no games",
             OptionId::ShowOther => "Show Other folder",
             OptionId::ShowUtility => "Show Utility folder",
+            OptionId::ShowUnstable => "Show Unstable folder",
+            OptionId::CorePreference => "Core preference",
             OptionId::ShowBar => "Bottom bar while browsing",
             OptionId::RebuildCache => "Rebuild all system lists",
             OptionId::ScrapeAll => "Scrape All Systems",
@@ -181,6 +189,8 @@ impl OptionId {
             }
             OptionId::ShowOther => "Show the Other group: the cores that are not games.",
             OptionId::ShowUtility => "Show the Utility group: test patterns and measurement cores.",
+            OptionId::ShowUnstable => "Show the Unstable group: nightly core builds.",
+            OptionId::CorePreference => "Prefer standard or RetroAchievements cores when both are installed.",
             OptionId::ShowBar => "The strip with the time and the buttons. Menus always keep it.",
             OptionId::FoldersLast => {
                 "On, folders lead a system's listing; off, the games come first."

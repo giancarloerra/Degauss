@@ -161,6 +161,7 @@ struct OpenGame {
     field: Option<OpenField>,
 }
 
+#[cfg(test)]
 pub fn needs_many(
     gamelist_path: &Path,
     folder: &Path,
@@ -168,6 +169,33 @@ pub fn needs_many(
     image_policy: ImagePolicy,
     metadata_policy: MetadataPolicy,
 ) -> Result<Vec<Result<Needs>>> {
+    let fallback: Vec<bool> = relative_game_paths
+        .iter()
+        .map(|path| crate::zip::split_member_path(Path::new(path)).is_none())
+        .collect();
+    needs_many_with_fallback(
+        gamelist_path,
+        folder,
+        relative_game_paths,
+        &fallback,
+        image_policy,
+        metadata_policy,
+    )
+}
+
+pub fn needs_many_with_fallback(
+    gamelist_path: &Path,
+    folder: &Path,
+    relative_game_paths: &[String],
+    metadata_fallback: &[bool],
+    image_policy: ImagePolicy,
+    metadata_policy: MetadataPolicy,
+) -> Result<Vec<Result<Needs>>> {
+    if metadata_fallback.len() != relative_game_paths.len() {
+        return Err(Error::local(
+            "metadata policy count does not match scrape targets",
+        ));
+    }
     let Some(bytes) = read_optional(gamelist_path)? else {
         return Ok(relative_game_paths
             .iter()
@@ -180,7 +208,7 @@ pub fn needs_many(
             .collect());
     };
     let document = parse_document(&bytes, gamelist_path)?;
-    let resolved = resolve_games(&document, relative_game_paths);
+    let resolved = resolve_games(&document, relative_game_paths, metadata_fallback);
     Ok(resolved
         .into_iter()
         .map(|result| {
@@ -273,12 +301,34 @@ pub struct Update {
     pub metadata_policy: MetadataPolicy,
 }
 
+#[cfg(test)]
 pub fn apply_many(
     gamelist_path: &Path,
     folder: &Path,
     updates: &[Update],
     backups: &mut Backups,
 ) -> Result<Vec<Result<Change>>> {
+    let fallback: Vec<bool> = updates
+        .iter()
+        .map(|update| {
+            crate::zip::split_member_path(Path::new(&update.relative_game_path)).is_none()
+        })
+        .collect();
+    apply_many_with_fallback(gamelist_path, folder, updates, &fallback, backups)
+}
+
+pub fn apply_many_with_fallback(
+    gamelist_path: &Path,
+    folder: &Path,
+    updates: &[Update],
+    metadata_fallback: &[bool],
+    backups: &mut Backups,
+) -> Result<Vec<Result<Change>>> {
+    if metadata_fallback.len() != updates.len() {
+        return Err(Error::local(
+            "metadata policy count does not match scrape updates",
+        ));
+    }
     if updates.is_empty() {
         return Ok(Vec::new());
     }
@@ -292,7 +342,7 @@ pub fn apply_many(
         .iter()
         .map(|update| update.relative_game_path.clone())
         .collect();
-    let resolved = resolve_games(&document, &relative_paths);
+    let resolved = resolve_games(&document, &relative_paths, metadata_fallback);
     let mut outcomes = vec![Ok(Change::default()); updates.len()];
     let mut replacements = Vec::new();
     let mut appended = Vec::new();
@@ -300,7 +350,14 @@ pub fn apply_many(
     for (at, (update, resolved)) in updates.iter().zip(resolved).enumerate() {
         let edits = match resolved {
             Ok(Some(index)) => {
-                existing_edits(source, &document, &document.games[index], folder, update)
+                let game = &document.games[index];
+                if crate::zip::split_member_path(Path::new(&update.relative_game_path)).is_some()
+                    && game.path != normalise_rel(&update.relative_game_path)
+                {
+                    append_member_from_legacy(source, &document, game, folder, update)
+                } else {
+                    existing_edits(source, &document, game, folder, update)
+                }
             }
             Ok(None) => append_game_bytes(source, &document, update)
                 .map(|(bytes, change)| (Vec::new(), bytes, change)),
@@ -677,7 +734,7 @@ fn xml_attributes(element: &BytesStart<'_>, origin: &Path) -> Result<Vec<(String
                     ),
                 )
             })?;
-            let key = attribute.key.as_ref().to_ascii_lowercase();
+            let key = attribute.key.as_ref().to_owned();
             let value = attribute
                 .normalized_value(XmlVersion::Implicit1_0)
                 .map_err(|error| {
@@ -695,10 +752,18 @@ fn xml_attributes(element: &BytesStart<'_>, origin: &Path) -> Result<Vec<(String
         .collect()
 }
 
-fn matching_game<'a>(document: &'a Document, relative: &str) -> Result<Option<&'a Game>> {
+fn matching_game<'a>(
+    document: &'a Document,
+    relative: &str,
+    metadata_fallback: bool,
+) -> Result<Option<&'a Game>> {
     let wanted = normalise_rel(relative);
     if let Some(found) = unique_at(document, relative, |game| game.path == wanted)? {
         return Ok(Some(found));
+    }
+
+    if !metadata_fallback {
+        return Ok(None);
     }
 
     let file_name = file_name_of(&wanted).to_ascii_lowercase();
@@ -754,8 +819,12 @@ fn matching_game<'a>(document: &'a Document, relative: &str) -> Result<Option<&'
     Ok(None)
 }
 
-fn matching_game_index(document: &Document, relative: &str) -> Result<Option<usize>> {
-    matching_game(document, relative).map(|matched| {
+fn matching_game_index(
+    document: &Document,
+    relative: &str,
+    metadata_fallback: bool,
+) -> Result<Option<usize>> {
+    matching_game(document, relative, metadata_fallback).map(|matched| {
         matched.and_then(|matched| {
             document
                 .games
@@ -770,10 +839,15 @@ fn matching_game_index(document: &Document, relative: &str) -> Result<Option<usi
 /// A single existing entry, or a single as-yet missing path, may not receive
 /// two scrape results in the same batch. Refusing both targets is safer than
 /// choosing an order-dependent winner after title/slug fallback matching.
-fn resolve_games(document: &Document, relative_paths: &[String]) -> Vec<Result<Option<usize>>> {
+fn resolve_games(
+    document: &Document,
+    relative_paths: &[String],
+    metadata_fallback: &[bool],
+) -> Vec<Result<Option<usize>>> {
     let mut resolved: Vec<Result<Option<usize>>> = relative_paths
         .iter()
-        .map(|relative| matching_game_index(document, relative))
+        .enumerate()
+        .map(|(index, relative)| matching_game_index(document, relative, metadata_fallback[index]))
         .collect();
     let mut existing: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
     let mut missing: BTreeMap<String, Vec<usize>> = BTreeMap::new();
@@ -976,6 +1050,62 @@ fn existing_edits(
         replacements.push((game.close_start..game.close_start, bytes));
     }
     Ok((replacements, Vec::new(), change))
+}
+
+/// Materialize a single-member legacy overlay at its exact member path before
+/// editing it. Existing fields, unknown tags and parent links survive; the
+/// shared archive/title row is never modified or given a duplicate id.
+fn append_member_from_legacy(
+    source: &[u8],
+    document: &Document,
+    game: &Game,
+    folder: &Path,
+    update: &Update,
+) -> Result<ExistingEdits> {
+    let (mut replacements, _, mut change) = existing_edits(source, document, game, folder, update)?;
+    if !change.changed() {
+        return Ok((Vec::new(), Vec::new(), change));
+    }
+    let path = game
+        .fields
+        .get("path")
+        .ok_or_else(|| Error::local("legacy metadata entry has no path field"))?;
+    replacements.push((
+        path.whole.clone(),
+        element("path", &update.relative_game_path).into_bytes(),
+    ));
+    let original = &source[game.whole.clone()];
+    let mut reader = Reader::from_reader(original);
+    if let Event::Start(start) = reader
+        .read_event()
+        .map_err(|error| Error::local(error.to_string()))?
+    {
+        let mut opening = String::from("<game");
+        for (key, value) in xml_attributes(&start, folder)? {
+            if !key.eq_ignore_ascii_case("id") {
+                opening.push_str(&format!(
+                    " {key}=\"{}\"",
+                    escape(&value).replace('"', "&quot;")
+                ));
+            }
+        }
+        opening.push('>');
+        replacements.push((
+            game.whole.start..game.whole.start + reader.buffer_position() as usize,
+            opening.into_bytes(),
+        ));
+    }
+    for (range, _) in &mut replacements {
+        range.start -= game.whole.start;
+        range.end -= game.whole.start;
+    }
+    let cloned = apply_replacements(original, replacements)?;
+    let mut insertion = Vec::new();
+    insertion.extend_from_slice(document.newline.as_bytes());
+    insertion.extend_from_slice(&cloned);
+    insertion.extend_from_slice(document.newline.as_bytes());
+    change.created_entry = true;
+    Ok((Vec::new(), insertion, change))
 }
 
 fn append_game_bytes(
@@ -1874,5 +2004,63 @@ mod tests {
             "./media/screenscraper/3-42-abc.png",
             "./media/screenscraper/3-43-abc.png"
         ));
+    }
+    #[test]
+    fn multigame_zip_scrape_never_edits_an_archive_or_basename_match() {
+        let folder = temp("zip-exact");
+        let path = folder.join("gamelist.xml");
+        let archive_row = "<game><path>library.zip</path><name>Archive</name></game>";
+        std::fs::write(&path, format!("<gameList>{archive_row}</gameList>")).unwrap();
+        let update = Update {
+            relative_game_path: "./library.zip/folder/Game.rom".into(),
+            metadata: metadata("Member"),
+            image_path: None,
+            image_created: false,
+            image_policy: ImagePolicy::Off,
+            metadata_policy: MetadataPolicy::FillMissing,
+        };
+        apply_many_with_fallback(&path, &folder, &[update], &[false], &mut Backups::default())
+            .unwrap()[0]
+            .as_ref()
+            .unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains(archive_row));
+        assert!(text.contains("<path>./library.zip/folder/Game.rom</path>"));
+        assert!(text.contains("<name>Member</name>"));
+        std::fs::remove_dir_all(folder).unwrap();
+    }
+
+    #[test]
+    fn single_member_fill_preserves_legacy_fields_and_materializes_exact_entry() {
+        let folder = temp("zip-legacy-fill");
+        let path = folder.join("gamelist.xml");
+        let original = r#"<game ID="old" customFlag="Keep &amp; exact"><path>Only.zip</path><name>Keep name</name><custom>Keep custom</custom></game>"#;
+        std::fs::write(&path, format!("<gameList>{original}</gameList>")).unwrap();
+        let update = Update {
+            relative_game_path: "./Only.zip/Game.rom".into(),
+            metadata: metadata("Replacement name"),
+            image_path: None,
+            image_created: false,
+            image_policy: ImagePolicy::Off,
+            metadata_policy: MetadataPolicy::FillMissing,
+        };
+        apply_many_with_fallback(&path, &folder, &[update], &[true], &mut Backups::default())
+            .unwrap()[0]
+            .as_ref()
+            .unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains(original));
+        assert_eq!(text.matches("ID=\"old\"").count(), 1);
+        assert_eq!(text.matches("customFlag=\"Keep &amp; exact\"").count(), 2);
+        assert!(
+            !text.contains("customflag="),
+            "XML attribute names are case-sensitive"
+        );
+        let list = crate::gamelist::Gamelist::load(&path, &folder).unwrap();
+        let (member, _) = list.lookup_exact("./Only.zip/Game.rom").unwrap();
+        assert_eq!(member.name.as_deref(), Some("Keep name"));
+        assert_eq!(member.developer.as_deref(), Some("New developer"));
+        assert_eq!(text.matches("<custom>Keep custom</custom>").count(), 2);
+        std::fs::remove_dir_all(folder).unwrap();
     }
 }

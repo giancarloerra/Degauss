@@ -1,0 +1,531 @@
+--- a/ra_http.cpp
++++ b/ra_http.cpp
+@@ -1,6 +1,6 @@
+ // ra_http.cpp — Asynchronous HTTP for RetroAchievements on MiSTer
+ //
+-// Worker thread executes curl via popen(), responses are queued back to the
++// Worker thread executes curl via posix_spawnp(), responses are queued back to the
+ // main thread for safe rc_client callback dispatch.
+ 
+ #include "ra_http.h"
+@@ -13,6 +13,14 @@
+ #include <sched.h>
+ #include <errno.h>
+ #include <unistd.h>
++#include <limits.h>
++#include <sys/wait.h>
++#include <string>
++#include <spawn.h>
++#include <sys/socket.h>
++#include <fcntl.h>
++
++extern char **environ;
+ 
+ // ---------------------------------------------------------------------------
+ // Debug (uses same style as achievements.cpp)
+@@ -68,7 +76,7 @@
+ }
+ 
+ // ---------------------------------------------------------------------------
+-// curl execution via popen()
++// curl execution via posix_spawnp()
+ // ---------------------------------------------------------------------------
+ 
+ // Grow-able buffer for reading curl output
+@@ -100,49 +108,56 @@
+ 	b->data[b->len] = '\0';
+ }
+ 
+-// Build a shell command string for curl.
+-// We write status code on a separate last line using -w '\n%{http_code}'.
+-static char *build_curl_cmd(const char *url, const char *post_data,
+-	const char *content_type)
+-{
+-	// Estimate command length
+-	size_t len = 256 + strlen(url);
+-	if (post_data) len += strlen(post_data) + 32;
+-	if (content_type) len += strlen(content_type) + 32;
+-
+-	char *cmd = (char *)malloc(len);
+-	if (!cmd) return NULL;
+-
+-	// Base: silent, follow redirects, 30s timeout, output body then HTTP code
+-	int off = snprintf(cmd, len,
+-		"curl -s -L --max-time 30 -w '\\n%%{http_code}' -A '%s'", s_user_agent);
+-
+-	if (post_data && post_data[0]) {
+-		// Use --data-binary with stdin to avoid shell injection from post_data
+-		off += snprintf(cmd + off, len - off, " -X POST");
+-		if (content_type && content_type[0]) {
+-			off += snprintf(cmd + off, len - off, " -H 'Content-Type: %s'", content_type);
+-		} else {
+-			off += snprintf(cmd + off, len - off,
+-				" -H 'Content-Type: application/x-www-form-urlencoded'");
+-		}
+-		off += snprintf(cmd + off, len - off, " --data-binary @-");
+-	}
+-
+-	// URL: use single quotes to prevent shell interpretation, escaping any
+-	// embedded single quotes.
+-	off += snprintf(cmd + off, len - off, " '");
+-	for (const char *p = url; *p; p++) {
+-		if (*p == '\'') {
+-			off += snprintf(cmd + off, len - off, "'\\''");
+-		} else {
+-			cmd[off++] = *p;
+-		}
+-	}
+-	off += snprintf(cmd + off, len - off, "'");
+-	cmd[off] = '\0';
+-
+-	return cmd;
++// curl config values are quoted separately from shell syntax. No shell runs.
++static std::string config_quote(const char *value)
++{
++ std::string quoted = "\"";
++ for (const char *p = value; *p; ++p) {
++  switch (*p) {
++  case '\\': quoted += "\\\\"; break;
++  case '"': quoted += "\\\""; break;
++  case '\n': quoted += "\\n"; break;
++  case '\r': quoted += "\\r"; break;
++  case '\t': quoted += "\\t"; break;
++  case '\v': quoted += "\\v"; break;
++  default: quoted += *p;
++  }
++ }
++ return quoted + "\"\n";
++}
++
++static void process_error(ra_http_resp *resp, const char *operation, int error)
++{
++ resp->http_status = -1;
++ char message[192];
++ snprintf(message, sizeof(message), "curl %s failed: %s", operation, strerror(error));
++ resp->body = strdup(message);
++ resp->body_len = resp->body ? strlen(resp->body) : 0;
++ HTTP_LOG("ERROR: %s", message);
++}
++
++// Report transport failures without copying URLs, POST bodies, or credentials.
++static void transport_error(ra_http_resp *resp, int code)
++{
++ // rcheevos RC_API_SERVER_RESPONSE_CLIENT_ERROR passes this safe body to callers.
++ resp->http_status = -1;
++ const char *cause = "transport failed";
++ switch (code) {
++ case 1: cause = "only HTTPS is permitted"; break;
++ case 2: cause = "curl options or initialization failed"; break;
++ case 6: cause = "DNS resolution failed"; break;
++ case 7: cause = "connection failed"; break;
++ case 28: cause = "request timed out"; break;
++ case 35: cause = "TLS negotiation failed"; break;
++ case 60: cause = "TLS certificate verification failed"; break;
++ case 77: cause = "CA bundle missing or unreadable"; break;
++ case 127: cause = "curl executable unavailable"; break;
++ }
++ char message[160];
++ snprintf(message, sizeof(message), "curl failed (exit %d): %s", code, cause);
++ resp->body = strdup(message);
++ resp->body_len = resp->body ? strlen(resp->body) : 0;
++ HTTP_LOG("ERROR: %s", message);
+ }
+ 
+ static void execute_request(ra_http_req *req, ra_http_resp *resp)
+@@ -153,104 +168,151 @@
+ 	resp->body = NULL;
+ 	resp->body_len = 0;
+ 
+-	// Build final shell command.
+-	// For POST: printf '%s' '<data>' | curl ... --data-binary @-
+-	// This avoids temp files and double-popen.
+-	size_t url_len  = strlen(req->url);
+-	size_t post_len = req->post_data ? strlen(req->post_data) : 0;
+-	size_t ua_len   = strlen(s_user_agent);
+-	size_t cmd_len  = 512 + url_len + post_len * 4 + ua_len; // *4: worst-case shell escaping
+-	char *cmd = (char *)malloc(cmd_len);
+-	if (!cmd) {
+-		HTTP_LOG("ERROR: malloc failed for command buffer");
+-		resp->body = strdup("malloc failed");
+-		resp->body_len = resp->body ? strlen(resp->body) : 0;
++	// An explicit sidecar avoids the obsolete system CA store without changing it.
++	// Its name follows the executable, including custom installation locations.
++	char ca_path[PATH_MAX];
++	ssize_t ca_length = readlink("/proc/self/exe", ca_path,
++		sizeof(ca_path) - sizeof(".cacert.pem"));
++	if (ca_length < 0 || ca_length >= (ssize_t)(sizeof(ca_path) - sizeof(".cacert.pem"))) {
++		transport_error(resp, 77);
+ 		return;
+ 	}
+-
+-	int off = 0;
+-
+-	if (req->post_data && req->post_data[0]) {
+-		// Use printf to feed POST body into curl's stdin.
+-		// Shell-escape the post_data using single-quote wrapping
+-		// (replace each ' with '\'' ).
+-		off += snprintf(cmd + off, cmd_len - off, "printf '%%s' '");
+-		for (const char *p = req->post_data; *p && (size_t)off < cmd_len - 10; p++) {
+-			if (*p == '\'') {
+-				off += snprintf(cmd + off, cmd_len - off, "'\\''");
+-			} else {
+-				cmd[off++] = *p;
+-			}
+-		}
+-		off += snprintf(cmd + off, cmd_len - off, "' | ");
+-	}
+-
+-	// curl base flags (-k: skip SSL cert verification — MiSTer CA bundle is outdated)
+-	off += snprintf(cmd + off, cmd_len - off,
+-		"curl -s -k -L --max-time 30 -w '\\n%%{http_code}' -A '%s'", s_user_agent);
+-
+-	if (req->post_data && req->post_data[0]) {
+-		const char *ct = (req->content_type && req->content_type[0])
+-			? req->content_type
+-			: "application/x-www-form-urlencoded";
+-		off += snprintf(cmd + off, cmd_len - off,
+-			" -X POST -H 'Content-Type: %s' --data-binary @-", ct);
+-	}
+-
+-	// URL: single-quote wrapped with ' escaped as '\''
+-	off += snprintf(cmd + off, cmd_len - off, " '");
+-	for (const char *p = req->url; *p && (size_t)off < cmd_len - 10; p++) {
+-		if (*p == '\'') {
+-			off += snprintf(cmd + off, cmd_len - off, "'\\''");
+-		} else {
+-			cmd[off++] = *p;
+-		}
+-	}
+-	off += snprintf(cmd + off, cmd_len - off, "'");
+-	cmd[off] = '\0';
+-
+-	// Log the command with sensitive params masked: &t= (token) and &p= (password)
+-	{
+-		char *masked = strdup(cmd);
+-		if (masked) {
+-			static const char *keys[] = { "&t=", "&p=", NULL };
+-			for (int k = 0; keys[k]; k++) {
+-				char *pos = strstr(masked, keys[k]);
+-				if (pos) {
+-					char *val = pos + 3;
+-					char *end = val;
+-					while (*end && *end != '&' && *end != '\'') end++;
+-					memmove(val + 3, end, strlen(end) + 1);
+-					memcpy(val, "***", 3);
+-				}
+-			}
+-			HTTP_LOG("CMD: %s", masked);
+-			free(masked);
+-		}
+-	}
+-
+-	FILE *fp = popen(cmd, "r");
+-	free(cmd);
+-
+-	if (!fp) {
+-		HTTP_LOG("ERROR: popen() failed: %s", strerror(errno));
+-		resp->body = strdup("popen() failed");
+-		resp->body_len = resp->body ? strlen(resp->body) : 0;
+-		return;
+-	}
++	memcpy(ca_path + ca_length, ".cacert.pem", sizeof(".cacert.pem"));
++
++ // All request values travel through stdin, never process arguments or disk.
++ std::string config = "url = " + config_quote(req->url);
++ config += "user-agent = " + config_quote(s_user_agent);
++ config += "cacert = " + config_quote(ca_path);
++ if (req->post_data && req->post_data[0]) {
++  const char *ct = req->content_type && req->content_type[0]
++   ? req->content_type : "application/x-www-form-urlencoded";
++  config += "request = POST\nheader = " + config_quote((std::string("Content-Type: ") + ct).c_str());
++  config += "data-raw = " + config_quote(req->post_data);
++ }
++ HTTP_LOG("Request: HTTPS %s", req->post_data && req->post_data[0] ? "POST" : "GET");
++
++ int input[2] = {-1, -1}, output_fd[2] = {-1, -1};
++ auto close_pipes = [&]() {
++  for (int fd : {input[0], input[1], output_fd[0], output_fd[1]})
++   if (fd >= 0) close(fd);
++ };
++ if (socketpair(AF_UNIX, SOCK_STREAM, 0, input) || pipe(output_fd)) {
++  int error = errno;
++  close_pipes();
++  process_error(resp, "pipe creation", error);
++  return;
++ }
++ // A launcher may leave a standard stream closed. Keep owned descriptors
++ // above stderr so spawn cleanup cannot close a redirected standard stream.
++ for (int *fd : {&input[0], &input[1], &output_fd[0], &output_fd[1]}) {
++  if (*fd < 3) {
++   int promoted = fcntl(*fd, F_DUPFD_CLOEXEC, 3);
++   if (promoted < 0) {
++    int error = errno;
++    close_pipes();
++    process_error(resp, "pipe setup", error);
++    return;
++   }
++   close(*fd);
++   *fd = promoted;
++  }
++  if (fcntl(*fd, F_SETFD, FD_CLOEXEC) < 0) {
++   int error = errno;
++   close_pipes();
++   process_error(resp, "pipe setup", error);
++   return;
++  }
++ }
++#ifdef SO_NOSIGPIPE
++ int no_sigpipe = 1;
++ if (setsockopt(input[0], SOL_SOCKET, SO_NOSIGPIPE, &no_sigpipe, sizeof(no_sigpipe))) {
++  int error = errno;
++  close_pipes();
++  process_error(resp, "pipe setup", error);
++  return;
++ }
++#endif
++ posix_spawn_file_actions_t actions;
++ int error = posix_spawn_file_actions_init(&actions);
++ if (error) {
++  close_pipes();
++  process_error(resp, "spawn setup", error);
++  return;
++ }
++ error = posix_spawn_file_actions_adddup2(&actions, input[1], STDIN_FILENO);
++ if (!error) error = posix_spawn_file_actions_adddup2(&actions, output_fd[1], STDOUT_FILENO);
++ // curl config errors can quote request values; expose only its safe exit cause.
++ if (!error) error = posix_spawn_file_actions_addopen(&actions, STDERR_FILENO, "/dev/null", O_WRONLY, 0);
++ for (int fd : {input[0], input[1], output_fd[0], output_fd[1]})
++  if (!error) error = posix_spawn_file_actions_addclose(&actions, fd);
++ const char *args[] = {"curl", "-q", "-s", "-L", "--proto", "=https",
++  "--proto-redir", "=https", "--max-time", "30", "-w", "\n%{http_code}", "--config", "-", nullptr};
++ pid_t child = -1;
++ if (!error) error = posix_spawnp(&child, "curl", &actions, nullptr,
++  const_cast<char **>(args), environ);
++ posix_spawn_file_actions_destroy(&actions);
++ if (error) {
++  close_pipes();
++  if (error == ENOENT) transport_error(resp, 127);
++  else process_error(resp, "spawn", error);
++  return;
++ }
++ close(input[1]); input[1] = -1;
++ close(output_fd[1]); output_fd[1] = -1;
++ // curl consumes its complete config before issuing a request. It cannot fill
++ // the response pipe while waiting for more config, including large POST data.
++ size_t written = 0;
++ int write_error = 0;
++ while (written < config.size()) {
++#ifdef MSG_NOSIGNAL
++  ssize_t count = send(input[0], config.data() + written, config.size() - written, MSG_NOSIGNAL);
++#else
++  ssize_t count = send(input[0], config.data() + written, config.size() - written, 0);
++#endif
++  if (count < 0 && errno == EINTR) continue;
++  if (count <= 0) { write_error = count < 0 ? errno : EIO; break; }
++  written += (size_t)count;
++ }
++ close(input[0]); input[0] = -1;
+ 
+ 	// Read all output
+ 	struct buf output;
+ 	buf_init(&output);
+ 	char chunk[4096];
++	int read_error = 0;
+ 	while (1) {
+-		size_t n = fread(chunk, 1, sizeof(chunk), fp);
++		ssize_t n = read(output_fd[0], chunk, sizeof(chunk));
++		if (n < 0 && errno == EINTR) continue;
++		if (n < 0) { read_error = errno; break; }
+ 		if (n == 0) break;
+-		buf_append(&output, chunk, n);
+-	}
+-
+-	int exit_code = pclose(fp);
+-	HTTP_LOG("pclose exit_code=%d output_len=%zu", exit_code, output.len);
++		buf_append(&output, chunk, (size_t)n);
++	}
++
++	close(output_fd[0]); output_fd[0] = -1;
++ int exit_code = 0;
++ pid_t waited;
++ do { waited = waitpid(child, &exit_code, 0); } while (waited < 0 && errno == EINTR);
++ if (waited < 0) {
++  int error = errno;
++  free(output.data);
++  process_error(resp, "wait", error);
++  return;
++ }
++ HTTP_LOG("curl exit_code=%d output_len=%zu", exit_code, output.len);
++
++	if (exit_code == -1 || !WIFEXITED(exit_code) || WEXITSTATUS(exit_code)) {
++		const int code = exit_code != -1 && WIFEXITED(exit_code)
++			? WEXITSTATUS(exit_code) : -1;
++		free(output.data);
++		transport_error(resp, code);
++		return;
++	}
++
++ if (write_error || read_error) {
++  free(output.data);
++  process_error(resp, write_error ? "stdin write" : "stdout read", write_error ? write_error : read_error);
++  return;
++ }
+ 
+ 	if (!output.data || output.len == 0) {
+ 		HTTP_LOG("ERROR: curl returned no output (exit=%d)", exit_code);
+--- /dev/null
++++ b/tests/run-ra-http-tests.py
+@@ -0,0 +1,153 @@
++#!/usr/bin/env python3
++"""Exercise the production curl request executor against a real local TLS server."""
++import http.server
++import pathlib
++import os
++import platform
++import shutil
++import ssl
++import subprocess
++import tempfile
++import threading
++
++root = pathlib.Path(__file__).resolve().parent.parent
++source = (root / 'ra_http.cpp').read_text()
++# Compile the actual request implementation without the unrelated main-loop
++# worker. No replacement HTTP implementation or fake curl participates.
++source = source[:source.index('// Worker thread\n')]
++source = source.replace('#include "achievements.h"', 'void ra_log_write(const char*, ...);')
++# macOS has no /proc/self/exe. Adapt only this OS lookup to the real host
++# executable; curl, request construction, TLS, and response handling are unchanged.
++if platform.system() == 'Darwin':
++    source = source.replace('#include <unistd.h>', r'''#include <unistd.h>
++#include <mach-o/dyld.h>
++#include <limits.h>
++static ssize_t test_executable_readlink(const char *path, char *out, size_t size) {
++ if (strcmp(path, "/proc/self/exe")) return readlink(path, out, size);
++ char executable[PATH_MAX]; uint32_t count = sizeof(executable);
++ if (_NSGetExecutablePath(executable, &count)) return -1;
++ size_t length = strlen(executable);
++ if (length > size) length = size;
++ memcpy(out, executable, length); return length;
++}
++#define readlink test_executable_readlink
++''')
++with tempfile.TemporaryDirectory(prefix='ra-http-') as tmp:
++    d = pathlib.Path(tmp)
++    cpp = d / 'request.cpp'
++    cpp.write_text(source + '''
++#include <stdarg.h>
++#include <signal.h>
++#include <cassert>
++static std::string captured_logs;
++void ra_log_write(const char *format, ...) {
++ char text[4096]; va_list args; va_start(args, format);
++ vsnprintf(text, sizeof(text), format, args); va_end(args);
++ captured_logs += text;
++}
++int main(int argc, char **argv) {
++ if (argc < 2) return 2;
++ ra_http_req request = {};
++ request.url = argv[1];
++ std::string post;
++ if (argc > 2) { char block[4096]; ssize_t count; while ((count = read(0, block, sizeof(block))) > 0) post.append(block, count); }
++ request.post_data = argc > 2 ? const_cast<char*>(post.c_str()) : nullptr;
++ request.content_type = argc > 3 ? argv[3] : nullptr;
++ ra_http_resp response = {};
++ struct sigaction before, after;
++ sigaction(SIGPIPE, nullptr, &before);
++ int saved[3] = {-1, -1, -1};
++ const char *closed = getenv("TEST_CLOSED_STREAMS");
++ int closed_mask = closed ? atoi(closed) : 0;
++ for (int fd = 0; fd < 3; ++fd) {
++  if (closed_mask & (1 << fd)) {
++   saved[fd] = fcntl(fd, F_DUPFD_CLOEXEC, 3);
++   assert(saved[fd] >= 3);
++   assert(close(fd) == 0);
++  }
++ }
++ execute_request(&request, &response);
++ for (int fd = 0; fd < 3; ++fd) {
++  if (saved[fd] >= 0) {
++   assert(dup2(saved[fd], fd) == fd);
++   close(saved[fd]);
++  }
++ }
++ sigaction(SIGPIPE, nullptr, &after);
++ assert(before.sa_handler == after.sa_handler);
++ printf("%d\\n%s", response.http_status, response.body ? response.body : "");
++ free(response.body);
++ fprintf(stderr, "%s", captured_logs.c_str());
++}
++''')
++    exe = d / "request's client"
++    subprocess.run([os.environ.get('CXX', 'c++'), '-std=c++14', '-I', str(root), str(cpp), '-o', str(exe), '-pthread'], check=True)
++    cert, key = d / 'cert.pem', d / 'key.pem'
++    subprocess.run(['openssl', 'req', '-x509', '-newkey', 'rsa:2048', '-nodes',
++                    '-keyout', str(key), '-out', str(cert), '-days', '1',
++                    '-subj', '/CN=localhost', '-addext', 'subjectAltName=DNS:localhost'],
++                   check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
++    class Handler(http.server.BaseHTTPRequestHandler):
++        def log_message(self, *args): pass
++        def do_GET(self):
++            if self.path == '/redirect':
++                self.send_response(302)
++                self.send_header('Location', 'http://localhost:1/blocked')
++                self.end_headers()
++            else:
++                self.send_response(200); self.end_headers(); self.wfile.write(b'tls verified')
++        def do_POST(self):
++            body = self.rfile.read(int(self.headers['Content-Length']))
++            self.send_response(200); self.end_headers(); self.wfile.write(body)
++    server = http.server.HTTPServer(('127.0.0.1', 0), Handler)
++    context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
++    context.load_cert_chain(cert, key)
++    server.socket = context.wrap_socket(server.socket, server_side=True)
++    thread = threading.Thread(target=server.serve_forever, daemon=True); thread.start()
++    base = 'https://localhost:%d' % server.server_port
++    (d / '.curlrc').write_text('insecure\n')
++    sidecar = pathlib.Path(str(exe) + '.cacert.pem')
++    def request(url, body=None, content_type=None, search_path=None, closed_streams=0):
++        args = [str(exe), url] + (['stdin-body'] if body is not None else [])
++        if content_type is not None: args.append(content_type)
++        result = subprocess.run(args, input=body.encode() if body is not None else None, capture_output=True, timeout=35, check=True,
++            env={"PATH": search_path or os.environ["PATH"], "NO_PROXY": "localhost,127.0.0.1", "CURL_HOME": str(d), "TEST_CLOSED_STREAMS": str(closed_streams)})
++        assert url.encode() not in result.stderr and b"synthetic=" not in result.stderr, 'Request details must not be logged'
++        return result.stdout.decode()
++    try:
++        missing = request(base)
++        assert missing.startswith('-1\n') and 'exit 77' in missing, 'Missing CA must retain its client error'
++        shutil.copyfile(cert, sidecar)
++        assert request(base) == '200\ntls verified'
++        for closed_streams in (1, 2, 4, 7):
++            assert request(base, 'synthetic=closed-streams', closed_streams=closed_streams) == '200\nsynthetic=closed-streams'
++        assert request(base, "synthetic=a'b&value=two") == "200\nsynthetic=a'b&value=two"
++        assert request(base, "body", "application/" + "x" * 8192 + "'quoted") == "200\nbody"
++        for body in ("@literal-not-a-file", "quotes='\" slash=\\ newline=\n carriage=\r tab=\t vertical=\v", "synthetic=" + "long\n\\\"" * 100000):
++            assert request(base, body) == "200\n" + body
++        # Inspect the exact arguments handed to real curl, then exec it normally.
++        probe = d / 'probe'
++        probe.mkdir()
++        argv_file = d / 'curl-argv.txt'
++        real_curl = shutil.which('curl')
++        wrapper = probe / 'curl'
++        wrapper.write_text("#!" + os.sys.executable + "\nimport os,sys\nopen(" + repr(str(argv_file)) + ", 'w').write(repr(sys.argv[1:]))\nos.execv(" + repr(real_curl) + ", [" + repr(real_curl) + "] + sys.argv[1:])\n")
++        wrapper.chmod(0o755)
++        probe_path = str(probe) + os.pathsep + os.environ['PATH']
++        assert request(base + '/?synthetic=url-secret', 'synthetic=post-secret', search_path=probe_path) == '200\nsynthetic=post-secret'
++        assert 'synthetic' not in argv_file.read_text()
++        # Early child termination must not SIGPIPE Main or change its policy.
++        wrapper.write_text('#!/bin/sh\nexit 23\n')
++        assert 'exit 23' in request(base, 'synthetic=' + 'x' * 2000000, search_path=probe_path)
++        empty_path = d / 'empty-path'
++        empty_path.mkdir()
++        assert 'exit 127' in request(base, search_path=str(empty_path))
++        assert 'exit 60' in request(base.replace('localhost', '127.0.0.1')), 'Hostname validation must remain enabled'
++        assert 'exit 1' in request('http://localhost:1/plain'), 'Plain HTTP must be rejected'
++        assert 'exit 1' in request(base + '/redirect'), 'HTTPS-to-HTTP redirect must fail'
++        assert 'exit 7' in request('https://localhost:1/refused'), 'Connection failure must retain cause'
++        sidecar.write_text('invalid CA bundle')
++        assert 'exit 77' in request(base), 'Unreadable CA must fail explicitly'
++    finally:
++        server.shutdown(); server.server_close(); thread.join()
++print('Real curl TLS/POST/hostname/redirect/CA/connection checks passed')

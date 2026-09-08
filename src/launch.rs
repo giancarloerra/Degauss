@@ -140,27 +140,45 @@ pub fn plan_amiga_vision(
 ///
 /// The first match in the folder wins, which is what MiSTer's own tooling
 /// does. A game with two CDs needs its own shortcut either way.
-fn companion_for(rule: &LaunchRule, game: &Path) -> Option<PathBuf> {
+fn companion_for(rule: &LaunchRule, game: &Path) -> Result<Option<PathBuf>> {
     if rule.companion_extensions.is_empty() {
-        return None;
+        return Ok(None);
     }
-    let dir = game.parent()?;
-    let mut found: Vec<PathBuf> = std::fs::read_dir(dir)
-        .ok()?
+    let accepts = |path: &Path| {
+        path.extension().and_then(|e| e.to_str()).is_some_and(|e| {
+            rule.companion_extensions
+                .iter()
+                .any(|x| x.eq_ignore_ascii_case(e))
+        })
+    };
+    if let Some((archive, member)) = crate::zip::split_member_path(game) {
+        let parent = Path::new(&member).parent().unwrap_or(Path::new(""));
+        let mut found: Vec<_> = crate::zip::entries(&archive)?
+            .into_iter()
+            .filter(|entry| entry.name != member)
+            .filter(|entry| Path::new(&entry.name).parent().unwrap_or(Path::new("")) == parent)
+            .filter(|entry| accepts(Path::new(&entry.name)))
+            .map(|entry| archive.join(entry.name))
+            .collect();
+        found.sort();
+        return Ok(found.into_iter().next());
+    }
+    let Some(dir) = game.parent() else {
+        return Ok(None);
+    };
+    // Preserve the established ordinary-folder behavior. Archive read errors
+    // must propagate because a failed listing cannot establish no companion.
+    let Ok(listing) = std::fs::read_dir(dir) else {
+        return Ok(None);
+    };
+    let mut found: Vec<PathBuf> = listing
         .flatten()
         .map(|item| item.path())
         .filter(|path| path != game)
-        .filter(|path| {
-            path.extension()
-                .and_then(|ext| ext.to_str())
-                .map(|ext| ext.to_ascii_lowercase())
-                .is_some_and(|ext| rule.companion_extensions.contains(&ext))
-        })
+        .filter(|path| accepts(path))
         .collect();
-    // Sorted so the same folder always produces the same MGL, rather than
-    // whatever order the filesystem happened to return.
     found.sort();
-    found.into_iter().next()
+    Ok(found.into_iter().next())
 }
 
 /// Encode text back to ISO-8859-1, the way AmigaVision wrote it.
@@ -306,7 +324,7 @@ pub fn favorite_mgl_amiga(system: &SystemConfig, install: &Path, title: &str) ->
 
 /// The AmigaVision title an MGL carries, where it carries one.
 pub fn amiga_marker(mgl: &Path) -> Option<(PathBuf, String)> {
-    let text = std::fs::read_to_string(mgl).ok()?;
+    let text = crate::favorites::read_mgl_text(mgl, "AmigaVision MGL marker").ok()?;
     let at = text.find(&format!("<{DEGAUSS_TAG} "))?;
     let rest = &text[at..];
     let install = attribute(rest, "install")?;
@@ -364,7 +382,7 @@ pub fn favorite_mgl(system: &SystemConfig, game: &Path) -> Result<Option<String>
         )
     })?;
     let mut items = Vec::new();
-    if let Some(companion) = companion_for(rule, game) {
+    if let Some(companion) = companion_for(rule, game)? {
         if let Some(path) = companion.to_str() {
             let mut extra = MglItem::new(rule, path)?;
             extra.index = rule.companion_index.unwrap_or(rule.index);
@@ -400,6 +418,83 @@ pub fn needs_system_core(game: &Path) -> bool {
         "mgl" => amiga_marker(game).is_some(),
         _ => true,
     }
+}
+
+/// Build a launch using the current preference without persisting variant data.
+/// Self-describing custom launchers remain untouched. Recognized Favorites are
+/// converted only into the temporary output, preserving the saved Favorite.
+#[cfg(test)]
+pub fn plan_with_preference(
+    system: &SystemConfig,
+    game: &Path,
+    mgl_path: &Path,
+    menu_root: &Path,
+    ra_first: bool,
+) -> Result<LaunchPlan> {
+    plan_with_choice(system, game, mgl_path, menu_root, ra_first, None)
+}
+
+#[cfg(test)]
+pub fn favorite_mgl_with_preference(
+    system: &SystemConfig,
+    game: &Path,
+    menu_root: &Path,
+    ra_first: bool,
+) -> Result<Option<String>> {
+    favorite_mgl_with_choice(system, game, menu_root, ra_first, None)
+}
+
+pub fn plan_with_choice(
+    system: &SystemConfig,
+    game: &Path,
+    mgl_path: &Path,
+    menu_root: &Path,
+    ra_first: bool,
+    selected: Option<&str>,
+) -> Result<LaunchPlan> {
+    if game
+        .extension()
+        .is_some_and(|s| s.eq_ignore_ascii_case("mgl"))
+        && amiga_marker(game).is_none()
+    {
+        if !crate::core_variants::recognized_favorite(game, system)? {
+            return plan(system, game, mgl_path);
+        }
+        let core = crate::core_choices::resolve(system, menu_root, selected, ra_first)?;
+        if !crate::core_variants::needs_conversion(game, &core)?
+            && !crate::favorites::has_bare_paths(game)?
+        {
+            return plan(system, game, mgl_path);
+        }
+        let text = crate::core_variants::convert_favorite(game, &core)?;
+        let mgl = crate::favorites::relocate_mgl(&text, game, system)?;
+        return Ok(LaunchPlan {
+            mgl,
+            mgl_path: mgl_path.to_path_buf(),
+            command: format!("load_core {}\n", mgl_path.display()),
+            boot_file: None,
+        });
+    }
+    let mut result = plan(system, game, mgl_path)?;
+    if needs_system_core(game) {
+        let core = crate::core_choices::resolve(system, menu_root, selected, ra_first)?;
+        result.mgl = crate::core_variants::apply(&result.mgl, mgl_path, &core)?;
+    }
+    Ok(result)
+}
+
+pub fn favorite_mgl_with_choice(
+    system: &SystemConfig,
+    game: &Path,
+    menu_root: &Path,
+    ra_first: bool,
+    selected: Option<&str>,
+) -> Result<Option<String>> {
+    let Some(text) = favorite_mgl(system, game)? else {
+        return Ok(None);
+    };
+    let core = crate::core_choices::resolve(system, menu_root, selected, ra_first)?;
+    crate::core_variants::apply(&text, game, &core).map(Some)
 }
 
 /// Work out how to start one entry.
@@ -456,7 +551,7 @@ pub fn plan(system: &SystemConfig, game: &Path, mgl_path: &Path) -> Result<Launc
     let mut items = Vec::new();
     // The companion is mounted first, so the disk the game boots from is
     // the last thing handed over.
-    if let Some(companion) = companion_for(rule, game) {
+    if let Some(companion) = companion_for(rule, game)? {
         let path = companion.to_str().ok_or_else(|| {
             DegaussError::unsupported(
                 "companion path",
@@ -534,8 +629,30 @@ mod tests {
         }
     }
 
+    #[test]
+    fn archive_companions_stay_in_the_selected_virtual_directory() {
+        let root = std::env::temp_dir().join(format!("degauss-companion-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let archive = root.join("library.zip");
+        std::fs::write(
+            &archive,
+            crate::zip::tests_archive(&["Game/game.vhd", "Game/disc.chd", "Other/disc.chd"], false),
+        )
+        .unwrap();
+        let mut rule = c64().launch.remove(0);
+        rule.companion_extensions = vec!["chd".into()];
+        assert_eq!(
+            companion_for(&rule, &archive.join("Game/game.vhd")).unwrap(),
+            Some(archive.join("Game/disc.chd"))
+        );
+        std::fs::write(&archive, b"broken archive").unwrap();
+        assert!(companion_for(&rule, &archive.join("Game/game.vhd")).is_err());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
     fn c64() -> SystemConfig {
         SystemConfig {
+            preserve_rbf_stem: false,
             name: "C64".into(),
             path: "/media/fat/games/C64".into(),
             extensions: vec!["d64".into(), "prg".into(), "crt".into()],
@@ -592,6 +709,7 @@ mod tests {
         // AmigaVision then cannot match the name it wrote itself: the core
         // starts and the game does not.
         let system = SystemConfig {
+            preserve_rbf_stem: false,
             name: "Amiga".into(),
             path: "/media/fat/games/Amiga".into(),
             extensions: vec!["adf".into()],
@@ -620,6 +738,7 @@ mod tests {
     #[test]
     fn a_title_that_is_not_latin1_is_refused_rather_than_mangled() {
         let system = SystemConfig {
+            preserve_rbf_stem: false,
             name: "Amiga".into(),
             path: "/media/fat/games/Amiga".into(),
             extensions: vec!["adf".into()],
@@ -644,6 +763,7 @@ mod tests {
         // The library lives inside one disk image, so there is no file to
         // hand over: the game is chosen by name on the way up.
         let system = SystemConfig {
+            preserve_rbf_stem: false,
             name: "Amiga".into(),
             path: "/media/fat/games/Amiga".into(),
             extensions: vec!["adf".into()],
@@ -677,6 +797,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("degauss-ags-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let system = SystemConfig {
+            preserve_rbf_stem: false,
             name: "Amiga".into(),
             path: dir.to_string_lossy().into_owned(),
             extensions: vec!["adf".into()],
@@ -1009,6 +1130,7 @@ mod tests {
         // so the extra element costs nothing there: the stock menu starts
         // AmigaVision at its own menu and Degauss starts it at the title.
         let system = SystemConfig {
+            preserve_rbf_stem: false,
             name: "Amiga".into(),
             path: "/media/fat/games/Amiga".into(),
             extensions: vec![],
@@ -1042,6 +1164,7 @@ mod tests {
     #[test]
     fn a_title_with_characters_xml_cares_about_survives_the_round_trip() {
         let system = SystemConfig {
+            preserve_rbf_stem: false,
             name: "Amiga".into(),
             path: "/media/fat/games/Amiga".into(),
             extensions: vec![],
@@ -1073,6 +1196,7 @@ mod tests {
         // write the name where AmigaVision reads it before the core comes
         // up. Without this the favourite would start AmigaVision's menu.
         let system = SystemConfig {
+            preserve_rbf_stem: false,
             name: "Amiga".into(),
             path: "/media/fat/games/Amiga".into(),
             extensions: vec!["mgl".into()],

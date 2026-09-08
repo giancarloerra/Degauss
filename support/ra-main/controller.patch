@@ -1,0 +1,148 @@
+--- a/user_io.cpp
++++ b/user_io.cpp
+@@ -1813,12 +1813,12 @@
+ {
+ 	uint8_t joy = (joystick>1 || !joyswap) ? joystick : joystick ^ 1;
+ 
+-	static int use32 = 0;
+-	use32 |= map >> 16;
++	// Main can restart without resetting the FPGA joystick registers.
++	// Always replace the upper word too, including an old input-disable bit.
+ 
+ 	spi_uio_cmd_cont((joy < 2) ? (UIO_JOYSTICK0 + joy) : (UIO_JOYSTICK2 + joy - 2));
+ 	spi_w(map);
+-	if(use32) spi_w(map >> 16);
++	spi_w(map >> 16);
+ 	DisableIO();
+ 
+ 	if (!is_minimig() && joy_transl == 1 && newdir)
+--- a/input.cpp
++++ b/input.cpp
+@@ -6388,6 +6388,7 @@
+ 	static bool autofire_cfg_parsed = false;
+  	if (!autofire_cfg_parsed) autofire_cfg_parsed = parse_autofire_cfg();
+ 	static uint32_t joy_mask_prev[NUMPLAYERS] = {};
++	static bool joy_mask_initialized = false;
+ 
+ 	add_frame_callback(key_update_frames_held_cb);
+ 
+@@ -6437,13 +6438,15 @@
+ 		for (int i = 0; i < NUMPLAYERS; i++) {
+ 			joy_mask[i] = joy_mask[i] | autofire_mask[i];
+ 			int newdir = (joy_mask[i] & 0xF) | (joy_mask_prev[i] & 0xF);
+-			if (joy_mask[i] != joy_mask_prev[i])
++			if (!joy_mask_initialized || joy_mask[i] != joy_mask_prev[i])
+ 			{
+ 				joy_mask_prev[i] = joy_mask[i];
+ 				user_io_digital_joystick(i, joy_mask[i], newdir);
+ 			}
+ 		}
+ 	}
++
++	if (grabbed) joy_mask_initialized = true;
+ 
+ 	if (!grabbed || user_io_osd_is_visible())
+ 	{
+--- /dev/null
++++ b/tests/run-ra-controller-tests.py
+@@ -0,0 +1,100 @@
++#!/usr/bin/env python3
++"""Exercise actual Main joystick serialization and first-poll state clearing."""
++import pathlib
++import subprocess
++import tempfile
++
++root = pathlib.Path(__file__).resolve().parent.parent
++user_io = (root / 'user_io.cpp').read_text()
++inputs = (root / 'input.cpp').read_text()
++
++
++def block(text, marker):
++    start = text.index(marker)
++    opening = text.index('{', start)
++    depth = 1
++    end = opening + 1
++    while depth:
++        depth += (text[end] == '{') - (text[end] == '}')
++        end += 1
++    return text[start:end]
++
++
++send = block(user_io, 'void user_io_digital_joystick(')
++poll = inputs[inputs.index('int input_poll(int getchar)'):]
++start = poll.index('static uint32_t joy_mask_prev')
++end = poll.index('add_frame_callback(', start)
++declarations = poll[start:end]
++start = poll.index('\n\tif (grabbed)')
++end = poll.index('\n\tif (!grabbed ||', start)
++forward = poll[start:end]
++source = r'''
++#include <cassert>
++#include <cstdint>
++#include <vector>
++#include <unistd.h>
++#define NUMPLAYERS 6
++#define UIO_JOYSTICK0 2
++#define UIO_JOYSTICK2 16
++static int joyswap = 0, joy_transl = 0;
++static unsigned player, word_index, transfers;
++static uint32_t fpga[NUMPLAYERS];
++static std::vector<uint16_t> words;
++void spi_uio_cmd_cont(unsigned cmd) {
++    player = cmd < 16 ? cmd - 2 : cmd - 16 + 2;
++    word_index = 0;
++    ++transfers;
++}
++void spi_w(uint16_t word) {
++    assert(word_index < 2);
++    words.push_back(word);
++    // Exact HPS contract: each received word replaces only its own half.
++    const unsigned shift = word_index++ * 16;
++    fpga[player] = (fpga[player] & ~(uint32_t(0xffff) << shift)) | (uint32_t(word) << shift);
++}
++void DisableIO() { assert(word_index == 2); }
++bool is_minimig() { return false; }
++void user_io_l_analog_joystick(unsigned, int, int) {}
++void register_activity() {}
++''' + send + '\nvoid poll_for_test(bool grabbed, uint32_t* joy_mask, uint32_t* autofire_mask) {\n' + declarations + forward + r'''
++}
++int main(int argc, char** argv) {
++    uint32_t mask[NUMPLAYERS] = {}, autofire[NUMPLAYERS] = {};
++    for (auto &state : fpga) state = 0x00800000; // Stale RA NES input-disable bit.
++    poll_for_test(false, mask, autofire);
++    assert(transfers == 0);
++    poll_for_test(true, mask, autofire);
++    assert(transfers == NUMPLAYERS);
++    for (auto state : fpga) assert(state == 0);
++    poll_for_test(true, mask, autofire);
++    assert(transfers == NUMPLAYERS); // Unchanged polls still avoid SPI traffic.
++    mask[0] = 128; // NES Start, no high-bit button event required.
++    poll_for_test(true, mask, autofire);
++    assert(fpga[0] == 128);
++    mask[0] = 0;
++    poll_for_test(true, mask, autofire);
++    assert(fpga[0] == 0);
++    user_io_digital_joystick(0, 0x00800080, 0);
++    assert(fpga[0] == 0x00800080);
++    user_io_digital_joystick(0, 128, 0);
++    assert(fpga[0] == 128);
++    joyswap = 1;
++    user_io_digital_joystick(0, 0x12345678, 0);
++    assert(fpga[1] == 0x12345678);
++    user_io_digital_joystick(2, 0x87654321, 0);
++    assert(fpga[2] == 0x87654321); // Players above two are not swapped.
++    // Main's app_restart uses exec: the first-poll state must reset in that
++    // new process image, even after this process has already initialized it.
++    if (argc == 1) {
++        execl(argv[0], argv[0], "restarted", static_cast<char*>(nullptr));
++        assert(false && "exec restart failed");
++    }
++    assert(argc == 2);
++}
++'''
++with tempfile.TemporaryDirectory() as temporary:
++    path = pathlib.Path(temporary)
++    (path / 'test.cpp').write_text(source)
++    subprocess.run(['c++', '-std=c++11', '-Wall', '-Wextra', '-Werror', str(path / 'test.cpp'), '-o', str(path / 'test')], check=True)
++    subprocess.run([str(path / 'test')], check=True)
++print('Joystick first-poll clearing, full-word updates, release and swap checks passed')

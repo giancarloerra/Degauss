@@ -18,6 +18,8 @@ jobs:
       - run: rustup component add clippy rustfmt
       - run: rustup target add armv7-unknown-linux-musleabihf
       - run: cargo fmt --check
+      - name: Check RA release delivery compatibility
+        run: python3 scripts/test-ra-release.py
       # Four baked typefaces make the generated interface source about
       # 258 MB, and one rustc peaks near 13 GB compiling it. The runner has
       # 16 GB of memory plus its own 4 GB swapfile, and --all-targets runs

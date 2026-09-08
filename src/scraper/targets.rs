@@ -50,6 +50,8 @@ pub struct Target {
     pub match_path: Option<PathBuf>,
     pub folder: PathBuf,
     pub relative_path: String,
+    /// Only a single supported ZIP member can inherit archive-level metadata.
+    pub metadata_fallback: bool,
 }
 
 impl Target {
@@ -162,7 +164,13 @@ pub fn collect(
             on_progress(&system.def.name);
             check_cancelled(cancelled)?;
             Ok(TargetBatch {
-                targets: vec![target_for(system, platform, launch, title)?],
+                targets: vec![target_for(
+                    system,
+                    platform,
+                    launch,
+                    title,
+                    &mut crate::zip::ArchiveCache::default(),
+                )?],
                 ..Default::default()
             })
         }
@@ -184,7 +192,7 @@ fn expand_affected_systems(
 ) {
     let mut readers: HashMap<PathBuf, Vec<String>> = HashMap::new();
     for system in systems {
-        if system.def.id.eq_ignore_ascii_case("Favorites")
+        if is_favorites_target(system)
             || artwork_pack_system_ids
                 .iter()
                 .any(|id| id.eq_ignore_ascii_case(&system.def.id))
@@ -223,7 +231,7 @@ fn collect_all(
     let mut batch = TargetBatch::default();
     for system in systems {
         check_cancelled(cancelled)?;
-        if system.def.id.eq_ignore_ascii_case("Favorites") {
+        if is_favorites_target(system) {
             continue;
         }
         if artwork_pack_system_ids
@@ -268,12 +276,6 @@ fn collect_system(
     cancelled: &AtomicBool,
     on_progress: &mut dyn FnMut(&str),
 ) -> Result<TargetBatch> {
-    if system.def.id.eq_ignore_ascii_case("Favorites") {
-        return Err(Error::new(
-            ErrorKind::Configuration,
-            "the master Favourites shelf is not a scrape target",
-        ));
-    }
     let platform = platform_id(system, overrides)?;
     on_progress(&system.def.name);
     check_cancelled(cancelled)?;
@@ -306,6 +308,7 @@ fn walk(
     cancelled: &AtomicBool,
 ) -> Result<Walked> {
     let mut walked = Walked::default();
+    let mut archives = crate::zip::ArchiveCache::default();
     let mut queue = VecDeque::from([(start, 0usize)]);
     let mut seen = HashSet::new();
     while let Some((place, depth)) = queue.pop_front() {
@@ -340,13 +343,15 @@ fn walk(
             check_cancelled(cancelled)?;
             match &row.kind {
                 Kind::Enter(next) => queue.push_back((next.clone(), depth + 1)),
-                Kind::Play(launch) => match target_for(system, platform, launch, &row.name) {
-                    Ok(target) => walked.targets.push(target),
-                    Err(error) => walked.issues.push(TargetIssue {
-                        system: system.def.name.clone(),
-                        detail: error.to_string(),
-                    }),
-                },
+                Kind::Play(launch) => {
+                    match target_for(system, platform, launch, &row.name, &mut archives) {
+                        Ok(target) => walked.targets.push(target),
+                        Err(error) => walked.issues.push(TargetIssue {
+                            system: system.def.name.clone(),
+                            detail: error.to_string(),
+                        }),
+                    }
+                }
             }
         }
     }
@@ -361,7 +366,13 @@ fn check_cancelled(cancelled: &AtomicBool) -> Result<()> {
     }
 }
 
-fn target_for(system: &FoundSystem, platform: u32, launch: &Launch, title: &str) -> Result<Target> {
+fn target_for(
+    system: &FoundSystem,
+    platform: u32,
+    launch: &Launch,
+    title: &str,
+    archives: &mut crate::zip::ArchiveCache,
+) -> Result<Target> {
     let (folder, relative_path, match_path, query) = match launch {
         Launch::File(path) => {
             let folder = root_for(system, path).ok_or_else(|| {
@@ -393,7 +404,26 @@ fn target_for(system: &FoundSystem, platform: u32, launch: &Launch, title: &str)
             (folder, format!("./Games/{title}"), None, title.to_string())
         }
     };
+    let metadata_fallback = if let Launch::File(path) = launch {
+        if let Some((archive, _)) = crate::zip::split_member_path(path) {
+            let contents = archives
+                .read(&archive)
+                .map_err(|error| Error::local(error.to_string()))?;
+            let config = system.to_config();
+            contents
+                .entries
+                .iter()
+                .filter(|entry| config.accepts(Path::new(&entry.name)))
+                .count()
+                == 1
+        } else {
+            true
+        }
+    } else {
+        true
+    };
     Ok(Target {
+        metadata_fallback,
         system_id: system.def.id.clone(),
         affected_system_ids: vec![system.def.id.clone()],
         system_name: system.def.name.clone(),
@@ -413,7 +443,19 @@ fn find_system<'a>(systems: &'a [FoundSystem], id: &str) -> Result<&'a FoundSyst
         .ok_or_else(|| Error::new(ErrorKind::Configuration, format!("unknown system {id}")))
 }
 
+// Retain the reserved-ID exclusion for older custom tables without a category.
+pub(super) fn is_favorites_target(system: &FoundSystem) -> bool {
+    crate::systems::is_favorites(system.category())
+        || system.def.id.eq_ignore_ascii_case("Favorites")
+}
+
 fn platform_id(system: &FoundSystem, overrides: &BTreeMap<String, u32>) -> Result<u32> {
+    if is_favorites_target(system) {
+        return Err(Error::new(
+            ErrorKind::Configuration,
+            "the master Favourites shelf is not a scrape target",
+        ));
+    }
     platforms::id_for(&system.def.id, overrides).ok_or_else(|| {
         Error::new(
             ErrorKind::Configuration,
@@ -529,6 +571,7 @@ fn remove_ambiguous(batch: &mut TargetBatch) {
             target.screen_scraper_system_id,
         );
         if let Some(existing) = positions.get(&key).copied() {
+            merged[existing].metadata_fallback &= target.metadata_fallback;
             for system_id in target.affected_system_ids {
                 if !merged[existing].affected_system_ids.contains(&system_id) {
                     merged[existing].affected_system_ids.push(system_id);
@@ -794,6 +837,7 @@ mod tests {
     #[test]
     fn case_sensitive_storage_keeps_distinct_paths_distinct() {
         let target = |folder: &str, system: &str| Target {
+            metadata_fallback: true,
             system_id: system.into(),
             affected_system_ids: vec![system.into()],
             system_name: system.into(),
@@ -827,6 +871,7 @@ mod tests {
         std::fs::create_dir(&root).unwrap();
         std::os::unix::fs::symlink(&root, &alias).unwrap();
         let target = |folder: PathBuf, system: &str| Target {
+            metadata_fallback: true,
             system_id: system.into(),
             affected_system_ids: vec![system.into()],
             system_name: system.into(),
@@ -915,6 +960,49 @@ mod tests {
         std::fs::write(&ordinary, b"rom bytes").unwrap();
         assert!(hashable(&ordinary));
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn renamed_favourites_are_excluded_from_all_scopes_and_shared_refreshes() {
+        let root = temp("renamed-favorites");
+        let game = root.join("Game.rom");
+        std::fs::write(&game, b"game").unwrap();
+        for category in ["Favorites", "favorites", "FAVORITES"] {
+            let mut favorite = system("MyShelf", "My shelf", &root, &["rom"]);
+            favorite.menu_folder = None;
+            favorite.def.category = Some(category.into());
+            let ordinary = system("NES", "Nintendo", &root, &["rom"]);
+            let systems = [ordinary, favorite];
+            let overrides = BTreeMap::from([("MyShelf".into(), 3)]);
+            let batch =
+                collect_now(&systems, &DisplayNames::default(), &Scope::All, &overrides).unwrap();
+            assert_eq!(batch.targets.len(), 1);
+            assert_eq!(batch.targets[0].affected_system_ids, vec!["NES"]);
+            assert!(batch.unsupported_systems.is_empty());
+            for scope in [
+                Scope::System {
+                    system_id: "MyShelf".into(),
+                    place: Place::Dir(root.clone()),
+                    display_name: "My shelf".into(),
+                },
+                Scope::Folder {
+                    system_id: "MyShelf".into(),
+                    place: Place::Dir(root.clone()),
+                    display_name: "My shelf".into(),
+                },
+                Scope::Game {
+                    system_id: "MyShelf".into(),
+                    launch: Launch::File(game.clone()),
+                    title: "Game".into(),
+                },
+            ] {
+                let error = collect_now(&systems, &DisplayNames::default(), &scope, &overrides)
+                    .unwrap_err();
+                assert_eq!(error.kind, ErrorKind::Configuration);
+                assert!(error.to_string().contains("not a scrape target"));
+            }
+        }
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

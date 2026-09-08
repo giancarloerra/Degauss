@@ -141,7 +141,7 @@ pub enum PresentMode {
     ///
     /// One extra copy, but every blend read hits cache and an unchanged
     /// screen copies nothing at all. The right answer on hardware whose
-    /// framebuffer reads are slow; on this one it is not the default.
+    /// framebuffer reads are slow; selected by default for physical /dev/mem mappings.
     Staged,
 }
 
@@ -509,5 +509,6 @@ mod tests {
             visible_pixels(&tinted_half) >= visible_pixels(&original_zero),
             "mixing a colour must not make any part of the logo disappear"
         );
+        crate::app::test_library_launch_flow(window.clone());
     }
 }

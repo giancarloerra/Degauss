@@ -31,7 +31,7 @@ const FORMAT: u32 = 1;
 const ARTWORK_PACK_FORMAT: u32 = 3;
 
 /// What is known about every system, small enough to read at startup.
-#[derive(Serialize, Deserialize, Default, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Index {
     pub format: u32,
     /// Keyed by the system's id from the table.
@@ -122,6 +122,12 @@ pub struct Folder {
     pub rows: Vec<Row>,
     /// Playable things below this folder, at any depth.
     pub games: usize,
+}
+
+impl Default for Index {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl Index {
@@ -234,6 +240,7 @@ pub fn save_index(dir: &Path, index: &Index) -> Result<()> {
     write(&index_path(dir), &bytes)
 }
 
+#[cfg(test)]
 pub fn save_system(dir: &Path, id: &str, cache: &SystemCache) -> Result<()> {
     let bytes = postcard::to_stdvec(cache)
         .map_err(|e| DegaussError::unsupported("cache", format!("writing {id}: {e}")))?;
@@ -247,22 +254,14 @@ pub fn save_system(dir: &Path, id: &str, cache: &SystemCache) -> Result<()> {
 /// playable things under each folder is worked out on the way back up, so
 /// the answer to "is there anything in here" costs a lookup rather than a
 /// walk.
+pub fn build_system_checked(library: &Library) -> Result<SystemCache> {
+    build_system_controlled(library, &AtomicBool::new(false), &mut |_, _| {})?
+        .ok_or_else(|| DegaussError::unsupported("cache build", "cancelled"))
+}
+
+#[cfg(test)]
 pub fn build_system(library: &Library) -> SystemCache {
-    let cancelled = AtomicBool::new(false);
-    match build_system_controlled(library, &cancelled, &mut |_, _| {}) {
-        Ok(Some(cache)) => cache,
-        Ok(None) => SystemCache {
-            format: FORMAT,
-            folders: BTreeMap::new(),
-        },
-        Err(error) => {
-            crate::note(&format!("cache        build failed: {error}"));
-            SystemCache {
-                format: FORMAT,
-                folders: BTreeMap::new(),
-            }
-        }
-    }
+    build_system_checked(library).expect("fixture cache must build")
 }
 
 /// Build with cooperative cancellation and progress between filesystem
@@ -309,19 +308,20 @@ fn walk_controlled(
         return Ok(None);
     }
     let key = place.key();
-    if depth > MAX_DEPTH || seen.contains(&key) {
+    if depth > MAX_DEPTH {
+        return Err(DegaussError::unsupported(
+            "cache traversal",
+            format!(
+                "{} exceeds the maximum folder depth of {MAX_DEPTH}",
+                place.path().display()
+            ),
+        ));
+    }
+    if seen.contains(&key) {
         return Ok(Some(0));
     }
     seen.push(key.clone());
-    let (mut rows, _) = match library.list(place, true) {
-        Ok(listing) => listing,
-        // Released Degauss treats an unreadable nested branch as holding no
-        // games and continues indexing the rest of the system. Preserve that
-        // behaviour, but let an unreadable system root fail a transactional
-        // source build instead of installing an empty replacement cache.
-        Err(_) if depth > 0 => return Ok(Some(0)),
-        Err(error) => return Err(error),
-    };
+    let (mut rows, _) = library.list(place, true)?;
 
     let mut games = 0;
     for row in &mut rows {
@@ -363,6 +363,9 @@ fn walk_controlled(
     );
     *folders_done += 1;
     progress(*folders_done, *games_done);
+    if cancelled.load(Ordering::Relaxed) {
+        return Ok(None);
+    }
     Ok(Some(games))
 }
 
@@ -435,8 +438,75 @@ impl Drop for PreparedCacheGroup {
 }
 
 impl PreparedCacheGroup {
+    /// Completed rows available for computing the matching index before any
+    /// live file is replaced.
+    pub fn caches(&self) -> &[StagedSystemCache] {
+        &self.caches
+    }
+
+    /// Stage the matching index in the same rollback transaction as its rows.
+    pub fn with_index(mut self, dir: &Path, index: &Index) -> Result<Self> {
+        let final_path = index_path(dir);
+        if self
+            .files
+            .iter()
+            .any(|entry| entry.final_path == final_path)
+        {
+            return Err(DegaussError::unsupported(
+                "cache transaction",
+                "index already staged",
+            ));
+        }
+        // Inspect the previous index before creating a file, so a failed
+        // metadata check cannot leave an untracked staging file behind.
+        let had_old = path_exists(&final_path)?;
+        let (new_path, backup_path) = loop {
+            let serial = NEXT_CACHE_TRANSACTION.fetch_add(1, Ordering::Relaxed);
+            let tag = format!("degauss-index-{}-{serial}", std::process::id());
+            let new_path = final_path.with_extension(format!("{tag}.new"));
+            let backup_path = final_path.with_extension(format!("{tag}.bak"));
+            if !path_exists(&new_path)? && !path_exists(&backup_path)? {
+                break (new_path, backup_path);
+            }
+        };
+        let bytes = postcard::to_stdvec(index)
+            .map_err(|e| DegaussError::unsupported("cache index", e.to_string()))?;
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&new_path)
+            .map_err(|e| DegaussError::io("creating staged index", &new_path, e))?;
+        self.files.push(StagedCacheFile {
+            had_old,
+            final_path,
+            new_path: new_path.clone(),
+            backup_path,
+            backup_moved: false,
+            installed: false,
+        });
+        use std::io::Write as _;
+        file.write_all(&bytes)
+            .and_then(|_| file.sync_all())
+            .map_err(|e| DegaussError::io("writing staged index", &new_path, e))?;
+        let written = std::fs::read(&new_path)
+            .map_err(|e| DegaussError::io("validating staged index", &new_path, e))?;
+        let decoded: Index = postcard::from_bytes(&written)
+            .map_err(|e| DegaussError::malformed("staged index", &new_path, e.to_string()))?;
+        if decoded.format != FORMAT {
+            return Err(DegaussError::malformed(
+                "staged index",
+                &new_path,
+                "incompatible format",
+            ));
+        }
+        Ok(self)
+    }
+
     /// Replace every member of the group as one transaction. If any member
     /// fails, every earlier member is restored before the error is returned.
+    /// This handles observed I/O failures, not process termination or power
+    /// loss between renames: no filesystem provides one atomic rename for
+    /// this group, and no restart-recovery journal is written here.
     pub fn install(mut self) -> Result<(Vec<StagedSystemCache>, Vec<String>)> {
         let install = (|| -> Result<()> {
             for entry in &mut self.files {
@@ -445,7 +515,7 @@ impl PreparedCacheGroup {
                         DegaussError::io("backing up the previous cache", &entry.final_path, error)
                     })?;
                     entry.backup_moved = true;
-                } else if entry.final_path.exists() {
+                } else if path_exists(&entry.final_path)? {
                     return Err(DegaussError::unsupported(
                         "cache transaction",
                         format!(
@@ -491,6 +561,18 @@ impl PreparedCacheGroup {
         }
         self.finished = true;
         Ok((std::mem::take(&mut self.caches), warnings))
+    }
+}
+
+fn path_exists(path: &Path) -> Result<bool> {
+    match std::fs::symlink_metadata(path) {
+        Ok(_) => Ok(true),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(DegaussError::io(
+            "checking cache transaction path",
+            path,
+            error,
+        )),
     }
 }
 
@@ -614,13 +696,14 @@ fn stage_transactional_with_tag(
         let new_path = final_path.with_extension(format!("{tag}-{position}.new"));
         let backup_path = final_path.with_extension(format!("{tag}-{position}.bak"));
         let bytes = encode_for(kind, cache)?;
+        let had_old = path_exists(&final_path)?;
         let mut file = std::fs::OpenOptions::new()
             .write(true)
             .create_new(true)
             .open(&new_path)
             .map_err(|error| DegaussError::io("creating staged cache", &new_path, error))?;
         prepared.files.push(StagedCacheFile {
-            had_old: final_path.exists(),
+            had_old,
             final_path,
             new_path: new_path.clone(),
             backup_path,
@@ -667,6 +750,31 @@ pub fn install_transactional(
     prepared.install().map(|(_, warnings)| warnings)
 }
 
+/// Commit a complete system scan and its summary together.
+pub fn save_system_with_index(
+    dir: &Path,
+    id: &str,
+    cache: &SystemCache,
+    index: &Index,
+) -> Result<Vec<String>> {
+    let staged = StagedSystemCache {
+        id: id.to_string(),
+        cache: cache.clone(),
+        fingerprints: ContentFingerprints::new(),
+        fingerprints_complete: false,
+    };
+    stage_transactional(
+        dir,
+        CacheKind::Gamelist,
+        vec![staged],
+        &AtomicBool::new(false),
+    )?
+    .ok_or_else(|| DegaussError::unsupported("cache transaction", "cancelled"))?
+    .with_index(dir, index)?
+    .install()
+    .map(|(_, warnings)| warnings)
+}
+
 /// When a folder itself last changed, seconds since the epoch, or 0.
 ///
 /// A directory's own mtime moves when an entry is added or removed from it,
@@ -686,29 +794,18 @@ pub fn mtime_of(path: &Path) -> i64 {
         .unwrap_or(0)
 }
 
-/// Clear the released index and gamelist system files while retaining the
-/// independent Artwork Pack cache. A forced global rebuild can then refresh
-/// source-neutral rows without discarding valid CRC fingerprints before the
-/// replacement for that system has been produced.
-pub fn clear_for_rebuild(dir: &Path) {
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return;
-    };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if entry.file_name() == "artwork-pack" {
-            continue;
-        }
-        if path.is_dir() {
-            let _ = std::fs::remove_dir_all(path);
-        } else {
-            let _ = std::fs::remove_file(path);
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_default_index_round_trips_as_the_existing_cache_format() {
+        let index = super::Index::default();
+        assert_eq!(index.format, super::FORMAT);
+        let bytes = postcard::to_stdvec(&index).unwrap();
+        let restored: super::Index = postcard::from_bytes(&bytes).unwrap();
+        assert_eq!(restored.format, super::FORMAT);
+        assert!(restored.systems.is_empty());
+    }
+
     use super::*;
     use crate::config::SystemConfig;
 
@@ -720,6 +817,7 @@ mod tests {
 
     fn system(dir: &Path) -> SystemConfig {
         SystemConfig {
+            preserve_rbf_stem: false,
             name: "Test".into(),
             path: dir.to_string_lossy().into_owned(),
             extensions: vec!["d64".into()],
@@ -953,38 +1051,6 @@ mod tests {
         std::fs::remove_dir_all(store).ok();
     }
 
-    #[test]
-    fn forced_rebuild_clear_retains_only_the_independent_pack_cache() {
-        let store = temp("pack-preserved-on-rebuild");
-        std::fs::write(index_path(&store), b"old-index").unwrap();
-        std::fs::write(system_path(&store, "Test"), b"old-system").unwrap();
-        std::fs::create_dir_all(store.join("other-dir")).unwrap();
-        std::fs::write(store.join("other-dir/file"), b"old").unwrap();
-        let cache = SystemCache {
-            format: FORMAT,
-            folders: BTreeMap::new(),
-        };
-        install_transactional(
-            &store,
-            CacheKind::ArtworkPack,
-            &[StagedSystemCache {
-                id: "Test".into(),
-                cache,
-                fingerprints: ContentFingerprints::new(),
-                fingerprints_complete: true,
-            }],
-        )
-        .unwrap();
-
-        clear_for_rebuild(&store);
-
-        assert!(!index_path(&store).exists());
-        assert!(!system_path(&store, "Test").exists());
-        assert!(!store.join("other-dir").exists());
-        assert!(load_artwork_pack_data(&store, "Test").is_some());
-        std::fs::remove_dir_all(store).ok();
-    }
-
     fn staged(id: &str) -> StagedSystemCache {
         StagedSystemCache {
             id: id.to_string(),
@@ -1174,7 +1240,7 @@ mod tests {
     }
 
     #[test]
-    fn an_unreadable_nested_branch_keeps_the_released_zero_subtree_behaviour() {
+    fn an_unreadable_nested_branch_fails_instead_of_becoming_an_empty_cache() {
         let games = temp("nested-read-failure");
         let not_a_directory = games.join("not-a-directory");
         std::fs::write(&not_a_directory, b"file").unwrap();
@@ -1188,7 +1254,7 @@ mod tests {
         let mut folders = 0;
         let mut games_done = 0;
 
-        let below = walk_controlled(
+        let error = walk_controlled(
             &library,
             &Place::Dir(not_a_directory),
             1,
@@ -1199,10 +1265,217 @@ mod tests {
             &mut games_done,
             &mut |_, _| {},
         )
-        .unwrap();
+        .unwrap_err();
 
-        assert_eq!(below, Some(0));
+        assert!(error.to_string().contains("reading folder"));
         assert!(cache.folders.is_empty());
         std::fs::remove_dir_all(games).ok();
+    }
+
+    #[test]
+    fn successful_rebuild_removes_deleted_files_and_zip_members_without_touching_other_systems() {
+        let games = temp("rebuild-removal-games");
+        let store = temp("rebuild-removal-store");
+        std::fs::write(games.join("Keep.d64"), b"rom").unwrap();
+        std::fs::write(games.join("Remove.d64"), b"rom").unwrap();
+        std::fs::write(
+            games.join("Set.zip"),
+            crate::zip::tests_archive(&["One.d64", "Two.d64"], false),
+        )
+        .unwrap();
+        let library = Library::open(&system(&games)).unwrap();
+        let initial = build_system_checked(&library).unwrap();
+        let mut index = Index::new();
+        index
+            .systems
+            .insert("Test".into(), initial.summary(&library.start()));
+        index.systems.insert(
+            "Untouched".into(),
+            Summary {
+                games: 7,
+                folders: 2,
+            },
+        );
+        save_system_with_index(&store, "Test", &initial, &index).unwrap();
+        std::fs::write(system_path(&store, "Untouched"), b"other-cache-bytes").unwrap();
+        let independent = artwork_pack_system_path(&store, "Test");
+        std::fs::create_dir_all(independent.parent().unwrap()).unwrap();
+        std::fs::write(&independent, b"independent-pack").unwrap();
+        assert_eq!(index.systems["Test"].games, 4);
+
+        std::fs::remove_file(games.join("Remove.d64")).unwrap();
+        std::fs::write(
+            games.join("Set.zip"),
+            crate::zip::tests_archive(&["One.d64"], false),
+        )
+        .unwrap();
+        let rebuilt = build_system_checked(&Library::open(&system(&games)).unwrap()).unwrap();
+        index
+            .systems
+            .insert("Test".into(), rebuilt.summary(&library.start()));
+        assert!(save_system_with_index(&store, "Test", &rebuilt, &index)
+            .unwrap()
+            .is_empty());
+        let reloaded = load_system(&store, "Test").unwrap();
+        assert_eq!(reloaded.summary(&library.start()).games, 2);
+        assert_eq!(load_index(&store).unwrap().systems["Test"].games, 2);
+        assert_eq!(load_index(&store).unwrap().systems["Untouched"].games, 7);
+        assert_eq!(
+            std::fs::read(system_path(&store, "Untouched")).unwrap(),
+            b"other-cache-bytes"
+        );
+        assert_eq!(std::fs::read(independent).unwrap(), b"independent-pack");
+        std::fs::remove_dir_all(games).unwrap();
+        std::fs::remove_dir_all(store).unwrap();
+    }
+
+    #[test]
+    fn malformed_nested_archive_cannot_replace_a_previous_cache_or_index() {
+        let games = temp("failed-rebuild-games");
+        let store = temp("failed-rebuild-store");
+        std::fs::create_dir_all(games.join("Nested")).unwrap();
+        let archive = games.join("Nested/Set.zip");
+        std::fs::write(&archive, crate::zip::tests_archive(&["Game.d64"], false)).unwrap();
+        let library = Library::open(&system(&games)).unwrap();
+        let old = build_system_checked(&library).unwrap();
+        let mut index = Index::new();
+        index
+            .systems
+            .insert("Test".into(), old.summary(&library.start()));
+        save_system_with_index(&store, "Test", &old, &index).unwrap();
+        let old_cache_bytes = std::fs::read(system_path(&store, "Test")).unwrap();
+        let old_index_bytes = std::fs::read(index_path(&store)).unwrap();
+        std::fs::write(&archive, b"broken archive").unwrap();
+        let error = build_system_checked(&Library::open(&system(&games)).unwrap()).unwrap_err();
+        assert!(error.to_string().contains("Set.zip"));
+        assert_eq!(
+            std::fs::read(system_path(&store, "Test")).unwrap(),
+            old_cache_bytes
+        );
+        assert_eq!(std::fs::read(index_path(&store)).unwrap(), old_index_bytes);
+        assert_eq!(load_index(&store).unwrap().systems["Test"].games, 1);
+        std::fs::remove_dir_all(games).unwrap();
+        std::fs::remove_dir_all(store).unwrap();
+    }
+
+    #[test]
+    fn failed_index_install_rolls_back_the_new_rows_and_preserves_the_old_pair() {
+        let store = temp("index-install-rollback");
+        let old = staged("Test");
+        let old_index = Index::new();
+        save_system_with_index(&store, "Test", &old.cache, &old_index).unwrap();
+        let old_cache_bytes = std::fs::read(system_path(&store, "Test")).unwrap();
+        let old_index_bytes = std::fs::read(index_path(&store)).unwrap();
+        let mut next = Index::new();
+        next.systems.insert(
+            "Test".into(),
+            Summary {
+                games: 8,
+                folders: 1,
+            },
+        );
+        let mut changed = staged("Test");
+        changed.cache.folders.insert(
+            "changed".into(),
+            Folder {
+                mtime: 0,
+                rows: Vec::new(),
+                games: 8,
+            },
+        );
+        let prepared = stage_transactional(
+            &store,
+            CacheKind::Gamelist,
+            vec![changed],
+            &AtomicBool::new(false),
+        )
+        .unwrap()
+        .unwrap()
+        .with_index(&store, &next)
+        .unwrap();
+        assert_eq!(prepared.caches().len(), 1);
+        // Fail the real rename after the rows have already been installed.
+        let index_staging = prepared.files.last().unwrap().new_path.clone();
+        std::fs::remove_file(index_staging).unwrap();
+        let error = prepared.install().unwrap_err();
+        assert!(error.to_string().contains("installing the staged cache"));
+        assert_eq!(
+            std::fs::read(system_path(&store, "Test")).unwrap(),
+            old_cache_bytes
+        );
+        assert_eq!(std::fs::read(index_path(&store)).unwrap(), old_index_bytes);
+        assert_eq!(
+            std::fs::read_dir(&store).unwrap().count(),
+            2,
+            "only original live files remain"
+        );
+        std::fs::remove_dir_all(store).unwrap();
+    }
+
+    #[test]
+    fn dropping_a_complete_staged_pair_preserves_live_files() {
+        let store = temp("cancel-staged-pair");
+        let cache = staged("Test");
+        let index = Index::new();
+        save_system_with_index(&store, "Test", &cache.cache, &index).unwrap();
+        let old_cache_bytes = std::fs::read(system_path(&store, "Test")).unwrap();
+        let old_index_bytes = std::fs::read(index_path(&store)).unwrap();
+        let prepared = stage_transactional(
+            &store,
+            CacheKind::Gamelist,
+            vec![cache],
+            &AtomicBool::new(false),
+        )
+        .unwrap()
+        .unwrap()
+        .with_index(&store, &index)
+        .unwrap();
+        drop(prepared);
+        assert_eq!(
+            std::fs::read(system_path(&store, "Test")).unwrap(),
+            old_cache_bytes
+        );
+        assert_eq!(std::fs::read(index_path(&store)).unwrap(), old_index_bytes);
+        assert_eq!(std::fs::read_dir(&store).unwrap().count(), 2);
+        std::fs::remove_dir_all(store).unwrap();
+    }
+
+    #[test]
+    fn cancellation_at_the_final_progress_callback_still_discards_the_cache() {
+        let games = temp("cancel-final-progress");
+        std::fs::write(games.join("Game.d64"), b"rom").unwrap();
+        let library = Library::open(&system(&games)).unwrap();
+        let cancelled = AtomicBool::new(false);
+        let cache = build_system_controlled(&library, &cancelled, &mut |_, _| {
+            cancelled.store(true, Ordering::Relaxed)
+        })
+        .unwrap();
+        assert!(cache.is_none());
+        std::fs::remove_dir_all(games).unwrap();
+    }
+
+    #[test]
+    fn excessive_depth_is_an_error_instead_of_an_empty_subtree() {
+        let games = temp("excessive-depth");
+        let library = Library::open(&system(&games)).unwrap();
+        let mut cache = SystemCache {
+            format: FORMAT,
+            folders: BTreeMap::new(),
+        };
+        let error = walk_controlled(
+            &library,
+            &library.start(),
+            MAX_DEPTH + 1,
+            &mut cache,
+            &mut Vec::new(),
+            &AtomicBool::new(false),
+            &mut 0,
+            &mut 0,
+            &mut |_, _| {},
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("maximum folder depth"));
+        assert!(cache.folders.is_empty());
+        std::fs::remove_dir_all(games).unwrap();
     }
 }
