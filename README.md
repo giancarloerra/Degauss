@@ -293,11 +293,6 @@ fb_terminal=1
 
 It is enabled by default in the standard MiSTer configuration.
 
-Framebuffer access adapts automatically to MiSTer Linux 5.15 and 6.18. No
-additional setting or data migration is needed. See the
-[framebuffer compatibility checks](docs/testing/framebuffer-compatibility.md)
-for diagnostics and kernel validation.
-
 Degauss can browse the collection and launch games normally when started this way. However, after leaving a game/core, MiSTer will return to the stock menu instead of reopening Degauss automatically. There's not going to be the Frontend option anymore in the cores menu, and you'll need to re-launch Degauss from the OSD if you want to go back to it.
 
 Doing it in this way, the installed `/media/fat/degauss/MiSTer_Degauss` file is not used.
@@ -326,12 +321,22 @@ Adding games to one system does not need the whole card read again:
 A successful rebuild reflects additions and removals. An unreadable folder or archive
 reports its error and keeps that system's previous complete list.
 
-ZIP archives open as folders, including their internal subfolders. ZIP64 is supported
+### ZIP libraries
+
+ZIP archives open as folders, including their internal subfolders, without extracting
+the library. Systems that already launch ZIP files as individual games keep that
+behaviour. ZIP64 is supported
 within the documented bounds. Metadata for a multi-game archive identifies each game
 by its full archive/member path; single-game archives retain legacy archive-level
 metadata. See [ZIP libraries](docs/zip-libraries.md) for details and launch limits.
 
-For a system with multiple installed core versions, **X → Core Version** chooses
+### RetroAchievements and Unstable cores
+
+Installed RetroAchievements and Unstable cores can be browsed even when there is
+no standard version of that core. Degauss discovers these installations; it does
+not install the cores or configure a RetroAchievements account.
+
+**X → Core Version** chooses
 Default, Standard, RetroAchievements, or a matching Unstable build. The choice is
 saved for that system and applies to its games and recognized favourites.
 **Use Default Core Version** removes that override. Default follows **Core preference**
@@ -342,9 +347,9 @@ The **Unstable** group browses installed `_Unstable` cores by their full build n
 RetroAchievements requires a compatible RA installation, including its Main profile.
 Degauss releases include a separate RA Main that retains Frontend and the saved
 shortcut without being overwritten by the upstream RA updater. Select it in the
-RA Main profile as described in the [RA Main integration](support/ra-main/README.md). See the
-[small hardware test procedure](docs/testing/library-compatibility-hardware.md)
-for setup and launch/return checks.
+RA Main profile as described in the [RA Main installation instructions](support/ra-main/README.md#installation-and-updates).
+It uses the same saved Frontend shortcut as normal Degauss Main. Unstable cores
+running under Degauss Main already have the Frontend menu and shortcut.
 
 ## Views
 
