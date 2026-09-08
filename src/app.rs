@@ -12404,11 +12404,11 @@ mod tests {
     }
 
     #[test]
-    fn build_progress_never_consumes_controls_under_the_message() {
+    fn build_progress_is_not_dismissed_as_an_ordinary_message() {
         assert!(message_consumes_input(true, false));
         assert!(
             !message_consumes_input(true, true),
-            "index progress repaints every frame while all screens remain interactive"
+            "index progress remains visible; build controls are handled separately"
         );
         assert!(!message_consumes_input(false, false));
         assert!(!message_consumes_input(false, true));
