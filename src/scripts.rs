@@ -161,12 +161,11 @@ trap ':' INT
 if cd -- "$script_dir"; then
     /bin/bash -- "$script"
     script_status=$?
+    if [ "$script_status" -ne 0 ]; then
+        printf '\nScript exited with status %s: %s\n' "$script_status" "$script" >&2
+    fi
 else
-    script_status=$?
     printf '\nCannot enter script directory: %s\n' "$script_dir" >&2
-fi
-if [ "$script_status" -ne 0 ]; then
-    printf '\nScript exited with status %s: %s\n' "$script_status" "$script" >&2
 fi
 printf '\nPress any key to return to Degauss...'
 IFS= read -r -n 1 return_key
@@ -404,6 +403,39 @@ mod tests {
         assert!(String::from_utf8(output.stderr)
             .unwrap()
             .contains("Script exited with status 7"));
+    }
+
+    #[test]
+    fn real_shell_missing_directory_reports_setup_failure_and_returns() {
+        let fixture = Fixture::new();
+        let browser = Browser::open(&fixture.0).unwrap();
+        let script = fixture.file("Scripts/sub folder/check.sh", "printf SCRIPT_RAN\nexit 7\n");
+        let launch = Launch::prepare(
+            browser.root(),
+            &script,
+            Path::new("/bin/bash"),
+            vec!["-c".into(), "printf FRONTEND_RETURNED".into()],
+        )
+        .unwrap();
+        // Exercise disappearance between successful preflight and shell cd.
+        std::fs::rename(script.parent().unwrap(), fixture.0.join("Scripts/moved")).unwrap();
+        let mut child = launch
+            .command()
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        child.stdin.take().unwrap().write_all(b"x").unwrap();
+        let output = child.wait_with_output().unwrap();
+        assert!(output.status.success());
+        let stdout = String::from_utf8(output.stdout).unwrap();
+        let stderr = String::from_utf8(output.stderr).unwrap();
+        assert!(stderr.contains("Cannot enter script directory"), "{stderr}");
+        assert!(!stderr.contains("Script exited"), "{stderr}");
+        assert!(!stdout.contains("SCRIPT_RAN"), "{stdout}");
+        assert!(stdout.contains("Press any key to return"));
+        assert!(stdout.contains("FRONTEND_RETURNED"));
     }
 
     #[test]
