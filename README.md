@@ -6,6 +6,10 @@
 
 <p align="center"><strong>Official website:</strong> <a href="https://misterdegauss.com">misterdegauss.com</a></p>
 
+<p align="center">
+  <a href="https://discord.com/channels/647909397477195803/1547377865983660072"><img src="https://img.shields.io/badge/Discord-Join%20the%20Degauss%20channel-5865F2?logo=discord&amp;logoColor=white" alt="Join the Degauss Discord channel"></a>
+</p>
+
 ---
 
 Degauss plays nice with the standard MiSTer setup, folders and scripts, instead of trying to replace it all.
@@ -21,6 +25,11 @@ speed and for CRTs, with several views, custom theming, different fonts, many fe
 
 Source available, written in Rust and using Slint, and licensed for non-commercial use.
 
+> **Slow exFAT folder scans after the September 7 MiSTer Linux update?**
+> The [optional kernel fix guide](https://github.com/giancarloerra/Degauss/blob/e4b5d2a1d9c0e4196d934be8d0f5dcc0296fb2e7/support/kernel-fix/README.md) explains the
+> separate installer and restoration procedure. Degauss's normal updater
+> does not install or replace the kernel.
+
 > ### Feature request or bug report? Star this repository as well to support it ⭐️
 >
 > Degauss is written and maintained by one person in his own time. A star is
@@ -30,26 +39,53 @@ Source available, written in Rust and using Slint, and licensed for non-commerci
 
 ## Screenshots
 
+The Degauss 0.6.0 images below are captured from the actual MiSTer framebuffer,
+mainly using the Blue-Yellow GE custom theme, with Standard-theme comparisons
+labelled separately. CRT presentation is applied for the README. Older examples
+remain labelled by release.
+
+### Current interface (0.6.0)
+
 | | | |
 |---|---|---|
-| <img src="docs/screenshots/0.4.0/01-main-menu.png" alt="Main Menu" height="200"> | <img src="docs/screenshots/0.4.0/02-details-view.png" alt="Details View" height="200"> | <img src="docs/screenshots/0.4.0/03-list-view.png" alt="List View" height="200"> |
-| Main Menu | Details View | List View |
-| <img src="docs/screenshots/0.4.0/04-gallery-view.png" alt="Gallery View" height="200"> | <img src="docs/screenshots/0.4.0/05-multi-list-view.png" alt="Multi List View" height="200"> | <img src="docs/screenshots/0.4.0/06-carousel-view.png" alt="Carousel View" height="200"> |
-| Gallery View | Multi List View | Carousel View |
+| <img src="docs/screenshots/0.6.0/01-home.png" alt="Home" height="200"> | <img src="docs/screenshots/0.6.0/02-details.png" alt="Details: DoDonPachi III" height="200"> | <img src="docs/screenshots/0.6.0/03-list.png" alt="List View: Arcade Favourites" height="200"> |
+| Home | Details: DoDonPachi III | List View |
+| <img src="docs/screenshots/0.6.0/04-gallery.png" alt="Gallery View: Arcade Favourites" height="200"> | <img src="docs/screenshots/0.6.0/05-multi-list.png" alt="Multi List View: Arcade Favourites" height="200"> | <img src="docs/screenshots/0.6.0/06-carousel.png" alt="Carousel View: Actraiser" height="200"> |
+| Gallery View | Multi List View | Carousel: Actraiser |
+| <img src="docs/screenshots/0.6.0/07-tiled.png" alt="Tiled View: Amiga Favourites" height="200"> | <img src="docs/screenshots/0.6.0/08-options.png" alt="Organised Options" height="200"> | <img src="docs/screenshots/0.6.0/09-navigation.png" alt="Navigation and Hold Shortcuts" height="200"> |
+| Tiled: Amiga Favourites | Organised Options | Navigation and Hold Shortcuts |
+| <img src="docs/screenshots/0.6.0/10-appearance.png" alt="Appearance" height="200"> | <img src="docs/screenshots/0.6.0/11-library.png" alt="Library: Show Scripts Folder" height="200"> | <img src="docs/screenshots/0.6.0/12-display.png" alt="Display" height="200"> |
+| Appearance | Library | Display |
+| <img src="docs/screenshots/0.6.0/13-developer.png" alt="Developer" height="200"> | <img src="docs/screenshots/0.6.0/14-actions.png" alt="Grouped Actions" height="200"> | <img src="docs/screenshots/0.6.0/15-random-favourite.png" alt="Random Game and Random Favourite" height="200"> |
+| Developer | Grouped Actions | Random Game and Random Favourite |
+| <img src="docs/screenshots/0.6.0/16-place-view.png" alt="Per-place View" height="200"> | <img src="docs/screenshots/0.6.0/17-information.png" alt="Game Information: Steep Slope Sliders" height="200"> | <img src="docs/screenshots/0.6.0/28-artwork-source.png" alt="Arcade Artwork Source: Automatic Using Gamelist" height="200"> |
+| Per-place View | Game Information: Steep Slope Sliders | Automatic or Explicit Artwork Source |
+| <img src="docs/screenshots/0.6.0/18-index-progress.png" alt="Indexing Progress: Running Rebuild" height="200"> | <img src="docs/screenshots/0.6.0/34-index-details.png" alt="Indexing Details: Running Rebuild" height="200"> | <img src="docs/screenshots/0.6.0/19-index-complete.png" alt="Indexing Complete" height="200"> |
+| Indexing Progress | Indexing Details | Indexing Complete |
+| <img src="docs/screenshots/0.6.0/20-manual-search.png" alt="Single-game Scraper Controls: Dandy" height="200"> | <img src="docs/screenshots/0.6.0/33-manual-query.png" alt="Manual Search: dandy" height="200"> | <img src="docs/screenshots/0.6.0/24-manual-match.png" alt="Manual Match: 1944 The Loop Master" height="200"> |
+| Single-game Scraper Controls: Dandy | Manual Search: dandy | Manual Match: 1944 |
+| <img src="docs/screenshots/0.6.0/21-scraper-progress.png" alt="Scraper Preparation: Arcade" height="200"> | <img src="docs/screenshots/0.6.0/35-scraper-complete.png" alt="Single-game Scrape Complete: 1944" height="200"> | <img src="docs/screenshots/0.6.0/26-scripts.png" alt="Installed MiSTer Scripts" height="200"> |
+| Scraper Preparation: Arcade | Scrape Complete: 1944 | Installed Scripts |
+| <img src="docs/screenshots/0.6.0/27-script-confirmation.png" alt="Confirmation Before Running a Script" height="200"> | <img src="docs/screenshots/0.6.0/31-standard-home.png" alt="Standard Theme: Home" height="200"> | <img src="docs/screenshots/0.6.0/32-standard-details.png" alt="Standard Theme: Actraiser Details" height="200"> |
+| Script Confirmation | Standard Theme: Home | Standard Theme: Details |
+
+### Earlier release examples (0.4.0)
+
+These genuine images retain earlier feature and theme examples. They show the
+0.4.0 interface; the palettes and saved custom themes remain supported.
+
+| | | |
+|---|---|---|
 | <img src="docs/screenshots/0.4.0/07-custom-theme.png" alt="Custom Theme" height="200"> | <img src="docs/screenshots/0.4.0/08-amber-theme.png" alt="Amber Theme" height="200"> | <img src="docs/screenshots/0.4.0/09-blue-orange-theme.png" alt="Blue-Orange Theme" height="200"> |
 | Custom Theme | Amber Theme | Blue-Orange Theme |
 | <img src="docs/screenshots/0.4.0/10-mono-theme.png" alt="Mono Theme" height="200"> | <img src="docs/screenshots/0.4.0/11-green-mono-theme.png" alt="Green Mono Theme" height="200"> | <img src="docs/screenshots/0.4.0/12-modern-theme.png" alt="Modern Theme" height="200"> |
 | Mono Theme | Green Mono Theme | Modern Theme |
-| <img src="docs/screenshots/0.4.0/13-neon-theme.png" alt="Neon Theme" height="200"> | <img src="docs/screenshots/0.4.0/14-search-discover-organise.png" alt="Search, Discover &amp; Organise" height="200"> | <img src="docs/screenshots/0.4.0/15-different-view-every-place.png" alt="A Different View for Every Place" height="200"> |
-| Neon Theme | Search, Discover & Organise | A Different View for Every Place |
-| <img src="docs/screenshots/0.4.0/16-theme-editor.png" alt="Theme Editor" height="200"> | <img src="docs/screenshots/0.4.0/17-category-system-image-picker.png" alt="Category &amp; System Image Picker" height="200"> | <img src="docs/screenshots/0.4.0/18-saved-custom-theme.png" alt="A Saved Custom Theme" height="200"> |
-| Theme Editor | Category & System Image Picker | A Saved Custom Theme |
-| <img src="docs/screenshots/0.4.0/19-fully-configurable.png" alt="Fully Configurable" height="200"> | <img src="docs/screenshots/0.4.0/20-built-in-scraper.png" alt="Built-in Scraper, From One Game to Everything" height="200"> | <img src="docs/screenshots/0.4.0/21-scraper-working-through-system.png" alt="Scraper Working Through a System" height="200"> |
-| Fully Configurable | Built-in Scraper, From One Game to Everything | Scraper Working Through a System |
-| <img src="docs/screenshots/0.4.0/22-scraper-progress.png" alt="Scraper Progress You Can See" height="200"> | <img src="docs/screenshots/0.4.0/23-scraper-match.png" alt="Choose the Right Scraper Match" height="200"> | <img src="docs/screenshots/0.4.0/24-scraper-completion-report.png" alt="A Clear Completion Report" height="200"> |
-| Scraper Progress You Can See | Choose the Right Scraper Match | A Clear Completion Report |
-| <img src="docs/screenshots/0.4.0/25-existing-mister-artwork-packs.png" alt="Use Existing MiSTer Artwork Packs" height="200"> | <img src="docs/screenshots/0.4.0/26-screensaver-artwork-slideshow.png" alt="Screensaver Artwork Slideshow" height="200"> | |
-| Use Existing MiSTer Artwork Packs | Screensaver Artwork Slideshow | |
+| <img src="docs/screenshots/0.4.0/13-neon-theme.png" alt="Neon Theme" height="200"> | <img src="docs/screenshots/0.4.0/16-theme-editor.png" alt="Theme Editor" height="200"> | <img src="docs/screenshots/0.4.0/17-category-system-image-picker.png" alt="Category &amp; System Image Picker" height="200"> |
+| Neon Theme | Theme Editor | Category & System Image Picker |
+| <img src="docs/screenshots/0.4.0/18-saved-custom-theme.png" alt="A Saved Custom Theme" height="200"> | <img src="docs/screenshots/0.4.0/20-built-in-scraper.png" alt="Built-in Scraper, From One Game to Everything" height="200"> | <img src="docs/screenshots/0.4.0/22-scraper-progress.png" alt="Scraper Progress You Can See" height="200"> |
+| A Saved Custom Theme | Built-in Scraper, From One Game to Everything | Scraper Progress You Can See |
+| <img src="docs/screenshots/0.4.0/26-screensaver-artwork-slideshow.png" alt="Screensaver Artwork Slideshow" height="200"> | | |
+| Screensaver Artwork Slideshow | | |
 
 ## Watch Degauss 0.4.0 in action
 
@@ -65,6 +101,7 @@ Click the image to watch Degauss 0.4.0 on YouTube.
 ## Table of contents
 
 - [Using it](#using-it)
+  - [Running MiSTer scripts](#running-mister-scripts)
 - [Why Degauss](#why-degauss)
 - [Installing](#installing)
   - [Installing through Update All (recommended)](#installing-through-update-all-recommended)
@@ -102,15 +139,51 @@ Click the image to watch Degauss 0.4.0 on YouTube.
 | Control | Does |
 |---|---|
 | **up / down** | move through lists |
-| **left / right** | scroll speed, 0.5x to 12x, or what the **Left and right** setting says: letter jumps, page jumps, or plain movement. In Options, left chooses the previous ordered value and right chooses the next; either direction toggles two-choice values |
+| **left / right** | scroll speed, 0.5x to 12x, or what **Left and Right Behaviour** says: letter jumps, page jumps, or plain movement. Inside an Options page, left chooses the previous ordered value and right chooses the next; either direction toggles two-choice values |
 | **A** (enter) | open a folder, launch a game; in Options, choose the next value or run an action |
 | **B** (escape) | back, out of the folder |
-| **X** (tab) | context menu: random game, random favourite, keep or drop a favourite, jump to letter, search, hide a row, rebuild this system, change view, etc. With **Hold X (1s) to add/remove fav** enabled, hold X for one second over a game to use the favourite shortcut |
-| **Y** (space) | menu: options, help, about, exit |
+| **X** (tab) | **Actions** for the current selection and location: Game Information, random game, random favourite, keep or drop a favourite, jump to letter, search, hide a row, rebuild this system, change view, etc. With **Hold X (1s) to Add/Remove Fav** enabled, hold X for one second over a game to use the favourite shortcut |
+| **Y** (space) | **Menu**: Options, Scripts, Help, About, Exit to MiSTer. Optional **Hold Y (1s) for Random Game** uses Random Game Behaviour while browsing inside a system; a short press still opens Menu |
 
-A gamepad needs no setup and a keyboard is never needed. While Degauss
+**Actions** groups the available controls into **Game**, **Find**, **Library**
+and **Appearance**. Groups without applicable actions are omitted. **A** opens
+a group; **B** returns to the group list, then to browsing. Each selected
+control has an explanation below the list. The Categories home screen keeps
+its short, flat Actions menu for images and views.
+
+**Game** contains Game Information, separate **Random Game** and **Random
+Favourite** actions, and adding/removing favourites. Both random choices use
+the currently open folder and **Random Game Behaviour**. **Find** contains
+jump, search and hiding controls; **Library** contains scraping, core choice,
+data source and rebuilding; **Appearance** contains view and image controls.
+
+A gamepad needs no extra setup and browsing and settings need no keyboard. While Degauss
 owns the screen, MiSTer sends the d-pad as arrows and the face buttons as
 Enter, Escape, Space and Tab.
+
+### Running MiSTer scripts
+
+Open **Y Menu → Scripts** to browse the installed scripts and their subfolders.
+The browser starts at `Scripts` under the configured `menu_root`, normally
+`/media/fat/Scripts`. It lists `.sh` files, with folders first. Hidden files
+and folders, and Degauss's own `degauss.sh`, are excluded.
+
+**A** opens a folder or asks for confirmation before running a script.
+**B** goes to its parent folder, or returns to Menu at the Scripts root.
+Choose **A Run** to execute the selected script or **B Cancel** to leave it
+untouched. Only run scripts you trust: they retain their normal access to the
+card and may require a keyboard or other interaction.
+
+Degauss exits before the script runs, restoring its terminal rather than
+remaining behind it. After completion, failure, or interruption with Ctrl-C,
+the terminal keeps the result visible and asks for a key to return. Degauss
+then reopens at the same Scripts folder and selection. A script that reboots
+or shuts down MiSTer keeps that behaviour.
+
+**Options → Library → Show Scripts Folder** is On by default. Switching it Off
+hides this Menu entry without changing any script files; the choice is saved
+with the other Options settings. Missing or unreadable script folders and
+scripts report their underlying error.
 
 ## Why Degauss
 
@@ -136,10 +209,11 @@ Enter, Escape, Space and Tab.
 - **The card is the truth.** Reorganise, rename or move files with any
   tool and the browser follows: nothing has to be re-imported or re-tagged.
   The index it keeps is only a copy of what the card already says, and
-  **Options -> Rebuild all system lists** quickly updates all systems after an update,
-  and the contextual menu's **Rebuild this system list** does one system alone.
-- **Full metadata.** Description, publisher, developer, release date,
-  players and language, read from `gamelist.xml`.
+  **Options → Library → Rebuild All System Lists** updates all systems after an update,
+  and **Actions → Library → Rebuild This System List** does one system alone.
+- **Full metadata.** Read the complete description and available publisher,
+  developer, release date, players, language and genre in Game Information,
+  from the system's selected Gamelist or Artwork Pack source.
 - **Favourites are MiSTer's favourites**, written into `_@Favorites` in
   MiSTer's own format. One made here works in the stock menu; one made
   anywhere else appears here.
@@ -150,6 +224,15 @@ Measured on the DE10-Nano's own hardware, with a large multi-system
 collection indexed.
 
 ## Installing
+
+> **Slow scans after a MiSTer Linux update:** the September 7, 2026 Linux
+> release can make exFAT folder reads much slower. The
+> [upstream fix](https://github.com/MiSTer-devel/Linux-Kernel_MiSTer/commit/9854075c86455942c2ce57e0b7dc80e3e2c5b108)
+> is merged, but a source-code merge is not a distributed kernel update.
+> Degauss's normal updater does not replace the kernel. Any optional kernel
+> workaround is separate from installing or updating Degauss. See the
+> [optional kernel fix and restoration guide](https://github.com/giancarloerra/Degauss/blob/e4b5d2a1d9c0e4196d934be8d0f5dcc0296fb2e7/support/kernel-fix/README.md).
+
 
 ### Installing through Update All (recommended)
 
@@ -314,12 +397,26 @@ system** or a full rebuild. A layout the defaults do not cover is one
 `game_roots` edit in `degauss.toml` away.
 
 The first run reads the card and writes an index, about a minute for a
-full one of 97k+ games. It never does that again on its own: **Options → Rebuild all system lists**
-is how you tell it the card has changed (for example after adding new games). New images and metadata are read on the fly.
+full one of 97k+ games. Ordinary folder libraries then reuse their saved lists:
+**Options → Library → Rebuild All System Lists** is how you tell Degauss the
+card has changed (for example after adding new games). New images and metadata
+are read on the fly. Automatic Artwork Pack preparation is described
+[below](#using-mister-game-artwork-databases).
 Adding games to one system does not need the whole card read again:
-**X → Rebuild this system list** inside that system reads just its folders.
+**X Actions → Library → Rebuild This System List** inside that system reads just its folders.
+Running it from a subfolder still rebuilds the complete containing system, not only that subfolder.
 A successful rebuild reflects additions and removals. An unreadable folder or archive
 reports its error and keeps that system's previous complete list.
+
+Global and single-system rebuilds show a progress dashboard with the active
+system and folder, processed systems, folder/game counts and elapsed time.
+**A Details** opens the full scrolling text report; **B Overview** returns to the dashboard.
+**B Cancel** requests cancellation while the rebuild is active. Progress with
+an unknown total is shown without a percentage; it never performs a second
+scan just to count the work. Input and repaint stay responsive, and the
+screensaver stays off during indexing. Completion, cancellation and errors
+keep their report available until **B Back**. These operation controls remain
+visible even when Bottom Bar While Browsing is Off.
 
 ### ZIP libraries
 
@@ -336,10 +433,10 @@ Installed RetroAchievements and Unstable cores can be browsed even when there is
 no standard version of that core. Degauss discovers these installations; it does
 not install the cores or configure a RetroAchievements account.
 
-**X → Core Version** chooses
+**X Actions → Library → Core Version** chooses
 Default, Standard, RetroAchievements, or a matching Unstable build. The choice is
 saved for that system and applies to its games and recognized favourites.
-**Use Default Core Version** removes that override. Default follows **Core preference**
+**Use Default Core Version** removes that override. Default follows **Options → Library → Core Preference**
 and never automatically chooses an Unstable build. A missing explicitly selected
 version produces an error; it does not launch another version.
 
@@ -354,8 +451,8 @@ running under Degauss Main already have the Frontend menu and shortcut.
 ## Views
 
 - **List**: plain text in one column.
-- **Details**: the list beside a large picture, with what the gamelist
-  knows underneath it.
+- **Details**: the list beside a large picture, with a compact year/players
+  and publisher summary. Game Information opens the complete metadata.
 - **Tiled**: a grid of pictures with their titles underneath.
 - **Carousel**: one large cover with its neighbours either side.
 - **Multi list**: two text columns in reading order, showing twice as many entries
@@ -364,76 +461,99 @@ running under Degauss Main already have the Frontend menu and shortcut.
   image has an outline and its title appears above the bottom bar for half a
   second. Entries without artwork remain visible as named text cells.
 
-**Options → View** is the global default. Every browse place can instead
+**Options → Appearance → View** is the global default. Every browse place can instead
 keep its own custom view: the Categories screen, each category's Systems
-screen, each system root, and every folder inside a system. Use **X → Change
-view** at that place to create or update its custom view. **X → Use global
-view** removes only that place's custom view; it then follows later global
+screen, each system root, and every folder inside a system. Use **X Actions →
+Appearance → Change View** at that place to create or update its custom view.
+**Use Global View**, in the same group, removes only that place's custom view;
+it then follows later global
 changes again. A custom view remains custom even when it currently matches
-the global setting.
+the global setting. At the Categories home screen these view controls are
+directly in its flat Actions menu.
+
+View changes are saved when leaving the Actions page, before returning to
+browsing or opening another action. A save error keeps the menu open with the
+underlying problem, so the change is not silently lost after a restart.
+
+For a playable game, **Game Information** is the first entry in **X Actions → Game**
+from any browsing view. It shows the title, artwork, description, publisher,
+developer, full release date, players, language and available genre. Scroll to
+inspect long values and the full description; left/right moves by a page.
+**B** or **X** returns to Actions / Game, and backing out restores the same game
+without launching it or changing the view. Information comes from the system's
+selected Gamelist or Artwork Pack source, including for favourites. Missing
+fields remain empty. Details keeps the compact summary; Information is where
+all available fields and the complete description can be read.
+
+Complete descriptions are read only when Game Information opens, with a visible
+loading or error state. Existing compact caches remain valid; no library rebuild
+is required. This does not add description reads to ordinary browsing or indexing.
 
 Folders appear in square brackets with the number of games inside them,
 counted through every subfolder, and can sit before the games or after
 them. Favourites carry a heart in every view and can be gathered at the
 top of their folder.
 
-**Hide this**, in the contextual menu, takes any row out of the list: a
+**Hide This**, in **Actions → Find**, takes any row out of the list: a
 game, a folder, or a whole system while you are looking at the system
 list. That is separate from the folders and systems left out because they
-hold no games at all, which **Show systems with no games** governs. **Show what
-you hid** shows the rows you hid without unhiding them, and **Unhide
-everything** puts them all back.
+hold no games at all, which **Show Systems with No Games** governs. **Show What
+You Hid** shows the rows you hid without unhiding them, and **Unhide
+Everything** puts them all back. These settings are in **Options → Library**.
 
 The screensaver, after the set time, drifts through game images taken from your own
 card.
 
 ## Settings
 
-**Options**
+Open **Y Menu → Options**, then choose Navigation, Appearance, Library,
+Display or Developer. **A** enters a page; **B** returns to the Options
+categories. Left and right do nothing on the category list. Each page keeps
+its selected row during the current session. Inside a page, left/right adjust
+values and **A** adjusts a value or runs the selected action. Reset actions
+require **A** and confirmation, never a sideways press.
 
-One screen holds everything, in groups a blank row apart, top to bottom:
-
-| Setting | Does |
-|---|---|
-| Scroll speed | How fast a held direction moves through the list. 3x out of the box |
-| Skip artwork faster than | Above this speed, pictures wait until the list stops. 6x out of the box |
-| Left and right behaviour | What left and right do while browsing: Scroll speed change (the default), Letter, Page or Direction. Letter and Page repeat while held; in Direction, left and right move one entry and up and down move a whole row in Tiled, Multi list and Gallery |
-| Theme | Left and right choose a palette. Press A to open the editor. Standard uses the colours in `degauss.toml`. See [Themes and colours](#themes-and-colours) |
-| View | The global default for places without a custom view: Details, Tiled, List, Carousel, Multi list or Gallery |
-| Reset all custom views | With A and confirmation, remove every place-specific view without changing the global View setting |
-| Text | The typeface: Smooth, Pixel (a DOS font on whole pixels), and the bolder Smooth 2 and Pixel 2 |
-| Artwork | Turn pictures off entirely |
-| Artwork scale factor | Framebuffer keeps the original square-pixel fit and is the default. 4:3 and 16:9 correct game artwork for that physical display shape in Details, Tiled, Carousel and Gallery. Category logos, system logos and the screensaver are unchanged |
-| Bottom bar while browsing | The strip with the time and the buttons. Menus always keep it |
-| Favourites first | Gather a folder's favourites at its top, in the same alphabet |
-| Hold X (1s) to add/remove fav | Off by default. Hold X for one second over a game to open the normal favourite-folder chooser, or to remove it when it is already a favourite. The shortcut does nothing in the master Favourites system |
-| Folders before games | On, folders lead a system's listing; off, the games come first |
-| Random game behaviour | Whether a random pick starts the game, or only moves to it so you can look first |
-| Show Other folder | Show the Other group, the cores that are not games |
-| Show Utility folder | Show the Utility group, test patterns and measurement cores |
-| Show Unstable folder | Show installed Unstable cores. On by default |
-| Core preference | Standard first (default) or RetroAchievements first. Used by systems whose Core Version is Default; the other version is used only when the preferred version is absent |
-| Show systems with no games | Systems and folders holding nothing are left out on their own; this shows them. Off by default |
-| Show what you hid | Show what you hid yourself with **Hide this** |
-| Unhide everything | Press A and confirm to put back everything you hid yourself, in every folder and every system. Left and right do nothing |
-| Edge margin, sides | Keep this much of each side clear of the bezel |
-| Edge margin, top and bottom | The same, vertically |
-| Screen position, sideways | Nudge the picture, for a screen that sits off centre |
-| Screen position, up and down | The same, vertically |
-| Screensaver | How long with nothing pressed before pictures start |
-| Rebuild all system lists | Press A to read the whole card again. Run it after adding games, cores or artwork; for one system, the contextual menu's **Rebuild this system list** is quicker. Left and right do nothing |
-| Developer | Press A to open the screen below. Left and right do nothing |
-
-**Developer**
-
-| Setting | Does |
-|---|---|
-| Drawing path | Draw into the screen directly, or into memory first |
-| Performance readout | Replace the key hints with frame timings |
+| Page | Setting | Does |
+|---|---|---|
+| Navigation | Scroll Speed | How fast a held direction moves through the list. 3x out of the box |
+| Navigation | Skip Artwork Faster Than | Above this speed, pictures wait until the list stops. 6x out of the box |
+| Navigation | Left and Right Behaviour | What left and right do while browsing: Scroll Speed Change (the default), Letter, Page or Direction. Letter and Page repeat while held; in Direction, left and right move one entry and up and down move a whole row in Tiled, Multi List and Gallery |
+| Navigation | Hold X (1s) to Add/Remove Fav | Off by default. Hold X for one second over a game to open the normal favourite-folder chooser, or to remove it when it is already a favourite. The shortcut does nothing in the master Favourites system |
+| Navigation | Hold Y (1s) for Random Game | Off by default. Hold Y for one second while browsing inside a system to use Random Game. It follows Random Game Behaviour; a short Y still opens Menu. The hold shortcut is inactive in menus and during operations |
+| Navigation | Random Game Behaviour | Whether either random action starts the game, or only moves to it so you can look first |
+| Appearance | Theme | Left and right choose a palette. Press A to open the editor. Standard uses the colours in `degauss.toml`. See [Themes and colours](#themes-and-colours) |
+| Appearance | View | The global default for places without a custom view: Details, Tiled, Carousel, List, Multi List or Gallery |
+| Appearance | Reset All Custom Views | With A and confirmation, remove every place-specific view without changing the global View setting |
+| Appearance | Text | The typeface: Smooth, Pixel (a DOS font on whole pixels), and the bolder Smooth 2 and Pixel 2 |
+| Appearance | Artwork | Turn pictures off entirely |
+| Appearance | Artwork Scale Factor | Framebuffer keeps the original square-pixel fit and is the default. 4:3 and 16:9 correct game artwork for that physical display shape in Details, Tiled, Carousel and Gallery. Category logos, system logos and the screensaver are unchanged |
+| Appearance | Bottom Bar While Browsing | On by default. Show the time and button hints while browsing. A saved Off choice stays Off after updating or restarting; menus and operation controls remain visible |
+| Appearance | Screensaver | How long with nothing pressed before pictures start |
+| Library | Favourites First | Show favourites first in each folder, keeping them in alphabetical order |
+| Library | Folders Before Games | On, folders lead a system's listing; off, the games come first |
+| Library | Core Preference | Standard First (default) or RetroAchievements First. Used by systems whose Core Version is Default; the other version is used only when the preferred version is absent |
+| Library | Show Other Folder | Show the Other group, the cores that are not games |
+| Library | Show Utility Folder | Show the Utility group, test patterns and measurement cores |
+| Library | Show Unstable Folder | Show installed Unstable cores. On by default |
+| Library | Show Scripts Folder | On by default. Show Scripts in Menu to browse and run installed `.sh` files. Turning this Off hides the entry without changing the files |
+| Library | Show Systems with No Games | Systems and folders holding nothing are left out on their own; this shows them. Off by default |
+| Library | Show What You Hid | Show what you hid yourself with **Hide This** |
+| Library | Unhide Everything | Press A and confirm to put back everything you hid yourself, in every folder and every system. Left and right do nothing |
+| Library | Rebuild All System Lists | Press A to read the whole card again. Run it after adding games, cores or artwork; **Actions → Library → Rebuild This System List** rebuilds just the containing system. Left and right do nothing |
+| Library | Scrape All Systems | Press A to open ScreenScraper settings for all supported systems. Artwork Pack systems are skipped; the master Favourites system is not a scrape target |
+| Display | Edge Margin, Sides | Keep this much of each side clear of the bezel |
+| Display | Edge Margin, Top and Bottom | The same, vertically |
+| Display | Screen Position, Sideways | Nudge the picture, for a screen that sits off centre |
+| Display | Screen Position, Up and Down | The same, vertically |
+| Developer | Drawing Path | Draw into the screen directly, or into memory first |
+| Developer | Performance Readout | Replace the key hints with frame timings |
 
 `degauss.toml` is documentation as much as configuration: every value
-explains itself. Anything changed from the Options screen is written to
-`settings.toml` beside it, so your changes never overwrite those notes.
+explains itself. Changes are written to `settings.toml` beside it when leaving
+an Options page, so your changes never overwrite those notes.
+If saving fails, the page stays open and a message explains the problem.
+Changes remain active for the current session; dismiss the message and press
+**B** again after resolving the storage problem to retry saving.
 Delete `settings.toml` to go back to the documented defaults.
 
 ### Themes and colours
@@ -518,7 +638,7 @@ built-in theme.
 
 #### Editing a theme on-device
 
-Highlight **Theme** in Options and press A. The editor starts from the
+Highlight **Theme** in **Options → Appearance** and press A. The editor starts from the
 currently selected palette and previews every change immediately.
 
 | Control | Does |
@@ -642,10 +762,18 @@ is only what `<path>` points at:
 ### Using MiSTer Game Artwork Databases
 
 Degauss can also read the local [MiSTer Game Artwork Databases](https://github.com/chipster6502/MiSTer_artwork_pack)
-installed by MiSTer's Update All and Downloader tools. Nothing changes
-automatically: **Gamelist**
-remains the default for every existing and new installation, even when an
-artwork database is already present.
+installed by MiSTer's Update All and Downloader tools. **Automatic** is the
+default when no source choice has been saved. A `gamelist.xml` in any of the
+system's library roots keeps the whole system on Gamelist. Otherwise Degauss
+uses a valid installed pack from SD, then USB0 through USB7. With neither,
+the usual filesystem/Gamelist presentation remains available. Broken or
+unreadable candidates are reported, not silently skipped to another source.
+Existing saved Artwork Pack locations retain their meaning.
+
+Older settings did not record an explicit Gamelist choice. An existing settings
+file without a saved Pack choice therefore uses Automatic, so an installed pack
+can now appear when no root `gamelist.xml` exists. Choosing **Gamelist** now saves
+that explicit choice. No migration or reset is needed.
 
 Install and update a database through **Update All → Settings → Extra Content
 → Game Artwork DBs**. Update All also chooses its 2D, 3D or mixed artwork
@@ -657,12 +785,12 @@ Databases can also be downloaded directly from the original
 [MiSTer Game Artwork Databases repository](https://github.com/chipster6502/MiSTer_artwork_pack).
 Degauss reads the installed database in place rather than importing or copying it.
 **Game Data Source** is selected separately for each supported system from its
-**X** context menu, not from the global Options menu.
+**X Actions → Library** menu, not from the global Options menu.
 
-To use one in Degauss:
+To choose a pack manually:
 
 1. Highlight a supported system, or browse inside it, and press **X**.
-2. Open **Game Data Source**.
+2. Open **Library → Game Data Source**.
 3. Choose **Artwork Pack**.
 4. Confirm the detected `docs` location. If more than one installation is
    present, choose the one Degauss should use.
@@ -681,9 +809,24 @@ Neo Geo and Neo Geo MVS share one choice because they use the same library and
 database. Favourites have no separate choice: each one follows the current
 source of the system that owns its game.
 
-The two sources are deliberately exclusive:
+The source menu shows both the saved mode and its effective source. Automatic
+is checked off-thread at startup, when reopening a system and when rebuilding
+its list. Installing a pack or adding/removing a root gamelist can therefore
+change an Automatic choice on the next check, without saving a manual path.
+Automatic checks only standard SD/USB locations; the explicit Pack picker
+continues to support network and custom locations.
 
-- **Gamelist** uses the existing `gamelist.xml` name, artwork and metadata.
+A newly detected pack prepares its system lists as part of indexing, before
+the completion report is shown. Its game counts and artwork are then available
+to browsing, favourites and the screensaver without opening that system first.
+No manual cache reset or extra rebuild is needed. Preparation uses the same
+progress, Details and cancellation controls as the rest of indexing.
+
+The two effective sources are deliberately exclusive:
+
+- **Gamelist** is an explicit saved choice, even without XML, and uses the
+  existing `gamelist.xml` name, artwork and metadata. It disables automatic
+  pack selection until Automatic is chosen again.
 - **Artwork Pack** uses only the selected local database for game artwork,
   display name, year, genre, developer, players and description.
 
@@ -700,7 +843,7 @@ whole-file size limit on that lookup. XML identity metadata remains bounded to
 
 Selecting an Artwork Pack never edits or removes the existing gamelist or its
 media. Choose **Gamelist** again to restore them immediately. While Artwork
-Pack is selected, that system's contextual scrape actions are hidden and
+Pack is selected, that system's scrape entries in Actions are hidden and
 **Scrape All Systems** reports it as skipped before checking scraper login or
 making a request.
 
@@ -725,8 +868,8 @@ TurboGrafx-16 CD, Vectrex, Virtual Boy, WonderSwan and WonderSwan Color.
 
 Degauss can create or update these same gamelists from
 [ScreenScraper.fr](https://www.screenscraper.fr). A free ScreenScraper account
-is required. Open **Y → Options → Scrape All Systems** for the whole card, or press
-**X** in the browser and choose **Scrape This System**, **Scrape This Folder**
+is required. Open **Y Menu → Options → Library → Scrape All Systems** for the whole card, or press
+**X** to open **Actions → Library** and choose **Scrape This System**, **Scrape This Folder**
 or **Scrape This Game**. The master Favourites shelf is never a scrape target.
 
 Official Degauss binaries already contain the application authorization needed
@@ -749,6 +892,14 @@ Both settings cannot be Off when a scrape starts. The metadata fields are
 name, description, publisher, developer, release date, players, genre and
 language.
 
+When the selected image exists and every enabled metadata field is populated,
+Degauss skips the game before making any ScreenScraper request. Fill missing
+still checks all eight fields: a blank language, publisher or other field can
+therefore cause another metadata lookup even when the picture and description
+are present. A field ScreenScraper does not supply remains blank and may be
+retried on a later run; existing artwork is not downloaded again for that
+metadata lookup.
+
 Ordinary ROM files are matched by CRC32, MD5 and SHA-1 when they are no more
 than 64 MiB. Larger files, archives, `.mgl`, `.mra` and other wrappers use an
 exact normalised-title search instead. A unique exact match is applied
@@ -758,22 +909,53 @@ artwork. Press **A** to confirm one, **X** to edit the pre-filled search title
 and try again, or **B** to leave the game untouched. A search with no suitable
 result stays editable so a shorter or alternative title can be tried.
 
+For a direct title search without first running automatic matching, open
+**Scrape This Game** and select **Search Manually**, immediately below
+**Start Scraping**. It searches the selected game's system using its pre-filled
+title. The same candidate picker lets you edit the title, preview a match and
+confirm its use. **B** returns to the single-game scraper settings. The account,
+password-storage confirmation and chosen Images and Metadata policies still
+apply: manual matching does not force replacement of existing data. This action
+is available only for an individual game, not folder, system or all-system jobs.
+
+Use Search Manually when an automatic match was wrong. To correct existing
+artwork or metadata, set the corresponding Images or Metadata policy to
+**Replace existing** before confirming the replacement match.
+
 Folder, system and all-systems scrapes never stop for a match choice. Missing
-and ambiguous games are counted, skipped without changes, and the remaining
+and ambiguous ScreenScraper matches are counted, skipped without changes, and the remaining
 games continue. Unsupported systems are also skipped and counted. If two
 systems use the same folder but require different ScreenScraper platform IDs,
 the all-systems scrape skips that shared target; a per-system scrape remains
 available.
 
-During a run, the blocking progress screen shows the current item, writes,
-unchanged and unresolved items, errors, worker count, the account limits
-reported by ScreenScraper and Degauss's current allowance estimate. Another
+Symlinked copies share a single scrape and gamelist update only when they point
+to the same physical file and the same existing gamelist entry; extra paths
+are counted as **Linked copies**. Conflicting mappings to different files and
+ambiguous entries are reported as errors. During **Checking existing data**,
+planning shows known totals and can be cancelled.
+
+During a run, the progress dashboard shows current work, game progress,
+written, unchanged, unresolved and failed counts. **A Details** opens a
+scrollable report with status, scope, current title, completed/total, written,
+unchanged, linked copies, unresolved and skipped/error breakdowns, allowance,
+throughput and the last problem. **B Overview** returns without cancelling.
+The report retains
+worker counts, account limits reported by ScreenScraper and Degauss's allowance
+estimate. Another
 program using the same account can change the server's counters while the run
 is in progress. The estimate covers API lookups, not the separate media-file
 transfers. Media transfers obey the download-speed limit reported for the
-account. Press **B**, then confirm, to cancel. Cancellation stops card
+account. On the running dashboard, press **B**, then confirm, to cancel. Cancellation stops card
 enumeration and new requests, and safely finishes installing results that
 already completed.
+
+After results are saved, **Refreshing Lists** rebuilds each affected system's
+complete list, including after a single-game scrape. This work runs in a
+Degauss-owned worker, with the system/folder and read counts shown while the
+interface remains responsive. It is not a targeted one-game refresh. The
+dashboard shows safe finishing until that work completes; Details remains
+available. No helper or background service stays running after Degauss exits.
 
 Connection and server failures remain on the progress screen until they are
 dismissed. The on-screen message is kept concise; technical curl and HTTP
@@ -805,6 +987,20 @@ login**. External USB and network storage need no special scraper setting:
 the same resolved system folders used by the browser determine where each
 gamelist and media directory are written.
 
+Choose **Default Image** in Scrape All Systems to set the global artwork type:
+Screenshot, Box Art (2D), or Box Art (3D). A system, folder or single-game
+scraper instead offers **System Image**, which applies to that entire system.
+Its default, **Use Global**, follows Default Image. For example, choose 2D
+box art globally and Screenshot for Arcade. Scrape All and manual-match
+previews respect each system's choice. Favourites display the artwork of
+their original games, so they do not need a separate scraper preference.
+
+Changing the image type does not replace existing pictures under Missing
+Only. Choose Images: Replace existing when replacing already downloaded
+artwork. If the chosen type is unavailable, Degauss reports missing media
+instead of silently selecting another type. Artwork Pack systems remain
+excluded from scraping.
+
 Advanced settings can be edited directly in the same `screenscraper.toml`.
 They are optional; omitting them keeps the defaults shown here:
 
@@ -816,6 +1012,9 @@ hash_limit_mib = 64
 max_media_mib = 32
 media_type = "ss"
 
+[system_media_types]
+Arcade = "box-2D"
+
 [system_ids]
 "ExactDegaussSystemId" = 123
 ```
@@ -823,7 +1022,10 @@ media_type = "ss"
 `hash_limit_mib` controls the largest ordinary ROM Degauss will hash (1–4096
 MiB); larger and wrapper/disc files use title matching. `max_media_mib` limits
 one downloaded picture (1–256 MiB). `media_type` is the ScreenScraper media
-type, with `ss` meaning gameplay screenshot. A `system_ids` entry maps a
+type, with `ss` meaning gameplay screenshot. The optional `system_media_types`
+table overrides it for individual Degauss system IDs, matched
+case-insensitively. Removing an entry restores the global type. Existing
+custom media types remain supported in the file. A `system_ids` entry maps a
 Degauss system ID, matched case-insensitively, to a positive ScreenScraper
 platform ID. It is intended only for a missing or deliberately overridden
 platform mapping; an invalid or ambiguous override can associate the wrong
@@ -1022,8 +1224,9 @@ supported. Favourites shows its heart when `Favorites.png` or `.jpg` is not
 present. Restart Degauss after adding or replacing a directly named image.
 
 You can also put additional PNG, JPG or JPEG images directly in this same `logos`
-folder, using any filename. On the master category screen or on a system such
-as **Computer → Amiga**, press **X**, choose **Change Image**, then select any
+folder, using any filename. On the master Categories screen, press **X** and
+choose **Change Image** directly. On a system such as **Computer → Amiga**,
+press **X** and choose **Appearance → Change Image**. Then select any
 shipped or user-added image in the list. Degauss copies the selection into its
 managed image storage and leaves the source file untouched. **Clear Custom
 Image** appears for a category or system that has such a selection; it removes
@@ -1142,7 +1345,7 @@ It is worth asking your agent to check the whole card for this once.
 #### After any change
 
 Rebuild the cache from the Degauss menu, or just the changed system with
-**X → Rebuild this system list** while inside it. Artwork is not stored in the
+**X Actions → Library → Rebuild This System List** while inside it. Artwork is not stored in the
 persistent system-list index, so new pictures are read from the card when
 their rows are shown. Favourites are shared with
 MiSTer's own `_@Favorites` folder, so an agent can add one and the stock
@@ -1189,7 +1392,17 @@ framebuffer, which works while the frontend is running. `--screen`,
 shows. `--layout` accepts `details`, `tiled`, `list`, `carousel`,
 `multi-list` and `gallery`. An explicit `--layout` is temporary and takes
 precedence over saved global and custom views; without it, render, bench and
-selftest use Details. Every screenshot in this README was made this way.
+selftest use Details. This headless facility is useful for inspection and
+diagnostics; it is separate from capturing the live MiSTer framebuffer.
+
+`--screen options` shows the Options categories. Add
+`--options-page navigation|appearance|library|display|developer` to render
+a settings page directly. `--screen advanced` remains a direct alias for the
+Developer page. `--screen actions` shows Actions, with the existing
+`--screen context` spelling retained as an alias. `--screen information`
+shows Game Information for the playable game chosen with `--system` and
+`--select`. `--screen scripts` opens the Scripts browser under the configured
+`menu_root`.
 
 ```bash
 degauss --system PSX --layout tiled --render /tmp/shot.bmp --geometry 352x240
