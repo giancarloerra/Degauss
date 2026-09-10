@@ -6,6 +6,10 @@
 
 <p align="center"><strong>Official website:</strong> <a href="https://misterdegauss.com">misterdegauss.com</a></p>
 
+<p align="center">
+  <a href="https://discord.com/channels/647909397477195803/1547377865983660072"><img src="https://img.shields.io/badge/Discord-Join%20the%20Degauss%20channel-5865F2?logo=discord&amp;logoColor=white" alt="Join the Degauss Discord channel"></a>
+</p>
+
 ---
 
 Degauss plays nice with the standard MiSTer setup, folders and scripts, instead of trying to replace it all.
