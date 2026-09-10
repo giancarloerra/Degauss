@@ -48,26 +48,49 @@ remain labelled by release.
 
 | | | |
 |---|---|---|
-| <img src="docs/screenshots/0.6.0/01-home.png" alt="Home" height="200"> | <img src="docs/screenshots/0.6.0/02-details.png" alt="Details: DoDonPachi III" height="200"> | <img src="docs/screenshots/0.6.0/03-list.png" alt="List View: Arcade Favourites" height="200"> |
-| Home | Details: DoDonPachi III | List View |
+| <img src="docs/screenshots/0.6.0/01-home.png" alt="Home with its Capcom custom category image" height="200"> | <img src="docs/screenshots/0.6.0/02-details.png" alt="Details: DoDonPachi III" height="200"> | <img src="docs/screenshots/0.6.0/03-list.png" alt="List View: Arcade Favourites" height="200"> |
+| Home, with its Capcom custom category image | Details: DoDonPachi III | List View |
 | <img src="docs/screenshots/0.6.0/04-gallery.png" alt="Gallery View: Arcade Favourites" height="200"> | <img src="docs/screenshots/0.6.0/05-multi-list.png" alt="Multi List View: Arcade Favourites" height="200"> | <img src="docs/screenshots/0.6.0/06-carousel.png" alt="Carousel View: Actraiser" height="200"> |
 | Gallery View | Multi List View | Carousel: Actraiser |
-| <img src="docs/screenshots/0.6.0/07-tiled.png" alt="Tiled View: Amiga Favourites" height="200"> | <img src="docs/screenshots/0.6.0/08-options.png" alt="Organised Options" height="200"> | <img src="docs/screenshots/0.6.0/09-navigation.png" alt="Navigation and Hold Shortcuts" height="200"> |
-| Tiled: Amiga Favourites | Organised Options | Navigation and Hold Shortcuts |
+| <img src="docs/screenshots/0.6.0/07-tiled.png" alt="Tiled View: Amiga Favourites" height="200"> | <img src="docs/screenshots/0.6.0/08-options.png" alt="Extensive Options" height="200"> | <img src="docs/screenshots/0.6.0/09-navigation.png" alt="Navigation and Hold Shortcuts" height="200"> |
+| Tiled: Amiga Favourites | Extensive Options | Navigation and Hold Shortcuts |
 | <img src="docs/screenshots/0.6.0/10-appearance.png" alt="Appearance" height="200"> | <img src="docs/screenshots/0.6.0/11-library.png" alt="Library: Show Scripts Folder" height="200"> | <img src="docs/screenshots/0.6.0/12-display.png" alt="Display" height="200"> |
 | Appearance | Library | Display |
 | <img src="docs/screenshots/0.6.0/13-developer.png" alt="Developer" height="200"> | <img src="docs/screenshots/0.6.0/14-actions.png" alt="Grouped Actions" height="200"> | <img src="docs/screenshots/0.6.0/15-random-favourite.png" alt="Random Game and Random Favourite" height="200"> |
 | Developer | Grouped Actions | Random Game and Random Favourite |
-| <img src="docs/screenshots/0.6.0/16-place-view.png" alt="Per-place View" height="200"> | <img src="docs/screenshots/0.6.0/17-information.png" alt="Game Information: Steep Slope Sliders" height="200"> | <img src="docs/screenshots/0.6.0/28-artwork-source.png" alt="Arcade Artwork Source: Automatic Using Gamelist" height="200"> |
-| Per-place View | Game Information: Steep Slope Sliders | Automatic or Explicit Artwork Source |
+| <img src="docs/screenshots/0.6.0/16-place-view.png" alt="Per-place View" height="200"> | <img src="docs/screenshots/0.6.0/17-information.png" alt="Game Information: Steep Slope Sliders" height="200"> | <img src="docs/screenshots/0.6.0/32-standard-details.png" alt="Standard Theme: Actraiser Details" height="200"> |
+| Per-place View | Game Information: Steep Slope Sliders | Standard Theme: Details |
 | <img src="docs/screenshots/0.6.0/18-index-progress.png" alt="Indexing Progress: Running Rebuild" height="200"> | <img src="docs/screenshots/0.6.0/34-index-details.png" alt="Indexing Details: Running Rebuild" height="200"> | <img src="docs/screenshots/0.6.0/19-index-complete.png" alt="Indexing Complete" height="200"> |
 | Indexing Progress | Indexing Details | Indexing Complete |
+
+<p align="center">
+  <img src="docs/screenshots/0.6.0/29-core-version-retroachievements.png" alt="RetroAchievements &amp; Unstable Cores" height="200"><br>
+  <strong>RetroAchievements &amp; Unstable Cores</strong><br>
+  <sub>Choose an installed Standard, RetroAchievements, or matching Unstable core for each system, and Degauss remembers that choice for its games and recognised favourites.</sub>
+</p>
+
+**Game Artwork Databases:** choose **Automatic**, **Gamelist** or **Artwork Pack**
+for each supported system. Automatic is the default and prefers a `gamelist.xml` in any of that system's
+library roots; otherwise it looks for a supported pack installed in the default
+SD or USB locations. Explicit Gamelist and Artwork Pack choices stay saved until
+Automatic is selected again. [How to install and select a pack](#using-mister-game-artwork-databases).
+
+| | |
+|---|---|
+| <img src="docs/screenshots/0.6.0/28-artwork-source.png" alt="Game Data Source: Automatic, Gamelist or Artwork Pack" height="200"> | <img src="docs/screenshots/0.6.0/36-artwork-pack-location.png" alt="Select an Installed Artwork Pack Location" height="200"> |
+| Automatic, Gamelist or Artwork Pack | Choose an Installed Pack Location |
+
+| | | |
+|---|---|---|
 | <img src="docs/screenshots/0.6.0/20-manual-search.png" alt="Single-game Scraper Controls: Dandy" height="200"> | <img src="docs/screenshots/0.6.0/33-manual-query.png" alt="Manual Search: dandy" height="200"> | <img src="docs/screenshots/0.6.0/24-manual-match.png" alt="Manual Match: 1944 The Loop Master" height="200"> |
 | Single-game Scraper Controls: Dandy | Manual Search: dandy | Manual Match: 1944 |
-| <img src="docs/screenshots/0.6.0/21-scraper-progress.png" alt="Scraper Preparation: Arcade" height="200"> | <img src="docs/screenshots/0.6.0/35-scraper-complete.png" alt="Single-game Scrape Complete: 1944" height="200"> | <img src="docs/screenshots/0.6.0/26-scripts.png" alt="Installed MiSTer Scripts" height="200"> |
-| Scraper Preparation: Arcade | Scrape Complete: 1944 | Installed Scripts |
-| <img src="docs/screenshots/0.6.0/27-script-confirmation.png" alt="Confirmation Before Running a Script" height="200"> | <img src="docs/screenshots/0.6.0/31-standard-home.png" alt="Standard Theme: Home" height="200"> | <img src="docs/screenshots/0.6.0/32-standard-details.png" alt="Standard Theme: Actraiser Details" height="200"> |
-| Script Confirmation | Standard Theme: Home | Standard Theme: Details |
+
+| | |
+|---|---|
+| <img src="docs/screenshots/0.6.0/21-scraper-progress.png" alt="Scraper Preparation: Arcade" height="200"> | <img src="docs/screenshots/0.6.0/35-scraper-complete.png" alt="Single-game Scrape Complete: 1944" height="200"> |
+| Scraper Preparation: Arcade | Scrape Complete: 1944 |
+| <img src="docs/screenshots/0.6.0/26-scripts.png" alt="Installed MiSTer Scripts" height="200"> | <img src="docs/screenshots/0.6.0/27-script-confirmation.png" alt="Confirmation Before Running a Script" height="200"> |
+| Installed Scripts | Script Confirmation |
 
 ### Earlier release examples (0.4.0)
 
@@ -82,12 +105,15 @@ These genuine images retain earlier feature and theme examples. They show the
 | Mono Theme | Green Mono Theme | Modern Theme |
 | <img src="docs/screenshots/0.4.0/13-neon-theme.png" alt="Neon Theme" height="200"> | <img src="docs/screenshots/0.4.0/16-theme-editor.png" alt="Theme Editor" height="200"> | <img src="docs/screenshots/0.4.0/17-category-system-image-picker.png" alt="Category &amp; System Image Picker" height="200"> |
 | Neon Theme | Theme Editor | Category & System Image Picker |
-| <img src="docs/screenshots/0.4.0/18-saved-custom-theme.png" alt="A Saved Custom Theme" height="200"> | <img src="docs/screenshots/0.4.0/20-built-in-scraper.png" alt="Built-in Scraper, From One Game to Everything" height="200"> | <img src="docs/screenshots/0.4.0/22-scraper-progress.png" alt="Scraper Progress You Can See" height="200"> |
-| A Saved Custom Theme | Built-in Scraper, From One Game to Everything | Scraper Progress You Can See |
-| <img src="docs/screenshots/0.4.0/26-screensaver-artwork-slideshow.png" alt="Screensaver Artwork Slideshow" height="200"> | | |
-| Screensaver Artwork Slideshow | | |
+
+| | |
+|---|---|
+| <img src="docs/screenshots/0.4.0/18-saved-custom-theme.png" alt="A Saved Custom Theme" height="200"> | <img src="docs/screenshots/0.4.0/26-screensaver-artwork-slideshow.png" alt="Screensaver Artwork Slideshow" height="200"> |
+| A Saved Custom Theme | Screensaver Artwork Slideshow |
 
 ## Watch Degauss 0.4.0 in action
+
+Earlier design. Same speed.
 
 <p align="center">
   <a href="https://www.youtube.com/watch?v=aFnvkkhbPFY">
@@ -168,6 +194,9 @@ The browser starts at `Scripts` under the configured `menu_root`, normally
 `/media/fat/Scripts`. It lists `.sh` files, with folders first. Hidden files
 and folders, and Degauss's own `degauss.sh`, are excluded.
 
+Executable `.sh` files run directly, including compiled MiSTer utilities and
+scripts with their own interpreter. Non-executable shell scripts run with Bash.
+
 **A** opens a folder or asks for confirmation before running a script.
 **B** goes to its parent folder, or returns to Menu at the Scripts root.
 Choose **A Run** to execute the selected script or **B Cancel** to leave it
@@ -179,6 +208,11 @@ remaining behind it. After completion, failure, or interruption with Ctrl-C,
 the terminal keeps the result visible and asks for a key to return. Degauss
 then reopens at the same Scripts folder and selection. A script that reboots
 or shuts down MiSTer keeps that behaviour.
+
+If a script reloads MiSTer's menu before returning, the new launcher restores
+the same script selection. A later Menu reload, after Degauss has already
+returned, uses the normal startup screen. Neither path starts a second
+frontend. Scripts that load a game core keep that core on screen.
 
 **Options → Library → Show Scripts Folder** is On by default. Switching it Off
 hides this Menu entry without changing any script files; the choice is saved

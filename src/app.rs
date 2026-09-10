@@ -13182,6 +13182,7 @@ impl App {
         surface: &mut dyn Surface,
         input: &mut InputReader,
         presenter: &mut Presenter,
+        mut owner_alive: impl FnMut() -> Result<bool>,
     ) -> Result<Outcome> {
         let mut repeater = Repeater::new(RepeatConfig {
             interval: Duration::from_millis(self.speed_ms()),
@@ -13193,6 +13194,10 @@ impl App {
         let mut vsync_usable = true;
 
         loop {
+            if !owner_alive()? {
+                self.save_settings();
+                return Ok(Outcome::LauncherReplaced);
+            }
             let now = Instant::now();
 
             slint::platform::update_timers_and_animations();
@@ -14069,6 +14074,7 @@ impl BenchReport {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Outcome {
     Quit,
+    LauncherReplaced,
     Script(Box<crate::scripts::Launch>),
 
     /// A launch carries its finished plan rather than a row index: the plan

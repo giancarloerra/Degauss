@@ -21,6 +21,7 @@ mod covers;
 mod error;
 mod favorites;
 mod font;
+mod frontend_session;
 mod gamelist;
 mod index_job;
 mod information_job;
@@ -1262,11 +1263,17 @@ fn run_on_framebuffer(
     chosen: Option<usize>,
     started: Instant,
 ) -> Result<()> {
+    let Some(session) = frontend_session::UiSession::acquire(&args.device)? else {
+        return Ok(());
+    };
     let system_count = loaded.systems.len();
     log_start();
     let state_path = state_path_for(&loaded.settings_path);
     let resuming = state::is_resuming();
-    let script_return = std::env::var_os(scripts::RETURN_ENV).map(PathBuf::from);
+    let script_return = match std::env::var_os(scripts::RETURN_ENV) {
+        Some(path) => Some(PathBuf::from(path)),
+        None => state::resuming_script()?,
+    };
     std::env::remove_var(scripts::RETURN_ENV);
     let mut framebuffer = surface::Framebuffer::open(&args.device)?;
     let geometry = framebuffer.geometry();
@@ -1376,7 +1383,9 @@ fn run_on_framebuffer(
     let default = default_present_mode(framebuffer.mapping_source());
     let mode = app.initialize_presentation(default, args.present);
     let mut presenter = Presenter::new(geometry, mode);
-    let outcome = app.run(&mut framebuffer, &mut input, &mut presenter);
+    let outcome = app.run(&mut framebuffer, &mut input, &mut presenter, || {
+        session.owner_alive()
+    });
 
     terminal.restore();
     if let Some(console) = console.as_mut() {
@@ -1413,9 +1422,10 @@ fn run_on_framebuffer(
 
     match outcome {
         Outcome::Quit => note("ended        user quit"),
+        Outcome::LauncherReplaced => note("ended        MiSTer launcher was replaced"),
         Outcome::Script(script) => {
             app.position().save(&state_path)?;
-            state::mark_resuming();
+            state::mark_script_resuming(script.script())?;
             note(&format!(
                 "ended        running {}",
                 script.script().display()
@@ -1423,6 +1433,8 @@ fn run_on_framebuffer(
             drop(app);
             drop(input);
             drop(framebuffer);
+            let script = script.with_menu_owner(session.owner_token());
+            drop(session);
             return script.exec().map(|never| match never {});
         }
         Outcome::Launch { plan, name } => {

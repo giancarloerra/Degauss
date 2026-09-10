@@ -157,26 +157,101 @@ script_dir=$2
 return_dir=$3
 frontend=$4
 shift 4
-trap ':' INT
-if cd -- "$script_dir"; then
-    /bin/bash -- "$script"
-    script_status=$?
+if [ -x "$script" ]; then
+    script_command=("$script")
+else
+    script_command=(/bin/bash -- "$script")
+fi
+menu_owner_current() {
+    [ -z "${DEGAUSS_MENU_OWNER:-}" ] && return 0
+    local owner_pid=${DEGAUSS_MENU_OWNER%%:*}
+    local owner_start=${DEGAUSS_MENU_OWNER#*:}
+    local owner_stat
+    local -a owner_fields
+    if ! { IFS= read -r owner_stat < "/proc/$owner_pid/stat"; } 2>/dev/null; then
+        if [ -e "/proc/$owner_pid/stat" ]; then
+            printf '\nCannot check the MiSTer launcher process.\n' >&2
+            exit 1
+        fi
+        return 1
+    fi
+    IFS=' ' read -r -a owner_fields <<< "${owner_stat##*) }"
+    [ "${owner_fields[19]:-}" = "$owner_start" ] &&
+        [ "${owner_fields[0]:-}" != Z ] && [ "${owner_fields[0]:-}" != X ]
+}
+cancel_script_group() {
+    for signal in TERM KILL; do
+        kill -0 -- "-$script_group" 2>/dev/null || break
+        if ! kill -"$signal" -- "-$script_group"; then
+            if kill -0 -- "-$script_group" 2>/dev/null; then
+                printf '\nCannot stop the cancelled script process group.\n' >&2
+                exit 1
+            fi
+        fi
+        for ((attempt=0; attempt<20; attempt++)); do
+            kill -0 -- "-$script_group" 2>/dev/null || break
+            IFS= read -r -t 0.05 -n 1 discarded_key
+        done
+    done
+    if kill -0 -- "-$script_group" 2>/dev/null; then
+        printf '\nThe cancelled script still has running processes; not restarting Degauss.\n' >&2
+        exit 1
+    fi
+}
+return_frontend() {
+    menu_owner_current || exit 0
     if [ "$script_status" -ne 0 ]; then
         printf '\nScript exited with status %s: %s\n' "$script_status" "$script" >&2
+    fi
+    printf '\nPress any key to return to Degauss...'
+    if [ -n "${DEGAUSS_MENU_OWNER:-}" ]; then
+        while menu_owner_current; do
+            IFS= read -r -t 0.2 -n 1 return_key
+            read_status=$?
+            [ "$read_status" -le 128 ] && break
+        done
+    else
+        IFS= read -r -n 1 return_key
+    fi
+    menu_owner_current || exit 0
+    printf '\n'
+    if ! cd -- "$return_dir"; then
+        printf 'Cannot restore frontend directory: %s\n' "$return_dir" >&2
+        exit 1
+    fi
+    trap - INT
+    export DEGAUSS_SCRIPTS_RETURN="$script"
+    exec "$frontend" "$@"
+}
+menu_owner_current || exit 0
+script_status=0
+trap ':' INT
+if cd -- "$script_dir"; then
+    if [ -t 0 ]; then
+        set -m
+        "${script_command[@]}" &
+        script_group=$!
+        trap 'trap ":" INT; script_status=130; set +m; cancel_script_group; return_frontend "$@"' INT
+        fg %+ >/dev/null
+        script_status=$?
+        trap ':' INT
+        if [ "$script_status" -eq 1 ]; then
+            wait "$script_group" 2>/dev/null
+            waited_status=$?
+            [ "$waited_status" -ne 127 ] && script_status=$waited_status
+        fi
+        set +m
+        if [ "$script_status" -eq 130 ]; then
+            cancel_script_group
+        fi
+    else
+        "${script_command[@]}"
+        script_status=$?
     fi
 else
     printf '\nCannot enter script directory: %s\n' "$script_dir" >&2
 fi
-printf '\nPress any key to return to Degauss...'
-IFS= read -r -n 1 return_key
-printf '\n'
-if ! cd -- "$return_dir"; then
-    printf 'Cannot restore frontend directory: %s\n' "$return_dir" >&2
-    exit 1
-fi
-trap - INT
-export DEGAUSS_SCRIPTS_RETURN="$script"
-exec "$frontend" "$@"
+return_frontend "$@"
 "#;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -187,6 +262,7 @@ pub struct Launch {
     return_directory: PathBuf,
     executable: PathBuf,
     args: Vec<OsString>,
+    menu_owner: Option<String>,
 }
 
 impl Launch {
@@ -244,7 +320,14 @@ impl Launch {
             return_directory,
             executable,
             args,
+            menu_owner: None,
         })
+    }
+
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    pub fn with_menu_owner(mut self, owner: Option<String>) -> Self {
+        self.menu_owner = owner;
+        self
     }
 
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
@@ -280,6 +363,11 @@ impl Launch {
             .arg(&self.executable)
             .args(&self.args)
             .env_remove(RETURN_ENV);
+        if let Some(owner) = &self.menu_owner {
+            command.env(crate::frontend_session::OWNER_ENV, owner);
+        } else {
+            command.env_remove(crate::frontend_session::OWNER_ENV);
+        }
         command
     }
 
@@ -329,6 +417,155 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
+    fn read_until(
+        stream: &mut (impl std::io::Read + std::os::fd::AsRawFd),
+        text: &mut String,
+        wanted: &str,
+    ) -> bool {
+        use std::time::{Duration, Instant};
+        let deadline = Instant::now() + Duration::from_secs(8);
+        while !text.contains(wanted) && Instant::now() < deadline {
+            let mut descriptor = libc::pollfd {
+                fd: stream.as_raw_fd(),
+                events: libc::POLLIN,
+                revents: 0,
+            };
+            if unsafe { libc::poll(&mut descriptor, 1, 100) } <= 0 {
+                continue;
+            }
+            let mut bytes = [0; 1024];
+            match stream.read(&mut bytes) {
+                Ok(0) | Err(_) => break,
+                Ok(size) => text.push_str(&String::from_utf8_lossy(&bytes[..size])),
+            }
+        }
+        text.contains(wanted)
+    }
+
+    #[cfg(target_os = "linux")]
+    struct MenuOwner(std::process::Child);
+
+    #[cfg(target_os = "linux")]
+    impl MenuOwner {
+        fn new() -> Self {
+            Self(Command::new("/bin/sleep").arg("30").spawn().unwrap())
+        }
+
+        fn token(&self) -> String {
+            let stat = std::fs::read_to_string(format!("/proc/{}/stat", self.0.id())).unwrap();
+            let started = stat
+                .rsplit_once(')')
+                .unwrap()
+                .1
+                .split_whitespace()
+                .nth(19)
+                .unwrap();
+            format!("{}:{started}", self.0.id())
+        }
+
+        fn stop(&mut self) {
+            self.0.kill().unwrap();
+            self.0.wait().unwrap();
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    impl Drop for MenuOwner {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn dead_or_reused_menu_owner_never_launches_a_script_or_frontend() {
+        let fixture = Fixture::new();
+        let script = fixture.file("Scripts/check.sh", "printf SCRIPT_RAN\n");
+        let mut owner = MenuOwner::new();
+        let token = owner.token();
+        let (pid, started) = token.split_once(':').unwrap();
+        let stale = format!("{pid}:{}", started.parse::<u64>().unwrap() + 1);
+        for (token, stop_first) in [(stale, false), (token, true)] {
+            if stop_first {
+                owner.stop();
+            }
+            let launch = Launch::prepare(
+                &fixture.0.join("Scripts"),
+                &script,
+                Path::new("/bin/bash"),
+                vec!["-c".into(), "printf FRONTEND_RETURNED".into()],
+            )
+            .unwrap()
+            .with_menu_owner(Some(token));
+            let output = launch.command().stdin(Stdio::null()).output().unwrap();
+            assert!(output.status.success());
+            assert!(
+                output.stdout.is_empty(),
+                "{}",
+                String::from_utf8_lossy(&output.stdout)
+            );
+            assert!(
+                output.stderr.is_empty(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn menu_owner_exit_during_acknowledgement_prevents_frontend_return() {
+        use std::time::{Duration, Instant};
+        let fixture = Fixture::new();
+        let script = fixture.file("Scripts/check.sh", "exit 0\n");
+        let mut owner = MenuOwner::new();
+        let launch = Launch::prepare(
+            &fixture.0.join("Scripts"),
+            &script,
+            Path::new("/bin/bash"),
+            vec!["-c".into(), "printf FRONTEND_RETURNED".into()],
+        )
+        .unwrap()
+        .with_menu_owner(Some(owner.token()));
+        let mut child = launch
+            .command()
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let mut text = String::new();
+        let prompt = read_until(
+            child.stdout.as_mut().unwrap(),
+            &mut text,
+            "Press any key to return",
+        );
+        owner.stop();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let mut exited = false;
+        while Instant::now() < deadline {
+            if child.try_wait().unwrap().is_some() {
+                exited = true;
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        if !exited {
+            child.kill().unwrap();
+        }
+        let output = child.wait_with_output().unwrap();
+        text.push_str(&String::from_utf8_lossy(&output.stdout));
+        assert!(prompt && exited && output.status.success(), "{text}");
+        assert!(!text.contains("FRONTEND_RETURNED"), "{text}");
+        assert!(
+            output.stderr.is_empty(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
     #[test]
     fn listing_is_shallow_sorted_and_excludes_hidden_and_frontend() {
         let fixture = Fixture::new();
@@ -367,6 +604,97 @@ mod tests {
             vec![]
         )
         .is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn real_shell_executes_a_native_program_named_sh() {
+        use std::os::unix::fs::PermissionsExt;
+        let fixture = Fixture::new();
+        let script = fixture.0.join("Scripts/native program.sh");
+        #[cfg(target_os = "macos")]
+        let native_program = "/usr/bin/true";
+        #[cfg(not(target_os = "macos"))]
+        let native_program = "/bin/bash";
+        std::fs::copy(native_program, &script).unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let launch = Launch::prepare(
+            &fixture.0.join("Scripts"),
+            &script,
+            Path::new("/bin/bash"),
+            vec!["-c".into(), "printf FRONTEND_RETURNED".into()],
+        )
+        .unwrap();
+        let mut child = launch
+            .command()
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(b"printf 'NATIVE_EXECUTABLE_RAN\\n'\nexit 0\n")
+            .unwrap();
+        let output = child.wait_with_output().unwrap();
+        let stdout = String::from_utf8(output.stdout).unwrap();
+        let stderr = String::from_utf8(output.stderr).unwrap();
+        assert!(output.status.success(), "{stderr}");
+        #[cfg(not(target_os = "macos"))]
+        assert!(
+            stdout.contains("NATIVE_EXECUTABLE_RAN"),
+            "{stdout}\n{stderr}"
+        );
+        assert!(stdout.contains("FRONTEND_RETURNED"), "{stdout}\n{stderr}");
+        assert!(!stderr.contains("Script exited with status"), "{stderr}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn executable_shebangs_are_honoured_and_plain_shell_files_still_work() {
+        use std::os::unix::fs::PermissionsExt;
+        let fixture = Fixture::new();
+        for (executable, body, expected) in [
+            (
+                true,
+                "#!/bin/cat\nSHEBANG_CONTENT\nexit 7\n",
+                "#!/bin/cat\nSHEBANG_CONTENT",
+            ),
+            (
+                false,
+                "#!/bin/cat\nprintf 'NONEXEC_BASH_RAN\\n'\n",
+                "NONEXEC_BASH_RAN\n",
+            ),
+            (true, "printf 'EXEC_BASH_RAN\\n'\n", "EXEC_BASH_RAN\n"),
+        ] {
+            let script = fixture.file("Scripts/interpreter choice.sh", body);
+            let mode = if executable { 0o755 } else { 0o644 };
+            std::fs::set_permissions(&script, std::fs::Permissions::from_mode(mode)).unwrap();
+            let launch = Launch::prepare(
+                &fixture.0.join("Scripts"),
+                &script,
+                Path::new("/bin/bash"),
+                vec!["-c".into(), "printf FRONTEND_RETURNED".into()],
+            )
+            .unwrap();
+            let mut child = launch
+                .command()
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .unwrap();
+            child.stdin.take().unwrap().write_all(b"x").unwrap();
+            let output = child.wait_with_output().unwrap();
+            let stdout = String::from_utf8(output.stdout).unwrap();
+            let stderr = String::from_utf8(output.stderr).unwrap();
+            assert!(output.status.success(), "{stderr}");
+            assert!(stdout.contains(expected), "{stdout}\n{stderr}");
+            assert!(stdout.contains("FRONTEND_RETURNED"), "{stdout}\n{stderr}");
+            assert!(!stderr.contains("Script exited with status"), "{stderr}");
+        }
     }
 
     #[test]
@@ -558,35 +886,57 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn tty_descriptors_without_controlling_terminal_deliver_ctrl_c_and_return() {
-        use std::io::Read;
         use std::os::fd::FromRawFd;
+        use std::os::unix::fs::PermissionsExt;
         use std::os::unix::process::CommandExt;
-        use std::time::{Duration, Instant};
 
-        fn read_until(master: &mut std::fs::File, text: &mut String, wanted: &str) -> bool {
-            use std::os::fd::AsRawFd;
-            let deadline = Instant::now() + Duration::from_secs(8);
-            while !text.contains(wanted) && Instant::now() < deadline {
-                let mut descriptor = libc::pollfd {
-                    fd: master.as_raw_fd(),
-                    events: libc::POLLIN,
-                    revents: 0,
-                };
-                if unsafe { libc::poll(&mut descriptor, 1, 100) } <= 0 {
-                    continue;
-                }
-                let mut bytes = [0; 1024];
-                match master.read(&mut bytes) {
-                    Ok(0) | Err(_) => break,
-                    Ok(size) => text.push_str(&String::from_utf8_lossy(&bytes[..size])),
-                }
-            }
-            text.contains(wanted)
-        }
-
-        for new_session in [false, true] {
+        let cases: [(&str, &str, &[u8], Option<i32>); 6] = [
+            (
+                "printf 'SCRIPT_READY\\n'\nIFS= read -r value\nprintf 'UNEXPECTED_READ_RETURN\\n'\n",
+                "SCRIPT_READY",
+                &[3],
+                Some(130),
+            ),
+            (
+                "trap 'exit 130' INT\nprintf 'SCRIPT_GROUP=%s\\n' \"$$\"\nvalue=$(/bin/bash -c 'trap \"\" INT; printf \"NESTED_PID=%s\\n\" \"$$\" >&2; exec /bin/sleep 30' >/dev/null & /bin/sleep 30)\nprintf 'UNEXPECTED_READ_RETURN\\n'\n",
+                "NESTED_PID=",
+                &[3],
+                Some(130),
+            ),
+            (
+                "printf 'SCRIPT_READY\\n'\nIFS= read -r value\nprintf 'ANSWER=%s\\n' \"$value\"\nexit 7\n",
+                "SCRIPT_READY",
+                b"hello world\n",
+                Some(7),
+            ),
+            (
+                "printf 'SCRIPT_READY\\n'\nexit 7\n",
+                "SCRIPT_READY",
+                b"",
+                Some(7),
+            ),
+            (
+                "/bin/sleep 30 &\nprintf 'SERVICE_PID=%s\\nSCRIPT_READY\\n' \"$!\"\n",
+                "SCRIPT_READY",
+                b"",
+                None,
+            ),
+            (
+                "#!/bin/cat\nSCRIPT_READY\nSHEBANG_CONTENT\n",
+                "SCRIPT_READY",
+                b"",
+                None,
+            ),
+        ];
+        for ((body, ready_text, input, expected_status), new_session) in cases
+            .into_iter()
+            .flat_map(|case| [false, true].map(|new_session| (case, new_session)))
+        {
             let fixture = Fixture::new();
-            fixture.file("Scripts/interrupt.sh", "printf 'SCRIPT_READY\\n'\nIFS= read -r value\nprintf 'UNEXPECTED_READ_RETURN\\n'\n");
+            let script = fixture.file("Scripts/interrupt.sh", body);
+            if body.starts_with("#!") {
+                std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+            }
             let (mut master_fd, mut slave_fd) = (-1, -1);
             assert_eq!(
                 unsafe {
@@ -625,9 +975,9 @@ mod tests {
             }
             let mut child = command.spawn().unwrap();
             let mut text = String::new();
-            let ready = read_until(&mut master, &mut text, "SCRIPT_READY");
+            let ready = read_until(&mut master, &mut text, ready_text);
             if ready {
-                master.write_all(&[3]).unwrap();
+                master.write_all(input).unwrap();
             }
             let prompt = ready && read_until(&mut master, &mut text, "Press any key to return");
             if prompt {
@@ -638,11 +988,51 @@ mod tests {
                 let _ = child.kill();
             }
             let status = child.wait().unwrap();
+            let recorded_pid = |marker: &str| {
+                text.lines()
+                    .find_map(|line| line.strip_prefix(marker)?.trim().parse::<i32>().ok())
+            };
+            let nested_alive =
+                recorded_pid("NESTED_PID=").is_some_and(|pid| unsafe { libc::kill(pid, 0) == 0 });
+            if ready_text == "NESTED_PID=" {
+                assert!(recorded_pid("NESTED_PID=").is_some(), "{text}");
+            }
+            if nested_alive {
+                if let Some(pid) = recorded_pid("NESTED_PID=") {
+                    unsafe { libc::kill(pid, libc::SIGKILL) };
+                }
+            }
+            let service_alive = recorded_pid("SERVICE_PID=").map(|pid| {
+                let alive = unsafe { libc::kill(pid, 0) == 0 };
+                unsafe { libc::kill(pid, libc::SIGTERM) };
+                alive
+            });
+            if body.contains("SERVICE_PID=") {
+                assert_eq!(service_alive, Some(true), "{text}");
+            }
             assert!(
                 ready && prompt && returned && status.success(),
                 "new_session={new_session}: {text}"
             );
-            assert!(text.contains("Script exited with status 130"), "{text}");
+            if let Some(expected) = expected_status {
+                assert!(
+                    text.contains(&format!("Script exited with status {expected}")),
+                    "{text}"
+                );
+            } else {
+                assert!(!text.contains("Script exited with status"), "{text}");
+            }
+            if input == b"hello world\n" {
+                assert!(text.contains("ANSWER=hello world"), "{text}");
+            }
+            assert!(
+                !nested_alive,
+                "cancelled command substitution survived: {text}"
+            );
+            assert!(
+                service_alive != Some(false),
+                "successful script's background service was stopped: {text}"
+            );
             assert!(!text.contains("UNEXPECTED_READ_RETURN"), "{text}");
         }
     }
