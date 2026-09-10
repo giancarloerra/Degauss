@@ -525,6 +525,90 @@ impl Gamelist {
     /// Parse gamelist XML from a string. Split out from [`Gamelist::load`]
     /// so tests do not need files on disk.
     pub fn parse(text: &str, folder: &Path, origin: &Path) -> Result<Self> {
+        Self::parse_descriptions::<false, _>(text, folder, origin, &mut first_line, None)
+    }
+
+    /// Read one complete description without retaining long descriptions for
+    /// every game or changing the compact metadata used by browsing/caches.
+    pub fn full_description(
+        path: &Path,
+        folder: &Path,
+        key: &str,
+        exact: bool,
+        cancelled: &std::sync::atomic::AtomicBool,
+    ) -> Result<Option<String>> {
+        let file = std::fs::File::open(path)
+            .map_err(|error| DegaussError::io("reading game information", path, error))?;
+        use std::io::Read;
+        let mut text = String::new();
+        file.take(MAX_GAMELIST_BYTES + 1)
+            .read_to_string(&mut text)
+            .map_err(|error| DegaussError::io("reading game information", path, error))?;
+        if text.len() as u64 > MAX_GAMELIST_BYTES {
+            return Err(DegaussError::unsupported(
+                "game information",
+                "gamelist exceeds its supported size limit",
+            ));
+        }
+        Self::description_from_text(&text, folder, path, key, exact, cancelled)
+    }
+
+    fn description_from_text(
+        text: &str,
+        folder: &Path,
+        origin: &Path,
+        key: &str,
+        exact: bool,
+        cancelled: &std::sync::atomic::AtomicBool,
+    ) -> Result<Option<String>> {
+        let mut ordinal = 0usize;
+        let indexed = Self::parse_descriptions::<true, _>(
+            text,
+            folder,
+            origin,
+            &mut |_| {
+                let token = ordinal.to_string();
+                ordinal += 1;
+                token
+            },
+            Some(cancelled),
+        )?;
+        let selected = if exact {
+            indexed.lookup_exact(key)
+        } else {
+            indexed.lookup(key)
+        }
+        .and_then(|(meta, _)| meta.desc.as_deref())
+        .map(|token| token.parse::<usize>().expect("description ordinal"));
+        drop(indexed);
+        let Some(selected) = selected else {
+            return Ok(None);
+        };
+        let mut ordinal = 0usize;
+        let mut description = None;
+        Self::parse_descriptions::<true, _>(
+            text,
+            folder,
+            origin,
+            &mut |value| {
+                if ordinal == selected {
+                    description = Some(value.to_string());
+                }
+                ordinal += 1;
+                first_line(value)
+            },
+            Some(cancelled),
+        )?;
+        Ok(description)
+    }
+
+    fn parse_descriptions<const CHECK_CANCEL: bool, F: FnMut(&str) -> String>(
+        text: &str,
+        folder: &Path,
+        origin: &Path,
+        description: &mut F,
+        cancelled: Option<&std::sync::atomic::AtomicBool>,
+    ) -> Result<Self> {
         let mut reader = Reader::from_str(text);
         // NOT trim_text: it trims each fragment, so the spaces on either
         // side of an entity reference are destroyed and "Rock &amp; Roll"
@@ -543,6 +627,14 @@ impl Gamelist {
         let mut text = String::new();
 
         loop {
+            if CHECK_CANCEL
+                && cancelled.is_some_and(|flag| flag.load(std::sync::atomic::Ordering::Relaxed))
+            {
+                return Err(DegaussError::unsupported(
+                    "game information",
+                    "reading cancelled",
+                ));
+            }
             match reader.read_event() {
                 Err(e) => {
                     return Err(DegaussError::malformed(
@@ -650,7 +742,7 @@ impl Gamelist {
                                 // drawn: this file holds tens of thousands
                                 // of descriptions and they are shown on one
                                 // line each.
-                                "desc" => game.desc = Some(first_line(&value)),
+                                "desc" => game.desc = Some(description(&value)),
                                 "publisher" => game.publisher = Some(value),
                                 "developer" => game.developer = Some(value),
                                 "releasedate" => game.released = Some(release_date(&value)),
@@ -769,6 +861,90 @@ impl Gamelist {
         }
 
         list
+    }
+}
+
+#[cfg(test)]
+mod information_tests {
+    use super::*;
+    use std::sync::atomic::AtomicBool;
+
+    #[test]
+    fn selected_full_description_preserves_inheritance_entities_and_compact_browse() {
+        let xml = "<gameList><game id=\"parent\"><desc>First &amp; line\nSecond paragraph that must remain.</desc></game><game parentid=\"parent\"><path>collection.zip/one.nes</path></game><game><path>collection.zip/two.nes</path><desc>Other description</desc></game></gameList>";
+        let root = Path::new("/games");
+        let origin = root.join("gamelist.xml");
+        let full = Gamelist::description_from_text(
+            xml,
+            root,
+            &origin,
+            "collection.zip/one.nes",
+            true,
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+        assert_eq!(
+            full.as_deref(),
+            Some("First & line\nSecond paragraph that must remain.")
+        );
+        assert_eq!(
+            Gamelist::parse(xml, root, &origin)
+                .unwrap()
+                .lookup_exact("collection.zip/one.nes")
+                .unwrap()
+                .0
+                .desc
+                .as_deref(),
+            Some("First & line")
+        );
+        assert!(Gamelist::description_from_text(
+            xml,
+            root,
+            &origin,
+            "different/one.nes",
+            true,
+            &AtomicBool::new(false)
+        )
+        .unwrap()
+        .is_none());
+    }
+
+    #[test]
+    fn full_description_uses_existing_slug_and_duplicate_winners() {
+        let xml = "<gameList><game><path>Title.slug</path><desc>Slug first\nSlug full</desc></game><game><path>A.nes</path><desc>Old</desc></game><game><path>A.nes</path><desc>New\nComplete</desc></game></gameList>";
+        let root = Path::new("/games");
+        let origin = root.join("gamelist.xml");
+        let cancel = AtomicBool::new(false);
+        assert_eq!(
+            Gamelist::description_from_text(xml, root, &origin, "Title.nes", false, &cancel)
+                .unwrap()
+                .as_deref(),
+            Some("Slug first\nSlug full")
+        );
+        assert_eq!(
+            Gamelist::description_from_text(xml, root, &origin, "A.nes", true, &cancel)
+                .unwrap()
+                .as_deref(),
+            Some("New\nComplete")
+        );
+        assert!(Gamelist::description_from_text(
+            xml,
+            root,
+            &origin,
+            "A.nes",
+            true,
+            &AtomicBool::new(true)
+        )
+        .is_err());
+        assert!(Gamelist::description_from_text(
+            "<gameList><game></broken>",
+            root,
+            &origin,
+            "A.nes",
+            true,
+            &cancel
+        )
+        .is_err());
     }
 }
 

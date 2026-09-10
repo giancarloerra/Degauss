@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io::{Read, Write};
 use std::ops::Range;
 use std::path::{Path, PathBuf};
@@ -35,6 +35,12 @@ pub struct Change {
 pub struct Needs {
     pub image: bool,
     pub metadata: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Eligibility {
+    Needs(Needs),
+    Alias { representative: usize },
 }
 
 impl Needs {
@@ -183,6 +189,7 @@ pub fn needs_many(
     )
 }
 
+#[cfg(test)]
 pub fn needs_many_with_fallback(
     gamelist_path: &Path,
     folder: &Path,
@@ -191,6 +198,37 @@ pub fn needs_many_with_fallback(
     image_policy: ImagePolicy,
     metadata_policy: MetadataPolicy,
 ) -> Result<Vec<Result<Needs>>> {
+    Ok(needs_many_controlled(
+        gamelist_path,
+        folder,
+        relative_game_paths,
+        metadata_fallback,
+        image_policy,
+        metadata_policy,
+        &mut |_| Ok(()),
+    )?
+    .into_iter()
+    .map(|result| {
+        result.and_then(|eligibility| match eligibility {
+            Eligibility::Needs(needs) => Ok(needs),
+            Eligibility::Alias { .. } => {
+                Err(Error::local("target is a verified alias of another target"))
+            }
+        })
+    })
+    .collect::<Vec<_>>())
+}
+
+pub fn needs_many_controlled(
+    gamelist_path: &Path,
+    folder: &Path,
+    relative_game_paths: &[String],
+    metadata_fallback: &[bool],
+    image_policy: ImagePolicy,
+    metadata_policy: MetadataPolicy,
+    progress: &mut impl FnMut(usize) -> Result<()>,
+) -> Result<Vec<Result<Eligibility>>> {
+    progress(0)?;
     if metadata_fallback.len() != relative_game_paths.len() {
         return Err(Error::local(
             "metadata policy count does not match scrape targets",
@@ -200,56 +238,122 @@ pub fn needs_many_with_fallback(
         return Ok(relative_game_paths
             .iter()
             .map(|_| {
-                Ok(Needs {
+                Ok(Eligibility::Needs(Needs {
                     image: image_policy != ImagePolicy::Off,
                     metadata: metadata_policy != MetadataPolicy::Off,
-                })
+                }))
             })
             .collect());
     };
     let document = parse_document(&bytes, gamelist_path)?;
-    let resolved = resolve_games(&document, relative_game_paths, metadata_fallback);
-    Ok(resolved
-        .into_iter()
-        .map(|result| {
-            let game = match result? {
-                Some(index) => &document.games[index],
-                None => {
-                    return Ok(Needs {
-                        image: image_policy != ImagePolicy::Off,
-                        metadata: metadata_policy != MetadataPolicy::Off,
-                    })
-                }
-            };
-            let image = match image_policy {
-                ImagePolicy::Off => false,
-                ImagePolicy::ReplaceExisting => true,
-                ImagePolicy::MissingOnly => match effective_art(&document, game)? {
-                    Some(field) if !field.value.trim().is_empty() => {
-                        !resolve_relative(folder, field.value.trim()).is_file()
-                    }
-                    _ => true,
-                },
-            };
-            let metadata = match metadata_policy {
-                MetadataPolicy::Off => false,
-                MetadataPolicy::ReplaceExisting => true,
-                MetadataPolicy::FillMissing => {
-                    let mut missing = false;
-                    for name in FIELDS {
-                        if effective_field(&document, game, name)?
-                            .is_none_or(|field| field.value.trim().is_empty())
-                        {
-                            missing = true;
-                            break;
-                        }
-                    }
-                    missing
-                }
-            };
-            Ok(Needs { image, metadata })
+    let (resolved, aliases) = resolve_games_at(
+        &document,
+        relative_game_paths,
+        metadata_fallback,
+        Some(folder),
+        progress,
+    )?;
+    let representatives: HashMap<usize, usize> = resolved
+        .iter()
+        .enumerate()
+        .filter(|(at, _)| !aliases.contains(at))
+        .filter_map(|(at, result)| match result {
+            Ok(Some(entry)) => Some((*entry, at)),
+            _ => None,
         })
-        .collect())
+        .collect();
+    let mut parents: HashMap<&str, Vec<&Game>> = HashMap::new();
+    for (at, game) in document.games.iter().enumerate() {
+        if at % 256 == 0 {
+            progress(0)?;
+        }
+        if let Some(id) = game.id.as_deref() {
+            parents.entry(id).or_default().push(game);
+        }
+    }
+    resolved
+        .into_iter()
+        .enumerate()
+        .map(|(at, result)| {
+            progress(at)?;
+            if aliases.contains(&at) {
+                let representative = match &result {
+                    Ok(Some(entry)) => representatives.get(entry).copied(),
+                    _ => None,
+                }
+                .ok_or_else(|| Error::local("verified alias has no representative target"))?;
+                return Ok(Ok(Eligibility::Alias { representative }));
+            }
+            Ok((|| {
+                let game = match result? {
+                    Some(index) => &document.games[index],
+                    None => {
+                        return Ok(Eligibility::Needs(Needs {
+                            image: image_policy != ImagePolicy::Off,
+                            metadata: metadata_policy != MetadataPolicy::Off,
+                        }))
+                    }
+                };
+                let parent = || -> Result<Option<&Game>> {
+                    let Some(id) = game.parent_id.as_deref() else {
+                        return Ok(None);
+                    };
+                    let Some(matches) = parents.get(id) else {
+                        return Ok(None);
+                    };
+                    if matches.len() > 1 {
+                        return Err(Error::new(
+                            ErrorKind::Local,
+                            format!("gamelist contains more than one parent with id {id}"),
+                        ));
+                    }
+                    Ok(matches.first().copied())
+                };
+                let image = match image_policy {
+                    ImagePolicy::Off => false,
+                    ImagePolicy::ReplaceExisting => true,
+                    ImagePolicy::MissingOnly => match if let Some(art) = own_art(game) {
+                        Some(art)
+                    } else {
+                        parent()?.and_then(own_art)
+                    } {
+                        Some(field) if !field.value.trim().is_empty() => {
+                            !resolve_relative(folder, field.value.trim()).is_file()
+                        }
+                        _ => true,
+                    },
+                };
+                let metadata = match metadata_policy {
+                    MetadataPolicy::Off => false,
+                    MetadataPolicy::ReplaceExisting => true,
+                    MetadataPolicy::FillMissing => {
+                        let mut missing = false;
+                        for name in FIELDS {
+                            let own = game
+                                .fields
+                                .get(name)
+                                .filter(|field| !field.value.trim().is_empty());
+                            let effective = match own {
+                                Some(field) => Some(field),
+                                None => parent()?.and_then(|parent| {
+                                    parent
+                                        .fields
+                                        .get(name)
+                                        .filter(|field| !field.value.trim().is_empty())
+                                }),
+                            };
+                            if effective.is_none() {
+                                missing = true;
+                                break;
+                            }
+                        }
+                        missing
+                    }
+                };
+                Ok(Eligibility::Needs(Needs { image, metadata }))
+            })())
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -342,7 +446,7 @@ pub fn apply_many_with_fallback(
         .iter()
         .map(|update| update.relative_game_path.clone())
         .collect();
-    let resolved = resolve_games(&document, &relative_paths, metadata_fallback);
+    let resolved = resolve_games(&document, &relative_paths, metadata_fallback)?;
     let mut outcomes = vec![Ok(Change::default()); updates.len()];
     let mut replacements = Vec::new();
     let mut appended = Vec::new();
@@ -752,6 +856,7 @@ fn xml_attributes(element: &BytesStart<'_>, origin: &Path) -> Result<Vec<(String
         .collect()
 }
 
+#[cfg(test)]
 fn matching_game<'a>(
     document: &'a Document,
     relative: &str,
@@ -819,6 +924,7 @@ fn matching_game<'a>(
     Ok(None)
 }
 
+#[cfg(test)]
 fn matching_game_index(
     document: &Document,
     relative: &str,
@@ -843,15 +949,39 @@ fn resolve_games(
     document: &Document,
     relative_paths: &[String],
     metadata_fallback: &[bool],
-) -> Vec<Result<Option<usize>>> {
-    let mut resolved: Vec<Result<Option<usize>>> = relative_paths
-        .iter()
-        .enumerate()
-        .map(|(index, relative)| matching_game_index(document, relative, metadata_fallback[index]))
-        .collect();
+) -> Result<Vec<Result<Option<usize>>>> {
+    resolve_games_controlled(document, relative_paths, metadata_fallback, &mut |_| Ok(()))
+}
+
+fn resolve_games_controlled(
+    document: &Document,
+    relative_paths: &[String],
+    metadata_fallback: &[bool],
+    progress: &mut impl FnMut(usize) -> Result<()>,
+) -> Result<Vec<Result<Option<usize>>>> {
+    resolve_games_at(document, relative_paths, metadata_fallback, None, progress)
+        .map(|(resolved, _)| resolved)
+}
+
+type ResolvedGames = (Vec<Result<Option<usize>>>, HashSet<usize>);
+
+fn resolve_games_at(
+    document: &Document,
+    relative_paths: &[String],
+    metadata_fallback: &[bool],
+    folder: Option<&Path>,
+    progress: &mut impl FnMut(usize) -> Result<()>,
+) -> Result<ResolvedGames> {
+    let index = MatchIndex::new(document, progress)?;
+    let mut resolved = Vec::with_capacity(relative_paths.len());
+    for (at, relative) in relative_paths.iter().enumerate() {
+        progress(at)?;
+        resolved.push(index.find(relative, metadata_fallback[at]));
+    }
     let mut existing: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
     let mut missing: BTreeMap<String, Vec<usize>> = BTreeMap::new();
     for (at, result) in resolved.iter().enumerate() {
+        progress(at)?;
         match result {
             Ok(Some(index)) => existing.entry(*index).or_default().push(at),
             Ok(None) => missing
@@ -865,12 +995,40 @@ fn resolve_games(
             Err(_) => {}
         }
     }
-    for positions in existing
-        .values()
-        .chain(missing.values())
-        .filter(|positions| positions.len() > 1)
-    {
+    let mut aliases = HashSet::new();
+    for (entry, positions) in existing.iter().filter(|(_, positions)| positions.len() > 1) {
+        if let Some(folder) = folder {
+            match same_file_representative(
+                folder,
+                &document.games[*entry].path,
+                relative_paths,
+                positions,
+                progress,
+            ) {
+                Ok(keep) => {
+                    aliases.extend(positions.iter().copied().filter(|at| *at != keep));
+                    continue;
+                }
+                Err(error) if error.kind == ErrorKind::Cancelled => return Err(error),
+                Err(error) => {
+                    for &at in positions {
+                        resolved[at] = Err(error.clone());
+                    }
+                    continue;
+                }
+            }
+        }
         for &at in positions {
+            progress(at)?;
+            resolved[at] = Err(Error::local(format!(
+                "more than one scrape target resolves to the same gamelist entry as {}",
+                relative_paths[at]
+            )));
+        }
+    }
+    for positions in missing.values().filter(|positions| positions.len() > 1) {
+        for &at in positions {
+            progress(at)?;
             resolved[at] = Err(Error::new(
                 ErrorKind::Local,
                 format!(
@@ -880,9 +1038,163 @@ fn resolve_games(
             ));
         }
     }
-    resolved
+    Ok((resolved, aliases))
 }
 
+fn same_file_representative(
+    folder: &Path,
+    existing_path: &str,
+    relative_paths: &[String],
+    positions: &[usize],
+    progress: &mut impl FnMut(usize) -> Result<()>,
+) -> Result<usize> {
+    let mut physical = None;
+    for &at in positions {
+        progress(at)?;
+        let path = folder.join(normalise_rel(&relative_paths[at]));
+        let canonical = path.canonicalize().map_err(|error| {
+            Error::local(format!(
+                "could not verify scrape alias {}: {error}",
+                path.display()
+            ))
+        })?;
+        let metadata = std::fs::metadata(&canonical).map_err(|error| {
+            Error::local(format!(
+                "could not inspect scrape alias {}: {error}",
+                path.display()
+            ))
+        })?;
+        if !metadata.is_file() || physical.as_ref().is_some_and(|first| first != &canonical) {
+            return Err(Error::local(format!("more than one scrape target resolves to the same gamelist entry, but they are not the same file: {}", relative_paths[at])));
+        }
+        physical = Some(canonical);
+    }
+    positions
+        .iter()
+        .copied()
+        .min_by_key(|&at| {
+            let path = normalise_rel(&relative_paths[at]);
+            (path != existing_path, path, at)
+        })
+        .ok_or_else(|| Error::local("scrape alias group contains no targets"))
+}
+
+/// One immutable document's lookup tables preserve the reader's precedence.
+/// All matching positions are retained: an ambiguous key must not pick a winner.
+struct MatchIndex {
+    exact: HashMap<String, Vec<usize>>,
+    names: HashMap<String, Vec<usize>>,
+    stems: HashMap<String, Vec<usize>>,
+    slugs: HashMap<String, Vec<usize>>,
+}
+
+impl MatchIndex {
+    fn new(document: &Document, progress: &mut impl FnMut(usize) -> Result<()>) -> Result<Self> {
+        let mut index = Self {
+            exact: HashMap::new(),
+            names: HashMap::new(),
+            stems: HashMap::new(),
+            slugs: HashMap::new(),
+        };
+        for (at, game) in document.games.iter().enumerate() {
+            if at % 256 == 0 {
+                progress(0)?;
+            }
+            if game.path.is_empty() {
+                continue;
+            }
+            index.exact.entry(game.path.clone()).or_default().push(at);
+            if let Some(slug) = game.path.strip_suffix(".slug") {
+                index
+                    .slugs
+                    .entry(crate::gamelist::slugify(slug))
+                    .or_default()
+                    .push(at);
+            } else {
+                let name = file_name_of(&game.path).to_ascii_lowercase();
+                index
+                    .stems
+                    .entry(stem_of(&name).to_ascii_lowercase())
+                    .or_default()
+                    .push(at);
+                index.names.entry(name).or_default().push(at);
+            }
+        }
+        Ok(index)
+    }
+
+    fn unique<'a>(
+        values: impl Iterator<Item = &'a usize>,
+        relative: &str,
+    ) -> Result<Option<usize>> {
+        let mut first = None;
+        for &at in values {
+            if first.is_some_and(|first| first != at) {
+                return Err(Error::new(
+                    ErrorKind::Local,
+                    format!("gamelist contains more than one matching entry for {relative}"),
+                ));
+            }
+            first = Some(at);
+        }
+        Ok(first)
+    }
+
+    fn lookup(
+        map: &HashMap<String, Vec<usize>>,
+        key: &str,
+        relative: &str,
+    ) -> Result<Option<usize>> {
+        Self::unique(map.get(key).into_iter().flatten(), relative)
+    }
+
+    fn slug(&self, stem: &str, relative: &str) -> Result<Option<usize>> {
+        let candidates = crate::gamelist::slug_candidates(stem);
+        Self::unique(
+            candidates
+                .iter()
+                .filter_map(|key| self.slugs.get(key))
+                .flatten(),
+            relative,
+        )
+    }
+
+    fn find(&self, relative: &str, fallback: bool) -> Result<Option<usize>> {
+        let wanted = normalise_rel(relative);
+        if let Some(at) = Self::lookup(&self.exact, &wanted, relative)? {
+            return Ok(Some(at));
+        }
+        if !fallback {
+            return Ok(None);
+        }
+        let name = file_name_of(&wanted).to_ascii_lowercase();
+        if let Some(at) = Self::lookup(&self.names, &name, relative)? {
+            return Ok(Some(at));
+        }
+        let stem = stem_of(&name).to_ascii_lowercase();
+        if let Some(at) = Self::lookup(&self.stems, &stem, relative)? {
+            return Ok(Some(at));
+        }
+        if let Some(at) = self.slug(&stem, relative)? {
+            return Ok(Some(at));
+        }
+        if let Some((archive, _)) = wanted.rsplit_once(".zip/") {
+            let name = file_name_of(archive).to_ascii_lowercase();
+            let stem = stem_of(&name).to_ascii_lowercase();
+            if let Some(at) = self.slug(&stem, relative)? {
+                return Ok(Some(at));
+            }
+            if let Some(at) = Self::lookup(&self.names, &name, relative)? {
+                return Ok(Some(at));
+            }
+            if let Some(at) = Self::lookup(&self.stems, &stem, relative)? {
+                return Ok(Some(at));
+            }
+        }
+        Ok(None)
+    }
+}
+#[cfg(test)]
 fn unique_at<'a>(
     document: &'a Document,
     relative: &str,
@@ -1338,6 +1650,225 @@ fn atomic_replace(path: &Path, bytes: &[u8]) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
+    #[test]
+    fn real_alias_groups_share_one_target_without_weakening_writer_guards() {
+        use std::os::unix::fs::symlink;
+        let root = temp("verified-aliases");
+        for directory in ["a", "z", "separate"] {
+            std::fs::create_dir_all(root.join(directory)).unwrap();
+        }
+        std::fs::write(root.join("Game.rom"), b"same physical game").unwrap();
+        for alias in ["a/Game.rom", "z/Game.rom", "separate/Game.rom"] {
+            symlink(root.join("Game.rom"), root.join(alias)).unwrap();
+        }
+        let xml = "<gameList><game><path>./Game.rom</path><name>Game</name></game></gameList>";
+        let document = super::parse_document(xml.as_bytes(), &root.join("gamelist.xml")).unwrap();
+        let paths = vec!["z/Game.rom".into(), "Game.rom".into(), "a/Game.rom".into()];
+        for _ in 0..2 {
+            let (resolved, aliases) = super::resolve_games_at(
+                &document,
+                &paths,
+                &[true; 3],
+                Some(&root),
+                &mut |_| Ok(()),
+            )
+            .unwrap();
+            assert!(resolved.iter().all(Result::is_ok));
+            assert_eq!(aliases, std::collections::HashSet::from([0, 2]));
+        }
+        let scoped = vec!["z/Game.rom".into(), "a/Game.rom".into()];
+        let (_, aliases) =
+            super::resolve_games_at(&document, &scoped, &[true; 2], Some(&root), &mut |_| Ok(()))
+                .unwrap();
+        assert_eq!(aliases, std::collections::HashSet::from([0]));
+        assert!(
+            super::resolve_games(&document, &paths, &[true; 3])
+                .unwrap()
+                .iter()
+                .all(Result::is_err),
+            "writer still rejects duplicate results for one XML entry"
+        );
+        let explicit = xml.replace(
+            "</gameList>",
+            "<game><path>a/Game.rom</path><name>Alias entry</name></game></gameList>",
+        );
+        let explicit =
+            super::parse_document(explicit.as_bytes(), &root.join("gamelist.xml")).unwrap();
+        let (_, aliases) = super::resolve_games_at(
+            &explicit,
+            &["Game.rom".into(), "a/Game.rom".into()],
+            &[true; 2],
+            Some(&root),
+            &mut |_| Ok(()),
+        )
+        .unwrap();
+        assert!(
+            aliases.is_empty(),
+            "distinct exact XML entries remain separate"
+        );
+        for folder in [&root, &root.join("separate")] {
+            std::fs::write(folder.join("gamelist.xml"), xml).unwrap();
+            let outcomes = super::needs_many_controlled(
+                &folder.join("gamelist.xml"),
+                folder,
+                &["Game.rom".into()],
+                &[true],
+                super::ImagePolicy::MissingOnly,
+                super::MetadataPolicy::FillMissing,
+                &mut |_| Ok(()),
+            )
+            .unwrap();
+            assert!(
+                matches!(outcomes[0], Ok(super::Eligibility::Needs(_))),
+                "different gamelists never share planning identity"
+            );
+        }
+        let error =
+            super::same_file_representative(&root, "Game.rom", &paths, &[0, 1, 2], &mut |_| {
+                Err(super::Error::new(super::ErrorKind::Cancelled, "cancelled"))
+            })
+            .unwrap_err();
+        assert_eq!(error.kind, super::ErrorKind::Cancelled);
+        std::fs::remove_file(root.join("a/Game.rom")).unwrap();
+        std::fs::write(root.join("a/Game.rom"), b"different game").unwrap();
+        let (resolved, aliases) =
+            super::resolve_games_at(&document, &paths, &[true; 3], Some(&root), &mut |_| Ok(()))
+                .unwrap();
+        assert!(aliases.is_empty());
+        assert!(resolved.iter().all(|result| result
+            .as_ref()
+            .unwrap_err()
+            .to_string()
+            .contains("not the same file")));
+        std::fs::remove_file(root.join("a/Game.rom")).unwrap();
+        symlink(root.join("missing.rom"), root.join("a/Game.rom")).unwrap();
+        let (resolved, aliases) =
+            super::resolve_games_at(&document, &paths, &[true; 3], Some(&root), &mut |_| Ok(()))
+                .unwrap();
+        assert!(aliases.is_empty());
+        assert!(resolved.iter().all(|result| result
+            .as_ref()
+            .unwrap_err()
+            .to_string()
+            .contains("could not verify scrape alias")));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn indexed_matching_preserves_linear_precedence_and_ambiguity() {
+        let paths = [
+            "Case.rom",
+            "case.rom",
+            "dir/one.rom",
+            "other/one.bin",
+            "two.slug",
+            "two!.slug",
+            "legacy.zip",
+            "collection.zip/member.rom",
+            "duplicate.rom",
+            "duplicate.rom",
+        ];
+        let xml = format!(
+            "<gameList>{}</gameList>",
+            paths
+                .iter()
+                .map(|path| format!("<game><path>{path}</path></game>"))
+                .collect::<String>()
+        );
+        let document =
+            super::parse_document(xml.as_bytes(), std::path::Path::new("test.xml")).unwrap();
+        let index = super::MatchIndex::new(&document, &mut |_| Ok(())).unwrap();
+        for query in [
+            "./Case.rom",
+            "case.rom",
+            "else/CASE.rom",
+            "one.rom",
+            "one.xyz",
+            "two.rom",
+            "legacy.zip/member.rom",
+            "collection.zip/member.rom",
+            "duplicate.rom",
+            "missing.rom",
+        ] {
+            for fallback in [false, true] {
+                let old = super::matching_game_index(&document, query, fallback)
+                    .map_err(|error| error.to_string());
+                let new = index
+                    .find(query, fallback)
+                    .map_err(|error| error.to_string());
+                assert_eq!(new, old, "{query}, fallback={fallback}");
+            }
+        }
+        let relative = vec!["dir/one.rom".into(), "else/one.rom".into()];
+        let outcomes = super::resolve_games(&document, &relative, &[true, true]).unwrap();
+        assert!(outcomes.iter().all(|result| result
+            .as_ref()
+            .unwrap_err()
+            .to_string()
+            .contains("more than one scrape target")));
+    }
+
+    #[test]
+    fn eligibility_resolution_can_cancel_inside_one_document() {
+        let xml = "<gameList><game><path>one.rom</path></game></gameList>";
+        let document =
+            super::parse_document(xml.as_bytes(), std::path::Path::new("test.xml")).unwrap();
+        let paths = vec!["one.rom".to_string(); 1000];
+        let mut calls = 0;
+        let error = super::resolve_games_controlled(
+            &document,
+            &paths,
+            &vec![true; paths.len()],
+            &mut |_| {
+                calls += 1;
+                if calls == 12 {
+                    Err(super::Error::new(
+                        super::ErrorKind::Cancelled,
+                        "test cancellation",
+                    ))
+                } else {
+                    Ok(())
+                }
+            },
+        )
+        .unwrap_err();
+        assert_eq!(error.kind, super::ErrorKind::Cancelled);
+        assert_eq!(
+            calls, 12,
+            "cancellation must stop before classifying duplicate targets as failures"
+        );
+    }
+
+    #[test]
+    fn bounded_planning_comparison_preserves_every_result() {
+        let paths: Vec<_> = (0..600).map(|at| format!("folder/Game{at}.mra")).collect();
+        let xml = format!(
+            "<gameList>{}</gameList>",
+            paths
+                .iter()
+                .map(|path| format!("<game><path>{path}</path></game>"))
+                .collect::<String>()
+        );
+        let document =
+            super::parse_document(xml.as_bytes(), std::path::Path::new("timing.xml")).unwrap();
+        let start = std::time::Instant::now();
+        let old: Vec<_> = paths
+            .iter()
+            .map(|path| super::matching_game_index(&document, path, true).unwrap())
+            .collect();
+        let linear = start.elapsed();
+        let start = std::time::Instant::now();
+        let index = super::MatchIndex::new(&document, &mut |_| Ok(())).unwrap();
+        let new: Vec<_> = paths
+            .iter()
+            .map(|path| index.find(path, true).unwrap())
+            .collect();
+        let indexed = start.elapsed();
+        assert_eq!(old, new);
+        eprintln!(
+            "600 exact targets: linear={linear:?}, indexed including construction={indexed:?}"
+        );
+    }
     use super::*;
 
     fn temp(name: &str) -> PathBuf {
@@ -1788,6 +2319,65 @@ mod tests {
         )
         .unwrap();
         assert_eq!(needed, Needs::default());
+        let _ = std::fs::remove_dir_all(folder);
+    }
+
+    #[test]
+    fn external_parent_metadata_and_root_relative_art_skip_only_the_matching_zip_member() {
+        let folder = temp("complete-inherited-zip");
+        let path = folder.join("gamelist.xml");
+        std::fs::write(folder.join("art.png"), b"image").unwrap();
+        let xml = "<gameList><game id=\"p\"><name>Name</name><desc>Description</desc><publisher>Publisher</publisher><developer>Developer</developer><releasedate>19910000T000000</releasedate><players>1</players><genre>Action</genre><lang>en</lang><screenshot>/art.png</screenshot></game><game parentid=\"p\"><path>collection.zip/one.rom</path></game></gameList>";
+        std::fs::write(&path, xml).unwrap();
+        let paths = vec!["collection.zip/one.rom".into(), "other.zip/one.rom".into()];
+        let results = needs_many_with_fallback(
+            &path,
+            &folder,
+            &paths,
+            &[false, false],
+            ImagePolicy::MissingOnly,
+            MetadataPolicy::FillMissing,
+        )
+        .unwrap();
+        let mut results = results.into_iter();
+        assert_eq!(
+            results.next().unwrap().unwrap(),
+            Needs {
+                image: false,
+                metadata: false
+            }
+        );
+        assert_eq!(
+            results.next().unwrap().unwrap(),
+            Needs {
+                image: true,
+                metadata: true
+            },
+            "another archive member must not inherit the same basename's completeness"
+        );
+        std::fs::remove_file(folder.join("art.png")).unwrap();
+        assert_eq!(
+            needs_many_with_fallback(
+                &path,
+                &folder,
+                &paths[..1],
+                &[false],
+                ImagePolicy::MissingOnly,
+                MetadataPolicy::FillMissing
+            )
+            .unwrap()
+            .remove(0)
+            .unwrap(),
+            Needs {
+                image: true,
+                metadata: false
+            }
+        );
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            xml,
+            "planning must not rewrite external metadata"
+        );
         let _ = std::fs::remove_dir_all(folder);
     }
 

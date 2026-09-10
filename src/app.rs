@@ -34,18 +34,24 @@ use slint::{ComponentHandle, ModelRc, SharedPixelBuffer, SharedString, VecModel}
 use crate::browse::{self, Library, Place};
 use crate::config::{Color as ConfigColor, Colors, Config, SystemConfig};
 use crate::covers::{BudgetedCover, CoverCache, CoverStats};
-use crate::error::Result;
+use crate::error::{DegaussError, Result};
 use crate::font::Font;
 use crate::input::{
     Action, InputReader, KeyEdge, RepeatConfig, Repeater, SPEED_START, SPEED_STEPS,
 };
 use crate::list_state::ListState;
 use crate::metrics::{FrameTimer, StartupTimings};
-use crate::options::{speed_badge, speed_label, OptionId, ADVANCED, OPTIONS};
+#[cfg(test)]
+use crate::options::OPTIONS;
+use crate::options::{speed_badge, speed_label, OptionId, OptionsPage, ADVANCED};
 use crate::render::{FrameWork, PresentMode, Presenter};
 use crate::settings::{CustomViews, SaveOutcome, Settings};
 use crate::surface::Surface;
 use crate::systems::{is_favorites, FoundSystem, SystemDef};
+
+#[cfg(test)]
+#[path = "ui_acceptance_tests.rs"]
+mod ui_acceptance_tests;
 use crate::theme::{Theme, ThemeSet};
 use crate::theme_editor::{
     EditorEffect, EditorMode, ThemeEditor, EDITOR_ROWS, NAME_CANCEL, NAME_CELLS, NAME_COLUMNS,
@@ -60,9 +66,12 @@ pub enum Screen {
     Splash,
     Browse,
     Menu,
+    Scripts,
     /// What can be done with the folder on screen, on its own button.
     Context,
+    OptionsRoot,
     Options,
+    Information,
     /// On-device palette and wordmark editor.
     ThemeEditor,
     /// Settings that exist to be measured or tuned once, not used.
@@ -102,7 +111,9 @@ impl Screen {
         match self {
             Screen::Browse => 0,
             Screen::Menu
+            | Screen::Scripts
             | Screen::Context
+            | Screen::OptionsRoot
             | Screen::Options
             | Screen::Advanced
             | Screen::Help
@@ -118,6 +129,7 @@ impl Screen {
             Screen::Screensaver => 3,
             Screen::Find | Screen::ScraperKeyboard => 4,
             Screen::ThemeEditor => 5,
+            Screen::Information => 6,
             Screen::FavoriteFolder => 1,
         }
     }
@@ -168,12 +180,14 @@ const SPLASH_MS: u64 = 1400;
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Pending {
     Exit,
+    RunScript(Box<crate::scripts::Launch>),
     Hide(usize),
     ResetCustomViews,
     ResetHidden,
     StartScrape,
     SaveScraperPassword,
     AcceptScraperStorageForStart,
+    AcceptScraperStorageForSearch,
     ClearScraperLogin,
     CancelScrape,
     ClearCategoryImage(ImageTarget),
@@ -251,10 +265,12 @@ fn option_operation(option: OptionId, input: OptionInput) -> OptionOperation {
         | OptionId::ShowOther
         | OptionId::ShowUtility
         | OptionId::ShowUnstable
+        | OptionId::ShowScripts
         | OptionId::CorePreference
         | OptionId::ShowBar
         | OptionId::FavoritesFirst
         | OptionId::HoldXFavorite
+        | OptionId::HoldYRandom
         | OptionId::RandomLaunches
         | OptionId::FoldersLast
         | OptionId::ShowStats
@@ -957,47 +973,48 @@ const MARQUEE_TRAVEL_MS: u64 = 1400;
 /// folder is a different question from what you can do with the program,
 /// and the answers will keep diverging: favourites and jump-to belong here,
 /// not beside "Exit to MiSTer".
-const RANDOM: &str = "Random game in this folder";
+const RANDOM: &str = "Random Game";
 
 /// The same, drawn only from what has been kept. The heart is written as
 /// a literal here for the same reason it is in the interface file: it is a
 /// glyph, and glyphs reach the binary by being written down.
-const RANDOM_FAVORITE: &str = "Random game in this folder (\u{2665} only)";
+const RANDOM_FAVORITE: &str = "Random Favourite";
+const GAME_INFORMATION: &str = "Game Information";
 
 /// Switching how the list looks belongs with the folder you are looking at,
 /// not two screens away in the settings.
-const CHANGE_VIEW: &str = "Change view";
+const CHANGE_VIEW: &str = "Change View";
 
 /// Stop overriding the global view in the exact place on screen.
-const USE_GLOBAL_VIEW: &str = "Use global view";
+const USE_GLOBAL_VIEW: &str = "Use Global View";
 
 /// Move down a long list a letter at a time.
-const JUMP: &str = "Jump to letter";
+const JUMP: &str = "Jump to Letter";
 
 /// Narrow the folder on screen to the titles that match.
-const SEARCH: &str = "Search this folder";
+const SEARCH: &str = "Search This Folder";
 
 /// Put back everything the search took away.
-const CLEAR_SEARCH: &str = "Clear search";
+const CLEAR_SEARCH: &str = "Clear Search";
 
 /// The id the favourites folder is listed under in the table.
 const FAVORITES_ID: &str = "Favorites";
 
 /// Take this row out of the list until it is asked for again.
-const HIDE_THIS: &str = "Hide this";
+const HIDE_THIS: &str = "Hide This";
 
 /// Read the system being browsed off the card again, leaving every other
 /// system's listing as it was.
-const REBUILD_SYSTEM: &str = "Rebuild this system list";
+const REBUILD_SYSTEM: &str = "Rebuild This System List";
 
 /// Put it back.
-const SHOW_THIS: &str = "Show this";
+const SHOW_THIS: &str = "Show This";
 
 /// Keep this game where MiSTer's own favourites live.
-const ADD_FAVORITE: &str = "Add to favourites";
+const ADD_FAVORITE: &str = "Add to Favourites";
 
 /// Take it out again.
-const REMOVE_FAVORITE: &str = "Remove from favourites";
+const REMOVE_FAVORITE: &str = "Remove From Favourites";
 
 /// ScreenScraper entry points. These strings are also the action identifiers
 /// while their menu is open, so they stay in one place.
@@ -1008,16 +1025,23 @@ const GAME_DATA_SOURCE: &str = "Game Data Source";
 const CORE_VERSION: &str = "Core Version";
 const USE_DEFAULT_CORE_VERSION: &str = "Use Default Core Version";
 const SOURCE_GAMELIST: &str = "Gamelist";
+const SOURCE_AUTOMATIC: &str = "Automatic";
 const SOURCE_ARTWORK_PACK: &str = "Artwork Pack";
 const CHOOSE_PACK_DIRECTORY: &str = "Choose Another Directory...";
 const USE_PACK_DIRECTORY: &str = "Use This Directory";
 
-fn source_choice_rows(pack_selected: bool) -> Vec<String> {
-    [SOURCE_GAMELIST, SOURCE_ARTWORK_PACK]
+fn source_choice_rows(mode: crate::artwork_source::Mode) -> Vec<String> {
+    [SOURCE_AUTOMATIC, SOURCE_GAMELIST, SOURCE_ARTWORK_PACK]
         .into_iter()
         .enumerate()
         .map(|(index, label)| {
-            if (index == 1) == pack_selected {
+            if index
+                == match mode {
+                    crate::artwork_source::Mode::Automatic => 0,
+                    crate::artwork_source::Mode::Gamelist => 1,
+                    crate::artwork_source::Mode::ArtworkPack => 2,
+                }
+            {
                 format!("{label} (Current)")
             } else {
                 label.to_string()
@@ -1212,9 +1236,11 @@ fn persist_source_choice(
     let label = match target {
         crate::source_cache::Target::Gamelist => {
             changed.artwork_pack_roots.remove(group);
+            changed.gamelist_sources.insert(group.to_string());
             SOURCE_GAMELIST
         }
         crate::source_cache::Target::ArtworkPack { docs_root } => {
+            changed.gamelist_sources.remove(group);
             changed
                 .artwork_pack_roots
                 .insert(group.to_string(), docs_root.to_string_lossy().into_owned());
@@ -1226,6 +1252,26 @@ fn persist_source_choice(
         SaveOutcome::InstalledWithWarning(warning) => Some(warning.to_string()),
     };
     Ok((changed, label, warning))
+}
+
+fn persist_source_mode(
+    current: &Settings,
+    path: &Path,
+    group: &str,
+    target: &crate::source_cache::Target,
+    automatic: bool,
+) -> Result<(Settings, &'static str, Option<String>)> {
+    if !automatic {
+        return persist_source_choice(current, path, group, target);
+    }
+    let mut changed = current.clone();
+    changed.artwork_pack_roots.remove(group);
+    changed.gamelist_sources.remove(group);
+    let warning = match changed.save(path)? {
+        SaveOutcome::Durable => None,
+        SaveOutcome::InstalledWithWarning(warning) => Some(warning.to_string()),
+    };
+    Ok((changed, SOURCE_AUTOMATIC, warning))
 }
 
 fn update_index_summaries(
@@ -1251,22 +1297,45 @@ enum ScraperRow {
     Username,
     Password,
     Images,
+    ImageType,
     Metadata,
     Start,
+    Search,
     ClearLogin,
     Back,
 }
 
-const SCRAPER_ROWS: [ScraperRow; 7] = [
+const SCRAPER_ROWS: [ScraperRow; 8] = [
     ScraperRow::Username,
     ScraperRow::Password,
     ScraperRow::Images,
+    ScraperRow::ImageType,
     ScraperRow::Metadata,
     ScraperRow::Start,
     ScraperRow::ClearLogin,
     ScraperRow::Back,
 ];
-const SCRAPER_PROGRESS_ROWS: usize = 11;
+const SCRAPER_GAME_ROWS: [ScraperRow; 9] = [
+    ScraperRow::Username,
+    ScraperRow::Password,
+    ScraperRow::Images,
+    ScraperRow::ImageType,
+    ScraperRow::Metadata,
+    ScraperRow::Start,
+    ScraperRow::Search,
+    ScraperRow::ClearLogin,
+    ScraperRow::Back,
+];
+
+fn scraper_rows(scope: &crate::scraper::Scope) -> &'static [ScraperRow] {
+    if matches!(scope, crate::scraper::Scope::Game { .. }) {
+        &SCRAPER_GAME_ROWS
+    } else {
+        &SCRAPER_ROWS
+    }
+}
+
+const SCRAPER_PROGRESS_ROWS: usize = 12;
 
 impl ScraperRow {
     fn label(self) -> &'static str {
@@ -1274,9 +1343,11 @@ impl ScraperRow {
             Self::Username => "Username",
             Self::Password => "Password",
             Self::Images => "Images",
+            Self::ImageType => "Image Type",
             Self::Metadata => "Metadata",
-            Self::Start => "Start scraping",
-            Self::ClearLogin => "Clear saved login",
+            Self::Start => "Start Scraping",
+            Self::Search => "Search Manually",
+            Self::ClearLogin => "Clear Saved Login",
             Self::Back => "Back",
         }
     }
@@ -1523,6 +1594,97 @@ struct ContextActions {
     core_version_override: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ContextPage {
+    Game,
+    Find,
+    Library,
+    Appearance,
+}
+
+impl ContextPage {
+    const ALL: [Self; 4] = [Self::Game, Self::Find, Self::Library, Self::Appearance];
+
+    fn index(self) -> usize {
+        Self::ALL.iter().position(|page| *page == self).unwrap()
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Game => "Game",
+            Self::Find => "Find",
+            Self::Library => "Library",
+            Self::Appearance => "Appearance",
+        }
+    }
+
+    fn help(self) -> &'static str {
+        match self {
+            Self::Game => "Game information, random choices and favourites.",
+            Self::Find => "Jump, search and control the selected item's visibility.",
+            Self::Library => "Scraping, core choice, game data and system rebuilding.",
+            Self::Appearance => "The current place's view and category or system images.",
+        }
+    }
+
+    fn contains(self, action: &str) -> bool {
+        match self {
+            Self::Game => matches!(
+                action,
+                GAME_INFORMATION | RANDOM | RANDOM_FAVORITE | ADD_FAVORITE | REMOVE_FAVORITE
+            ),
+            Self::Find => matches!(action, JUMP | SEARCH | CLEAR_SEARCH | HIDE_THIS | SHOW_THIS),
+            Self::Library => matches!(
+                action,
+                SCRAPE_SYSTEM
+                    | SCRAPE_FOLDER
+                    | SCRAPE_GAME
+                    | CORE_VERSION
+                    | USE_DEFAULT_CORE_VERSION
+                    | GAME_DATA_SOURCE
+                    | REBUILD_SYSTEM
+            ),
+            Self::Appearance => matches!(
+                action,
+                CHANGE_CATEGORY_IMAGE | CLEAR_CATEGORY_IMAGE | CHANGE_VIEW | USE_GLOBAL_VIEW
+            ),
+        }
+    }
+}
+
+fn context_help(action: &str) -> &'static str {
+    match action {
+        GAME_INFORMATION => "Read the selected game's complete metadata and description.",
+        RANDOM => "Pick a game from the open folder using Random Game Behaviour.",
+        RANDOM_FAVORITE => {
+            "Pick only from favourites under the open folder, using Random Game Behaviour."
+        }
+        ADD_FAVORITE => "Choose a Favourites folder for the selected game.",
+        REMOVE_FAVORITE => "Remove the selected favourite. The original game is not deleted.",
+        JUMP => "Jump to the first entry beginning with the chosen letter.",
+        SEARCH => "Filter this list by name. Back keeps the search until it is cleared.",
+        CLEAR_SEARCH => "Clear the search and show the full current list again.",
+        HIDE_THIS => "Hide the selected item from browsing without deleting it.",
+        SHOW_THIS => "Remove this item's hidden setting so it is normally visible again.",
+        SCRAPE_SYSTEM => "Open scraping settings for the entire selected system.",
+        SCRAPE_FOLDER => "Open scraping settings for this folder and its contents.",
+        SCRAPE_GAME => "Scrape the selected game or search manually for a different match.",
+        CORE_VERSION => "Choose an installed core version for this system, or use Default.",
+        USE_DEFAULT_CORE_VERSION => {
+            "Remove this system's core override and use the global core preference."
+        }
+        GAME_DATA_SOURCE => "Choose the image and metadata source for this system.",
+        REBUILD_SYSTEM => "Rescan this entire system, including all its folders.",
+        CHANGE_CATEGORY_IMAGE => "Choose the image shown for the selected category or system.",
+        CLEAR_CATEGORY_IMAGE => {
+            "Remove this custom image after confirmation and restore the default image."
+        }
+        CHANGE_VIEW => "Set the view for this place only. Other folders and systems are unchanged.",
+        USE_GLOBAL_VIEW => "Remove this place's custom view and follow the global View setting.",
+        _ => "",
+    }
+}
+
 fn category_image_preview(
     choices: &[crate::category_images::Choice],
     selected: usize,
@@ -1558,6 +1720,9 @@ fn context_entries(
 ) -> Vec<String> {
     let mut groups: Vec<Vec<String>> = Vec::new();
 
+    if favorite.is_some() {
+        groups.push(vec![GAME_INFORMATION.to_string()]);
+    }
     if browsing == Browsing::Games {
         groups.push(vec![RANDOM.to_string(), RANDOM_FAVORITE.to_string()]);
     }
@@ -1628,14 +1793,7 @@ fn context_entries(
     }
     groups.push(views);
 
-    let mut entries = Vec::new();
-    for group in groups {
-        if !entries.is_empty() {
-            entries.push(String::new());
-        }
-        entries.extend(group);
-    }
-    entries
+    groups.into_iter().flatten().collect()
 }
 
 /// The line drawn over a screensaver picture: what it is, and what it is
@@ -1669,11 +1827,98 @@ fn shortened_label(value: &str, room: usize) -> String {
     format!("{}...", kept.trim_end())
 }
 
-/// Reading the card into the cache, one system per frame.
-///
-/// One per frame rather than all at once: reading a system takes seconds,
-/// and a screen that says what it is doing and moves while it does it is
-/// the difference between waiting and wondering.
+fn compact_detail_text(details: &browse::Details) -> (String, String) {
+    let released = details.released.trim();
+    let year = released
+        .get(..4)
+        .filter(|value| value.bytes().all(|byte| byte.is_ascii_digit()))
+        .unwrap_or("");
+    let players = details.players.trim();
+    let players = if players.is_empty() {
+        String::new()
+    } else if players
+        .chars()
+        .all(|ch| ch.is_ascii_digit() || matches!(ch, '-' | '–' | '—' | ' '))
+    {
+        format!(
+            "{players} {}",
+            if players == "1" { "Player" } else { "Players" }
+        )
+    } else {
+        players.to_string()
+    };
+    let summary = match (year.is_empty(), players.is_empty()) {
+        (false, false) => format!("{year} · {players}"),
+        (false, true) => year.to_string(),
+        (true, false) => players,
+        (true, true) => String::new(),
+    };
+    let publisher = if details.publisher.trim().is_empty() {
+        String::new()
+    } else {
+        details.publisher.trim().to_string()
+    };
+    (summary, publisher)
+}
+
+fn game_information(row: &browse::Row) -> String {
+    let mut text = row.name.clone();
+    let values = [
+        ("Genre", row.genre.as_deref().unwrap_or("")),
+        ("Publisher", row.details.publisher.as_str()),
+        ("Developer", row.details.developer.as_str()),
+        ("Released", row.details.released.as_str()),
+        ("Players", row.details.players.as_str()),
+        ("Language", row.details.lang.as_str()),
+    ];
+    for (label, value) in values {
+        text.push_str(&format!("\n\n{label}: {value}"));
+    }
+    text.push_str("\n\nDescription\n");
+    text.push_str(&row.details.desc);
+    text
+}
+
+struct ReadingInformation {
+    row: browse::Row,
+    job: crate::information_job::Job,
+    cancelling: bool,
+}
+
+enum Discovery {
+    Queued(crate::index_job::DiscoveryRequest),
+    Running(crate::index_job::DiscoveryJob),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct IndexDisplay {
+    current: Option<usize>,
+    done: usize,
+    total: usize,
+    folders: usize,
+    games: usize,
+    elapsed: u64,
+    cancelling: bool,
+    discovering: bool,
+    folder_revision: u64,
+}
+
+#[derive(Clone, Default)]
+struct IndexOverview {
+    title: String,
+    state: String,
+    subject: String,
+    folder: String,
+    done: usize,
+    total: usize,
+    folders: usize,
+    games: usize,
+    elapsed: u64,
+    determinate: bool,
+    problem: String,
+    report: String,
+}
+
 struct Building {
     /// Indices into `all_systems`, in reverse so the next one is popped.
     left: Vec<usize>,
@@ -1683,6 +1928,37 @@ struct Building {
     /// True when the whole cache was thrown away first, so a system whose
     /// file is still on the card is read again rather than skipped.
     forced: bool,
+    current: Option<usize>,
+    job: Option<crate::index_job::Job>,
+    discovery: Option<Discovery>,
+    /// Dispatch only after the current scope has reached the surface.
+    awaiting_frame: bool,
+    displayed: Option<IndexDisplay>,
+    cancelling: bool,
+    single: bool,
+    folders: usize,
+    games: usize,
+    folders_done: usize,
+    games_done: usize,
+    folder: String,
+    folder_revision: u64,
+    started: Instant,
+}
+
+impl Building {
+    fn display(&self) -> IndexDisplay {
+        IndexDisplay {
+            current: self.current,
+            done: self.done,
+            total: self.total,
+            folders: self.folders_done + self.folders,
+            games: self.games_done + self.games,
+            elapsed: self.started.elapsed().as_secs(),
+            cancelling: self.cancelling,
+            discovering: self.discovery.is_some(),
+            folder_revision: self.folder_revision,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1704,6 +1980,15 @@ enum SourceOperation {
     /// Recreate a missing, stale or deliberately rebuilt Pack cache without
     /// changing the already selected source.
     Recover(SourceRecoveryPurpose),
+}
+
+#[derive(Clone, Copy)]
+enum SourceResolutionAction {
+    Startup,
+    OpenSystem,
+    Rebuild(Instant),
+    RefreshSystem,
+    Automatic,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1954,6 +2239,10 @@ fn squashed(name: &str) -> String {
         .collect()
 }
 
+fn scraper_search_title(name: &str) -> String {
+    name.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
 /// One step of the path walked into a system: where it points, and where
 /// the selection was standing when it was left.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1984,7 +2273,7 @@ fn next_random(seed: &mut u64) -> u64 {
 
 /// What the menu offers depends on where it was opened from: hiding a
 /// system only makes sense while looking at the list of systems.
-fn menu_entries(browsing: Browsing, system: Option<&str>) -> Vec<String> {
+fn menu_entries(browsing: Browsing, system: Option<&str>, show_scripts: bool) -> Vec<String> {
     let mut entries = Vec::new();
     if browsing == Browsing::Systems {
         if let Some(name) = system {
@@ -1992,6 +2281,9 @@ fn menu_entries(browsing: Browsing, system: Option<&str>) -> Vec<String> {
         }
     }
     entries.push("Options".to_string());
+    if show_scripts {
+        entries.push("Scripts".to_string());
+    }
     entries.push("Help".to_string());
     entries.push("About".to_string());
     entries.push("Exit to MiSTer".to_string());
@@ -2015,8 +2307,8 @@ const HELP: [&str; 10] = [
     "",
     "A                open a folder, play a game",
     "B                go back, out of a folder",
-    "X                the contextual menu",
-    "Y                the main menu",
+    "X (Tab)          Actions",
+    "Y (Space)        Menu",
 ];
 
 /// Pixel geometry for one layout, from the real framebuffer size.
@@ -2066,17 +2358,11 @@ impl Geometry {
         // The bottom strip is deliberately thinner than the old title bar:
         // it carries small text and nothing else, and on a 240 line screen
         // every row it does not take is a row of games.
-        let bar = if show_bar {
-            (height / 15.0).round().clamp(10.0, 22.0)
-        } else {
-            0.0
-        };
-        // The title bar exists only on the settings screens, where there is
-        // a name and an explanation that have nowhere else to go. Taking
-        // its height off the list while browsing left a strip of nothing
-        // along the bottom of the plain view: the room was reserved and
-        // never drawn in.
-        let body = (height - bar - if chrome_shown { chrome } else { 0.0 }).max(16.0);
+        let bar = (height / 15.0).round().clamp(10.0, 22.0);
+        // Reserve exactly the title bar that this screen draws.
+        let body =
+            (height - if show_bar { bar } else { 0.0 } - if chrome_shown { chrome } else { 0.0 })
+                .max(16.0);
         let pad = (width / 55.0).round().clamp(3.0, 14.0);
 
         let rows_layout = |rows: f32| {
@@ -2299,10 +2585,10 @@ fn theme_editor_help(mode: EditorMode, selected: usize, custom_source: bool) -> 
         EditorMode::Browse if selected == 15 && custom_source => "A Delete   B Back",
         EditorMode::Browse if matches!(selected, 15 | 16) => "A Cancel   B Back",
         EditorMode::Browse => "A Edit   B Back   X Swap",
-        EditorMode::Hex => "A Apply   B Cancel   X Picker   Y Reset",
+        EditorMode::Hex => "A Use B Back X RGB Y Reset",
         EditorMode::Picker => "A Apply   B Cancel   X Hex   Y Reset",
         EditorMode::Swap => "A Swap   B Cancel",
-        EditorMode::Name => "A Type   B Cancel   X Delete   Y Clear",
+        EditorMode::Name => "A Type B Back X Del Y Clear",
         EditorMode::Discard => "A Choose   B Keep Editing",
         EditorMode::Delete => "A Choose   B Keep Theme",
     }
@@ -2422,7 +2708,13 @@ pub struct App {
     here: Vec<browse::Row>,
     game_list: ListState,
     menu_list: ListState,
-    option_list: ListState,
+    context_actions: Vec<String>,
+    context_page: Option<ContextPage>,
+    context_root_selection: usize,
+    context_page_selections: [usize; 4],
+    options_page: OptionsPage,
+    options_root_list: ListState,
+    option_lists: [ListState; 5],
     advanced_list: ListState,
     theme_editor_list: ListState,
     help_list: ListState,
@@ -2435,12 +2727,19 @@ pub struct App {
     scraper_list: ListState,
     scraper_scope: crate::scraper::Scope,
     scraper_return: Screen,
+    scraper_matches_return: Screen,
     scraper_keyboard_field: ScraperField,
     scraper_keyboard_page: ScraperKeyboardPage,
     scraper_keyboard_draft: String,
     scraper_keyboard_list: ListState,
     scraper_progress: crate::scraper::Progress,
     scraper_progress_list: ListState,
+    scraper_details: bool,
+    scraper_refresh_job: Option<crate::index_job::Job>,
+    scraper_refresh_id: Option<String>,
+    scraper_refresh_folder: String,
+    scraper_refresh_folders: usize,
+    scraper_refresh_games: usize,
     scraper_job: Option<crate::scraper::Job>,
     /// Manual resolution exists only for one-game scrapes. Batch scopes
     /// never populate or enter these controls.
@@ -2510,6 +2809,8 @@ pub struct App {
     height: u32,
 
     covers: CoverCache,
+    /// Group previews sit on the page background rather than the game surface.
+    group_covers: CoverCache,
     /// Gallery thumbnails are decoded to their actual cell size. Keeping
     /// them separate prevents the dense view from filling the large-art
     /// cache with unnecessarily large images.
@@ -2555,6 +2856,7 @@ pub struct App {
     favorites_first: bool,
     /// Whether a one-second X hold adds or removes the selected favourite.
     hold_x_favorite: bool,
+    hold_y_random: bool,
     /// The typeface everything is set in.
     font: Font,
     /// The persistent Text option, independent of a theme's optional default.
@@ -2590,6 +2892,13 @@ pub struct App {
     /// a cheap source fingerprint check and reuses the parsed TSV snapshot
     /// only while its root, language and Pack files are unchanged.
     artwork_provider_cache: HashMap<String, crate::artwork_pack::Provider>,
+    effective_artwork_pack_roots: std::collections::BTreeMap<String, String>,
+    artwork_source_errors: std::collections::BTreeMap<String, String>,
+    source_resolution: Option<crate::artwork_source::Job>,
+    source_resolution_cancelled: bool,
+    source_resolution_groups: HashSet<String>,
+    source_resolution_action: SourceResolutionAction,
+    source_switch_automatic: bool,
     /// Systems whose persisted Pack cache no longer provides complete current
     /// identities for the provider that was just read.
     provider_recovery_needed: HashSet<String>,
@@ -2604,6 +2913,9 @@ pub struct App {
     /// Set while the card is being read into the cache, a system at a time
     /// so the screen can say how far it has got.
     build: Option<Building>,
+    index_return_screen: Screen,
+    index_details: bool,
+    index_terminal: Option<IndexOverview>,
     /// Which systems are worth looking in, narrowed as looks come back
     /// empty. Built on first use, not at startup: nothing should read the
     /// card before the first frame.
@@ -2626,7 +2938,11 @@ pub struct App {
     present_label: &'static str,
 
     pending: Option<Pending>,
+    information: Option<ReadingInformation>,
     menu: Vec<String>,
+    scripts_browser: Option<crate::scripts::Browser>,
+    scripts_directory: PathBuf,
+    scripts_entries: Vec<crate::scripts::Entry>,
     pending_present_switch: bool,
     /// A system whose metadata is to be read after the next frame is drawn.
     opening: Option<usize>,
@@ -2717,7 +3033,7 @@ impl App {
         let show_other = loaded.settings.show_other.unwrap_or(false);
         let show_utility = loaded.settings.show_utility.unwrap_or(false);
         let show_unstable = loaded.settings.show_unstable.unwrap_or(true);
-        let show_bar = loaded.settings.show_bar.unwrap_or(false);
+        let show_bar = loaded.settings.show_bar.unwrap_or(true);
         let Loaded {
             config,
             mut settings,
@@ -2834,6 +3150,15 @@ impl App {
         // actually drawn on, which is the surface behind it.
         let ground = [palette.surface.r, palette.surface.g, palette.surface.b];
         let covers = CoverCache::new(cover_size, config.app.art_cache.max(8), ground);
+        let group_covers = CoverCache::new(
+            cover_size,
+            8,
+            [
+                palette.background.r,
+                palette.background.g,
+                palette.background.b,
+            ],
+        );
         let gallery_geometry = Geometry::compute(
             Layout::Gallery,
             false,
@@ -2855,6 +3180,7 @@ impl App {
         );
 
         let system_count = systems.len();
+        let effective_artwork_pack_roots = settings.artwork_pack_roots.clone();
         let mut app = App {
             speed: settings
                 .speed_step
@@ -2875,6 +3201,7 @@ impl App {
             favorites: crate::favorites::Favorites::default(),
             favorites_first: settings.favorites_first.unwrap_or(true),
             hold_x_favorite: settings.hold_x_favorite.unwrap_or(false),
+            hold_y_random: settings.hold_y_random.unwrap_or(false),
             // The file the user edits, then the one Degauss writes, then the
             // typeface that always exists. A name neither of them recognises
             // is not worth refusing to start over.
@@ -2894,10 +3221,20 @@ impl App {
             system_cache: None,
             artwork_provider: None,
             artwork_provider_cache: HashMap::new(),
+            effective_artwork_pack_roots,
+            artwork_source_errors: std::collections::BTreeMap::new(),
+            source_resolution: None,
+            source_resolution_cancelled: false,
+            source_resolution_groups: HashSet::new(),
+            source_resolution_action: SourceResolutionAction::Startup,
+            source_switch_automatic: false,
             provider_recovery_needed: HashSet::new(),
             provider_validated: HashSet::new(),
             pack_health_shown: HashSet::new(),
             build: None,
+            index_return_screen: Screen::Browse,
+            index_details: false,
+            index_terminal: None,
             saver_candidates: None,
             config,
             settings,
@@ -2917,7 +3254,14 @@ impl App {
             here: Vec::new(),
             game_list: ListState::new(0, geometry.visible),
             menu_list: ListState::new(0, geometry.visible),
-            option_list: ListState::new(OPTIONS.len(), geometry.visible),
+            context_actions: Vec::new(),
+            context_page: None,
+            context_root_selection: 0,
+            context_page_selections: [0; 4],
+            options_page: OptionsPage::Navigation,
+            options_root_list: ListState::new(OptionsPage::ALL.len(), geometry.visible),
+            option_lists: OptionsPage::ALL
+                .map(|page| ListState::new(page.ids().len(), geometry.visible)),
             advanced_list: ListState::new(ADVANCED.len(), geometry.visible),
             theme_editor_list: ListState::new(EDITOR_ROWS, geometry.visible),
             about_list: ListState::new(1, geometry.visible),
@@ -2928,6 +3272,7 @@ impl App {
             scraper_list: ListState::new(SCRAPER_ROWS.len(), geometry.visible),
             scraper_scope: crate::scraper::Scope::All,
             scraper_return: Screen::Menu,
+            scraper_matches_return: Screen::ScraperProgress,
             scraper_keyboard_field: ScraperField::Username,
             scraper_keyboard_page: ScraperKeyboardPage::Lower,
             scraper_keyboard_draft: String::new(),
@@ -2937,6 +3282,12 @@ impl App {
             ),
             scraper_progress: crate::scraper::Progress::default(),
             scraper_progress_list: ListState::new(SCRAPER_PROGRESS_ROWS, geometry.visible),
+            scraper_details: false,
+            scraper_refresh_job: None,
+            scraper_refresh_id: None,
+            scraper_refresh_folder: String::new(),
+            scraper_refresh_folders: 0,
+            scraper_refresh_games: 0,
             scraper_job: None,
             scraper_matches: Vec::new(),
             scraper_match_list: ListState::new(0, geometry.visible),
@@ -2982,6 +3333,7 @@ impl App {
             width,
             height,
             covers,
+            group_covers,
             gallery_covers,
             ui,
             window,
@@ -2998,7 +3350,11 @@ impl App {
             started: Instant::now(),
             present_label: present_mode.label(),
             pending: None,
+            information: None,
             menu: Vec::new(),
+            scripts_browser: None,
+            scripts_directory: PathBuf::new(),
+            scripts_entries: Vec::new(),
             show_empty,
             show_other,
             show_utility,
@@ -3060,8 +3416,7 @@ impl App {
         if !theme_problems.is_empty() {
             app.message = Some(theme_problems.join("\n"));
         }
-        app.queue_all_selected_providers();
-        app.start_provider_job_if_ready();
+        app.resolve_artwork_sources(None, SourceResolutionAction::Startup);
         app.apply_geometry();
         app
     }
@@ -3075,8 +3430,11 @@ impl App {
     fn bar_here(&self) -> bool {
         match self.screen {
             Screen::Menu
+            | Screen::Scripts
             | Screen::Context
+            | Screen::OptionsRoot
             | Screen::Options
+            | Screen::Information
             | Screen::Advanced
             | Screen::ThemeEditor
             | Screen::Help
@@ -3098,10 +3456,10 @@ impl App {
 
     /// Whether the strip along the top is drawn on the screen showing now.
     ///
-    /// The menus and the grid of letters carry a name and an explanation
-    /// there; browsing carries neither, whatever view it is in.
+    /// Gallery reserves its full height for the dense artwork grid.
     fn chrome_here(&self) -> bool {
-        matches!(self.screen.ui_index(), 1 | 4 | 5)
+        matches!(self.screen.ui_index(), 1 | 4 | 5 | 6)
+            || (self.screen == Screen::Browse && self.layout != Layout::Gallery)
     }
 
     fn plain_screen(&self) -> bool {
@@ -3119,7 +3477,7 @@ impl App {
     }
 
     fn apply_geometry(&mut self) {
-        let geometry = Geometry::compute(
+        let mut geometry = Geometry::compute(
             self.layout,
             self.plain_screen(),
             self.chrome_here(),
@@ -3128,6 +3486,35 @@ impl App {
             self.height,
             &self.config,
         );
+        if self.screen == Screen::Browse
+            && self.browsing == Browsing::Games
+            && self.layout == Layout::Details
+        {
+            // The approved compact preview leaves more room for game titles.
+            geometry.art_width *= 0.84;
+        }
+        let help_height = if matches!(
+            self.screen,
+            Screen::OptionsRoot
+                | Screen::Options
+                | Screen::Advanced
+                | Screen::Context
+                | Screen::Scripts
+                | Screen::Scraper
+                | Screen::GameDataSource
+                | Screen::ArtworkPackLocation
+        ) {
+            self.font.quantise(geometry.small_font) * 4.2 + geometry.pad * 1.5
+        } else {
+            0.0
+        };
+        if help_height > 0.0 {
+            geometry.visible = ((geometry.visible as f32 * geometry.row_height - help_height)
+                / geometry.row_height)
+                .floor()
+                .max(1.0) as usize;
+        }
+        self.ui.set_plain_help_height(help_height);
         self.geometry = geometry;
         let (gallery_edge, gallery_capacity, _) = self.gallery_cache_spec();
         if self.gallery_covers.max_edge() != gallery_edge
@@ -3140,7 +3527,7 @@ impl App {
             &mut self.system_list,
             &mut self.game_list,
             &mut self.menu_list,
-            &mut self.option_list,
+            &mut self.options_root_list,
             &mut self.advanced_list,
             &mut self.theme_editor_list,
             &mut self.help_list,
@@ -3149,6 +3536,9 @@ impl App {
             &mut self.scraper_progress_list,
             &mut self.scraper_match_list,
         ] {
+            list.reshape(geometry.visible, 1);
+        }
+        for list in &mut self.option_lists {
             list.reshape(geometry.visible, 1);
         }
         // Only the browse screen uses a grid.
@@ -3217,6 +3607,8 @@ impl App {
         self.ui.set_columns(geometry.columns as i32);
         self.ui.set_tile_width(geometry.tile_width);
         self.ui.set_tile_height(geometry.tile_height);
+        self.ui
+            .set_find_filtering(self.screen == Screen::Find && self.find_mode == FindMode::Search);
         if self.screen == Screen::Find {
             // The grid sizes itself from the screen rather than from the
             // list geometry, which is measured for rows of text.
@@ -3236,41 +3628,42 @@ impl App {
         }
         self.ui.set_grid_help(SharedString::from(match self.screen {
             Screen::ScraperKeyboard if self.scraper_keyboard_field == ScraperField::SearchTerm => {
-                "A Type   B Search   X Delete   Y Page"
+                "A Type  B Search  X Del  Y Page"
             }
-            Screen::ScraperKeyboard => "A Type   B Done   X Delete   Y Page",
-            Screen::Find if self.find_mode != FindMode::Jump => {
-                "A Pick   B Back   X Delete   Y Clear"
-            }
+            Screen::ScraperKeyboard => "A Type  B Done  X Del  Y Page",
+            Screen::Find if self.find_mode == FindMode::NewFolder => "A Type B Done X Del Y Clear",
+            Screen::Find if self.find_mode == FindMode::Search => "A Type B Back X Del Y Clear",
             Screen::Find => "A Pick   B Back",
             _ => "",
         }));
         self.ui
             .set_plain_help(SharedString::from(match self.screen {
-                Screen::Scraper if self.width < 480 => "↑↓ Move ←→ Set A Select B Back",
-                Screen::Scraper => "Up/Down Choose   Left/Right Change   A Select   B Back",
-                Screen::ScraperProgress if self.scraper_cancelling => {
-                    "Stopping safely   Please wait"
+                Screen::Context | Screen::Scraper | Screen::Options | Screen::Advanced => {
+                    self.menu_controls()
                 }
-                Screen::ScraperProgress if self.scraper_job.is_some() => {
-                    "Up/Down Details   B Cancel"
-                }
-                Screen::ScraperProgress if self.scraper_pending_terminal.is_some() => {
-                    "Refreshing lists   Please wait"
-                }
-                Screen::ScraperProgress => "Up/Down Details   A/B Close",
+                Screen::ScraperProgress => "Up/Down Scroll   B Overview",
                 Screen::ScraperMatches if self.scraper_search_job.is_some() => {
                     "Searching   B Cancel"
                 }
+                Screen::ScraperMatches if self.scraper_matches.is_empty() => "B Back   X Search",
                 Screen::ScraperMatches => "A Use   B Back   X Search",
+                Screen::GameDataSource | Screen::ArtworkPackLocation if self.width < 480 => {
+                    "↑↓ Choose  A Select  B Back"
+                }
                 Screen::GameDataSource | Screen::ArtworkPackLocation => {
                     "Up/Down Choose   A Select   B Back"
                 }
+                Screen::ArtworkPackDirectory if self.width < 480 => "↑↓ Choose  A Use  B Parent",
                 Screen::ArtworkPackDirectory => "Up/Down Choose   A Open/Use   B Parent",
                 Screen::SourceProgress if self.source_cancelling || self.provider_cancelling => {
                     "Stopping safely   Please wait"
                 }
                 Screen::SourceProgress => "B Cancel",
+                Screen::OptionsRoot => "A Open   B Back",
+                Screen::Scripts => "A Open/Run   B Parent",
+                Screen::Menu | Screen::FavoriteFolder => "A Select   B Back",
+                Screen::Help => "↑↓ Read   B Back",
+                Screen::Information => "↑↓ Read   ←→ Page   B/X Actions",
                 _ => "",
             }));
         // The margin, then the nudge: one side gains what the other gives
@@ -3297,8 +3690,10 @@ impl App {
                 Browsing::Games => &self.game_list,
             },
             Screen::Splash | Screen::Screensaver => &self.about_list,
-            Screen::Menu | Screen::Context => &self.menu_list,
-            Screen::Options => &self.option_list,
+            Screen::Menu | Screen::Context | Screen::Scripts => &self.menu_list,
+            Screen::OptionsRoot => &self.options_root_list,
+            Screen::Options => &self.option_lists[self.options_page.index()],
+            Screen::Information => &self.menu_list,
             Screen::Advanced => &self.advanced_list,
             Screen::ThemeEditor => &self.theme_editor_list,
             Screen::Help => &self.help_list,
@@ -3325,8 +3720,10 @@ impl App {
                 Browsing::Games => &mut self.game_list,
             },
             Screen::Splash | Screen::Screensaver => &mut self.about_list,
-            Screen::Menu | Screen::Context => &mut self.menu_list,
-            Screen::Options => &mut self.option_list,
+            Screen::Menu | Screen::Context | Screen::Scripts => &mut self.menu_list,
+            Screen::OptionsRoot => &mut self.options_root_list,
+            Screen::Options => &mut self.option_lists[self.options_page.index()],
+            Screen::Information => &mut self.menu_list,
             Screen::Advanced => &mut self.advanced_list,
             Screen::ThemeEditor => &mut self.theme_editor_list,
             Screen::Help => &mut self.help_list,
@@ -3350,8 +3747,227 @@ impl App {
         if self.screen == Screen::Advanced {
             &ADVANCED
         } else {
-            OPTIONS
+            self.options_page.ids()
         }
+    }
+
+    fn menu_controls(&self) -> &'static str {
+        if self.screen == Screen::Context && self.context_is_root() {
+            return "A Open   B Back";
+        }
+        let adjustable = match self.screen {
+            Screen::Options | Screen::Advanced => self
+                .option_ids()
+                .get(self.active_list().selected())
+                .is_some_and(|id| {
+                    matches!(
+                        option_operation(*id, OptionInput::Next),
+                        OptionOperation::Adjust(_)
+                    )
+                }),
+            Screen::Context => self
+                .menu
+                .get(self.menu_list.selected())
+                .is_some_and(|action| matches!(action.as_str(), CHANGE_VIEW | CORE_VERSION)),
+            Screen::Scraper => matches!(
+                scraper_rows(&self.scraper_scope).get(self.scraper_list.selected()),
+                Some(ScraperRow::Images | ScraperRow::ImageType | ScraperRow::Metadata)
+            ),
+            _ => false,
+        };
+        if !adjustable {
+            "A Select   B Back"
+        } else if self.screen == Screen::Scraper {
+            if self.width < 480 {
+                "←→ Set  A Select  B Back"
+            } else {
+                "Up/Down Choose   Left/Right Change   A Select   B Back"
+            }
+        } else {
+            "←→ Change   A Select   B Back"
+        }
+    }
+
+    pub fn open_options_page(&mut self, page: OptionsPage) {
+        self.options_page = page;
+        self.options_root_list.select(page.index());
+        self.screen = Screen::Options;
+        self.apply_geometry();
+    }
+
+    fn open_information(&mut self) {
+        let Some(row) = self.here.get(self.game_list.selected()).filter(|row| {
+            self.browsing == Browsing::Games && matches!(row.kind, browse::Kind::Play(_))
+        }) else {
+            return;
+        };
+        let mut row = row.clone();
+        let request = self.information_request(&row);
+        match request.and_then(crate::information_job::start) {
+            Ok(job) => {
+                row.details.desc = "Reading full description...".to_string();
+                self.information = Some(ReadingInformation {
+                    row: row.clone(),
+                    job,
+                    cancelling: false,
+                });
+            }
+            Err(error) => row.details.desc = format!("Could not read description: {error}"),
+        }
+        self.ui
+            .set_information_text(SharedString::from(game_information(&row)));
+        self.ui.set_information_offset(0.0);
+        self.screen = Screen::Information;
+        self.apply_geometry();
+        self.touch_selection();
+    }
+
+    fn information_request(&self, row: &browse::Row) -> Result<crate::information_job::Request> {
+        let browse::Kind::Play(mut launch) = row.kind.clone() else {
+            return Err(DegaussError::unsupported("game information", "not a game"));
+        };
+        let id = if self.in_favorites() {
+            let browse::Launch::File(path) = &launch else {
+                return Err(DegaussError::unsupported(
+                    "game information",
+                    "invalid favourite",
+                ));
+            };
+            let reference = crate::favorites::reference_of_with_systems(path, &self.all_systems)
+                .ok_or_else(|| {
+                    DegaussError::unsupported("game information", "favourite target is unavailable")
+                })?;
+            let id = owner_of_favorite(&self.all_systems, &reference).ok_or_else(|| {
+                DegaussError::unsupported(
+                    "game information",
+                    "favourite's owning system is unavailable or ambiguous",
+                )
+            })?;
+            launch = match crate::launch::amiga_marker(path) {
+                Some((install, title)) => browse::Launch::AmigaVision { install, title },
+                None => browse::Launch::File(reference.cache_target),
+            };
+            id
+        } else {
+            self.open_system
+                .clone()
+                .ok_or_else(|| DegaussError::unsupported("game information", "no system is open"))?
+        };
+        let system = self
+            .all_systems
+            .iter()
+            .find(|system| system.def.id == id)
+            .ok_or_else(|| {
+                DegaussError::unsupported("game information", "owning system is unavailable")
+            })?;
+        if let Some(error) = self.source_problem(&id) {
+            return Err(DegaussError::unsupported("game data source", error));
+        }
+        let source = if self.pack_selected(&id) {
+            let provider = self
+                .artwork_provider_cache
+                .get(&id)
+                .cloned()
+                .or_else(|| {
+                    (self.open_system.as_deref() == Some(id.as_str()))
+                        .then(|| self.artwork_provider.clone())
+                        .flatten()
+                })
+                .ok_or_else(|| {
+                    DegaussError::unsupported(
+                        "game information",
+                        "Artwork Pack metadata is unavailable; reopen the system",
+                    )
+                })?;
+            crate::information_job::Source::ArtworkPack(provider)
+        } else {
+            crate::information_job::Source::Gamelist
+        };
+        Ok(crate::information_job::Request {
+            launch,
+            config: system.to_config(),
+            source,
+        })
+    }
+
+    fn poll_information(&mut self) {
+        let event = self
+            .information
+            .as_mut()
+            .and_then(|reading| reading.job.try_recv());
+        let Some(event) = event else {
+            return;
+        };
+        let mut reading = self.information.take().expect("active information read");
+        if reading.cancelling || matches!(event, crate::information_job::Event::Cancelled) {
+            self.screen = Screen::Context;
+            self.apply_geometry();
+            return;
+        }
+        reading.row.details.desc = match event {
+            crate::information_job::Event::Ready(description) => description.unwrap_or_default(),
+            crate::information_job::Event::Failed(error) => {
+                format!("Could not read description: {error}")
+            }
+            crate::information_job::Event::Cancelled => unreachable!(),
+        };
+        self.ui
+            .set_information_text(SharedString::from(game_information(&reading.row)));
+        self.dirty = true;
+    }
+
+    fn handle_information(&mut self, action: Action) {
+        let limit = self.ui.get_information_max_scroll().max(0.0);
+        let current = self.ui.get_information_offset();
+        let line = self.geometry.small_font * 2.0;
+        let page = (self.height as f32 - self.geometry.chrome - self.geometry.bar) * 0.8;
+        let next = match action {
+            Action::Up => current - line,
+            Action::Down => current + line,
+            Action::Slower | Action::PageUp => current - page,
+            Action::Faster | Action::PageDown => current + page,
+            Action::Home => 0.0,
+            Action::End => limit,
+            Action::Quit | Action::Context => {
+                if let Some(reading) = self.information.as_mut() {
+                    reading.job.cancel();
+                    reading.cancelling = true;
+                    reading.row.details.desc = "Stopping description read...".to_string();
+                    self.ui
+                        .set_information_text(SharedString::from(game_information(&reading.row)));
+                    self.dirty = true;
+                    return;
+                }
+                self.screen = Screen::Context;
+                self.apply_geometry();
+                return;
+            }
+            _ => current,
+        };
+        self.ui.set_information_offset(next.clamp(0.0, limit));
+        self.dirty = true;
+    }
+
+    fn scroll_message(&mut self, action: Action) -> bool {
+        let limit = self.ui.get_overlay_max_scroll().max(0.0);
+        if limit == 0.0 {
+            return false;
+        }
+        let current = self.ui.get_overlay_offset();
+        let line = self.geometry.small_font * 2.0;
+        let page = self.height as f32 * 0.6;
+        let next = match action {
+            Action::Up => current - line,
+            Action::Down => current + line,
+            Action::Slower | Action::PageUp => current - page,
+            Action::Faster | Action::PageDown => current + page,
+            Action::Home => 0.0,
+            Action::End => limit,
+            _ => return false,
+        };
+        self.ui.set_overlay_offset(next.clamp(0.0, limit));
+        self.window.request_redraw();
+        true
     }
 
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
@@ -3532,6 +4148,9 @@ impl App {
                 (0..self.all_systems.len())
                     .filter(|&index| {
                         let system = &self.all_systems[index];
+                        if self.source_problem(&system.def.id).is_some() {
+                            return false;
+                        }
                         self.pack_selected(&system.def.id)
                             || system
                                 .paths
@@ -3582,7 +4201,7 @@ impl App {
             // find pictures means parsing its gamelist, seconds of it, and
             // this runs while somebody is looking at the screen.
             let pack_root =
-                crate::artwork_pack::selected_root(&self.settings.artwork_pack_roots, &id)
+                crate::artwork_pack::selected_root(&self.effective_artwork_pack_roots, &id)
                     .map(Path::to_path_buf);
             let pack_selected = pack_root.is_some();
             let provider = pack_root
@@ -3774,7 +4393,17 @@ impl App {
     }
 
     fn open_system_now(&mut self) {
-        self.open_system_now_with_provider(None);
+        let group = self
+            .systems
+            .get(self.system_list.selected())
+            .and_then(|system| crate::artwork_pack::source_group(&system.def.id));
+        if let Some(group) = group {
+            self.resolve_artwork_sources(Some(group), SourceResolutionAction::OpenSystem);
+        } else if self.source_resolution.is_some() {
+            self.source_resolution_action = SourceResolutionAction::OpenSystem;
+        } else {
+            self.open_system_now_with_provider(None);
+        }
     }
 
     fn open_system_now_with_provider(
@@ -3787,12 +4416,19 @@ impl App {
         let id = system.def.id.clone();
         let config: SystemConfig = system.to_config();
         let name = system.name().to_string();
+        if let Some(problem) = self.source_problem(&id) {
+            self.message = Some(format!(
+                "{name}: game data source could not be resolved\n{problem}"
+            ));
+            self.dirty = true;
+            return;
+        }
 
         // What was written down, if anything. Where a system starts is
         // decided by how it was declared and costs nothing to work out, so
         // a system already written down is opened without being read: a large
         // system's gamelist runs to tens of megabytes and seconds of parsing.
-        let pack_root = crate::artwork_pack::selected_root(&self.settings.artwork_pack_roots, &id)
+        let pack_root = crate::artwork_pack::selected_root(&self.effective_artwork_pack_roots, &id)
             .map(Path::to_path_buf);
         let pack_data = pack_root
             .as_ref()
@@ -4201,7 +4837,237 @@ impl App {
     }
 
     fn pack_selected(&self, system_id: &str) -> bool {
-        crate::artwork_pack::selected_root(&self.settings.artwork_pack_roots, system_id).is_some()
+        crate::artwork_pack::selected_root(&self.effective_artwork_pack_roots, system_id).is_some()
+    }
+
+    fn source_problem(&self, id: &str) -> Option<&str> {
+        self.artwork_source_errors
+            .get(crate::artwork_pack::source_group(id)?)
+            .map(String::as_str)
+    }
+
+    fn source_label(&self, id: &str) -> String {
+        let effective = if self.source_resolution.is_some()
+            && crate::artwork_pack::source_group(id)
+                .is_some_and(|group| self.source_resolution_groups.contains(group))
+        {
+            "Checking"
+        } else if self.source_problem(id).is_some() {
+            "Unresolved"
+        } else if self.pack_selected(id) {
+            SOURCE_ARTWORK_PACK
+        } else {
+            SOURCE_GAMELIST
+        };
+        match crate::artwork_source::mode(&self.settings, id) {
+            crate::artwork_source::Mode::Automatic => format!("Automatic: {effective}"),
+            crate::artwork_source::Mode::Gamelist => SOURCE_GAMELIST.to_string(),
+            crate::artwork_source::Mode::ArtworkPack => SOURCE_ARTWORK_PACK.to_string(),
+        }
+    }
+
+    fn resolve_artwork_sources(&mut self, group: Option<&str>, action: SourceResolutionAction) {
+        if self.source_resolution.is_some() {
+            if matches!(action, SourceResolutionAction::OpenSystem) {
+                self.source_resolution_action = action;
+            }
+            return;
+        }
+        let systems: Vec<_> = self
+            .all_systems
+            .iter()
+            .filter(|system| {
+                group.is_none_or(|group| {
+                    crate::artwork_pack::source_group(&system.def.id) == Some(group)
+                })
+            })
+            .cloned()
+            .collect();
+        self.source_resolution_groups = systems
+            .iter()
+            .filter_map(|system| {
+                crate::artwork_pack::source_group(&system.def.id).map(str::to_string)
+            })
+            .collect();
+        let mut settings = self.settings.clone();
+        if matches!(action, SourceResolutionAction::Automatic) {
+            for group in &self.source_resolution_groups {
+                settings.artwork_pack_roots.remove(group);
+                settings.gamelist_sources.remove(group);
+            }
+        }
+        match crate::artwork_source::Job::start(systems, settings) {
+            Ok(job) => {
+                self.source_resolution = Some(job);
+                self.source_resolution_cancelled = false;
+                self.source_resolution_action = action;
+                if !matches!(
+                    action,
+                    SourceResolutionAction::Startup | SourceResolutionAction::Rebuild(_)
+                ) {
+                    self.message = Some("Checking game data source...\n\nB Cancel".into());
+                }
+            }
+            Err(error) => {
+                if !matches!(action, SourceResolutionAction::Automatic) {
+                    for group in &self.source_resolution_groups {
+                        self.artwork_source_errors
+                            .insert(group.clone(), error.to_string());
+                    }
+                }
+                if matches!(
+                    action,
+                    SourceResolutionAction::Startup | SourceResolutionAction::Rebuild(_)
+                ) {
+                    self.build = None;
+                    self.ui.set_index_active(false);
+                }
+                self.message = Some(error.to_string());
+            }
+        }
+        self.dirty = true;
+    }
+
+    fn poll_artwork_sources(&mut self) {
+        let Some(result) = self
+            .source_resolution
+            .as_mut()
+            .and_then(|job| job.try_recv())
+        else {
+            return;
+        };
+        self.source_resolution = None;
+        let result = if std::mem::take(&mut self.source_resolution_cancelled) {
+            Ok(None)
+        } else {
+            result
+        };
+        let action = self.source_resolution_action;
+        let resolution = match result {
+            Ok(Some(resolution)) => resolution,
+            Ok(None) => {
+                if !matches!(action, SourceResolutionAction::Automatic) {
+                    for group in &self.source_resolution_groups {
+                        self.artwork_source_errors.insert(
+                            group.clone(),
+                            "Game data source check cancelled; reopen the system to retry".into(),
+                        );
+                    }
+                }
+                if matches!(
+                    action,
+                    SourceResolutionAction::Startup | SourceResolutionAction::Rebuild(_)
+                ) {
+                    self.build = None;
+                    self.ui.set_index_active(false);
+                }
+                self.message = Some("Game data source check cancelled".into());
+                self.dirty = true;
+                return;
+            }
+            Err(error) => {
+                if !matches!(action, SourceResolutionAction::Automatic) {
+                    for group in &self.source_resolution_groups {
+                        self.artwork_source_errors
+                            .insert(group.clone(), error.to_string());
+                    }
+                }
+                if matches!(
+                    action,
+                    SourceResolutionAction::Startup | SourceResolutionAction::Rebuild(_)
+                ) {
+                    self.build = None;
+                    self.ui.set_index_active(false);
+                }
+                self.message = Some(error.to_string());
+                self.dirty = true;
+                return;
+            }
+        };
+        if matches!(action, SourceResolutionAction::Automatic) {
+            if !resolution.errors.is_empty() {
+                self.message = Some(
+                    resolution
+                        .errors
+                        .values()
+                        .cloned()
+                        .collect::<Vec<_>>()
+                        .join("\n"),
+                );
+                self.dirty = true;
+                return;
+            }
+            let Some(group) = self
+                .source_system_id
+                .as_deref()
+                .and_then(crate::artwork_pack::source_group)
+            else {
+                return;
+            };
+            let target = match resolution.roots.get(group) {
+                Some(root) => crate::source_cache::Target::ArtworkPack {
+                    docs_root: root.into(),
+                },
+                None => crate::source_cache::Target::Gamelist,
+            };
+            self.source_switch_automatic = true;
+            self.begin_source_switch(target);
+            return;
+        }
+        let groups = std::mem::take(&mut self.source_resolution_groups);
+        for group in groups {
+            let before = self.effective_artwork_pack_roots.get(&group).cloned();
+            let next = resolution.roots.get(&group).cloned();
+            if before != next {
+                self.invalidate_artwork_provider_group(&group);
+                self.saver_candidates = None;
+                self.saver_pool.clear();
+                self.saver_queue.clear();
+            }
+            self.effective_artwork_pack_roots.remove(&group);
+            self.artwork_source_errors.remove(&group);
+            if let Some(root) = next {
+                self.effective_artwork_pack_roots
+                    .insert(group.clone(), root);
+            }
+            if let Some(error) = resolution.errors.get(&group) {
+                self.artwork_source_errors.insert(group, error.clone());
+            }
+        }
+        self.message = (!resolution.errors.is_empty()).then(|| {
+            resolution
+                .errors
+                .values()
+                .cloned()
+                .collect::<Vec<_>>()
+                .join("\n")
+        });
+        match action {
+            SourceResolutionAction::Startup => {
+                let missing_pack_cache = self.all_systems.iter().any(|system| {
+                    self.pack_selected(&system.def.id)
+                        && !crate::cache::load_artwork_pack_data(&self.cache_dir, &system.def.id)
+                            .is_some_and(|data| data.fingerprints_complete)
+                });
+                if self.build.is_some() || missing_pack_cache {
+                    self.build = None;
+                    self.start_build(false);
+                }
+                self.queue_all_selected_providers();
+                self.start_provider_job_if_ready();
+            }
+            SourceResolutionAction::OpenSystem => self.open_system_now_with_provider(None),
+            SourceResolutionAction::RefreshSystem => self.rebuild_open_system_resolved(),
+            SourceResolutionAction::Rebuild(started) => {
+                self.build = None;
+                self.start_build(true);
+                if let Some(build) = self.build.as_mut() {
+                    build.started = started;
+                }
+            }
+            SourceResolutionAction::Automatic => unreachable!(),
+        }
+        self.dirty = true;
     }
 
     fn load_selected_system_cache(&self, system_id: &str) -> Option<crate::cache::SystemCache> {
@@ -4269,7 +5135,7 @@ impl App {
 
     fn invalidate_decoded_pack_group(&mut self, group: &str) {
         let mut docs_roots = HashSet::new();
-        if let Some(root) = self.settings.artwork_pack_roots.get(group) {
+        if let Some(root) = self.effective_artwork_pack_roots.get(group) {
             docs_roots.insert(PathBuf::from(root));
         }
         for provider in self.artwork_provider_cache.values() {
@@ -4321,7 +5187,7 @@ impl App {
             .filter(|snapshot| snapshot.source_changed)
             .filter(|snapshot| {
                 crate::artwork_pack::selected_root(
-                    &self.settings.artwork_pack_roots,
+                    &self.effective_artwork_pack_roots,
                     &snapshot.provider.system_id,
                 )
                 .is_some_and(|root| {
@@ -4342,7 +5208,7 @@ impl App {
             self.provider_requests
                 .retain(|request| request.system_id != provider.system_id);
             let current_root = crate::artwork_pack::selected_root(
-                &self.settings.artwork_pack_roots,
+                &self.effective_artwork_pack_roots,
                 &provider.system_id,
             );
             if current_root
@@ -4364,7 +5230,7 @@ impl App {
         let language = self.scraper_settings.language.as_deref();
         for provider in providers {
             let current_root = crate::artwork_pack::selected_root(
-                &self.settings.artwork_pack_roots,
+                &self.effective_artwork_pack_roots,
                 &provider.system_id,
             );
             if !current_root.is_some_and(|root| provider.configuration_matches(root, language)) {
@@ -4383,7 +5249,7 @@ impl App {
             let Some(group) = crate::artwork_pack::source_group(&system.def.id) else {
                 continue;
             };
-            if self.settings.artwork_pack_roots.contains_key(group) {
+            if self.effective_artwork_pack_roots.contains_key(group) {
                 groups.insert(group.to_string());
             }
         }
@@ -4396,8 +5262,7 @@ impl App {
 
     fn queue_provider_group(&mut self, group: &str, first: bool) {
         let Some(root) = self
-            .settings
-            .artwork_pack_roots
+            .effective_artwork_pack_roots
             .get(group)
             .map(PathBuf::from)
         else {
@@ -4506,7 +5371,7 @@ impl App {
         scraper_scope_only_artwork_pack(
             &self.scraper_scope,
             &self.all_systems,
-            &self.settings.artwork_pack_roots,
+            &self.effective_artwork_pack_roots,
         )
     }
 
@@ -4578,10 +5443,12 @@ impl App {
         let Some(place) = self.current_view_place() else {
             return;
         };
-        if place.remove(&mut self.settings.custom_views) {
-            self.save_settings();
-        }
+        place.remove(&mut self.settings.custom_views);
         self.resolve_view();
+        if !self.save_settings() {
+            self.apply_geometry();
+            return;
+        }
         self.screen = Screen::Browse;
         self.apply_geometry();
         self.touch_selection();
@@ -4633,7 +5500,7 @@ impl App {
         // Clone only the small ownership/settings inputs so provider reuse can
         // continue through `self` while the pure enrichment path borrows them.
         let systems = self.all_systems.clone();
-        let artwork_pack_roots = self.settings.artwork_pack_roots.clone();
+        let artwork_pack_roots = self.effective_artwork_pack_roots.clone();
         let cache_dir = self.cache_dir.clone();
         let mut missing_groups = HashSet::new();
         for row in rows.iter() {
@@ -4666,6 +5533,21 @@ impl App {
             &cache_dir,
             |id, _, _| self.artwork_provider_cache.get(id).cloned(),
         );
+        if !self.artwork_source_errors.is_empty() {
+            for row in rows.iter_mut() {
+                let browse::Kind::Play(browse::Launch::File(path)) = &row.kind else {
+                    continue;
+                };
+                let unresolved = crate::favorites::reference_of_with_systems(path, &systems)
+                    .and_then(|reference| owner_of_favorite(&systems, &reference))
+                    .is_some_and(|id| self.source_problem(&id).is_some());
+                if unresolved {
+                    row.cover = None;
+                    row.details = Default::default();
+                    row.genre = None;
+                }
+            }
+        }
     }
 
     /// Which system's folders a path sits in, deepest first so a system
@@ -5262,9 +6144,7 @@ impl App {
     /// back, and part of what can change is which systems there are at
     /// all, so it walks the same ground startup walked: the menu folders
     /// for cores, then the game folders against the table.
-    fn rediscover_systems(&mut self) -> Result<()> {
-        let roots: Vec<PathBuf> = self.config.game_roots.iter().map(PathBuf::from).collect();
-        let cores = crate::systems::CoreIndex::read(Path::new(&self.config.menu_root));
+    fn apply_discovered_systems(&mut self, found: Vec<FoundSystem>) {
         let open = self.open_system.clone();
         let open_name = open.as_deref().and_then(|id| {
             self.all_systems
@@ -5272,12 +6152,7 @@ impl App {
                 .find(|s| s.def.id == id)
                 .map(|s| s.name().to_string())
         });
-        self.all_systems = crate::systems::discover_checked(
-            &self.table,
-            &roots,
-            self.logo_dir.as_deref(),
-            &cores,
-        )?;
+        self.all_systems = found;
         // The screensaver's shortlist holds positions into the list that
         // was just replaced, so it is built again on next use.
         self.saver_candidates = None;
@@ -5290,7 +6165,6 @@ impl App {
             }
         }
         self.rebuild_system_list();
-        Ok(())
     }
 
     /// Leave the system that just stopped existing, the way walking out
@@ -5331,7 +6205,14 @@ impl App {
             self.dirty = true;
             return;
         }
+        self.index_terminal = None;
+        self.index_details = false;
         // Keep the last complete caches until their replacement is committed.
+        self.index_return_screen = if self.screen == Screen::Splash {
+            Screen::Browse
+        } else {
+            self.screen
+        };
         let total = self.all_systems.len();
         self.source_recovery_queue.clear();
         self.source_recovery_warnings.clear();
@@ -5341,17 +6222,31 @@ impl App {
             let Some(group) = crate::artwork_pack::source_group(id) else {
                 continue;
             };
-            if !self.pack_selected(id) || !queued.insert(group.to_string()) {
+            if !self.pack_selected(id) || queued.contains(group) {
                 continue;
             }
             let complete = crate::cache::load_artwork_pack_data(&self.cache_dir, id)
                 .is_some_and(|data| data.fingerprints_complete);
             if forced || !complete || self.provider_recovery_needed.contains(id) {
+                queued.insert(group.to_string());
                 self.source_recovery_suppressed.remove(group);
                 self.source_recovery_queue.push_back(group.to_string());
             }
         }
-        let mut left: Vec<usize> = (0..total).collect();
+        let mut left: Vec<usize> = (0..total)
+            .filter(|at| self.source_problem(&self.all_systems[*at].def.id).is_none())
+            .collect();
+        let skipped_sources = total - left.len();
+        for problem in self
+            .artwork_source_errors
+            .values()
+            .cloned()
+            .collect::<Vec<_>>()
+        {
+            self.build_warning(format!(
+                "Game data source unresolved; system cache preserved: {problem}"
+            ));
+        }
         // Popped from the end, so reverse to read them in the order they
         // are listed: the name on screen should march forwards.
         left.reverse();
@@ -5361,142 +6256,659 @@ impl App {
             .retain(|id, _| self.all_systems.iter().any(|s| &s.def.id == id));
         self.build = Some(Building {
             left,
-            done: 0,
+            done: skipped_sources,
             total,
             index,
             forced,
+            current: None,
+            job: None,
+            discovery: None,
+            awaiting_frame: false,
+            displayed: None,
+            cancelling: false,
+            single: false,
+            folders: 0,
+            games: 0,
+            folders_done: 0,
+            games_done: 0,
+            folder: String::new(),
+            folder_revision: 0,
+            started: Instant::now(),
         });
+        self.pause_index_marquees();
         // Not shown yet: it goes up when the reading starts, which is
         // after the wordmark has had its moment.
         self.dirty = true;
     }
 
     /// Read one system into the cache, and say so on screen.
-    fn build_one_system(&mut self) {
-        let Some(build) = self.build.as_mut() else {
-            return;
+    fn index_message(&self, elapsed: u64) -> Option<String> {
+        let build = self.build.as_ref()?;
+        let name = build
+            .current
+            .and_then(|index| self.all_systems.get(index))
+            .map(|system| system.name())
+            .unwrap_or("Preparing");
+        let scope = if build.single {
+            "Indexing This System"
+        } else {
+            "Indexing All Systems"
         };
-        let Some(index) = build.left.pop() else {
-            // Done: write the index down and use it.
-            let finished = self.build.take().expect("just checked");
-            let index = finished.index;
-            if let Err(e) = crate::cache::save_index(&self.cache_dir, &index) {
-                let message = format!("cache index not written: {e}");
-                crate::note(&message);
-                self.message_after_build = Some(match self.message_after_build.take() {
-                    Some(previous) => format!("{previous}\n{message}"),
-                    None => message,
-                });
-            }
-            self.index = Some(index);
-            self.apply_index();
-            // The corrected counts were worked out against the caches
-            // this build just replaced.
-            self.correct_system_counts();
-            self.rebuild_system_list();
-            // The progress comes down; anything that had to outlive the
-            // build goes up in its place. Only set when the open system
-            // vanished, in which case the re-listing below has nothing
-            // to do, so the two never fight over the field.
-            self.message = self.message_after_build.take();
-            // The folder on screen was listed from the cache as it was
-            // before the build, and its rows keep answering from the
-            // copy in memory. Both are behind the card now.
-            if let Some(id) = self.open_system.clone() {
-                if self.pack_selected(&id) {
-                    let data = crate::cache::load_artwork_pack_data(&self.cache_dir, &id);
-                    self.system_cache = data.map(|data| data.cache);
+        let activity = if build.cancelling {
+            format!("Cancelling safely: {name}")
+        } else if self.source_resolution.is_some() {
+            "Preparing: checking game data sources".to_string()
+        } else if build.discovery.is_some() {
+            "Preparing: discovering systems and cores".to_string()
+        } else if self.source_job.is_some() {
+            format!(
+                "Preparing Artwork Pack: {}",
+                if self.source_progress.current.is_empty() {
+                    name
                 } else {
-                    self.system_cache = crate::cache::load_system(&self.cache_dir, &id);
+                    &self.source_progress.current
                 }
-                if self.browsing == Browsing::Games {
-                    self.relist_here();
+            )
+        } else {
+            format!("Scanning: {name}")
+        };
+        Some(format!("{scope}\n\n{activity}\n{}\n{} / {} systems processed\n{} folders   {} games read\n{} seconds elapsed\n\n{}",
+            build.folder, build.done, build.total, build.folders_done + build.folders,
+            build.games_done + build.games, elapsed,
+            self.message_after_build.as_deref().unwrap_or("No problems reported")))
+    }
+
+    fn index_overview(&self) -> Option<IndexOverview> {
+        let Some(build) = self.build.as_ref() else {
+            return self.index_terminal.clone();
+        };
+        Some(IndexOverview {
+            title: if build.single {
+                "Index This System"
+            } else {
+                "Index All Systems"
+            }
+            .into(),
+            state: if build.cancelling {
+                "Cancelling"
+            } else if build.discovery.is_some() || self.source_resolution.is_some() {
+                "Preparing"
+            } else {
+                "Running"
+            }
+            .into(),
+            subject: self
+                .source_job
+                .as_ref()
+                .filter(|_| !self.source_progress.current.is_empty())
+                .map(|_| self.source_progress.current.clone())
+                .or_else(|| {
+                    build
+                        .current
+                        .and_then(|at| self.all_systems.get(at))
+                        .map(|system| system.name().to_string())
+                })
+                .unwrap_or_else(|| {
+                    if self.source_resolution.is_some() {
+                        "Checking Game Data Sources".into()
+                    } else {
+                        "Discovering systems and cores".into()
+                    }
+                }),
+            folder: build.folder.clone(),
+            done: build.done,
+            total: build.total,
+            folders: build.folders_done + build.folders,
+            games: build.games_done + build.games,
+            elapsed: build.started.elapsed().as_secs(),
+            determinate: !build.single && build.discovery.is_none() && build.total > 0,
+            problem: self.message_after_build.clone().unwrap_or_default(),
+            report: self
+                .index_message(build.started.elapsed().as_secs())
+                .unwrap_or_default(),
+        })
+    }
+
+    fn update_operation_ui(&self) {
+        self.ui.set_operation_kind(0);
+        self.ui.set_operation_percent(SharedString::default());
+        if let Some(view) = self.index_overview() {
+            let active = self.build.is_some();
+            self.ui.set_operation_kind(1);
+            self.ui.set_operation_details(self.index_details);
+            self.ui.set_operation_title(view.title.into());
+            self.ui.set_operation_state(
+                if view.state == "Finished With Problems" {
+                    "Problems".to_string()
+                } else {
+                    view.state
                 }
-            }
-            if self.start_next_source_recovery() {
-                self.dirty = true;
-                return;
-            }
-            self.dirty = true;
+                .into(),
+            );
+            self.ui.set_operation_subject(view.subject.into());
+            self.ui.set_operation_activity(
+                if view.folder.is_empty() {
+                    String::new()
+                } else {
+                    format!("Folder: {}", view.folder)
+                }
+                .into(),
+            );
+            self.ui.set_operation_determinate(view.determinate);
+            self.ui
+                .set_operation_fraction(view.done as f32 / view.total.max(1) as f32);
+            self.ui.set_operation_progress(
+                format!("{} / {} Systems Processed", view.done, view.total).into(),
+            );
+            self.ui.set_operation_note(
+                if view.determinate {
+                    "System Progress, Not Time Remaining"
+                } else if active {
+                    "Reading Folders; Total Not Yet Known"
+                } else {
+                    "System List Update Finished"
+                }
+                .into(),
+            );
+            self.ui
+                .set_operation_counts(ModelRc::new(VecModel::from(vec![
+                    DetailLine {
+                        label: "Folders Read".into(),
+                        value: view.folders.to_string().into(),
+                    },
+                    DetailLine {
+                        label: "Games Found".into(),
+                        value: view.games.to_string().into(),
+                    },
+                    DetailLine {
+                        label: "Elapsed".into(),
+                        value: format!("{}s", view.elapsed).into(),
+                    },
+                ])));
+            self.ui.set_operation_problem(view.problem.into());
+            self.ui.set_operation_controls(
+                if self.index_details {
+                    "Up/Down Scroll   B Overview"
+                } else if active {
+                    "A Details   B Cancel"
+                } else {
+                    "A Details   B Back"
+                }
+                .into(),
+            );
             return;
-        };
-        build.done += 1;
-        let done = build.done;
-        let total = build.total;
-        let forced = build.forced;
-
-        let Some(system) = self.all_systems.get(index) else {
+        }
+        if self.screen != Screen::ScraperProgress {
             return;
+        }
+        let progress = &self.scraper_progress;
+        let finishing = self.scraper_pending_terminal.is_some();
+        let state = if finishing {
+            "Refreshing Lists"
+        } else if matches!(self.scraper_terminal, Some(ScraperTerminal::Failed(_))) {
+            "Failed"
+        } else if let Some(terminal) = &self.scraper_terminal {
+            terminal.label()
+        } else if self.scraper_cancelling {
+            "Cancelling"
+        } else {
+            progress.phase.label()
         };
-        let id = system.def.id.clone();
-        let name = system.name().to_string();
-        let config = system.to_config();
+        let known = progress.total > 0
+            && !matches!(
+                progress.phase,
+                crate::scraper::Phase::Account | crate::scraper::Phase::Enumerating
+            );
+        let subject = self.scraper_scope_label();
+        let mut activity = if finishing && !self.scraper_refresh_folder.is_empty() {
+            format!("Folder: {}", self.scraper_refresh_folder)
+        } else if !progress.current.is_empty() {
+            progress.current.clone()
+        } else {
+            progress.activity.clone()
+        };
+        if activity == subject {
+            activity.clear();
+        }
+        let problem = match &self.scraper_terminal {
+            Some(ScraperTerminal::Failed(detail)) => detail.clone(),
+            _ => progress.last_problem.clone().unwrap_or_default(),
+        };
+        self.ui.set_operation_kind(2);
+        self.ui.set_operation_details(self.scraper_details);
+        self.ui.set_operation_title("ScreenScraper".into());
+        self.ui.set_operation_state(state.into());
+        self.ui.set_operation_subject(subject.into());
+        self.ui.set_operation_activity(activity.into());
+        self.ui.set_operation_determinate(known && !finishing);
+        self.ui.set_operation_fraction(
+            (progress.completed as f32 / progress.total.max(1) as f32).min(1.0),
+        );
+        self.ui.set_operation_progress(
+            if finishing {
+                format!(
+                    "{} Folders   {} Games Read",
+                    self.scraper_refresh_folders, self.scraper_refresh_games
+                )
+            } else {
+                format!("{} / {} Games", progress.completed, progress.total)
+            }
+            .into(),
+        );
+        self.ui.set_operation_note(
+            if finishing {
+                "Updating Images and Metadata in the Lists".to_string()
+            } else if !known && progress.total == 0 && self.scraper_terminal.is_none() {
+                "Total Not Yet Known".to_string()
+            } else if progress.deduplicated_aliases > 0 {
+                format!("Linked Copies Skipped: {}", progress.deduplicated_aliases)
+            } else {
+                String::new()
+            }
+            .into(),
+        );
+        self.ui
+            .set_operation_counts(ModelRc::new(VecModel::from(vec![
+                DetailLine {
+                    label: "Written".into(),
+                    value: progress.updated.to_string().into(),
+                },
+                DetailLine {
+                    label: "Unchanged".into(),
+                    value: progress.unchanged.to_string().into(),
+                },
+                DetailLine {
+                    label: "Unresolved".into(),
+                    value: (progress.not_found + progress.ambiguous + progress.no_media)
+                        .to_string()
+                        .into(),
+                },
+                DetailLine {
+                    label: "Failed".into(),
+                    value: progress.failed.to_string().into(),
+                },
+            ])));
+        self.ui.set_operation_problem(problem.into());
+        self.ui.set_operation_controls(
+            if self.scraper_details {
+                "Up/Down Scroll   B Overview"
+            } else if finishing || self.scraper_cancelling {
+                "A Details   Finishing Safely"
+            } else if self.scraper_job.is_some() {
+                "A Details   B Cancel"
+            } else {
+                "A Details   B Back"
+            }
+            .into(),
+        );
+    }
 
-        self.message = Some(format!(
-            "Indexing all systems\n\n{name}   {done} of {total}"
-        ));
+    fn pause_index_marquees(&mut self) {
+        self.marquee.stop();
+        self.detail_marquee.stop();
+        self.ui.set_marquee_end(false);
+        self.ui.set_detail_end(false);
+    }
 
-        // Already written down and not being forced: nothing to read.
-        let start = browse::start_for(&config);
-        let pack = self.pack_selected(&id);
-        let summary = if pack {
-            // A Pack rebuild is completed by the cancellable group worker
-            // queued above. Keep using the previous complete cache meanwhile;
-            // never overwrite it with a partial synchronous rebuild.
-            crate::cache::load_artwork_pack_system(&self.cache_dir, &id)
-                .map(|cache| cache.summary(&start))
-        } else if !forced {
-            crate::cache::load_system(&self.cache_dir, &id).map(|cache| cache.summary(&start))
+    /// Counters do not change the covered list, artwork or metadata models.
+    fn publish_index_progress(&mut self) -> bool {
+        let Some(build) = self.build.as_ref() else {
+            return false;
+        };
+        let display = build.display();
+        if build.displayed == Some(display) {
+            return false;
+        }
+        self.message = if self.index_details {
+            self.index_message(display.elapsed)
         } else {
             None
         };
-        let summary = match summary {
-            Some(summary) => Some(summary),
-            None if pack => None,
-            None => {
-                let built = (|| -> Result<(crate::cache::Summary, Vec<String>)> {
-                    let library = Library::open_with_names(&config, self.names.clone())?;
-                    let cache = crate::cache::build_system_checked(&library)?;
-                    let summary = cache.summary(&start);
-                    let mut next_index = self.build.as_ref().expect("active build").index.clone();
-                    next_index.systems.insert(id.clone(), summary);
-                    let warnings = crate::cache::save_system_with_index(
-                        &self.cache_dir,
-                        &id,
-                        &cache,
-                        &next_index,
-                    )?;
-                    Ok((summary, warnings))
-                })();
-                match built {
-                    Ok((summary, warnings)) => {
-                        if !warnings.is_empty() {
-                            let message = warnings.join("\n");
-                            self.message_after_build =
-                                Some(match self.message_after_build.take() {
-                                    Some(previous) => format!("{previous}\n{message}"),
-                                    None => message,
-                                });
-                        }
-                        Some(summary)
-                    }
-                    Err(error) => {
-                        let message = format!("{name}: {error}");
-                        crate::note(&message);
-                        self.message_after_build = Some(match self.message_after_build.take() {
-                            Some(previous) => format!("{previous}\n{message}"),
-                            None => message,
-                        });
-                        None
-                    }
+        self.build.as_mut().expect("active build").displayed = Some(display);
+        self.ui.set_index_active(true);
+        self.ui.set_overlay_dismissible(false);
+        self.ui.set_overlay_offset(0.0);
+        self.ui
+            .set_index_fraction(display.done as f32 / display.total.max(1) as f32);
+        self.ui.set_overlay(SharedString::from(
+            self.message.as_deref().unwrap_or_default(),
+        ));
+        self.update_operation_ui();
+        self.window.request_redraw();
+        true
+    }
+
+    fn index_frame_presented(&mut self) {
+        if let Some(build) = self.build.as_mut() {
+            build.awaiting_frame = false;
+        }
+    }
+
+    fn discover_for_build(&mut self) {
+        let build = self.build.as_mut().expect("active discovery");
+        let discovery = build.discovery.take().expect("discovery phase");
+        let result = match discovery {
+            Discovery::Queued(_) if build.cancelling => Some(Ok(None)),
+            Discovery::Queued(request) if build.awaiting_frame => {
+                build.discovery = Some(Discovery::Queued(request));
+                self.publish_index_progress();
+                return;
+            }
+            Discovery::Queued(request) => match crate::index_job::DiscoveryJob::start(request) {
+                Ok(job) => {
+                    build.discovery = Some(Discovery::Running(job));
+                    return;
                 }
+                Err(error) => Some(Err(error)),
+            },
+            Discovery::Running(mut job) => {
+                let result = job.try_recv();
+                if result.is_none() {
+                    build.discovery = Some(Discovery::Running(job));
+                    self.publish_index_progress();
+                    return;
+                }
+                result
             }
         };
-        if let (Some(build), Some(summary)) = (self.build.as_mut(), summary) {
-            build.index.systems.insert(id, summary);
+        let preparation = self.build.take().expect("active discovery");
+        match result.expect("completed discovery") {
+            _ if preparation.cancelling => {
+                self.message = Some("Indexing cancelled during preparation".to_string());
+            }
+            Ok(None) => {
+                self.message = Some("Indexing cancelled during preparation".to_string());
+            }
+            Err(error) => self.message = Some(error.to_string()),
+            Ok(Some(found)) => {
+                self.apply_discovered_systems(found);
+                let started = preparation.started;
+                self.build = Some(preparation);
+                self.resolve_artwork_sources(None, SourceResolutionAction::Rebuild(started));
+                return;
+            }
+        }
+        if let Some(problem) = self.message.take() {
+            let cancelled =
+                preparation.cancelling || problem == "Indexing cancelled during preparation";
+            let report = format!(
+                "{problem}\n{} seconds elapsed\nNo system lists were replaced.",
+                preparation.started.elapsed().as_secs()
+            );
+            self.index_terminal = Some(IndexOverview {
+                title: "Index All Systems".into(),
+                state: if cancelled { "Cancelled" } else { "Failed" }.into(),
+                subject: "System Discovery".into(),
+                elapsed: preparation.started.elapsed().as_secs(),
+                problem: if cancelled { String::new() } else { problem },
+                report: report.clone(),
+                ..IndexOverview::default()
+            });
+            if self.index_details {
+                self.message = Some(report);
+            }
+        }
+        self.ui.set_index_active(false);
+        self.last_input = Instant::now();
+        self.touch_selection();
+    }
+
+    fn build_warning(&mut self, message: String) {
+        crate::note(&message);
+        self.message_after_build = Some(match self.message_after_build.take() {
+            Some(previous) => format!("{previous}\n{message}"),
+            None => message,
+        });
+    }
+
+    fn build_one_system(&mut self) {
+        self.poll_artwork_sources();
+        if self.source_resolution.is_some() {
+            return;
+        }
+        self.poll_source_cache();
+        if self.source_job.is_some() {
+            self.publish_index_progress();
+            return;
+        }
+        if self
+            .build
+            .as_ref()
+            .is_some_and(|build| build.discovery.is_some())
+        {
+            self.discover_for_build();
+            return;
+        }
+        let event = self
+            .build
+            .as_mut()
+            .and_then(|build| build.job.as_mut())
+            .and_then(crate::index_job::Job::try_recv);
+        if let Some(event) = event {
+            match event {
+                crate::index_job::Event::Progress {
+                    folders,
+                    games,
+                    folder,
+                } => {
+                    let build = self.build.as_mut().expect("active build");
+                    build.folders = folders;
+                    build.games = games;
+                    if build.folder != folder {
+                        build.folder = folder;
+                        build.folder_revision += 1;
+                    }
+                }
+                crate::index_job::Event::Ready {
+                    index,
+                    cache,
+                    warnings,
+                    folders,
+                    games,
+                    elapsed,
+                    summary,
+                } => {
+                    let build = self.build.as_mut().expect("active build");
+                    build.index = index;
+                    build.done += 1;
+                    build.job = None;
+                    let current = build.current.take();
+                    build.folders_done += folders;
+                    build.games_done += games;
+                    build.folders = 0;
+                    build.games = 0;
+                    if let Some(cache) = cache {
+                        self.system_cache = Some(cache);
+                        self.library = None;
+                    }
+                    if let Some(system) = current.and_then(|at| self.all_systems.get(at)) {
+                        crate::note(&format!(
+                            "index {}: {:.3}s, {} games",
+                            system.def.id,
+                            elapsed.as_secs_f64(),
+                            summary.map_or(0, |value| value.games)
+                        ));
+                    }
+                    for warning in warnings {
+                        self.build_warning(warning);
+                    }
+                }
+                crate::index_job::Event::Cancelled { index } => {
+                    let build = self.build.as_mut().expect("active build");
+                    build.index = index;
+                    build.job = None;
+                    build.current = None;
+                    build.cancelling = true;
+                }
+                crate::index_job::Event::Failed { error, index } => {
+                    let build = self.build.as_mut().expect("active build");
+                    build.index = index;
+                    build.job = None;
+                    let current = build.current.take();
+                    build.done += 1;
+                    build.folders_done += build.folders;
+                    build.games_done += build.games;
+                    build.folders = 0;
+                    build.games = 0;
+                    let name = current
+                        .and_then(|at| self.all_systems.get(at))
+                        .map(|system| system.name())
+                        .unwrap_or("System");
+                    self.build_warning(format!("{name}: {error}"));
+                }
+            }
+            self.publish_index_progress();
+            if self.build.as_ref().is_some_and(|build| build.job.is_some()) {
+                return;
+            }
         }
 
-        self.dirty = true;
+        let Some(build) = self.build.as_mut() else {
+            return;
+        };
+        if build.job.is_some() {
+            self.publish_index_progress();
+            return;
+        }
+        if build.cancelling {
+            build.left.clear();
+            build.current = None;
+            self.source_recovery_queue.clear();
+        }
+        if let Some(current) = build.current {
+            if build.awaiting_frame {
+                self.publish_index_progress();
+                return;
+            }
+            let system = &self.all_systems[current];
+            let id = system.def.id.clone();
+            if let Some(group) = crate::artwork_pack::source_group(&id) {
+                if let Some(at) = self
+                    .source_recovery_queue
+                    .iter()
+                    .position(|queued| queued == group)
+                {
+                    self.source_recovery_queue.remove(at);
+                    if !self.begin_source_recovery(&id, SourceRecoveryPurpose::FullBuild) {
+                        let cause = self.message.take().unwrap_or_else(|| {
+                            "Artwork Pack cache preparation could not start".into()
+                        });
+                        self.build_warning(format!("{id}: {cause}"));
+                    }
+                    return;
+                }
+            }
+            let request = crate::index_job::Request {
+                config: system.to_config(),
+                names: self.names.clone(),
+                cache_dir: self.cache_dir.clone(),
+                forced: build.forced,
+                artwork_pack: crate::artwork_pack::selected_root(
+                    &self.effective_artwork_pack_roots,
+                    &id,
+                )
+                .is_some(),
+                retain_cache: self.open_system.as_deref() == Some(id.as_str()),
+                id,
+                index: std::mem::take(&mut build.index),
+            };
+            match crate::index_job::start(request) {
+                Ok(job) => build.job = Some(job),
+                Err(failure) => {
+                    build.index = failure.index;
+                    build.current = None;
+                    build.done += 1;
+                    self.build_warning(failure.error.to_string());
+                }
+            }
+            return;
+        }
+        if let Some(index) = build.left.pop() {
+            build.current = Some(index);
+            build.folders = 0;
+            build.games = 0;
+            build.folder.clear();
+            build.folder_revision += 1;
+            build.awaiting_frame = true;
+            self.publish_index_progress();
+            return;
+        }
+
+        let mut overview = self.index_overview().expect("active build");
+        let finished = self.build.take().expect("active build");
+        if let Err(error) = crate::cache::save_index(&self.cache_dir, &finished.index) {
+            self.build_warning(format!("Cache index not written: {error}"));
+        }
+        self.index = Some(finished.index);
+        self.apply_index();
+        self.correct_system_counts();
+        self.rebuild_system_list();
+        if self.open_system.is_some() && self.browsing == Browsing::Games {
+            self.relist_here();
+        }
+        let result = format!(
+            "Indexing {}\n{} / {} systems processed in {:.1}s",
+            if finished.cancelling {
+                "cancelled"
+            } else {
+                "finished"
+            },
+            finished.done,
+            finished.total,
+            finished.started.elapsed().as_secs_f64()
+        );
+        crate::note(&result.replace('\n', "   "));
+        if !self.source_recovery_queue.is_empty() {
+            if let Some(warnings) = &self.message_after_build {
+                self.source_recovery_warnings.push(warnings.clone());
+            }
+        }
+        overview.state = if finished.cancelling {
+            "Cancelled"
+        } else if self.message_after_build.is_some() {
+            "Finished With Problems"
+        } else {
+            "Complete"
+        }
+        .into();
+        overview.subject = if finished.single {
+            self.open_system
+                .as_deref()
+                .and_then(|id| self.all_systems.iter().find(|system| system.def.id == id))
+                .map(|system| system.name().to_string())
+                .unwrap_or_else(|| "System List".into())
+        } else {
+            "All Systems".into()
+        };
+        overview.folder.clear();
+        overview.problem = self.message_after_build.take().unwrap_or_default();
+        overview.report = format!(
+            "{result}\n{} folders   {} games read\n\n{}",
+            overview.folders,
+            overview.games,
+            if overview.problem.is_empty() {
+                "No problems reported"
+            } else {
+                &overview.problem
+            }
+        );
+        overview.determinate = finished.total > 0;
+        self.message = None;
+        if finished.forced || finished.cancelling || !overview.problem.is_empty() {
+            if self.index_details {
+                self.message = Some(overview.report.clone());
+            }
+            self.index_terminal = Some(overview);
+        }
+        self.last_input = Instant::now();
+        self.ui.set_index_active(false);
+        if !finished.cancelling && self.start_next_source_recovery() {
+            self.index_terminal = None;
+            self.message = None;
+            self.dirty = true;
+            return;
+        }
+        self.touch_selection();
     }
 
     fn rebuild_system_list(&mut self) {
@@ -5696,6 +7108,22 @@ impl App {
         )
     }
 
+    fn fresh_group_cover_cache(&self) -> CoverCache {
+        let palette = self.effective_palette();
+        CoverCache::new(
+            self.config
+                .app
+                .cover_size
+                .max(self.width.max(self.height) / 2),
+            8,
+            [
+                palette.background.r,
+                palette.background.g,
+                palette.background.b,
+            ],
+        )
+    }
+
     /// Thumbnail edge and capacity for the Gallery browse rectangle. The
     /// cache holds at least one complete visible page, or an eviction would
     /// force the same page to decode again forever on large framebuffers.
@@ -5740,6 +7168,7 @@ impl App {
             self.effective_logo_opacity(),
         );
         self.covers = self.fresh_cover_cache();
+        self.group_covers = self.fresh_group_cover_cache();
         self.gallery_covers = self.fresh_gallery_cover_cache();
         self.touch_selection();
     }
@@ -6039,6 +7468,9 @@ impl App {
 
     fn handle_theme_editor(&mut self, action: Action) {
         if message_consumes_input(self.message.is_some(), self.build.is_some()) {
+            if self.scroll_message(action) {
+                return;
+            }
             self.message = None;
             self.dirty = true;
             return;
@@ -6061,7 +7493,8 @@ impl App {
             | Action::Home
             | Action::End
             | Action::CyclePresent
-            | Action::FavoriteShortcut => EditorEffect::None,
+            | Action::FavoriteShortcut
+            | Action::RandomShortcut => EditorEffect::None,
         };
         self.apply_theme_editor_effect(effect);
     }
@@ -6218,6 +7651,9 @@ impl App {
                 self.settings.show_unstable = Some(self.show_unstable);
                 self.rebuild_system_list();
             }
+            OptionId::ShowScripts => {
+                self.settings.show_scripts = Some(!self.settings.show_scripts.unwrap_or(true));
+            }
             OptionId::CorePreference => {
                 self.settings.core_preference =
                     Some(self.settings.core_preference.unwrap_or_default().next());
@@ -6260,6 +7696,10 @@ impl App {
             OptionId::HoldXFavorite => {
                 self.hold_x_favorite = !self.hold_x_favorite;
                 self.settings.hold_x_favorite = Some(self.hold_x_favorite);
+            }
+            OptionId::HoldYRandom => {
+                self.hold_y_random = !self.hold_y_random;
+                self.settings.hold_y_random = Some(self.hold_y_random);
             }
             OptionId::RandomLaunches => {
                 self.random_launches = !self.random_launches;
@@ -6329,6 +7769,7 @@ impl App {
             OptionId::ShowOther => on_off(self.show_other),
             OptionId::ShowUtility => on_off(self.show_utility),
             OptionId::ShowUnstable => on_off(self.show_unstable),
+            OptionId::ShowScripts => on_off(self.settings.show_scripts.unwrap_or(true)),
             OptionId::CorePreference => self
                 .settings
                 .core_preference
@@ -6338,6 +7779,7 @@ impl App {
             OptionId::ShowBar => on_off(self.show_bar),
             OptionId::FavoritesFirst => on_off(self.favorites_first),
             OptionId::HoldXFavorite => on_off(self.hold_x_favorite),
+            OptionId::HoldYRandom => on_off(self.hold_y_random),
             OptionId::RandomLaunches => if self.random_launches {
                 "Launches"
             } else {
@@ -6382,18 +7824,19 @@ impl App {
         }
     }
 
-    fn save_settings(&self) {
+    fn save_settings(&mut self) -> bool {
         match self.settings.save(&self.settings_path) {
-            Ok(SaveOutcome::Durable) => {}
+            Ok(SaveOutcome::Durable) => true,
             Ok(SaveOutcome::InstalledWithWarning(warning)) => {
-                eprintln!(
-                    "degauss: settings were installed but durability could not be confirmed: {warning}"
-                );
+                self.message = Some(format!("Settings installed, but durability could not be confirmed: {warning}\n\nClose this message, then go back to retry saving."));
+                self.dirty = true;
+                false
             }
             Err(error) => {
-                // Not fatal: the interface still works, the change just will not
-                // survive a restart, and the user should be told which it is.
                 eprintln!("degauss: could not save settings: {error}");
+                self.message = Some(format!("Settings not saved: {error}\n\nChanges remain active in this session. Close this message, then go back to retry saving."));
+                self.dirty = true;
+                false
             }
         }
     }
@@ -6402,37 +7845,74 @@ impl App {
         // The legacy map is normally empty after startup migration. Clear it
         // too so a reset in the same run cannot resurrect an old view later.
         let removed = clear_custom_views(&mut self.settings);
-        self.save_settings();
+        let saved = self.save_settings();
         self.resolve_view();
         self.apply_geometry();
-        self.message = Some(format!("{removed} custom views reset"));
+        if saved {
+            self.message = Some(format!("{removed} custom views reset"));
+        }
         self.dirty = true;
     }
 
     fn reset_hidden(&mut self) {
         let held = clear_hidden(&mut self.settings);
-        self.save_settings();
+        let saved = self.save_settings();
+        let save_message = self.message.take();
         self.corrected_counts.clear();
         self.rebuild_system_list();
         self.relist_here();
-        self.message = Some(format!("{held} shown again"));
+        if saved {
+            self.message = Some(format!("{held} shown again"));
+        } else {
+            self.message = save_message;
+        }
         self.dirty = true;
     }
 
     fn rebuild_all_systems(&mut self) {
         // One rebuild at a time: a second ask would swap the system list from
         // under the running build. Its progress message already answers A.
-        if self.build.is_some() {
+        if self.build.is_some() || self.source_job.is_some() || self.refreshing.is_some() {
             return;
         }
-        // Discovery normally happens only at startup. Repeat it first so a
-        // newly added or removed core or folder is included in the rebuild.
-        if let Err(error) = self.rediscover_systems() {
-            self.message = Some(error.to_string());
+        if self.provider_job.is_some() {
+            self.message = Some("Wait for the current Artwork Pack read to finish.".to_string());
             self.dirty = true;
             return;
         }
-        self.start_build(true);
+        self.index_return_screen = self.screen;
+        self.index_terminal = None;
+        self.index_details = false;
+        // Keep the old systems and index until this read finishes. No card
+        // access is dispatched until Preparing has reached the surface.
+        self.build = Some(Building {
+            left: Vec::new(),
+            done: 0,
+            total: 0,
+            index: self.index.clone().unwrap_or_default(),
+            forced: true,
+            current: None,
+            job: None,
+            discovery: Some(Discovery::Queued(crate::index_job::DiscoveryRequest {
+                menu_root: PathBuf::from(&self.config.menu_root),
+                roots: self.config.game_roots.iter().map(PathBuf::from).collect(),
+                table: self.table.clone(),
+                logo_dir: self.logo_dir.clone(),
+            })),
+            awaiting_frame: true,
+            displayed: None,
+            cancelling: false,
+            single: false,
+            folders: 0,
+            games: 0,
+            folders_done: 0,
+            games_done: 0,
+            folder: String::new(),
+            folder_revision: 0,
+            started: Instant::now(),
+        });
+        self.pause_index_marquees();
+        self.publish_index_progress();
         self.dirty = true;
     }
 
@@ -6477,13 +7957,14 @@ impl App {
             Screen::ScraperMatches => self.leave_scraper_matches(),
             Screen::GameDataSource => {
                 self.screen = Screen::Browse;
-                self.open_context();
+                self.reopen_context_for(GAME_DATA_SOURCE);
                 if let Some(index) = self.menu.iter().position(|entry| entry == GAME_DATA_SOURCE) {
                     self.menu_list.select(index);
                 }
             }
             Screen::ArtworkPackLocation => self.open_game_data_source(),
             Screen::ArtworkPackDirectory => self.leave_artwork_pack_directory(),
+            Screen::Scripts => self.leave_scripts(),
             Screen::SourceProgress => {
                 if let Some(job) = &self.source_job {
                     job.cancel();
@@ -6496,14 +7977,25 @@ impl App {
                 }
             }
             Screen::Advanced => {
-                self.save_settings();
-                self.screen = Screen::Options;
+                if !self.save_settings() {
+                    return None;
+                }
+                self.screen = Screen::OptionsRoot;
                 self.apply_geometry();
             }
             Screen::ThemeEditor => self.close_theme_editor(),
             Screen::Options => {
-                self.save_settings();
-                self.screen = Screen::Menu;
+                if !self.save_settings() {
+                    return None;
+                }
+                self.screen = Screen::OptionsRoot;
+                self.apply_geometry();
+            }
+            Screen::OptionsRoot => {
+                self.open_menu();
+            }
+            Screen::Information => {
+                self.screen = Screen::Context;
                 self.apply_geometry();
             }
             Screen::Help | Screen::About => {
@@ -6516,7 +8008,14 @@ impl App {
                     // A contextual change is deliberately saved on close so
                     // stepping through several previews does not write the
                     // card for every press.
-                    self.save_settings();
+                    if !self.save_settings() {
+                        return None;
+                    }
+                    self.remember_context_selection();
+                    if self.context_page.is_some() {
+                        self.show_context_page(None);
+                        return None;
+                    }
                 }
                 self.screen = Screen::Browse;
                 self.resolve_view();
@@ -6586,15 +8085,142 @@ impl App {
         } else {
             None
         };
-        self.menu = menu_entries(self.browsing, system.as_deref());
+        self.menu = menu_entries(
+            self.browsing,
+            system.as_deref(),
+            self.settings.show_scripts.unwrap_or(true),
+        );
         self.menu_list = ListState::new(self.menu.len(), self.geometry.visible);
         self.screen = Screen::Menu;
         self.apply_geometry();
     }
 
+    fn open_scripts(&mut self) {
+        match crate::scripts::Browser::open(Path::new(&self.config.menu_root)) {
+            Ok(browser) => {
+                let root = browser.root().to_path_buf();
+                self.scripts_browser = Some(browser);
+                self.show_scripts_directory(root, None);
+            }
+            Err(error) => {
+                self.message = Some(error.to_string());
+                self.dirty = true;
+            }
+        }
+    }
+
+    fn show_scripts_directory(&mut self, directory: PathBuf, selected: Option<&Path>) {
+        let Some(browser) = &self.scripts_browser else {
+            return;
+        };
+        match browser.list(&directory) {
+            Ok(entries) => {
+                let selected = selected
+                    .and_then(|path| entries.iter().position(|entry| entry.path == path))
+                    .unwrap_or(0);
+                self.menu = entries
+                    .iter()
+                    .map(|entry| {
+                        if entry.is_directory {
+                            format!("[ {} ]", entry.name)
+                        } else {
+                            entry.name.clone()
+                        }
+                    })
+                    .collect();
+                self.menu_list = ListState::new(entries.len(), self.geometry.visible);
+                self.menu_list.select(selected);
+                self.scripts_entries = entries;
+                self.scripts_directory = directory;
+                self.screen = Screen::Scripts;
+                self.apply_geometry();
+            }
+            Err(error) => {
+                self.message = Some(error.to_string());
+                self.dirty = true;
+            }
+        }
+    }
+
+    fn activate_script(&mut self) {
+        let Some(entry) = self.scripts_entries.get(self.menu_list.selected()).cloned() else {
+            return;
+        };
+        if entry.is_directory {
+            self.show_scripts_directory(entry.path, None);
+            return;
+        }
+        let Some(browser) = &self.scripts_browser else {
+            return;
+        };
+        let launch = std::env::current_exe()
+            .map_err(|error| DegaussError::io("locate frontend executable", "degauss", error))
+            .and_then(|executable| {
+                crate::scripts::Launch::prepare(
+                    browser.root(),
+                    &entry.path,
+                    &executable,
+                    std::env::args_os().skip(1).collect(),
+                )
+            });
+        match launch {
+            Ok(launch) => {
+                self.pending = Some(Pending::RunScript(Box::new(launch)));
+                self.message = Some(format!(
+                    "Run {}?\n\nOnly run scripts you trust.\nDegauss returns when it finishes.\n\nA Run   B Cancel",
+                    entry.name
+                ));
+            }
+            Err(error) => self.message = Some(error.to_string()),
+        }
+        self.dirty = true;
+    }
+
+    fn leave_scripts(&mut self) {
+        let Some(browser) = &self.scripts_browser else {
+            self.open_menu();
+            return;
+        };
+        if self.scripts_directory == browser.root() {
+            self.open_menu();
+            if let Some(selected) = self.menu.iter().position(|entry| entry == "Scripts") {
+                self.menu_list.select(selected);
+            }
+        } else if let Some(parent) = self.scripts_directory.parent().map(Path::to_path_buf) {
+            let selected = self.scripts_directory.clone();
+            self.show_scripts_directory(parent, Some(&selected));
+        }
+    }
+
+    pub fn resume_scripts(&mut self, script: &Path) {
+        self.open_menu();
+        self.open_scripts();
+        if self.message.is_some() {
+            return;
+        }
+        if let Some(parent) = script.parent() {
+            match parent.canonicalize() {
+                Ok(parent) => {
+                    let selected = parent.join(script.file_name().unwrap_or_default());
+                    self.show_scripts_directory(parent, Some(&selected));
+                }
+                Err(error) => {
+                    self.message = Some(
+                        DegaussError::io("resolve returning Scripts directory", parent, error)
+                            .to_string(),
+                    );
+                    self.dirty = true;
+                }
+            }
+        }
+    }
+
     /// What a contextual entry currently reads as, when it is a choice
     /// rather than an action.
     fn context_value(&self, index: usize) -> String {
+        if self.context_is_root() {
+            return ">".to_string();
+        }
         match self.menu.get(index).map(String::as_str) {
             Some(CORE_VERSION) => self
                 .core_system_id()
@@ -6608,15 +8234,8 @@ impl App {
             Some(CHANGE_VIEW) => self.layout.shown().to_string(),
             Some(GAME_DATA_SOURCE) => self
                 .context_system_id()
-                .map(|id| {
-                    if self.pack_selected(id) {
-                        SOURCE_ARTWORK_PACK
-                    } else {
-                        SOURCE_GAMELIST
-                    }
-                })
-                .unwrap_or_default()
-                .to_string(),
+                .map(|id| self.source_label(id))
+                .unwrap_or_default(),
             _ => String::new(),
         }
     }
@@ -6642,6 +8261,68 @@ impl App {
         self.apply_geometry();
         self.touch_selection();
         self.dirty = true;
+    }
+
+    fn context_scope(&self) -> String {
+        let action = self
+            .menu
+            .get(self.menu_list.selected())
+            .map(String::as_str)
+            .unwrap_or("");
+        if matches!(
+            action,
+            GAME_INFORMATION | ADD_FAVORITE | REMOVE_FAVORITE | HIDE_THIS | SHOW_THIS
+        ) {
+            match self.browsing {
+                Browsing::Games => {
+                    if let Some(row) = self.here.get(self.game_list.selected()) {
+                        return row.name.clone();
+                    }
+                }
+                Browsing::Systems => {
+                    if let Some(system) = self.systems.get(self.system_list.selected()) {
+                        return system.name().to_string();
+                    }
+                }
+                Browsing::Categories => {}
+            }
+        }
+        if matches!(action, CHANGE_CATEGORY_IMAGE | CLEAR_CATEGORY_IMAGE) {
+            if let Some(target) = self.selected_image_target() {
+                return target.label().to_string();
+            }
+        }
+        if matches!(action, SCRAPE_SYSTEM | SCRAPE_FOLDER | SCRAPE_GAME) {
+            if let Some(scope) = self.scraper_scope_from_context(action) {
+                return match scope {
+                    crate::scraper::Scope::System { display_name, .. }
+                    | crate::scraper::Scope::Folder { display_name, .. } => display_name,
+                    crate::scraper::Scope::Game { title, .. } => title,
+                    crate::scraper::Scope::All => "All Systems".to_string(),
+                };
+            }
+        }
+        if matches!(
+            action,
+            CORE_VERSION | USE_DEFAULT_CORE_VERSION | GAME_DATA_SOURCE | REBUILD_SYSTEM
+        ) {
+            if self.in_favorites() && matches!(action, CORE_VERSION | USE_DEFAULT_CORE_VERSION) {
+                return "Original Game System".to_string();
+            }
+            if let Some(id) = self.context_system_id() {
+                if let Some(system) = self.all_systems.iter().find(|system| system.def.id == id) {
+                    return system.name().to_string();
+                }
+            }
+        }
+        match self.browsing {
+            Browsing::Categories => "Home".to_string(),
+            Browsing::Systems => self
+                .open_category
+                .clone()
+                .unwrap_or_else(|| "Systems".to_string()),
+            Browsing::Games => self.here_label(),
+        }
     }
 
     fn core_system_id(&self) -> Option<String> {
@@ -6703,7 +8384,7 @@ impl App {
         match settings.save(&self.settings_path) {
             Ok(outcome) => {
                 self.settings = settings;
-                self.open_context();
+                self.reopen_context_for(CORE_VERSION);
                 if let Some(index) = self.menu.iter().position(|entry| entry == CORE_VERSION) {
                     self.menu_list.select(index);
                 }
@@ -6936,6 +8617,23 @@ impl App {
             selected.is_some(),
             favorite,
         )
+    }
+
+    fn random_shortcut_enabled(&self) -> bool {
+        self.hold_y_random
+            && self.screen == Screen::Browse
+            && self.browsing == Browsing::Games
+            && !self.trail.is_empty()
+            && self.message.is_none()
+            && self.pending.is_none()
+            && self.build.is_none()
+            && self.index_terminal.is_none()
+            && self.refreshing.is_none()
+            && self.scraper_refresh_job.is_none()
+            && self.source_job.is_none()
+            && self.provider_job.is_none()
+            && self.scraper_job.is_none()
+            && self.scraper_pending_terminal.is_none()
     }
 
     /// Offer the folders MiSTer's favourites are already kept in, and the
@@ -7174,7 +8872,7 @@ impl App {
         self.category_image_choices.clear();
         self.category_image_target = None;
         self.screen = Screen::Browse;
-        self.open_context();
+        self.reopen_context_for(CHANGE_CATEGORY_IMAGE);
         if let Some(index) = self
             .menu
             .iter()
@@ -7189,6 +8887,7 @@ impl App {
         self.category_image_choices.clear();
         self.category_image_target = None;
         self.covers = self.fresh_cover_cache();
+        self.group_covers = self.fresh_group_cover_cache();
         self.reroll_category_art();
         self.screen = Screen::Browse;
         self.apply_geometry();
@@ -7247,12 +8946,24 @@ impl App {
             return;
         }
         self.source_system_id = Some(system_id.clone());
-        let pack_selected = self.pack_selected(&system_id);
-        self.menu = source_choice_rows(pack_selected);
-        self.menu_list = ListState::new(self.menu.len(), self.geometry.visible);
-        if pack_selected {
-            self.menu_list.select(1);
+        let mode = crate::artwork_source::mode(&self.settings, &system_id);
+        self.menu = source_choice_rows(mode);
+        if mode == crate::artwork_source::Mode::Automatic {
+            let effective = if self.source_problem(&system_id).is_some() {
+                "Unresolved"
+            } else if self.pack_selected(&system_id) {
+                SOURCE_ARTWORK_PACK
+            } else {
+                SOURCE_GAMELIST
+            };
+            self.menu[0] = format!("Automatic (Current: {effective})");
         }
+        self.menu_list = ListState::new(self.menu.len(), self.geometry.visible);
+        self.menu_list.select(match mode {
+            crate::artwork_source::Mode::Automatic => 0,
+            crate::artwork_source::Mode::Gamelist => 1,
+            crate::artwork_source::Mode::ArtworkPack => 2,
+        });
         self.screen = Screen::GameDataSource;
         self.message = None;
         self.apply_geometry();
@@ -7367,7 +9078,7 @@ impl App {
         self.menu.push(CHOOSE_PACK_DIRECTORY.to_string());
         self.menu_list = ListState::new(self.menu.len(), self.geometry.visible);
         if let Some(saved) =
-            crate::artwork_pack::selected_root(&self.settings.artwork_pack_roots, system_id)
+            crate::artwork_pack::selected_root(&self.effective_artwork_pack_roots, system_id)
         {
             if let Some(index) = self.source_locations.iter().position(|root| root == saved) {
                 self.menu_list.select(index);
@@ -7517,6 +9228,42 @@ impl App {
     }
 
     fn begin_source_switch(&mut self, target: crate::source_cache::Target) {
+        let Some(group) = self
+            .source_system_id
+            .as_deref()
+            .and_then(crate::artwork_pack::source_group)
+        else {
+            return;
+        };
+        let unchanged = !self.artwork_source_errors.contains_key(group)
+            && match &target {
+                crate::source_cache::Target::Gamelist => {
+                    !self.effective_artwork_pack_roots.contains_key(group)
+                }
+                crate::source_cache::Target::ArtworkPack { docs_root } => self
+                    .effective_artwork_pack_roots
+                    .get(group)
+                    .is_some_and(|root| Path::new(root) == docs_root),
+            };
+        if unchanged {
+            match persist_source_mode(
+                &self.settings,
+                &self.settings_path,
+                group,
+                &target,
+                self.source_switch_automatic,
+            ) {
+                Ok((settings, _, warning)) => {
+                    self.settings = settings;
+                    self.open_game_data_source();
+                    self.message = warning;
+                }
+                Err(error) => self.message = Some(source_change_failure_message(&error)),
+            }
+            self.source_switch_automatic = false;
+            self.dirty = true;
+            return;
+        }
         if self.source_job.is_some()
             || self.provider_job.is_some()
             || self.build.is_some()
@@ -7543,7 +9290,9 @@ impl App {
             && self.source_recovery_suppressed.contains(group))
             || self.source_job.is_some()
             || self.provider_job.is_some()
-            || self.build.is_some()
+            || self.build.as_ref().is_some_and(|build| {
+                purpose != SourceRecoveryPurpose::FullBuild || build.job.is_some()
+            })
             || self.refreshing.is_some()
         {
             return false;
@@ -7552,7 +9301,7 @@ impl App {
             self.source_recovery_suppressed.remove(group);
         }
         let Some(docs_root) =
-            crate::artwork_pack::selected_root(&self.settings.artwork_pack_roots, system_id)
+            crate::artwork_pack::selected_root(&self.effective_artwork_pack_roots, system_id)
                 .map(Path::to_path_buf)
         else {
             return false;
@@ -7600,7 +9349,13 @@ impl App {
                 self.source_operation = Some(operation);
                 self.source_progress = crate::source_cache::Progress::default();
                 self.source_cancelling = false;
-                self.show_source_progress();
+                if operation == SourceOperation::Recover(SourceRecoveryPurpose::FullBuild)
+                    && self.build.is_some()
+                {
+                    self.publish_index_progress();
+                } else {
+                    self.show_source_progress();
+                }
             }
             Err(error) => {
                 self.source_operation = None;
@@ -7628,6 +9383,14 @@ impl App {
             };
             match event {
                 crate::source_cache::Event::Progress(progress) => {
+                    if let Some(build) = self.build.as_mut().filter(|_| {
+                        self.source_operation
+                            == Some(SourceOperation::Recover(SourceRecoveryPurpose::FullBuild))
+                    }) {
+                        build.folders = progress.folders;
+                        build.games = progress.games;
+                        build.displayed = None;
+                    }
                     self.source_progress = progress;
                     self.dirty = true;
                 }
@@ -7654,6 +9417,14 @@ impl App {
                     providers,
                     progress,
                 } => {
+                    if self.source_cancelling && self.build.is_some() {
+                        self.source_job = None;
+                        self.source_progress = progress;
+                        self.source_cancelling = false;
+                        let operation = self.source_operation.take();
+                        self.finish_source_terminal(operation, None, true);
+                        break;
+                    }
                     self.source_job = None;
                     self.source_progress = progress;
                     self.source_cancelling = false;
@@ -7866,18 +9637,41 @@ impl App {
                     })
                     .unwrap_or_else(|| "this system".to_string());
                 if purpose == SourceRecoveryPurpose::FullBuild {
+                    if let Some(build) = self.build.as_mut() {
+                        if cancelled {
+                            build.cancelling = true;
+                        } else {
+                            build.done += 1;
+                        }
+                        build.current = None;
+                        build.folders = 0;
+                        build.games = 0;
+                        build.displayed = None;
+                        if let Some(error) = error {
+                            self.build_warning(format!("{name}: {error}"));
+                        } else if !cancelled {
+                            self.build_warning(format!(
+                                "{name}: Artwork Pack cache preparation stopped without a result"
+                            ));
+                        }
+                        self.message = None;
+                        self.publish_index_progress();
+                        self.dirty = true;
+                        return;
+                    }
                     if cancelled {
                         self.source_recovery_queue.clear();
                         self.message = Some(format!(
                             "System-list rebuild finished, but the Artwork Pack cache refresh for {name} was cancelled. The previous complete cache remains in use."
                         ));
-                    } else if error.is_some() {
-                        self.source_recovery_warnings.push(name.clone());
+                    } else if let Some(error) = error.as_ref() {
+                        self.source_recovery_warnings
+                            .push(format!("{name}: {}", artwork_pack_error_action(error)));
                         if !self.start_next_source_recovery() {
-                            self.message = Some(
-                                "Library rebuilt; some Pack caches were kept.\nSee degauss.log for details."
-                                    .to_string(),
-                            );
+                            self.message = Some(format!(
+                                "Library rebuild finished with problems:\n{}",
+                                self.source_recovery_warnings.join("\n")
+                            ));
                         }
                     } else {
                         self.source_recovery_queue.clear();
@@ -7885,6 +9679,9 @@ impl App {
                             "Library rebuild finished, but an Artwork Pack cache stopped without a result."
                                 .to_string(),
                         );
+                    }
+                    if self.source_job.is_none() {
+                        self.screen = self.index_return_screen;
                     }
                     self.apply_geometry();
                     self.dirty = true;
@@ -7973,9 +9770,14 @@ impl App {
             );
             return;
         };
-        let mut next_index = self.index.clone().unwrap_or_default();
+        let mut next_index = self
+            .build
+            .as_ref()
+            .map(|build| build.index.clone())
+            .or_else(|| self.index.clone())
+            .unwrap_or_default();
         update_index_summaries(&mut next_index, &self.all_systems, prepared.caches());
-        let (_caches, install_warnings) = match prepared
+        let (caches, install_warnings) = match prepared
             .with_index(&self.cache_dir, &next_index)
             .and_then(|prepared| prepared.install())
         {
@@ -8006,7 +9808,43 @@ impl App {
             self.source_recovery_suppressed.remove(group);
         }
         self.store_source_providers(providers);
+        if purpose == SourceRecoveryPurpose::FullBuild {
+            if let Some(build) = self.build.as_mut() {
+                build.index = next_index;
+                for staged in caches {
+                    let summary = build.index.systems[&staged.id];
+                    build.done += 1;
+                    build.folders_done += staged.cache.folders.len();
+                    build.games_done += summary.games;
+                    crate::note(&format!(
+                        "index {}: Artwork Pack cache prepared, {} games",
+                        staged.id, summary.games
+                    ));
+                    if self.open_system.as_deref() == Some(staged.id.as_str()) {
+                        self.artwork_provider =
+                            self.artwork_provider_cache.get(&staged.id).cloned();
+                        self.system_cache = Some(staged.cache);
+                        self.library = None;
+                    }
+                }
+                build.left.retain(|at| {
+                    crate::artwork_pack::source_group(&self.all_systems[*at].def.id) != group
+                });
+                build.current = None;
+                build.folders = 0;
+                build.games = 0;
+                build.displayed = None;
+                for warning in std::mem::take(&mut self.source_recovery_warnings) {
+                    self.build_warning(warning);
+                }
+                self.message = None;
+                self.publish_index_progress();
+                self.dirty = true;
+                return;
+            }
+        }
         self.index = Some(next_index);
+        self.apply_index();
         self.correct_system_counts();
         self.rebuild_system_list();
         self.screen = Screen::Browse;
@@ -8047,11 +9885,14 @@ impl App {
             }
             SourceRecoveryPurpose::FullBuild => {
                 if !self.start_next_source_recovery() {
+                    self.screen = self.index_return_screen;
                     self.message = Some(if self.source_recovery_warnings.is_empty() {
                         "Library rebuild complete.".to_string()
                     } else {
-                        "Library rebuild complete with storage warnings.\nSee degauss.log for details."
-                            .to_string()
+                        format!(
+                            "Library rebuild finished with problems:\n{}",
+                            self.source_recovery_warnings.join("\n")
+                        )
                     });
                 }
             }
@@ -8069,7 +9910,7 @@ impl App {
         let data = crate::cache::load_artwork_pack_data(&self.cache_dir, &id);
         self.system_cache = data.map(|data| data.cache);
         self.library = None;
-        let root = crate::artwork_pack::selected_root(&self.settings.artwork_pack_roots, &id)
+        let root = crate::artwork_pack::selected_root(&self.effective_artwork_pack_roots, &id)
             .map(Path::to_path_buf);
         self.artwork_provider = root
             .as_deref()
@@ -8118,18 +9959,34 @@ impl App {
             }
         };
 
-        let (settings, label, settings_warning) =
-            match persist_source_choice(&self.settings, &self.settings_path, group, &target) {
-                Ok(saved) => saved,
-                Err(error) => {
-                    crate::note(&format!("game source  settings unchanged: {error}"));
-                    self.open_game_data_source();
-                    self.message = Some(source_change_failure_message(&error));
-                    return;
-                }
-            };
+        let (settings, label, settings_warning) = match persist_source_mode(
+            &self.settings,
+            &self.settings_path,
+            group,
+            &target,
+            self.source_switch_automatic,
+        ) {
+            Ok(saved) => saved,
+            Err(error) => {
+                crate::note(&format!("game source  settings unchanged: {error}"));
+                self.open_game_data_source();
+                self.message = Some(source_change_failure_message(&error));
+                return;
+            }
+        };
         warnings.extend(settings_warning);
         self.settings = settings;
+        self.source_switch_automatic = false;
+        self.artwork_source_errors.remove(group);
+        match &target {
+            crate::source_cache::Target::Gamelist => {
+                self.effective_artwork_pack_roots.remove(group);
+            }
+            crate::source_cache::Target::ArtworkPack { docs_root } => {
+                self.effective_artwork_pack_roots
+                    .insert(group.into(), docs_root.to_string_lossy().into_owned());
+            }
+        }
         if let Some(index) = self.index.as_mut() {
             update_index_summaries(index, &self.all_systems, &caches);
             if let Err(error) = crate::cache::save_index(&self.cache_dir, index) {
@@ -8141,6 +9998,7 @@ impl App {
         self.store_source_providers(providers);
         self.source_recovery_suppressed.remove(group);
         self.covers = self.fresh_cover_cache();
+        self.group_covers = self.fresh_group_cover_cache();
         self.gallery_covers = self.fresh_gallery_cover_cache();
         self.saver_candidates = None;
         self.saver_pool.clear();
@@ -8163,7 +10021,7 @@ impl App {
             }
             self.library = None;
             let pack_root =
-                crate::artwork_pack::selected_root(&self.settings.artwork_pack_roots, &id)
+                crate::artwork_pack::selected_root(&self.effective_artwork_pack_roots, &id)
                     .map(Path::to_path_buf);
             self.artwork_provider = pack_root
                 .as_deref()
@@ -8190,6 +10048,70 @@ impl App {
 
     /// What can be done with the folder on screen.
     fn open_context(&mut self) {
+        self.context_page = None;
+        self.refresh_context();
+    }
+
+    fn context_is_root(&self) -> bool {
+        self.browsing != Browsing::Categories && self.context_page.is_none()
+    }
+
+    fn remember_context_selection(&mut self) {
+        if let Some(page) = self.context_page {
+            self.context_page_selections[page.index()] = self.menu_list.selected();
+        } else {
+            self.context_root_selection = self.menu_list.selected();
+        }
+    }
+
+    fn show_context_page(&mut self, page: Option<ContextPage>) {
+        self.context_page = page;
+        self.menu = if self.browsing == Browsing::Categories {
+            self.context_page = None;
+            self.context_actions.clone()
+        } else if let Some(page) = page {
+            self.context_actions
+                .iter()
+                .filter(|action| page.contains(action))
+                .cloned()
+                .collect()
+        } else {
+            ContextPage::ALL
+                .into_iter()
+                .filter(|page| {
+                    self.context_actions
+                        .iter()
+                        .any(|action| page.contains(action))
+                })
+                .map(|page| page.label().to_string())
+                .collect()
+        };
+        let selected = self
+            .context_page
+            .map(|page| self.context_page_selections[page.index()])
+            .unwrap_or(self.context_root_selection);
+        self.menu_list = ListState::new(self.menu.len(), self.geometry.visible);
+        self.menu_list.select(selected);
+        self.screen = Screen::Context;
+        self.apply_geometry();
+        self.dirty = true;
+    }
+
+    fn reopen_context_for(&mut self, action: &str) {
+        self.context_page = if self.browsing == Browsing::Categories {
+            None
+        } else {
+            ContextPage::ALL
+                .into_iter()
+                .find(|page| page.contains(action))
+        };
+        self.refresh_context();
+        if let Some(index) = self.menu.iter().position(|entry| entry == action) {
+            self.menu_list.select(index);
+        }
+    }
+
+    fn refresh_context(&mut self) {
         // Inside the Favourites shelf the rows ARE the favourite files, so
         // the target-keyed lookup below answers false for every one of
         // them and the menu offered to Add what is already there. On the
@@ -8228,7 +10150,7 @@ impl App {
         let game_data_source = context_system
             .as_deref()
             .is_some_and(crate::artwork_pack::supports);
-        self.menu = context_entries(
+        self.context_actions = context_entries(
             self.browsing,
             !self.filter.is_empty(),
             favorite,
@@ -8245,12 +10167,10 @@ impl App {
                     .is_some_and(|id| self.settings.core_choices.contains_key(&id)),
             },
         );
-        if self.menu.is_empty() {
+        if self.context_actions.is_empty() {
             return;
         }
-        self.menu_list = ListState::new(self.menu.len(), self.geometry.visible);
-        self.screen = Screen::Context;
-        self.apply_geometry();
+        self.show_context_page(self.context_page);
     }
 
     fn scraper_scope_from_context(&self, choice: &str) -> Option<crate::scraper::Scope> {
@@ -8311,10 +10231,27 @@ impl App {
     }
 
     fn open_scraper(&mut self, scope: crate::scraper::Scope, return_to: Screen) {
+        let problem = match &scope {
+            crate::scraper::Scope::All => self
+                .artwork_source_errors
+                .values()
+                .next()
+                .map(String::as_str),
+            crate::scraper::Scope::System { system_id, .. }
+            | crate::scraper::Scope::Folder { system_id, .. }
+            | crate::scraper::Scope::Game { system_id, .. } => self.source_problem(system_id),
+        };
+        if let Some(problem) = problem {
+            self.message = Some(format!(
+                "Scraping cannot start while a game data source is unresolved:\n{problem}"
+            ));
+            self.dirty = true;
+            return;
+        }
         let only_artwork_pack = scraper_scope_only_artwork_pack(
             &scope,
             &self.all_systems,
-            &self.settings.artwork_pack_roots,
+            &self.effective_artwork_pack_roots,
         );
         if !only_artwork_pack {
             if let Some(problem) = &self.scraper_settings_problem {
@@ -8333,7 +10270,11 @@ impl App {
         }
         self.scraper_scope = scope;
         self.scraper_return = return_to;
-        self.scraper_list = ListState::new(SCRAPER_ROWS.len(), self.geometry.visible);
+        self.scraper_list = ListState::new(
+            scraper_rows(&self.scraper_scope).len(),
+            self.geometry.visible,
+        );
+        self.scraper_matches_return = Screen::ScraperProgress;
         self.scraper_matches.clear();
         self.scraper_match_list = ListState::new(0, self.geometry.visible);
         self.scraper_search_term = match &self.scraper_scope {
@@ -8360,6 +10301,23 @@ impl App {
         shortened_label(self.scraper_scope.label(), room)
     }
 
+    fn scraper_system_id(&self) -> Option<&str> {
+        match &self.scraper_scope {
+            crate::scraper::Scope::All => None,
+            crate::scraper::Scope::System { system_id, .. }
+            | crate::scraper::Scope::Folder { system_id, .. }
+            | crate::scraper::Scope::Game { system_id, .. } => Some(system_id),
+        }
+    }
+
+    fn scraper_search_settings(&self) -> crate::scraper::ScraperSettings {
+        let mut settings = self.scraper_settings.clone();
+        if let Some(system_id) = self.scraper_system_id() {
+            settings.media_type = settings.media_type_for(system_id).to_string();
+        }
+        settings
+    }
+
     fn scraper_value(&self, row: ScraperRow) -> String {
         match row {
             ScraperRow::Username if self.scraper_settings.username.is_empty() => {
@@ -8371,16 +10329,84 @@ impl App {
             }
             ScraperRow::Password => "Saved".to_string(),
             ScraperRow::Images => self.scraper_settings.image_policy.label().to_string(),
+            ScraperRow::ImageType => {
+                let media_type = match self.scraper_system_id() {
+                    Some(id) => self.scraper_settings.media_type_override(id),
+                    None => Some(self.scraper_settings.media_type.as_str()),
+                };
+                match media_type {
+                    None => "Use Global".to_string(),
+                    Some(value) if value.eq_ignore_ascii_case("ss") => "Screenshot".to_string(),
+                    Some(value) if value.eq_ignore_ascii_case("box-2D") => {
+                        "Box Art (2D)".to_string()
+                    }
+                    Some(value) if value.eq_ignore_ascii_case("box-3D") => {
+                        "Box Art (3D)".to_string()
+                    }
+                    Some(value) => value.to_string(),
+                }
+            }
             ScraperRow::Metadata => self.scraper_settings.metadata_policy.label().to_string(),
-            ScraperRow::Start => ">".to_string(),
+            ScraperRow::Start | ScraperRow::Search => ">".to_string(),
             ScraperRow::ClearLogin | ScraperRow::Back => String::new(),
         }
     }
 
+    fn scraper_selected_help(&self) -> &'static str {
+        match scraper_rows(&self.scraper_scope).get(self.scraper_list.selected()).copied() {
+            Some(ScraperRow::Username) => "Enter the username for the ScreenScraper account.",
+            Some(ScraperRow::Password) => "Enter the account password. Saving it on the card requires storage confirmation.",
+            Some(ScraperRow::Images) => "Choose no image downloads, missing images only, or replacement of existing images.",
+            Some(ScraperRow::ImageType) if self.scraper_system_id().is_some() => "Choose this system's artwork type, or Use Global to follow Default Image.",
+            Some(ScraperRow::ImageType) => "Choose the default artwork type for systems without their own image choice.",
+            Some(ScraperRow::Metadata) => "Choose no metadata changes, filling empty fields, or replacement of existing fields.",
+            Some(ScraperRow::Start) => "Start scraping this scope with the selected image and metadata settings.",
+            Some(ScraperRow::Search) => "Search again, even if matched. Image and metadata settings still apply.",
+            Some(ScraperRow::ClearLogin) => "Remove the saved ScreenScraper username and password after confirmation.",
+            Some(ScraperRow::Back) => "Save these settings and return to the previous menu.",
+            None => "",
+        }
+    }
+
     fn adjust_scraper(&mut self, delta: isize) {
-        match SCRAPER_ROWS.get(self.scraper_list.selected()).copied() {
+        match scraper_rows(&self.scraper_scope)
+            .get(self.scraper_list.selected())
+            .copied()
+        {
             Some(ScraperRow::Images) => {
                 self.scraper_settings.image_policy = self.scraper_settings.image_policy.step(delta);
+            }
+            Some(ScraperRow::ImageType) => {
+                let choices = [None, Some("ss"), Some("box-2D"), Some("box-3D")];
+                let id = self.scraper_system_id().map(str::to_string);
+                let choices = if id.is_some() {
+                    &choices[..]
+                } else {
+                    &choices[1..]
+                };
+                let current = match id.as_deref() {
+                    Some(id) => self.scraper_settings.media_type_override(id),
+                    None => Some(self.scraper_settings.media_type.as_str()),
+                };
+                let at = choices.iter().position(|value| match (*value, current) {
+                    (None, None) => true,
+                    (Some(a), Some(b)) => a.eq_ignore_ascii_case(b),
+                    _ => false,
+                });
+                let next = at.map_or_else(
+                    || if delta < 0 { choices.len() - 1 } else { 0 },
+                    |at| step(at, delta, choices.len()),
+                );
+                if let Some(id) = id {
+                    if let Err(error) = self
+                        .scraper_settings
+                        .set_media_type_override(&id, choices[next])
+                    {
+                        self.message = Some(error.to_string());
+                    }
+                } else if let Some(value) = choices[next] {
+                    self.scraper_settings.media_type = value.to_string();
+                }
             }
             Some(ScraperRow::Metadata) => {
                 self.scraper_settings.metadata_policy =
@@ -8392,11 +10418,17 @@ impl App {
     }
 
     fn activate_scraper_row(&mut self) {
-        match SCRAPER_ROWS.get(self.scraper_list.selected()).copied() {
+        match scraper_rows(&self.scraper_scope)
+            .get(self.scraper_list.selected())
+            .copied()
+        {
             Some(ScraperRow::Username) => self.open_scraper_keyboard(ScraperField::Username),
             Some(ScraperRow::Password) => self.open_scraper_keyboard(ScraperField::Password),
-            Some(ScraperRow::Images | ScraperRow::Metadata) => self.adjust_scraper(1),
+            Some(ScraperRow::Images | ScraperRow::ImageType | ScraperRow::Metadata) => {
+                self.adjust_scraper(1)
+            }
             Some(ScraperRow::Start) => self.confirm_scrape(),
+            Some(ScraperRow::Search) => self.open_manual_scraper_search(),
             Some(ScraperRow::ClearLogin) => {
                 self.pending = Some(Pending::ClearScraperLogin);
                 self.message =
@@ -8476,7 +10508,7 @@ impl App {
 
     fn finish_scraper_keyboard(&mut self) {
         if self.scraper_keyboard_field == ScraperField::SearchTerm {
-            let term = squashed(&self.scraper_keyboard_draft);
+            let term = scraper_search_title(&self.scraper_keyboard_draft);
             self.scraper_keyboard_draft.clear();
             self.screen = Screen::ScraperMatches;
             self.apply_geometry();
@@ -8543,6 +10575,8 @@ impl App {
                 "No Matches for {}",
                 shortened_label(&self.scraper_search_term, 32)
             )
+        } else if self.scraper_matches.len() == 1 {
+            "1 Match".to_string()
         } else {
             format!("{} Matches", self.scraper_matches.len())
         };
@@ -8557,18 +10591,53 @@ impl App {
             return;
         }
         self.scraper_search_job = None;
+        self.scraper_matches_return = Screen::ScraperProgress;
         self.screen = Screen::ScraperMatches;
         self.set_scraper_matches(matches);
     }
 
-    fn leave_scraper_matches(&mut self) {
-        self.scraper_search_job = None;
+    fn clear_scraper_preview(&mut self) {
         self.scraper_preview_job = None;
         self.scraper_preview_match_id = None;
         self.scraper_preview_image = None;
         self.scraper_preview_caption.clear();
-        self.screen = Screen::ScraperProgress;
+        self.ui.set_art(slint::Image::default());
+        self.ui.set_has_art(false);
+        self.ui.set_art_caption(SharedString::default());
+        self.ui.set_art_heart(false);
+        self.ui.set_art_scale_x(1.0);
+    }
+
+    fn leave_scraper_matches(&mut self) {
+        self.scraper_search_job = None;
+        self.clear_scraper_preview();
+        self.screen = self.scraper_matches_return;
         self.apply_geometry();
+        self.dirty = true;
+    }
+
+    fn open_manual_scraper_search(&mut self) {
+        if !matches!(self.scraper_scope, crate::scraper::Scope::Game { .. }) {
+            return;
+        }
+        if self.build.is_some() || self.refreshing.is_some() {
+            self.message = Some("Wait for the current library update to finish.".to_string());
+        } else if self.scraper_settings.username.is_empty()
+            || self.scraper_settings.password.is_empty()
+        {
+            self.message = Some("Set the ScreenScraper username and password first.".to_string());
+        } else if self.scraper_settings.image_policy == crate::scraper::ImagePolicy::Off
+            && self.scraper_settings.metadata_policy == crate::scraper::MetadataPolicy::Off
+        {
+            self.message = Some("Enable images, metadata, or both first.".to_string());
+        } else if !self.scraper_settings.accepted_plaintext_warning {
+            self.pending = Some(Pending::AcceptScraperStorageForSearch);
+            self.message = Some("ScreenScraper password will be stored as plain text on the card.\n\nA accept, B cancel".to_string());
+        } else if self.save_scraper_settings() {
+            self.open_scraper_matches(Vec::new());
+            self.scraper_matches_return = Screen::Scraper;
+            self.start_scraper_search();
+        }
         self.dirty = true;
     }
 
@@ -8578,7 +10647,7 @@ impl App {
             self.dirty = true;
             return;
         };
-        let term = squashed(&self.scraper_search_term);
+        let term = scraper_search_title(&self.scraper_search_term);
         if term.is_empty() {
             self.scraper_search_status = "Enter a game title".to_string();
             self.dirty = true;
@@ -8596,7 +10665,7 @@ impl App {
         let request = crate::scraper::SearchRequest {
             system_id,
             term: term.clone(),
-            settings: self.scraper_settings.clone(),
+            settings: self.scraper_search_settings(),
             developer,
         };
         let job = match crate::scraper::start_search(request) {
@@ -8804,6 +10873,7 @@ impl App {
     }
 
     fn begin_scraper_job(&mut self, job: crate::scraper::Job, manual_resolution: bool) {
+        self.clear_scraper_preview();
         let scope_label = self.scraper_scope_label();
         self.scraper_progress = crate::scraper::Progress {
             scope: scope_label,
@@ -8811,6 +10881,7 @@ impl App {
             ..Default::default()
         };
         self.scraper_progress_list = ListState::new(SCRAPER_PROGRESS_ROWS, self.geometry.visible);
+        self.scraper_details = false;
         self.scraper_job = Some(job);
         self.scraper_manual_resolution_eligible = manual_resolution;
         self.scraper_open_matches_after_refresh = false;
@@ -9044,6 +11115,10 @@ impl App {
                 self.scraper_progress.unchanged.to_string(),
             ),
             (
+                "Linked copies".to_string(),
+                self.scraper_progress.deduplicated_aliases.to_string(),
+            ),
+            (
                 "Unresolved".to_string(),
                 format!(
                     "{} missing, {} ambiguous, {} no image",
@@ -9081,6 +11156,7 @@ impl App {
     }
 
     fn poll_scraper(&mut self) {
+        self.poll_scraper_cache_refresh();
         loop {
             let event = self
                 .scraper_job
@@ -9148,6 +11224,9 @@ impl App {
                 .unwrap_or_else(|| id.clone());
             self.scraper_progress.current = format!("Refreshing {name}");
             self.scraper_cache_refresh_active = true;
+            self.scraper_refresh_folder.clear();
+            self.scraper_refresh_folders = 0;
+            self.scraper_refresh_games = 0;
             self.refreshing = Some(id);
         } else {
             self.scraper_cache_refresh_active = false;
@@ -9170,11 +11249,136 @@ impl App {
                 squashed(&error)
             ));
             self.scraper_progress.system_errors += 1;
-            self.scraper_progress.last_problem =
-                Some("A Degauss library list could not be refreshed".to_string());
+            self.scraper_progress.last_problem = Some(format!("Library refresh failed: {error}"));
         }
         self.scraper_cache_refresh_active = false;
         self.start_next_scraper_refresh();
+    }
+
+    fn start_scraper_cache_refresh(&mut self, id: String) {
+        let prepared = (|| -> Result<crate::index_job::Request> {
+            let at = self
+                .all_systems
+                .iter()
+                .position(|system| system.def.id == id)
+                .ok_or_else(|| {
+                    DegaussError::unsupported(
+                        "library refresh",
+                        format!("system {id} is no longer available"),
+                    )
+                })?;
+            let roots = self
+                .config
+                .game_roots
+                .iter()
+                .map(PathBuf::from)
+                .collect::<Vec<_>>();
+            let paths =
+                crate::systems::existing_folders_checked(&self.all_systems[at].def, &roots)?;
+            if paths.is_empty() {
+                return Err(DegaussError::unsupported(
+                    "library refresh",
+                    format!("no folder for {id} is on the card"),
+                ));
+            }
+            self.all_systems[at].paths = paths;
+            Ok(crate::index_job::Request {
+                id: id.clone(),
+                config: self.all_systems[at].to_config(),
+                names: self.names.clone(),
+                cache_dir: self.cache_dir.clone(),
+                forced: true,
+                artwork_pack: false,
+                index: self.index.clone().unwrap_or_default(),
+                retain_cache: self.open_system.as_deref() == Some(id.as_str()),
+            })
+        })();
+        match prepared {
+            Ok(request) => match crate::index_job::start(request) {
+                Ok(job) => {
+                    self.scraper_refresh_id = Some(id);
+                    self.scraper_refresh_job = Some(job);
+                }
+                Err(failure) => self.finish_scraper_refresh(Some(failure.error.to_string())),
+            },
+            Err(error) => self.finish_scraper_refresh(Some(error.to_string())),
+        }
+        self.dirty = true;
+    }
+
+    fn poll_scraper_cache_refresh(&mut self) {
+        loop {
+            let Some(event) = self
+                .scraper_refresh_job
+                .as_mut()
+                .and_then(crate::index_job::Job::try_recv)
+            else {
+                return;
+            };
+            let error = match event {
+                crate::index_job::Event::Progress {
+                    folders,
+                    games,
+                    folder,
+                } => {
+                    self.scraper_refresh_folders = folders;
+                    self.scraper_refresh_games = games;
+                    self.scraper_refresh_folder = folder;
+                    self.dirty = true;
+                    continue;
+                }
+                crate::index_job::Event::Ready {
+                    index,
+                    cache,
+                    warnings,
+                    folders,
+                    games,
+                    ..
+                } => {
+                    self.index = Some(index);
+                    self.scraper_refresh_folders = folders;
+                    self.scraper_refresh_games = games;
+                    if let Some(id) = &self.scraper_refresh_id {
+                        if let Some(system) =
+                            self.all_systems.iter().find(|system| system.def.id == *id)
+                        {
+                            for path in &system.paths {
+                                self.covers.invalidate_under(path);
+                                self.gallery_covers.invalidate_under(path);
+                            }
+                            if self.open_system.as_deref() == Some(id.as_str()) {
+                                self.opened_config = Some(system.to_config());
+                                self.library = None;
+                                self.system_cache = cache;
+                                self.artwork_provider = None;
+                            }
+                        }
+                    }
+                    self.apply_index();
+                    self.correct_system_counts();
+                    self.rebuild_system_list();
+                    if self.browsing == Browsing::Games
+                        && self.open_system == self.scraper_refresh_id
+                    {
+                        self.relist_here();
+                    }
+                    (!warnings.is_empty()).then(|| warnings.join("\n"))
+                }
+                crate::index_job::Event::Failed { error, index } => {
+                    self.index = Some(index);
+                    Some(error.to_string())
+                }
+                crate::index_job::Event::Cancelled { index } => {
+                    self.index = Some(index);
+                    Some("The library refresh was cancelled before completion".into())
+                }
+            };
+            self.scraper_refresh_job = None;
+            self.scraper_refresh_id = None;
+            self.finish_scraper_refresh(error);
+            self.dirty = true;
+            return;
+        }
     }
 
     fn close_scraper_progress(&mut self) {
@@ -9185,7 +11389,7 @@ impl App {
             return;
         }
         self.scraper_terminal = None;
-        self.screen = Screen::Browse;
+        self.screen = self.scraper_return;
         self.resolve_view();
         self.apply_geometry();
         self.touch_selection();
@@ -9217,12 +11421,32 @@ impl App {
                 self.scraper_keyboard_draft.pop();
             }
             Action::Menu => self.cycle_scraper_keyboard(),
-            Action::CyclePresent | Action::FavoriteShortcut => {}
+            Action::CyclePresent | Action::FavoriteShortcut | Action::RandomShortcut => {}
         }
         self.dirty = true;
     }
 
     fn handle_scraper_progress(&mut self, action: Action) {
+        if !self.scraper_details {
+            match action {
+                Action::Accept => {
+                    self.scraper_details = true;
+                    self.restart_marquee();
+                }
+                Action::Quit if self.scraper_job.is_some() && !self.scraper_cancelling => {
+                    self.pending = Some(Pending::CancelScrape);
+                    self.message = Some(format!(
+                        "Cancel scrape for {}?\n\nA yes, B no",
+                        self.scraper_scope_label()
+                    ));
+                }
+                Action::Quit => self.close_scraper_progress(),
+                _ => {}
+            }
+            self.dirty = true;
+            return;
+        }
+        let selected = self.scraper_progress_list.selected();
         match action {
             Action::Up => {
                 self.scraper_progress_list.move_items(-1);
@@ -9244,18 +11468,16 @@ impl App {
             Action::End => {
                 self.scraper_progress_list.go_last();
             }
-            Action::Quit if self.scraper_job.is_some() => {
-                if !self.scraper_cancelling {
-                    self.pending = Some(Pending::CancelScrape);
-                    self.message = Some(format!(
-                        "Cancel scrape for {}?\n\nA yes, B no",
-                        self.scraper_scope_label()
-                    ));
-                }
-            }
-            Action::Accept if self.scraper_job.is_some() => {}
-            Action::Quit | Action::Accept => self.close_scraper_progress(),
-            Action::Menu | Action::Context | Action::CyclePresent | Action::FavoriteShortcut => {}
+            Action::Quit => self.scraper_details = false,
+            Action::Accept => {}
+            Action::Menu
+            | Action::Context
+            | Action::CyclePresent
+            | Action::FavoriteShortcut
+            | Action::RandomShortcut => {}
+        }
+        if selected != self.scraper_progress_list.selected() {
+            self.restart_marquee();
         }
         self.dirty = true;
     }
@@ -9299,7 +11521,8 @@ impl App {
             | Action::Faster
             | Action::Menu
             | Action::CyclePresent
-            | Action::FavoriteShortcut => false,
+            | Action::FavoriteShortcut
+            | Action::RandomShortcut => false,
         };
         if moved {
             self.restart_marquee();
@@ -9314,27 +11537,117 @@ impl App {
     /// as opening an unread system does: the read takes seconds on a big
     /// system, and a still screen with no explanation looks hung.
     fn rebuild_open_system(&mut self) {
+        if self.build.is_some()
+            || self.source_job.is_some()
+            || self.provider_job.is_some()
+            || self.source_resolution.is_some()
+        {
+            self.message = Some("Wait for the current library update to finish.".into());
+            self.dirty = true;
+            return;
+        }
+        let group = self
+            .open_system
+            .as_deref()
+            .and_then(crate::artwork_pack::source_group);
+        if let Some(group) = group {
+            self.resolve_artwork_sources(Some(group), SourceResolutionAction::RefreshSystem);
+        } else {
+            self.rebuild_open_system_resolved();
+        }
+    }
+
+    fn rebuild_open_system_resolved(&mut self) {
+        if let Some(problem) = self
+            .open_system
+            .as_deref()
+            .and_then(|id| self.source_problem(id))
+        {
+            self.message = Some(problem.to_string());
+            self.dirty = true;
+            return;
+        }
+        self.index_return_screen = self.screen;
+        self.index_terminal = None;
+        self.index_details = false;
         self.screen = Screen::Browse;
         self.apply_geometry();
         self.dirty = true;
         // A full build is already reading every system, this one
         // included, and its progress message is on screen; a second read
         // of the same folders would be the same work twice.
-        if self.build.is_some() {
+        if self.build.is_some() || self.source_job.is_some() || self.provider_job.is_some() {
             return;
         }
         let Some(id) = self.open_system.clone() else {
             return;
         };
-        let name = self
-            .open_system_ref()
-            .map(|system| system.name().to_string())
-            .unwrap_or_default();
-        self.message = Some(format!("Indexing {name} list"));
-        self.refreshing = Some(id);
+        if self.pack_selected(&id) {
+            self.begin_source_recovery(&id, SourceRecoveryPurpose::RefreshSystem);
+            return;
+        }
+        let Some(at) = self
+            .all_systems
+            .iter()
+            .position(|system| system.def.id == id)
+        else {
+            return;
+        };
+        let roots = self
+            .config
+            .game_roots
+            .iter()
+            .map(PathBuf::from)
+            .collect::<Vec<_>>();
+        match crate::systems::existing_folders_checked(&self.all_systems[at].def, &roots) {
+            Ok(paths) if !paths.is_empty() => self.all_systems[at].paths = paths,
+            Ok(_) => {
+                self.message = Some("No folder for this system is on the card".to_string());
+                return;
+            }
+            Err(error) => {
+                self.message = Some(error.to_string());
+                return;
+            }
+        }
+        self.opened_config = Some(self.all_systems[at].to_config());
+        self.library = None;
+        self.build = Some(Building {
+            left: vec![at],
+            done: 0,
+            total: 1,
+            index: self.index.clone().unwrap_or_default(),
+            forced: true,
+            current: None,
+            job: None,
+            discovery: None,
+            awaiting_frame: false,
+            displayed: None,
+            cancelling: false,
+            single: true,
+            folders: 0,
+            games: 0,
+            folders_done: 0,
+            games_done: 0,
+            folder: String::new(),
+            folder_revision: 0,
+            started: Instant::now(),
+        });
+        self.pause_index_marquees();
+        self.publish_index_progress();
     }
 
     pub fn handle(&mut self, action: Action) -> Option<Outcome> {
+        if self.source_resolution.is_some() && self.build.is_none() {
+            if matches!(action, Action::Quit) {
+                self.source_resolution_cancelled = true;
+                if let Some(job) = &self.source_resolution {
+                    job.cancel();
+                }
+            }
+            self.dirty = true;
+            return None;
+        }
         // Anything at all counts as somebody being here.
         self.last_input = Instant::now();
         if self.screen == Screen::Screensaver {
@@ -9355,6 +11668,53 @@ impl App {
             return None;
         }
 
+        if self.build.is_some() || self.index_terminal.is_some() {
+            match action {
+                Action::Accept if !self.index_details => {
+                    self.index_details = true;
+                    self.message = self.index_overview().map(|view| view.report);
+                }
+                Action::Quit if self.index_details => {
+                    self.index_details = false;
+                    self.message = None;
+                }
+                Action::Quit if self.build.is_some() => {
+                    let build = self.build.as_mut().expect("active build");
+                    build.cancelling = true;
+                    if let Some(job) = &build.job {
+                        job.cancel();
+                    }
+                    if let Some(Discovery::Running(job)) = &build.discovery {
+                        job.cancel();
+                    }
+                    if let Some(job) = &self.source_resolution {
+                        self.source_resolution_cancelled = true;
+                        job.cancel();
+                    }
+                    if let Some(job) = &self.source_job {
+                        self.source_cancelling = true;
+                        job.cancel();
+                    }
+                    build.displayed = None;
+                    self.publish_index_progress();
+                }
+                Action::Quit => {
+                    self.index_terminal = None;
+                    self.message = None;
+                    self.screen = self.index_return_screen;
+                    self.resolve_view();
+                    self.apply_geometry();
+                    self.touch_selection();
+                }
+                _ if self.index_details => {
+                    self.scroll_message(action);
+                }
+                _ => {}
+            }
+            self.dirty = true;
+            return None;
+        }
+
         if let Some(pending) = self.pending.clone() {
             match action {
                 Action::Accept => {
@@ -9363,6 +11723,13 @@ impl App {
                     self.dirty = true;
                     match pending {
                         Pending::Exit => return Some(Outcome::Quit),
+                        Pending::RunScript(launch) => {
+                            if let Err(error) = launch.validate() {
+                                self.message = Some(error.to_string());
+                            } else if self.save_settings() {
+                                return Some(Outcome::Script(launch));
+                            }
+                        }
                         Pending::Hide(index) => {
                             self.hide_system(index);
                             self.screen = Screen::Browse;
@@ -9382,6 +11749,13 @@ impl App {
                             settings.accepted_plaintext_warning = true;
                             if self.replace_scraper_settings(settings) {
                                 self.confirm_scrape();
+                            }
+                        }
+                        Pending::AcceptScraperStorageForSearch => {
+                            let mut settings = self.scraper_settings.clone();
+                            settings.accepted_plaintext_warning = true;
+                            if self.replace_scraper_settings(settings) {
+                                self.open_manual_scraper_search();
                             }
                         }
                         Pending::ClearScraperLogin => {
@@ -9430,8 +11804,16 @@ impl App {
         // dispatch below depend on this return coming first: a press that
         // dismisses a message must not also jump a letter or a page.
         if message_consumes_input(self.message.is_some(), self.build.is_some()) {
+            if self.scroll_message(action) {
+                return None;
+            }
             self.message = None;
             self.dirty = true;
+            return None;
+        }
+
+        if self.screen == Screen::Information {
+            self.handle_information(action);
             return None;
         }
 
@@ -9508,6 +11890,8 @@ impl App {
                     self.adjust_scraper(delta);
                 } else if self.screen == Screen::Context {
                     self.adjust_context(delta);
+                } else if self.screen == Screen::OptionsRoot {
+                    return None;
                 } else {
                     // The Left and right setting applies only while
                     // browsing. The other screens that fall through to
@@ -9602,6 +11986,11 @@ impl App {
                 Some(FavoriteChange::Remove) => self.remove_favorite(),
                 None => {}
             },
+            Action::RandomShortcut => {
+                if self.random_shortcut_enabled() {
+                    return self.random_here(false);
+                }
+            }
             Action::CyclePresent => self.pending_present_switch = true,
             Action::Accept => match self.screen {
                 Screen::Screensaver => self.leave_screensaver(),
@@ -9642,6 +12031,18 @@ impl App {
                         .get(self.menu_list.selected())
                         .cloned()
                         .unwrap_or_default();
+                    if was_context {
+                        self.remember_context_selection();
+                        if self.context_is_root() {
+                            if let Some(page) = ContextPage::ALL
+                                .into_iter()
+                                .find(|page| page.label() == choice)
+                            {
+                                self.show_context_page(Some(page));
+                            }
+                            return None;
+                        }
+                    }
                     // Any action other than continuing to adjust the view
                     // closes or replaces Context. Persist a view already
                     // chosen there before that path can launch or fail.
@@ -9649,8 +12050,9 @@ impl App {
                         && choice != CHANGE_VIEW
                         && choice != USE_GLOBAL_VIEW
                         && choice != USE_DEFAULT_CORE_VERSION
+                        && !self.save_settings()
                     {
-                        self.save_settings();
+                        return None;
                     }
                     if choice == CHANGE_VIEW || choice == CORE_VERSION {
                         // Stays open, like a setting: the point is to see
@@ -9672,6 +12074,8 @@ impl App {
                         }
                     } else if choice == GAME_DATA_SOURCE {
                         self.open_game_data_source();
+                    } else if choice == GAME_INFORMATION {
+                        self.open_information();
                     } else if choice == RANDOM {
                         return self.random_here(false);
                     } else if choice == RANDOM_FAVORITE {
@@ -9709,8 +12113,10 @@ impl App {
                         self.pending = Some(Pending::Hide(index));
                         self.message = Some(format!("Hide {name}?\n\nA yes, B no"));
                     } else if choice == "Options" {
-                        self.screen = Screen::Options;
+                        self.screen = Screen::OptionsRoot;
                         self.apply_geometry();
+                    } else if choice == "Scripts" {
+                        self.open_scripts();
                     } else if choice == "Help" {
                         self.screen = Screen::Help;
                         self.apply_geometry();
@@ -9728,14 +12134,39 @@ impl App {
                 Screen::Options | Screen::Advanced => {
                     self.handle_option_input(OptionInput::Activate)
                 }
+                Screen::OptionsRoot => {
+                    if let Some(page) = OptionsPage::ALL.get(self.options_root_list.selected()) {
+                        self.open_options_page(*page);
+                    }
+                }
+                Screen::Information => {}
                 Screen::Scraper => self.activate_scraper_row(),
                 Screen::GameDataSource => match self.menu_list.selected() {
-                    0 => self.begin_source_switch(crate::source_cache::Target::Gamelist),
-                    1 => self.open_artwork_pack_locations(),
+                    0 => {
+                        if let Some(group) = self
+                            .source_system_id
+                            .as_deref()
+                            .and_then(crate::artwork_pack::source_group)
+                        {
+                            self.resolve_artwork_sources(
+                                Some(group),
+                                SourceResolutionAction::Automatic,
+                            );
+                        }
+                    }
+                    1 => {
+                        self.source_switch_automatic = false;
+                        self.begin_source_switch(crate::source_cache::Target::Gamelist);
+                    }
+                    2 => {
+                        self.source_switch_automatic = false;
+                        self.open_artwork_pack_locations();
+                    }
                     _ => {}
                 },
                 Screen::ArtworkPackLocation => self.activate_artwork_pack_location(),
                 Screen::ArtworkPackDirectory => self.activate_artwork_pack_directory(),
+                Screen::Scripts => self.activate_script(),
                 Screen::Help | Screen::About => return self.go_back(),
                 Screen::Splash => self.leave_splash(),
                 // Routed before this match so editor controls can assign X
@@ -9790,7 +12221,7 @@ impl App {
             (Screen::CategoryImage, _) => {
                 category_image_preview(&self.category_image_choices, self.menu_list.selected())
             }
-            (Screen::Browse, Browsing::Games) => {
+            (Screen::Browse | Screen::Information, Browsing::Games) => {
                 match self.here.get(self.game_list.selected()) {
                     Some(row) => {
                         // Inside favourites a folder is a shelf the user
@@ -9845,6 +12276,22 @@ impl App {
     ///
     /// The one place that decides, so every list goes the same way.
     fn cover_for(&mut self, path: &std::path::Path) -> Option<slint::Image> {
+        let palette = self.effective_palette();
+        let ground = match self.screen {
+            Screen::Screensaver => [0, 0, 0],
+            Screen::Information => [
+                palette.background.r,
+                palette.background.g,
+                palette.background.b,
+            ],
+            Screen::Browse if self.layout == Layout::Carousel => [
+                palette.background.r,
+                palette.background.g,
+                palette.background.b,
+            ],
+            _ => [palette.surface.r, palette.surface.g, palette.surface.b],
+        };
+        self.covers.set_ground(ground);
         self.covers.get(path).map(to_image)
     }
 
@@ -9912,9 +12359,15 @@ impl App {
                 && match self.screen {
                     Screen::Screensaver => true,
                     Screen::Browse => self.layout == Layout::Details,
+                    Screen::Information => true,
                     _ => false,
                 });
         if !wanted {
+            self.ui.set_art(slint::Image::default());
+            self.ui.set_has_art(false);
+            self.ui.set_art_caption(SharedString::default());
+            self.ui.set_art_heart(false);
+            self.ui.set_art_scale_x(1.0);
             self.art_pending = false;
             return;
         }
@@ -9929,7 +12382,16 @@ impl App {
             self.height,
             game_art,
         ));
-        match path.and_then(|path| self.cover_for(&path)) {
+        let group_preview = self.screen == Screen::Browse
+            && self.browsing != Browsing::Games
+            && self.layout == Layout::Details;
+        match path.and_then(|path| {
+            if group_preview {
+                self.group_covers.get(&path).map(to_image)
+            } else {
+                self.cover_for(&path)
+            }
+        }) {
             Some(image) => {
                 self.ui.set_art(image);
                 self.ui.set_has_art(true);
@@ -10142,6 +12604,7 @@ impl App {
                 }
             }
             Screen::Menu
+            | Screen::Scripts
             | Screen::FavoriteFolder
             | Screen::CategoryImage
             | Screen::GameDataSource
@@ -10181,6 +12644,13 @@ impl App {
                     rows.push(plain_row(option.label(), &self.option_value(option)));
                 }
             }
+            Screen::OptionsRoot => {
+                for index in range {
+                    let page = OptionsPage::ALL[index];
+                    rows.push(plain_row(page.label(), ">"));
+                }
+            }
+            Screen::Information => {}
             Screen::ThemeEditor => {
                 if let Some(editor) = self.theme_editor.as_ref() {
                     let editor_rows = editor.rows();
@@ -10192,8 +12662,17 @@ impl App {
             }
             Screen::Scraper => {
                 for index in range {
-                    let row = SCRAPER_ROWS[index];
-                    rows.push(plain_row(row.label(), &self.scraper_value(row)));
+                    let row = scraper_rows(&self.scraper_scope)[index];
+                    let label = if row == ScraperRow::ImageType {
+                        if self.scraper_system_id().is_some() {
+                            "System Image"
+                        } else {
+                            "Default Image"
+                        }
+                    } else {
+                        row.label()
+                    };
+                    rows.push(plain_row(label, &self.scraper_value(row)));
                 }
             }
             Screen::ScraperProgress => {
@@ -10279,6 +12758,18 @@ impl App {
             .collect()
     }
 
+    fn update_compact_details(&self) {
+        let details = self
+            .here
+            .get(self.game_list.selected())
+            .filter(|row| !row.is_folder())
+            .filter(|_| self.screen == Screen::Browse && self.browsing == Browsing::Games)
+            .map(|row| &row.details);
+        let (summary, publisher) = details.map(compact_detail_text).unwrap_or_default();
+        self.ui.set_compact_summary(SharedString::from(summary));
+        self.ui.set_compact_publisher(SharedString::from(publisher));
+    }
+
     /// How much room the lines under the picture take, if any.
     ///
     /// Set here rather than with the rest of the geometry because it
@@ -10287,8 +12778,9 @@ impl App {
     /// has nothing to say, and six empty labels beside it push the picture
     /// up the screen to make room for nothing.
     fn apply_detail_panel(&self) {
-        let line = (self.geometry.small_font * 1.3).ceil().max(7.0);
-        let wanted = line * browse::Details::LABELS.len() as f32;
+        let line = (self.geometry.small_font * 1.6).ceil().max(12.0);
+        let wanted = (line * 3.0 + self.geometry.pad)
+            .max(self.geometry.row_height * self.geometry.visible as f32 * 0.36);
         // A little air under the last line, on screens that have any to
         // spare. On 240 lines every one is spoken for, and adding it there
         // would move the picture on a tube that is already right.
@@ -10313,12 +12805,101 @@ impl App {
 
     fn update_chrome(&self) {
         self.apply_detail_panel();
+        self.update_compact_details();
+        self.update_operation_ui();
+        let (group_title, group_subtitle) = match (self.screen, self.browsing) {
+            (Screen::Browse, Browsing::Categories) => (
+                self.selected_category_name()
+                    .unwrap_or_default()
+                    .to_string(),
+                "Browse Systems".to_string(),
+            ),
+            (Screen::Browse, Browsing::Systems) => self
+                .systems
+                .get(self.system_list.selected())
+                .map(|system| {
+                    (
+                        system.name().to_string(),
+                        self.games_in(&system.def.id)
+                            .map(|count| format!("{count} Games"))
+                            .unwrap_or_default(),
+                    )
+                })
+                .unwrap_or_default(),
+            _ => (String::new(), String::new()),
+        };
+        self.ui.set_group_title(SharedString::from(group_title));
+        self.ui
+            .set_group_subtitle(SharedString::from(group_subtitle));
         self.ui
             .set_detail_lines(ModelRc::new(VecModel::from(self.detail_lines())));
         self.ui
             .set_clock(SharedString::from(self.status.clock.as_str()));
         self.ui.set_wifi(self.status.wifi);
         self.ui.set_bluetooth(self.status.bluetooth);
+        self.ui.set_index_active(self.build.is_some());
+        self.ui.set_index_fraction(
+            self.build
+                .as_ref()
+                .map_or(0.0, |build| build.done as f32 / build.total.max(1) as f32),
+        );
+        self.ui.set_browse_playable(
+            self.browsing == Browsing::Games
+                && self
+                    .here
+                    .get(self.game_list.selected())
+                    .is_some_and(|row| matches!(row.kind, browse::Kind::Play(_))),
+        );
+        self.ui
+            .set_plain_scope(SharedString::from(match self.screen {
+                Screen::OptionsRoot | Screen::Options | Screen::Advanced => {
+                    "Global Settings".to_string()
+                }
+                Screen::Context => self.context_scope(),
+                Screen::Scraper => self.scraper_scope_label(),
+                Screen::Information => self.here_label(),
+                Screen::GameDataSource | Screen::ArtworkPackLocation => {
+                    self.source_system_id.clone().unwrap_or_default()
+                }
+                _ => String::new(),
+            }));
+        self.ui
+            .set_heading_detail(SharedString::from(match self.screen {
+                Screen::Browse if self.browsing == Browsing::Categories => {
+                    "Game Browser".to_string()
+                }
+                Screen::Browse | Screen::OptionsRoot | Screen::Options | Screen::Advanced => {
+                    format!(
+                        "{}/{}",
+                        (self.active_list().selected() + 1).min(self.active_list().count()),
+                        self.active_list().count()
+                    )
+                }
+                Screen::Context => {
+                    let count = self.menu.iter().filter(|entry| !entry.is_empty()).count();
+                    let selected = self
+                        .menu
+                        .iter()
+                        .take(self.menu_list.selected() + 1)
+                        .filter(|entry| !entry.is_empty())
+                        .count();
+                    format!("{selected}/{count}")
+                }
+                Screen::ThemeEditor => self
+                    .theme_editor
+                    .as_ref()
+                    .map(|editor| editor.source_name().to_string())
+                    .unwrap_or_default(),
+                Screen::GameDataSource | Screen::ArtworkPackLocation => {
+                    self.source_system_id.clone().unwrap_or_default()
+                }
+                Screen::CategoryImage => format!(
+                    "{}/{}",
+                    self.active_list().selected() + 1,
+                    self.active_list().count()
+                ),
+                _ => String::new(),
+            }));
         // Just the multiple. The chevrons were a way of showing the speed
         // without reading it, and the badge is only up for a moment now.
         let (multiple, _) = SPEED_STEPS[self.speed.min(SPEED_STEPS.len() - 1)];
@@ -10345,7 +12926,6 @@ impl App {
         self.ui
             .set_lr_word(SharedString::from(self.horizontal.legend_word()));
 
-        let list = self.active_list();
         let (heading, status) = match self.screen {
             Screen::Screensaver => (String::new(), String::new()),
             Screen::FavoriteFolder => ("Keep it in".to_string(), String::new()),
@@ -10356,43 +12936,76 @@ impl App {
                 ),
                 FindMode::Jump => ("Jump to letter".to_string(), String::new()),
                 FindMode::Search => (
-                    if self.filter.is_empty() {
-                        "Search".to_string()
-                    } else {
-                        format!("Search {}", self.filter)
-                    },
+                    "Search This Folder".to_string(),
                     format!("{} found", self.here.len()),
                 ),
             },
             Screen::Browse => {
                 let name = match self.browsing {
-                    Browsing::Categories => "Degauss".to_string(),
+                    Browsing::Categories => String::new(),
                     Browsing::Systems => self
                         .open_category
                         .clone()
                         .unwrap_or_else(|| "Systems".to_string()),
                     Browsing::Games => self.here_label(),
                 };
-                (
-                    format!(
-                        "{name}   {}/{}",
-                        (list.selected() + 1).min(list.count()),
-                        list.count()
-                    ),
-                    speed_badge(self.speed),
-                )
+                (name, speed_badge(self.speed))
             }
             Screen::Menu => ("Menu".to_string(), String::new()),
-            Screen::Context => (
-                if self.browsing == Browsing::Categories {
-                    "This Category"
+            Screen::Scripts => {
+                let relative = self
+                    .scripts_browser
+                    .as_ref()
+                    .and_then(|browser| self.scripts_directory.strip_prefix(browser.root()).ok());
+                let heading = match relative.filter(|path| !path.as_os_str().is_empty()) {
+                    Some(path) => format!("Scripts / {}", path.display()),
+                    None => "Scripts".to_string(),
+                };
+                let help = match self.scripts_entries.get(self.menu_list.selected()) {
+                    Some(entry) if entry.is_directory => "Open this folder to choose a script.",
+                    Some(_) => {
+                        "Run this script after confirmation. Degauss returns when it finishes."
+                    }
+                    None => "No scripts in this folder. B returns to the parent or menu.",
+                };
+                (heading, help.to_string())
+            }
+            Screen::Context => {
+                self.ui.set_plain_help(self.menu_controls().into());
+                let selected = self
+                    .menu
+                    .get(self.menu_list.selected())
+                    .map(String::as_str)
+                    .unwrap_or("");
+                let help = if self.context_is_root() {
+                    ContextPage::ALL
+                        .into_iter()
+                        .find(|page| page.label() == selected)
+                        .map(ContextPage::help)
+                        .unwrap_or("")
                 } else {
-                    "This Folder"
-                }
-                .to_string(),
-                String::new(),
+                    context_help(selected)
+                };
+                let heading = self
+                    .context_page
+                    .map(|page| format!("Actions / {}", page.label()))
+                    .unwrap_or_else(|| "Actions".to_string());
+                (heading, help.to_string())
+            }
+            Screen::OptionsRoot => (
+                "Options".to_string(),
+                OptionsPage::ALL[self.options_root_list.selected()]
+                    .help()
+                    .to_string(),
             ),
-            Screen::Scraper => ("ScreenScraper".to_string(), self.scraper_scope_label()),
+            Screen::Information => ("Game Information".to_string(), String::new()),
+            Screen::Scraper => {
+                self.ui.set_plain_help(self.menu_controls().into());
+                (
+                    "ScreenScraper".to_string(),
+                    self.scraper_selected_help().to_string(),
+                )
+            }
             Screen::ScraperMatches => (
                 format!("Match {}", self.scraper_scope_label()),
                 self.scraper_search_status.clone(),
@@ -10442,7 +13055,12 @@ impl App {
                 } else {
                     "Game Data Source".to_string()
                 },
-                "A Select, B Back".to_string(),
+                match self.menu_list.selected() {
+                    0 => "Use gamelist.xml when present; otherwise use an installed SD/USB pack.",
+                    1 => "Always use gamelist.xml, even when an artwork pack is installed.",
+                    _ => "Choose a pack for images and metadata. Scraping is disabled.",
+                }
+                .to_string(),
             ),
             Screen::ArtworkPackLocation => (
                 if self.source_choice_is_shared() {
@@ -10450,14 +13068,14 @@ impl App {
                 } else {
                     "Artwork Pack Location".to_string()
                 },
-                "A Select, B Back".to_string(),
+                "Choose a detected pack or browse to another directory.".to_string(),
             ),
             Screen::ArtworkPackDirectory => (
                 self.source_directory
                     .as_deref()
                     .map(|path| path.to_string_lossy().into_owned())
                     .unwrap_or_else(|| "Artwork Pack Directory".to_string()),
-                "A Open or Use, B Parent".to_string(),
+                String::new(),
             ),
             Screen::SourceProgress => (
                 if self.provider_job_purpose == ProviderJobPurpose::LocationDiscovery {
@@ -10478,17 +13096,20 @@ impl App {
                     "B Cancel".to_string()
                 },
             ),
-            Screen::Options | Screen::Advanced => (
-                if self.screen == Screen::Advanced {
-                    "Advanced".to_string()
-                } else {
-                    "Options".to_string()
-                },
-                self.option_ids()
-                    .get(self.active_list().selected())
-                    .map(|o| o.help().to_string())
-                    .unwrap_or_default(),
-            ),
+            Screen::Options | Screen::Advanced => {
+                self.ui.set_plain_help(self.menu_controls().into());
+                (
+                    if self.screen == Screen::Advanced {
+                        "Options / Developer".to_string()
+                    } else {
+                        format!("Options / {}", self.options_page.label())
+                    },
+                    self.option_ids()
+                        .get(self.active_list().selected())
+                        .map(|o| o.help().to_string())
+                        .unwrap_or_default(),
+                )
+            }
             Screen::ThemeEditor => {
                 let (mode, selected, custom_source) = self
                     .theme_editor
@@ -10505,19 +13126,21 @@ impl App {
 
         self.ui.set_heading(SharedString::from(heading));
         self.ui.set_status(SharedString::from(status));
+        if self.screen == Screen::Find && self.find_mode == FindMode::Search {
+            self.ui.set_find_query(self.filter.clone().into());
+        }
         self.ui.set_show_stats(self.show_stats);
         self.ui.set_stats(SharedString::from(self.stats_line()));
         // A plain message says how to leave, the way the questions already
         // carry their keys in their own text. Questions keep their "A yes,
         // B no" and build progress replaces itself every frame, so neither
         // takes the hint.
-        let overlay = match &self.message {
-            Some(text) if self.pending.is_none() && self.build.is_none() => {
-                format!("{text}\n\nB close")
-            }
-            Some(text) => text.clone(),
-            None => String::new(),
-        };
+        let overlay = self.message.as_deref().unwrap_or_default();
+        if self.ui.get_overlay().as_str() != overlay {
+            self.ui.set_overlay_offset(0.0);
+        }
+        self.ui
+            .set_overlay_dismissible(self.pending.is_none() && self.build.is_none());
         self.ui.set_overlay(SharedString::from(overlay));
     }
     fn stats_line(&self) -> String {
@@ -10573,12 +13196,14 @@ impl App {
             let now = Instant::now();
 
             slint::platform::update_timers_and_animations();
+            self.poll_artwork_sources();
             self.poll_source_cache();
             self.poll_provider_job();
             self.start_provider_job_if_ready();
             self.poll_scraper();
             self.poll_scraper_search();
             self.poll_scraper_preview();
+            self.poll_information();
 
             // A held left or right scrolls only where it moves the cursor:
             // while browsing in the Direction setting. Everywhere else,
@@ -10588,6 +13213,7 @@ impl App {
             // stick stops the repeat instead of taking one more step there.
             repeater.set_horizontal_repeats(self.horizontal_scrolls());
             repeater.set_favorite_hold(self.favorite_change().is_some());
+            repeater.set_random_hold(self.random_shortcut_enabled());
             for edge in input.poll() {
                 let action = match edge {
                     KeyEdge::Down(action) => repeater.press(action, now),
@@ -10595,16 +13221,21 @@ impl App {
                 };
                 if let Some(action) = action {
                     if let Some(outcome) = self.handle(action) {
-                        self.save_settings();
+                        if !matches!(outcome, Outcome::Script(_)) {
+                            self.save_settings();
+                        }
                         return Ok(outcome);
                     }
                 }
             }
             repeater.set_horizontal_repeats(self.horizontal_scrolls());
             repeater.set_favorite_hold(self.favorite_change().is_some());
+            repeater.set_random_hold(self.random_shortcut_enabled());
             for action in repeater.tick(now) {
                 if let Some(outcome) = self.handle(action) {
-                    self.save_settings();
+                    if !matches!(outcome, Outcome::Script(_)) {
+                        self.save_settings();
+                    }
                     return Ok(outcome);
                 }
             }
@@ -10643,6 +13274,11 @@ impl App {
             // Left alone for long enough, show pictures instead.
             let idle = self.screensaver_after();
             if idle > 0
+                && self.source_resolution.is_none()
+                && self.build.is_none()
+                && self.index_terminal.is_none()
+                && self.scraper_refresh_job.is_none()
+                && self.information.is_none()
                 && !matches!(
                     self.screen,
                     Screen::Screensaver
@@ -10698,6 +13334,7 @@ impl App {
 
             let drew = if let Some(work) = presenter.draw(&self.window, surface)? {
                 surface.present()?;
+                self.index_frame_presented();
                 self.last_work = work;
                 self.timer.record(frame_start.elapsed());
                 if !first_frame_done {
@@ -10736,20 +13373,18 @@ impl App {
             // the read still happens, only its explanation went early.
             if let Some(id) = self.refreshing.take() {
                 let scraper_refresh = self.scraper_cache_refresh_active;
-                let error = self.refresh_system(&id);
-                if self.browsing == Browsing::Games
-                    && self.open_system.as_deref() == Some(id.as_str())
-                {
-                    // The rows on screen came from the cache that was
-                    // just replaced.
-                    self.relist_here();
-                }
                 if scraper_refresh {
-                    self.finish_scraper_refresh(error);
-                } else if let Some(error) = error {
-                    // Set after the redraw, which clears the message
-                    // field; set before, the error would never be seen.
-                    self.message = Some(error);
+                    self.start_scraper_cache_refresh(id);
+                } else {
+                    let error = self.refresh_system(&id);
+                    if self.browsing == Browsing::Games
+                        && self.open_system.as_deref() == Some(id.as_str())
+                    {
+                        self.relist_here();
+                    }
+                    if let Some(error) = error {
+                        self.message = Some(error);
+                    }
                 }
                 self.dirty = true;
             }
@@ -10828,6 +13463,7 @@ impl App {
     ) -> Result<BenchReport> {
         self.active_list_mut().go_first();
         self.covers = self.fresh_cover_cache();
+        self.group_covers = self.fresh_group_cover_cache();
         self.gallery_covers = self.fresh_gallery_cover_cache();
         self.timer = FrameTimer::new();
         self.art = ArtStats::default();
@@ -10875,7 +13511,9 @@ impl App {
             }
         }
 
-        if let Some(text) = report_art_failures(&self.covers, &self.gallery_covers) {
+        if let Some(text) =
+            report_failure_caches(&[&self.covers, &self.gallery_covers, &self.group_covers])
+        {
             println!("{text}");
         }
 
@@ -11016,6 +13654,7 @@ impl App {
     }
 
     pub fn open_system_by_index(&mut self, index: usize) {
+        self.finish_background_work_for_headless();
         // Every system, including the ones a setting hides: the headless
         // paths address the table as it is written, and an index taken
         // against the whole list must not be read against a shorter one.
@@ -11037,14 +13676,25 @@ impl App {
 
     fn finish_background_work_for_headless(&mut self) {
         loop {
+            self.poll_artwork_sources();
+            if self.source_resolution.is_some() {
+                std::thread::sleep(Duration::from_millis(1));
+                continue;
+            }
             if self.build.is_some() {
+                // Headless callers explicitly finish work before rendering
+                // their only image; no interactive frame is being awaited.
+                self.index_frame_presented();
                 self.build_one_system();
+                std::thread::sleep(Duration::from_millis(1));
                 continue;
             }
             self.poll_source_cache();
             self.poll_provider_job();
             self.start_provider_job_if_ready();
+            self.poll_information();
             if self.build.is_none()
+                && self.information.is_none()
                 && self.source_job.is_none()
                 && self.provider_job.is_none()
                 && self.provider_requests.is_empty()
@@ -11057,6 +13707,10 @@ impl App {
 
     /// Open a screen directly, for the headless render path.
     pub fn set_screen(&mut self, screen: Screen) {
+        if screen == Screen::Scripts {
+            self.open_scripts();
+            return;
+        }
         // Through the same door the button uses. The menu's contents depend
         // on where it was opened from, and a render path that set the screen
         // directly drew an empty menu: a picture of something the app never
@@ -11075,6 +13729,12 @@ impl App {
             // Same reason as the menu: what it offers depends on where it
             // was opened from.
             self.open_context();
+            return;
+        }
+        if screen == Screen::Information {
+            self.open_context();
+            self.open_information();
+            self.finish_background_work_for_headless();
             return;
         }
         if screen == Screen::Find {
@@ -11298,13 +13958,14 @@ fn message_consumes_input(has_message: bool, build_running: bool) -> bool {
     has_message && !build_running
 }
 
-/// Large artwork and Gallery thumbnails use separate caches but report one
-/// deduplicated list. Returned rather than printed: on the device the console
-/// is behind the picture, so the caller decides where it can be read.
+#[cfg(target_os = "linux")]
 pub fn report_art_failures(covers: &CoverCache, thumbnails: &CoverCache) -> Option<String> {
     report_failure_caches(&[covers, thumbnails])
 }
 
+/// Group artwork, large artwork and Gallery thumbnails report one
+/// deduplicated list. Returned rather than printed: on the device the console
+/// is behind the picture, so the caller decides where it can be read.
 fn report_failure_caches(caches: &[&CoverCache]) -> Option<String> {
     let mut failures = Vec::new();
     for cache in caches {
@@ -11408,6 +14069,7 @@ impl BenchReport {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Outcome {
     Quit,
+    Script(Box<crate::scripts::Launch>),
 
     /// A launch carries its finished plan rather than a row index: the plan
     /// is built while the interface is still up, so everything that can go
@@ -11422,6 +14084,7 @@ pub enum Outcome {
 /// Runs within the renderer's single installed Slint platform.
 #[cfg(test)]
 pub(crate) fn test_library_launch_flow(window: Rc<MinimalSoftwareWindow>) {
+    ui_acceptance_tests::run_ui_acceptance_flow(window.clone());
     // Atomically claim a fresh directory; a previous interrupted run may have
     // left a fixture behind, and its contents are not ours to remove.
     let root = (0_u64..)
@@ -11479,6 +14142,25 @@ pub(crate) fn test_library_launch_flow(window: Rc<MinimalSoftwareWindow>) {
     };
     let ui = DegaussWindow::new().unwrap();
     let mut app = App::new(loaded, window, ui, StartupTimings::default(), 352, 240);
+    app.finish_background_work_for_headless();
+    let initial_screen = app.screen;
+    app.screen = Screen::ScraperProgress;
+    app.scraper_progress.phase = crate::scraper::Phase::Account;
+    app.scraper_progress.total = 1;
+    app.update_operation_ui();
+    assert_eq!(app.ui.get_operation_progress().as_str(), "0 / 1 Games");
+    assert_eq!(app.ui.get_operation_note().as_str(), "");
+    assert!(
+        !app.ui.get_operation_determinate(),
+        "account checking remains indeterminate even with a known game total"
+    );
+    app.scraper_progress.phase = crate::scraper::Phase::Enumerating;
+    app.scraper_progress.total = 0;
+    app.update_operation_ui();
+    assert_eq!(app.ui.get_operation_note().as_str(), "Total Not Yet Known");
+    assert!(!app.ui.get_operation_determinate());
+    app.scraper_progress = Default::default();
+    app.screen = initial_screen;
     app.open_system_by_index(0);
     let rules = std::mem::take(&mut app.all_systems[0].def.launch);
     assert_eq!(
@@ -11514,7 +14196,7 @@ pub(crate) fn test_library_launch_flow(window: Rc<MinimalSoftwareWindow>) {
         _ => panic!("expected launch outcome"),
     };
     assert!(mgl(&mut app).contains("<rbf>_Console/NES</rbf>"));
-    app.open_context();
+    app.reopen_context_for(CORE_VERSION);
     assert!(app.menu.iter().any(|row| row == CORE_VERSION));
     app.menu_list
         .select(app.menu.iter().position(|row| row == CORE_VERSION).unwrap());
@@ -11618,6 +14300,35 @@ pub(crate) fn test_library_launch_flow(window: Rc<MinimalSoftwareWindow>) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn compact_details_keep_full_source_and_omit_empty_separators() {
+        let details = crate::browse::Details {
+            released: "1990-12-16T00:00:00".into(),
+            players: "1".into(),
+            publisher: "Example".into(),
+            ..Default::default()
+        };
+        assert_eq!(
+            super::compact_detail_text(&details),
+            ("1990 · 1 Player".into(), "Example".into())
+        );
+        assert_eq!(details.released, "1990-12-16T00:00:00");
+        let missing = crate::browse::Details::default();
+        assert_eq!(
+            super::compact_detail_text(&missing),
+            (String::new(), String::new())
+        );
+        let players_only = crate::browse::Details {
+            players: "1-2".into(),
+            ..Default::default()
+        };
+        assert_eq!(super::compact_detail_text(&players_only).0, "1-2 Players");
+        let ranged_players = browse::Details {
+            players: "1–2".into(),
+            ..Default::default()
+        };
+        assert_eq!(super::compact_detail_text(&ranged_players).0, "1–2 Players");
+    }
     use super::*;
 
     fn picker_temp(tag: &str) -> PathBuf {
@@ -11747,12 +14458,16 @@ mod tests {
     #[test]
     fn source_chooser_keeps_the_active_source_visible_after_highlight_moves() {
         assert_eq!(
-            source_choice_rows(false),
-            vec!["Gamelist (Current)", "Artwork Pack"]
+            source_choice_rows(crate::artwork_source::Mode::Gamelist),
+            vec!["Automatic", "Gamelist (Current)", "Artwork Pack"]
         );
         assert_eq!(
-            source_choice_rows(true),
-            vec!["Gamelist", "Artwork Pack (Current)"]
+            source_choice_rows(crate::artwork_source::Mode::ArtworkPack),
+            vec!["Automatic", "Gamelist", "Artwork Pack (Current)"]
+        );
+        assert_eq!(
+            source_choice_rows(crate::artwork_source::Mode::Automatic),
+            vec!["Automatic (Current)", "Gamelist", "Artwork Pack"]
         );
     }
 
@@ -11892,6 +14607,10 @@ mod tests {
         assert_eq!(label, SOURCE_GAMELIST);
         assert!(warning.is_none());
         assert!(gamelist.artwork_pack_roots.is_empty());
+        assert!(Settings::load(&settings_path)
+            .unwrap()
+            .gamelist_sources
+            .contains("SuperGrafx"));
         assert!(
             Settings::load(&settings_path)
                 .unwrap()
@@ -11899,6 +14618,20 @@ mod tests {
                 .is_empty(),
             "a restart must return to Gamelist"
         );
+        let (automatic, label, _) = persist_source_mode(
+            &gamelist,
+            &settings_path,
+            "SuperGrafx",
+            &crate::source_cache::Target::Gamelist,
+            true,
+        )
+        .unwrap();
+        assert_eq!(label, SOURCE_AUTOMATIC);
+        assert!(automatic.artwork_pack_roots.is_empty());
+        assert!(Settings::load(&settings_path)
+            .unwrap()
+            .gamelist_sources
+            .is_empty());
         std::fs::remove_dir_all(root).ok();
     }
 
@@ -12222,12 +14955,12 @@ mod tests {
 
     #[test]
     fn the_menu_offers_hiding_only_where_it_makes_sense() {
-        let systems = menu_entries(Browsing::Systems, Some("Commodore 64"));
+        let systems = menu_entries(Browsing::Systems, Some("Commodore 64"), true);
         assert!(
             systems.iter().any(|e| e == "Hide Commodore 64"),
             "hiding belongs on the systems list"
         );
-        let games = menu_entries(Browsing::Games, Some("Commodore 64"));
+        let games = menu_entries(Browsing::Games, Some("Commodore 64"), true);
         assert!(
             !games.iter().any(|e| e.starts_with("Hide ")),
             "there is nothing to hide while looking at games"
@@ -12356,7 +15089,7 @@ mod tests {
         );
         assert_eq!(
             theme_editor_help(EditorMode::Hex, 0, false),
-            "A Apply   B Cancel   X Picker   Y Reset"
+            "A Use B Back X RGB Y Reset"
         );
         assert_eq!(
             theme_editor_help(EditorMode::Picker, 0, false),
@@ -12368,7 +15101,7 @@ mod tests {
         );
         assert_eq!(
             theme_editor_help(EditorMode::Name, 0, false),
-            "A Type   B Cancel   X Delete   Y Clear"
+            "A Type B Back X Del Y Clear"
         );
         assert_eq!(
             theme_editor_help(EditorMode::Discard, 0, false),
@@ -13048,7 +15781,7 @@ mod tests {
         assert!(thumbnails.get(&shared).is_none());
         assert!(thumbnails.get(&thumbnail_only).is_none());
 
-        let report = report_art_failures(&covers, &thumbnails).expect("two failed paths");
+        let report = report_failure_caches(&[&covers, &thumbnails]).expect("two failed paths");
         let shared_text = shared.display().to_string();
         assert_eq!(
             report
@@ -13900,9 +16633,7 @@ mod tests {
     }
 
     #[test]
-    fn the_contextual_menu_comes_in_groups_with_blanks_between_them() {
-        // A dozen entries in one column is a wall. The blanks are read,
-        // never chosen, and the movement keys step over them.
+    fn contextual_actions_have_no_blank_rows_in_grouped_pages() {
         let entries = context_entries(
             Browsing::Games,
             true,
@@ -13911,7 +16642,10 @@ mod tests {
             false,
             ContextActions::default(),
         );
-        assert!(entries.iter().any(|e| e.is_empty()), "groups are separated");
+        assert!(
+            entries.iter().all(|e| !e.is_empty()),
+            "pages use compact selectable rows"
+        );
         assert!(
             !entries.first().is_some_and(String::is_empty),
             "no blank first"
@@ -13938,6 +16672,29 @@ mod tests {
         assert!(at(REBUILD_SYSTEM) < at(CHANGE_VIEW));
         // Both ways of picking something at random sit together.
         assert_eq!(at(RANDOM) + 1, at(RANDOM_FAVORITE));
+    }
+
+    #[test]
+    fn operation_footer_measurement_does_not_reserve_a_hidden_browse_bar() {
+        let config = Config::parse("[app]\n", Path::new("test")).unwrap();
+        for (width, height) in [(352, 240), (640, 480), (1280, 720)] {
+            let hidden =
+                Geometry::compute(Layout::List, true, false, false, width, height, &config);
+            let shown = Geometry::compute(Layout::List, true, false, true, width, height, &config);
+            assert!(
+                hidden.bar > 0.0,
+                "operation controls need a measured footer even when Browse hides its bar"
+            );
+            assert_eq!(hidden.bar, shown.bar);
+            let safe_height = (height as f32
+                - (height as f32 * config.app.overscan_y as f32 / 100.0).round() * 2.0)
+                .max(48.0);
+            assert_eq!(
+                hidden.row_height,
+                (safe_height / 10.0).floor().max(9.0),
+                "hidden browse bars must continue to use the full body height"
+            );
+        }
     }
 
     #[test]

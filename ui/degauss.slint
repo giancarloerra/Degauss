@@ -199,6 +199,66 @@ component ArtworkImage inherits Rectangle {
     }
 }
 
+// One read-only sheet, using the selected row's already loaded information.
+// The application owns navigation; layout supplies the real scroll limit.
+component InformationSheet inherits Rectangle {
+    in property <string> text;
+    in property <float> offset;
+    in property <length> font-size;
+    in property <length> pad;
+    in property <color> text-color;
+    in property <color> track-color;
+    in property <color> position-color;
+    in property <image> art;
+    in property <bool> has-art;
+    in property <float> art-scale-x: 1.0;
+    out property <float> max-scroll: max(0, (content.height - root.height) / 1px);
+    property <float> scroll: min(max(0, root.offset), root.max-scroll);
+    clip: true;
+
+    content := Rectangle {
+        x: root.pad;
+        y: -root.scroll * 1px;
+        width: max(1px, root.width - root.pad * 3);
+        height: information.y + information.preferred-height + root.pad;
+
+        picture := ArtworkImage {
+            source: root.art;
+            has-source: root.has-art;
+            horizontal-scale: root.art-scale-x;
+            x: 0px;
+            y: root.pad;
+            width: parent.width;
+            height: root.has-art ? root.font-size * 7 : 0px;
+        }
+
+        information := Text {
+            text: root.text;
+            color: root.text-color;
+            font-size: root.font-size;
+            x: 0px;
+            y: root.has-art ? picture.y + picture.height + root.pad : root.pad;
+            width: parent.width;
+            height: self.preferred-height;
+            wrap: word-wrap;
+        }
+    }
+
+    if root.max-scroll > 0: Rectangle {
+        x: parent.width - root.pad / 2 - 2px;
+        y: root.pad;
+        width: 2px;
+        height: max(1px, parent.height - root.pad * 2);
+        background: root.track-color;
+        Rectangle {
+            width: parent.width;
+            height: min(parent.height, max(root.pad, parent.height * root.height / content.height));
+            y: (parent.height - self.height) * root.scroll / root.max-scroll;
+            background: root.position-color;
+        }
+    }
+}
+
 struct Row {
     title: string,
     favorite: bool,
@@ -210,6 +270,66 @@ struct Row {
 }
 
 export { Row }
+
+// Browsing and settings share one title edge and a stable value column.
+component MenuRow inherits Rectangle {
+    in property <Row> item;
+    in property <bool> selected;
+    in property <bool> reserve-marker;
+    in property <bool> at-end;
+    in property <length> pad;
+    in property <length> font-size;
+    in property <length> value-font;
+    in property <length> value-min-width: 0px;
+    in property <color> text-color;
+    in property <color> value-color;
+    in property <color> selection-color;
+    in property <color> selection-text;
+    in property <color> favorite-color;
+    property <length> marker-width: root.reserve-marker || root.item.favorite
+        ? root.font-size + root.pad / 2 : 0px;
+    property <length> value-width: root.item.value == "" ? 0px
+        : min(root.width * 45%, max(root.value-min-width, value-gauge.preferred-width));
+    background: root.selected ? root.selection-color : transparent;
+    clip: true;
+
+    value-gauge := Text {
+        text: root.item.value;
+        font-size: root.value-font;
+        visible: false;
+    }
+    Text {
+        text: root.item.favorite ? "\u{2665}" : "";
+        color: root.favorite-color;
+        font-size: root.font-size;
+        x: root.pad;
+        width: root.marker-width;
+        height: parent.height;
+        vertical-alignment: center;
+    }
+    ScrollingTitle {
+        text: root.item.title;
+        text-color: root.selected ? root.selection-text : root.text-color;
+        font-size: root.font-size;
+        active: root.selected;
+        at-end: root.at-end;
+        x: root.pad + root.marker-width;
+        width: max(1px, parent.width - root.pad * 2 - root.marker-width
+            - root.value-width - (root.value-width > 0px ? root.pad : 0px));
+        height: parent.height;
+    }
+    ScrollingTitle {
+        text: root.item.value;
+        text-color: root.selected ? root.selection-text : root.value-color;
+        font-size: root.value-font;
+        active: root.selected;
+        at-end: root.at-end;
+        align: right;
+        x: parent.width - root.pad - root.value-width;
+        width: root.value-width;
+        height: parent.height;
+    }
+}
 
 export component DegaussWindow inherits Window {
     // Palette.
@@ -264,7 +384,8 @@ export component DegaussWindow inherits Window {
 
     // 0 = browse, 1 = a plain list (menu, context, options, advanced, help,
     // favourite folders), 2 = the wordmark (about and splash), 3 = the
-    // screensaver, 4 = the grid of letters, 5 = the theme editor.
+    // screensaver, 4 = the grid of letters, 5 = the theme editor,
+    // 6 = the complete, scrollable game information.
     in property <int> screen: 0;
     in property <string> about-version;
     in property <string> about-line;
@@ -292,6 +413,8 @@ export component DegaussWindow inherits Window {
     // Drawn in the artwork panel when there is no picture for this row and
     // no logo in the logos folder: the system or game name, set large.
     in property <string> art-caption;
+    in property <string> group-title;
+    in property <string> group-subtitle;
     /// Inside the favourites folder there is nothing to picture and the
     /// name says only what the row already says, so the mark itself stands
     /// in: one big heart in the colour it has everywhere else.
@@ -302,7 +425,15 @@ export component DegaussWindow inherits Window {
     in property <length> tile-height: 80px;
 
     in property <string> heading;
+    in property <string> heading-detail;
     in property <string> status;
+    in property <bool> browse-playable;
+    in property <string> plain-scope;
+    /// Reserved by the application only on pages with selected-row help.
+    in property <float> plain-help-height: 0;
+    in property <string> information-text;
+    in property <float> information-offset: 0;
+    out property <float> information-max-scroll: information-view.max-scroll;
     in property <length> bar-height: 16px;
     in property <length> bar-font: 9px;
     in property <string> clock;
@@ -333,6 +464,22 @@ export component DegaussWindow inherits Window {
     in property <[DetailLine]> detail-lines;
     /// How tall the block of lines is, and one line of it.
     in property <length> detail-height;
+    in property <string> compact-summary;
+    in property <string> compact-publisher;
+    in property <int> operation-kind: 0;
+    in property <bool> operation-details: false;
+    in property <string> operation-title;
+    in property <string> operation-state;
+    in property <string> operation-subject;
+    in property <string> operation-activity;
+    in property <bool> operation-determinate: false;
+    in property <float> operation-fraction: 0;
+    in property <string> operation-progress;
+    in property <string> operation-percent;
+    in property <string> operation-note;
+    in property <[DetailLine]> operation-counts;
+    in property <string> operation-problem;
+    in property <string> operation-controls;
     in property <length> detail-line;
     /// True on the list of groups, which is short and leaves the bottom of
     /// its column empty.
@@ -340,6 +487,8 @@ export component DegaussWindow inherits Window {
     /// True when the grid is narrowing a list rather than jumping down it,
     /// which is the only time the two spare buttons edit anything.
     in property <bool> find-search;
+    in property <bool> find-filtering;
+    in property <string> find-query;
     // Theme editor sub-screen: 0 roles, 1 hex, 2 swap, 3 name, 4 discard,
     // 5 continuous RGB picker.
     in property <int> theme-editor-mode: 0;
@@ -361,9 +510,23 @@ export component DegaussWindow inherits Window {
     in property <length> saver-cell;
     in property <length> saver-offset;
     in property <string> overlay;
+    in property <bool> overlay-dismissible;
+    in property <float> overlay-offset;
+    out property <float> overlay-max-scroll: message-panel.max-scroll;
+    out property <bool> bottom-bar-visible: root.show-bar && (root.operation-kind == 0 || root.operation-details) && !message-panel.visible;
+    out property <bool> operation-footer-visible: root.operation-kind != 0 && !root.operation-details && !message-panel.visible;
+    in property <bool> index-active;
+    in property <float> index-fraction;
     // The performance readout, shown only when asked for.
     in property <string> stats;
     in property <bool> show-stats;
+
+    property <bool> has-heading: root.screen == 1 || root.screen == 4
+        || root.screen == 5 || root.screen == 6
+        || (root.screen == 0 && root.layout != 5);
+    property <length> heading-height: root.has-heading ? root.chrome-height : 0px;
+    property <length> help-height: root.screen == 1
+        ? max(0, root.plain-help-height) * 1px : 0px;
 
     default-font-family: root.font-family;
 
@@ -382,53 +545,94 @@ export component DegaussWindow inherits Window {
         clip: true;
 
         // ---- title bar ---------------------------------------------------
-        // Only on the settings and menu screens. Browsing does not need a
-        // strip of chrome naming what is plainly on the screen, and the
-        // option explanation has nowhere else to live.
-        if root.screen == 1 || root.screen == 4 || root.screen == 5: Rectangle {
+        // Location and position stay separate from the selected row.
+        if root.has-heading: heading-bar := Rectangle {
             x: 0; y: 0;
             width: parent.width;
             height: root.chrome-height;
-            background: root.c-panel;
-            HorizontalLayout {
-                padding-left: root.pad;
-                padding-right: root.pad;
-                // Without this a long title runs straight into the
-                // explanation beside it, with no gap to read them apart.
-                spacing: root.pad * 2;
-                Text {
-                    text: root.heading;
-                    color: root.c-text;
-                    font-size: root.small-glyph;
-                    vertical-alignment: center;
-                    overflow: elide;
-                }
-                // The explanation of the selected option lives here and is
-                // routinely longer than the space, so it walks like a title
-                // rather than eliding into a sentence that stops halfway.
-                ScrollingTitle {
-                    text: root.status;
-                    text-color: root.c-state;
-                    font-size: root.small-glyph;
-                    align: right;
-                    active: true;
-                    at-end: root.marquee-end;
-                    horizontal-stretch: 2;
-                }
+            property <string> right-text: root.heading-detail != ""
+                ? root.heading-detail
+                : root.help-height > 0px ? root.plain-scope
+                : root.screen == 6 || root.screen == 0 ? "" : root.status;
+            property <length> right-width: self.right-text == "" ? 0px
+                : min(self.width * 55%, heading-detail-gauge.preferred-width);
+            property <length> brand-width: root.screen == 0 && root.show-brand
+                ? self.width * 28% : 0px;
+            Rectangle {
+                visible: !root.show-brand;
+                y: parent.height - 1px;
+                width: parent.width;
+                height: 1px;
+                background: root.c-panel;
+            }
+            heading-detail-gauge := Text {
+                text: heading-bar.right-text;
+                font-size: root.small-glyph;
+                visible: false;
+            }
+            BlendedLogo {
+                visible: heading-bar.brand-width > 0px;
+                x: root.pad;
+                y: 0px;
+                width: heading-bar.brand-width;
+                height: parent.height;
+                tint: root.logo-tint;
+                tint-mix: root.logo-tint-mix;
+                tint-enabled: root.logo-tint-enabled;
+            }
+            ScrollingTitle {
+                text: root.heading;
+                text-color: root.c-text;
+                font-size: root.small-glyph;
+                active: true;
+                at-end: root.marquee-end;
+                x: root.pad + heading-bar.brand-width
+                    + (heading-bar.brand-width > 0px ? root.pad : 0px);
+                width: max(1px, parent.width - self.x - root.pad
+                    - heading-bar.right-width - (heading-bar.right-width > 0px ? root.pad * 2 : 0px));
+                height: parent.height;
+            }
+            ScrollingTitle {
+                text: heading-bar.right-text;
+                text-color: root.help-height > 0px || root.heading-detail != ""
+                    ? root.c-text-dim : root.c-state;
+                font-size: root.small-glyph;
+                align: right;
+                active: true;
+                at-end: root.marquee-end;
+                x: parent.width - root.pad - heading-bar.right-width;
+                width: heading-bar.right-width;
+                height: parent.height;
             }
         }
 
         // ---- body --------------------------------------------------------
         Rectangle {
             x: 0;
-            y: root.screen == 1 || root.screen == 4 || root.screen == 5 ? root.chrome-height : 0px;
+            y: root.heading-height;
             width: parent.width;
             height: root.screen == 3
                 ? parent.height
                 : parent.height
-                    - (root.screen == 1 || root.screen == 4 || root.screen == 5 ? root.chrome-height : 0px)
+                    - root.heading-height - root.help-height
                     - (root.show-bar ? root.bar-height : 0px);
             clip: true;
+
+            information-view := InformationSheet {
+                visible: root.screen == 6;
+                width: parent.width;
+                height: parent.height;
+                text: root.information-text;
+                offset: root.information-offset;
+                font-size: root.small-glyph;
+                pad: root.pad;
+                text-color: root.c-text;
+                track-color: root.c-panel;
+                position-color: root.c-state;
+                art: root.art;
+                has-art: root.screen == 6 && root.has-art;
+                art-scale-x: root.art-scale-x;
+            }
 
             // The wordmark, on its own. Used for the splash and About.
             //
@@ -494,83 +698,48 @@ export component DegaussWindow inherits Window {
                 || (root.screen == 0 && root.layout == 2): VerticalLayout {
                 alignment: root.center-rows ? LayoutAlignment.center : LayoutAlignment.start;
                 spacing: 0px;
-                for row[index] in root.rows: Rectangle {
+                for row[index] in root.rows: MenuRow {
                     height: root.compact-separators && row.title == ""
                         ? root.row-height / 2
                         : root.row-height;
-                    background: index == root.selected ? root.c-accent : transparent;
-                    HorizontalLayout {
-                        padding-left: root.pad;
-                        padding-right: root.pad;
-                        spacing: root.pad;
-                        Text {
-                            // Written here as a literal, because the glyphs
-                            // that reach the binary are the ones the
-                            // compiler finds in this file. A heart asked
-                            // for from Rust alone draws nothing at all.
-                            text: row.favorite ? "\u{2665} " : "";
-                            color: root.c-favorite;
-                            font-size: root.body-glyph;
-                            vertical-alignment: center;
-                            width: row.favorite ? self.preferred-width : 0px;
-                        }
-                        ScrollingTitle {
-                            text: row.title;
-                            text-color: index == root.selected ? root.c-accent-text : root.c-text;
-                            font-size: root.body-glyph;
-                            active: index == root.selected;
-                            at-end: root.marquee-end;
-                        }
-                        Text {
-                            text: row.value;
-                            color: index == root.selected ? root.c-accent-text : root.c-text;
-                            font-size: root.body-glyph;
-                            vertical-alignment: center;
-                            horizontal-alignment: right;
-                        }
-
-                    }
+                    item: row;
+                    selected: index == root.selected;
+                    reserve-marker: root.screen == 0;
+                    at-end: root.marquee-end;
+                    pad: root.pad;
+                    font-size: root.body-glyph;
+                    value-font: root.body-glyph;
+                    text-color: root.c-text;
+                    value-color: root.c-text-dim;
+                    selection-color: root.c-accent;
+                    selection-text: root.c-accent-text;
+                    favorite-color: root.c-favorite;
                 }
             }
 
             // Browse, multi list: two text columns in reading order.
             if root.screen == 0 && root.layout == 4: Rectangle {
                 background: root.c-background;
-                for row[index] in root.rows: Rectangle {
-                    property <length> cell-width: parent.width / 2;
-                    x: mod(index, 2) * self.cell-width;
+                for row[index] in root.rows: MenuRow {
+                    property <length> column-gap: root.pad / 2;
+                    property <length> cell-width: (parent.width - self.column-gap) / 2;
+                    x: mod(index, 2) * (self.cell-width + self.column-gap);
                     y: floor(index / 2) * root.row-height;
                     width: self.cell-width;
                     height: root.row-height;
-                    background: index == root.selected ? root.c-accent : transparent;
-
-                    HorizontalLayout {
-                        padding-left: root.pad;
-                        padding-right: root.pad;
-                        spacing: root.pad / 2;
-                        Text {
-                            text: row.favorite ? "\u{2665} " : "";
-                            color: root.c-favorite;
-                            font-size: root.body-glyph;
-                            vertical-alignment: center;
-                            width: row.favorite ? self.preferred-width : 0px;
-                        }
-                        ScrollingTitle {
-                            text: row.title;
-                            text-color: index == root.selected ? root.c-accent-text : root.c-text;
-                            font-size: root.body-glyph;
-                            active: index == root.selected;
-                            at-end: root.marquee-end;
-                        }
-                        Text {
-                            text: row.value;
-                            color: index == root.selected ? root.c-accent-text : root.c-text-dim;
-                            font-size: root.small-glyph;
-                            vertical-alignment: center;
-                            horizontal-alignment: right;
-                            width: row.value == "" ? 0px : max(28px, self.preferred-width);
-                        }
-                    }
+                    item: row;
+                    selected: index == root.selected;
+                    reserve-marker: true;
+                    at-end: root.marquee-end;
+                    pad: root.pad;
+                    font-size: root.body-glyph;
+                    value-font: root.small-glyph;
+                    value-min-width: 28px;
+                    text-color: root.c-text;
+                    value-color: root.c-text-dim;
+                    selection-color: root.c-accent;
+                    selection-text: root.c-accent-text;
+                    favorite-color: root.c-favorite;
                 }
             }
 
@@ -708,24 +877,63 @@ export component DegaussWindow inherits Window {
             }
 
             // A grid of letters: jump down a long list, or narrow it.
-            if root.screen == 4: Rectangle {
-                for cell[index] in root.rows: Rectangle {
-                    property <length> cell-width: parent.width / root.columns;
-                    property <length> cell-height: parent.height / root.grid-rows;
-                    width: self.cell-width;
-                    height: self.cell-height;
-                    x: Math.mod(index, root.columns) * self.cell-width;
-                    y: Math.floor(index / root.columns) * self.cell-height;
-                    background: index == root.selected ? root.c-accent : transparent;
-                    Text {
-                        text: cell.title;
-                        color: index == root.selected ? root.c-accent-text : root.c-text;
+            if root.screen == 4: find-body := Rectangle {
+                width: parent.width;
+                height: parent.height;
+                property <length> query-height: root.find-filtering
+                    ? root.chrome-height + root.pad * 2 : 0px;
+                property <length> explanation-height: root.find-filtering
+                    ? root.small-glyph * 1.5 + root.pad * 2 : 0px;
+                if root.find-filtering: Rectangle {
+                    x: root.pad;
+                    y: root.pad;
+                    width: parent.width - root.pad * 2;
+                    height: find-body.query-height - root.pad;
+                    background: root.c-panel;
+                    ScrollingTitle {
+                        text: root.find-query + "_";
+                        text-color: root.c-text;
                         font-size: root.body-glyph;
-                        horizontal-alignment: center;
-                        vertical-alignment: center;
-                        width: parent.width;
+                        active: true;
+                        at-end: root.marquee-end;
+                        x: root.pad;
+                        width: parent.width - root.pad * 2;
                         height: parent.height;
                     }
+                }
+                Rectangle {
+                    y: find-body.query-height;
+                    width: parent.width;
+                    height: parent.height - find-body.query-height - find-body.explanation-height;
+                    for cell[index] in root.rows: Rectangle {
+                        property <length> cell-width: parent.width / root.columns;
+                        property <length> cell-height: parent.height / root.grid-rows;
+                        width: self.cell-width;
+                        height: self.cell-height;
+                        x: Math.mod(index, root.columns) * self.cell-width;
+                        y: Math.floor(index / root.columns) * self.cell-height;
+                        background: index == root.selected ? root.c-accent : transparent;
+                        Text {
+                            text: cell.title;
+                            color: index == root.selected ? root.c-accent-text : root.c-text;
+                            font-size: root.body-glyph;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                            width: parent.width;
+                            height: parent.height;
+                        }
+                    }
+                }
+                if root.find-filtering: Text {
+                    text: "Live Filter · B Keeps the Search";
+                    color: root.c-text-dim;
+                    font-size: root.small-glyph;
+                    x: root.pad;
+                    y: parent.height - find-body.explanation-height;
+                    width: parent.width - root.pad * 2;
+                    height: find-body.explanation-height;
+                    vertical-alignment: center;
+                    overflow: elide;
                 }
             }
 
@@ -1197,85 +1405,49 @@ export component DegaussWindow inherits Window {
 
             // Browse, preview: titles on the left, a big picture on the right.
             if root.screen == 0 && root.layout == 0: HorizontalLayout {
-                spacing: 0px;
+                spacing: root.pad / 2;
 
                 Rectangle {
                     background: root.c-background;
                     clip: true;
 
-                    // The list of groups is three or four entries in a
-                    // column with room for ten, so the wordmark goes in the
-                    // space rather than leaving it blank.
-                    BlendedLogo {
-                        visible: root.show-brand;
-                        tint: root.logo-tint;
-                        tint-mix: root.logo-tint-mix;
-                        tint-enabled: root.logo-tint-enabled;
-                        width: parent.width * 70%;
-                        height: root.chrome-height;
-                        x: (parent.width - self.width) / 2;
-                        y: parent.height - self.height - root.pad;
-                    }
-
                     VerticalLayout {
                         alignment: root.center-rows ? LayoutAlignment.center : LayoutAlignment.start;
                         spacing: 0px;
-                        for row[index] in root.rows: Rectangle {
+                        for row[index] in root.rows: MenuRow {
                             height: root.row-height;
-                            background: index == root.selected ? root.c-accent : transparent;
-                            HorizontalLayout {
-                                padding-left: root.pad;
-                                padding-right: root.pad / 2;
-                                Text {
-                                    text: row.favorite ? "\u{2665} " : "";
-                                    color: root.c-favorite;
-                                    font-size: root.body-glyph;
-                                    vertical-alignment: center;
-                                    width: row.favorite ? self.preferred-width : 0px;
-                                }
-                                ScrollingTitle {
-                                    text: row.title;
-                                    text-color: index == root.selected ? root.c-accent-text : root.c-text;
-                                    font-size: root.body-glyph;
-                                    active: index == root.selected;
-                                    at-end: root.marquee-end;
-                                }
-                                Text {
-                                    text: row.value;
-                                    color: index == root.selected ? root.c-accent-text : root.c-text-dim;
-                                    font-size: root.small-glyph;
-                                    vertical-alignment: center;
-                                    horizontal-alignment: right;
-                                    // A floor, not a width. 34px is what a
-                                    // count needs on a tube and holds the
-                                    // column steady when the numbers are
-                                    // short. On a larger framebuffer the
-                                    // font grows and the number does not
-                                    // fit, so the box has to grow with it
-                                    // or the figure is cut off under the
-                                    // picture.
-                                    width: row.value == ""
-                                        ? 0px
-                                        : max(34px, self.preferred-width);
-                                }
-                            }
+                            item: row;
+                            selected: index == root.selected;
+                            reserve-marker: !root.show-brand;
+                            at-end: root.marquee-end;
+                            pad: root.pad;
+                            font-size: root.body-glyph;
+                            value-font: root.small-glyph;
+                            value-min-width: 34px;
+                            text-color: root.c-text;
+                            value-color: root.c-text-dim;
+                            selection-color: root.c-accent;
+                            selection-text: root.c-accent-text;
+                            favorite-color: root.c-favorite;
                         }
                     }
                 }
 
                 Rectangle {
                     width: root.art-width;
-                    background: root.c-surface;
+                    background: root.group-title != "" ? root.c-background : root.c-surface;
                     property <length> panel: root.detail-height;
+                    property <bool> group: root.group-title != "";
 
                     ArtworkImage {
                         source: root.art;
                         has-source: root.has-art;
                         horizontal-scale: root.art-scale-x;
-                        x: 1px;
-                        y: 1px;
-                        width: parent.width - 2px;
-                        height: parent.height - parent.panel - 2px;
+                        x: root.pad / 2;
+                        y: parent.group ? parent.height * 18% : root.pad / 2;
+                        width: parent.width - root.pad;
+                        height: parent.group ? parent.height * 42%
+                            : parent.height - parent.panel - root.pad;
                     }
                     // The stand-in when there is no picture, and there is
                     // nothing worth picturing.
@@ -1289,13 +1461,13 @@ export component DegaussWindow inherits Window {
                         x: root.pad;
                         y: 0px;
                         width: parent.width - root.pad * 2;
-                        height: parent.height - parent.panel;
+                        height: parent.group ? parent.height * 60% : parent.height - parent.panel;
                     }
                     // The stand-in when there is no picture.
                     // Stands in for a logo, so it is set like one rather
                     // than like a caption.
                     Text {
-                        visible: !root.has-art && !root.art-heart;
+                        visible: !root.has-art && !root.art-heart && !parent.group;
                         text: root.art-caption;
                         color: root.c-text;
                         font-size: root.caption-glyph;
@@ -1307,21 +1479,49 @@ export component DegaussWindow inherits Window {
                         width: parent.width - root.pad * 2;
                         height: parent.height - parent.panel;
                     }
+                    Text {
+                        visible: parent.group;
+                        text: root.group-title;
+                        color: root.c-text;
+                        font-size: root.caption-glyph;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                        x: root.pad;
+                        y: parent.height * 63%;
+                        width: parent.width - root.pad * 2;
+                        height: root.caption-glyph * 1.4;
+                        overflow: elide;
+                    }
+                    Text {
+                        visible: parent.group;
+                        text: root.group-subtitle;
+                        color: root.c-text-dim;
+                        font-size: root.small-glyph;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                        x: root.pad;
+                        y: parent.height * 63% + root.caption-glyph * 1.6;
+                        width: parent.width - root.pad * 2;
+                        height: root.small-glyph * 1.4;
+                        overflow: elide;
+                    }
 
-                    DetailPanel {
+                    Rectangle {
                         x: root.pad;
                         y: parent.height - parent.panel;
                         width: parent.width - root.pad * 2;
                         height: parent.panel;
-                        lines: root.detail-lines;
-                        font-size: root.small-glyph;
-                        line-height: root.detail-line;
-                        pad: root.pad;
-                        text-color: root.c-text;
-                        label-color: root.c-text-dim;
-                        at-end: root.detail-end;
-                        ms-per-px: 44;
-                        travel-cap: 8000ms;
+                        visible: parent.panel > 0px;
+                        for line[index] in [root.compact-summary, root.compact-publisher, "X Actions for Info"] : Text {
+                            text: line;
+                            color: root.c-text;
+                            font-size: root.small-glyph;
+                            y: index * root.detail-line;
+                            width: parent.width;
+                            height: root.detail-line;
+                            vertical-alignment: center;
+                            overflow: elide;
+                        }
                     }
                 }
             }
@@ -1330,11 +1530,19 @@ export component DegaussWindow inherits Window {
             if root.screen == 0 && root.layout == 1: Rectangle {
                 background: root.c-background;
                 for row[index] in root.rows: Rectangle {
-                    x: mod(index, root.columns) * root.tile-width;
-                    y: floor(index / root.columns) * root.tile-height;
-                    width: root.tile-width;
-                    height: root.tile-height;
+                    property <length> gap: root.pad / 2;
+                    x: mod(index, root.columns) * root.tile-width + self.gap / 2;
+                    y: floor(index / root.columns) * root.tile-height + self.gap / 2;
+                    width: root.tile-width - self.gap;
+                    height: root.tile-height - self.gap;
                     background: index == root.selected ? root.c-accent : root.c-background;
+                    Rectangle {
+                        x: 2px;
+                        y: 2px;
+                        width: parent.width - 4px;
+                        height: parent.height - 4px - root.small-font;
+                        background: root.c-surface;
+                    }
                     ArtworkImage {
                         source: row.cover;
                         has-source: row.has-cover;
@@ -1369,16 +1577,127 @@ export component DegaussWindow inherits Window {
             }
 
 
+            // Browse, carousel: one cover across the middle, its
+            // neighbours half off each edge. Nothing moves; a cover that
+            // slides into place is a cover you are waiting for.
+            //
+            // Inside the browse body so the shared footer and modal progress
+            // remain above the artwork in every layout.
+            if root.screen == 0 && root.layout == 3: Rectangle {
+                x: 0px;
+                y: 0px;
+                width: parent.width;
+                height: parent.height;
+                clip: true;
+                property <length> panel: root.detail-height;
+
+                for row[index] in root.rows: Rectangle {
+                    // Where this one sits relative to the chosen one, so
+                    // the middle stays the middle even at the ends of the
+                    // list, where the window cannot centre itself.
+                    property <int> offset: index - root.selected;
+
+                    x: (parent.width - root.tile-width) / 2 + offset * root.tile-width;
+                    y: 0;
+                    width: root.tile-width;
+                    height: parent.height - parent.panel;
+
+                    ArtworkImage {
+                        source: row.cover;
+                        has-source: row.has-cover;
+                        horizontal-scale: row.art-scale-x;
+                        x: root.pad;
+                        y: root.pad;
+                        width: parent.width - root.pad * 2;
+                        height: parent.height - root.pad * 3 - root.body-font;
+                    }
+
+                    Text {
+                        text: row.has-cover ? "" : row.title;
+                        color: root.c-text-dim;
+                        font-size: root.small-glyph;
+                        x: root.pad;
+                        y: root.pad;
+                        width: parent.width - root.pad * 2;
+                        height: parent.height - root.pad * 3 - root.body-font;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                        wrap: word-wrap;
+                        overflow: elide;
+                    }
+
+                    // The ones either side are held back so the middle
+                    // reads as the one being chosen.
+                    Rectangle {
+                        background: #000000;
+                        opacity: offset == 0 ? 0.0 : 0.5;
+                        x: 0;
+                        y: 0;
+                        width: parent.width;
+                        height: parent.height;
+                    }
+
+                    // In the corner of the cover, not on the title line: the
+                    // title scrolls and the heart must not move with it.
+                    Text {
+                        text: row.favorite ? "\u{2665}" : "";
+                        color: root.c-favorite;
+                        font-size: root.body-glyph;
+                        x: root.pad;
+                        y: root.pad;
+                    }
+                    Rectangle {
+                        visible: offset == 0;
+                        x: root.pad / 2;
+                        y: parent.height - root.body-font - root.pad * 1.5;
+                        width: parent.width - root.pad;
+                        height: root.body-font + root.pad;
+                        background: root.c-panel;
+                    }
+                    ScrollingTitle {
+                        text: row.title;
+                        text-color: offset == 0 ? root.c-text : root.c-text-dim;
+                        font-size: root.body-glyph;
+                        align: center;
+                        active: offset == 0;
+                        at-end: root.marquee-end;
+                        x: root.pad;
+                        y: parent.height - root.body-font - root.pad;
+                        width: parent.width - root.pad * 2;
+                        height: root.body-font;
+                    }
+                }
+
+                // Once, under the row, for the cover in the middle: six copies
+                // of the same lines sliding past each other would be unreadable.
+                DetailPanel {
+                    x: root.pad;
+                    y: parent.height - parent.panel;
+                    width: parent.width - root.pad * 2;
+                    height: parent.panel;
+                    lines: root.detail-lines;
+                    font-size: root.small-glyph;
+                    line-height: root.detail-line;
+                    pad: root.pad;
+                    text-color: root.c-text;
+                    label-color: root.c-text-dim;
+                    at-end: root.detail-end;
+                    ms-per-px: 44;
+                    travel-cap: 8000ms;
+                }
+            }
+
             // Browse, gallery: dense thumbnails, with the selected title
             // shown separately rather than reserving a caption in every cell.
             if root.screen == 0 && root.layout == 5: Rectangle {
                 background: root.c-background;
                 for row[index] in root.rows: Rectangle {
-                    x: mod(index, root.columns) * root.tile-width;
-                    y: floor(index / root.columns) * root.tile-height;
-                    width: root.tile-width;
-                    height: root.tile-height;
-                    background: root.c-background;
+                    property <length> gap: root.pad / 2;
+                    x: mod(index, root.columns) * root.tile-width + self.gap / 2;
+                    y: floor(index / root.columns) * root.tile-height + self.gap / 2;
+                    width: root.tile-width - self.gap;
+                    height: root.tile-height - self.gap;
+                    background: root.c-surface;
 
                     ArtworkImage {
                         source: row.cover;
@@ -1443,11 +1762,47 @@ export component DegaussWindow inherits Window {
             }
         }
 
+        // The selected setting's explanation has a stable place of its own.
+        if root.help-height > 0px: Rectangle {
+            x: 0px;
+            y: parent.height - (root.show-bar ? root.bar-height : 0px) - root.help-height;
+            width: parent.width;
+            height: root.help-height - root.pad / 2;
+            background: root.c-panel;
+            Text {
+                text: root.plain-scope;
+                color: root.c-text-dim;
+                font-size: root.small-glyph;
+                x: root.pad;
+                y: root.pad / 2;
+                width: parent.width - root.pad * 2;
+                height: root.small-glyph * 1.3;
+                overflow: elide;
+            }
+            Rectangle {
+                x: root.pad;
+                y: root.pad / 2 + root.small-glyph * 1.3;
+                width: parent.width - root.pad * 2;
+                height: parent.height - root.pad - root.small-glyph * 1.3;
+                clip: true;
+                Text {
+                    text: root.status;
+                    color: root.c-text;
+                    font-size: root.small-glyph;
+                    width: parent.width;
+                    height: self.preferred-height;
+                    y: root.marquee-end ? -max(0px, self.height - parent.height) : 0px;
+                    wrap: word-wrap;
+                    animate y { duration: 1400ms; easing: linear; }
+                }
+            }
+        }
+
         // ---- bottom bar ---------------------------------------------------
         // The machine on the left, what the buttons do on the right, and
         // the scroll speed in between for a moment after it changes. Not on
         // the wordmark: nothing should sit under a logo.
-        if root.show-bar: Rectangle {
+        if root.bottom-bar-visible: Rectangle {
             x: 0;
             y: parent.height - root.bar-height;
             width: parent.width;
@@ -1470,6 +1825,7 @@ export component DegaussWindow inherits Window {
                     color: root.c-text-dim;
                     font-size: root.bar-glyph;
                     vertical-alignment: center;
+                    overflow: elide;
                 }
                 // Drawn rather than written. The glyphs are baked into the
                 // binary from the text in this file, and the font behind
@@ -1556,6 +1912,8 @@ export component DegaussWindow inherits Window {
                             : "A Pick   B Back"))
                     : root.screen == 5
                     ? root.status
+                    : root.screen == 6
+                    ? "\u{2191}\u{2193} Scroll   B Back"
                     : root.screen == 1
                         ? (root.plain-help != ""
                             ? root.plain-help
@@ -1567,9 +1925,12 @@ export component DegaussWindow inherits Window {
                                 ? "\u{2191}\u{2193} Choose   \u{2190}\u{2192} Change   A Select   B Back"
                                 : "\u{2190}\u{2192} Change  A Select  B Back"))
                         : (root.wide-bar
-                            ? "\u{2191}\u{2193} Choose   \u{2190}\u{2192} " + root.lr-word + "   A Select   B Back   X This folder   Y Menu"
-                            : "A Select  B Back  X Folder  Y Menu");
-                color: root.show-stats ? root.c-state : root.c-text-dim;
+                            ? "\u{2191}\u{2193} Choose   \u{2190}\u{2192} " + root.lr-word
+                                + (root.browse-playable ? "   A Play" : "   A Open")
+                                + "   B Back   X Actions   Y Menu"
+                            : (root.browse-playable ? "A Play" : "A Open")
+                                + "  B Back  X Actions  Y Menu");
+                color: root.show-stats ? root.c-state : root.c-text;
                 font-size: root.bar-glyph;
                 x: parent.width * 30%;
                 y: 0;
@@ -1586,24 +1947,184 @@ export component DegaussWindow inherits Window {
         // moving anything or waiting for anything.
 
 
-        if root.overlay != "" && (root.screen < 2 || root.screen == 5): Rectangle {
+        if root.operation-kind != 0 && !root.operation-details: Rectangle {
+            width: parent.width;
+            height: parent.height;
+            background: root.c-background;
+            property <length> line: max(root.small-glyph * 1.5, self.height * 8%);
+            Text {
+                text: root.operation-title;
+                x: root.pad; y: 0px;
+                width: parent.width * 64% - root.pad;
+                height: parent.line;
+                font-size: root.small-glyph;
+                color: root.c-text;
+                vertical-alignment: center;
+                overflow: elide;
+            }
+            Text {
+                text: root.operation-state;
+                x: parent.width * 64%; y: 0px;
+                width: parent.width * 36% - root.pad;
+                height: parent.line;
+                font-size: root.small-glyph;
+                color: root.c-text-dim;
+                horizontal-alignment: right;
+                vertical-alignment: center;
+                overflow: elide;
+            }
+            Rectangle { y: parent.line; height: 1px; width: parent.width; background: root.c-panel; }
+            Text {
+                text: root.operation-subject;
+                x: root.pad; y: parent.height * 12%;
+                width: parent.width - root.pad * 2; height: parent.line;
+                font-size: root.small-glyph; color: root.c-text;
+                vertical-alignment: center; overflow: elide;
+            }
+            Text {
+                text: root.operation-activity;
+                x: root.pad; y: parent.height * 22%;
+                width: parent.width - root.pad * 2; height: parent.line;
+                font-size: root.small-glyph; color: root.c-text;
+                vertical-alignment: center; overflow: elide;
+            }
+            Rectangle {
+                x: root.pad; y: parent.height * 35%;
+                width: parent.width - root.pad * 2; height: max(4px, parent.height * 3%);
+                background: root.c-panel;
+                if root.operation-determinate: Rectangle {
+                    width: parent.width * min(1, max(0, root.operation-fraction));
+                    height: parent.height; background: root.c-accent;
+                }
+                if !root.operation-determinate: Rectangle {
+                    width: parent.width; height: parent.height;
+                    for segment in 10: Rectangle {
+                        x: parent.width * segment / 10;
+                        width: parent.width * 0.04; height: parent.height;
+                        background: root.c-accent;
+                    }
+                }
+            }
+            Text {
+                text: root.operation-progress;
+                x: root.pad; y: parent.height * 40%;
+                width: parent.width * 80% - root.pad; height: parent.line;
+                font-size: root.small-glyph; color: root.c-text;
+                vertical-alignment: center; overflow: elide;
+            }
+            Text {
+                text: root.operation-percent;
+                x: parent.width * 80%; y: parent.height * 40%;
+                width: parent.width * 20% - root.pad; height: parent.line;
+                font-size: root.small-glyph; color: root.c-text-dim;
+                horizontal-alignment: right; vertical-alignment: center; overflow: elide;
+            }
+            Text {
+                text: root.operation-note;
+                x: root.pad; y: parent.height * 49%;
+                width: parent.width - root.pad * 2; height: parent.line;
+                font-size: root.small-glyph; color: root.c-text-dim;
+                vertical-alignment: center; overflow: elide;
+            }
+            for stat[index] in root.operation-counts: Rectangle {
+                x: root.pad + mod(index, 2) * (parent.width - root.pad * 2) / 2;
+                y: parent.height * 59% + floor(index / 2) * parent.line;
+                width: (parent.width - root.pad * 2) / 2;
+                height: parent.line;
+                Text {
+                    text: stat.label; x: 0px; y: 0px;
+                    width: parent.width * 55%; height: parent.height;
+                    font-size: root.small-glyph; color: root.c-text-dim;
+                    vertical-alignment: center; overflow: elide;
+                }
+                Text {
+                    text: stat.value; x: parent.width * 55%; y: 0px;
+                    width: parent.width * 45% - root.pad;
+                    height: parent.height; font-size: root.small-glyph; color: root.c-text;
+                    horizontal-alignment: right; vertical-alignment: center; overflow: elide;
+                }
+            }
+            Text {
+                text: root.operation-problem;
+                x: root.pad; y: parent.height * 78%;
+                width: parent.width - root.pad * 2;
+                height: max(0px, parent.height - self.y - root.bar-height);
+                font-size: root.small-glyph; color: root.c-text;
+                wrap: word-wrap; overflow: elide;
+            }
+            Rectangle {
+                visible: root.operation-footer-visible;
+                y: parent.height - root.bar-height; width: parent.width;
+                height: root.bar-height; background: root.c-bar;
+                Text {
+                    text: root.operation-controls;
+                    x: root.pad; width: parent.width - root.pad * 2; height: parent.height;
+                    font-size: root.bar-glyph; color: root.c-text;
+                    horizontal-alignment: right; vertical-alignment: center; overflow: elide;
+                }
+            }
+        }
+
+        message-panel := Rectangle {
+            visible: root.overlay != "" && (root.screen < 2 || root.screen == 5);
+            property <bool> index-report: root.operation-kind == 1 && root.operation-details;
+            property <bool> has-hint: root.overlay-dismissible && !root.index-active;
+            property <float> max-scroll: max(0, (message-text.preferred-height - message-viewport.height) / 1px);
             background: root.c-surface;
-            height: root.row-height * 3;
+            height: self.index-report ? parent.height : root.index-active
+                ? min(parent.height - root.pad * 2, max(root.row-height * 7, parent.height * 70%))
+                : min(parent.height - root.pad * 2,
+                    max(root.row-height * 3, message-text.preferred-height + root.pad * 2
+                        + (self.has-hint ? root.bar-height : 0px)));
             y: (parent.height - self.height) / 2;
             Rectangle {
                 background: root.c-accent;
                 height: 2px;
                 y: 0px;
             }
-            Text {
-                text: root.overlay;
+            message-viewport := Rectangle {
+                x: root.pad;
+                y: root.pad;
+                width: parent.width - root.pad * 2;
+                height: max(1px, parent.height - root.pad * 2
+                    - (message-panel.index-report ? root.bar-height
+                        : root.index-active ? root.pad * 2 : message-panel.has-hint ? root.bar-height : 0px));
+                clip: true;
+                message-text := Text {
+                    text: root.overlay;
+                    color: root.c-text;
+                    font-size: root.body-glyph;
+                    horizontal-alignment: center;
+                    wrap: word-wrap;
+                    width: parent.width;
+                    height: self.preferred-height;
+                    y: max(0px, (parent.height - self.height) / 2)
+                        - min(max(0, root.overlay-offset), message-panel.max-scroll) * 1px;
+                }
+            }
+            if message-panel.has-hint || message-panel.index-report: Text {
+                text: message-panel.index-report ? root.operation-controls
+                    : message-panel.max-scroll > 0 ? "\u{2191}\u{2193} Read   B Close" : "B Close";
                 color: root.c-text;
-                font-size: root.body-glyph;
+                font-size: root.bar-glyph;
                 horizontal-alignment: center;
                 vertical-alignment: center;
-                wrap: word-wrap;
                 x: root.pad;
+                y: parent.height - root.pad - root.bar-height;
                 width: parent.width - root.pad * 2;
+                height: root.bar-height;
+            }
+            if root.index-active && !message-panel.index-report: Rectangle {
+                x: root.pad;
+                y: parent.height - root.pad * 2;
+                width: parent.width - root.pad * 2;
+                height: max(2px, root.pad / 2);
+                background: root.c-panel;
+                Rectangle {
+                    width: parent.width * min(1, max(0, root.index-fraction));
+                    height: parent.height;
+                    background: root.c-state;
+                }
             }
         }
     }
@@ -1667,112 +2188,8 @@ export component DegaussWindow inherits Window {
             }
         }
 
-        // Browse, carousel: one cover across the middle, its
-        // neighbours half off each edge. Nothing moves; a cover that
-        // slides into place is a cover you are waiting for.
-        //
-        // Given the safe rectangle explicitly, because unlike the
-        // screensaver this is ordinary browsing and a television crops the
-        // edges. `tile-width` is measured against the safe width, so
-        // centring it in the whole screen would put the middle cover off
-        // centre by the margin and push its neighbours behind the bezel.
-        if root.screen == 0 && root.layout == 3: Rectangle {
-            x: root.inset-left;
-            y: root.inset-top;
-            width: root.width - root.inset-left - root.inset-right;
-            height: root.height - root.inset-top - root.inset-bottom;
-            clip: true;
-            property <length> panel: root.detail-height;
 
-            for row[index] in root.rows: Rectangle {
-                // Where this one sits relative to the chosen one, so
-                // the middle stays the middle even at the ends of the
-                // list, where the window cannot centre itself.
-                property <int> offset: index - root.selected;
-
-                x: (parent.width - root.tile-width) / 2 + offset * root.tile-width;
-                y: 0;
-                width: root.tile-width;
-                height: parent.height - parent.panel;
-
-                ArtworkImage {
-                    source: row.cover;
-                    has-source: row.has-cover;
-                    horizontal-scale: row.art-scale-x;
-                    x: root.pad;
-                    y: root.pad;
-                    width: parent.width - root.pad * 2;
-                    height: parent.height - root.pad * 3 - root.body-font;
-                }
-
-                Text {
-                    text: row.has-cover ? "" : row.title;
-                    color: root.c-text-dim;
-                    font-size: root.small-glyph;
-                    x: root.pad;
-                    y: root.pad;
-                    width: parent.width - root.pad * 2;
-                    height: parent.height - root.pad * 3 - root.body-font;
-                    horizontal-alignment: center;
-                    vertical-alignment: center;
-                    wrap: word-wrap;
-                    overflow: elide;
-                }
-
-                // The ones either side are held back so the middle
-                // reads as the one being chosen.
-                Rectangle {
-                    background: #000000;
-                    opacity: offset == 0 ? 0.0 : 0.5;
-                    x: 0;
-                    y: 0;
-                    width: parent.width;
-                    height: parent.height;
-                }
-
-                // In the corner of the cover, not on the title line: the
-                // title scrolls and the heart must not move with it.
-                Text {
-                    text: row.favorite ? "\u{2665}" : "";
-                    color: root.c-favorite;
-                    font-size: root.body-glyph;
-                    x: root.pad;
-                    y: root.pad;
-                }
-                ScrollingTitle {
-                    text: row.title;
-                    text-color: offset == 0 ? root.c-text : root.c-text-dim;
-                    font-size: root.body-glyph;
-                    align: center;
-                    active: offset == 0;
-                    at-end: root.marquee-end;
-                    x: root.pad;
-                    y: parent.height - root.body-font - root.pad;
-                    width: parent.width - root.pad * 2;
-                    height: root.body-font;
-                }
-            }
-
-            // Once, under the row, for the cover in the middle: six copies
-            // of the same lines sliding past each other would be unreadable.
-            DetailPanel {
-                x: root.pad;
-                y: parent.height - parent.panel;
-                width: parent.width - root.pad * 2;
-                height: parent.panel;
-                lines: root.detail-lines;
-                font-size: root.small-glyph;
-                line-height: root.detail-line;
-                pad: root.pad;
-                text-color: root.c-text;
-                label-color: root.c-text-dim;
-                at-end: root.detail-end;
-                ms-per-px: 44;
-                travel-cap: 8000ms;
-            }
-        }
-
-        if root.speed-visible: Rectangle {
+        if root.speed-visible && !root.index-active: Rectangle {
             background: root.c-bar;
             border-radius: 2px;
             width: speed-text.preferred-width + root.pad * 2;
@@ -1792,7 +2209,7 @@ export component DegaussWindow inherits Window {
         }
 
 
-        if root.gallery-title-visible && !root.speed-visible: Rectangle {
+        if root.gallery-title-visible && !root.speed-visible && !root.index-active: Rectangle {
             background: root.c-bar;
             width: Math.min(
                 parent.width - root.inset-left - root.inset-right - root.pad * 2,

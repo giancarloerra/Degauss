@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 use quick_xml::events::{BytesStart, Event};
 use quick_xml::{Reader, XmlVersion};
 
-use super::config::{DeveloperCredentials, ScraperSettings};
+use super::config::{validate_media_type, DeveloperCredentials, ScraperSettings};
 use super::hashes::Hashes;
 use super::{Account, Error, ErrorKind, Match, Media, Metadata, Result};
 
@@ -593,12 +593,26 @@ impl Client {
         })
     }
 
+    #[cfg(test)]
     pub fn by_hash(
         &self,
         system_id: u32,
         file_name: &str,
         hashes: &Hashes,
     ) -> Result<LookupResponse> {
+        self.by_hash_with_media_type(system_id, file_name, hashes, &self.media_type)
+    }
+
+    /// Select one target's artwork without rebuilding the shared client or
+    /// changing the media choice seen by other concurrent workers.
+    pub fn by_hash_with_media_type(
+        &self,
+        system_id: u32,
+        file_name: &str,
+        hashes: &Hashes,
+        media_type: &str,
+    ) -> Result<LookupResponse> {
+        validate_media_type(media_type)?;
         let mut params = self.auth();
         params.extend([
             ("systemeid".into(), system_id.to_string()),
@@ -637,7 +651,7 @@ impl Client {
             &response.body,
             self.region.as_deref(),
             self.language.as_deref(),
-            &self.media_type,
+            media_type,
         )?;
         if !parsed.saw_game && !parsed.saw_games_container {
             return Err(Error::new(
@@ -669,10 +683,20 @@ impl Client {
     }
 
     /// Return every game ScreenScraper offers for an editable manual query.
-    /// Automatic matching uses [`Self::by_name`] below and still accepts only
+    /// Automatic matching uses [`Self::by_name_with_media_type`] below and still accepts only
     /// an exact normalised title; this broader result is for a person to
     /// inspect and choose from explicitly.
     pub fn search(&self, system_id: u32, title: &str) -> Result<LookupResponse> {
+        self.search_with_media_type(system_id, title, &self.media_type)
+    }
+
+    pub fn search_with_media_type(
+        &self,
+        system_id: u32,
+        title: &str,
+        media_type: &str,
+    ) -> Result<LookupResponse> {
+        validate_media_type(media_type)?;
         if title.trim().is_empty() {
             return Err(Error::new(
                 ErrorKind::Configuration,
@@ -714,7 +738,7 @@ impl Client {
             &response.body,
             self.region.as_deref(),
             self.language.as_deref(),
-            &self.media_type,
+            media_type,
         )?;
         if !parsed.saw_game && !parsed.saw_games_container {
             return Err(Error::new(
@@ -733,8 +757,18 @@ impl Client {
         })
     }
 
+    #[cfg(test)]
     pub fn by_name(&self, system_id: u32, title: &str) -> Result<LookupResponse> {
-        let response = self.search(system_id, title)?;
+        self.by_name_with_media_type(system_id, title, &self.media_type)
+    }
+
+    pub fn by_name_with_media_type(
+        &self,
+        system_id: u32,
+        title: &str,
+        media_type: &str,
+    ) -> Result<LookupResponse> {
+        let response = self.search_with_media_type(system_id, title, media_type)?;
         let candidates: Vec<Match> = response
             .alternatives
             .iter()
@@ -1877,6 +1911,108 @@ mod tests {
             },
         )
         .unwrap()
+    }
+
+    #[test]
+    fn shared_client_selects_each_targets_requested_media_without_changing_the_default() {
+        let response = HttpResponse {
+            status: 200,
+            content_type: Some("application/xml".into()),
+            body: br#"<Data><jeux><jeu id="42">
+                <noms><nom region="wor">Fixture Game</nom></noms>
+                <medias>
+                    <media type="ss" region="wor" format="png">https://media.screenscraper.fr/screenshot.png</media>
+                    <media type="box-2D" region="jp" format="png">https://media.screenscraper.fr/box-jp.png</media>
+                    <media type="box-2D" region="us" format="png">https://media.screenscraper.fr/box-us.png</media>
+                    <media type="box-3D" region="wor" format="png">https://media.screenscraper.fr/box-3d.png</media>
+                    <media type="wheel-hd" region="wor" format="png">https://media.screenscraper.fr/wheel.png</media>
+                </medias>
+                </jeu></jeux></Data>"#.to_vec(),
+        };
+        let client = client(response);
+        let hashes = Hashes {
+            size: 3,
+            crc32: "352441C2".into(),
+            md5: "900150983CD24FB0D6963F7D28E17F72".into(),
+            sha1: "A9993E364706816ABA3E25717850C26C9CD0D89D".into(),
+        };
+        for (media_type, image) in [
+            ("ss", Some("screenshot.png")),
+            ("box-2d", Some("box-us.png")),
+            ("BOX-3D", Some("box-3d.png")),
+            ("wheel-hd", Some("wheel.png")),
+            ("sstitle", None),
+        ] {
+            for response in [
+                client
+                    .search_with_media_type(3, "Fixture", media_type)
+                    .unwrap(),
+                client
+                    .by_name_with_media_type(3, "Fixture Game", media_type)
+                    .unwrap(),
+                client
+                    .by_hash_with_media_type(3, "fixture.nes", &hashes, media_type)
+                    .unwrap(),
+            ] {
+                let Lookup::Found(found) = response.lookup else {
+                    panic!("media selection must not change game matching");
+                };
+                let expected = image.map(|image| format!("https://media.screenscraper.fr/{image}"));
+                assert_eq!(
+                    found.media.as_ref().map(|media| media.url.as_str()),
+                    expected.as_deref(),
+                    "a missing requested kind must not substitute another kind"
+                );
+                assert_eq!(response.alternatives[0].media, found.media);
+            }
+            let default = client.search(3, "Fixture").unwrap();
+            assert_eq!(
+                default.alternatives[0].media.as_ref().unwrap().url,
+                "https://media.screenscraper.fr/screenshot.png",
+                "one target's choice must not change the shared client's global default"
+            );
+        }
+    }
+
+    #[test]
+    fn custom_global_media_and_region_are_preserved_by_default_lookup_wrappers() {
+        let client = Client::new(
+            Arc::new(Mock {
+                response: HttpResponse {
+                    status: 200,
+                    content_type: Some("application/xml".into()),
+                    body: br#"<Data><jeux><jeu id="42"><noms><nom region="wor">Fixture Game</nom></noms>
+                        <medias>
+                            <media type="ss" region="wor" format="png">https://media.screenscraper.fr/screenshot.png</media>
+                            <media type="wheel-hd" region="us" format="png">https://media.screenscraper.fr/wheel-us.png</media>
+                            <media type="wheel-hd" region="jp" format="png">https://media.screenscraper.fr/wheel-jp.png</media>
+                        </medias></jeu></jeux></Data>"#.to_vec(),
+                },
+            }),
+            DeveloperCredentials {
+                developer_id: "developer".into(),
+                developer_password: "private".into(),
+            },
+            &ScraperSettings {
+                username: "user".into(),
+                password: "password".into(),
+                media_type: "WHEEL-HD".into(),
+                region: Some("jp".into()),
+                system_media_types: [("NES".into(), "box-2D".into())].into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        for response in [
+            client.search(3, "Fixture").unwrap(),
+            client.by_name(3, "Fixture Game").unwrap(),
+        ] {
+            assert_eq!(
+                response.alternatives[0].media.as_ref().unwrap().url,
+                "https://media.screenscraper.fr/wheel-jp.png",
+                "a numeric platform id must not accidentally resolve a Degauss system override"
+            );
+        }
     }
 
     #[test]

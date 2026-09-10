@@ -272,6 +272,114 @@ pub struct Provider {
 }
 
 impl Provider {
+    fn select_full_synopsis_path(selected: &mut Option<PathBuf>, candidate: PathBuf) -> Result<()> {
+        if selected.is_some() {
+            return Err(DegaussError::unsupported(
+                "game information",
+                "Artwork Pack has duplicate synopsis filenames for this language. Keep only one matching file and reopen the system.",
+            ));
+        }
+        *selected = Some(candidate);
+        Ok(())
+    }
+
+    /// Complete synopsis for the same prepared match used by the browse row.
+    /// Never recompute a weaker match or fall back to a different provider.
+    pub fn full_description(
+        &self,
+        launch: &Launch,
+        cancelled: &AtomicBool,
+    ) -> Result<Option<String>> {
+        if !self.health.usable() {
+            return Err(DegaussError::unsupported(
+                "game information",
+                self.status_line(),
+            ));
+        }
+        if !self.still_current(&self.docs_root, self.synopsis_language.as_deref()) {
+            return Err(DegaussError::unsupported(
+                "game information",
+                "Artwork Pack changed or is unreadable; reopen the system to refresh its provider",
+            ));
+        }
+        let prepared = self.prepared.as_ref().ok_or_else(|| {
+            DegaussError::unsupported(
+                "game information",
+                "Artwork Pack matching is not prepared; reopen the system",
+            )
+        })?;
+        let Some(presentation) = prepared.get(&launch_cache_key(launch)) else {
+            return Ok(None);
+        };
+        let Some(diagnostic) = presentation.diagnostic.as_ref() else {
+            return Ok(None);
+        };
+        let Some(language) = diagnostic.synopsis_language.as_deref() else {
+            return Ok(None);
+        };
+        let artwork = self.docs_root.join(&diagnostic.pack_folder).join("Artwork");
+        let filename = format!("synopsis_{language}.tsv");
+        let mut selected_path = None;
+        for entry in std::fs::read_dir(&artwork).map_err(|error| {
+            DegaussError::io("reading Artwork Pack synopsis directory", &artwork, error)
+        })? {
+            if cancelled.load(Ordering::Relaxed) {
+                return Ok(None);
+            }
+            let entry = entry.map_err(|error| {
+                DegaussError::io("reading Artwork Pack synopsis entry", &artwork, error)
+            })?;
+            if entry.file_name().to_string_lossy().to_ascii_lowercase() == filename {
+                Self::select_full_synopsis_path(&mut selected_path, entry.path())?;
+            }
+        }
+        let path = selected_path.ok_or_else(|| {
+            DegaussError::unsupported(
+                "game information",
+                "the prepared Artwork Pack synopsis file is missing; reopen the system",
+            )
+        })?;
+        let Some(rows) = read_tsv_controlled(
+            &path,
+            &["#key", "synopsis"],
+            2,
+            &mut TableBudget::default(),
+            cancelled,
+        )?
+        else {
+            return Ok(None);
+        };
+        let key = fold(&diagnostic.key);
+        let mut description: Option<String> = None;
+        for row in rows {
+            if cancelled.load(Ordering::Relaxed) {
+                return Ok(None);
+            }
+            validate_key(&row[0], &path)?;
+            if fold(&row[0]) == key {
+                if description.as_ref().is_some_and(|text| text != &row[1]) {
+                    return Err(DegaussError::unsupported(
+                        "game information",
+                        "prepared Artwork Pack synopsis has conflicting values; reopen the system",
+                    ));
+                }
+                description = Some(row[1].clone());
+            }
+        }
+        if !self.still_current(&self.docs_root, self.synopsis_language.as_deref()) {
+            return Err(DegaussError::unsupported(
+                "game information",
+                "Artwork Pack changed while reading the description; reopen the system",
+            ));
+        }
+        description.map(Some).ok_or_else(|| {
+            DegaussError::unsupported(
+                "game information",
+                "prepared Artwork Pack synopsis key is missing; reopen the system",
+            )
+        })
+    }
+
     fn identity_for_launch(
         &self,
         launch: &Launch,
@@ -2926,6 +3034,22 @@ mod tests {
     }
 
     #[test]
+    fn full_description_rejects_case_colliding_synopsis_paths_in_either_order() {
+        let lower = PathBuf::from("Artwork/synopsis_en.tsv");
+        let upper = PathBuf::from("Artwork/synopsis_EN.tsv");
+        for (first, second) in [(&lower, &upper), (&upper, &lower)] {
+            let mut selected = None;
+            Provider::select_full_synopsis_path(&mut selected, first.clone()).unwrap();
+            assert_eq!(selected.as_ref(), Some(first));
+            let error = Provider::select_full_synopsis_path(&mut selected, second.clone())
+                .expect_err("directory order must not choose an arbitrary full description");
+            assert!(error.to_string().contains("duplicate synopsis filenames"));
+            assert!(error.to_string().contains("Keep only one matching file"));
+            assert_eq!(selected.as_ref(), Some(first));
+        }
+    }
+
+    #[test]
     fn synopsis_text_is_not_rejected_by_the_short_key_and_name_limit() {
         let (root, art) = pack("long-synopsis");
         ready_tables(&art, "", "");
@@ -2937,11 +3061,61 @@ mod tests {
         )
         .unwrap();
 
-        let provider = Provider::load("SuperGrafx", &root, Some("en"));
+        let mut provider = Provider::load("SuperGrafx", &root, Some("en"));
         assert_eq!(provider.health, ProviderHealth::Ready);
         let presentation = provider.resolve(&identity("Chosen Game (USA)")).unwrap();
         assert!(presentation.details.desc.starts_with("Long description"));
         assert!(presentation.details.desc.ends_with("..."));
+        let game = root.parent().unwrap().join("Chosen Game (USA).pce");
+        std::fs::write(&game, b"game").unwrap();
+        let launch = Launch::File(game);
+        let row = Row {
+            name: "Chosen Game (USA)".into(),
+            sort_key: "chosen game".into(),
+            kind: Kind::Play(launch.clone()),
+            cover: None,
+            genre: None,
+            favorite: false,
+            below: None,
+            details: Details::default(),
+        };
+        let cache = crate::cache::SystemCache {
+            format: 0,
+            folders: BTreeMap::from([(
+                "root".into(),
+                crate::cache::Folder {
+                    mtime: 0,
+                    rows: vec![row],
+                    games: 1,
+                },
+            )]),
+        };
+        assert_eq!(
+            provider
+                .prepare_for_cache(
+                    &cache,
+                    &crate::cache::ContentFingerprints::new(),
+                    &AtomicBool::new(false)
+                )
+                .unwrap(),
+            Some(1)
+        );
+        provider.discard_catalogue();
+        assert!(!provider.catalogue_available());
+        assert_eq!(
+            provider
+                .full_description(&launch, &AtomicBool::new(false))
+                .unwrap()
+                .as_deref(),
+            Some(synopsis.as_str())
+        );
+        std::fs::write(art.join("synopsis_en.tsv"), "changed").unwrap();
+        assert!(
+            provider
+                .full_description(&launch, &AtomicBool::new(false))
+                .is_err(),
+            "stale sources must not return truncated or stale text"
+        );
         std::fs::remove_dir_all(root.parent().unwrap()).ok();
     }
 
