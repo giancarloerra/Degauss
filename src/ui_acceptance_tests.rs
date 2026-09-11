@@ -3372,6 +3372,68 @@ fn run_degraded_pack_acknowledgement_flow(root: &Path, window: Rc<MinimalSoftwar
     app.ui.hide().unwrap();
     drop(app);
 
+    // 4. Pack content updated without a new diagnostic: a well-formed row
+    // added to gameinfo.tsv changes only the source fingerprint, and that
+    // alone brings the warning back in a new process. Meanwhile the file
+    // on the card breaks after the warning went up, so the warning could
+    // not say so: the press that writes over it says it instead, on screen
+    // and in the log.
+    std::fs::write(
+        artwork.join("gameinfo.tsv"),
+        "#key\tname\tyear\tgenre\tdeveloper\tplayers\nKnown\tPack First\t1990\tAction\tStudio\t1\nSecond\tPack Second\t1991\tPuzzle\tStudio\t2\nExtra\tPack Extra\t1992\tAction\tStudio\t1\n",
+    )
+    .unwrap();
+    let malformed_line = format!(
+        "artwork pack warnings: {} is malformed:",
+        warnings.display()
+    );
+    let malformed_before = std::fs::read_to_string(crate::LOG_PATH)
+        .unwrap()
+        .matches(&malformed_line)
+        .count();
+    let mut app = start(window.clone());
+    assert!(
+        message_contains(&app, "is incomplete"),
+        "changed content with an unchanged diagnostic is a warning not yet seen: {:?}",
+        app.message
+    );
+    assert!(
+        !message_contains(&app, "could not be read"),
+        "the file was whole when the warning went up: {:?}",
+        app.message
+    );
+    let provider = app.artwork_provider.as_ref().unwrap();
+    assert_eq!(
+        provider.diagnostics, no_index_diagnostics,
+        "the diagnostic is unchanged; only the content is"
+    );
+    let extra_digest = provider.health_digest();
+    assert_ne!(extra_digest, no_index_digest);
+    std::fs::write(&warnings, "degraded = \"not a table").unwrap();
+    app.handle(Action::Accept);
+    assert!(
+        message_contains(&app, "remembered")
+            && message_contains(&app, "could not be read and was replaced"),
+        "a file that broke between the warning and the press is said at the press: {:?}",
+        app.message
+    );
+    assert_eq!(
+        std::fs::read_to_string(crate::LOG_PATH)
+            .unwrap()
+            .matches(&malformed_line)
+            .count(),
+        malformed_before + 1,
+        "the replacement of a file that broke meanwhile must reach the log"
+    );
+    assert!(
+        acknowledged("NES", &extra_digest),
+        "the broken file is replaced by a readable one"
+    );
+    app.handle(Action::Accept);
+    assert!(app.message.is_none(), "{:?}", app.message);
+    app.ui.hide().unwrap();
+    drop(app);
+
     // 4. An updated manifest is another pack state: warned about once more.
     // Meanwhile the file on the card was replaced by hand while this
     // process runs (another group's acknowledgement, this one's gone): the
@@ -3381,7 +3443,7 @@ fn run_degraded_pack_acknowledgement_flow(root: &Path, window: Rc<MinimalSoftwar
     let mut app = start(window.clone());
     assert!(message_contains(&app, "is incomplete"), "{:?}", app.message);
     let updated_digest = app.artwork_provider.as_ref().unwrap().health_digest();
-    assert_ne!(updated_digest, no_index_digest);
+    assert_ne!(updated_digest, extra_digest);
     let mut by_hand = Acknowledgements::default();
     by_hand.acknowledge("SNES", "kept");
     by_hand.save(&warnings).unwrap();
@@ -3392,7 +3454,7 @@ fn run_degraded_pack_acknowledgement_flow(root: &Path, window: Rc<MinimalSoftwar
         acknowledged("SNES", "kept"),
         "an entry written by hand while the program runs must survive the next save"
     );
-    assert!(!acknowledged("NES", &no_index_digest));
+    assert!(!acknowledged("NES", &extra_digest));
     app.ui.hide().unwrap();
     drop(app);
 
@@ -3400,10 +3462,6 @@ fn run_degraded_pack_acknowledgement_flow(root: &Path, window: Rc<MinimalSoftwar
     // else; that warning says the file was set aside, and why, because the
     // press that dismisses it writes over what was there.
     std::fs::write(&warnings, "degraded = \"not a table").unwrap();
-    let malformed_line = format!(
-        "artwork pack warnings: {} is malformed:",
-        warnings.display()
-    );
     let malformed_before = std::fs::read_to_string(crate::LOG_PATH)
         .unwrap()
         .matches(&malformed_line)

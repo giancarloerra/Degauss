@@ -1928,6 +1928,10 @@ struct PendingPackHealth {
     /// The text that was put up. A press that dismisses something else,
     /// put up over it meanwhile, does not count as having seen this.
     message: String,
+    /// Whether that text already says the acknowledgement file could not
+    /// be parsed and will be written over. A file that breaks after the
+    /// warning went up is only found at the press, which then has to say so.
+    malformed_announced: bool,
 }
 
 struct Building {
@@ -5432,8 +5436,9 @@ impl App {
                 // A file that could not be parsed read as empty; the press
                 // that dismisses this warning writes over it, so say why,
                 // here and in the log. The read before that save is the same
-                // file and is not logged again.
+                // file and is not logged again unless it broke meanwhile.
                 Ok(seen) => {
+                    let malformed_announced = seen.malformed().is_some();
                     if let Some(error) = seen.malformed() {
                         crate::note(&format!(
                             "artwork pack warnings: {} is malformed: {error}",
@@ -5449,6 +5454,7 @@ impl App {
                         group,
                         digest,
                         message,
+                        malformed_announced,
                     });
                 }
                 // Nothing is written down over a file that could not be
@@ -5469,7 +5475,8 @@ impl App {
     /// it down, so the next start does not put it up again. What is on disk
     /// is read again first, so a deletion made while this program runs
     /// stays deleted. A failure is said on screen with its cause, as a
-    /// settings save failure is.
+    /// settings save failure is. So is a file that broke after the warning
+    /// went up: the save writes over it, and nothing else has said so.
     fn acknowledge_pack_health(&mut self, dismissed: Option<&str>) {
         let Some(pending) = self.pack_health_pending.take() else {
             return;
@@ -5479,15 +5486,34 @@ impl App {
         }
         let path = crate::pack_health::path_beside(&self.settings_path);
         let outcome = crate::pack_health::Acknowledgements::load(&path).and_then(|mut seen| {
+            let replaced = seen
+                .malformed()
+                .filter(|_| !pending.malformed_announced)
+                .map(str::to_string);
             seen.acknowledge(&pending.group, &pending.digest);
-            seen.save(&path)
+            seen.save(&path).map(|outcome| (outcome, replaced))
         });
         match outcome {
-            Ok(SaveOutcome::Durable) => {}
-            Ok(SaveOutcome::InstalledWithWarning(warning)) => {
-                self.message = Some(format!(
-                    "Artwork Pack warning remembered, but durability could not be confirmed: {warning}"
-                ));
+            Ok((outcome, replaced)) => {
+                let replaced = replaced.map(|error| {
+                    crate::note(&format!(
+                        "artwork pack warnings: {} is malformed: {error}",
+                        path.display()
+                    ));
+                    format!(
+                        "The list of dismissed warnings could not be read and was replaced: {error}"
+                    )
+                });
+                self.message = match (outcome, replaced) {
+                    (SaveOutcome::Durable, None) => None,
+                    (SaveOutcome::Durable, Some(replaced)) => {
+                        Some(format!("Artwork Pack warning remembered. {replaced}"))
+                    }
+                    (SaveOutcome::InstalledWithWarning(warning), replaced) => Some(format!(
+                        "Artwork Pack warning remembered, but durability could not be confirmed: {warning}{}",
+                        replaced.map(|replaced| format!("\n\n{replaced}")).unwrap_or_default()
+                    )),
+                };
             }
             Err(error) => {
                 crate::note(&format!(
