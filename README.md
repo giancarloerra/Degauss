@@ -881,8 +881,8 @@ filesystem-derived game name and leaves that artwork or field empty. It never
 fills the gap from the gamelist or ScreenScraper. Publisher and game language
 also remain empty because the database format does not provide them. A folder
 showing its game's artwork takes that picture from the selected source too, and
-shows none while the Pack is unusable or has no picture for the game. System
-logos and category images remain independent of this choice.
+keeps the system logo while the Pack is unusable or has no picture for the
+game. System logos and category images remain independent of this choice.
 
 MRA entries are matched by their `<setname>`, including MGLs that point to an
 MRA. Large embedded hexadecimal ROM, patch and cheat payloads do not impose a
