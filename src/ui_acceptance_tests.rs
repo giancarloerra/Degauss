@@ -3149,16 +3149,19 @@ fn assert_details_split(app: &App, style: DetailsStyle, over_game: bool, context
     assert_eq!(app.details_style, style, "{context}");
     assert_eq!(app.layout, Layout::Details, "{context}");
     // The picture's share of the safe width while browsing games, 42% for
-    // Information and 62% for Large Artwork, pinned as the share itself
-    // rather than the multiplier applied to the half, so a drift in either
-    // the base split or the factor fails here.
+    // Information and 62% for Large Artwork, measured from the safe width
+    // itself rather than from the Details half, so a drift in either the
+    // base split or the factor fails here. The half is rounded to a pixel
+    // before the factor, hence the tolerance.
     let share = match style {
         DetailsStyle::Information => 0.42,
         DetailsStyle::LargeArtwork => 0.62,
     };
-    let expected = 2.0 * details_half_width(app) * share;
+    let inset = (app.width as f32 * app.config.app.overscan_x as f32 / 100.0).round();
+    let safe = (app.width as f32 - inset * 2.0).max(64.0);
+    let expected = safe * share;
     assert!(
-        (app.ui.get_art_width() - expected).abs() < 0.01,
+        (app.ui.get_art_width() - expected).abs() <= 1.0,
         "{context}: {style:?} must give the picture {expected} of the width, not {}",
         app.ui.get_art_width()
     );
@@ -3189,8 +3192,6 @@ fn leave_options_to_browse(app: &mut App) {
 fn run_details_style_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
     let artwork = Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/logos/NES.png");
     assert!(artwork.is_file());
-    let captures = root.join("details-style");
-    std::fs::create_dir_all(&captures).unwrap();
 
     // An older settings file has no key: it must draw exactly the layout
     // it was drawn with, and starting must not write a choice the user
@@ -3484,8 +3485,14 @@ fn run_details_style_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
         app.details_style = style;
         app.game_list.select(1);
         for (width, height) in [(352, 240), (640, 480), (1280, 720)] {
-            let name = format!("details-{}", style.setting());
-            capture_frame(&mut app, &captures, &name, width, height);
+            app.width = width;
+            app.height = height;
+            app.window.set_size(slint::PhysicalSize::new(width, height));
+            app.apply_geometry();
+            if let Some(directory) = std::env::var_os("DEGAUSS_UI_CAPTURE_DIR") {
+                let name = format!("details-{}", style.setting());
+                capture_frame(&mut app, &PathBuf::from(directory), &name, width, height);
+            }
             app.load_art();
             app.refresh();
             assert_details_split(&app, style, true, &format!("{width}x{height}"));
