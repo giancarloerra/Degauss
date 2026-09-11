@@ -963,9 +963,82 @@ fn run_main_favourites_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
         !favorites_root.exists(),
         "the flow starts on a card that has no favourites yet"
     );
+    assert!(
+        !app.all_systems
+            .iter()
+            .any(|system| crate::systems::is_favorites(system.category())),
+        "a folder absent at startup is a system discovery never found"
+    );
+
+    // The chooser offers the root first even before the root exists, and
+    // leaving it without choosing drops its rows.
+    select_row_named(&mut app, "First Game");
+    accept_game_action(&mut app, ADD_FAVORITE);
+    assert_eq!(app.screen, Screen::FavoriteFolder);
+    assert_eq!(app.menu, vec![MAIN_FAVORITES, NEW_FOLDER]);
+    assert_eq!(app.favorite_destinations[0], FavoriteDestination::Root);
+    assert_eq!(app.menu_list.selected(), 0);
+    app.handle(Action::Quit);
+    assert_eq!(app.screen, Screen::Browse);
+    assert!(app.favorite_destinations.is_empty());
+    assert!(!favorites_root.exists(), "looking does not make the folder");
+
+    // The first favourite makes the root and goes straight into it. With
+    // no Favorites system discovered there is no shelf to refresh, and
+    // that is said rather than left for the Categories screen to show.
+    let root_favorite = favorites_root.join("First Game.mgl");
+    select_row_named(&mut app, "First Game");
+    accept_game_action(&mut app, ADD_FAVORITE);
+    assert_eq!(app.menu_list.selected(), 0);
+    app.handle(Action::Accept);
+    assert_eq!(app.screen, Screen::Browse);
+    assert!(app.favorite_destinations.is_empty());
+    assert!(std::fs::symlink_metadata(&root_favorite).unwrap().is_file());
+    assert!(app.favorites.holds(&game));
+    assert!(app
+        .here
+        .iter()
+        .any(|row| row.name == "First Game" && row.favorite));
+    let unlisted = app
+        .message
+        .clone()
+        .expect("an unlisted shelf is said after the write");
+    assert!(
+        unlisted.contains("not listed until Rebuild All System Lists"),
+        "the way to list the shelf is named: {unlisted}"
+    );
+    assert!(
+        crate::cache::load_system(&app.cache_dir, "Favorites").is_none(),
+        "no shelf was discovered, so none was written"
+    );
+    assert!(app
+        .systems
+        .iter()
+        .all(|system| system.def.id != "Favorites"));
+    app.handle(Action::Quit);
+    assert!(app.message.is_none());
+    // The existing removal takes it away again and says the same, since
+    // the shelf is still unlisted.
+    select_row_named(&mut app, "First Game");
+    accept_game_action(&mut app, REMOVE_FAVORITE);
+    assert_eq!(app.screen, Screen::Browse);
+    assert!(!root_favorite.exists());
+    assert!(!app.favorites.holds(&game));
+    assert!(
+        favorites_root.is_dir(),
+        "removing a favourite keeps the root"
+    );
+    assert!(app
+        .message
+        .as_deref()
+        .is_some_and(|message| message.contains("not listed until Rebuild All System Lists")));
+    app.handle(Action::Quit);
+    assert!(app.message.is_none());
+
     // The master shelf, declared the way the shipped table declares it and
-    // pointed at this card's root, so the refresh after a write has a
-    // system to rewrite.
+    // pointed at this card's root: what the full rebuild discovers now the
+    // folder is there, so the refresh after a write has a system to
+    // rewrite.
     let mut favorites = crate::systems::parse_table(
         include_str!("../assets/systems.toml"),
         Path::new("systems.toml"),
@@ -982,19 +1055,15 @@ fn run_main_favourites_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
         menu_folder: None,
     });
 
-    // The chooser offers the root first even before the root exists.
+    // Choosing the root writes the .mgl straight into _@Favorites and
+    // makes no folder named after the row.
     select_row_named(&mut app, "First Game");
     accept_game_action(&mut app, ADD_FAVORITE);
     assert_eq!(app.screen, Screen::FavoriteFolder);
     assert_eq!(app.menu, vec![MAIN_FAVORITES, NEW_FOLDER]);
-    assert_eq!(app.favorite_destinations[0], FavoriteDestination::Root);
     assert_eq!(app.menu_list.selected(), 0);
-
-    // Choosing it writes the .mgl straight into _@Favorites and makes no
-    // folder named after the row.
     app.handle(Action::Accept);
     assert_eq!(app.screen, Screen::Browse);
-    let root_favorite = favorites_root.join("First Game.mgl");
     assert!(
         std::fs::symlink_metadata(&root_favorite).unwrap().is_file(),
         "a game favourite in the root is a plain .mgl"
@@ -1114,6 +1183,33 @@ fn run_main_favourites_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
     app.handle(Action::Quit);
     assert!(app.message.is_none());
     assert_eq!(app.screen, Screen::Browse);
+
+    // When the redraw after the refusal cannot list the folder either,
+    // both causes are shown: the refusal alone would leave the emptied
+    // list looking like an empty folder once it was dismissed.
+    let place = app.trail.last().unwrap().place.clone();
+    select_row_named(&mut app, "First Game");
+    accept_game_action(&mut app, ADD_FAVORITE);
+    assert_eq!(app.screen, Screen::FavoriteFolder);
+    app.trail.last_mut().unwrap().place = Place::Dir(root.join("games/Gone"));
+    app.handle(Action::Accept);
+    assert_eq!(app.screen, Screen::Browse);
+    let both = app.message.clone().expect("both failures are reported");
+    assert!(
+        both.contains("already has a favourite called First Game"),
+        "the refusal comes first: {both}"
+    );
+    assert!(
+        both.contains("reading folder"),
+        "the listing failure is kept under it: {both}"
+    );
+    assert!(both.find("already has").unwrap() < both.find("reading folder").unwrap());
+    assert!(app.here.is_empty());
+    app.handle(Action::Quit);
+    assert!(app.message.is_none());
+    app.trail.last_mut().unwrap().place = place;
+    app.relist_here();
+    assert_eq!(app.here.len(), 2);
     std::fs::remove_file(&root_favorite).unwrap();
 
     // A folder really called Main Favourites shows the same words as the

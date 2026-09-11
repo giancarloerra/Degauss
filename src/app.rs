@@ -4737,14 +4737,26 @@ impl App {
     /// exact moment that folder moved, and a shelf that shows yesterday's
     /// favourites until a full rebuild is asked for is wrong. The folder is
     /// small, so reading this one system again costs nothing worth noticing.
+    ///
+    /// A card that had no favourites folder when Degauss started has no
+    /// Favorites system: discovery skips a system whose folder is absent,
+    /// and only the full rebuild discovers again. The favourite just
+    /// written is what made the folder, so there is no cache to refresh
+    /// and the shelf stays unlisted until that rebuild. Said, rather than
+    /// left to be found out from the Categories screen.
     fn refresh_favorites_system(&mut self) -> Option<String> {
-        let id = self
+        let Some(system) = self
             .all_systems
             .iter()
-            .find(|system| is_favorites(system.category()))?
-            .def
-            .id
-            .clone();
+            .find(|system| is_favorites(system.category()))
+        else {
+            return Some(
+                "Favourites: its folder was not on the card when Degauss started, \
+                 so the shelf is not listed until Rebuild All System Lists"
+                    .to_string(),
+            );
+        };
+        let id = system.def.id.clone();
         self.refresh_system(&id)
     }
 
@@ -7989,6 +8001,8 @@ impl App {
                 }
             }
             Screen::Find | Screen::FavoriteFolder => {
+                // The chooser's rows are done with once it is left.
+                self.favorite_destinations.clear();
                 self.screen = Screen::Browse;
                 self.resolve_view();
                 self.apply_geometry();
@@ -8719,6 +8733,9 @@ impl App {
     /// Degauss's own format, so a favourite made here is a favourite in the
     /// stock menu too.
     fn add_favorite_in(&mut self, destination: &FavoriteDestination) {
+        // The chooser's rows are done with: the destination was taken
+        // from them before this was called.
+        self.favorite_destinations.clear();
         let Some(target) = destination.path(&self.favorites_root()) else {
             // A folder still to be named: the name grid comes back here
             // with the folder once it has been spelt out.
@@ -8726,7 +8743,6 @@ impl App {
             self.open_find(FindMode::NewFolder);
             return;
         };
-        let folder = destination.label();
         let Some(game) = self.selected_game() else {
             return;
         };
@@ -8755,15 +8771,12 @@ impl App {
             // The title is already the shown name, so sanitising it keeps
             // the favourite recognisable while making the name one the
             // card can hold.
-            let outcome =
-                crate::launch::favorite_mgl_amiga(&config, &install, &title).and_then(|mgl| {
-                    crate::favorites::add_game(&target, &sanitise(&title), &mgl).map(|_| title)
-                });
+            let outcome = crate::launch::favorite_mgl_amiga(&config, &install, &title)
+                .and_then(|mgl| crate::favorites::add_game(&target, &sanitise(&title), &mgl));
             let mut outcome_error = None;
             let mut refresh_error = None;
             match outcome {
-                Ok(what) => {
-                    self.message = Some(format!("{what}\n\nkept in {folder}"));
+                Ok(_) => {
                     self.reread_favorites();
                     refresh_error = self.refresh_favorites_system();
                 }
@@ -8772,12 +8785,7 @@ impl App {
             self.screen = Screen::Browse;
             self.apply_geometry();
             self.relist_here();
-            if let Some(error) = outcome_error.or(refresh_error) {
-                // Set after show_here, which clears the message field as
-                // part of its redraw; set before, the error would never be
-                // seen.
-                self.message = Some(error);
-            }
+            self.report_after_relist(outcome_error.or(refresh_error));
             self.dirty = true;
             return;
         }
@@ -8799,7 +8807,7 @@ impl App {
                 // stem: a favourite called "mslug" would be a stranger in a
                 // list that has always said "Metal Slug".
                 let fav_name = crate::favorites::favorite_name(&name, &game);
-                crate::favorites::add_game(&target, &fav_name, &mgl).map(|_| fav_name)
+                crate::favorites::add_game(&target, &fav_name, &mgl)
             }
             // A core file is linked to, not described. The link keeps the
             // real filename, not the shown name: the stock script resolves
@@ -8818,8 +8826,7 @@ impl App {
         let mut outcome_error = None;
         let mut refresh_error = None;
         match outcome {
-            Ok(what) => {
-                self.message = Some(format!("{what}\n\nkept in {folder}"));
+            Ok(_) => {
                 self.reread_favorites();
                 refresh_error = self.refresh_favorites_system();
             }
@@ -8828,17 +8835,28 @@ impl App {
         self.screen = Screen::Browse;
         self.apply_geometry();
         self.relist_here();
-        if let Some(error) = outcome_error.or(refresh_error) {
-            // Set after show_here, which clears the message field as
-            // part of its redraw; set before, the error would never be
-            // seen.
-            self.message = Some(error);
-        }
+        self.report_after_relist(outcome_error.or(refresh_error));
         self.dirty = true;
     }
 
-    fn link_favorite(&self, folder: &Path, name: &str, game: &Path) -> Result<String> {
-        crate::favorites::add_core(folder, name, game).map(|_| name.to_string())
+    fn link_favorite(&self, folder: &Path, name: &str, game: &Path) -> Result<PathBuf> {
+        crate::favorites::add_core(folder, name, game)
+    }
+
+    /// Say what went wrong with a favourite change, after the redraw that
+    /// follows it: `show_here` clears the message field as part of its
+    /// redraw, so anything set before it would never be seen. When the
+    /// redraw itself could not list the folder, its own message is kept
+    /// under this one: dropped, the empty list left behind would look like
+    /// an empty folder once this was dismissed.
+    fn report_after_relist(&mut self, error: Option<String>) {
+        let Some(error) = error else {
+            return;
+        };
+        self.message = Some(match self.message.take() {
+            Some(listing) => format!("{error}\n\n{listing}"),
+            None => error,
+        });
     }
 
     /// Take a favourite away, by removing the file that makes it one.
@@ -8870,12 +8888,7 @@ impl App {
         self.screen = Screen::Browse;
         self.apply_geometry();
         self.relist_here();
-        if let Some(error) = outcome_error.or(refresh_error) {
-            // Set after show_here, which clears the message field as
-            // part of its redraw; set before, the error would never be
-            // seen.
-            self.message = Some(error);
-        }
+        self.report_after_relist(outcome_error.or(refresh_error));
         self.dirty = true;
     }
 
@@ -16760,6 +16773,26 @@ mod tests {
             Some(root.join("Main Favourites"))
         );
         assert_ne!(destinations[0].path(root), destinations[1].path(root));
+    }
+
+    #[test]
+    fn a_user_folder_called_new_folder_is_a_folder_and_not_the_naming_row() {
+        // The naming row used to be told apart by its words, so a folder
+        // somebody had really called "New folder..." opened the name grid
+        // instead of taking the favourite. Typed rows keep such a folder a
+        // destination of its own and the naming row the last one.
+        let destinations = favorite_destinations(vec![NEW_FOLDER.to_string()]);
+        assert_eq!(
+            destinations,
+            vec![
+                FavoriteDestination::Root,
+                FavoriteDestination::Folder(NEW_FOLDER.to_string()),
+                FavoriteDestination::NewFolder,
+            ]
+        );
+        let root = Path::new("/menu/_@Favorites");
+        assert_eq!(destinations[1].path(root), Some(root.join(NEW_FOLDER)));
+        assert_eq!(destinations[2].path(root), None);
     }
 
     #[test]
