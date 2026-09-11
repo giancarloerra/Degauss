@@ -538,7 +538,9 @@ different pictures, no artwork at all, or several entries sharing a picture
 beside one without, keeps the system logo. List and Multi list stay text.
 Hidden entries never contribute their artwork, Favourites shelves keep
 their heart, and the picture follows the selected data source of the
-system.
+system. The picture is answered from the system's saved list, so a system
+browsed before its list has been written keeps the system logo on its
+folders until it is indexed or rebuilt.
 
 **Hide This**, in **Actions → Find**, takes any row out of the list: a
 game, a folder, or a whole system while you are looking at the system
