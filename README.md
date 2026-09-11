@@ -500,6 +500,13 @@ running under Degauss Main already have the Frontend menu and shortcut.
   image has an outline and its title appears above the bottom bar for half a
   second. Entries without artwork remain visible as named text cells.
 
+The Details Style changes only the games level of Details: the Home,
+category and system screens and the other views keep their proportions, and
+switching it does not rebuild the library or the artwork cache. Pictures are
+decoded to `cover_size` in `degauss.toml` or half the screen, whichever is
+larger, so on a screen wider than about twice that edge Large Artwork
+enlarges a landscape picture a little; a larger `cover_size` keeps it sharp.
+
 **Options → Appearance → View** is the global default. Every browse place can instead
 keep its own custom view: the Categories screen, each category's Systems
 screen, each system root, and every folder inside a system. Use **X Actions →
@@ -564,7 +571,7 @@ require **A** and confirmation, never a sideways press.
 | Appearance | Theme | Left and right choose a palette. Press A to open the editor. Standard uses the colours in `degauss.toml`. See [Themes and colours](#themes-and-colours) |
 | Appearance | View | The global default for places without a custom view: Details, Tiled, Carousel, List, Multi List or Gallery |
 | Appearance | Reset All Custom Views | With A and confirmation, remove every place-specific view without changing the global View setting |
-| Appearance | Details Style | How Details shares the screen while browsing games. Information (default) keeps the list beside a picture of about 42% of the width with the compact summary under it; Large Artwork gives the picture about 62% of the width and the whole height of its column, with no lines under it. Home, category and system screens and the other views are unchanged, and switching does not rebuild the library or the artwork cache. Pictures are decoded to `cover_size` in `degauss.toml` or half the screen, whichever is larger, so on a screen wider than about twice that edge Large Artwork enlarges a landscape picture a little; a larger `cover_size` keeps it sharp |
+| Appearance | Details Style | How Details shares the screen while browsing games. Information (default) keeps the list beside a picture of about 42% of the width, with the compact summary under it; Large Artwork gives the picture about 62% and the whole column height, with no lines under it. An unrecognised saved value draws Information and says so on the first screen |
 | Appearance | Text | The typeface: Smooth, Pixel (a DOS font on whole pixels), and the bolder Smooth 2 and Pixel 2 |
 | Appearance | Artwork | Turn pictures off entirely |
 | Appearance | Artwork Scale Factor | Framebuffer keeps the original square-pixel fit and is the default. 4:3 and 16:9 correct game artwork for that physical display shape in Details, Tiled, Carousel and Gallery. Category logos, system logos and the screensaver are unchanged |

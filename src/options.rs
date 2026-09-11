@@ -290,7 +290,7 @@ impl OptionId {
                 "Remove all custom views after confirmation. Every place will use the global view."
             }
             OptionId::DetailsStyle => {
-                "Information keeps the compact summary under the picture. Large Artwork widens the picture to the full height."
+                "Information keeps the summary under the picture. Large Artwork gives it more width and the full height."
             }
             OptionId::Font => {
                 "Choose Smooth or Pixel text. Smooth 2 and Pixel 2 use bolder lettering."
