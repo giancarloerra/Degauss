@@ -3159,11 +3159,19 @@ impl App {
             .as_deref()
             .and_then(ArtworkScale::parse)
             .unwrap_or_default();
-        let details_style = settings
-            .details_style
-            .as_deref()
-            .and_then(DetailsStyle::parse)
-            .unwrap_or_default();
+        // Absent means the layout older installations draw. A token that
+        // is present but not one of the two names is said out loud rather
+        // than quietly drawn as Information, and stays in settings.toml
+        // untouched, like a theme name the folder does not answer to.
+        let details_style = match settings.details_style.as_deref() {
+            None => DetailsStyle::default(),
+            Some(text) => DetailsStyle::parse(text).unwrap_or_else(|| {
+                theme_problems.push(format!(
+                    "Details Style {text} is not information or large-artwork; using Information."
+                ));
+                DetailsStyle::default()
+            }),
+        };
         // Margins are saved when changed and read back here. Without this the
         // Options screen would show the saved figure while the screen kept
         // the one from the config file, and the two would disagree.
@@ -3476,8 +3484,9 @@ impl App {
             }));
         app.ui.set_about_copyright(SharedString::from(COPYRIGHT));
         app.ui.set_about_licence(SharedString::from(LICENCE));
-        // A theme file that did not load, or a saved theme that is gone, is
-        // said out loud on the first screen. Any press takes it down.
+        // A theme file that did not load, a saved theme that is gone, or a
+        // Details Style token that is neither name, is said out loud on the
+        // first screen. Any press takes it down.
         if !theme_problems.is_empty() {
             app.message = Some(theme_problems.join("\n"));
         }

@@ -3221,6 +3221,33 @@ fn run_details_style_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
         app.ui.hide().unwrap();
     }
 
+    // A token that is neither name is not quietly drawn as Information:
+    // the first screen says so, and the text stays in the setting for the
+    // user to correct rather than being replaced by a choice never made.
+    {
+        let app = unopened_fixture_app(
+            root,
+            window.clone(),
+            Settings {
+                details_style: Some("large_artwork".into()),
+                ..Default::default()
+            },
+        );
+        assert_eq!(app.details_style, DetailsStyle::Information);
+        assert_eq!(
+            app.settings.details_style.as_deref(),
+            Some("large_artwork"),
+            "startup must not rewrite the text it could not read"
+        );
+        let message = app
+            .message
+            .clone()
+            .expect("an unreadable Details Style is reported at start");
+        assert!(message.contains("large_artwork"), "{message}");
+        assert!(message.contains("using Information"), "{message}");
+        app.ui.hide().unwrap();
+    }
+
     // Both styles persist: the choice is written when the page is left and
     // survives a fresh App from the reloaded file, in both directions.
     let mut app = fixture_app(root, window.clone(), Settings::default());
