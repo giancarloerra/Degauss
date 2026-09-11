@@ -90,12 +90,13 @@ pub struct Progress {
     /// Batch runs keep counting unresolved entries without carrying every
     /// server response or interrupting an unattended scrape.
     pub manual_matches: Vec<Match>,
-    /// Every game the run could not resolve, with the reason: no match,
-    /// several matches, no image to fetch, or a failed lookup, download or
-    /// write. A game whose image failed but whose metadata was written is
-    /// listed with the image error. The report names them after an
-    /// unattended batch. Carried only by the terminal event; progress
-    /// snapshots leave it empty.
+    /// Every game the run attempted and could not resolve, with the
+    /// reason: no match, several matches, no image to fetch, or a failed
+    /// lookup, download or write. A game whose image failed but whose
+    /// metadata was written is listed with the image error; games not
+    /// reached before a failure or cancellation are not listed. The report
+    /// names them after an unattended batch. Carried only by the terminal
+    /// event; progress snapshots leave it empty.
     pub unresolved_games: Vec<UnresolvedGame>,
 }
 
@@ -1727,56 +1728,19 @@ fn prepare(
                     },
                 )?;
                 match result.lookup {
-                    Lookup::NotFound => {
-                        activity_text(events, &current, "Matching by name");
-                        retry(
-                            cancelled,
-                            |error, delay| retry_activity(events, &current, error, delay),
-                            || {
-                                limited_lookup(limits, || {
-                                    client.by_name_with_media_type(
-                                        target.screen_scraper_system_id,
-                                        &target.query,
-                                        media_type,
-                                    )
-                                })
-                            },
-                        )?
-                    }
+                    Lookup::NotFound => search_by_title(
+                        &target, &current, media_type, client, limits, cancelled, events,
+                    )?,
                     _ => result,
                 }
             }
-            None => {
-                activity_text(events, &current, "Matching by name");
-                retry(
-                    cancelled,
-                    |error, delay| retry_activity(events, &current, error, delay),
-                    || {
-                        limited_lookup(limits, || {
-                            client.by_name_with_media_type(
-                                target.screen_scraper_system_id,
-                                &target.query,
-                                media_type,
-                            )
-                        })
-                    },
-                )?
-            }
+            None => search_by_title(
+                &target, &current, media_type, client, limits, cancelled, events,
+            )?,
         }
     } else {
-        activity_text(events, &current, "Matching by name");
-        retry(
-            cancelled,
-            |error, delay| retry_activity(events, &current, error, delay),
-            || {
-                limited_lookup(limits, || {
-                    client.by_name_with_media_type(
-                        target.screen_scraper_system_id,
-                        &target.query,
-                        media_type,
-                    )
-                })
-            },
+        search_by_title(
+            &target, &current, media_type, client, limits, cancelled, events,
         )?
     };
 
@@ -1891,6 +1855,48 @@ fn retry_delay(kind: ErrorKind, attempt: usize) -> Duration {
 
 fn current_label(target: &Target) -> String {
     format!("{}: {}", target.system_name, target.title)
+}
+
+/// Search ScreenScraper by title. A file named only by its extension and
+/// dump tags leaves nothing to send once those are removed; that is one
+/// game without a match, recorded like a server miss without a request or
+/// a failed-search reservation being spent, not a setup fault that should
+/// stop the run.
+fn search_by_title(
+    target: &Target,
+    current: &str,
+    media_type: &str,
+    client: &Client,
+    limits: &LimitedTransport,
+    cancelled: &AtomicBool,
+    events: &SyncSender<WorkerMessage>,
+) -> Result<super::api::LookupResponse> {
+    if target.query.trim().is_empty() {
+        log_scraper_detail(
+            current,
+            "no title remains to search for once the extension and dump tags are removed",
+        );
+        return Ok(super::api::LookupResponse {
+            lookup: Lookup::NotFound,
+            alternatives: Vec::new(),
+            account: None,
+            server_miss: false,
+        });
+    }
+    activity_text(events, current, "Matching by name");
+    retry(
+        cancelled,
+        |error, delay| retry_activity(events, current, error, delay),
+        || {
+            limited_lookup(limits, || {
+                client.by_name_with_media_type(
+                    target.screen_scraper_system_id,
+                    &target.query,
+                    media_type,
+                )
+            })
+        },
+    )
 }
 
 fn retry_status(error: &Error, delay: Duration) -> String {
@@ -2496,16 +2502,6 @@ mod tests {
                 },
             })
         }
-    }
-
-    fn mock() -> Arc<Mock> {
-        Arc::new(Mock {
-            api_calls: AtomicUsize::new(0),
-            media_calls: AtomicUsize::new(0),
-            quota_empty: false,
-            bad_media: false,
-            no_media: false,
-        })
     }
 
     fn temp(name: &str) -> PathBuf {
@@ -3356,6 +3352,106 @@ mod tests {
         }
     }
 
+    struct TaglessMock;
+
+    impl Transport for TaglessMock {
+        fn get(
+            &self,
+            endpoint: &str,
+            params: &[(String, String)],
+            _limit: u64,
+        ) -> Result<HttpResponse> {
+            let parameter = |name: &str| {
+                params
+                    .iter()
+                    .find(|(key, _)| key == name)
+                    .map(|(_, value)| value.as_str())
+                    .unwrap_or_default()
+            };
+            let body = match endpoint {
+                "ssuserInfos.php" => "<Data><ssuser><niveau>1</niveau><maxthreads>1</maxthreads><maxdownloadspeed>256</maxdownloadspeed><requeststoday>0</requeststoday><requestskotoday>0</requestskotoday><maxrequestspermin>60</maxrequestspermin><maxrequestsperday>20</maxrequestsperday><maxrequestskoperday>20</maxrequestskoperday></ssuser></Data>".to_string(),
+                "jeuInfos.php" if parameter("romnom").starts_with('(') => {
+                    "<Data><jeux/></Data>".to_string()
+                }
+                "jeuInfos.php" => {
+                    let md5 = parameter("md5");
+                    format!("<Data><jeux><jeu id='42'><noms><nom region='wor'>Found</nom></noms><rom><rommd5>{md5}</rommd5></rom></jeu></jeux></Data>")
+                }
+                other => panic!("unexpected endpoint {other}"),
+            };
+            Ok(HttpResponse {
+                status: 200,
+                content_type: Some("application/xml".into()),
+                body: body.into_bytes(),
+            })
+        }
+
+        fn get_media(
+            &self,
+            _url: &str,
+            _limit: u64,
+            _max_kib_per_second: Option<u64>,
+        ) -> Result<HttpResponse> {
+            unreachable!()
+        }
+    }
+
+    #[test]
+    fn a_file_named_only_by_dump_tags_is_recorded_and_the_batch_continues() {
+        // A system with several extensions keeps the extension in the row
+        // name, so a file called only by its tags searches for an empty
+        // term once the extension and tags are removed. That is one game
+        // without a match, whether it reaches the title search after a hash
+        // miss or directly: the run counts it like a server miss, spends no
+        // failed-search allowance on it, and writes the next game instead
+        // of stopping on a setup error.
+        let root = temp("tagless-title");
+        std::fs::write(root.join("(Unl).bin"), b"unlicensed").unwrap();
+        std::fs::write(root.join("(Proto).cue"), b"FILE \"(Proto).bin\" BINARY").unwrap();
+        std::fs::write(root.join("Zebra.rom"), b"found").unwrap();
+        let mut request = request(&root, settings(ImagePolicy::Off));
+        request.systems = vec![FoundSystem {
+            def: toml::from_str(
+                "name = 'Nintendo'\nid = 'NES'\nfolders = ['NES']\nrbf = '_Console/NES'\nextensions = ['rom', 'bin', 'cue']\n",
+            )
+            .unwrap(),
+            ..system(&root)
+        }];
+        let Event::Finished(mut progress) =
+            finish(start_with_transport(request, Arc::new(TaglessMock)).unwrap())
+        else {
+            panic!("a file with no searchable title stopped the batch");
+        };
+        assert_eq!(progress.completed, 3);
+        assert_eq!(progress.not_found, 2);
+        assert_eq!(progress.failed, 0);
+        // Only the hash miss for "(Unl).bin" reached ScreenScraper; neither
+        // empty title search spent a failed-search slot.
+        assert_eq!(progress.failed_searches, 1);
+        assert_eq!(progress.updated, 1);
+        progress
+            .unresolved_games
+            .sort_by(|a, b| a.label.cmp(&b.label));
+        assert_eq!(
+            progress.unresolved_games,
+            vec![
+                UnresolvedGame {
+                    label: "Nintendo: (Proto).cue".into(),
+                    reason: "no match".into(),
+                },
+                UnresolvedGame {
+                    label: "Nintendo: (Unl).bin".into(),
+                    reason: "no match".into(),
+                },
+            ]
+        );
+        let gamelist = std::fs::read_to_string(root.join("gamelist.xml")).unwrap();
+        assert!(gamelist.contains("<path>./Zebra.rom</path>"));
+        assert!(!gamelist.contains("(Unl)"));
+        assert!(!gamelist.contains("(Proto)"));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
     #[test]
     fn a_documented_closure_text_still_stops_the_batch() {
         let root = temp("closure-text");
@@ -4079,7 +4175,13 @@ mod tests {
         std::fs::write(root.join("art.png"), PNG).unwrap();
         let xml = "<gameList><game><path>./Game.rom</path><name>Name</name><image>./art.png</image></game></gameList>";
         std::fs::write(root.join("gamelist.xml"), xml).unwrap();
-        let mock = mock();
+        let mock = Arc::new(Mock {
+            api_calls: AtomicUsize::new(0),
+            media_calls: AtomicUsize::new(0),
+            quota_empty: false,
+            bad_media: false,
+            no_media: false,
+        });
         for scope_root in [
             {
                 let mut all = request(&root, settings(ImagePolicy::MissingOnly));
@@ -4130,7 +4232,13 @@ mod tests {
             "<gameList><game><path>./Game.rom</path><name>Local Name</name><image>./art.png</image></game></gameList>",
         )
         .unwrap();
-        let mock = mock();
+        let mock = Arc::new(Mock {
+            api_calls: AtomicUsize::new(0),
+            media_calls: AtomicUsize::new(0),
+            quota_empty: false,
+            bad_media: false,
+            no_media: false,
+        });
         let Event::Finished(progress) = finish(
             start_with_transport(
                 game_request(&root, settings(ImagePolicy::MissingOnly)),
@@ -4163,7 +4271,13 @@ mod tests {
             "<gameList><game><path>./Game.rom</path><name>Local Name</name></game></gameList>",
         )
         .unwrap();
-        let mock = mock();
+        let mock = Arc::new(Mock {
+            api_calls: AtomicUsize::new(0),
+            media_calls: AtomicUsize::new(0),
+            quota_empty: false,
+            bad_media: false,
+            no_media: false,
+        });
         let Event::Finished(progress) = finish(
             start_with_transport(
                 request(&root, settings(ImagePolicy::MissingOnly)),
@@ -4196,7 +4310,13 @@ mod tests {
             "<gameList><game><path>./Game.rom</path><image>./art.png</image></game></gameList>",
         )
         .unwrap();
-        let mock = mock();
+        let mock = Arc::new(Mock {
+            api_calls: AtomicUsize::new(0),
+            media_calls: AtomicUsize::new(0),
+            quota_empty: false,
+            bad_media: false,
+            no_media: false,
+        });
         let Event::Finished(progress) = finish(
             start_with_transport(
                 request(&root, settings(ImagePolicy::MissingOnly)),
@@ -4232,7 +4352,13 @@ mod tests {
         .unwrap();
         let mut replace = settings(ImagePolicy::ReplaceExisting);
         replace.metadata_policy = MetadataPolicy::ReplaceExisting;
-        let mock = mock();
+        let mock = Arc::new(Mock {
+            api_calls: AtomicUsize::new(0),
+            media_calls: AtomicUsize::new(0),
+            quota_empty: false,
+            bad_media: false,
+            no_media: false,
+        });
         let Event::Finished(progress) =
             finish(start_with_transport(request(&root, replace), mock.clone()).unwrap())
         else {
