@@ -93,7 +93,9 @@ impl Acknowledgements {
     /// read back as a shorter list of warnings already seen. The directory
     /// is flushed afterwards like the settings are, so the move itself
     /// survives a power cut; when that flush fails the file is in place and
-    /// the outcome says what could not be confirmed.
+    /// the outcome says what could not be confirmed. A temporary file left
+    /// by a failed write or move is removed, and when that fails too the
+    /// error says so, as the settings writer does.
     pub fn save(&self, path: &Path) -> Result<SaveOutcome> {
         let text = toml::to_string_pretty(self).map_err(|error| {
             DegaussError::malformed("artwork pack warnings", path, error.to_string())
@@ -106,11 +108,15 @@ impl Acknowledgements {
             .parent()
             .filter(|parent| !parent.as_os_str().is_empty())
             .unwrap_or_else(|| Path::new("."));
-        let temporary = parent.join(format!(".{FILE}.{}.part", std::process::id()));
-        let outcome = (|| {
-            let mut file = std::fs::File::create(&temporary).map_err(|error| {
-                DegaussError::io("writing temporary artwork pack warnings", &temporary, error)
-            })?;
+        let temporary = parent.join(format!(".{FILE}.degauss-{}.tmp", std::process::id()));
+        let mut file = std::fs::File::create(&temporary).map_err(|error| {
+            DegaussError::io(
+                "creating temporary artwork pack warnings",
+                &temporary,
+                error,
+            )
+        })?;
+        let written: Result<()> = (|| {
             file.write_all(body.as_bytes()).map_err(|error| {
                 DegaussError::io("writing temporary artwork pack warnings", &temporary, error)
             })?;
@@ -121,14 +127,16 @@ impl Acknowledgements {
                     error,
                 )
             })?;
-            drop(file);
-            std::fs::rename(&temporary, path)
-                .map_err(|error| DegaussError::io("installing artwork pack warnings", path, error))
+            Ok(())
         })();
-        if outcome.is_err() {
-            let _ = std::fs::remove_file(&temporary);
+        drop(file);
+        if let Err(error) = written {
+            return Err(cleanup_temporary(&temporary, error));
         }
-        outcome?;
+        if let Err(error) = std::fs::rename(&temporary, path) {
+            let error = DegaussError::io("installing artwork pack warnings", path, error);
+            return Err(cleanup_temporary(&temporary, error));
+        }
         match std::fs::File::open(parent).and_then(|directory| directory.sync_all()) {
             Ok(()) => Ok(SaveOutcome::Durable),
             Err(error) => Ok(SaveOutcome::InstalledWithWarning(DegaussError::io(
@@ -137,6 +145,23 @@ impl Acknowledgements {
                 error,
             ))),
         }
+    }
+}
+
+/// The failure that stopped the save, with the leftover temporary file
+/// removed; when even that fails the error says so, because a stray file
+/// beside the settings is worth knowing about.
+fn cleanup_temporary(path: &Path, error: DegaussError) -> DegaussError {
+    match std::fs::remove_file(path) {
+        Ok(()) => error,
+        Err(cleanup) if cleanup.kind() == std::io::ErrorKind::NotFound => error,
+        Err(cleanup) => DegaussError::unsupported(
+            "writing artwork pack warnings",
+            format!(
+                "{error}; removing the temporary file {} also failed: {cleanup}",
+                path.display()
+            ),
+        ),
     }
 }
 
@@ -277,13 +302,70 @@ mod tests {
         assert!(
             error
                 .to_string()
-                .starts_with("writing temporary artwork pack warnings failed for"),
+                .starts_with("creating temporary artwork pack warnings failed for"),
             "a failed save must say which step failed: {error}"
         );
         assert_eq!(
             std::fs::read(&blocked).unwrap(),
             b"file",
             "a failed save must leave what was in the way alone"
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_save_that_cannot_move_into_place_reports_it_and_leaves_no_temporary_file() {
+        let dir = temp("in-the-way");
+        let path = dir.join(FILE);
+        std::fs::create_dir(&path).unwrap();
+        let mut seen = Acknowledgements::default();
+        seen.acknowledge("NES", "abc");
+        let error = seen.save(&path).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .starts_with("installing artwork pack warnings failed for"),
+            "the move is the step that failed, and the error must say so: {error}"
+        );
+        assert!(
+            !error.to_string().contains("also failed"),
+            "a temporary file that was removed is not part of the failure: {error}"
+        );
+        let names: Vec<String> = std::fs::read_dir(&dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(
+            names,
+            vec![FILE.to_string()],
+            "the written temporary file must not be left beside the settings"
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_temporary_file_that_cannot_be_removed_is_part_of_the_reported_failure() {
+        let dir = temp("stuck");
+        let stuck = dir.join("stuck.tmp");
+        std::fs::create_dir(&stuck).unwrap();
+        let error = cleanup_temporary(
+            &stuck,
+            DegaussError::unsupported("writing artwork pack warnings", "the save failed"),
+        );
+        let text = error.to_string();
+        assert!(
+            text.contains("the save failed") && text.contains("also failed"),
+            "both failures must reach the screen, or a stray file goes unexplained: {text}"
+        );
+        assert!(text.contains(&stuck.display().to_string()));
+        let gone = cleanup_temporary(
+            &dir.join("never-written.tmp"),
+            DegaussError::unsupported("writing artwork pack warnings", "the save failed"),
+        );
+        assert_eq!(
+            gone.to_string(),
+            "writing artwork pack warnings unsupported: the save failed",
+            "a temporary file that was never written is nothing to report"
         );
         std::fs::remove_dir_all(&dir).unwrap();
     }
