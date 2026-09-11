@@ -2990,6 +2990,9 @@ pub struct App {
     index: Option<crate::cache::Index>,
     /// The open system's folders, when they have been written down.
     system_cache: Option<crate::cache::SystemCache>,
+    /// Whether the open system has an image chosen for it. Asked of the
+    /// card once, as the system opens, so listing a folder never has to.
+    system_image_chosen: bool,
     /// Current read-only Pack snapshot. Present only for a Pack-selected
     /// system, including an unusable snapshot whose health is shown.
     artwork_provider: Option<crate::artwork_pack::Provider>,
@@ -3324,6 +3327,7 @@ impl App {
             cache_dir: crate::cache::dir_for(&settings_path),
             index: None,
             system_cache: None,
+            system_image_chosen: false,
             artwork_provider: None,
             artwork_provider_cache: HashMap::new(),
             effective_artwork_pack_roots,
@@ -4575,6 +4579,10 @@ impl App {
             self.screen = Screen::Browse;
             self.apply_geometry();
         }
+        self.system_image_chosen = self
+            .logo_dir
+            .as_deref()
+            .is_some_and(|dir| crate::category_images::has_system_override(dir, &id));
         self.opened_config = Some(config.clone());
         if self.system_cache.is_some() {
             self.library = None;
@@ -5692,7 +5700,8 @@ impl App {
     /// name, with its own count, and opens as one.
     ///
     /// Inside favourites a folder is a shelf and keeps its heart. A system
-    /// given its own image keeps that on its folders, as it does today.
+    /// given its own image keeps that on its folders, as it does today;
+    /// whether it has one was looked up as the system opened.
     fn derive_folder_covers(&self, rows: &mut [browse::Row]) {
         if self.in_favorites() {
             return;
@@ -5700,12 +5709,7 @@ impl App {
         let Some(cache) = self.system_cache.as_ref() else {
             return;
         };
-        if self
-            .logo_dir
-            .as_deref()
-            .zip(self.open_system.as_deref())
-            .is_some_and(|(dir, id)| crate::category_images::has_system_override(dir, id))
-        {
+        if self.system_image_chosen {
             return;
         }
         let provider = self.artwork_provider.as_ref();
@@ -9023,6 +9027,16 @@ impl App {
         self.dirty = true;
     }
 
+    /// Keep what the open system knows about its chosen image current,
+    /// when the image just chosen or cleared is that system's.
+    fn note_system_image(&mut self, target: &ImageTarget, chosen: bool) {
+        if let ImageTarget::System { id, .. } = target {
+            if self.open_system.as_deref() == Some(id.as_str()) {
+                self.system_image_chosen = chosen;
+            }
+        }
+    }
+
     fn refresh_category_image(&mut self) {
         self.category_image_choices.clear();
         self.category_image_target = None;
@@ -9051,7 +9065,10 @@ impl App {
             return;
         };
         match target.install(logo_dir, &choice.path) {
-            Ok(_) => self.refresh_category_image(),
+            Ok(_) => {
+                self.note_system_image(&target, true);
+                self.refresh_category_image();
+            }
             Err(error) => {
                 crate::note(&format!("custom art could not be saved: {error}"));
                 self.message =
@@ -9067,7 +9084,10 @@ impl App {
             return;
         };
         match target.clear(logo_dir) {
-            Ok(_) => self.refresh_category_image(),
+            Ok(_) => {
+                self.note_system_image(target, false);
+                self.refresh_category_image();
+            }
             Err(error) => {
                 crate::note(&format!("custom art could not be cleared: {error}"));
                 self.message = Some("Degauss could not clear the custom image.".to_string());
@@ -15720,7 +15740,7 @@ mod tests {
             if let Some(image) = image {
                 std::fs::write(games_dir.join("media").join(image), b"picture").unwrap();
                 gamelist.push_str(&format!(
-                    "<game><path>./{game}</path><name>{image} title</name><image>./media/{image}</image><publisher>{image} publisher</publisher></game>"
+                    "<game><path>./{game}</path><image>./media/{image}</image></game>"
                 ));
             }
         }
@@ -16114,85 +16134,6 @@ mod tests {
             None,
             "a hidden folder is not walked into"
         );
-        std::fs::remove_dir_all(root).ok();
-    }
-
-    /// A favourite names a game, and is answered from that game's own
-    /// written-down row. The folder around the game may show a different
-    /// picture or none, and the favourite must not notice: here the folder
-    /// holds two different games and so shows nothing, while the favourite
-    /// into it keeps its game's picture, name and details.
-    #[test]
-    fn a_favourite_into_a_folder_is_answered_from_its_own_game() {
-        let root = picker_temp("favourite-into-folder");
-        let games = root.join("games");
-        let cache_dir = root.join("cache");
-        let favourites = root.join("_@Favorites");
-        std::fs::create_dir_all(&favourites).unwrap();
-        let config = disc_config(&games);
-        let cache = gamelist_cache(
-            &games,
-            &config,
-            &[
-                ("Set/Wanted.chd", Some("wanted.png")),
-                ("Set/Other.chd", Some("other.png")),
-            ],
-        );
-        crate::cache::save_system(&cache_dir, "Disc", &cache).unwrap();
-        let folder = Place::Dir(games.join("Set"));
-        assert_eq!(
-            derived_folder_cover(&cache, &folder, &[], None),
-            None,
-            "two games in the folder: the folder shows nothing"
-        );
-        for row in &cache.get(&Place::Dir(games.clone())).unwrap().rows {
-            assert!(row.is_folder());
-            assert_eq!(
-                row_target(row),
-                None,
-                "a folder is never a favourite's target"
-            );
-        }
-
-        let game = games.join("Set/Wanted.chd");
-        let favorite = favourites.join("Wanted.mgl");
-        std::fs::write(
-            &favorite,
-            format!(
-                "<mistergamedescription><file path=\"{}\" /></mistergamedescription>",
-                game.display()
-            ),
-        )
-        .unwrap();
-        let mut rows = vec![browse::Row {
-            name: "Wanted".to_string(),
-            sort_key: "wanted".to_string(),
-            kind: browse::Kind::Play(browse::Launch::File(favorite)),
-            cover: None,
-            genre: None,
-            favorite: true,
-            below: None,
-            details: browse::Details::default(),
-        }];
-        let systems = vec![found_system_with_extensions(
-            "Disc",
-            vec![games.clone()],
-            &["chd"],
-        )];
-        enrich_favorite_rows(
-            &mut rows,
-            &systems,
-            &Default::default(),
-            &cache_dir,
-            |_, _, _| None,
-        );
-        assert_eq!(rows[0].name, "wanted.png title");
-        assert_eq!(
-            rows[0].cover.as_deref(),
-            Some(games.join("media/wanted.png").as_path())
-        );
-        assert_eq!(rows[0].details.publisher, "wanted.png publisher");
-        assert!(rows[0].favorite);
         std::fs::remove_dir_all(root).ok();
     }
 

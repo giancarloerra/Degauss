@@ -3273,9 +3273,21 @@ fn run_folder_artwork_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
     assert_eq!(app.here[at].cover.as_deref(), Some(image.as_path()));
 
     // An image chosen for the system stands on its folders, as it did
-    // before; clearing it brings the game's picture back.
+    // before; clearing it brings the game's picture back. The choice is
+    // read as the system opens, which is where it is made from: listing
+    // a folder never asks the card, so a file that appears underneath an
+    // open system changes nothing until the system is opened again.
     let managed = crate::category_images::install_system(&logos, "NES", &custom).unwrap();
     app.relist_here();
+    let at = folder_at(&app);
+    assert_eq!(
+        app.here[at].cover.as_deref(),
+        Some(image.as_path()),
+        "a listing does not ask the card about the system's image"
+    );
+    app.handle(Action::Quit);
+    assert_eq!(app.browsing, Browsing::Systems);
+    app.open_system_by_index(0);
     let at = folder_at(&app);
     app.game_list.select(at);
     assert_eq!(app.here[at].cover, None);
@@ -3284,7 +3296,8 @@ fn run_folder_artwork_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
         (Some(managed), "Example Game".to_string(), false, false)
     );
     assert!(crate::category_images::clear_system(&logos, "NES").unwrap());
-    app.relist_here();
+    app.handle(Action::Quit);
+    app.open_system_by_index(0);
     let at = folder_at(&app);
     assert_eq!(app.here[at].cover.as_deref(), Some(image.as_path()));
 
@@ -3392,7 +3405,10 @@ fn run_folder_artwork_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
         "back on the gamelist, its picture again"
     );
 
-    // A shelf inside favourites is left alone: no picture, the heart.
+    // A shelf inside favourites is left alone: no picture, the heart. The
+    // favourite beside it, which names the game inside the folder, keeps
+    // the game's own picture and name: it is answered from the game, not
+    // from the folder around it.
     let shelf = root.join("_@Favorites/Shelf");
     std::fs::create_dir_all(&shelf).unwrap();
     let favorite = shelf.join("Example Game.mgl");
@@ -3418,12 +3434,16 @@ fn run_folder_artwork_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
             }
         }
     }
-    app.all_systems.push(favorites);
-    app.open_system = Some("Favorites".into());
-    app.system_cache = Some(favorites_cache);
-    app.artwork_provider = None;
-    assert!(app.in_favorites());
-    let mut rows = vec![browse::Row {
+    let mut rows = favorites_cache
+        .get(&Place::Dir(shelf.clone()))
+        .expect("the shelf is written down")
+        .rows
+        .clone();
+    assert_eq!(rows.len(), 1);
+    assert!(matches!(rows[0].kind, browse::Kind::Play(_)));
+    assert_eq!(rows[0].cover.as_deref(), Some(image.as_path()));
+    let game_name = rows[0].name.clone();
+    rows.push(browse::Row {
         name: "Shelf".into(),
         sort_key: "shelf".into(),
         kind: browse::Kind::Enter(Place::Dir(shelf)),
@@ -3432,12 +3452,32 @@ fn run_folder_artwork_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
         favorite: false,
         below: Some(1),
         details: browse::Details::default(),
-    }];
+    });
+    app.all_systems.push(favorites);
+    app.open_system = Some("Favorites".into());
+    app.system_cache = Some(favorites_cache);
+    app.artwork_provider = None;
+    assert!(app.in_favorites());
     app.derive_folder_covers(&mut rows);
-    assert_eq!(rows[0].cover, None, "a shelf has no artwork and never will");
+    app.mark_favorites(&mut rows);
+    let shelf_at = rows.iter().position(|row| row.is_folder()).unwrap();
+    let game_at = 1 - shelf_at;
+    assert_eq!(
+        rows[shelf_at].cover, None,
+        "a shelf has no artwork and never will"
+    );
+    assert_eq!(rows[game_at].cover.as_deref(), Some(image.as_path()));
+    assert_eq!(rows[game_at].name, game_name);
+    assert!(rows[game_at].favorite);
     app.here = rows;
-    app.game_list = ListState::new(1, app.geometry.visible);
+    app.game_list = ListState::new(2, app.geometry.visible);
+    app.game_list.select(shelf_at);
     assert_eq!(app.current_art(), (None, "Shelf".to_string(), true, false));
+    app.game_list.select(game_at);
+    assert_eq!(
+        app.current_art(),
+        (Some(image.clone()), game_name, false, true)
+    );
     app.ui.hide().unwrap();
 }
 
