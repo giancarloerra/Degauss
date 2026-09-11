@@ -5,7 +5,7 @@
 /deploy/Scripts/.config/degauss/degauss
 
 # Written by Degauss itself: options, where you were, and which incomplete
-# Artwork Pack warnings were already shown
+# Artwork Pack warnings were already dismissed
 /settings.toml
 /state.toml
 /artwork-pack-warnings.toml

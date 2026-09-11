@@ -14,6 +14,7 @@ use std::sync::Arc;
 
 use quick_xml::events::Event;
 use quick_xml::Reader;
+use sha1::{Digest, Sha1};
 
 use crate::browse::{Details, Kind, Launch, Row};
 use crate::error::{DegaussError, Result};
@@ -971,8 +972,6 @@ impl Provider {
     /// source fingerprint. The system is left out so systems sharing one
     /// mapping share one acknowledgement, as they share one source.
     pub fn health_digest(&self) -> String {
-        use sha1::{Digest, Sha1};
-
         let mut hasher = Sha1::new();
         let mut field = |bytes: &[u8]| {
             hasher.update(bytes);

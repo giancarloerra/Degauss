@@ -1919,6 +1919,17 @@ struct IndexOverview {
     report: String,
 }
 
+/// An incomplete-pack warning on screen, written down once a press
+/// dismisses it and not before: a headless render never dismisses, and
+/// only the press says somebody saw it.
+struct PendingPackHealth {
+    group: String,
+    digest: String,
+    /// The text that was put up. A press that dismisses something else,
+    /// put up over it meanwhile, does not count as having seen this.
+    message: String,
+}
+
 struct Building {
     /// Indices into `all_systems`, in reverse so the next one is popped.
     left: Vec<usize>,
@@ -2910,9 +2921,8 @@ pub struct App {
     /// A changed provider invalidates its group's entries so a new problem is
     /// still reported, while ordinary re-entry does not repeat the same modal.
     pack_health_shown: HashSet<String>,
-    /// Incomplete-pack warnings already seen in earlier runs, read from the
-    /// card the first time a warning is about to be shown and not before.
-    pack_health_acknowledged: Option<crate::pack_health::Acknowledgements>,
+    /// The incomplete-pack warning waiting to be dismissed, if one is up.
+    pack_health_pending: Option<PendingPackHealth>,
     /// Set while the card is being read into the cache, a system at a time
     /// so the screen can say how far it has got.
     build: Option<Building>,
@@ -3234,7 +3244,7 @@ impl App {
             provider_recovery_needed: HashSet::new(),
             provider_validated: HashSet::new(),
             pack_health_shown: HashSet::new(),
-            pack_health_acknowledged: None,
+            pack_health_pending: None,
             build: None,
             index_return_screen: Screen::Browse,
             index_details: false,
@@ -5408,28 +5418,71 @@ impl App {
             health.label(),
             root
         ));
+        let mut message = artwork_pack_health_message(&system, health);
         // An incomplete pack is still usable, so its warning is worth one
         // look per snapshot, not one per start: this program exits for every
         // launch. Unavailable and invalid packs need acting on and are shown
-        // every time. Written when shown, not when dismissed: the message is
-        // modal, and a headless render never dismisses.
+        // again on every start. The file is read each time and never kept
+        // in memory, so a deletion made while this program runs is not
+        // undone by the next save.
         if health == crate::artwork_pack::ProviderHealth::Degraded {
             let path = crate::pack_health::path_beside(&self.settings_path);
-            let seen = self
-                .pack_health_acknowledged
-                .get_or_insert_with(|| crate::pack_health::Acknowledgements::load(&path));
-            if seen.acknowledged(&group, &digest) {
-                return;
+            match crate::pack_health::Acknowledgements::load(&path) {
+                Ok(seen) if seen.acknowledged(&group, &digest) => return,
+                Ok(_) => {
+                    self.pack_health_pending = message.clone().map(|message| PendingPackHealth {
+                        group,
+                        digest,
+                        message,
+                    });
+                }
+                // Nothing is written down over a file that could not be
+                // read: it may hold other groups' acknowledgements.
+                Err(error) => {
+                    crate::note(&format!("artwork pack warnings not read: {error}"));
+                    message = message.map(|message| {
+                        format!("{message}\n\nThis warning cannot be remembered: {error}")
+                    });
+                }
             }
-            seen.acknowledge(&group, &digest);
-            if let Err(error) = seen.save(&path) {
+        }
+        self.message = message;
+        self.dirty = true;
+    }
+
+    /// The press that took an incomplete-pack warning off the screen: write
+    /// it down, so the next start does not put it up again. What is on disk
+    /// is read again first, so a deletion made while this program runs
+    /// stays deleted. A failure is said on screen with its cause, as a
+    /// settings save failure is.
+    fn acknowledge_pack_health(&mut self, dismissed: Option<&str>) {
+        let Some(pending) = self.pack_health_pending.take() else {
+            return;
+        };
+        if dismissed != Some(pending.message.as_str()) {
+            return;
+        }
+        let path = crate::pack_health::path_beside(&self.settings_path);
+        let outcome = crate::pack_health::Acknowledgements::load(&path).and_then(|mut seen| {
+            seen.acknowledge(&pending.group, &pending.digest);
+            seen.save(&path)
+        });
+        match outcome {
+            Ok(SaveOutcome::Durable) => {}
+            Ok(SaveOutcome::InstalledWithWarning(warning)) => {
+                self.message = Some(format!(
+                    "Artwork Pack warning remembered, but durability could not be confirmed: {warning}"
+                ));
+            }
+            Err(error) => {
                 crate::note(&format!(
                     "artwork pack warning acknowledgement not saved: {error}"
                 ));
+                self.message = Some(format!(
+                    "Artwork Pack warning not remembered, so it returns on the next start: {error}"
+                ));
             }
         }
-        self.message = artwork_pack_health_message(&system, health);
-        self.dirty = true;
     }
 
     fn has_custom_view(&self) -> bool {
@@ -7493,8 +7546,9 @@ impl App {
             if self.scroll_message(action) {
                 return;
             }
-            self.message = None;
+            let dismissed = self.message.take();
             self.dirty = true;
+            self.acknowledge_pack_health(dismissed.as_deref());
             return;
         }
         let Some(editor) = self.theme_editor.as_mut() else {
@@ -11829,8 +11883,9 @@ impl App {
             if self.scroll_message(action) {
                 return None;
             }
-            self.message = None;
+            let dismissed = self.message.take();
             self.dirty = true;
+            self.acknowledge_pack_health(dismissed.as_deref());
             return None;
         }
 

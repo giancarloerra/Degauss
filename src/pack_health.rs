@@ -3,14 +3,16 @@
 //! An incomplete Pack stays usable, and its warning is worth one look, not
 //! one per start: launching a game ends this program, so a warning kept only
 //! in memory came back on every return. This file holds, per source group,
-//! the identity of the snapshot whose warning was shown. A pack that is
+//! the identity of the snapshot whose warning was dismissed. A pack that is
 //! unavailable or invalid is never written here; those need acting on and
-//! are shown every time.
+//! are shown again on every start.
 //!
 //! Kept apart from `state.toml`, which a cold start deletes, and from
 //! `settings.toml`, which refuses to start on a broken value. This file may
 //! be missing, stale or broken and the only cost is one more warning, which
-//! the next acknowledgement then replaces.
+//! the next acknowledgement then replaces. Read fresh each time it is
+//! needed, never cached: deleting it while this program runs must not be
+//! undone by the next save.
 
 use std::collections::BTreeMap;
 use std::io::Write;
@@ -19,6 +21,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::error::{DegaussError, Result};
+use crate::settings::SaveOutcome;
 
 pub const FILE: &str = "artwork-pack-warnings.toml";
 
@@ -35,29 +38,29 @@ pub struct Acknowledgements {
 }
 
 impl Acknowledgements {
-    /// Read it back. A missing file is the normal case; one that cannot be
-    /// read or parsed is written to the log and read as empty, so the
-    /// warning is shown once more and the next acknowledgement replaces it.
-    pub fn load(path: &Path) -> Self {
+    /// Read it back. A missing file is the normal case, and one that cannot
+    /// be parsed is written to the log and read as empty, so the warning is
+    /// shown once more and the next acknowledgement replaces it. A file that
+    /// is there but cannot be read is an error: saving over it would throw
+    /// away every acknowledgement it holds.
+    pub fn load(path: &Path) -> Result<Self> {
         match std::fs::read_to_string(path) {
             Ok(text) => match toml::from_str(&text) {
-                Ok(parsed) => parsed,
+                Ok(parsed) => Ok(parsed),
                 Err(error) => {
                     crate::note(&format!(
                         "artwork pack warnings: {} is malformed: {error}",
                         path.display()
                     ));
-                    Self::default()
+                    Ok(Self::default())
                 }
             },
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Self::default(),
-            Err(error) => {
-                crate::note(&format!(
-                    "artwork pack warnings: reading {} failed: {error}",
-                    path.display()
-                ));
-                Self::default()
-            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Self::default()),
+            Err(error) => Err(DegaussError::io(
+                "reading artwork pack warnings",
+                path,
+                error,
+            )),
         }
     }
 
@@ -65,7 +68,7 @@ impl Acknowledgements {
         self.degraded.get(group).is_some_and(|seen| seen == digest)
     }
 
-    /// Record the snapshot whose warning is being shown. One entry per
+    /// Record the snapshot whose warning was dismissed. One entry per
     /// group: an updated pack's warning is for another state, and the old
     /// one is of no further use.
     pub fn acknowledge(&mut self, group: &str, digest: &str) {
@@ -73,14 +76,17 @@ impl Acknowledgements {
     }
 
     /// Written beside and moved into place: a file cut short must not be
-    /// read back as a shorter list of warnings already seen.
-    pub fn save(&self, path: &Path) -> Result<()> {
+    /// read back as a shorter list of warnings already seen. The directory
+    /// is flushed afterwards like the settings are, so the move itself
+    /// survives a power cut; when that flush fails the file is in place and
+    /// the outcome says what could not be confirmed.
+    pub fn save(&self, path: &Path) -> Result<SaveOutcome> {
         let text = toml::to_string_pretty(self).map_err(|error| {
             DegaussError::malformed("artwork pack warnings", path, error.to_string())
         })?;
         let body = format!(
-            "# Written by Degauss when an incomplete Artwork Pack warning is shown.\n\
-             # Delete this file to see those warnings again.\n\n{text}"
+            "# Written by Degauss when an incomplete Artwork Pack warning is dismissed.\n\
+             # Delete this file and restart Degauss to see those warnings again.\n\n{text}"
         );
         let parent = path
             .parent()
@@ -108,7 +114,15 @@ impl Acknowledgements {
         if outcome.is_err() {
             let _ = std::fs::remove_file(&temporary);
         }
-        outcome
+        outcome?;
+        match std::fs::File::open(parent).and_then(|directory| directory.sync_all()) {
+            Ok(()) => Ok(SaveOutcome::Durable),
+            Err(error) => Ok(SaveOutcome::InstalledWithWarning(DegaussError::io(
+                "flushing artwork pack warnings directory",
+                parent,
+                error,
+            ))),
+        }
     }
 }
 
@@ -131,12 +145,15 @@ mod tests {
         assert_eq!(path, dir.join(FILE));
         let mut seen = Acknowledgements::default();
         seen.acknowledge("NES", "abc");
-        seen.save(&path).unwrap();
+        assert!(
+            matches!(seen.save(&path).unwrap(), SaveOutcome::Durable),
+            "a save into a writable directory is complete, file and directory alike"
+        );
 
-        let read = Acknowledgements::load(&path);
+        let read = Acknowledgements::load(&path).unwrap();
         assert!(
             read.acknowledged("NES", "abc"),
-            "a warning shown before a game must stay acknowledged in the next process"
+            "a warning dismissed before a game must stay acknowledged in the next process"
         );
         assert!(
             !read.acknowledged("NES", "abd"),
@@ -152,7 +169,7 @@ mod tests {
     #[test]
     fn a_missing_file_acknowledges_nothing() {
         let dir = temp("missing");
-        let read = Acknowledgements::load(&dir.join(FILE));
+        let read = Acknowledgements::load(&dir.join(FILE)).unwrap();
         assert!(!read.acknowledged("NES", "abc"));
         std::fs::remove_dir_all(&dir).unwrap();
     }
@@ -162,14 +179,31 @@ mod tests {
         let dir = temp("malformed");
         let path = dir.join(FILE);
         std::fs::write(&path, "degraded = 3\n[[[").unwrap();
-        let mut read = Acknowledgements::load(&path);
+        let mut read = Acknowledgements::load(&path).unwrap();
         assert!(
             !read.acknowledged("NES", "abc"),
             "a broken file must cost one more warning, never a refusal to start"
         );
         read.acknowledge("NES", "abc");
         read.save(&path).unwrap();
-        assert!(Acknowledgements::load(&path).acknowledged("NES", "abc"));
+        assert!(Acknowledgements::load(&path)
+            .unwrap()
+            .acknowledged("NES", "abc"));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_file_that_cannot_be_read_is_an_error_not_an_empty_list() {
+        let dir = temp("unreadable");
+        let path = dir.join(FILE);
+        std::fs::create_dir_all(&path).unwrap();
+        let error = Acknowledgements::load(&path).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .starts_with("reading artwork pack warnings failed for"),
+            "a read failure must be reported, not read as nothing acknowledged: {error}"
+        );
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -204,11 +238,15 @@ mod tests {
             text.starts_with("# Written by Degauss"),
             "the file says what it is for and how to reset it"
         );
+        assert!(
+            text.contains("restart Degauss"),
+            "the reset instruction must say that a running program keeps its own list"
+        );
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
-    fn a_save_that_cannot_install_reports_its_error() {
+    fn a_save_whose_temporary_file_cannot_be_created_reports_its_error() {
         let dir = temp("blocked");
         let blocked = dir.join("not-a-directory");
         std::fs::write(&blocked, b"file").unwrap();
@@ -216,8 +254,15 @@ mod tests {
         seen.acknowledge("NES", "abc");
         let error = seen.save(&blocked.join(FILE)).unwrap_err();
         assert!(
-            error.to_string().contains("artwork pack warnings"),
-            "a failed save must say what failed: {error}"
+            error
+                .to_string()
+                .starts_with("writing temporary artwork pack warnings failed for"),
+            "a failed save must say which step failed: {error}"
+        );
+        assert_eq!(
+            std::fs::read(&blocked).unwrap(),
+            b"file",
+            "a failed save must leave what was in the way alone"
         );
         std::fs::remove_dir_all(&dir).unwrap();
     }

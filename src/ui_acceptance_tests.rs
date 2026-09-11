@@ -3203,6 +3203,11 @@ fn run_degraded_pack_acknowledgement_flow(root: &Path, window: Rc<MinimalSoftwar
         app.open_system_by_index(0);
         assert_eq!(app.open_system.as_deref(), Some("NES"), "{:?}", app.message);
     };
+    let acknowledged = |group: &str, digest: &str| {
+        Acknowledgements::load(&warnings)
+            .unwrap()
+            .acknowledged(group, digest)
+    };
 
     // 6. A complete pack: no warning, and nothing written down.
     let app = start(window.clone());
@@ -3220,9 +3225,11 @@ fn run_degraded_pack_acknowledgement_flow(root: &Path, window: Rc<MinimalSoftwar
     app.ui.hide().unwrap();
     drop(app);
 
-    // 1. The first look at an incomplete pack warns, and remembers it.
+    // 1. The first look at an incomplete pack warns. Putting the warning up
+    // is not seeing it: a headless render opens a system the same way and
+    // nobody dismisses what it draws, so nothing is written down yet.
     std::fs::remove_file(artwork.join("Second.jpg")).unwrap();
-    let mut app = start(window.clone());
+    let app = start(window.clone());
     assert_eq!(
         app.artwork_provider.as_ref().unwrap().health,
         ProviderHealth::Degraded
@@ -3230,14 +3237,29 @@ fn run_degraded_pack_acknowledgement_flow(root: &Path, window: Rc<MinimalSoftwar
     assert!(message_contains(&app, "is incomplete"), "{:?}", app.message);
     let first_digest = app.artwork_provider.as_ref().unwrap().health_digest();
     assert!(
-        Acknowledgements::load(&warnings).acknowledged("NES", &first_digest),
-        "the shown warning is written down beside settings.toml before it is dismissed"
+        !warnings.exists(),
+        "a warning nobody dismissed must not be written down"
+    );
+    app.ui.hide().unwrap();
+    drop(app);
+
+    // The same pack in the next process: still not seen, so warned again;
+    // dismissing it is what writes it down.
+    let mut app = start(window.clone());
+    assert!(
+        message_contains(&app, "is incomplete"),
+        "an undismissed warning must come back: {:?}",
+        app.message
+    );
+    app.handle(Action::Accept);
+    assert!(app.message.is_none(), "{:?}", app.message);
+    assert!(
+        acknowledged("NES", &first_digest),
+        "the dismissed warning is written down beside settings.toml"
     );
     let first_file = std::fs::read_to_string(&warnings).unwrap();
 
     // 2. Dismissed, left and re-entered in the same process: not again.
-    app.handle(Action::Accept);
-    assert!(app.message.is_none());
     reopen(&mut app);
     assert!(app.message.is_none(), "{:?}", app.message);
     assert_eq!(std::fs::read_to_string(&warnings).unwrap(), first_file);
@@ -3256,13 +3278,17 @@ fn run_degraded_pack_acknowledgement_flow(root: &Path, window: Rc<MinimalSoftwar
         .diagnostics
         .iter()
         .any(|diagnostic| diagnostic.contains("index.tsv is missing")));
-    let seen = Acknowledgements::load(&warnings);
-    assert!(seen.acknowledged("NES", &no_index_digest));
-    assert!(
-        !seen.acknowledged("NES", &first_digest),
-        "one acknowledgement per source group: the old state is gone"
+    assert_eq!(
+        std::fs::read_to_string(&warnings).unwrap(),
+        first_file,
+        "nothing is written until the new warning is dismissed"
     );
     app.handle(Action::Accept);
+    assert!(acknowledged("NES", &no_index_digest));
+    assert!(
+        !acknowledged("NES", &first_digest),
+        "one acknowledgement per source group: the old state is gone"
+    );
     let no_index_file = std::fs::read_to_string(&warnings).unwrap();
     app.ui.hide().unwrap();
     drop(app);
@@ -3283,13 +3309,26 @@ fn run_degraded_pack_acknowledgement_flow(root: &Path, window: Rc<MinimalSoftwar
     drop(app);
 
     // 4. An updated manifest is another pack state: warned about once more.
+    // Meanwhile the file on the card was replaced by hand while this
+    // process runs (another group's acknowledgement, this one's gone): the
+    // save must start from what is on the card, not from what was read
+    // earlier, or the deletion is undone and the other group's entry lost.
     write_manifest(&["Known", "Second", "Third"]);
     let mut app = start(window.clone());
     assert!(message_contains(&app, "is incomplete"), "{:?}", app.message);
     let updated_digest = app.artwork_provider.as_ref().unwrap().health_digest();
     assert_ne!(updated_digest, no_index_digest);
-    assert!(Acknowledgements::load(&warnings).acknowledged("NES", &updated_digest));
+    let mut by_hand = Acknowledgements::default();
+    by_hand.acknowledge("SNES", "kept");
+    by_hand.save(&warnings).unwrap();
     app.handle(Action::Accept);
+    assert!(app.message.is_none(), "{:?}", app.message);
+    assert!(acknowledged("NES", &updated_digest));
+    assert!(
+        acknowledged("SNES", "kept"),
+        "an entry written by hand while the program runs must survive the next save"
+    );
+    assert!(!acknowledged("NES", &no_index_digest));
     app.ui.hide().unwrap();
     drop(app);
 
@@ -3297,16 +3336,65 @@ fn run_degraded_pack_acknowledgement_flow(root: &Path, window: Rc<MinimalSoftwar
     std::fs::write(&warnings, "degraded = \"not a table").unwrap();
     let mut app = start(window.clone());
     assert!(message_contains(&app, "is incomplete"), "{:?}", app.message);
+    app.handle(Action::Accept);
     assert!(
-        Acknowledgements::load(&warnings).acknowledged("NES", &updated_digest),
+        acknowledged("NES", &updated_digest),
         "the broken file is replaced by a readable one"
     );
-    app.handle(Action::Accept);
     let acknowledged_file = std::fs::read_to_string(&warnings).unwrap();
     app.ui.hide().unwrap();
     drop(app);
 
-    // 5. Invalid and unavailable packs need acting on: shown every time,
+    // A file that is there but cannot be read is another matter: it may
+    // hold acknowledgements, so the warning is shown with the reason and
+    // nothing is written over it.
+    std::fs::remove_file(&warnings).unwrap();
+    std::fs::create_dir(&warnings).unwrap();
+    let mut app = start(window.clone());
+    assert!(message_contains(&app, "is incomplete"), "{:?}", app.message);
+    assert!(
+        message_contains(&app, "cannot be remembered"),
+        "an unreadable file must be said on screen with its cause: {:?}",
+        app.message
+    );
+    app.handle(Action::Accept);
+    assert!(app.message.is_none(), "{:?}", app.message);
+    assert!(
+        warnings.is_dir(),
+        "an unreadable file must not be replaced by a fresh list"
+    );
+    app.ui.hide().unwrap();
+    drop(app);
+
+    // A save that fails when the warning is dismissed is said on screen with
+    // its cause, and the warning comes back on the next start.
+    std::fs::remove_dir(&warnings).unwrap();
+    let mut app = start(window.clone());
+    assert!(message_contains(&app, "is incomplete"), "{:?}", app.message);
+    std::fs::create_dir(&warnings).unwrap();
+    app.handle(Action::Accept);
+    assert!(
+        message_contains(&app, "not remembered"),
+        "a failed save must not be silent: {:?}",
+        app.message
+    );
+    app.handle(Action::Accept);
+    assert!(app.message.is_none(), "{:?}", app.message);
+    assert!(warnings.is_dir());
+    app.ui.hide().unwrap();
+    drop(app);
+    std::fs::remove_dir(&warnings).unwrap();
+    std::fs::write(&warnings, &acknowledged_file).unwrap();
+    let app = start(window.clone());
+    assert!(
+        app.message.is_none(),
+        "the acknowledgement put back reads as before: {:?}",
+        app.message
+    );
+    app.ui.hide().unwrap();
+    drop(app);
+
+    // 5. Invalid and unavailable packs need acting on: shown at every start,
     // and never written down.
     write_manifest(&["../escape"]);
     for _ in 0..2 {
