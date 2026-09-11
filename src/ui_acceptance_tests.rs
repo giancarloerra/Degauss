@@ -3130,6 +3130,152 @@ fn run_auto_source_choice_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
     app.ui.hide().unwrap();
 }
 
+/// A Neo Geo library of ROM sets, browsed, started and favourited through
+/// the interface: the rows a card owner sees are games, choosing one hands
+/// Main the complete set path, and a favourite made here is the ordinary
+/// MGL the stock menu reads, back on its row after a restart.
+fn run_neogeo_romset_flow(window: Rc<MinimalSoftwareWindow>) {
+    let root = fixture_directory();
+    let games = root.join("games/NEOGEO");
+    std::fs::create_dir_all(games.join("kof98")).unwrap();
+    std::fs::create_dir_all(root.join("_Console")).unwrap();
+    std::fs::write(root.join("_Console/NeoGeo.rbf"), b"core").unwrap();
+    std::fs::write(
+        games.join("romsets.xml"),
+        "<romsets><romset name=\"mslug\" altname=\"Metal Slug\"/>\
+         <romset name=\"kof98,kof98n\" altname=\"The King of Fighters '98\"/></romsets>",
+    )
+    .unwrap();
+    // Not an archive: a row for it proves the ZIP was taken whole.
+    std::fs::write(games.join("mslug.zip"), b"not an archive").unwrap();
+    std::fs::write(games.join("kof98/prom"), b"p").unwrap();
+    std::fs::write(games.join("Blazing Star.neo"), b"neo").unwrap();
+
+    let open = |settings: Settings| -> App {
+        let mut config = Config::parse("[app]", &root.join("degauss.toml")).unwrap();
+        config.menu_root = root.to_string_lossy().into_owned();
+        config.game_roots = vec![root.join("games").to_string_lossy().into_owned()];
+        let table = crate::systems::parse_table(
+            include_str!("../assets/systems.toml"),
+            Path::new("systems.toml"),
+        )
+        .unwrap();
+        let def = table
+            .into_iter()
+            .find(|system| system.id == "NeoGeo")
+            .unwrap();
+        let loaded = Loaded {
+            config,
+            settings,
+            settings_path: root.join("settings.toml"),
+            systems: vec![FoundSystem {
+                def: def.clone(),
+                paths: vec![games.clone()],
+                logo_dir: None,
+                menu_folder: None,
+            }],
+            table: vec![def],
+            names: Default::default(),
+            logo_dir: None,
+            themes_dir: root.join("themes"),
+            themes: Default::default(),
+        };
+        let mut app = App::new(
+            loaded,
+            window.clone(),
+            DegaussWindow::new().unwrap(),
+            StartupTimings::default(),
+            352,
+            240,
+        );
+        app.open_system_by_index(0);
+        assert!(app.build.is_none(), "fixture indexing must actually finish");
+        assert!(
+            app.message.is_none(),
+            "fixture startup failed: {:?}",
+            app.message
+        );
+        app.leave_splash();
+        assert_eq!(app.screen, Screen::Browse);
+        app
+    };
+
+    let mut app = open(Settings::default());
+    let names: Vec<&str> = app.here.iter().map(|row| row.name.as_str()).collect();
+    assert_eq!(
+        names,
+        ["Blazing Star.neo", "Metal Slug", "The King of Fighters '98"]
+    );
+    assert!(
+        app.here.iter().all(|row| !row.is_folder()),
+        "a set is a game, not a folder to enter"
+    );
+    let sets = [
+        ("mslug.zip", "Metal Slug"),
+        ("kof98", "The King of Fighters '98"),
+    ];
+    let position = |app: &App, title: &str| {
+        app.here
+            .iter()
+            .position(|row| row.name == title)
+            .unwrap_or_else(|| panic!("{title} is listed"))
+    };
+    for (set, title) in sets {
+        app.game_list.select(position(&app, title));
+        let Some(Outcome::Launch { plan, name }) = app.confirm_launch() else {
+            panic!("{set} must launch: {:?}", app.message);
+        };
+        assert_eq!(name, title);
+        assert!(
+            plan.mgl.contains(&format!(
+                "type=\"f\" index=\"1\" path=\"../../../../..{}\"",
+                games.join(set).display()
+            )),
+            "the complete set path goes to Main: {}",
+            plan.mgl
+        );
+        assert!(app.message.is_none());
+    }
+
+    for (set, title) in sets {
+        app.game_list.select(position(&app, title));
+        app.add_favorite_in("Neo Geo");
+        let favourite = root
+            .join("_@Favorites/Neo Geo")
+            .join(format!("{title}.mgl"));
+        let text = std::fs::read_to_string(&favourite).expect("the favourite is written");
+        assert!(
+            text.contains(&format!("path=\"{}\"", games.join(set).display())),
+            "an ordinary MGL with the absolute set path: {text}"
+        );
+        // Favourites lead the list once marked, so the row is found again
+        // by its title rather than by where it was.
+        assert!(
+            app.here[position(&app, title)].favorite,
+            "the heart shows at once"
+        );
+    }
+    assert!(!app.here[position(&app, "Blazing Star.neo")].favorite);
+
+    app.ui.hide().unwrap();
+    drop(app);
+    let mut app = open(Settings::default());
+    for (_, title) in sets {
+        assert!(
+            app.here[position(&app, title)].favorite,
+            "{title} keeps its heart after a restart"
+        );
+    }
+    assert!(!app.here[position(&app, "Blazing Star.neo")].favorite);
+    app.game_list.select(position(&app, "Metal Slug"));
+    app.remove_favorite();
+    assert!(!root.join("_@Favorites/Neo Geo/Metal Slug.mgl").exists());
+    assert!(!app.here[position(&app, "Metal Slug")].favorite);
+    assert!(app.here[position(&app, "The King of Fighters '98")].favorite);
+    assert!(app.message.is_none(), "{:?}", app.message);
+    app.ui.hide().unwrap();
+}
+
 pub(super) fn run_ui_acceptance_flow(window: Rc<MinimalSoftwareWindow>) {
     let root = fixture_directory();
     std::fs::create_dir_all(root.join("games/NES")).unwrap();
@@ -3142,6 +3288,7 @@ pub(super) fn run_ui_acceptance_flow(window: Rc<MinimalSoftwareWindow>) {
     std::fs::write(&gamelist_path, &gamelist_xml).unwrap();
     run_browse_bar_settings_flow(&root, window.clone());
     run_scripts_flow(&root, window.clone());
+    run_neogeo_romset_flow(window.clone());
     run_artwork_matte_flow(&root, window.clone());
     run_fresh_auto_pack_index_flow(&root, window.clone());
     run_auto_source_choice_flow(&root, window.clone());

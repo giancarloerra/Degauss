@@ -385,6 +385,17 @@ impl Provider {
         launch: &Launch,
         cancelled: &AtomicBool,
     ) -> Result<Option<GameIdentity>> {
+        // A Neo Geo ROM set is known to the Pack by its name alone: Main
+        // never hashes one either, and a ZIP set holds raw components
+        // whose CRCs the index does not carry. Reading it would cost a
+        // pass over every set on the card for nothing.
+        if source_group(&self.system_id) == Some("NeoGeo") {
+            if let Launch::File(path) = launch {
+                if let Some(identity) = neogeo_set_identity(path) {
+                    return Ok(Some(identity));
+                }
+            }
+        }
         let mut archives = self.archive_cache.lock().map_err(|_| {
             DegaussError::unsupported("archive lookup", "archive cache lock was poisoned")
         })?;
@@ -2252,6 +2263,34 @@ fn identity_for_launch_controlled(
             identity_for_path_redirected(path, cancelled, 0, &mut HashSet::new(), archives)
         }
     }
+}
+
+/// The identity of a Neo Geo ROM set: the set name, which is the ZIP's
+/// stem or the folder's name, with nothing to hash or stat. [`None`] for
+/// anything that is not a whole ZIP or an extensionless path, so a `.neo`,
+/// an `.mgl` and a member inside an archive keep their ordinary identity.
+fn neogeo_set_identity(path: &Path) -> Option<GameIdentity> {
+    if archive_member(path).is_some() {
+        return None;
+    }
+    let extension = path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    let name = match extension.as_str() {
+        "zip" => path.file_stem()?.to_str()?,
+        "" => path.file_name()?.to_str()?,
+        _ => return None,
+    };
+    Some(GameIdentity {
+        name: name.to_string(),
+        setname: None,
+        crc32: None,
+        size: None,
+        extension: None,
+        hash_path: None,
+    })
 }
 
 #[cfg(test)]
@@ -4250,5 +4289,92 @@ mod tests {
             .to_string()
             .contains("redirect chain exceeds 8 files"));
         std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn a_neo_geo_set_matches_the_pack_by_set_name_without_hashing() {
+        // The Pack's Neo Geo index is keyed by set name and lists every
+        // catalogue alias, so a set ZIP or folder is known by its name
+        // alone. Reading a set to hash it would open every ZIP on the card
+        // for a key the index cannot answer with anyway; the bytes here are
+        // not an archive, so any attempt to read them would fail loudly.
+        let base = temp("neogeo-sets");
+        let docs = base.join("docs");
+        ready_directory(&docs, "NEOGEO", "mslug", "mslug", "Metal Slug");
+        ready_tables(
+            &docs.join("NEOGEO/Artwork"),
+            "mslug\t\t\tmslug\nkof98n\t\t\tkof98\nMetal Slug\t\t\tmslug\n",
+            "mslug\tMetal Slug\t1996\tRun and gun\tNazca\t2\nkof98\tThe King of Fighters '98\t1998\tFighting\tSNK\t2\n",
+        );
+        let games = base.join("games/NEOGEO");
+        std::fs::create_dir_all(games.join("kof98n")).unwrap();
+        std::fs::write(games.join("MSLUG.zip"), b"not an archive").unwrap();
+        for id in ["NeoGeo", "NeoGeoMVS"] {
+            let provider = Provider::load(id, &docs, None);
+            assert_eq!(
+                provider.health,
+                ProviderHealth::Ready,
+                "{:?}",
+                provider.diagnostics
+            );
+            let zipped = Launch::File(games.join("MSLUG.zip"));
+            let presentation = provider
+                .presentation_for_launch(&zipped)
+                .unwrap()
+                .expect("the ZIP is matched by its stem");
+            assert_eq!(presentation.name.as_deref(), Some("Metal Slug"), "{id}");
+            assert_eq!(
+                presentation.diagnostic.unwrap().method,
+                MatchMethod::ExactKey
+            );
+            // A folder set is known by its name, an alias included.
+            let identity = provider
+                .identity_for_launch(&Launch::File(games.join("kof98n")), &AtomicBool::new(false))
+                .unwrap()
+                .unwrap();
+            assert_eq!(identity.name, "kof98n");
+            assert_eq!(
+                identity.hash_path, None,
+                "nothing about a set is ever hashed"
+            );
+            assert_eq!(
+                provider
+                    .resolve(&identity)
+                    .and_then(|presentation| presentation.diagnostic)
+                    .map(|diagnostic| diagnostic.method),
+                Some(MatchMethod::IndexName),
+                "{id}"
+            );
+            // The fingerprint pass has nothing to do for a set: it would
+            // otherwise open the ZIP and fail on these bytes.
+            assert_eq!(
+                provider
+                    .fingerprint_for_launch(&zipped, &AtomicBool::new(false), &mut |_| {})
+                    .unwrap(),
+                None
+            );
+        }
+        // A .neo keeps its ordinary identity, hashing included.
+        let provider = Provider::load("NeoGeo", &docs, None);
+        let neo = provider
+            .identity_for_launch(
+                &Launch::File(games.join("Blazing Star.neo")),
+                &AtomicBool::new(false),
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(neo.name, "Blazing Star");
+        assert_eq!(neo.hash_path, Some(games.join("Blazing Star.neo")));
+        // Another system's whole ZIP is still a file to hash.
+        let other = Provider::load("NES", &docs, None);
+        let zip = other
+            .identity_for_launch(
+                &Launch::File(games.join("MSLUG.zip")),
+                &AtomicBool::new(false),
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(zip.hash_path, Some(games.join("MSLUG.zip")));
+        std::fs::remove_dir_all(&base).ok();
     }
 }

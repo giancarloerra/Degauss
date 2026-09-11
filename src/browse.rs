@@ -330,6 +330,10 @@ pub struct Library {
     /// reduced to a log line that `--audit` cannot report.
     structural_problems: Vec<(PathBuf, String)>,
     archive_cache: std::cell::RefCell<crate::zip::ArchiveCache>,
+    /// The ROM-set catalogues of a Neo Geo system, whose ZIPs and folders
+    /// can be single games. [`None`] for every other system, which then
+    /// pays nothing for the question.
+    neogeo: Option<crate::neogeo::Catalogues>,
     /// What reading this system's metadata cost, so the answer to "why did
     /// that take a moment" is measured rather than guessed.
     pub cost: OpenCost,
@@ -448,12 +452,15 @@ impl Library {
                 art,
             });
         }
+        let neogeo = crate::neogeo::is_romset_system(config)
+            .then(|| crate::neogeo::Catalogues::open(roots.iter().map(|root| root.path.as_path())));
         Ok(Library {
             config: config.clone(),
             roots,
             names,
             structural_problems,
             archive_cache: std::cell::RefCell::new(crate::zip::ArchiveCache::default()),
+            neogeo,
             cost,
         })
     }
@@ -513,6 +520,12 @@ impl Library {
         let listing =
             std::fs::read_dir(dir).map_err(|e| DegaussError::io("reading folder", dir, e))?;
         let root = self.root_for(dir);
+        // A Neo Geo folder answers to a ROM-set catalogue, under which a
+        // ZIP or a folder can be one game rather than something to enter.
+        let neogeo = self
+            .neogeo
+            .as_ref()
+            .map(|catalogues| (catalogues, catalogues.for_dir(dir, root)));
         let install = amiga_install_of(dir);
         // An AmigaVision install keeps its whole library inside one disk
         // image, and the only trace of it on disk is a folder of text files
@@ -554,6 +567,24 @@ impl Library {
                 {
                     continue;
                 }
+                // An unzipped Neo Geo ROM set is a folder of raw components
+                // that Main loads as one game. It is listed as that game
+                // and never entered: its contents are the loader's.
+                if let Some((catalogues, catalogue)) = &neogeo {
+                    match catalogues.classify(catalogue, &path, &name, true) {
+                        crate::neogeo::Recognition::Game(title) => {
+                            stats.games += 1;
+                            let row = self.row_for(&path, title, root, true);
+                            if row.cover.is_some() {
+                                stats.with_art += 1;
+                            }
+                            rows.push(row);
+                            continue;
+                        }
+                        crate::neogeo::Recognition::Hidden => continue,
+                        crate::neogeo::Recognition::Unrecognised => {}
+                    }
+                }
                 // A folder with nothing to reach inside it is a dead end,
                 // and a card accumulates them.
                 if !show_empty && self.shows_nothing(&path, root, 0)? {
@@ -580,6 +611,24 @@ impl Library {
 
             // An archive opens as a folder unless the core takes it whole.
             if extension == "zip" && !self.config.accepts(&path) {
+                // A zipped Neo Geo ROM set is one game under the name the
+                // catalogue gives it. Main hands the whole ZIP to the
+                // loader, so it is never opened here, not even to look.
+                if let Some((catalogues, catalogue)) = &neogeo {
+                    match catalogues.classify(catalogue, &path, &name, false) {
+                        crate::neogeo::Recognition::Game(title) => {
+                            stats.games += 1;
+                            let row = self.row_for(&path, title, root, true);
+                            if row.cover.is_some() {
+                                stats.with_art += 1;
+                            }
+                            rows.push(row);
+                            continue;
+                        }
+                        crate::neogeo::Recognition::Hidden => continue,
+                        crate::neogeo::Recognition::Unrecognised => {}
+                    }
+                }
                 stats.folders += 1;
                 // Shown without the extension, the way the stock menu shows
                 // an archive it can reach into.
@@ -755,7 +804,12 @@ impl Library {
     }
 
     fn game_row_with_metadata(&self, path: &Path, root: Option<usize>, legacy: bool) -> Row {
-        let name = self.display_name(path);
+        self.row_for(path, self.display_name(path), root, legacy)
+    }
+
+    /// A playable row under a name already decided, with whatever the
+    /// metadata overlay adds to it.
+    fn row_for(&self, path: &Path, name: String, root: Option<usize>, legacy: bool) -> Row {
         let mut row = Row {
             sort_key: name.to_lowercase(),
             name,
@@ -937,6 +991,10 @@ impl Library {
         // Asked once for the folder, not once per file in it: it is a
         // property of the folder, and answering it rescans the parent.
         let amiga_install = amiga_install_of(dir).is_some();
+        let neogeo = self
+            .neogeo
+            .as_ref()
+            .map(|catalogues| (catalogues, catalogues.for_dir(dir, root)));
         let listing = std::fs::read_dir(dir)
             .map_err(|error| DegaussError::io("reading folder", dir, error))?;
         for item in listing {
@@ -947,7 +1005,26 @@ impl Library {
                 continue;
             }
             let path = item.path();
-            if entry_is_dir_checked(&item)? {
+            let is_dir = entry_is_dir_checked(&item)?;
+            let extension = extension_of(&path);
+            // A Neo Geo ROM set is a game whether zipped or not, so a folder
+            // of nothing but sets is worth walking into; one the catalogue
+            // hides would never be shown and is not.
+            if let Some((catalogues, catalogue)) = &neogeo {
+                let candidate = if is_dir {
+                    !(self.is_art_directory(&path, root) || self.is_skipped(&name))
+                } else {
+                    extension == "zip" && !self.config.accepts(&path)
+                };
+                if candidate {
+                    match catalogues.classify(catalogue, &path, &name, is_dir) {
+                        crate::neogeo::Recognition::Game(_) => return Ok(false),
+                        crate::neogeo::Recognition::Hidden => continue,
+                        crate::neogeo::Recognition::Unrecognised => {}
+                    }
+                }
+            }
+            if is_dir {
                 if self.is_art_directory(&path, root)
                     || self.is_skipped(&name)
                     || self.shows_nothing(&path, root, depth + 1)?
@@ -959,7 +1036,6 @@ impl Library {
             // A file only counts if it is one this system can open, an
             // archive that opens like a folder, or a listing naming titles
             // held inside a disk image.
-            let extension = extension_of(&path);
             if extension == "zip" || (self.config.accepts(&path) && !is_not_a_game(&name)) {
                 return Ok(false);
             }
@@ -1249,6 +1325,12 @@ impl Library {
                     .unreadable
                     .push((place.path().to_path_buf(), e.to_string())),
             }
+        }
+        // A ROM-set catalogue that could not be read is the same kind of
+        // failure as a folder that could not be: its sets are then listed
+        // as plain archives and folders, and the owner should know why.
+        if let Some(neogeo) = &self.neogeo {
+            audit.unreadable.extend(neogeo.problems());
         }
         audit
     }
@@ -2149,5 +2231,390 @@ mod tests {
             expected
         );
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// The shipped Neo Geo definition, pointed at a temporary folder.
+    fn neogeo_system(path: &Path) -> SystemConfig {
+        SystemConfig {
+            preserve_rbf_stem: false,
+            name: "Neo Geo".to_string(),
+            path: path.to_string_lossy().into_owned(),
+            extensions: vec!["neo".to_string(), "mgl".to_string()],
+            rbf: "_Console/NeoGeo".to_string(),
+            launch: vec![crate::config::LaunchRule {
+                extensions: vec!["neo".to_string(), "mgl".to_string()],
+                kind: "f".to_string(),
+                index: 1,
+                delay: 1,
+                reset_delay: None,
+                reset_hold: None,
+                companion_extensions: Vec::new(),
+                companion_index: None,
+            }],
+            skip_folders: Vec::new(),
+            setname: None,
+            extra_paths: Vec::new(),
+        }
+    }
+
+    const ROMSETS: &str = r#"<romsets>
+        <romset name="mslug" altname="Metal Slug"/>
+        <romset name="kof98,kof98n" altname="The King of Fighters '98"/>
+        <romset name="secret" altname="Never Shown" hide="1"/>
+        <romset name="untitled"/>
+    </romsets>"#;
+
+    fn play_target(row: &Row) -> &Path {
+        match &row.kind {
+            Kind::Play(Launch::File(path)) => path,
+            other => panic!("{} must be a playable file, got {other:?}", row.name),
+        }
+    }
+
+    #[test]
+    fn a_zipped_neo_geo_set_is_one_game_named_by_romsets_xml_and_is_never_opened() {
+        // The bytes are not an archive at all. Listing it as a game under
+        // the catalogue's title is only possible if the ZIP was never
+        // opened, which is the point: Main takes the whole file, and a
+        // library of hundreds of sets must not be read to be listed.
+        let dir = temp("neogeo-zip");
+        std::fs::write(dir.join("romsets.xml"), ROMSETS).unwrap();
+        std::fs::write(dir.join("MSLUG.zip"), b"not an archive").unwrap();
+
+        let library = Library::open(&neogeo_system(&dir)).unwrap();
+        let (rows, stats) = library.list(&library.start(), false).unwrap();
+        assert_eq!(names_of(&rows), vec!["Metal Slug"]);
+        assert_eq!((stats.games, stats.folders), (1, 0));
+        assert_eq!(play_target(&rows[0]), dir.join("MSLUG.zip"));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn an_unzipped_set_directory_is_one_game_and_its_rom_files_are_never_entered() {
+        let dir = temp("neogeo-dir");
+        std::fs::write(dir.join("romsets.xml"), ROMSETS).unwrap();
+        std::fs::create_dir_all(dir.join("kof98n")).unwrap();
+        std::fs::write(dir.join("kof98n/prom"), b"p").unwrap();
+        std::fs::write(dir.join("kof98n/crom0"), b"c").unwrap();
+
+        let library = Library::open(&neogeo_system(&dir)).unwrap();
+        let (rows, stats) = library.list(&library.start(), false).unwrap();
+        // A later alias of the entry, so Main prints the set name after
+        // the title to tell it from the first.
+        assert_eq!(names_of(&rows), vec!["The King of Fighters '98 (kof98n)"]);
+        assert_eq!((stats.games, stats.folders), (1, 0));
+        assert_eq!(play_target(&rows[0]), dir.join("kof98n"));
+        // A folder holding only sets is a folder of games, not a dead end.
+        assert!(!library.shows_nothing(&dir, Some(0), 0).unwrap());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn organisational_folders_stay_navigable_and_sets_inside_them_are_games() {
+        // Sets are filed under genre folders on real cards. The folder is
+        // still a folder; what it holds are games, answered by the same
+        // catalogue at the top of the system.
+        let dir = temp("neogeo-organised");
+        std::fs::write(dir.join("romsets.xml"), ROMSETS).unwrap();
+        std::fs::create_dir_all(dir.join("Run and Gun/mslug")).unwrap();
+        std::fs::write(dir.join("Run and Gun/mslug/prom"), b"p").unwrap();
+        std::fs::write(dir.join("Run and Gun/kof98.zip"), b"zip").unwrap();
+
+        let library = Library::open(&neogeo_system(&dir)).unwrap();
+        let (top, _) = library.list(&library.start(), false).unwrap();
+        assert_eq!(names_of(&top), vec!["Run and Gun"]);
+        let Kind::Enter(Place::Dir(genre)) = &top[0].kind else {
+            panic!("an organisational folder is entered, not played");
+        };
+        let (inside, stats) = library.list(&Place::Dir(genre.clone()), false).unwrap();
+        assert_eq!(
+            names_of(&inside),
+            vec!["Metal Slug", "The King of Fighters '98"]
+        );
+        assert_eq!((stats.games, stats.folders), (2, 0));
+        assert!(inside.iter().all(|row| !row.is_folder()));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_directory_carrying_its_own_romset_xml_is_a_game_titled_by_it() {
+        let dir = temp("neogeo-romset-xml");
+        std::fs::write(dir.join("romsets.xml"), ROMSETS).unwrap();
+        // Not in the catalogue at all: the file alone makes it a game.
+        std::fs::create_dir_all(dir.join("homebrew")).unwrap();
+        std::fs::write(
+            dir.join("homebrew/romset.xml"),
+            r#"<romset name="homebrew" altname="Home Brew"/>"#,
+        )
+        .unwrap();
+        std::fs::write(dir.join("homebrew/prom"), b"p").unwrap();
+        // Hidden by the catalogue, but the folder's own file outranks it,
+        // as it does in Main.
+        std::fs::create_dir_all(dir.join("secret")).unwrap();
+        std::fs::write(dir.join("secret/romset.xml"), r#"<romset name="secret"/>"#).unwrap();
+
+        let library = Library::open(&neogeo_system(&dir)).unwrap();
+        let (rows, stats) = library.list(&library.start(), false).unwrap();
+        assert_eq!(names_of(&rows), vec!["Home Brew", "secret"]);
+        assert_eq!((stats.games, stats.folders), (2, 0));
+        assert_eq!(play_target(&rows[0]), dir.join("homebrew"));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn standalone_neo_and_mgl_rows_keep_their_names_beside_rom_sets() {
+        // What the release before this one showed for a .neo (its file
+        // name, since the system lists two extensions) and for an .mgl
+        // (its stem) must not move: existing favourites, saved positions
+        // and gamelists are keyed by them.
+        let dir = temp("neogeo-standalone");
+        std::fs::write(dir.join("romsets.xml"), ROMSETS).unwrap();
+        std::fs::write(dir.join("Blazing Star.neo"), b"neo").unwrap();
+        std::fs::write(dir.join("Shortcut.mgl"), b"<mistergamedescription/>").unwrap();
+        std::fs::write(dir.join("mslug.zip"), b"zip").unwrap();
+
+        let library = Library::open(&neogeo_system(&dir)).unwrap();
+        let (rows, stats) = library.list(&library.start(), false).unwrap();
+        assert_eq!(
+            names_of(&rows),
+            vec!["Blazing Star.neo", "Metal Slug", "Shortcut"]
+        );
+        assert_eq!(stats.games, 3);
+        assert_eq!(play_target(&rows[0]), dir.join("Blazing Star.neo"));
+        assert_eq!(play_target(&rows[2]), dir.join("Shortcut.mgl"));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn unrelated_zips_and_directories_are_not_neo_geo_games() {
+        let dir = temp("neogeo-unrelated");
+        std::fs::write(dir.join("romsets.xml"), ROMSETS).unwrap();
+        // An archive the catalogue does not know still opens like a folder.
+        std::fs::write(dir.join("Neo Geo.zip"), crate::zip::tests_fixture()).unwrap();
+        // A folder the catalogue does not know is a folder.
+        std::fs::create_dir_all(dir.join("misc")).unwrap();
+        std::fs::write(dir.join("misc/Other.neo"), b"neo").unwrap();
+
+        let library = Library::open(&neogeo_system(&dir)).unwrap();
+        let (rows, stats) = library.list(&library.start(), false).unwrap();
+        assert_eq!(names_of(&rows), vec!["misc", "Neo Geo"]);
+        assert_eq!((stats.games, stats.folders), (0, 2));
+        assert_eq!(rows[0].kind, Kind::Enter(Place::Dir(dir.join("misc"))));
+        assert_eq!(
+            rows[1].kind,
+            Kind::Enter(Place::Archive(dir.join("Neo Geo.zip")))
+        );
+
+        // A catalogue beside another system's games means nothing to it:
+        // the ZIP is an archive to enter and the folder is a folder.
+        std::fs::write(dir.join("mslug.zip"), crate::zip::tests_fixture()).unwrap();
+        std::fs::create_dir_all(dir.join("kof98")).unwrap();
+        std::fs::write(dir.join("kof98/game.d64"), b"x").unwrap();
+        let c64 = Library::open(&system(&dir)).unwrap();
+        let (rows, stats) = c64.list(&c64.start(), true).unwrap();
+        assert_eq!(names_of(&rows), vec!["kof98", "misc", "mslug", "Neo Geo"]);
+        assert_eq!(stats.games, 0);
+        assert!(rows.iter().all(Row::is_folder));
+
+        // Neo Geo CD runs the same core on discs and sees the same thing.
+        let mut cd = neogeo_system(&dir);
+        cd.extensions = vec!["cue".to_string(), "chd".to_string(), "mgl".to_string()];
+        let cd = Library::open(&cd).unwrap();
+        let (rows, _) = cd.list(&cd.start(), true).unwrap();
+        assert!(
+            rows.iter().all(Row::is_folder),
+            "got: {:?}",
+            names_of(&rows)
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_malformed_romsets_xml_is_reported_and_keeps_every_standalone_game() {
+        // A broken catalogue must not take the .neo files down with it.
+        // The sets fall back to what they are without one, an archive and
+        // a folder, and the audit names the file so it can be fixed.
+        let dir = temp("neogeo-broken-catalogue");
+        std::fs::write(dir.join("romsets.xml"), "<romsets><romset name=\"mslug\"").unwrap();
+        std::fs::write(dir.join("Blazing Star.neo"), b"neo").unwrap();
+        std::fs::write(dir.join("mslug.zip"), crate::zip::tests_fixture()).unwrap();
+        std::fs::create_dir_all(dir.join("kof98")).unwrap();
+        std::fs::write(dir.join("kof98/Inside.neo"), b"neo").unwrap();
+
+        let library = Library::open(&neogeo_system(&dir)).unwrap();
+        let (rows, stats) = library.list(&library.start(), false).unwrap();
+        assert_eq!(names_of(&rows), vec!["kof98", "mslug", "Blazing Star.neo"]);
+        assert_eq!((stats.games, stats.folders), (1, 2));
+        assert_eq!(
+            rows[1].kind,
+            Kind::Enter(Place::Archive(dir.join("mslug.zip")))
+        );
+        let audit = library.audit(false);
+        assert_eq!(
+            audit.games, 4,
+            "the .neo files inside the fallbacks still count"
+        );
+        let problem = audit
+            .unreadable
+            .iter()
+            .find(|(path, _)| path == &dir.join("romsets.xml"))
+            .expect("the broken catalogue is reported");
+        assert!(problem.1.contains("romsets.xml"), "got: {}", problem.1);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_malformed_romset_xml_is_reported_and_the_catalogue_still_names_the_set() {
+        let dir = temp("neogeo-broken-romset");
+        std::fs::write(dir.join("romsets.xml"), ROMSETS).unwrap();
+        std::fs::create_dir_all(dir.join("mslug")).unwrap();
+        std::fs::write(dir.join("mslug/romset.xml"), "<romset name=").unwrap();
+        std::fs::write(dir.join("mslug/prom"), b"p").unwrap();
+
+        let library = Library::open(&neogeo_system(&dir)).unwrap();
+        let (rows, _) = library.list(&library.start(), false).unwrap();
+        assert_eq!(names_of(&rows), vec!["Metal Slug"]);
+        assert!(!rows[0].is_folder());
+        let audit = library.audit(false);
+        assert_eq!(audit.games, 1);
+        assert!(
+            audit
+                .unreadable
+                .iter()
+                .any(|(path, reason)| path == &dir.join("mslug/romset.xml")
+                    && reason.contains("romset.xml")),
+            "got: {:?}",
+            audit.unreadable
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_sub_folder_romsets_xml_replaces_the_root_catalogue_for_that_folder() {
+        // Main reads the catalogue of the folder it is scanning when there
+        // is one, and the system's otherwise. The core's own release notes
+        // ship a sub-folder catalogue for a second collection this way.
+        let dir = temp("neogeo-subcatalogue");
+        std::fs::write(dir.join("romsets.xml"), ROMSETS).unwrap();
+        std::fs::create_dir_all(dir.join("gog")).unwrap();
+        std::fs::write(
+            dir.join("gog/romsets.xml"),
+            r#"<romsets><romset name="mslug" altname="Metal Slug (GOG)"/></romsets>"#,
+        )
+        .unwrap();
+        std::fs::write(dir.join("gog/mslug.zip"), b"zip").unwrap();
+        std::fs::write(dir.join("gog/kof98.zip"), b"zip").unwrap();
+        std::fs::write(dir.join("mslug.zip"), b"zip").unwrap();
+
+        let library = Library::open(&neogeo_system(&dir)).unwrap();
+        let (top, _) = library.list(&library.start(), false).unwrap();
+        assert_eq!(names_of(&top), vec!["gog", "Metal Slug"]);
+        let (inside, stats) = library.list(&Place::Dir(dir.join("gog")), false).unwrap();
+        // kof98 is only in the root catalogue, which does not apply here,
+        // so it is the archive it would be anywhere else.
+        assert_eq!(names_of(&inside), vec!["kof98", "Metal Slug (GOG)"]);
+        assert_eq!((stats.games, stats.folders), (1, 1));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn hidden_sets_are_not_listed_and_a_folder_holding_only_hidden_sets_is_empty() {
+        let dir = temp("neogeo-hidden");
+        std::fs::write(dir.join("romsets.xml"), ROMSETS).unwrap();
+        std::fs::write(dir.join("secret.zip"), b"zip").unwrap();
+        std::fs::create_dir_all(dir.join("Drafts/SECRET")).unwrap();
+        std::fs::write(dir.join("Drafts/SECRET/prom"), b"p").unwrap();
+        std::fs::write(dir.join("untitled.zip"), b"zip").unwrap();
+
+        let library = Library::open(&neogeo_system(&dir)).unwrap();
+        let (rows, stats) = library.list(&library.start(), false).unwrap();
+        // The hidden ZIP is gone, the folder of nothing but a hidden set is
+        // a dead end, and the entry with no title keeps its own name.
+        assert_eq!(names_of(&rows), vec!["untitled"]);
+        assert_eq!(stats.empty_folders_hidden, 1);
+        // Asked for, the empty folder is there; the hidden set never is.
+        let (all, _) = library.list(&library.start(), true).unwrap();
+        assert_eq!(names_of(&all), vec!["Drafts", "untitled"]);
+        let (drafts, _) = library.list(&Place::Dir(dir.join("Drafts")), true).unwrap();
+        assert!(drafts.is_empty(), "got: {:?}", names_of(&drafts));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn gamelist_records_bind_to_zip_and_directory_sets() {
+        // A gamelist names the file on the card, and a set is the ZIP or
+        // the folder itself: its record binds like any other game's, name
+        // and picture, and the gamelist name wins as it does everywhere.
+        let dir = temp("neogeo-gamelist");
+        std::fs::write(dir.join("romsets.xml"), ROMSETS).unwrap();
+        std::fs::create_dir_all(dir.join("media")).unwrap();
+        std::fs::write(dir.join("mslug.zip"), b"zip").unwrap();
+        std::fs::create_dir_all(dir.join("kof98")).unwrap();
+        std::fs::write(dir.join("kof98/prom"), b"p").unwrap();
+        std::fs::write(dir.join("media/mslug.png"), b"x").unwrap();
+        std::fs::write(dir.join("media/kof98.png"), b"x").unwrap();
+        std::fs::write(
+            dir.join("gamelist.xml"),
+            r#"<gameList>
+            <game><path>./mslug.zip</path><name>Metal Slug (scraped)</name>
+              <image>./media/mslug.png</image></game>
+            <game><path>./kof98</path><genre>Fighting</genre>
+              <image>./media/kof98.png</image></game>
+            </gameList>"#,
+        )
+        .unwrap();
+
+        let library = Library::open(&neogeo_system(&dir)).unwrap();
+        let (rows, stats) = library.list(&library.start(), false).unwrap();
+        assert_eq!(
+            names_of(&rows),
+            vec!["Metal Slug (scraped)", "The King of Fighters '98"]
+        );
+        assert_eq!(stats.with_art, 2);
+        assert_eq!(rows[0].cover, Some(dir.join("media/mslug.png")));
+        assert_eq!(rows[1].cover, Some(dir.join("media/kof98.png")));
+        assert_eq!(rows[1].genre.as_deref(), Some("Fighting"));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn neo_geo_and_neo_geo_mvs_list_the_same_shared_library_identically() {
+        // Both shipped rows point at one folder. The catalogue is read the
+        // same way for each, so neither can show a set the other calls a
+        // folder, which is what would put two different lists in one cache
+        // directory.
+        let dir = temp("neogeo-shared");
+        std::fs::write(dir.join("romsets.xml"), ROMSETS).unwrap();
+        std::fs::write(dir.join("mslug.zip"), b"zip").unwrap();
+        std::fs::create_dir_all(dir.join("kof98")).unwrap();
+        std::fs::write(dir.join("kof98/prom"), b"p").unwrap();
+        std::fs::write(dir.join("Blazing Star.neo"), b"neo").unwrap();
+        let table = crate::systems::parse_table(
+            include_str!("../assets/systems.toml"),
+            Path::new("systems.toml"),
+        )
+        .unwrap();
+        let mut listings = Vec::new();
+        for id in ["NeoGeo", "NeoGeoMVS"] {
+            let def = table.iter().find(|system| system.id == id).unwrap().clone();
+            let config = crate::systems::FoundSystem {
+                def,
+                paths: vec![dir.clone()],
+                logo_dir: None,
+                menu_folder: None,
+            }
+            .to_config();
+            let library = Library::open(&config).unwrap();
+            let (rows, stats) = library.list(&library.start(), false).unwrap();
+            assert_eq!(
+                names_of(&rows),
+                vec!["Blazing Star.neo", "Metal Slug", "The King of Fighters '98"],
+                "{id}"
+            );
+            assert_eq!((stats.games, stats.folders), (3, 0), "{id}");
+            listings.push(rows);
+        }
+        assert_eq!(listings[0], listings[1]);
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

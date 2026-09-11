@@ -29,6 +29,7 @@ mod input;
 mod launch;
 mod list_state;
 mod metrics;
+mod neogeo;
 mod options;
 mod provider_job;
 mod render;
