@@ -1422,10 +1422,10 @@ to point somewhere else. `degauss.sh` passes them explicitly.
 
 | Flag | What it answers |
 |---|---|
-| `--audit` | Every system, one line each: games found, artwork bound, folders and any selected Artwork Pack health problem. A Gamelist system with a `gamelist.xml` but no artwork bound, a usable Pack that resolves no pictures, or a system with no games is listed again underneath as a problem. A whole card checked without opening a hundred systems by hand. |
+| `--audit` | Every system, one line each: games found, artwork bound, folders and any selected Artwork Pack health problem. A Gamelist system with a `gamelist.xml` but no artwork bound, a usable Pack that resolves no pictures, or a system with no games is listed again underneath as a problem, as is an archive, or a member of one, that was skipped, with its reason. A whole card checked without opening a hundred systems by hand. |
 | `--list-systems` | Which systems this card actually has, and where each one resolved. The answer to "why is my system missing". |
 | `--check-install` | The installation itself, including every saved Artwork Pack root: what is present, missing, broken or left half-migrated. The first thing to run when something looks wrong. |
-| `--report` | One system in detail, with `--system <id>`. It identifies Gamelist or Artwork Pack; for a Pack it also reports the selected root, health and the first game's local match method. |
+| `--report` | One system in detail, with `--system <id>`. It identifies Gamelist or Artwork Pack; for a Pack it also reports the selected root, health and the first game's local match method. A skipped archive or member is listed as `unreadable` with its reason. |
 | `--dry-run-launch` | The MGL that *would* be written to start a game, printed instead of run. The answer to "why does this game not start". |
 
 ### Seeing it without the screen
