@@ -73,7 +73,7 @@ impl Error {
             ErrorKind::DailyQuota => "Daily request allowance exhausted",
             ErrorKind::FailedQuota => "Failed-search allowance exhausted",
             ErrorKind::NotFound => "No matching game was found",
-            ErrorKind::InvalidRequest => "ScreenScraper rejected this search",
+            ErrorKind::InvalidRequest => "ScreenScraper rejected this request",
             ErrorKind::MalformedResponse => "ScreenScraper response was unreadable",
             ErrorKind::Transport => "Network connection failed",
             ErrorKind::Timeout => "ScreenScraper timed out",
@@ -100,8 +100,9 @@ pub enum ErrorKind {
     DailyQuota,
     FailedQuota,
     NotFound,
-    /// ScreenScraper refused this one request (a rejected search term or
-    /// parameter). Unlike an outage, the next game can still be looked up.
+    /// ScreenScraper refused this one request (a rejected search term,
+    /// parameter or media address). Unlike an outage, the next game can
+    /// still be looked up.
     InvalidRequest,
     MalformedResponse,
     Transport,

@@ -1058,8 +1058,13 @@ fn run_scraper_unresolved_report_flow(root: &Path, window: Rc<MinimalSoftwareWin
     let mut app = fixture_app(root, window, Settings::default());
     app.screen = Screen::ScraperProgress;
     app.scraper_return = Screen::Browse;
-    app.scraper_details = false;
+    app.scraper_details = true;
     app.scraper_terminal = None;
+    app.handle(Action::End);
+    assert_eq!(
+        app.scraper_progress_list.selected(),
+        SCRAPER_PROGRESS_ROWS - 1
+    );
     app.scraper_progress = crate::scraper::Progress {
         phase: crate::scraper::Phase::Finishing,
         scope: "Fixture System".into(),
@@ -1075,7 +1080,7 @@ fn run_scraper_unresolved_report_flow(root: &Path, window: Rc<MinimalSoftwareWin
             },
             crate::scraper::UnresolvedGame {
                 label: "Fixture System: Rejected Game".into(),
-                reason: "ScreenScraper rejected this search".into(),
+                reason: "ScreenScraper rejected this request".into(),
             },
         ],
         ..Default::default()
@@ -1092,7 +1097,14 @@ fn run_scraper_unresolved_report_flow(root: &Path, window: Rc<MinimalSoftwareWin
         SCRAPER_PROGRESS_ROWS + 3,
         "the report can scroll to every unresolved game"
     );
+    assert_eq!(
+        app.scraper_progress_list.selected(),
+        SCRAPER_PROGRESS_ROWS - 1,
+        "a Details view read during the run is not snapped back to the top when the run ends"
+    );
     assert_eq!(app.scraper_progress_rows().len(), SCRAPER_PROGRESS_ROWS);
+    app.handle(Action::Quit);
+    assert!(!app.scraper_details);
     capture_live_if_requested(&mut app, "scraper-unresolved-overview");
     app.handle(Action::Accept);
     assert!(app.scraper_details);
@@ -1104,7 +1116,7 @@ fn run_scraper_unresolved_report_flow(root: &Path, window: Rc<MinimalSoftwareWin
     app.refresh();
     let selected = app.rows.row_data(app.ui.get_selected() as usize).unwrap();
     assert_eq!(selected.title, "Fixture System: Rejected Game");
-    assert_eq!(selected.value, "ScreenScraper rejected this search");
+    assert_eq!(selected.value, "ScreenScraper rejected this request");
     capture_live_if_requested(&mut app, "scraper-unresolved-details-end");
     app.handle(Action::Up);
     app.handle(Action::Up);

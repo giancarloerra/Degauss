@@ -90,9 +90,12 @@ pub struct Progress {
     /// Batch runs keep counting unresolved entries without carrying every
     /// server response or interrupting an unattended scrape.
     pub manual_matches: Vec<Match>,
-    /// Every game the run did not write, with the reason, so the report can
-    /// name them after an unattended batch. Carried only by the terminal
-    /// event; progress snapshots leave it empty.
+    /// Every game the run could not resolve, with the reason: no match,
+    /// several matches, no image to fetch, or a failed lookup, download or
+    /// write. A game whose image failed but whose metadata was written is
+    /// listed with the image error. The report names them after an
+    /// unattended batch. Carried only by the terminal event; progress
+    /// snapshots leave it empty.
     pub unresolved_games: Vec<UnresolvedGame>,
 }
 
@@ -1976,6 +1979,9 @@ fn stage(prepared: Prepared, progress: &mut Progress) -> Result<Option<Pending>>
         if !media_failed {
             progress.unchanged += 1;
         }
+        if prepared.no_media {
+            progress.unresolved(&target_label, "no image");
+        }
         return Ok(None);
     }
     Ok(Some(Pending {
@@ -2490,6 +2496,16 @@ mod tests {
                 },
             })
         }
+    }
+
+    fn mock() -> Arc<Mock> {
+        Arc::new(Mock {
+            api_calls: AtomicUsize::new(0),
+            media_calls: AtomicUsize::new(0),
+            quota_empty: false,
+            bad_media: false,
+            no_media: false,
+        })
     }
 
     fn temp(name: &str) -> PathBuf {
@@ -3168,12 +3184,14 @@ mod tests {
         let _ = std::fs::remove_dir_all(root);
     }
 
-    /// Answers the hash lookup for `Rejected.rom` with a configured
-    /// response and matches every other game.
+    /// Answers the lookup for `Rejected.rom` with a configured response
+    /// and matches every other game. With `at_title_search` the hash lookup
+    /// misses and the configured response answers the title search instead.
     struct RejectingMock {
         status: u16,
         content_type: &'static str,
         body: &'static str,
+        at_title_search: bool,
     }
 
     impl Transport for RejectingMock {
@@ -3192,7 +3210,17 @@ mod tests {
             };
             let body = match endpoint {
                 "ssuserInfos.php" => "<Data><ssuser><niveau>1</niveau><maxthreads>1</maxthreads><maxdownloadspeed>256</maxdownloadspeed><requeststoday>0</requeststoday><requestskotoday>0</requestskotoday><maxrequestspermin>60</maxrequestspermin><maxrequestsperday>20</maxrequestsperday><maxrequestskoperday>20</maxrequestskoperday></ssuser></Data>".to_string(),
+                "jeuInfos.php" if parameter("romnom") == "Rejected.rom" && self.at_title_search => {
+                    "<Data><jeux/></Data>".to_string()
+                }
                 "jeuInfos.php" if parameter("romnom") == "Rejected.rom" => {
+                    return Ok(HttpResponse {
+                        status: self.status,
+                        content_type: Some(self.content_type.into()),
+                        body: self.body.as_bytes().to_vec(),
+                    });
+                }
+                "jeuRecherche.php" if parameter("recherche") == "Rejected" && self.at_title_search => {
                     return Ok(HttpResponse {
                         status: self.status,
                         content_type: Some(self.content_type.into()),
@@ -3225,21 +3253,36 @@ mod tests {
     #[test]
     fn a_rejected_individual_search_is_recorded_and_the_batch_continues() {
         // One game ScreenScraper refuses, by HTTP 400 or by an error text it
-        // does not document as an outage, is that game's problem: the run
-        // still processes the next game and names the rejected one.
-        for (status, content_type, body) in [
+        // does not document as an outage, is that game's problem whether the
+        // refusal answers the hash lookup or the title search: the run still
+        // processes the next game and names the rejected one.
+        for (status, content_type, body, at_title_search) in [
             (
                 400,
                 "text/plain",
                 "Erreur : Problème dans le nom du fichier rom",
+                false,
             ),
             (
                 200,
                 "text/plain",
                 "Erreur : Problème dans le nom du fichier rom",
+                false,
+            ),
+            (
+                400,
+                "text/plain",
+                "Erreur : Problème dans la recherche",
+                true,
+            ),
+            (
+                200,
+                "text/plain",
+                "Erreur : Problème dans la recherche",
+                true,
             ),
         ] {
-            let root = temp(&format!("rejected-search-{status}"));
+            let root = temp(&format!("rejected-search-{status}-{at_title_search}"));
             std::fs::write(root.join("Rejected.rom"), b"rejected").unwrap();
             std::fs::write(root.join("Zebra.rom"), b"found").unwrap();
             let Event::Finished(progress) = finish(
@@ -3249,11 +3292,14 @@ mod tests {
                         status,
                         content_type,
                         body,
+                        at_title_search,
                     }),
                 )
                 .unwrap(),
             ) else {
-                panic!("a rejected search stopped the batch (HTTP {status})");
+                panic!(
+                    "a rejected search stopped the batch (HTTP {status}, title search {at_title_search})"
+                );
             };
             assert_eq!(progress.completed, 2);
             assert_eq!(progress.failed, 1);
@@ -3262,7 +3308,7 @@ mod tests {
                 progress.unresolved_games,
                 vec![UnresolvedGame {
                     label: "Nintendo: Rejected".into(),
-                    reason: "ScreenScraper rejected this search".into(),
+                    reason: "ScreenScraper rejected this request".into(),
                 }]
             );
             let gamelist = std::fs::read_to_string(root.join("gamelist.xml")).unwrap();
@@ -3274,35 +3320,40 @@ mod tests {
 
     #[test]
     fn an_unreadable_match_response_is_recorded_and_the_batch_continues() {
-        let root = temp("unreadable-match");
-        std::fs::write(root.join("Rejected.rom"), b"rejected").unwrap();
-        std::fs::write(root.join("Zebra.rom"), b"found").unwrap();
-        let Event::Finished(progress) = finish(
-            start_with_transport(
-                request(&root, settings(ImagePolicy::Off)),
-                Arc::new(RejectingMock {
-                    status: 200,
-                    content_type: "application/xml",
-                    body: "<Data><message>no game list here</message></Data>",
-                }),
-            )
-            .unwrap(),
-        ) else {
-            panic!("an unusable match response stopped the batch");
-        };
-        assert_eq!(progress.failed, 1);
-        assert_eq!(progress.updated, 1);
-        assert_eq!(
-            progress.unresolved_games,
-            vec![UnresolvedGame {
-                label: "Nintendo: Rejected".into(),
-                reason: "ScreenScraper response was unreadable".into(),
-            }]
-        );
-        assert!(std::fs::read_to_string(root.join("gamelist.xml"))
-            .unwrap()
-            .contains("<path>./Zebra.rom</path>"));
-        let _ = std::fs::remove_dir_all(root);
+        for at_title_search in [false, true] {
+            let root = temp(&format!("unreadable-match-{at_title_search}"));
+            std::fs::write(root.join("Rejected.rom"), b"rejected").unwrap();
+            std::fs::write(root.join("Zebra.rom"), b"found").unwrap();
+            let Event::Finished(progress) = finish(
+                start_with_transport(
+                    request(&root, settings(ImagePolicy::Off)),
+                    Arc::new(RejectingMock {
+                        status: 200,
+                        content_type: "application/xml",
+                        body: "<Data><message>no game list here</message></Data>",
+                        at_title_search,
+                    }),
+                )
+                .unwrap(),
+            ) else {
+                panic!(
+                    "an unusable match response stopped the batch (title search {at_title_search})"
+                );
+            };
+            assert_eq!(progress.failed, 1);
+            assert_eq!(progress.updated, 1);
+            assert_eq!(
+                progress.unresolved_games,
+                vec![UnresolvedGame {
+                    label: "Nintendo: Rejected".into(),
+                    reason: "ScreenScraper response was unreadable".into(),
+                }]
+            );
+            assert!(std::fs::read_to_string(root.join("gamelist.xml"))
+                .unwrap()
+                .contains("<path>./Zebra.rom</path>"));
+            let _ = std::fs::remove_dir_all(root);
+        }
     }
 
     #[test]
@@ -3317,6 +3368,7 @@ mod tests {
                     status: 200,
                     content_type: "text/plain",
                     body: "Erreur : API totalement fermé",
+                    at_title_search: false,
                 }),
             )
             .unwrap(),
@@ -3924,6 +3976,10 @@ mod tests {
         assert_eq!(progress.updated, 1);
         assert_eq!(progress.no_media, 1);
         assert_eq!(progress.failed, 0);
+        assert!(
+            progress.unresolved_games.is_empty(),
+            "a game whose metadata was written is not reported as unresolved"
+        );
         assert_eq!(mock.media_calls.load(Ordering::Relaxed), 1);
         let text = std::fs::read_to_string(root.join("gamelist.xml")).unwrap();
         assert!(text.contains("<name>Remote Game</name>"));
@@ -3952,6 +4008,14 @@ mod tests {
         assert_eq!(progress.no_media, 1);
         assert_eq!(progress.unchanged, 1);
         assert_eq!(progress.updated, 0);
+        assert_eq!(
+            progress.unresolved_games,
+            vec![UnresolvedGame {
+                label: "Nintendo: Game".into(),
+                reason: "no image".into(),
+            }],
+            "nothing was written, so the report must name the game"
+        );
         assert!(!root.join("gamelist.xml").exists());
         assert_eq!(mock.media_calls.load(Ordering::Relaxed), 1);
         let _ = std::fs::remove_dir_all(root);
@@ -4008,16 +4072,6 @@ mod tests {
         let _ = std::fs::remove_dir_all(root);
     }
 
-    fn mock() -> Arc<Mock> {
-        Arc::new(Mock {
-            api_calls: AtomicUsize::new(0),
-            media_calls: AtomicUsize::new(0),
-            quota_empty: false,
-            bad_media: false,
-            no_media: false,
-        })
-    }
-
     #[test]
     fn a_batch_entry_with_an_image_and_one_field_makes_no_request() {
         let root = temp("batch-one-field-complete");
@@ -4026,15 +4080,24 @@ mod tests {
         let xml = "<gameList><game><path>./Game.rom</path><name>Name</name><image>./art.png</image></game></gameList>";
         std::fs::write(root.join("gamelist.xml"), xml).unwrap();
         let mock = mock();
-        for scope_root in [request(&root, settings(ImagePolicy::MissingOnly)), {
-            let mut folder = request(&root, settings(ImagePolicy::MissingOnly));
-            folder.scope = Scope::Folder {
-                system_id: "NES".into(),
-                place: crate::browse::Place::Dir(root.clone()),
-                display_name: "Nintendo".into(),
-            };
-            folder
-        }] {
+        for scope_root in [
+            {
+                let mut all = request(&root, settings(ImagePolicy::MissingOnly));
+                all.scope = Scope::All;
+                all.scope_label = "All Systems".into();
+                all
+            },
+            request(&root, settings(ImagePolicy::MissingOnly)),
+            {
+                let mut folder = request(&root, settings(ImagePolicy::MissingOnly));
+                folder.scope = Scope::Folder {
+                    system_id: "NES".into(),
+                    place: crate::browse::Place::Dir(root.clone()),
+                    display_name: "Nintendo".into(),
+                };
+                folder
+            },
+        ] {
             let Event::Finished(progress) =
                 finish(start_with_transport(scope_root, mock.clone()).unwrap())
             else {

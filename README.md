@@ -965,7 +965,7 @@ artwork or metadata, set the corresponding Images or Metadata policy to
 
 Folder, system and all-systems scrapes never stop for a match choice. Missing
 and ambiguous ScreenScraper matches are counted, skipped without changes, and the remaining
-games continue. A search ScreenScraper rejects for one game, or a match
+games continue. A request ScreenScraper rejects for one game, or a match
 response it serves unreadable, is counted as failed for that game and the run
 continues; a network failure, a rejected login, a rate limit or a service
 outage still stops the run. Unsupported systems are also skipped and counted. If two
@@ -984,9 +984,11 @@ written, unchanged, unresolved and failed counts. **A Details** opens a
 scrollable report with status, scope, current title, completed/total, written,
 unchanged, linked copies, unresolved and skipped/error breakdowns, allowance,
 throughput and the last problem. After the run, the report continues with
-every game that was not written and the reason, one row per game, so a
-missing, ambiguous or rejected game can be found and scraped individually.
-**B Overview** returns without cancelling.
+every game the run could not resolve and the reason, one row per game: no
+match, several matches, no image to fetch, or a failed lookup, download or
+gamelist write. A game whose image failed but whose metadata was written is
+listed with the image error. A missing, ambiguous or rejected game can then be
+found and scraped individually. **B Overview** returns without cancelling.
 The report retains
 worker counts, account limits reported by ScreenScraper and Degauss's allowance
 estimate. Another
