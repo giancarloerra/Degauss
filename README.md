@@ -919,7 +919,7 @@ policies for pictures and metadata:
 | **Images: Missing only** | Keeps the effective `<image>`, `<screenshot>` or `<thumbnail>` when its file exists, and fetches a picture only when artwork is absent or broken. |
 | **Images: Replace existing** | Downloads the selected ScreenScraper media and makes it the entry's `<image>`. The previous media file is not overwritten or deleted. |
 | **Metadata: Off** | Never changes metadata. |
-| **Metadata: Fill missing** | Fills empty fields and preserves every non-empty local or inherited value. A folder, system or all-systems run treats an entry with any stored field as complete; **Scrape This Game** fills its empty fields one by one. |
+| **Metadata: Fill missing** | Fills empty fields and preserves every non-empty local or inherited value. A folder, system or all-systems run treats an entry with any stored field as complete; **Scrape This Game** and **Search Manually** fill its empty fields one by one. |
 | **Metadata: Replace existing** | Replaces only fields ScreenScraper actually returned. A missing upstream value never erases a local one. |
 
 Both settings cannot be Off when a scrape starts. The metadata fields are
