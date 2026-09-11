@@ -223,15 +223,47 @@ return_frontend() {
     export DEGAUSS_SCRIPTS_RETURN="$script"
     exec "$frontend" "$@"
 }
+interrupt_script() {
+    trap ':' INT
+    script_status=130
+    if [ -z "${script_group:-}" ]; then
+        return
+    fi
+    set +m
+    cancel_script_group
+    return_frontend "$@"
+}
 menu_owner_current || exit 0
 script_status=0
 trap ':' INT
 if cd -- "$script_dir"; then
     if [ -t 0 ]; then
+        script_group=
+        trap 'interrupt_script "$@"' INT
         set -m
-        "${script_command[@]}" &
+        /bin/bash -c '
+parent=$1
+shift
+while :; do
+    kill -0 "$parent" 2>/dev/null || exit 1
+    if [ -r "/proc/$$/stat" ]; then
+        IFS= read -r process_stat < "/proc/$$/stat"
+        IFS=" " read -r -a process_fields <<< "${process_stat##*) }"
+        [ "${process_fields[2]:-}" = "${process_fields[5]:-}" ] && break
+    else
+        process_group=$(/bin/ps -o pgid= -p "$$")
+        terminal_group=$(/bin/ps -o tpgid= -p "$$")
+        [ -n "$process_group" ] && [ "$process_group" -eq "$terminal_group" ] && break
+    fi
+done
+exec "$@"
+' degauss-script-child "$$" "${script_command[@]}" &
         script_group=$!
-        trap 'trap ":" INT; script_status=130; set +m; cancel_script_group; return_frontend "$@"' INT
+        if [ "$script_status" -eq 130 ]; then
+            set +m
+            cancel_script_group
+            return_frontend "$@"
+        fi
         fg %+ >/dev/null
         script_status=$?
         trap ':' INT
