@@ -15,19 +15,21 @@
 //! undone by the next save.
 
 use std::collections::BTreeMap;
-use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
 use crate::error::{DegaussError, Result};
-use crate::settings::{cleanup_temporary, SaveOutcome};
+use crate::settings::{install_beside_settings, SaveLabels, SaveOutcome};
 
 pub const FILE: &str = "artwork-pack-warnings.toml";
 
 /// Beside the settings, which is beside the configuration.
 pub fn path_beside(settings_path: &Path) -> PathBuf {
-    settings_path.parent().unwrap_or(Path::new(".")).join(FILE)
+    settings_path
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .join(FILE)
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -85,13 +87,10 @@ impl Acknowledgements {
         self.degraded.insert(group.to_string(), digest.to_string());
     }
 
-    /// Written beside and moved into place: a file cut short must not be
-    /// read back as a shorter list of warnings already seen. The directory
-    /// is flushed afterwards like the settings are, so the move itself
-    /// survives a power cut; when that flush fails the file is in place and
-    /// the outcome says what could not be confirmed. A temporary file left
-    /// by a failed write or move is removed by the settings writer's
-    /// cleanup, which folds a removal failure into the error.
+    /// Written beside and moved into place by the settings writer's
+    /// install, so a file cut short is never read back as a shorter list of
+    /// warnings already seen, and the outcome says when the move could not
+    /// be confirmed durable.
     pub fn save(&self, path: &Path) -> Result<SaveOutcome> {
         let text = toml::to_string_pretty(self).map_err(|error| {
             DegaussError::malformed("artwork pack warnings", path, error.to_string())
@@ -100,57 +99,18 @@ impl Acknowledgements {
             "# Written by Degauss when an incomplete Artwork Pack warning is dismissed.\n\
              # Delete this file and restart Degauss to see those warnings again.\n\n{text}"
         );
-        let parent = path
-            .parent()
-            .filter(|parent| !parent.as_os_str().is_empty())
-            .unwrap_or_else(|| Path::new("."));
-        let temporary = parent.join(format!(".{FILE}.degauss-{}.tmp", std::process::id()));
-        let mut file = std::fs::File::create(&temporary).map_err(|error| {
-            DegaussError::io(
-                "creating temporary artwork pack warnings",
-                &temporary,
-                error,
-            )
-        })?;
-        let written: Result<()> = (|| {
-            file.write_all(body.as_bytes()).map_err(|error| {
-                DegaussError::io("writing temporary artwork pack warnings", &temporary, error)
-            })?;
-            file.sync_all().map_err(|error| {
-                DegaussError::io(
-                    "flushing temporary artwork pack warnings",
-                    &temporary,
-                    error,
-                )
-            })?;
-            Ok(())
-        })();
-        drop(file);
-        if let Err(error) = written {
-            return Err(cleanup_temporary(
-                "writing artwork pack warnings",
-                &temporary,
-                error,
-            ));
-        }
-        if let Err(error) = std::fs::rename(&temporary, path) {
-            let error = DegaussError::io("installing artwork pack warnings", path, error);
-            return Err(cleanup_temporary(
-                "writing artwork pack warnings",
-                &temporary,
-                error,
-            ));
-        }
-        match std::fs::File::open(parent).and_then(|directory| directory.sync_all()) {
-            Ok(()) => Ok(SaveOutcome::Durable),
-            Err(error) => Ok(SaveOutcome::InstalledWithWarning(DegaussError::io(
-                "flushing artwork pack warnings directory",
-                parent,
-                error,
-            ))),
-        }
+        install_beside_settings(&LABELS, path, &body)
     }
 }
+
+const LABELS: SaveLabels = SaveLabels {
+    creating_temporary: "creating temporary artwork pack warnings",
+    writing_temporary: "writing temporary artwork pack warnings",
+    flushing_temporary: "flushing temporary artwork pack warnings",
+    writing: "writing artwork pack warnings",
+    installing: "installing artwork pack warnings",
+    flushing_directory: "flushing artwork pack warnings directory",
+};
 
 #[cfg(test)]
 mod tests {
@@ -274,6 +234,29 @@ mod tests {
         assert!(
             text.contains("restart Degauss"),
             "the reset instruction must say that a running program keeps its own list"
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_leftover_temporary_file_is_stepped_around_not_written_over() {
+        let dir = temp("leftover");
+        let path = dir.join(FILE);
+        let leftover = dir.join(format!(".{FILE}.degauss-{}-0.tmp", std::process::id()));
+        std::fs::write(&leftover, b"left by an interrupted run").unwrap();
+        let mut seen = Acknowledgements::default();
+        seen.acknowledge("NES", "abc");
+        seen.save(&path).unwrap();
+        assert!(
+            Acknowledgements::load(&path)
+                .unwrap()
+                .acknowledged("NES", "abc"),
+            "a name already taken must not stop the save"
+        );
+        assert_eq!(
+            std::fs::read(&leftover).unwrap(),
+            b"left by an interrupted run",
+            "a file already at the temporary name is not this save's to truncate"
         );
         std::fs::remove_dir_all(&dir).unwrap();
     }
