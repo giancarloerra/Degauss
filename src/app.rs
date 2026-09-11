@@ -15983,7 +15983,7 @@ mod tests {
                     &std::sync::atomic::AtomicBool::new(false),
                 )
                 .unwrap()
-                .expect("test provider preparation completes");
+                .expect("test provider preparation completes")
         };
         let through = |provider: &crate::artwork_pack::Provider| {
             derived_folder_cover(&pack_cache, &folder, &[], Some(provider))
@@ -15996,13 +15996,17 @@ mod tests {
             None,
             "a Pack not yet prepared offers nothing, not the gamelist picture"
         );
-        prepared(&mut provider);
+        assert_eq!(prepared(&mut provider), 1);
         assert_eq!(through(&provider).as_deref(), Some(pack_cover.as_path()));
 
         let mut unmapped = crate::artwork_pack::Provider::load("NoSuchSystem", &docs, Some("en"));
         assert!(!unmapped.health.usable());
-        prepared(&mut unmapped);
-        assert_eq!(through(&unmapped), None, "an unusable Pack answers nothing");
+        assert_eq!(
+            prepared(&mut unmapped),
+            0,
+            "an unusable Pack prepares no row, so it has nothing to answer"
+        );
+        assert_eq!(through(&unmapped), None);
 
         std::fs::remove_file(&pack_cover).unwrap();
         let mut provider = crate::artwork_pack::Provider::load("SuperGrafx", &docs, Some("en"));

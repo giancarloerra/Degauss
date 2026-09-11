@@ -3157,7 +3157,7 @@ fn run_folder_artwork_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
         std::fs::write(
             games.join("gamelist.xml"),
             format!(
-                "<gameList><game><path>./Example Game/Example Game.nes</path><name>Example Game</name><image>./media/example.png</image></game><game><path>./Second Game.nes</path><name>Second Game</name><image>./media/second.png</image></game>{extra}</gameList>"
+                "<gameList><game><path>./Example Game/Example Game.nes</path><name>Example Game</name><image>./media/example.png</image><genre>Platform</genre><publisher>Example Publisher</publisher></game><game><path>./Second Game.nes</path><name>Second Game</name><image>./media/second.png</image></game>{extra}</gameList>"
             ),
         )
         .unwrap();
@@ -3186,6 +3186,14 @@ fn run_folder_artwork_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
     assert_eq!(folder.below, Some(1));
     assert_eq!(folder.details, browse::Details::default());
     assert_eq!(folder.genre, None);
+    let game = app
+        .system_cache
+        .as_ref()
+        .and_then(|cache| cache.get(&folder_place))
+        .map(|folder| folder.rows[0].clone())
+        .expect("the game inside is written down");
+    assert_eq!(game.genre.as_deref(), Some("Platform"));
+    assert_eq!(game.details.publisher, "Example Publisher");
     app.game_list.select(at);
 
     // Details draws it as game artwork; the grid and strip views draw it
@@ -3384,17 +3392,21 @@ fn run_folder_artwork_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
     );
     let mut unusable = crate::artwork_pack::Provider::load("NoSuchSystem", &docs, Some("en"));
     assert!(!unusable.health.usable());
-    unusable
-        .prepare_for_cache(
-            &pack_cache,
-            &crate::cache::ContentFingerprints::new(),
-            &std::sync::atomic::AtomicBool::new(false),
-        )
-        .unwrap();
+    assert_eq!(
+        unusable
+            .prepare_for_cache(
+                &pack_cache,
+                &crate::cache::ContentFingerprints::new(),
+                &std::sync::atomic::AtomicBool::new(false),
+            )
+            .unwrap(),
+        Some(0),
+        "an unusable Pack prepares no row"
+    );
     app.artwork_provider = Some(unusable);
     app.relist_here();
     let at = folder_at(&app);
-    assert_eq!(app.here[at].cover, None, "an unusable Pack: nothing");
+    assert_eq!(app.here[at].cover, None, "so it has nothing to answer");
     app.artwork_provider = None;
     app.system_cache = Some(gamelist_cache);
     app.relist_here();
@@ -3406,9 +3418,10 @@ fn run_folder_artwork_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
     );
 
     // A shelf inside favourites is left alone: no picture, the heart. The
-    // favourite beside it, which names the game inside the folder, keeps
-    // the game's own picture and name: it is answered from the game, not
-    // from the folder around it.
+    // favourite on it, which names the game inside the folder, is listed
+    // the way the screen lists it and answered from the game's own
+    // written-down row: its picture, name, genre and details, not the
+    // folder's derived presentation.
     let shelf = root.join("_@Favorites/Shelf");
     std::fs::create_dir_all(&shelf).unwrap();
     let favorite = shelf.join("Example Game.mgl");
@@ -3426,57 +3439,51 @@ fn run_folder_artwork_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
     favorites.paths = vec![root.join("_@Favorites")];
     let favorites_library =
         Library::open_with_names(&favorites.to_config(), browse::DisplayNames::default()).unwrap();
-    let mut favorites_cache = crate::cache::build_system(&favorites_library);
-    for folder in favorites_cache.folders.values_mut() {
-        for row in &mut folder.rows {
-            if matches!(row.kind, browse::Kind::Play(_)) {
-                row.cover = Some(image.clone());
-            }
-        }
-    }
-    let mut rows = favorites_cache
+    let favorites_cache = crate::cache::build_system(&favorites_library);
+    let written = &favorites_cache
         .get(&Place::Dir(shelf.clone()))
         .expect("the shelf is written down")
-        .rows
-        .clone();
-    assert_eq!(rows.len(), 1);
-    assert!(matches!(rows[0].kind, browse::Kind::Play(_)));
-    assert_eq!(rows[0].cover.as_deref(), Some(image.as_path()));
-    let game_name = rows[0].name.clone();
-    rows.push(browse::Row {
-        name: "Shelf".into(),
-        sort_key: "shelf".into(),
-        kind: browse::Kind::Enter(Place::Dir(shelf)),
-        cover: None,
-        genre: None,
-        favorite: false,
-        below: Some(1),
-        details: browse::Details::default(),
-    });
-    app.all_systems.push(favorites);
-    app.open_system = Some("Favorites".into());
-    app.system_cache = Some(favorites_cache);
-    app.artwork_provider = None;
-    assert!(app.in_favorites());
-    app.derive_folder_covers(&mut rows);
-    app.mark_favorites(&mut rows);
-    let shelf_at = rows.iter().position(|row| row.is_folder()).unwrap();
-    let game_at = 1 - shelf_at;
+        .rows;
+    assert_eq!(written.len(), 1);
     assert_eq!(
-        rows[shelf_at].cover, None,
+        written[0].kind,
+        browse::Kind::Play(browse::Launch::File(favorite))
+    );
+    assert_eq!(written[0].cover, None, "a favourite carries nothing itself");
+    crate::cache::save_system(&app.cache_dir, "Favorites", &favorites_cache).unwrap();
+    let game = crate::cache::load_system(&app.cache_dir, "NES")
+        .and_then(|cache| {
+            cache
+                .get(&folder_place)
+                .map(|folder| folder.rows[0].clone())
+        })
+        .expect("the game is written down");
+    assert_eq!(game.cover.as_deref(), Some(image.as_path()));
+    assert_eq!(game.name, "Example Game");
+    assert!(game.genre.is_some());
+    assert_ne!(game.details, browse::Details::default());
+    app.all_systems.push(favorites);
+    app.open_system_by_index(1);
+    assert!(app.in_favorites());
+    assert_eq!(app.here.len(), 1);
+    assert!(app.here[0].is_folder());
+    assert_eq!(
+        app.here[0].cover, None,
         "a shelf has no artwork and never will"
     );
-    assert_eq!(rows[game_at].cover.as_deref(), Some(image.as_path()));
-    assert_eq!(rows[game_at].name, game_name);
-    assert!(rows[game_at].favorite);
-    app.here = rows;
-    app.game_list = ListState::new(2, app.geometry.visible);
-    app.game_list.select(shelf_at);
     assert_eq!(app.current_art(), (None, "Shelf".to_string(), true, false));
-    app.game_list.select(game_at);
+    app.handle(Action::Accept);
+    assert_eq!(app.trail.len(), 2);
+    assert_eq!(app.here.len(), 1);
+    let listed = &app.here[0];
+    assert_eq!(listed.cover, game.cover);
+    assert_eq!(listed.name, game.name);
+    assert_eq!(listed.genre, game.genre);
+    assert_eq!(listed.details, game.details);
+    assert!(listed.favorite);
     assert_eq!(
         app.current_art(),
-        (Some(image.clone()), game_name, false, true)
+        (Some(image.clone()), "Example Game".to_string(), false, true)
     );
     app.ui.hide().unwrap();
 }
