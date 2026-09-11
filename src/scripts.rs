@@ -244,6 +244,7 @@ if cd -- "$script_dir"; then
         /bin/bash -c '
 parent=$1
 shift
+trap "exit 130" INT
 while :; do
     kill -0 "$parent" 2>/dev/null || exit 1
     if [ -r "/proc/$$/stat" ]; then
@@ -256,7 +257,8 @@ while :; do
         [ -n "$process_group" ] && [ "$process_group" -eq "$terminal_group" ] && break
     fi
 done
-exec "$@"
+"$@"
+exit $?
 ' degauss-script-child "$$" "${script_command[@]}" &
         script_group=$!
         if [ "$script_status" -eq 130 ]; then
