@@ -2110,8 +2110,8 @@ fn run_indexing_ui_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
         games: 123_456,
         elapsed: 219,
         determinate: true,
-        problem: "Fixture Archive.zip could not be read: incomplete central directory. Healthy folders remain available.".into(),
-        report: "Indexing finished with problems. Fixture Archive.zip: incomplete central directory. Healthy folders remain available.".into(),
+        problem: "Fixture System: /media/fat/games/Fixture/Fixture Archive.zip: skipped: zip archive is malformed: truncated central-directory header\nFixture System: /media/fat/games/Fixture/Fixture Set.zip: 2 members skipped: nested archive member is unsupported by MiSTer Main".into(),
+        report: "Indexing finished\n115 / 115 systems processed in 219.0s\n23456 folders   123456 games read\n\nFixture System: /media/fat/games/Fixture/Fixture Archive.zip: skipped: zip archive is malformed: truncated central-directory header\nFixture System: /media/fat/games/Fixture/Fixture Set.zip: 2 members skipped: nested archive member is unsupported by MiSTer Main".into(),
         ..Default::default()
     });
     capture_live_if_requested(&mut app, "index-large-problems-layout-fixture");
@@ -2122,6 +2122,82 @@ fn run_indexing_ui_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
     assert!(app.index_terminal.is_some());
     app.handle(Action::Quit);
     assert!(app.index_terminal.is_none());
+
+    // A corrupt archive and an inner archive member cost only themselves:
+    // the healthy games publish, the report says which system, archive and
+    // reason, and neither can be reached as a row.
+    let outer = root.join("games/NES/Outer.zip");
+    std::fs::write(
+        &outer,
+        crate::zip::tests_archive(&["Inner Game.nes", "inner.zip"], false),
+    )
+    .unwrap();
+    let broken = root.join("games/NES/Broken.zip");
+    std::fs::write(&broken, b"not an archive").unwrap();
+    app.rebuild_all_systems();
+    paint_index_frame(&mut app);
+    finish_discovery(&mut app);
+    app.finish_background_work_for_headless();
+    let problems = app.index_terminal.clone().unwrap();
+    assert_eq!(problems.state, "Finished With Problems");
+    assert!(
+        problems.problem.contains(&format!(
+            "NES: {}: skipped: zip archive is malformed: no valid end-of-directory record",
+            broken.display()
+        )),
+        "{}",
+        problems.problem
+    );
+    assert!(
+        problems.problem.contains(&format!(
+            "NES: {}: 1 member skipped: nested archive member is unsupported by MiSTer Main",
+            outer.display()
+        )),
+        "{}",
+        problems.problem
+    );
+    assert_eq!(app.index.as_ref().unwrap().systems["NES"].games, 3);
+    assert_eq!(app.index.as_ref().unwrap().systems["Added"].games, 1);
+    let published = crate::cache::load_system(&app.cache_dir, "NES").unwrap();
+    assert_eq!(
+        published.summary(&Place::Dir(root.join("games/NES"))).games,
+        3
+    );
+    assert!(!published
+        .folders
+        .contains_key(&Place::Archive(broken.clone()).key()));
+    capture_live_if_requested(&mut app, "index-all-finished-with-problems");
+    app.handle(Action::Accept);
+    assert!(app.message.as_ref().is_some_and(|report| {
+        report.contains("Broken.zip")
+            && report.contains("Outer.zip")
+            && report.contains("nested archive member is unsupported by MiSTer Main")
+    }));
+    capture_live_if_requested(&mut app, "index-all-finished-with-problems-details");
+    app.handle(Action::Quit);
+    app.handle(Action::Quit);
+    assert!(app.index_terminal.is_none());
+    assert_eq!(app.open_system, original_open);
+    assert_eq!(
+        app.here
+            .iter()
+            .map(|row| row.name.as_str())
+            .collect::<Vec<_>>(),
+        ["Outer", "First Game.nes", "Second Game.nes"],
+        "the rejected archive is not a row"
+    );
+    app.enter(Place::Archive(outer.clone()));
+    assert_eq!(
+        app.here
+            .iter()
+            .map(|row| row.name.as_str())
+            .collect::<Vec<_>>(),
+        ["Inner Game.nes"],
+        "the inner archive is not a row"
+    );
+    assert!(app.leave());
+    std::fs::remove_file(&outer).unwrap();
+    std::fs::remove_file(&broken).unwrap();
 
     std::fs::remove_file(root.join("_Console/Added.rbf")).unwrap();
     std::fs::rename(root.join("games/NES"), root.join("games/NES-removed")).unwrap();
@@ -2895,6 +2971,35 @@ fn run_fresh_auto_pack_index_flow(root: &Path, window: Rc<MinimalSoftwareWindow>
     app.rebuild_open_system_resolved();
     app.finish_background_work_for_headless();
     assert_complete(&app, 3);
+    // A corrupt archive in a Pack system is reported as the ZIP problem it
+    // is, with the healthy games still prepared; it must never come back as
+    // a missing prepared cache, which would hide the cause.
+    let broken = games.join("Broken.zip");
+    std::fs::write(&broken, b"not an archive").unwrap();
+    app.start_build(true);
+    app.finish_background_work_for_headless();
+    let problems = app.index_terminal.clone().unwrap();
+    assert_eq!(problems.state, "Finished With Problems");
+    assert!(
+        problems.problem.contains(&format!(
+            "NES: {}: skipped: zip archive is malformed: no valid end-of-directory record",
+            broken.display()
+        )),
+        "{}",
+        problems.problem
+    );
+    assert!(
+        !problems
+            .problem
+            .contains("prepared system cache is missing"),
+        "{}",
+        problems.problem
+    );
+    assert_complete(&app, 3);
+    assert_operation_controls(&mut app, false, "A Details   B Back");
+    capture_live_if_requested(&mut app, "source-auto-pack-finished-with-problems");
+    app.handle(Action::Quit);
+    std::fs::remove_file(&broken).unwrap();
     app.message = None;
     let before_failure = cache_snapshot(&app.cache_dir);
     let held = root.join("held-games");

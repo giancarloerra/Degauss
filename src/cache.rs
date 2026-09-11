@@ -254,14 +254,19 @@ pub fn save_system(dir: &Path, id: &str, cache: &SystemCache) -> Result<()> {
 /// playable things under each folder is worked out on the way back up, so
 /// the answer to "is there anything in here" costs a lookup rather than a
 /// walk.
-pub fn build_system_checked(library: &Library) -> Result<SystemCache> {
-    build_system_controlled(library, &AtomicBool::new(false), &mut |_, _| {})?
+///
+/// An archive that cannot be read, or a member of one that Main cannot use,
+/// is left out and written to `warnings` with its reason: the rest of the
+/// system is still written down. A folder that cannot be read is still an
+/// error, because nothing says how much of the system sat under it.
+pub fn build_system_checked(library: &Library, warnings: &mut Vec<String>) -> Result<SystemCache> {
+    build_system_controlled(library, &AtomicBool::new(false), warnings, &mut |_, _| {})?
         .ok_or_else(|| DegaussError::unsupported("cache build", "cancelled"))
 }
 
 #[cfg(test)]
 pub fn build_system(library: &Library) -> SystemCache {
-    build_system_checked(library).expect("fixture cache must build")
+    build_system_checked(library, &mut Vec::new()).expect("fixture cache must build")
 }
 
 /// Build with cooperative cancellation and progress between filesystem
@@ -269,18 +274,25 @@ pub fn build_system(library: &Library) -> SystemCache {
 pub fn build_system_controlled(
     library: &Library,
     cancelled: &AtomicBool,
+    warnings: &mut Vec<String>,
     progress: &mut impl FnMut(usize, usize),
 ) -> Result<Option<SystemCache>> {
-    build_system_observed(library, cancelled, &mut |_, folders, games, starting| {
-        if !starting {
-            progress(folders, games);
-        }
-    })
+    build_system_observed(
+        library,
+        cancelled,
+        warnings,
+        &mut |_, folders, games, starting| {
+            if !starting {
+                progress(folders, games);
+            }
+        },
+    )
 }
 
 pub fn build_system_observed(
     library: &Library,
     cancelled: &AtomicBool,
+    warnings: &mut Vec<String>,
     progress: &mut impl FnMut(&Place, usize, usize, bool),
 ) -> Result<Option<SystemCache>> {
     let mut cache = SystemCache {
@@ -297,6 +309,7 @@ pub fn build_system_observed(
         &mut cache,
         &mut seen,
         cancelled,
+        warnings,
         &mut folders,
         &mut games,
         progress,
@@ -312,6 +325,7 @@ fn walk_controlled(
     cache: &mut SystemCache,
     seen: &mut Vec<String>,
     cancelled: &AtomicBool,
+    warnings: &mut Vec<String>,
     folders_done: &mut usize,
     games_done: &mut usize,
     progress: &mut impl FnMut(&Place, usize, usize, bool),
@@ -337,10 +351,27 @@ fn walk_controlled(
     if cancelled.load(Ordering::Relaxed) {
         return Ok(None);
     }
-    let (mut rows, _) = library.list(place, true)?;
+    let (mut rows, _, skipped) = library.list_reporting(place, true)?;
+    if !skipped.is_empty() {
+        // One line per reason, with a count: the log already holds every
+        // member, and the summary on screen has to stay readable for an
+        // archive with hundreds of them.
+        let mut reasons = BTreeMap::new();
+        for skipped in skipped {
+            *reasons.entry(skipped.reason).or_insert(0usize) += 1;
+        }
+        for (reason, count) in reasons {
+            warnings.push(format!(
+                "{}: {count} member{} skipped: {reason}",
+                place.path().display(),
+                if count == 1 { "" } else { "s" }
+            ));
+        }
+    }
 
     let mut games = 0;
-    for row in &mut rows {
+    let mut dropped = Vec::new();
+    for (index, row) in rows.iter_mut().enumerate() {
         if cancelled.load(Ordering::Relaxed) {
             return Ok(None);
         }
@@ -350,24 +381,62 @@ fn walk_controlled(
                 *games_done += 1;
             }
             Kind::Enter(inner) => {
-                let Some(below) = walk_controlled(
+                let before = seen.len();
+                let below = match walk_controlled(
                     library,
                     &inner.clone(),
                     depth + 1,
                     cache,
                     seen,
                     cancelled,
+                    warnings,
                     folders_done,
                     games_done,
                     progress,
-                )?
-                else {
-                    return Ok(None);
+                ) {
+                    Ok(Some(below)) => below,
+                    Ok(None) => return Ok(None),
+                    Err(error) if matches!(inner, Place::Archive(_)) => {
+                        // An archive whose directory does not hold together
+                        // is left out whole: every folder its subtree already
+                        // wrote is taken back (its keys were pushed to `seen`
+                        // before being written), its row goes, and the rest
+                        // of the system carries on. Nothing of it is ever
+                        // published half done.
+                        for key in seen.drain(before..) {
+                            cache.folders.remove(&key);
+                        }
+                        // The archive is named once; its own error would
+                        // name it again, and the summary has to fit a screen.
+                        let reason = match &error {
+                            DegaussError::Malformed { what, path, detail }
+                                if path == inner.path() =>
+                            {
+                                format!("{what} is malformed: {detail}")
+                            }
+                            DegaussError::Io { what, path, source } if path == inner.path() => {
+                                format!("{what} failed: {source}")
+                            }
+                            _ => error.to_string(),
+                        };
+                        warnings.push(format!("{}: skipped: {reason}", inner.path().display()));
+                        dropped.push(index);
+                        continue;
+                    }
+                    Err(error) => return Err(error),
                 };
                 row.below = Some(below);
                 games += below;
             }
         }
+    }
+    if !dropped.is_empty() {
+        let mut index = 0;
+        rows.retain(|_| {
+            let keep = !dropped.contains(&index);
+            index += 1;
+            keep
+        });
     }
     cache.folders.insert(
         key,
@@ -1244,12 +1313,13 @@ mod tests {
         let library = Library::open_source_neutral(&system(&games), Default::default()).unwrap();
         let cancelled = AtomicBool::new(false);
 
-        let built = build_system_controlled(&library, &cancelled, &mut |folders, _| {
-            if folders >= 1 {
-                cancelled.store(true, Ordering::Relaxed);
-            }
-        })
-        .unwrap();
+        let built =
+            build_system_controlled(&library, &cancelled, &mut Vec::new(), &mut |folders, _| {
+                if folders >= 1 {
+                    cancelled.store(true, Ordering::Relaxed);
+                }
+            })
+            .unwrap();
 
         assert!(built.is_none());
         std::fs::remove_dir_all(games).ok();
@@ -1262,11 +1332,12 @@ mod tests {
         std::fs::create_dir_all(&child).unwrap();
         std::fs::write(child.join("Game.d64"), b"rom").unwrap();
         let library = Library::open_source_neutral(&system(&games), Default::default()).unwrap();
-        let original = build_system_checked(&library).unwrap();
+        let original = build_system_checked(&library, &mut Vec::new()).unwrap();
         let mut events = Vec::new();
         let observed = build_system_observed(
             &library,
             &AtomicBool::new(false),
+            &mut Vec::new(),
             &mut |place, folders, found, starting| {
                 events.push((place.clone(), folders, found, starting));
             },
@@ -1298,10 +1369,15 @@ mod tests {
         std::fs::remove_dir(&games).unwrap();
         std::fs::write(&games, b"not a directory").unwrap();
         let cancelled = AtomicBool::new(false);
-        let result = build_system_observed(&library, &cancelled, &mut |_, _, _, starting| {
-            assert!(starting);
-            cancelled.store(true, Ordering::Relaxed);
-        });
+        let result = build_system_observed(
+            &library,
+            &cancelled,
+            &mut Vec::new(),
+            &mut |_, _, _, starting| {
+                assert!(starting);
+                cancelled.store(true, Ordering::Relaxed);
+            },
+        );
         assert!(
             result.unwrap().is_none(),
             "cancellation must run before the failing read_dir call"
@@ -1331,6 +1407,7 @@ mod tests {
             &mut cache,
             &mut seen,
             &cancelled,
+            &mut Vec::new(),
             &mut folders,
             &mut games_done,
             &mut |_, _, _, _| {},
@@ -1354,7 +1431,7 @@ mod tests {
         )
         .unwrap();
         let library = Library::open(&system(&games)).unwrap();
-        let initial = build_system_checked(&library).unwrap();
+        let initial = build_system_checked(&library, &mut Vec::new()).unwrap();
         let mut index = Index::new();
         index
             .systems
@@ -1379,7 +1456,10 @@ mod tests {
             crate::zip::tests_archive(&["One.d64"], false),
         )
         .unwrap();
-        let rebuilt = build_system_checked(&Library::open(&system(&games)).unwrap()).unwrap();
+        let mut warnings = Vec::new();
+        let rebuilt =
+            build_system_checked(&Library::open(&system(&games)).unwrap(), &mut warnings).unwrap();
+        assert!(warnings.is_empty(), "{warnings:?}");
         index
             .systems
             .insert("Test".into(), rebuilt.summary(&library.start()));
@@ -1399,15 +1479,21 @@ mod tests {
         std::fs::remove_dir_all(store).unwrap();
     }
 
+    /// An archive that stops holding together is left out with a warning
+    /// and the system is written down without it, but not before: the
+    /// previous complete cache and index stay until the new scan is
+    /// published as one transaction, and a system whose only content was
+    /// that archive completes with nothing, warned about, rather than
+    /// looking like a healthy empty system.
     #[test]
-    fn malformed_nested_archive_cannot_replace_a_previous_cache_or_index() {
+    fn malformed_nested_archive_is_skipped_with_a_warning_until_published() {
         let games = temp("failed-rebuild-games");
         let store = temp("failed-rebuild-store");
         std::fs::create_dir_all(games.join("Nested")).unwrap();
         let archive = games.join("Nested/Set.zip");
         std::fs::write(&archive, crate::zip::tests_archive(&["Game.d64"], false)).unwrap();
         let library = Library::open(&system(&games)).unwrap();
-        let old = build_system_checked(&library).unwrap();
+        let old = build_system_checked(&library, &mut Vec::new()).unwrap();
         let mut index = Index::new();
         index
             .systems
@@ -1416,16 +1502,126 @@ mod tests {
         let old_cache_bytes = std::fs::read(system_path(&store, "Test")).unwrap();
         let old_index_bytes = std::fs::read(index_path(&store)).unwrap();
         std::fs::write(&archive, b"broken archive").unwrap();
-        let error = build_system_checked(&Library::open(&system(&games)).unwrap()).unwrap_err();
-        assert!(error.to_string().contains("Set.zip"));
+        let mut warnings = Vec::new();
+        let rebuilt =
+            build_system_checked(&Library::open(&system(&games)).unwrap(), &mut warnings).unwrap();
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert!(
+            warnings[0].starts_with(&format!("{}: skipped: ", archive.display())),
+            "{warnings:?}"
+        );
+        assert!(warnings[0].contains("end-of-directory"), "{warnings:?}");
+        assert_eq!(rebuilt.summary(&library.start()).games, 0);
+        assert!(
+            !rebuilt
+                .folders
+                .contains_key(&Place::Archive(archive.clone()).key()),
+            "a rejected archive must not be written down as a folder"
+        );
+        let nested = rebuilt
+            .get(&Place::Dir(games.join("Nested")))
+            .expect("the folder holding the archive is still written down");
+        assert!(nested.rows.is_empty(), "{:?}", nested.rows);
+        assert_eq!(nested.games, 0);
         assert_eq!(
             std::fs::read(system_path(&store, "Test")).unwrap(),
-            old_cache_bytes
+            old_cache_bytes,
+            "scanning publishes nothing by itself"
         );
         assert_eq!(std::fs::read(index_path(&store)).unwrap(), old_index_bytes);
         assert_eq!(load_index(&store).unwrap().systems["Test"].games, 1);
+        index
+            .systems
+            .insert("Test".into(), rebuilt.summary(&library.start()));
+        save_system_with_index(&store, "Test", &rebuilt, &index).unwrap();
+        assert_eq!(load_index(&store).unwrap().systems["Test"].games, 0);
+        assert_eq!(
+            load_system(&store, "Test")
+                .unwrap()
+                .summary(&library.start())
+                .games,
+            0
+        );
         std::fs::remove_dir_all(games).unwrap();
         std::fs::remove_dir_all(store).unwrap();
+    }
+
+    /// A structurally corrupt archive costs the system only that archive:
+    /// the healthy file beside it and the healthy archive beside it are
+    /// written down, nothing of the rejected one is (not a folder key, not a
+    /// row, not a count), and the warning names it.
+    #[test]
+    fn a_corrupt_archive_is_skipped_and_its_siblings_are_written_down() {
+        let games = temp("corrupt-archive-sibling");
+        std::fs::write(games.join("Healthy.d64"), b"rom").unwrap();
+        let healthy = crate::zip::tests_archive(&["One.d64", "Two.d64"], false);
+        std::fs::write(games.join("Good.zip"), &healthy).unwrap();
+        let truncated = games.join("Truncated.zip");
+        std::fs::write(&truncated, &healthy[..healthy.len() / 2]).unwrap();
+        let library = Library::open(&system(&games)).unwrap();
+        let mut warnings = Vec::new();
+        let cache = build_system_checked(&library, &mut warnings).unwrap();
+        assert_eq!(cache.summary(&library.start()).games, 3);
+        let top = cache.get(&library.start()).unwrap();
+        assert_eq!(
+            top.rows
+                .iter()
+                .map(|row| row.name.as_str())
+                .collect::<Vec<_>>(),
+            ["Good", "Healthy"],
+            "the rejected archive has no row"
+        );
+        assert_eq!(top.rows[0].below, Some(2));
+        assert!(!cache
+            .folders
+            .contains_key(&Place::Archive(truncated.clone()).key()));
+        assert!(cache
+            .folders
+            .contains_key(&Place::Archive(games.join("Good.zip")).key()));
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert!(
+            warnings[0].starts_with(&format!("{}: skipped: ", truncated.display())),
+            "{warnings:?}"
+        );
+        std::fs::remove_dir_all(games).unwrap();
+    }
+
+    /// Main splits its target at the first `.zip`, so an archive inside an
+    /// archive can never be launched: that member is left out, the
+    /// supported member beside it is written down and counted, and the
+    /// warning says which archive and why.
+    #[test]
+    fn an_inner_archive_member_is_skipped_and_the_outer_members_are_kept() {
+        let games = temp("inner-archive-member");
+        let outer = games.join("Outer.zip");
+        std::fs::write(
+            &outer,
+            crate::zip::tests_archive(&["Game.d64", "inner.zip", "Other.d64"], false),
+        )
+        .unwrap();
+        let library = Library::open(&system(&games)).unwrap();
+        let mut warnings = Vec::new();
+        let cache = build_system_checked(&library, &mut warnings).unwrap();
+        assert_eq!(cache.summary(&library.start()).games, 2);
+        let inside = cache.get(&Place::Archive(outer.clone())).unwrap();
+        assert_eq!(
+            inside
+                .rows
+                .iter()
+                .map(|row| row.name.as_str())
+                .collect::<Vec<_>>(),
+            ["Game", "Other"]
+        );
+        assert!(inside.rows.iter().all(|row| !row.is_folder()));
+        assert_eq!(cache.get(&library.start()).unwrap().rows[0].below, Some(2));
+        assert_eq!(
+            warnings,
+            [format!(
+                "{}: 1 member skipped: nested archive member is unsupported by MiSTer Main",
+                outer.display()
+            )]
+        );
+        std::fs::remove_dir_all(games).unwrap();
     }
 
     #[test]
@@ -1516,7 +1712,7 @@ mod tests {
         std::fs::write(games.join("Game.d64"), b"rom").unwrap();
         let library = Library::open(&system(&games)).unwrap();
         let cancelled = AtomicBool::new(false);
-        let cache = build_system_controlled(&library, &cancelled, &mut |_, _| {
+        let cache = build_system_controlled(&library, &cancelled, &mut Vec::new(), &mut |_, _| {
             cancelled.store(true, Ordering::Relaxed)
         })
         .unwrap();
@@ -1539,6 +1735,7 @@ mod tests {
             &mut cache,
             &mut Vec::new(),
             &AtomicBool::new(false),
+            &mut Vec::new(),
             &mut 0,
             &mut 0,
             &mut |_, _, _, _| {},

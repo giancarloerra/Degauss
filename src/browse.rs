@@ -470,14 +470,36 @@ impl Library {
     /// The rows of a place, folders first and then games, each in the order
     /// a person reads them.
     pub fn list(&self, place: &Place, show_empty: bool) -> Result<(Vec<Row>, ListStats)> {
-        let (mut rows, stats) = match place {
-            Place::Roots => self.list_roots(show_empty)?,
-            Place::Dir(dir) => self.list_dir(dir, show_empty)?,
+        self.list_reporting(place, show_empty)
+            .map(|(rows, stats, _)| (rows, stats))
+    }
+
+    /// As [`Library::list`], also returning the members an archive holds
+    /// that were left out, so an index or an audit can say so. Only the
+    /// archive itself reports them: its internal folders would repeat them.
+    pub fn list_reporting(
+        &self,
+        place: &Place,
+        show_empty: bool,
+    ) -> Result<(Vec<Row>, ListStats, Vec<crate::zip::Skipped>)> {
+        let (mut rows, stats, skipped) = match place {
+            Place::Roots => {
+                let (rows, stats) = self.list_roots(show_empty)?;
+                (rows, stats, Vec::new())
+            }
+            Place::Dir(dir) => {
+                let (rows, stats) = self.list_dir(dir, show_empty)?;
+                (rows, stats, Vec::new())
+            }
             Place::Archive(archive) => self.list_archive(archive, "", show_empty)?,
             Place::ArchiveDirectory { archive, prefix } => {
-                self.list_archive(archive, prefix, show_empty)?
+                let (rows, stats, _) = self.list_archive(archive, prefix, show_empty)?;
+                (rows, stats, Vec::new())
             }
-            Place::Listing { install, file } => self.list_listing(install, file)?,
+            Place::Listing { install, file } => {
+                let (rows, stats) = self.list_listing(install, file)?;
+                (rows, stats, Vec::new())
+            }
         };
         // Folders first, exactly as the stock menu orders them, then by
         // name without regard to case: "Zaxxon" must not sort before "apple".
@@ -486,7 +508,7 @@ impl Library {
                 .cmp(&a.is_folder())
                 .then_with(|| a.sort_key.cmp(&b.sort_key))
         });
-        Ok((rows, stats))
+        Ok((rows, stats, skipped))
     }
 
     /// The system's folders, one row each, named as they are on the card.
@@ -617,14 +639,29 @@ impl Library {
 
     /// The launchable files inside an archive. Only names are read; nothing
     /// is unpacked, because unpacking is the loader's job at launch time.
+    /// Members the reader left out are not rows; opening the archive itself
+    /// writes each of them to the log with its reason and hands them back.
     fn list_archive(
         &self,
         archive: &Path,
         prefix: &str,
         show_empty: bool,
-    ) -> Result<(Vec<Row>, ListStats)> {
+    ) -> Result<(Vec<Row>, ListStats, Vec<crate::zip::Skipped>)> {
         let contents = self.archive_cache.borrow_mut().read(archive)?;
         let entries = &contents.entries;
+        let skipped = if prefix.is_empty() {
+            for skipped in &contents.skipped {
+                crate::note(&format!(
+                    "zip          {}: member {}: {}",
+                    archive.display(),
+                    skipped.member,
+                    skipped.reason
+                ));
+            }
+            contents.skipped.clone()
+        } else {
+            Vec::new()
+        };
         let supported: Vec<_> = entries
             .iter()
             .filter(|entry| self.config.accepts(Path::new(&entry.name)))
@@ -705,7 +742,7 @@ impl Library {
             }
             rows.push(row);
         }
-        Ok((rows, stats))
+        Ok((rows, stats, skipped))
     }
 
     /// The titles named by an AmigaVision listing.
@@ -1165,7 +1202,8 @@ pub struct Audit {
     pub places_read: usize,
     pub deepest: usize,
     /// Places that could not be read, which is the interesting failure: a
-    /// missing folder is normal, a folder that errors is not.
+    /// missing folder is normal, a folder that errors is not. Archive
+    /// members left out by the reader are listed here with their reason.
     pub unreadable: Vec<(PathBuf, String)>,
     /// Set when the walk stopped early, so a total is never reported as
     /// complete when it is not.
@@ -1215,8 +1253,16 @@ impl Library {
             audit.places_read += 1;
             audit.deepest = audit.deepest.max(depth);
 
-            match self.list(&place, show_empty) {
-                Ok((mut rows, _)) => {
+            match self.list_reporting(&place, show_empty) {
+                Ok((mut rows, _, skipped)) => {
+                    // A member left out of an archive is a place that could
+                    // not be read, for the same reason a folder that errors
+                    // is: it is what the audit exists to surface.
+                    for skipped in skipped {
+                        audit
+                            .unreadable
+                            .push((place.path().join(&skipped.member), skipped.reason));
+                    }
                     project(&mut rows);
                     // Projection can replace a game's display name and sort
                     // key. CLI report, audit and dry-run must therefore walk
@@ -1712,6 +1758,52 @@ mod tests {
         std::fs::remove_dir_all(dir).unwrap();
     }
 
+    /// A member Main cannot use is not a row, so it can never be chosen,
+    /// while the audit still names it: the report is how a card owner finds
+    /// out why a game inside an archive is not listed.
+    #[test]
+    fn skipped_archive_members_are_audited_and_never_listed() {
+        let dir = temp("audit-skipped-members");
+        let archive = dir.join("library.zip");
+        std::fs::write(
+            &archive,
+            crate::zip::tests_archive(&["Keep.d64", "inner.zip", "Twin.d64", "twin.d64"], false),
+        )
+        .unwrap();
+        let library = Library::open(&system(&dir)).unwrap();
+        let (rows, stats) = library
+            .list(&Place::Archive(archive.clone()), false)
+            .unwrap();
+        assert_eq!(names_of(&rows), vec!["Keep.d64"]);
+        assert_eq!(stats.games, 1);
+        let audit = library.audit(false);
+        assert_eq!(audit.games, 1);
+        let mut unreadable: Vec<_> = audit
+            .unreadable
+            .iter()
+            .map(|(path, reason)| (path.clone(), reason.as_str()))
+            .collect();
+        unreadable.sort();
+        assert_eq!(
+            unreadable,
+            vec![
+                (
+                    archive.join("Twin.d64"),
+                    "duplicate or case-ambiguous member paths under \"twin.d64\""
+                ),
+                (
+                    archive.join("inner.zip"),
+                    "nested archive member is unsupported by MiSTer Main"
+                ),
+                (
+                    archive.join("twin.d64"),
+                    "duplicate or case-ambiguous member paths under \"twin.d64\""
+                ),
+            ]
+        );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
     #[test]
     fn an_archive_the_core_takes_whole_stays_one_game() {
         let dir = temp("whole-zip");
@@ -2138,6 +2230,7 @@ mod tests {
         let cache = crate::cache::build_system_controlled(
             &library,
             &std::sync::atomic::AtomicBool::new(false),
+            &mut Vec::new(),
             &mut |_, _| {},
         )
         .unwrap()

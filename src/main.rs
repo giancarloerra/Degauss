@@ -1510,7 +1510,7 @@ fn effective_library_with_sources(
         });
     };
 
-    let (language, notes) = match scraper::ScraperSettings::load(
+    let (language, mut notes) = match scraper::ScraperSettings::load(
         &scraper::ScraperSettings::path_beside(&loaded.settings_path),
     ) {
         Ok(settings) => (settings.language, Vec::new()),
@@ -1541,7 +1541,14 @@ fn effective_library_with_sources(
     } else if provider.health.usable() {
         let source_cache = match cached {
             Some(data) => data.cache,
-            None => cache::build_system_checked(&library)?,
+            None => {
+                // Archives or members the scan left out are reported with
+                // the source, the way the interface reports them.
+                let mut warnings = Vec::new();
+                let cache = cache::build_system_checked(&library, &mut warnings)?;
+                notes.extend(warnings);
+                cache
+            }
         };
         provider
             .fingerprints_for_cache(&source_cache, &cancelled, &mut |_, _| {})?

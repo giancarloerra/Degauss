@@ -155,17 +155,27 @@ def main():
                     raise SystemExit(f"{label} failed {archive.name}: exit {result.returncode}, output {result.stdout!r}")
             members += sum(not name.endswith("/") for name in contents)
             print(f"PASS {archive.name}: exact names, sizes and CRCs through both readers")
+        # The mutation touches the first central-directory header, Root.rom.
+        # Degauss leaves only that member out and still lists the other;
+        # Main's iterator cannot read the member at all.
         original = (work / "stored.zip").read_bytes()
         central = original.find(b"PK\x01\x02")
+        remaining = "".join(f"{name}\t{len(payload)}\t{zlib.crc32(payload):08x}\n"
+                            for name, payload in files.items() if name != "Root.rom")
         for name, offset, value in [("unsupported-method.zip", 10, 12), ("encrypted.zip", 8, 1)]:
             malformed = bytearray(original)
             malformed[central + offset] = value
             archive = work / name
             archive.write_bytes(malformed)
-            for label, binary in [("Degauss", degauss_reader), ("Main iterator", main_reader)]:
-                if run_reader(binary, archive).returncode == 0:
-                    raise SystemExit(f"{label} incorrectly accepted {name}")
-            print(f"PASS {name}: both readers reject")
+            result = run_reader(degauss_reader, archive)
+            if result.returncode or result.stdout != remaining:
+                raise SystemExit(f"Degauss did not keep the supported member of {name}: "
+                                 f"exit {result.returncode}, output {result.stdout!r}")
+            if run_reader(degauss_reader, archive, "Root.rom").returncode == 0:
+                raise SystemExit(f"Degauss offered the unsupported member of {name} for launch")
+            if run_reader(main_reader, archive).returncode == 0:
+                raise SystemExit(f"Main iterator incorrectly accepted {name}")
+            print(f"PASS {name}: unsupported member skipped and refused for launch, Main rejects")
         comment_archive = work / "comment-signature.zip"
         with zipfile.ZipFile(comment_archive, "w") as writer:
             writer.writestr("Root.rom", files["Root.rom"])
@@ -177,7 +187,7 @@ def main():
         if run_reader(degauss_reader, comment_archive, "Root.rom").returncode == 0:
             raise SystemExit("Degauss did not block the known unsupported Main comment launch")
         print("PASS comment-signature.zip: valid listing retained, incompatible Main launch blocked")
-        print(f"Verified {members} members in {len(fixtures)} small archives; 2 unsupported archives rejected.")
+        print(f"Verified {members} members in {len(fixtures)} small archives; 2 unsupported members skipped.")
         print(f"Main source: {MAIN_REVISION}. Local host coverage only; no card or core launch.")
 
 

@@ -3,8 +3,12 @@
 //! MiSTer opens the native `archive.zip/member` target. Its reader supports
 //! stored and deflated single-disk classic/ZIP64 archives. Names must survive
 //! our UTF-8 state/XML paths and MiSTer's ASCII-insensitive lookup unchanged.
+//! A central directory that does not hold together fails the whole archive;
+//! a member Main cannot use is left out with its reason, and the rest of the
+//! archive stays available.
 
-use std::collections::HashMap;
+use std::collections::hash_map::Entry as MapEntry;
+use std::collections::{HashMap, HashSet};
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -60,10 +64,20 @@ pub struct Entry {
     pub size: u64,
 }
 
+/// A member the archive holds that cannot be offered, and why. The name is
+/// the raw central-directory bytes, escaped when they are not UTF-8, so the
+/// log identifies the member exactly without a lossy decode.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Skipped {
+    pub member: String,
+    pub reason: String,
+}
+
 #[derive(Debug)]
 pub struct Contents {
     pub entries: Vec<Entry>,
     pub directories: Vec<String>,
+    pub skipped: Vec<Skipped>,
     // Current Main picks the last signature without checking comment length.
     main_compatible: bool,
 }
@@ -143,15 +157,7 @@ pub fn split_member_path(path: &Path) -> Option<(PathBuf, String)> {
 pub fn validate_member(path: &Path) -> Result<Entry> {
     let (archive, member) =
         split_member_path(path).ok_or_else(|| bad(path, "not a native archive/member target"))?;
-    entries(&archive)?
-        .into_iter()
-        .find(|entry| entry.name == member)
-        .ok_or_else(|| {
-            bad(
-                &archive,
-                format!("member {member:?} is missing or was renamed"),
-            )
-        })
+    find_member(contents(&archive)?, &archive, &member)
 }
 
 /// Validate the selected member and reject a known Main reader limitation
@@ -159,23 +165,41 @@ pub fn validate_member(path: &Path) -> Result<Entry> {
 pub fn validate_member_for_launch(path: &Path) -> Result<Entry> {
     let (archive, member) =
         split_member_path(path).ok_or_else(|| bad(path, "not a native archive/member target"))?;
-    let contents = contents_controlled(&archive, &AtomicBool::new(false))?
-        .ok_or_else(|| bad(&archive, "archive listing was cancelled unexpectedly"))?;
+    let contents = contents(&archive)?;
     if !contents.main_compatible {
         return Err(DegaussError::unsupported("zip launch", format!(
             "{}: MiSTer Main's ZIP reader selects a different end record inside the archive comment; member {member:?} cannot be launched",
             archive.display())));
     }
-    contents
-        .entries
-        .into_iter()
-        .find(|entry| entry.name == member)
-        .ok_or_else(|| {
-            bad(
-                &archive,
+    find_member(contents, &archive, &member)
+}
+
+/// The selected member, or the reason it was left out: a favourite or a
+/// gamelist can still name a member the archive holds but Main cannot use,
+/// and that is a different message from one that was renamed.
+fn find_member(contents: Contents, archive: &Path, member: &str) -> Result<Entry> {
+    let Contents {
+        entries, skipped, ..
+    } = contents;
+    if let Some(entry) = entries.into_iter().find(|entry| entry.name == member) {
+        return Ok(entry);
+    }
+    Err(
+        match skipped.iter().find(|skipped| skipped.member == member) {
+            Some(skipped) => DegaussError::unsupported(
+                "zip launch",
+                format!(
+                    "{}: member {member:?} skipped: {}",
+                    archive.display(),
+                    skipped.reason
+                ),
+            ),
+            None => bad(
+                archive,
                 format!("member {member:?} is missing or was renamed"),
-            )
-        })
+            ),
+        },
+    )
 }
 
 #[cfg_attr(not(test), allow(dead_code))]
@@ -183,7 +207,10 @@ pub fn list(path: &Path) -> Result<Vec<String>> {
     entries(path).map(|entries| entries.into_iter().map(|entry| entry.name).collect())
 }
 pub fn entries(path: &Path) -> Result<Vec<Entry>> {
-    entries_controlled(path, &AtomicBool::new(false))?
+    contents(path).map(|contents| contents.entries)
+}
+fn contents(path: &Path) -> Result<Contents> {
+    contents_controlled(path, &AtomicBool::new(false))?
         .ok_or_else(|| bad(path, "archive listing was cancelled unexpectedly"))
 }
 
@@ -292,8 +319,28 @@ fn layout(file: &mut std::fs::File, path: &Path, end: &[u8], end_offset: u64) ->
     Ok(directory)
 }
 
-/// Enforce a byte-exact path, including Main's first `.zip` split and buffers.
-fn validate_name(path: &Path, name: &str) -> Result<()> {
+/// Main splits its native target at the first `.zip`, so the archive path
+/// itself has to end there: no member of an archive at any other path can be
+/// addressed, which makes this an archive-level failure.
+fn outer_path(path: &Path) -> Result<&str> {
+    let outer = path
+        .to_str()
+        .ok_or_else(|| bad(path, "archive path is not UTF-8"))?;
+    if outer.to_ascii_lowercase().find(".zip") != outer.len().checked_sub(4)
+        || outer.chars().any(char::is_control)
+    {
+        return Err(bad(
+            path,
+            "archive path holds an earlier `.zip` or a control character, which Main cannot address",
+        ));
+    }
+    Ok(outer)
+}
+
+/// Why one member cannot become a byte-exact native path, or `None` when it
+/// can: Main's separators, its 260-byte filename and 1024-byte path buffers,
+/// and its refusal of a second `.zip` in the target.
+fn member_name_problem(name: &str, outer_len: usize) -> Option<String> {
     let body = name.strip_suffix('/').unwrap_or(name);
     if body.is_empty()
         || body.trim() != body
@@ -304,58 +351,71 @@ fn validate_name(path: &Path, name: &str) -> Result<()> {
             .split('/')
             .any(|part| part.is_empty() || part == "." || part == "..")
     {
-        return Err(bad(
-            path,
-            format!("member {name:?} cannot round-trip as a native path"),
-        ));
+        return Some("name cannot round-trip as a native path".to_string());
     }
     if body.rsplit('/').next().is_some_and(|part| part.len() > 260) {
-        return Err(bad(
-            path,
-            format!("member {name:?} exceeds Main's 260-byte filename limit"),
-        ));
+        return Some("filename exceeds Main's 260-byte limit".to_string());
     }
     if body
         .split('/')
         .any(|part| part.to_ascii_lowercase().ends_with(".zip"))
     {
-        return Err(bad(
-            path,
-            format!("nested archive member {name:?} is unsupported"),
-        ));
+        return Some("nested archive member is unsupported by MiSTer Main".to_string());
     }
-    let outer = path
-        .to_str()
-        .ok_or_else(|| bad(path, "archive path is not UTF-8"))?;
-    let lower = outer.to_ascii_lowercase();
-    if lower.find(".zip") != outer.len().checked_sub(4)
-        || outer.chars().any(char::is_control)
-        || outer
-            .len()
-            .checked_add(1)
-            .and_then(|n| n.checked_add(body.len()))
-            .is_none_or(|n| n > MAX_NATIVE_PATH_BYTES)
+    if outer_len
+        .checked_add(1)
+        .and_then(|n| n.checked_add(body.len()))
+        .is_none_or(|n| n > MAX_NATIVE_PATH_BYTES)
     {
-        return Err(bad(
-            path,
-            format!(
-                "native target for {name:?} is ambiguous or exceeds {MAX_NATIVE_PATH_BYTES} bytes"
-            ),
+        return Some(format!(
+            "native target exceeds {MAX_NATIVE_PATH_BYTES} bytes"
         ));
     }
-    Ok(())
+    None
+}
+
+/// The standard ZIP CRC-32, a bit at a time. Only member names pass through
+/// it, and this file is also compiled on its own by scripts/test-main-zip.py,
+/// so it cannot lean on a crate.
+fn crc32(bytes: &[u8]) -> u32 {
+    let mut crc = u32::MAX;
+    for &byte in bytes {
+        crc ^= u32::from(byte);
+        for _ in 0..8 {
+            crc = (crc >> 1) ^ (0xedb8_8320 & 0u32.wrapping_sub(crc & 1));
+        }
+    }
+    !crc
+}
+
+/// The Info-ZIP Unicode Path field (APPNOTE 4.6.9): version 1, the CRC-32
+/// of the raw name it describes, then the UTF-8 name. Another version or a
+/// stale CRC means the field is ignored, as APPNOTE says. The name it
+/// carries only identifies a member in a diagnostic: Main looks members up
+/// by their raw central-directory bytes and never reads this field.
+fn unicode_path<'a>(value: &'a [u8], raw: &[u8]) -> Option<&'a str> {
+    if value.len() < 5 || value[0] != 1 || dword(value, 1) != crc32(raw) {
+        return None;
+    }
+    std::str::from_utf8(&value[5..]).ok()
+}
+
+/// One central-directory record that passed every member check, kept until
+/// the conflict pass over the whole archive has run.
+struct Member {
+    name: String,
+    is_dir: bool,
+    crc32: u32,
+    size: u64,
 }
 
 /// Central-directory-only read with cancellation. Payload CRC/decompression
 /// failures remain Main's responsibility; this never reads compressed data.
-pub fn entries_controlled(path: &Path, cancelled: &AtomicBool) -> Result<Option<Vec<Entry>>> {
-    contents_controlled(path, cancelled).map(|contents| contents.map(|contents| contents.entries))
-}
-
 fn contents_controlled(path: &Path, cancelled: &AtomicBool) -> Result<Option<Contents>> {
     if cancelled.load(Ordering::Relaxed) {
         return Ok(None);
     }
+    let outer_len = outer_path(path)?.len();
     let mut file =
         std::fs::File::open(path).map_err(|e| DegaussError::io("opening archive", path, e))?;
     let file_size = file
@@ -401,14 +461,16 @@ fn contents_controlled(path: &Path, cancelled: &AtomicBool) -> Result<Option<Con
     read_at(&mut file, path, directory.offset, &mut bytes)?;
     let count = usize::try_from(directory.count)
         .map_err(|_| bad(path, "entry count does not fit this target"))?;
-    let mut entries = Vec::new();
-    entries
+    let mut members = Vec::new();
+    members
         .try_reserve_exact(count)
         .map_err(|_| bad(path, "cannot allocate bounded entry table"))?;
     let mut names = HashMap::<String, (String, bool)>::new();
     names
         .try_reserve(count)
         .map_err(|_| bad(path, "cannot allocate archive name table"))?;
+    let mut skipped = Vec::new();
+    let mut conflicts = HashSet::new();
     let mut cursor = 0usize;
     for _ in 0..count {
         if cancelled.load(Ordering::Relaxed) {
@@ -430,29 +492,13 @@ fn contents_controlled(path: &Path, cancelled: &AtomicBool) -> Result<Option<Con
                 "truncated central-directory name, extra field or comment",
             ));
         }
-        let name = std::str::from_utf8(&bytes[cursor + 46..cursor + 46 + name_len])
-            .map_err(|_| bad(path, "member name is not exact UTF-8"))?;
-        validate_name(path, name)?;
-        let flags = word(header, 8);
-        if flags & (1 | 32 | 64 | 8192) != 0 {
-            return Err(bad(
-                path,
-                format!("encrypted or compressed-patch member {name:?} is unsupported"),
-            ));
-        }
-        let method = word(header, 10);
-        if method != 0 && method != 8 {
-            return Err(bad(
-                path,
-                format!("member {name:?} has unsupported compression method {method}"),
-            ));
-        }
-        let mut size = u64::from(dword(header, 24));
-        let mut compressed = u64::from(dword(header, 20));
-        let mut local = u64::from(dword(header, 42));
-        let mut disk = u64::from(word(header, 34));
+        let raw = &bytes[cursor + 46..cursor + 46 + name_len];
         let mut extra = &bytes[cursor + 46 + name_len..cursor + 46 + name_len + extra_len];
+        cursor = end;
+        let flags = word(header, 8);
+        let method = word(header, 10);
         let mut zip64 = None;
+        let mut decoded = None;
         while !extra.is_empty() {
             if extra.len() < 4 {
                 return Err(bad(path, "truncated extra-field header"));
@@ -461,14 +507,62 @@ fn contents_controlled(path: &Path, cancelled: &AtomicBool) -> Result<Option<Con
             if field_len + 4 > extra.len() {
                 return Err(bad(path, "truncated extra-field value"));
             }
-            if word(extra, 0) == 1 {
-                if zip64.is_some() {
-                    return Err(bad(path, "duplicate ZIP64 extra field"));
+            match word(extra, 0) {
+                1 => {
+                    if zip64.is_some() {
+                        return Err(bad(path, "duplicate ZIP64 extra field"));
+                    }
+                    zip64 = Some(&extra[4..4 + field_len]);
                 }
-                zip64 = Some(&extra[4..4 + field_len]);
+                0x7075 => decoded = unicode_path(&extra[4..4 + field_len], raw),
+                _ => {}
             }
             extra = &extra[4 + field_len..];
         }
+        // From here on a problem belongs to this member alone: it is left
+        // out with its reason and the rest of the archive still stands.
+        // Only raw bytes that are valid UTF-8 can reach Main unchanged
+        // through the cache and the MGL; the UTF-8 flag (bit 11) says
+        // whether the writer claimed that, and a decoded Unicode Path name
+        // only identifies the member.
+        let name = match std::str::from_utf8(raw) {
+            Ok(name) => name,
+            Err(_) => {
+                let reason = if flags & 2048 != 0 {
+                    "member name is flagged UTF-8 but is not valid UTF-8".to_string()
+                } else {
+                    match decoded {
+                        Some(decoded) => format!(
+                            "unsupported legacy ZIP filename encoding; Unicode Path {decoded:?}"
+                        ),
+                        None => "unsupported legacy ZIP filename encoding".to_string(),
+                    }
+                };
+                skipped.push(Skipped {
+                    member: raw.escape_ascii().to_string(),
+                    reason,
+                });
+                continue;
+            }
+        };
+        let problem = if flags & (1 | 32 | 64 | 8192) != 0 {
+            Some("encrypted or compressed-patch member is unsupported".to_string())
+        } else if method != 0 && method != 8 {
+            Some(format!("unsupported compression method {method}"))
+        } else {
+            member_name_problem(name, outer_len)
+        };
+        if let Some(reason) = problem {
+            skipped.push(Skipped {
+                member: name.to_string(),
+                reason,
+            });
+            continue;
+        }
+        let mut size = u64::from(dword(header, 24));
+        let mut compressed = u64::from(dword(header, 20));
+        let mut local = u64::from(dword(header, 42));
+        let mut disk = u64::from(word(header, 34));
         let mut zip64 = zip64.unwrap_or(&[]);
         for value in [&mut size, &mut compressed, &mut local] {
             if *value == u64::from(u32::MAX) {
@@ -509,21 +603,20 @@ fn contents_controlled(path: &Path, cancelled: &AtomicBool) -> Result<Option<Con
         }
         let is_dir = name.ends_with('/');
         let key = name.trim_end_matches('/').to_ascii_lowercase();
-        if let Some((previous, _)) = names.get(&key) {
-            return Err(bad(
-                path,
-                format!("duplicate or case-ambiguous members {previous:?} and {name:?}"),
-            ));
+        match names.entry(key) {
+            MapEntry::Occupied(taken) => {
+                conflicts.insert(taken.key().clone());
+            }
+            MapEntry::Vacant(free) => {
+                free.insert((name.to_string(), is_dir));
+            }
         }
-        names.insert(key, (name.to_string(), is_dir));
-        if !is_dir {
-            entries.push(Entry {
-                name: name.to_string(),
-                crc32: dword(header, 16),
-                size,
-            });
-        }
-        cursor = end;
+        members.push(Member {
+            name: name.to_string(),
+            is_dir,
+            crc32: dword(header, 16),
+            size,
+        });
     }
     if cursor != length {
         return Err(bad(
@@ -533,17 +626,17 @@ fn contents_controlled(path: &Path, cancelled: &AtomicBool) -> Result<Option<Con
     }
     // Check implied directories against explicit files and directory casing.
     // Sort once rather than retaining every prefix of every long member name.
+    // A conflict is never resolved by choosing a side: the lowercase key of
+    // the ambiguous path is noted and everything at or under it is left out.
     let mut paths: Vec<_> = names.iter().collect();
     paths.sort_unstable_by_key(|(left, _)| *left);
     for (_, (name, _)) in &paths {
         for (slash, _) in name.match_indices('/') {
             let prefix = &name[..slash];
-            if let Some((existing, directory)) = names.get(&prefix.to_ascii_lowercase()) {
+            let prefix_key = prefix.to_ascii_lowercase();
+            if let Some((existing, directory)) = names.get(&prefix_key) {
                 if !directory || existing.trim_end_matches('/') != prefix {
-                    return Err(bad(
-                        path,
-                        format!("ambiguous file/directory prefix in member {name:?}"),
-                    ));
+                    conflicts.insert(prefix_key);
                 }
             }
         }
@@ -551,28 +644,60 @@ fn contents_controlled(path: &Path, cancelled: &AtomicBool) -> Result<Option<Con
     for pair in paths.windows(2) {
         let (_, (left, _)) = pair[0];
         let (_, (right, _)) = pair[1];
+        let mut end = 0;
         for (a, b) in left.split('/').zip(right.split('/')) {
             if !a.eq_ignore_ascii_case(b) {
                 break;
             }
+            end += a.len();
             if a != b {
-                return Err(bad(
-                    path,
-                    format!("case-ambiguous directory names in {left:?} and {right:?}"),
-                ));
+                conflicts.insert(left[..end].to_ascii_lowercase());
+                break;
             }
+            end += 1;
         }
     }
-    let mut directories: Vec<String> = names
-        .into_values()
-        .filter_map(|(name, directory)| directory.then(|| name.trim_end_matches('/').to_string()))
-        .collect();
+    // Keys are only worked out again when there is a conflict to match.
+    let conflict_of = |name: &str| -> Option<String> {
+        if conflicts.is_empty() {
+            return None;
+        }
+        let key = name.trim_end_matches('/').to_ascii_lowercase();
+        key.match_indices('/')
+            .map(|(slash, _)| slash)
+            .chain(std::iter::once(key.len()))
+            .map(|at| &key[..at])
+            .find(|prefix| conflicts.contains(*prefix))
+            .map(str::to_string)
+    };
+    let mut entries = Vec::new();
+    entries
+        .try_reserve_exact(members.len())
+        .map_err(|_| bad(path, "cannot allocate bounded entry table"))?;
+    let mut directories = Vec::new();
+    for member in members {
+        if let Some(group) = conflict_of(&member.name) {
+            skipped.push(Skipped {
+                member: member.name,
+                reason: format!("duplicate or case-ambiguous member paths under {group:?}"),
+            });
+        } else if member.is_dir {
+            directories.push(member.name.trim_end_matches('/').to_string());
+        } else {
+            entries.push(Entry {
+                name: member.name,
+                crc32: member.crc32,
+                size: member.size,
+            });
+        }
+    }
     // Browse uses a stable case-insensitive sort. Exact Unicode directory names
     // can share that sort key, so their input order must not come from HashMap.
     directories.sort_unstable();
     Ok(Some(Contents {
         entries,
         directories,
+        skipped,
         main_compatible,
     }))
 }
@@ -580,14 +705,40 @@ fn contents_controlled(path: &Path, cancelled: &AtomicBool) -> Result<Option<Con
 /// Real stored ZIP bytes shared by boundary/compatibility tests.
 #[cfg(test)]
 pub fn tests_archive(names: &[&str], zip64: bool) -> Vec<u8> {
+    let entries: Vec<_> = names
+        .iter()
+        .map(|name| TestEntry {
+            name: name.as_bytes(),
+            flags: 0,
+            method: 0,
+            extra: &[],
+        })
+        .collect();
+    tests_archive_entries(&entries, zip64)
+}
+
+/// One member of a test archive: its raw name bytes, general-purpose flags,
+/// compression method and central-directory extra field.
+#[cfg(test)]
+pub struct TestEntry<'a> {
+    pub name: &'a [u8],
+    pub flags: u16,
+    pub method: u16,
+    pub extra: &'a [u8],
+}
+
+#[cfg(test)]
+pub fn tests_archive_entries(entries: &[TestEntry<'_>], zip64: bool) -> Vec<u8> {
     let mut bytes = Vec::new();
     let mut directory = Vec::new();
-    for name in names {
+    for entry in entries {
         let offset = bytes.len() as u64;
-        let name = name.as_bytes();
+        let name = entry.name;
         let mut local = [0u8; 30];
         local[..4].copy_from_slice(&[0x50, 0x4b, 3, 4]);
         local[4..6].copy_from_slice(&20u16.to_le_bytes());
+        local[6..8].copy_from_slice(&entry.flags.to_le_bytes());
+        local[8..10].copy_from_slice(&entry.method.to_le_bytes());
         local[26..28].copy_from_slice(&(name.len() as u16).to_le_bytes());
         bytes.extend_from_slice(&local);
         bytes.extend_from_slice(name);
@@ -595,16 +746,20 @@ pub fn tests_archive(names: &[&str], zip64: bool) -> Vec<u8> {
         central[..4].copy_from_slice(&CENTRAL_SIGNATURE);
         central[4..6].copy_from_slice(&20u16.to_le_bytes());
         central[6..8].copy_from_slice(&(if zip64 { 45u16 } else { 20u16 }).to_le_bytes());
+        central[8..10].copy_from_slice(&entry.flags.to_le_bytes());
+        central[10..12].copy_from_slice(&entry.method.to_le_bytes());
         central[28..30].copy_from_slice(&(name.len() as u16).to_le_bytes());
+        let extra_len = entry.extra.len() + if zip64 { 28 } else { 0 };
+        central[30..32].copy_from_slice(&(extra_len as u16).to_le_bytes());
         if zip64 {
             central[20..28].fill(0xff);
             central[42..46].fill(0xff);
-            central[30..32].copy_from_slice(&28u16.to_le_bytes());
         } else {
             central[42..46].copy_from_slice(&(offset as u32).to_le_bytes());
         }
         directory.extend_from_slice(&central);
         directory.extend_from_slice(name);
+        directory.extend_from_slice(entry.extra);
         if zip64 {
             directory.extend_from_slice(&1u16.to_le_bytes());
             directory.extend_from_slice(&24u16.to_le_bytes());
@@ -623,8 +778,8 @@ pub fn tests_archive(names: &[&str], zip64: bool) -> Vec<u8> {
         bytes.extend_from_slice(&45u16.to_le_bytes());
         bytes.extend_from_slice(&0u32.to_le_bytes());
         bytes.extend_from_slice(&0u32.to_le_bytes());
-        bytes.extend_from_slice(&(names.len() as u64).to_le_bytes());
-        bytes.extend_from_slice(&(names.len() as u64).to_le_bytes());
+        bytes.extend_from_slice(&(entries.len() as u64).to_le_bytes());
+        bytes.extend_from_slice(&(entries.len() as u64).to_le_bytes());
         bytes.extend_from_slice(&(directory.len() as u64).to_le_bytes());
         bytes.extend_from_slice(&offset.to_le_bytes());
         bytes.extend_from_slice(&[0x50, 0x4b, 6, 7]);
@@ -634,7 +789,11 @@ pub fn tests_archive(names: &[&str], zip64: bool) -> Vec<u8> {
     }
     bytes.extend_from_slice(&EOCD_SIGNATURE);
     bytes.extend_from_slice(&0u32.to_le_bytes());
-    let count = if zip64 { u16::MAX } else { names.len() as u16 };
+    let count = if zip64 {
+        u16::MAX
+    } else {
+        entries.len() as u16
+    };
     bytes.extend_from_slice(&count.to_le_bytes());
     bytes.extend_from_slice(&count.to_le_bytes());
     bytes.extend_from_slice(
@@ -720,7 +879,7 @@ mod tests {
         ));
         std::fs::remove_file(&missing).ok();
         let cancelled = AtomicBool::new(true);
-        assert_eq!(entries_controlled(&missing, &cancelled).unwrap(), None);
+        assert!(contents_controlled(&missing, &cancelled).unwrap().is_none());
     }
 
     #[test]
@@ -863,29 +1022,140 @@ mod tests {
         std::fs::remove_file(path).unwrap();
     }
 
+    fn skipped_of(contents: &Contents) -> Vec<(&str, &str)> {
+        contents
+            .skipped
+            .iter()
+            .map(|skipped| (skipped.member.as_str(), skipped.reason.as_str()))
+            .collect()
+    }
+
+    fn names_of(contents: &Contents) -> Vec<&str> {
+        contents
+            .entries
+            .iter()
+            .map(|entry| entry.name.as_str())
+            .collect()
+    }
+
+    /// A name Main cannot address, or one that could pick the wrong member,
+    /// is left out on its own with its reason. The healthy sibling stays: one
+    /// bad name must not empty an archive of games, and a conflicting group
+    /// is left out whole rather than resolved by choosing a side.
     #[test]
     fn invalid_names_cannot_change_identity_or_choose_the_wrong_member() {
-        for (index, names) in [
-            vec!["../game.neo"],
-            vec!["/game.neo"],
-            vec!["a//game.neo"],
-            vec!["a/./game.neo"],
-            vec!["a\\game.neo"],
-            vec!["game.neo\n"],
-            vec!["nested.zip/game.neo"],
-            vec!["nested.zip"],
-            vec!["game.neo", "game.neo"],
-            vec!["game.neo", "GAME.neo"],
-            vec!["Folder/a.neo", "folder/b.neo"],
-            vec!["folder", "folder/game.neo"],
+        let overlong = format!("{}.neo", "n".repeat(257));
+        let deep = format!("{}game.neo", "a/".repeat(520));
+        for (index, (names, left_out, reason)) in [
+            (vec!["../game.neo", "ok.neo"], 1, "cannot round-trip"),
+            (vec!["/game.neo", "ok.neo"], 1, "cannot round-trip"),
+            (vec!["a//game.neo", "ok.neo"], 1, "cannot round-trip"),
+            (vec!["a/./game.neo", "ok.neo"], 1, "cannot round-trip"),
+            (vec!["a\\game.neo", "ok.neo"], 1, "cannot round-trip"),
+            (vec!["game.neo\n", "ok.neo"], 1, "cannot round-trip"),
+            (vec![" game.neo", "ok.neo"], 1, "cannot round-trip"),
+            (vec!["a:b.neo", "ok.neo"], 1, "cannot round-trip"),
+            (vec![overlong.as_str(), "ok.neo"], 1, "260-byte"),
+            (
+                vec![deep.as_str(), "ok.neo"],
+                1,
+                "native target exceeds 1023 bytes",
+            ),
+            (
+                vec!["nested.zip/game.neo", "ok.neo"],
+                1,
+                "nested archive member is unsupported by MiSTer Main",
+            ),
+            (
+                vec!["nested.zip", "ok.neo"],
+                1,
+                "nested archive member is unsupported by MiSTer Main",
+            ),
+            (
+                vec!["game.neo", "game.neo", "ok.neo"],
+                2,
+                "duplicate or case-ambiguous member paths under \"game.neo\"",
+            ),
+            (
+                vec!["game.neo", "GAME.neo", "ok.neo"],
+                2,
+                "duplicate or case-ambiguous member paths under \"game.neo\"",
+            ),
+            (
+                vec!["Folder/a.neo", "Folder/b.neo", "folder/z.neo", "ok.neo"],
+                3,
+                "duplicate or case-ambiguous member paths under \"folder\"",
+            ),
+            (
+                vec!["folder", "folder/game.neo", "ok.neo"],
+                2,
+                "duplicate or case-ambiguous member paths under \"folder\"",
+            ),
+            (
+                vec!["Folder/", "folder/game.neo", "ok.neo"],
+                2,
+                "duplicate or case-ambiguous member paths under \"folder\"",
+            ),
+            (
+                vec!["x/Folder/a.neo", "x/folder/b.neo", "x/other.neo", "ok.neo"],
+                2,
+                "duplicate or case-ambiguous member paths under \"x/folder\"",
+            ),
         ]
         .iter()
         .enumerate()
         {
             let path = write_fixture(&format!("names-{index}"), &tests_archive(names, false));
-            assert!(entries(&path).is_err(), "accepted {names:?}");
+            let contents = contents(&path).unwrap_or_else(|error| panic!("{names:?}: {error}"));
+            assert_eq!(
+                names_of(&contents),
+                names[*left_out..].to_vec(),
+                "retained members for {names:?}"
+            );
+            let skipped = skipped_of(&contents);
+            assert_eq!(
+                skipped
+                    .iter()
+                    .map(|(member, _)| *member)
+                    .collect::<Vec<_>>(),
+                names[..*left_out].to_vec(),
+                "skipped members for {names:?}"
+            );
+            for (member, why) in &skipped {
+                assert!(why.contains(reason), "{member}: {why}");
+            }
             std::fs::remove_file(path).unwrap();
         }
+    }
+
+    /// Launch confirmation and favourites name the real cause for a member
+    /// the archive holds but Main cannot use, which is a different repair
+    /// from a member that was renamed away.
+    #[test]
+    fn a_skipped_member_reports_its_reason_instead_of_looking_renamed() {
+        let path = write_fixture(
+            "skipped-launch",
+            &tests_archive(&["inner.zip", "game.neo"], false),
+        );
+        assert_eq!(list(&path).unwrap(), ["game.neo"]);
+        assert!(validate_member_for_launch(&path.join("game.neo")).is_ok());
+        for outcome in [
+            validate_member(&path.join("inner.zip")),
+            validate_member_for_launch(&path.join("inner.zip")),
+        ] {
+            let error = outcome.unwrap_err().to_string();
+            assert!(
+                error.contains("nested archive member is unsupported"),
+                "{error}"
+            );
+            assert!(error.contains("inner.zip"), "{error}");
+            assert!(!error.contains("missing or was renamed"), "{error}");
+        }
+        let error = validate_member(&path.join("gone.neo"))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("missing or was renamed"), "{error}");
+        std::fs::remove_file(path).unwrap();
     }
 
     #[test]
@@ -939,23 +1209,55 @@ mod tests {
         std::fs::remove_file(path).unwrap();
     }
 
+    /// Encryption, patched data and other compression methods are Main
+    /// reader limits of one member: that member is left out with the exact
+    /// limit named, and the plain member beside it is still listed.
     #[test]
-    fn unsupported_methods_flags_and_malformed_directory_lengths_are_errors() {
-        let original = tests_archive(&["game.neo"], false);
+    fn unsupported_methods_and_flags_skip_only_that_member() {
+        let original = tests_archive(&["game.neo", "plain.neo"], false);
         let central = original
             .windows(4)
             .position(|b| b == CENTRAL_SIGNATURE)
             .unwrap();
-        for (index, (offset, value)) in [(8, 1), (8, 32), (8, 64), (9, 32), (10, 12), (32, 1)]
-            .into_iter()
-            .enumerate()
+        for (index, (offset, value, reason)) in [
+            (8, 1, "encrypted or compressed-patch member is unsupported"),
+            (8, 32, "encrypted or compressed-patch member is unsupported"),
+            (8, 64, "encrypted or compressed-patch member is unsupported"),
+            (9, 32, "encrypted or compressed-patch member is unsupported"),
+            (10, 12, "unsupported compression method 12"),
+        ]
+        .into_iter()
+        .enumerate()
         {
             let mut bytes = original.clone();
             bytes[central + offset] = value;
             let path = write_fixture(&format!("unsupported-{index}"), &bytes);
-            assert!(entries(&path).is_err(), "accepted mutation {index}");
+            let contents = contents(&path).unwrap();
+            assert_eq!(names_of(&contents), ["plain.neo"], "mutation {index}");
+            assert_eq!(
+                skipped_of(&contents),
+                [("game.neo", reason)],
+                "mutation {index}"
+            );
             std::fs::remove_file(path).unwrap();
         }
+    }
+
+    /// A comment length that misplaces the next header is the directory not
+    /// holding together, which is the whole archive's problem: no member of
+    /// it is trusted, however healthy the others look.
+    #[test]
+    fn a_malformed_directory_length_is_an_archive_error() {
+        let mut bytes = tests_archive(&["game.neo", "plain.neo"], false);
+        let central = bytes
+            .windows(4)
+            .position(|b| b == CENTRAL_SIGNATURE)
+            .unwrap();
+        bytes[central + 32] = 1;
+        let path = write_fixture("bad-comment-length", &bytes);
+        let error = entries(&path).unwrap_err().to_string();
+        assert!(error.contains("central-directory"), "{error}");
+        std::fs::remove_file(path).unwrap();
     }
 
     #[test]
@@ -1054,16 +1356,131 @@ mod tests {
         std::fs::remove_file(path).unwrap();
     }
 
+    /// Main finds a member by its raw central-directory bytes, so only raw
+    /// bytes that are valid UTF-8 can travel through the cache and the MGL
+    /// unchanged. A legacy encoding is left out and named as such, never
+    /// decoded into a name that would not resolve; the Unicode Path field is
+    /// checked and used only to say which member that was; a name the writer
+    /// flagged as UTF-8 that is not gets its own reason; and none of this
+    /// fails the archive or produces a replacement character.
     #[test]
-    fn entry_names_are_never_decoded_lossily() {
-        let mut bytes = tests_archive(&["game.neo"], false);
-        let central = bytes
-            .windows(4)
-            .position(|b| b == CENTRAL_SIGNATURE)
-            .unwrap();
-        bytes[central + 46] = 0xff;
-        let path = write_fixture("bad-utf8", &bytes);
-        assert!(entries(&path).unwrap_err().to_string().contains("UTF-8"));
+    fn filename_encodings_are_honoured_without_lossy_decoding() {
+        assert_eq!(crc32(b"123456789"), 0xcbf4_3926, "CRC-32 check value");
+        let field = |version: u8, raw: &[u8], decoded: &str, stale: bool| -> Vec<u8> {
+            let mut value = vec![version];
+            value.extend_from_slice(&(crc32(raw) ^ if stale { 1 } else { 0 }).to_le_bytes());
+            value.extend_from_slice(decoded.as_bytes());
+            let mut extra = vec![0x75, 0x70];
+            extra.extend_from_slice(&(value.len() as u16).to_le_bytes());
+            extra.extend_from_slice(&value);
+            extra
+        };
+        let described = field(1, b"two\xe9.neo", "two\u{e9}.neo", false);
+        let stale = field(1, b"three\xe9.neo", "three\u{e9}.neo", true);
+        let unknown_version = field(2, b"four\xe9.neo", "four\u{e9}.neo", false);
+        let redundant = field(1, b"plain.neo", "plain.neo", false);
+        let entries = [
+            TestEntry {
+                name: b"one\xe9.neo",
+                flags: 0,
+                method: 0,
+                extra: &[],
+            },
+            TestEntry {
+                name: "\u{e4}.neo".as_bytes(),
+                flags: 2048,
+                method: 0,
+                extra: &[],
+            },
+            TestEntry {
+                name: b"two\xe9.neo",
+                flags: 0,
+                method: 0,
+                extra: &described,
+            },
+            TestEntry {
+                name: b"three\xe9.neo",
+                flags: 0,
+                method: 0,
+                extra: &stale,
+            },
+            TestEntry {
+                name: b"four\xe9.neo",
+                flags: 0,
+                method: 0,
+                extra: &unknown_version,
+            },
+            TestEntry {
+                name: b"five\xe9.neo",
+                flags: 2048,
+                method: 0,
+                extra: &[],
+            },
+            TestEntry {
+                name: b"plain.neo",
+                flags: 0,
+                method: 0,
+                extra: &redundant,
+            },
+            TestEntry {
+                name: b"kept.neo",
+                flags: 0,
+                method: 0,
+                extra: &[0x75, 0x70, 2, 0, 1, 0],
+            },
+        ];
+        let path = write_fixture("encodings", &tests_archive_entries(&entries, false));
+        let contents = contents(&path).unwrap();
+        assert_eq!(
+            names_of(&contents),
+            ["\u{e4}.neo", "plain.neo", "kept.neo"],
+            "the flagged UTF-8 name is byte-exact, and a Unicode Path field a valid name does not need never removes it"
+        );
+        assert_eq!(
+            skipped_of(&contents),
+            [
+                ("one\\xe9.neo", "unsupported legacy ZIP filename encoding"),
+                (
+                    "two\\xe9.neo",
+                    "unsupported legacy ZIP filename encoding; Unicode Path \"two\u{e9}.neo\""
+                ),
+                ("three\\xe9.neo", "unsupported legacy ZIP filename encoding"),
+                ("four\\xe9.neo", "unsupported legacy ZIP filename encoding"),
+                (
+                    "five\\xe9.neo",
+                    "member name is flagged UTF-8 but is not valid UTF-8"
+                ),
+            ]
+        );
+        for text in contents
+            .entries
+            .iter()
+            .map(|entry| entry.name.as_str())
+            .chain(
+                contents
+                    .skipped
+                    .iter()
+                    .map(|skipped| skipped.member.as_str()),
+            )
+        {
+            assert!(!text.contains('\u{fffd}'), "{text}");
+            assert!(!text.contains("malformed"), "{text}");
+        }
         std::fs::remove_file(path).unwrap();
+    }
+
+    /// The archive path is Main's first `.zip` split, so an earlier `.zip`
+    /// in it or a control character makes every member unaddressable: that
+    /// is the archive's problem, not any member's.
+    #[test]
+    fn an_ambiguous_outer_path_is_an_archive_error() {
+        let dir =
+            std::env::temp_dir().join(format!("degauss-zip-outer-{}.zip", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("inner.zip");
+        std::fs::write(&path, tests_archive(&["game.neo"], false)).unwrap();
+        let error = entries(&path).unwrap_err().to_string();
+        assert!(error.contains("earlier `.zip`"), "{error}");
+        std::fs::remove_dir_all(dir).unwrap();
     }
 }

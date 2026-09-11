@@ -439,8 +439,12 @@ are read on the fly. Automatic Artwork Pack preparation is described
 Adding games to one system does not need the whole card read again:
 **X Actions → Library → Rebuild This System List** inside that system reads just its folders.
 Running it from a subfolder still rebuilds the complete containing system, not only that subfolder.
-A successful rebuild reflects additions and removals. An unreadable folder or archive
-reports its error and keeps that system's previous complete list.
+A successful rebuild reflects additions and removals. An unreadable folder
+reports its error and keeps that system's previous complete list. A malformed
+archive, or a member inside one that MiSTer cannot launch, is skipped with a
+warning and the rest of the system is published; the rebuild then finishes as
+**Finished With Problems**, naming the system, the archive and the reason,
+with every skipped member written to `/tmp/degauss.log`.
 
 Global and single-system rebuilds show a progress dashboard with the active
 system and folder, processed systems, folder/game counts and elapsed time.
@@ -459,7 +463,11 @@ the library. Systems that already launch ZIP files as individual games keep that
 behaviour. ZIP64 is supported
 within the documented bounds. Metadata for a multi-game archive identifies each game
 by its full archive/member path; single-game archives retain legacy archive-level
-metadata. See [ZIP libraries](docs/zip-libraries.md) for details and launch limits.
+metadata. A damaged archive is skipped whole; a member MiSTer cannot launch (an
+inner archive, an encrypted or unusually compressed entry, a legacy-encoded or
+ambiguous name) is skipped on its own while the other members stay, and each
+skip is reported. See [ZIP libraries](docs/zip-libraries.md) for details and
+launch limits.
 
 ### RetroAchievements and Unstable cores
 

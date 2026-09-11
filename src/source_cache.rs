@@ -63,6 +63,10 @@ pub enum Event {
         prepared: PreparedCacheGroup,
         providers: Vec<crate::artwork_pack::Provider>,
         progress: Progress,
+        /// Archives and members the scan left out, each line prefixed with
+        /// its system's name. The group still stages: a ZIP problem is not
+        /// a reason to fail every system in it.
+        warnings: Vec<String>,
     },
     Cancelled(Progress),
     Failed {
@@ -159,6 +163,7 @@ fn run(request: Request, events: &SyncSender<Event>, cancelled: &Arc<AtomicBool>
     };
     let mut caches = Vec::new();
     let mut providers = Vec::new();
+    let mut warnings = Vec::new();
 
     for (position, system) in request.systems.into_iter().enumerate() {
         if cancelled.load(Ordering::Relaxed) {
@@ -211,7 +216,13 @@ fn run(request: Request, events: &SyncSender<Event>, cancelled: &Arc<AtomicBool>
             progress.games = base_games + games;
             let _ = events.try_send(Event::Progress(progress.clone()));
         };
-        let cache = match crate::cache::build_system_controlled(&library, cancelled, &mut report) {
+        let mut scan_warnings = Vec::new();
+        let cache = match crate::cache::build_system_controlled(
+            &library,
+            cancelled,
+            &mut scan_warnings,
+            &mut report,
+        ) {
             Ok(Some(cache)) => cache,
             Ok(None) => {
                 let _ = events.send(Event::Cancelled(progress));
@@ -222,6 +233,11 @@ fn run(request: Request, events: &SyncSender<Event>, cancelled: &Arc<AtomicBool>
                 return;
             }
         };
+        warnings.extend(
+            scan_warnings
+                .into_iter()
+                .map(|line| format!("{}: {line}", system.name)),
+        );
         let fingerprints = if let Some(provider) = provider
             .as_ref()
             .filter(|provider| provider.health.usable())
@@ -285,6 +301,7 @@ fn run(request: Request, events: &SyncSender<Event>, cancelled: &Arc<AtomicBool>
                 prepared,
                 providers,
                 progress,
+                warnings,
             });
         }
         Ok(Some(_)) | Ok(None) => {
@@ -625,6 +642,101 @@ mod tests {
                 .games,
             1
         );
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    /// A corrupt archive and an inner archive member cost either source the
+    /// same thing, and nothing more: Gamelist and Artwork Pack preparation
+    /// stage the same healthy summary, and the ZIP cause travels with the
+    /// staged group instead of failing it, so nothing later can replace it
+    /// with a message about a cache that was never prepared.
+    #[test]
+    fn both_sources_stage_the_same_healthy_tree_and_carry_the_zip_cause() {
+        let root = temp("zip-problems-both-sources");
+        let docs = root.join("docs");
+        let artwork = docs.join("SuperGrafx/Artwork");
+        let games = root.join("games");
+        std::fs::create_dir_all(&artwork).unwrap();
+        std::fs::create_dir_all(&games).unwrap();
+        std::fs::write(
+            artwork.join("manifest.tsv"),
+            "#key\tstyle\tss_system_id\nKnown\tbox-2D\t105\n",
+        )
+        .unwrap();
+        std::fs::write(
+            artwork.join("index.tsv"),
+            "#name\tcrc\tsize\tkey\nKnown\t\t\tKnown\n",
+        )
+        .unwrap();
+        std::fs::write(
+            artwork.join("gameinfo.tsv"),
+            "#key\tname\tyear\tgenre\tdeveloper\tplayers\n",
+        )
+        .unwrap();
+        std::fs::write(artwork.join("Known.jpg"), b"jpeg").unwrap();
+        std::fs::write(games.join("Known.pce"), b"rom").unwrap();
+        let outer = games.join("Outer.zip");
+        std::fs::write(
+            &outer,
+            crate::zip::tests_archive(&["Inside.pce", "inner.zip"], false),
+        )
+        .unwrap();
+        let broken = games.join("Broken.zip");
+        std::fs::write(&broken, b"broken archive").unwrap();
+
+        let mut summaries = Vec::new();
+        for (target, cache_dir) in [
+            (Target::Gamelist, root.join("gamelist-cache")),
+            (
+                Target::ArtworkPack {
+                    docs_root: docs.clone(),
+                },
+                root.join("pack-cache"),
+            ),
+        ] {
+            let mut job = start(Request {
+                target,
+                systems: vec![System {
+                    id: "SuperGrafx".to_string(),
+                    name: "SuperGrafx".to_string(),
+                    config: config(&games, "pce"),
+                }],
+                names: DisplayNames::default(),
+                synopsis_language: Some("en".to_string()),
+                cache_dir,
+                require_usable_provider: true,
+            })
+            .unwrap();
+            let Event::Staged {
+                prepared, warnings, ..
+            } = terminal(&mut job)
+            else {
+                panic!("a ZIP problem must not fail the source group");
+            };
+            assert_eq!(warnings.len(), 2, "{warnings:?}");
+            assert!(
+                warnings.contains(&format!(
+                    "SuperGrafx: {}: 1 member skipped: nested archive member is unsupported by MiSTer Main",
+                    outer.display()
+                )),
+                "{warnings:?}"
+            );
+            let broken_prefix = format!("SuperGrafx: {}: skipped: ", broken.display());
+            assert!(
+                warnings
+                    .iter()
+                    .any(|line| line.starts_with(&broken_prefix)
+                        && line.contains("end-of-directory")),
+                "{warnings:?}"
+            );
+            let (caches, _) = prepared.install().unwrap();
+            let summary = caches[0]
+                .cache
+                .summary(&crate::browse::Place::Dir(games.clone()));
+            assert_eq!(summary.games, 2, "Known.pce and Outer.zip/Inside.pce");
+            summaries.push(summary);
+        }
+        assert_eq!(summaries[0], summaries[1]);
         std::fs::remove_dir_all(root).ok();
     }
 
