@@ -966,13 +966,28 @@ fn status(code: u16) -> Result<()> {
 /// Interpret a body-level ScreenScraper error before losing its more precise
 /// login diagnosis to a generic HTTP status. In particular, the service can
 /// use HTTP 403 for either developer credentials or an end-user login and
-/// states which pair failed only in its plain-text response.
+/// states which pair failed only in its plain-text response. HTTP 400 no
+/// longer stops the run, so a documented service-wide text under it (a
+/// closure, an exhausted allowance, a refused client) keeps the text's
+/// classification instead of passing as one game's rejection.
 fn response_status(response: &HttpResponse) -> Result<()> {
     if let Ok(text) = std::str::from_utf8(&response.body) {
         let trimmed = text.trim_start_matches('\u{feff}').trim_start();
-        if trimmed.to_lowercase().starts_with("erreur") {
-            let body_error = text_error(trimmed);
-            if response.status < 300 || body_error.kind == ErrorKind::Authentication {
+        let lower = trimmed.to_lowercase();
+        if lower.starts_with("erreur") {
+            let documented = documented_error(&lower, trimmed);
+            let service_wide_under_400 = response.status == 400
+                && documented.as_ref().is_some_and(|error| {
+                    matches!(
+                        error.kind,
+                        ErrorKind::Configuration | ErrorKind::DailyQuota | ErrorKind::Unavailable
+                    )
+                });
+            let body_error = documented.unwrap_or_else(|| unrecognised_error(trimmed));
+            if response.status < 300
+                || body_error.kind == ErrorKind::Authentication
+                || service_wide_under_400
+            {
                 crate::note(match authentication_source(trimmed) {
                     Some(AuthenticationSource::Application) => {
                         "scraper      ScreenScraper rejected application authentication"
@@ -1020,73 +1035,99 @@ fn content_is_xml(response: &HttpResponse) -> Result<()> {
 }
 
 fn text_error(text: &str) -> Error {
-    let lower = text.to_lowercase();
-    if lower.starts_with("erreur") {
-        if lower.contains("développeur") || lower.contains("developpeur") {
-            return Error::new(
-                ErrorKind::Authentication,
-                "this Degauss build could not authenticate with ScreenScraper",
-            );
-        }
-        if lower.contains("utilisateur") {
-            return Error::new(
-                ErrorKind::Authentication,
-                "ScreenScraper rejected the login. Check the username and password",
-            );
-        }
-        if lower.contains("quota") {
-            return Error::new(
-                ErrorKind::DailyQuota,
-                "the ScreenScraper allowance is exhausted",
-            );
-        }
-        if lower.contains("introuv") || lower.contains("non trouv") {
-            return Error::new(ErrorKind::NotFound, "no matching game");
-        }
-        // The documented closure texts ("API fermé pour les non membres",
-        // "API totalement fermé") describe the service, not the request.
-        if lower.contains("ferm") {
-            return Error::new(
-                ErrorKind::Unavailable,
-                "ScreenScraper reported that the API is closed",
-            );
-        }
-        if lower.contains("blacklist") {
-            return Error::new(
-                ErrorKind::Configuration,
-                "this Degauss scraper client was refused by ScreenScraper",
-            );
-        }
-        // The documented HTTP 400 texts (a rom name carrying a path or not
-        // conforming, a malformed hash field, a call missing its fields)
-        // concern this one request: the run continues with the next game.
-        if lower.contains("fichier rom")
-            || lower.contains("l'url")
-            || lower.contains("crc, md5 ou sha1")
-        {
-            return Error::new(
-                ErrorKind::InvalidRequest,
-                format!("ScreenScraper rejected this request: {}", excerpt(text)),
-            );
-        }
-        // An error text ScreenScraper has not documented cannot be tied to
-        // the one request, so it stops the run as before rather than
-        // costing one lookup per remaining game; the log keeps the
-        // server's words so the cause stays diagnosable.
+    if text.trim().is_empty() {
         return Error::new(
             ErrorKind::Unavailable,
-            format!(
-                "ScreenScraper returned an unrecognised error response: {}",
-                excerpt(text)
-            ),
+            "ScreenScraper returned an empty response",
         );
     }
+    let lower = text.to_lowercase();
+    if lower.starts_with("erreur") {
+        return documented_error(&lower, text).unwrap_or_else(|| unrecognised_error(text));
+    }
     // Neither XML nor an error text is not an answer to the one request
-    // (an empty body, a maintenance notice), so the run stops.
+    // (a maintenance notice), so the run stops.
     Error::new(
         ErrorKind::Unavailable,
         format!(
             "ScreenScraper returned a response that was not XML: {}",
+            excerpt(text)
+        ),
+    )
+}
+
+/// The classification of an error text ScreenScraper documents; `lower`
+/// is `text` lowercased. None for a text the service has not documented.
+fn documented_error(lower: &str, text: &str) -> Option<Error> {
+    if lower.contains("développeur") || lower.contains("developpeur") {
+        return Some(Error::new(
+            ErrorKind::Authentication,
+            "this Degauss build could not authenticate with ScreenScraper",
+        ));
+    }
+    if lower.contains("utilisateur") {
+        return Some(Error::new(
+            ErrorKind::Authentication,
+            "ScreenScraper rejected the login. Check the username and password",
+        ));
+    }
+    if lower.contains("quota") {
+        return Some(Error::new(
+            ErrorKind::DailyQuota,
+            "the ScreenScraper allowance is exhausted",
+        ));
+    }
+    if lower.contains("introuv") || lower.contains("non trouv") {
+        return Some(Error::new(ErrorKind::NotFound, "no matching game"));
+    }
+    // The documented closure texts ("API fermé pour les non membres",
+    // "API totalement fermé") describe the service, not the request.
+    if lower.contains("ferm") {
+        return Some(Error::new(
+            ErrorKind::Unavailable,
+            "ScreenScraper reported that the API is closed",
+        ));
+    }
+    // The blacklist text is the one HTTP 426 carries: the same kind, so a
+    // refused client stops the run wherever the text arrives.
+    if lower.contains("blacklist") {
+        return Some(Error::new(
+            ErrorKind::Configuration,
+            "this Degauss scraper client was refused by ScreenScraper",
+        ));
+    }
+    // Degauss sends the same request fields for every game, so the
+    // documented texts for a call missing its fields concern the run.
+    if lower.contains("l'url") {
+        return Some(Error::new(
+            ErrorKind::Configuration,
+            format!(
+                "ScreenScraper rejected the request address, which is the same for every game: {}",
+                excerpt(text)
+            ),
+        ));
+    }
+    // The documented HTTP 400 texts for a rom name carrying a path or not
+    // conforming and for a malformed hash field concern this one request:
+    // the run continues with the next game.
+    if lower.contains("fichier rom") || lower.contains("crc, md5 ou sha1") {
+        return Some(Error::new(
+            ErrorKind::InvalidRequest,
+            format!("ScreenScraper rejected this request: {}", excerpt(text)),
+        ));
+    }
+    None
+}
+
+/// An error text ScreenScraper has not documented cannot be tied to the
+/// one request, so it stops the run as before rather than costing one
+/// lookup per remaining game; the log keeps the server's words so the
+/// cause stays diagnosable.
+fn unrecognised_error(text: &str) -> Error {
+    Error::new(
+        ErrorKind::Unavailable,
+        format!(
+            "ScreenScraper returned an unrecognised error response: {}",
             excerpt(text)
         ),
     )
@@ -2319,11 +2360,15 @@ mod tests {
 
     #[test]
     fn only_documented_per_request_error_texts_leave_the_run_going() {
-        // The documented 400 texts concern one request and must not stop
-        // the batch by masquerading as an outage. A closure, a refused
-        // client, a text ScreenScraper has not documented, or a body that
-        // is no answer at all concerns every remaining game and stops the
-        // run instead of costing one lookup per game.
+        // The documented 400 texts about one rom name or hash field concern
+        // one request and must not stop the batch by masquerading as an
+        // outage. The documented 400 texts about the request address concern
+        // every game, because Degauss sends the same fields for each. A
+        // closure, a refused client (the blacklist text is classified like
+        // HTTP 426, which carries it), a text ScreenScraper has not
+        // documented, or a body that is no answer at all concerns every
+        // remaining game and stops the run instead of costing one lookup
+        // per game.
         for (body, kind) in [
             (
                 "Erreur : API fermé pour les non membres ou les membres inactifs",
@@ -2348,9 +2393,9 @@ mod tests {
             ),
             (
                 "Erreur : Il manque des champs obligatoires dans l'url",
-                ErrorKind::InvalidRequest,
+                ErrorKind::Configuration,
             ),
-            ("Erreur : problème avec l'url", ErrorKind::InvalidRequest),
+            ("Erreur : problème avec l'url", ErrorKind::Configuration),
             (
                 "Erreur : Problème dans la recherche",
                 ErrorKind::Unavailable,
@@ -2404,6 +2449,16 @@ mod tests {
         .unwrap_err();
         assert_eq!(rejected.kind, ErrorKind::InvalidRequest);
         assert!(!rejected.retryable());
+        let incomplete = client(HttpResponse {
+            status: 200,
+            content_type: Some("text/plain".into()),
+            body: "Erreur : Il manque des champs obligatoires dans l'url"
+                .as_bytes()
+                .to_vec(),
+        })
+        .by_name(3, "Game")
+        .unwrap_err();
+        assert_eq!(incomplete.kind, ErrorKind::Configuration);
         let undocumented = client(HttpResponse {
             status: 200,
             content_type: Some("text/plain".into()),
@@ -2478,6 +2533,58 @@ mod tests {
     }
 
     #[test]
+    fn a_service_wide_text_under_http_400_still_stops_the_run() {
+        // HTTP 400 is one game's rejection, so it no longer stops the run.
+        // A documented closure, allowance or refused-client text delivered
+        // with that status would otherwise cost one lookup per remaining
+        // game; a per-request text, a not-found text, or one ScreenScraper
+        // has not documented keeps the status's per-game meaning.
+        for (body, kind) in [
+            ("Erreur : API totalement fermé", ErrorKind::Unavailable),
+            (
+                "Erreur : Le logiciel de scrape utilisé a été blacklisté",
+                ErrorKind::Configuration,
+            ),
+            (
+                "Erreur : Votre quota de scrape est dépassé pour aujourd'hui !",
+                ErrorKind::DailyQuota,
+            ),
+            (
+                "Erreur : Il manque des champs obligatoires dans l'url",
+                ErrorKind::Configuration,
+            ),
+            (
+                "Erreur : Problème dans le nom du fichier rom",
+                ErrorKind::InvalidRequest,
+            ),
+            ("Erreur : Jeu non trouvée !", ErrorKind::InvalidRequest),
+            (
+                "Erreur : Problème dans la recherche",
+                ErrorKind::InvalidRequest,
+            ),
+        ] {
+            let error = client(HttpResponse {
+                status: 400,
+                content_type: Some("text/plain".into()),
+                body: body.as_bytes().to_vec(),
+            })
+            .by_name(3, "Game")
+            .unwrap_err();
+            assert_eq!(error.kind, kind, "{body}");
+        }
+        // Other statuses keep their own meaning over a body text, so a
+        // rate limit stays retryable whatever the text says.
+        let limited = client(HttpResponse {
+            status: 429,
+            content_type: Some("text/plain".into()),
+            body: "Erreur : API totalement fermé".as_bytes().to_vec(),
+        })
+        .by_name(3, "Game")
+        .unwrap_err();
+        assert_eq!(limited.kind, ErrorKind::RateLimited);
+    }
+
+    #[test]
     fn an_undocumented_error_text_is_kept_in_the_diagnosis_but_bounded() {
         // The interface shows only the kind's fixed message, so the log
         // detail is the one place the server's actual words can be seen,
@@ -2512,6 +2619,13 @@ mod tests {
             "{}",
             plain.detail
         );
+        // An empty answer has no words to keep: the detail names the
+        // emptiness instead of ending in a bare colon.
+        for empty in ["", " \n\t"] {
+            let error = text_error(empty);
+            assert_eq!(error.kind, ErrorKind::Unavailable);
+            assert_eq!(error.detail, "ScreenScraper returned an empty response");
+        }
         // The cut falls exactly at the limit, with the whitespace between
         // words counted once, so a documented text is never shortened.
         let exact = format!("{} {}", "a".repeat(60), "b".repeat(59));

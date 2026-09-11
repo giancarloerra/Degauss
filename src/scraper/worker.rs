@@ -93,9 +93,10 @@ pub struct Progress {
     /// Every game the run attempted and could not resolve, with the
     /// reason as the report shows it: "no match", "no searchable title",
     /// the number of matches ("3 matches"), "no image", or the message of
-    /// a failed lookup, download or write. A game whose image failed but
-    /// whose metadata was written is listed with the image error; games
-    /// not reached before a failure or cancellation are not listed. The
+    /// a failed lookup, download or write. A game whose image failed or
+    /// had none at ScreenScraper is listed even when its metadata was
+    /// written; games not reached before a failure or cancellation are
+    /// not listed. The
     /// report names them after an unattended batch. Carried only by the
     /// terminal event; progress snapshots leave it empty.
     pub unresolved_games: Vec<UnresolvedGame>,
@@ -1507,6 +1508,9 @@ fn limited_lookup(
     if let Ok(response) = &result {
         reservation.finish(response.server_miss);
     }
+    // ScreenScraper counts a KO only for a negative answer (rom or game
+    // not found), so a rejected or unreadable lookup releases its slot
+    // uncounted.
     result
 }
 
@@ -1624,9 +1628,9 @@ enum WorkerMessage {
     Done,
 }
 
-/// Report reasons for a game counted as not found: ScreenScraper answered
-/// the lookup with no exact match, or no title search was sent because
-/// nothing remained to search for.
+// Report reasons for a game counted as not found: ScreenScraper answered
+// the lookup with no exact match, or no title search was sent because
+// nothing remained to search for.
 const NO_MATCH: &str = "no match";
 const NO_SEARCHABLE_TITLE: &str = "no searchable title";
 
@@ -2012,6 +2016,9 @@ fn stage(
             "the match has no selected ScreenScraper image",
         );
         progress.no_media += 1;
+        // Listed whether or not its metadata is written, so the report's
+        // rows agree with the "no image" count.
+        progress.unresolved(target_label, "no image");
     }
     // Metadata the planning step found complete is left alone even though
     // the match carries some: an image-only entry writes only its image.
@@ -2019,9 +2026,6 @@ fn stage(
     if prepared.media.is_none() && !metadata_selected {
         if !media_failed {
             progress.unchanged += 1;
-        }
-        if prepared.no_media {
-            progress.unresolved(target_label, "no image");
         }
         return Ok(None);
     }
@@ -3399,7 +3403,7 @@ mod tests {
             (
                 200,
                 "text/plain",
-                "Erreur : Il manque des champs obligatoires dans l'url",
+                "Erreur dans le nom du fichier rom : celui-ci contient un chemin d'accés",
                 true,
             ),
         ] {
@@ -3664,6 +3668,43 @@ mod tests {
                     reason: "ScreenScraper is unavailable".into(),
                 }],
                 "{name}"
+            );
+            let _ = std::fs::remove_dir_all(root);
+        }
+    }
+
+    #[test]
+    fn an_incomplete_request_address_stops_the_batch() {
+        // Degauss sends the same request fields for every game, so the
+        // documented text for a call missing its fields would recur for
+        // each remaining game; it stops the run like a refused client,
+        // whether it arrives in a 2xx body or with HTTP 400.
+        for status in [200, 400] {
+            let root = temp(&format!("incomplete-address-{status}"));
+            std::fs::write(root.join("Rejected.rom"), b"rejected").unwrap();
+            std::fs::write(root.join("Zebra.rom"), b"found").unwrap();
+            let Event::Failed { error, progress } = finish(
+                start_with_transport(
+                    request(&root, settings(ImagePolicy::Off)),
+                    Arc::new(RejectingMock {
+                        status,
+                        content_type: "text/plain",
+                        body: "Erreur : Il manque des champs obligatoires dans l'url",
+                        at_title_search: false,
+                    }),
+                )
+                .unwrap(),
+            ) else {
+                panic!("an incomplete request address (HTTP {status}) was treated as one game's problem");
+            };
+            assert_eq!(error.kind, ErrorKind::Configuration, "HTTP {status}");
+            assert_eq!(
+                progress.unresolved_games,
+                vec![UnresolvedGame {
+                    label: "Nintendo: Rejected".into(),
+                    reason: "Scraper setup needs attention".into(),
+                }],
+                "HTTP {status}"
             );
             let _ = std::fs::remove_dir_all(root);
         }
@@ -4358,9 +4399,13 @@ mod tests {
         assert_eq!(progress.updated, 1);
         assert_eq!(progress.no_media, 1);
         assert_eq!(progress.failed, 0);
-        assert!(
-            progress.unresolved_games.is_empty(),
-            "a game whose metadata was written is not reported as unresolved"
+        assert_eq!(
+            progress.unresolved_games,
+            vec![UnresolvedGame {
+                label: "Nintendo: Game".into(),
+                reason: "no image".into(),
+            }],
+            "the requested image was not resolved, so the report names the game as its count does"
         );
         assert_eq!(mock.media_calls.load(Ordering::Relaxed), 1);
         let text = std::fs::read_to_string(root.join("gamelist.xml")).unwrap();

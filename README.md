@@ -966,14 +966,17 @@ artwork or metadata, set the corresponding Images or Metadata policy to
 Folder, system and all-systems scrapes never stop for a match choice. Missing
 and ambiguous ScreenScraper matches are counted, skipped without changes, and the remaining
 games continue. A request ScreenScraper rejects for one game (HTTP 400 or one
-of its documented bad-request texts) or a match response it serves unreadable
-is counted as failed for that game and the run continues; a file whose name
-leaves nothing to search for once its extension and dump tags are removed is
-counted as missing with the reason "no searchable title" and no title search
-is sent, although a hash lookup is still made for a file that can be hashed.
-A network failure, a rejected login, a rate limit, a service outage, an error
-text Degauss does not recognise or an answer that is neither XML nor an error
-text still stops the run. Unsupported systems are also skipped and counted.
+of its documented texts about that game's rom name or hash fields) or a match
+response it serves unreadable is counted as failed for that game and the run
+continues; a file whose name leaves nothing to search for once its extension
+and dump tags are removed is counted as missing with the reason "no
+searchable title" and no title search is sent, although a hash lookup is
+still made for a file that can be hashed. A network failure, a rejected
+login, a rate limit, a service outage, a refused client, a request address
+reported as incomplete (Degauss sends the same fields for every game), an
+error text Degauss does not recognise or an answer that is neither XML nor an
+error text still stops the run. Unsupported systems are also skipped and
+counted.
 If two systems use the same folder but require different ScreenScraper
 platform IDs, the all-systems scrape skips that shared target; a per-system
 scrape remains available.
@@ -992,9 +995,10 @@ throughput and the last problem. After the run, the report continues with
 every game the run attempted and could not resolve, one row per game with
 its reason: "no match", "no searchable title", the number of matches (for
 example "3 matches"), "no image", or the message of a failed lookup,
-download or gamelist write. A game whose image failed but whose metadata
-was written is listed with the image error. Games not reached before a
-failure or cancellation are not listed. A missing, ambiguous or rejected
+download or gamelist write. A game whose image failed, or whose match has
+no image, is listed even when its metadata was written, so the rows agree
+with the "no image" count. Games not reached before a failure or
+cancellation are not listed. A missing, ambiguous or rejected
 game can then be found and scraped individually. **B Overview** returns
 without cancelling.
 The report retains
