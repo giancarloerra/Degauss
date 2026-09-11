@@ -180,17 +180,16 @@ its short, flat Actions menu for images and views.
 **Game** contains Game Information, separate **Random Game** and **Random
 Favourite** actions, and adding/removing favourites. Adding one opens a
 chooser that lists **Main Favourites** (the `_@Favorites` folder itself)
-first, then the folders already inside it, then **New folder**. Choosing Main
-Favourites writes the `.mgl`, or the link for a core file, directly under
-`_@Favorites`; no folder of that name is made, and a folder somebody has
-really called Main Favourites is listed after it as a folder of its own. On a
-card that had no `_@Favorites` when Degauss started, the first favourite
-makes it, but the Favourites shelf is only listed after **Rebuild All System
-Lists**; until then every favourite kept or dropped says so. Both random
-choices use the currently open folder and **Random Game Behaviour**.
-**Find** contains jump, search and hiding controls; **Library** contains
-scraping, core choice, data source and rebuilding; **Appearance** contains
-view and image controls.
+first, then the folders already inside it, then **New folder...**. Choosing
+Main Favourites writes the `.mgl`, or the link for a core file, directly
+under `_@Favorites`; no folder of that name is made, and a folder somebody
+has really called Main Favourites is listed after it as a folder of its own.
+On a card that had no `_@Favorites` when Degauss started, the first
+favourite makes it, but the Favourites shelf is only listed after **Rebuild
+All System Lists**. Both random choices use the currently open folder and
+**Random Game Behaviour**. **Find** contains jump, search and hiding
+controls; **Library** contains scraping, core choice, data source and
+rebuilding; **Appearance** contains view and image controls.
 
 A gamepad needs no extra setup and browsing and settings need no keyboard. While Degauss
 owns the screen, MiSTer sends the d-pad as arrows and the face buttons as

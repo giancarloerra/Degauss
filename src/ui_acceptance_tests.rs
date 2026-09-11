@@ -985,7 +985,8 @@ fn run_main_favourites_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
 
     // The first favourite makes the root and goes straight into it. With
     // no Favorites system discovered there is no shelf to refresh, and
-    // that is said rather than left for the Categories screen to show.
+    // the save stays press-free, the way a folder save on such a card has
+    // always been: the shelf is listed by the next full rebuild.
     let root_favorite = favorites_root.join("First Game.mgl");
     select_row_named(&mut app, "First Game");
     accept_game_action(&mut app, ADD_FAVORITE);
@@ -999,13 +1000,10 @@ fn run_main_favourites_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
         .here
         .iter()
         .any(|row| row.name == "First Game" && row.favorite));
-    let unlisted = app
-        .message
-        .clone()
-        .expect("an unlisted shelf is said after the write");
     assert!(
-        unlisted.contains("not listed until Rebuild All System Lists"),
-        "the way to list the shelf is named: {unlisted}"
+        app.message.is_none(),
+        "a save with no shelf to refresh costs no press: {:?}",
+        app.message
     );
     assert!(
         crate::cache::load_system(&app.cache_dir, "Favorites").is_none(),
@@ -1015,10 +1013,7 @@ fn run_main_favourites_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
         .systems
         .iter()
         .all(|system| system.def.id != "Favorites"));
-    app.handle(Action::Quit);
-    assert!(app.message.is_none());
-    // The existing removal takes it away again and says the same, since
-    // the shelf is still unlisted.
+    // The existing removal takes it away again, as press-free as before.
     select_row_named(&mut app, "First Game");
     accept_game_action(&mut app, REMOVE_FAVORITE);
     assert_eq!(app.screen, Screen::Browse);
@@ -1028,12 +1023,7 @@ fn run_main_favourites_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
         favorites_root.is_dir(),
         "removing a favourite keeps the root"
     );
-    assert!(app
-        .message
-        .as_deref()
-        .is_some_and(|message| message.contains("not listed until Rebuild All System Lists")));
-    app.handle(Action::Quit);
-    assert!(app.message.is_none());
+    assert!(app.message.is_none(), "{:?}", app.message);
 
     // The master shelf, declared the way the shipped table declares it and
     // pointed at this card's root: what the full rebuild discovers now the

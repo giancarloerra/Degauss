@@ -4737,26 +4737,14 @@ impl App {
     /// exact moment that folder moved, and a shelf that shows yesterday's
     /// favourites until a full rebuild is asked for is wrong. The folder is
     /// small, so reading this one system again costs nothing worth noticing.
-    ///
-    /// A card that had no favourites folder when Degauss started has no
-    /// Favorites system: discovery skips a system whose folder is absent,
-    /// and only the full rebuild discovers again. The favourite just
-    /// written is what made the folder, so there is no cache to refresh
-    /// and the shelf stays unlisted until that rebuild. Said, rather than
-    /// left to be found out from the Categories screen.
     fn refresh_favorites_system(&mut self) -> Option<String> {
-        let Some(system) = self
+        let id = self
             .all_systems
             .iter()
-            .find(|system| is_favorites(system.category()))
-        else {
-            return Some(
-                "Favourites: its folder was not on the card when Degauss started, \
-                 so the shelf is not listed until Rebuild All System Lists"
-                    .to_string(),
-            );
-        };
-        let id = system.def.id.clone();
+            .find(|system| is_favorites(system.category()))?
+            .def
+            .id
+            .clone();
         self.refresh_system(&id)
     }
 
