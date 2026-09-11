@@ -317,6 +317,19 @@ fn fixture_directory() -> PathBuf {
 }
 
 fn unopened_fixture_app(root: &Path, window: Rc<MinimalSoftwareWindow>, settings: Settings) -> App {
+    unopened_fixture_app_with_systems(root, window, settings, &["NES"], "games/NES")
+}
+
+/// The given systems, in that order, all over one games directory under
+/// the root: the members of a shared source group share their folder on
+/// the card.
+fn unopened_fixture_app_with_systems(
+    root: &Path,
+    window: Rc<MinimalSoftwareWindow>,
+    settings: Settings,
+    ids: &[&str],
+    games: &str,
+) -> App {
     let mut config = Config::parse("[app]", &root.join("degauss.toml")).unwrap();
     config.menu_root = root.to_string_lossy().into_owned();
     config.game_roots = vec![root.join("games").to_string_lossy().into_owned()];
@@ -325,18 +338,30 @@ fn unopened_fixture_app(root: &Path, window: Rc<MinimalSoftwareWindow>, settings
         Path::new("systems.toml"),
     )
     .unwrap();
-    let def = table.into_iter().find(|system| system.id == "NES").unwrap();
+    let defs: Vec<_> = ids
+        .iter()
+        .map(|id| {
+            table
+                .iter()
+                .find(|system| system.id == *id)
+                .unwrap()
+                .clone()
+        })
+        .collect();
     let loaded = Loaded {
         config,
         settings,
         settings_path: root.join("settings.toml"),
-        systems: vec![FoundSystem {
-            def: def.clone(),
-            paths: vec![root.join("games/NES")],
-            logo_dir: None,
-            menu_folder: None,
-        }],
-        table: vec![def],
+        systems: defs
+            .iter()
+            .map(|def| FoundSystem {
+                def: def.clone(),
+                paths: vec![root.join(games)],
+                logo_dir: None,
+                menu_folder: None,
+            })
+            .collect(),
+        table: defs,
         names: Default::default(),
         logo_dir: None,
         themes_dir: root.join("themes"),
@@ -3293,16 +3318,32 @@ fn run_degraded_pack_acknowledgement_flow(root: &Path, window: Rc<MinimalSoftwar
     app.ui.hide().unwrap();
     drop(app);
 
-    // 3. Back from a game: a new process, the same pack, no warning.
+    // 3. Back from a game: a new process, the same pack, no warning. The
+    // log still gets the whole diagnostic, every part of it, acknowledged
+    // or not: the screen is quiet, the record is not.
     let app = start(window.clone());
     assert!(
         app.message.is_none(),
         "an unchanged degraded pack must not warn again after a restart: {:?}",
         app.message
     );
+    let provider = app.artwork_provider.as_ref().unwrap();
+    assert_eq!(provider.health, ProviderHealth::Degraded);
     assert_eq!(
-        app.artwork_provider.as_ref().unwrap().health,
-        ProviderHealth::Degraded
+        provider.diagnostics.len(),
+        2,
+        "a missing image and a missing table are two diagnostics: {:?}",
+        provider.diagnostics
+    );
+    let logged = std::fs::read_to_string(crate::LOG_PATH).unwrap();
+    let expected = format!(
+        "artwork pack Degraded at {}: {}",
+        docs.display(),
+        provider.diagnostics.join("; ")
+    );
+    assert!(
+        logged.contains(&expected),
+        "an acknowledged warning must still be written to the log in full: {expected:?}"
     );
     assert_eq!(std::fs::read_to_string(&warnings).unwrap(), no_index_file);
     app.ui.hide().unwrap();
@@ -3434,6 +3475,89 @@ fn run_degraded_pack_acknowledgement_flow(root: &Path, window: Rc<MinimalSoftwar
         acknowledged_file,
         "actionable failures leave the incomplete-pack acknowledgement alone"
     );
+
+    // Two systems, one source: NeoGeo and NeoGeoMVS read the same NEOGEO
+    // pack, so its warning is one warning. Dismissed from one member, it
+    // must stay dismissed for the other in the next process.
+    let shared = root.join("shared-group");
+    let shared_games = shared.join("games/NEOGEO");
+    let shared_docs = shared.join("docs");
+    let shared_artwork = shared_docs.join("NEOGEO/Artwork");
+    for directory in [&shared_games, &shared_artwork] {
+        std::fs::create_dir_all(directory).unwrap();
+    }
+    std::fs::write(shared_games.join("One.neo"), b"first rom").unwrap();
+    std::fs::write(shared_games.join("Two.neo"), b"second rom").unwrap();
+    std::fs::write(
+        shared_artwork.join("manifest.tsv"),
+        "#key\tstyle\tss_system_id\nOne\tbox-2D\t142\nTwo\tbox-2D\t142\n",
+    )
+    .unwrap();
+    std::fs::write(
+        shared_artwork.join("index.tsv"),
+        "#name\tcrc\tsize\tkey\nOne\t\t\tOne\nTwo\t\t\tTwo\n",
+    )
+    .unwrap();
+    std::fs::write(
+        shared_artwork.join("gameinfo.tsv"),
+        "#key\tname\tyear\tgenre\tdeveloper\tplayers\nOne\tPack One\t1990\tAction\tStudio\t1\nTwo\tPack Two\t1991\tPuzzle\tStudio\t2\n",
+    )
+    .unwrap();
+    std::fs::write(shared_artwork.join("One.jpg"), crate::covers::JPEG_16).unwrap();
+    let shared_settings_path = shared.join("settings.toml");
+    let shared_warnings = crate::pack_health::path_beside(&shared_settings_path);
+    let mut shared_settings = Settings::default();
+    shared_settings
+        .artwork_pack_roots
+        .insert("NeoGeo".into(), shared_docs.to_string_lossy().into_owned());
+    shared_settings.save(&shared_settings_path).unwrap();
+    let start_member = |window: Rc<MinimalSoftwareWindow>, index: usize, id: &str| {
+        let mut app = unopened_fixture_app_with_systems(
+            &shared,
+            window,
+            Settings::load(&shared_settings_path).unwrap(),
+            &["NeoGeoMVS", "NeoGeo"],
+            "games/NEOGEO",
+        );
+        app.open_system_by_index(index);
+        assert!(app.source_resolution.is_none() && app.source_job.is_none());
+        assert!(app.build.is_none());
+        assert_eq!(app.open_system.as_deref(), Some(id), "{:?}", app.message);
+        assert_eq!(
+            app.artwork_provider.as_ref().unwrap().health,
+            ProviderHealth::Degraded,
+            "{:?}",
+            app.artwork_provider.as_ref().unwrap().diagnostics
+        );
+        app.leave_splash();
+        app
+    };
+    let mut app = start_member(window.clone(), 0, "NeoGeoMVS");
+    assert!(message_contains(&app, "is incomplete"), "{:?}", app.message);
+    let group_digest = app.artwork_provider.as_ref().unwrap().health_digest();
+    app.handle(Action::Accept);
+    assert!(app.message.is_none(), "{:?}", app.message);
+    let group_seen = Acknowledgements::load(&shared_warnings).unwrap();
+    assert!(
+        group_seen.acknowledged("NeoGeo", &group_digest),
+        "the acknowledgement is written under the source group, not the system"
+    );
+    assert!(!group_seen.acknowledged("NeoGeoMVS", &group_digest));
+    app.ui.hide().unwrap();
+    drop(app);
+    let app = start_member(window.clone(), 1, "NeoGeo");
+    assert_eq!(
+        app.artwork_provider.as_ref().unwrap().health_digest(),
+        group_digest,
+        "both members of the group read the same pack as the same snapshot"
+    );
+    assert!(
+        app.message.is_none(),
+        "a warning dismissed from the other member of the group must not come back: {:?}",
+        app.message
+    );
+    app.ui.hide().unwrap();
+    drop(app);
 }
 
 pub(super) fn run_ui_acceptance_flow(window: Rc<MinimalSoftwareWindow>) {
