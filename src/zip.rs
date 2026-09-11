@@ -1716,11 +1716,12 @@ mod tests {
 
     /// Main finds a member by its raw central-directory bytes, so only raw
     /// bytes that are valid UTF-8 can travel through the cache and the MGL
-    /// unchanged. A legacy encoding is left out and named as such, never
-    /// decoded into a name that would not resolve; the Unicode Path field is
-    /// checked and used only to say which member that was; a name the writer
-    /// flagged as UTF-8 that is not gets its own reason; and none of this
-    /// fails the archive or produces a replacement character.
+    /// unchanged, and they do whether or not the writer set the UTF-8 flag.
+    /// A legacy encoding is left out and named as such, never decoded into
+    /// a name that would not resolve; the Unicode Path field is checked and
+    /// used only to say which member that was; a name the writer flagged as
+    /// UTF-8 that is not gets its own reason; and none of this fails the
+    /// archive or produces a replacement character.
     #[test]
     fn filename_encodings_are_honoured_without_lossy_decoding() {
         assert_eq!(crc32(b"123456789"), 0xcbf4_3926, "CRC-32 check value");
@@ -1786,13 +1787,19 @@ mod tests {
                 method: 0,
                 extra: &[0x75, 0x70, 2, 0, 1, 0],
             },
+            TestEntry {
+                name: "six\u{e9}.neo".as_bytes(),
+                flags: 0,
+                method: 0,
+                extra: &[],
+            },
         ];
         let path = write_fixture("encodings", &tests_archive_entries(&entries, false));
         let contents = contents(&path).unwrap();
         assert_eq!(
             names_of(&contents),
-            ["\u{e4}.neo", "plain.neo", "kept.neo"],
-            "the flagged UTF-8 name is byte-exact, and a Unicode Path field a valid name does not need never removes it"
+            ["\u{e4}.neo", "plain.neo", "kept.neo", "six\u{e9}.neo"],
+            "a flagged UTF-8 name and an unflagged one that is valid UTF-8 are both byte-exact, since Main compares the raw bytes either way, and a Unicode Path field a valid name does not need never removes it"
         );
         assert_eq!(
             skipped_of(&contents),
