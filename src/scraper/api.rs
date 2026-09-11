@@ -973,14 +973,17 @@ fn response_status(response: &HttpResponse) -> Result<()> {
         if trimmed.to_lowercase().starts_with("erreur") {
             let body_error = text_error(trimmed);
             if response.status < 300 || body_error.kind == ErrorKind::Authentication {
-                crate::note(match authentication_source(trimmed) {
+                crate::note(&match authentication_source(trimmed) {
                     Some(AuthenticationSource::Application) => {
-                        "scraper      ScreenScraper rejected application authentication"
+                        "scraper      ScreenScraper rejected application authentication".to_string()
                     }
                     Some(AuthenticationSource::Account) => {
-                        "scraper      ScreenScraper rejected account authentication"
+                        "scraper      ScreenScraper rejected account authentication".to_string()
                     }
-                    None => "scraper      ScreenScraper returned a body-level error",
+                    None => format!(
+                        "scraper      ScreenScraper returned a body-level error: {}",
+                        excerpt(trimmed)
+                    ),
                 });
                 return Err(body_error);
             }
@@ -990,13 +993,20 @@ fn response_status(response: &HttpResponse) -> Result<()> {
 }
 
 fn content_is_xml(response: &HttpResponse) -> Result<()> {
-    if response.content_type.as_deref().is_some_and(|value| {
+    // ScreenScraper answers with XML or a plain-text error. Any other
+    // content type (a maintenance or intermediary page) is not an answer
+    // to the one request, so it counts as the service being unavailable
+    // rather than as one game's unreadable match.
+    if let Some(content_type) = response.content_type.as_deref().filter(|value| {
         let value = value.to_ascii_lowercase();
         !value.contains("xml") && !value.starts_with("text/plain")
     }) {
         return Err(Error::new(
-            ErrorKind::MalformedResponse,
-            "ScreenScraper returned a non-XML response",
+            ErrorKind::Unavailable,
+            format!(
+                "ScreenScraper returned a non-XML response (content type {})",
+                excerpt(content_type)
+            ),
         ));
     }
     let text = std::str::from_utf8(&response.body).map_err(|_| {
@@ -1033,6 +1043,21 @@ fn text_error(text: &str) -> Error {
                 "the ScreenScraper allowance is exhausted",
             );
         }
+        // The documented 431 text ("Faite du tri dans vos fichiers roms et
+        // repassez demain !") names no quota.
+        if lower.contains("tri dans vos fichiers") {
+            return Error::new(
+                ErrorKind::FailedQuota,
+                "the daily failed-search allowance is exhausted",
+            );
+        }
+        // Every documented 429 text, French or English, names threads.
+        if lower.contains("threads") {
+            return Error::new(
+                ErrorKind::RateLimited,
+                "ScreenScraper's concurrent or per-minute limit was reached",
+            );
+        }
         if lower.contains("introuv") || lower.contains("non trouv") {
             return Error::new(ErrorKind::NotFound, "no matching game");
         }
@@ -1051,16 +1076,37 @@ fn text_error(text: &str) -> Error {
             );
         }
         // Any other error text on a successful status answers this one
-        // request: the run continues with the next game.
+        // request: the run continues with the next game, and the log keeps
+        // the server's words so an undocumented refusal stays diagnosable.
         return Error::new(
             ErrorKind::InvalidRequest,
-            "ScreenScraper returned an error response for this request",
+            format!(
+                "ScreenScraper returned an error response for this request: {}",
+                excerpt(text)
+            ),
         );
     }
     Error::new(
         ErrorKind::MalformedResponse,
-        "ScreenScraper returned a response that was not XML",
+        format!(
+            "ScreenScraper returned a response that was not XML: {}",
+            excerpt(text)
+        ),
     )
+}
+
+/// One bounded line of a server text for the log. The documented error
+/// texts are short sentences; a longer body is cut so a page cannot
+/// flood the log.
+fn excerpt(text: &str) -> String {
+    const LIMIT: usize = 120;
+    let line = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    if line.chars().count() <= LIMIT {
+        line
+    } else {
+        let cut: String = line.chars().take(LIMIT).collect();
+        format!("{cut}...")
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2062,6 +2108,9 @@ mod tests {
 
     #[test]
     fn content_type_cannot_turn_html_into_xml() {
+        // An HTML page is never parsed as the account answer, and it is
+        // reported as the service being unavailable rather than as a
+        // malformed answer to one request.
         let error = client(HttpResponse {
             status: 200,
             content_type: Some("text/html".into()),
@@ -2069,7 +2118,7 @@ mod tests {
         })
         .account()
         .unwrap_err();
-        assert_eq!(error.kind, ErrorKind::MalformedResponse);
+        assert_eq!(error.kind, ErrorKind::Unavailable);
     }
 
     #[test]
@@ -2299,6 +2348,26 @@ mod tests {
                 "Erreur : Votre quota de scrape est dépassé pour aujourd'hui !",
                 ErrorKind::DailyQuota,
             ),
+            (
+                "Erreur : Faite du tri dans vos fichiers roms et repassez demain !",
+                ErrorKind::FailedQuota,
+            ),
+            (
+                "Erreur : Le nombre de threads autorisé pour le membre est atteint",
+                ErrorKind::RateLimited,
+            ),
+            (
+                "Erreur : Le nombre de threads par minute autorisé pour le membre est atteint",
+                ErrorKind::RateLimited,
+            ),
+            (
+                "Erreur : The maximum threads allowed to leecher users is already used",
+                ErrorKind::RateLimited,
+            ),
+            (
+                "Erreur : The maximum threads is already used",
+                ErrorKind::RateLimited,
+            ),
             ("Erreur : Jeu non trouvée !", ErrorKind::NotFound),
             (
                 "<html>not an error text</html>",
@@ -2326,6 +2395,67 @@ mod tests {
         .by_name(3, "Game")
         .unwrap_err();
         assert_eq!(closed.kind, ErrorKind::Unavailable);
+        // A limit or an exhausted failed-search allowance delivered as a
+        // 2xx text must keep its meaning: the batch stops instead of
+        // repeating a lookup the server is refusing for every game.
+        let limited = client(HttpResponse {
+            status: 200,
+            content_type: Some("text/plain".into()),
+            body: "Erreur : The maximum threads is already used"
+                .as_bytes()
+                .to_vec(),
+        })
+        .by_name(3, "Game")
+        .unwrap_err();
+        assert_eq!(limited.kind, ErrorKind::RateLimited);
+        let exhausted = client(HttpResponse {
+            status: 200,
+            content_type: Some("text/plain".into()),
+            body: "Erreur : Faite du tri dans vos fichiers roms et repassez demain !"
+                .as_bytes()
+                .to_vec(),
+        })
+        .by_name(3, "Game")
+        .unwrap_err();
+        assert_eq!(exhausted.kind, ErrorKind::FailedQuota);
+        // A page that is not XML at all is not a match response for one
+        // game: it stops the run like any other outage.
+        let page = client(HttpResponse {
+            status: 200,
+            content_type: Some("text/html; charset=utf-8".into()),
+            body: b"<html>maintenance</html>".to_vec(),
+        })
+        .by_name(3, "Game")
+        .unwrap_err();
+        assert_eq!(page.kind, ErrorKind::Unavailable);
+        assert!(page.detail.contains("text/html"), "{}", page.detail);
+    }
+
+    #[test]
+    fn an_undocumented_error_text_is_kept_in_the_diagnosis_but_bounded() {
+        // A per-game refusal no longer stops the run, so the only place the
+        // server's actual words can be seen is the log detail. A long body
+        // is cut so a page cannot flood it.
+        let error = text_error("Erreur : Problème   dans\nla recherche");
+        assert_eq!(error.kind, ErrorKind::InvalidRequest);
+        assert!(
+            error
+                .detail
+                .ends_with(": Erreur : Problème dans la recherche"),
+            "{}",
+            error.detail
+        );
+        let long = format!("Erreur : {}", "é".repeat(500));
+        let detail = text_error(&long).detail;
+        assert!(detail.ends_with("..."), "{detail}");
+        assert!(detail.chars().count() < 200, "{detail}");
+        let plain = text_error("Service paused for maintenance");
+        assert_eq!(plain.kind, ErrorKind::MalformedResponse);
+        assert!(
+            plain.detail.ends_with(": Service paused for maintenance"),
+            "{}",
+            plain.detail
+        );
     }
 
     #[test]

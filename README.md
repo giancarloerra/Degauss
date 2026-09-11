@@ -969,8 +969,8 @@ games continue. A request ScreenScraper rejects for one game or a match
 response it serves unreadable is counted as failed for that game and the run
 continues; a file whose name leaves nothing to search for once its extension
 and dump tags are removed is counted as a missing match without a request. A
-network failure, a rejected login, a rate limit or a service outage still
-stops the run. Unsupported systems are also
+network failure, a rejected login, a rate limit, a service outage or an answer
+that is not XML at all still stops the run. Unsupported systems are also
 skipped and counted. If two
 systems use the same folder but require different ScreenScraper platform IDs,
 the all-systems scrape skips that shared target; a per-system scrape remains

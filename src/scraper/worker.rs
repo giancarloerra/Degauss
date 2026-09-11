@@ -1788,7 +1788,15 @@ fn prepare(
                                 Err(error) => (None, Some(error), false),
                             },
                             Err(error) if error.kind == ErrorKind::NotFound => (None, None, true),
-                            Err(error) if error.kind == ErrorKind::MalformedResponse => {
+                            // An unusable or refused image answer is that
+                            // image's problem; the match already fetched
+                            // still provides the metadata.
+                            Err(error)
+                                if matches!(
+                                    error.kind,
+                                    ErrorKind::MalformedResponse | ErrorKind::InvalidRequest
+                                ) =>
+                            {
                                 (None, Some(error), false)
                             }
                             Err(error) => return Err(error),
@@ -2282,8 +2290,9 @@ fn safe_component(value: &str) -> String {
 
 /// Whether one game's failure stops the batch. A request ScreenScraper
 /// rejected, or a match response it served unreadable, concerns that game
-/// alone; transport, login, quota and service outages concern every game
-/// still queued.
+/// alone; transport, login, rate limit, quota and service outages (which
+/// include an answer that is not XML at all) concern every game still
+/// queued.
 fn fatal_for_run(error: &Error) -> bool {
     !matches!(
         error.kind,
@@ -2549,6 +2558,37 @@ mod tests {
                 std::slice::from_ref(&ordinary),
                 &HashSet::new()
             ));
+        }
+    }
+
+    #[test]
+    fn only_one_games_failures_leave_the_rest_of_the_batch_running() {
+        // The issue keeps transport, login, rate limit, allowance and service
+        // failures fatal to the batch; a game the server refused, could not
+        // find or answered unreadably, and a local file problem, concern
+        // that game alone. Dropping a kind from either side changes which
+        // games a run reaches.
+        for (kind, fatal) in [
+            (ErrorKind::Configuration, true),
+            (ErrorKind::Authentication, true),
+            (ErrorKind::Unavailable, true),
+            (ErrorKind::RateLimited, true),
+            (ErrorKind::DailyQuota, true),
+            (ErrorKind::FailedQuota, true),
+            (ErrorKind::Transport, true),
+            (ErrorKind::Timeout, true),
+            (ErrorKind::Server, true),
+            (ErrorKind::Cancelled, true),
+            (ErrorKind::Local, false),
+            (ErrorKind::NotFound, false),
+            (ErrorKind::InvalidRequest, false),
+            (ErrorKind::MalformedResponse, false),
+        ] {
+            assert_eq!(
+                fatal_for_run(&Error::new(kind, "detail")),
+                fatal,
+                "{kind:?}"
+            );
         }
     }
 
@@ -3453,6 +3493,72 @@ mod tests {
     }
 
     #[test]
+    fn a_login_rejection_during_the_batch_still_stops_it() {
+        // A login ScreenScraper rejects mid-run answers every remaining
+        // game the same way: the run stops with the login error instead of
+        // failing each queued game one request at a time.
+        let root = temp("login-rejected-mid-batch");
+        std::fs::write(root.join("Rejected.rom"), b"rejected").unwrap();
+        std::fs::write(root.join("Zebra.rom"), b"found").unwrap();
+        let Event::Failed { error, progress } = finish(
+            start_with_transport(
+                request(&root, settings(ImagePolicy::Off)),
+                Arc::new(RejectingMock {
+                    status: 403,
+                    content_type: "text/plain",
+                    body: "Erreur de login : Vérifier vos identifiants développeur !",
+                    at_title_search: false,
+                }),
+            )
+            .unwrap(),
+        ) else {
+            panic!("a rejected login was treated as one game's problem");
+        };
+        assert_eq!(error.kind, ErrorKind::Authentication);
+        assert_eq!(
+            progress.unresolved_games,
+            vec![UnresolvedGame {
+                label: "Nintendo: Rejected".into(),
+                reason: "ScreenScraper rejected the login".into(),
+            }]
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn a_page_instead_of_xml_still_stops_the_batch() {
+        // An HTML answer is not a match response for one game but a sign
+        // that the service is not answering; walking the queue would spend
+        // one request per remaining game for nothing.
+        let root = temp("html-page-mid-batch");
+        std::fs::write(root.join("Rejected.rom"), b"rejected").unwrap();
+        std::fs::write(root.join("Zebra.rom"), b"found").unwrap();
+        let Event::Failed { error, progress } = finish(
+            start_with_transport(
+                request(&root, settings(ImagePolicy::Off)),
+                Arc::new(RejectingMock {
+                    status: 200,
+                    content_type: "text/html",
+                    body: "<html><body>Maintenance</body></html>",
+                    at_title_search: false,
+                }),
+            )
+            .unwrap(),
+        ) else {
+            panic!("a non-XML page was treated as one game's problem");
+        };
+        assert_eq!(error.kind, ErrorKind::Unavailable);
+        assert_eq!(
+            progress.unresolved_games,
+            vec![UnresolvedGame {
+                label: "Nintendo: Rejected".into(),
+                reason: "ScreenScraper is unavailable".into(),
+            }]
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn a_documented_closure_text_still_stops_the_batch() {
         let root = temp("closure-text");
         std::fs::write(root.join("Rejected.rom"), b"rejected").unwrap();
@@ -4045,6 +4151,75 @@ mod tests {
         assert_eq!(progress.updated, 0);
         assert_eq!(mock.media_calls.load(Ordering::Relaxed), 2);
         assert!(!root.join("gamelist.xml").exists());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// The lookup succeeds; the image address is then refused with HTTP 400.
+    struct RejectedMediaMock(Mock);
+
+    impl Transport for RejectedMediaMock {
+        fn get(
+            &self,
+            endpoint: &str,
+            params: &[(String, String)],
+            limit: u64,
+        ) -> Result<HttpResponse> {
+            self.0.get(endpoint, params, limit)
+        }
+
+        fn get_media(
+            &self,
+            _url: &str,
+            _limit: u64,
+            _max_kib_per_second: Option<u64>,
+        ) -> Result<HttpResponse> {
+            self.0.media_calls.fetch_add(1, Ordering::Relaxed);
+            Ok(HttpResponse {
+                status: 400,
+                content_type: Some("text/plain".into()),
+                body: b"Erreur : Probleme dans l'adresse".to_vec(),
+            })
+        }
+    }
+
+    #[test]
+    fn a_rejected_image_address_still_writes_the_fetched_metadata() {
+        // Image and metadata completeness are independent: a refused image
+        // address is reported with the game, but the match already fetched
+        // is not thrown away, so the next run does not repeat the lookup
+        // for metadata it already had.
+        let root = temp("rejected-image-address");
+        std::fs::write(root.join("Game.rom"), b"game").unwrap();
+        let mock = Arc::new(RejectedMediaMock(Mock {
+            api_calls: AtomicUsize::new(0),
+            media_calls: AtomicUsize::new(0),
+            quota_empty: false,
+            bad_media: false,
+            no_media: false,
+        }));
+        let event = finish(
+            start_with_transport(
+                request(&root, settings(ImagePolicy::MissingOnly)),
+                mock.clone(),
+            )
+            .unwrap(),
+        );
+        let Event::Finished(progress) = event else {
+            panic!("a rejected image address stopped the run");
+        };
+        assert_eq!(progress.updated, 1);
+        assert_eq!(progress.failed, 1);
+        assert_eq!(
+            progress.unresolved_games,
+            vec![UnresolvedGame {
+                label: "Nintendo: Game".into(),
+                reason: "ScreenScraper rejected this request".into(),
+            }]
+        );
+        assert_eq!(mock.0.media_calls.load(Ordering::Relaxed), 1);
+        let text = std::fs::read_to_string(root.join("gamelist.xml")).unwrap();
+        assert!(text.contains("<name>Remote Game</name>"));
+        assert!(!text.contains("<image>"));
         let _ = std::fs::remove_dir_all(root);
     }
 
