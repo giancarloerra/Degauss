@@ -7673,9 +7673,6 @@ impl App {
                 let at = step(self.details_style.index(), delta, DetailsStyle::ALL.len());
                 self.details_style = DetailsStyle::ALL[at];
                 self.settings.details_style = Some(self.details_style.setting().to_string());
-                // Only the shape of the browse screen changes; the picture
-                // and the lists are what they were.
-                self.apply_geometry();
             }
             OptionId::ShowStats => {
                 self.show_stats = !self.show_stats;
