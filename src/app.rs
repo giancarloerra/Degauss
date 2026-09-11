@@ -5430,9 +5430,15 @@ impl App {
             match crate::pack_health::Acknowledgements::load(&path) {
                 Ok(seen) if seen.acknowledged(&group, &digest) => return,
                 // A file that could not be parsed read as empty; the press
-                // that dismisses this warning writes over it, so say why.
+                // that dismisses this warning writes over it, so say why,
+                // here and in the log. The read before that save is the same
+                // file and is not logged again.
                 Ok(seen) => {
                     if let Some(error) = seen.malformed() {
+                        crate::note(&format!(
+                            "artwork pack warnings: {} is malformed: {error}",
+                            path.display()
+                        ));
                         message = message.map(|message| {
                             format!(
                                 "{message}\n\nThe list of dismissed warnings could not be read and will be replaced: {error}"

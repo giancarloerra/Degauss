@@ -44,25 +44,21 @@ pub struct Acknowledgements {
 
 impl Acknowledgements {
     /// Read it back. A missing file is the normal case, and one that cannot
-    /// be parsed is written to the log and read as empty with the reason
-    /// kept in `malformed`, so the warning is shown once more, saying why,
-    /// and the next acknowledgement replaces it. A file that is there but
-    /// cannot be read is an error: saving over it would throw away every
-    /// acknowledgement it holds.
+    /// be parsed is read as empty with the reason kept in `malformed`, so
+    /// the warning is shown once more, saying why, and the next
+    /// acknowledgement replaces it. Nothing is logged here: the file is read
+    /// again before that save, and the caller that puts the warning up
+    /// writes the reason down once. A file that is there but cannot be read
+    /// is an error: saving over it would throw away every acknowledgement
+    /// it holds.
     pub fn load(path: &Path) -> Result<Self> {
         match std::fs::read_to_string(path) {
             Ok(text) => match toml::from_str(&text) {
                 Ok(parsed) => Ok(parsed),
-                Err(error) => {
-                    crate::note(&format!(
-                        "artwork pack warnings: {} is malformed: {error}",
-                        path.display()
-                    ));
-                    Ok(Self {
-                        malformed: Some(error.to_string()),
-                        ..Self::default()
-                    })
-                }
+                Err(error) => Ok(Self {
+                    malformed: Some(error.to_string()),
+                    ..Self::default()
+                }),
             },
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Self::default()),
             Err(error) => Err(DegaussError::io(
