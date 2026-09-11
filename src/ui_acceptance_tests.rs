@@ -3018,6 +3018,7 @@ fn run_fresh_auto_pack_index_flow(root: &Path, window: Rc<MinimalSoftwareWindow>
         "{message}"
     );
     assert_complete(&app, 3);
+    capture_live_if_requested(&mut app, "source-auto-pack-rebuilt-with-problems");
     std::fs::remove_file(&broken).unwrap();
     app.message = None;
     let before_failure = cache_snapshot(&app.cache_dir);
@@ -3296,6 +3297,7 @@ fn run_auto_source_choice_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
         )),
         "{message}"
     );
+    capture_live_if_requested(&mut app, "source-switch-finished-with-problems");
     assert_eq!(
         crate::artwork_source::mode(&app.settings, "NES"),
         Mode::ArtworkPack
