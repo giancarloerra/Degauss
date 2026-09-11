@@ -359,7 +359,7 @@ fn run(
             "index publication panicked; inspect the cache before retrying",
         ))
     });
-    let warnings = match publication {
+    let mut warnings = match publication {
         Ok(warnings) => warnings,
         Err(error) => {
             if let Some(previous) = previous {
@@ -370,6 +370,10 @@ fn run(
             return Err(error);
         }
     };
+    // A ROM-set catalogue that could not be read left its sets in the
+    // cache as archives and folders. The build finished, so it is said
+    // with the build's report rather than only in the log.
+    warnings.extend(catalogue_warnings(&library));
     Ok(Some(Ready {
         summary: Some(summary),
         folders: cache.folders.len(),
@@ -377,6 +381,16 @@ fn run(
         cache: request.retain_cache.then_some(cache),
         warnings,
     }))
+}
+
+/// One line per Neo Geo catalogue the library could not read, in the
+/// form the audit prints.
+pub fn catalogue_warnings(library: &Library) -> Vec<String> {
+    library
+        .catalogue_problems()
+        .into_iter()
+        .map(|(path, reason)| format!("{}: {reason}", path.display()))
+        .collect()
 }
 
 #[cfg(test)]
@@ -488,6 +502,45 @@ mod tests {
             .is_none());
         assert_eq!(request.index.systems["Test"].games, 9);
         assert!(!request.cache_dir.exists());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn a_broken_neo_geo_catalogue_is_reported_with_the_build_and_the_rest_is_published() {
+        // A broken romsets.xml turns every set into an archive or folder
+        // row. The rows are still written, since the .neo files beside
+        // them are fine, but a card owner looking at the finished build
+        // must see why the sets are missing, not a clean "Complete".
+        let (root, mut request) = fixture();
+        let games = root.join("games");
+        std::fs::remove_file(games.join("One.rom")).unwrap();
+        std::fs::write(games.join("romsets.xml"), "<romsets><romset name=\"mslug\"").unwrap();
+        std::fs::write(games.join("mslug.zip"), crate::zip::tests_fixture()).unwrap();
+        std::fs::write(games.join("Blazing Star.neo"), b"neo").unwrap();
+        request.config.rbf = "_Console/NeoGeo".into();
+        request.config.extensions = vec!["neo".into(), "mgl".into()];
+        let dir = request.cache_dir.clone();
+        let mut job = start(request).unwrap();
+        let Event::Ready {
+            summary: Some(summary),
+            warnings,
+            ..
+        } = terminal(&mut job)
+        else {
+            panic!("a broken catalogue must not fail the build");
+        };
+        // The .neo on the card is a game, and the set ZIP fell back to an
+        // archive that was entered: the two .neo members inside the
+        // fixture archive are counted, which a recognised set's never are.
+        assert_eq!(summary.games, 3);
+        assert!(crate::cache::load_system(&dir, "Test").is_some());
+        assert_eq!(warnings.len(), 1, "got: {warnings:?}");
+        let expected = games.join("romsets.xml").display().to_string();
+        assert!(
+            warnings[0].starts_with(&expected) && warnings[0].contains("malformed"),
+            "the file and the reason are named: {}",
+            warnings[0]
+        );
         std::fs::remove_dir_all(root).unwrap();
     }
 

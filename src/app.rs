@@ -4769,11 +4769,12 @@ impl App {
         next_index
             .systems
             .insert(id.to_string(), cache.summary(&browse::start_for(&config)));
-        let warnings =
+        let mut warnings =
             match crate::cache::save_system_with_index(&self.cache_dir, id, &cache, &next_index) {
                 Ok(warnings) => warnings,
                 Err(error) => return Some(format!("{name}: {error}")),
             };
+        warnings.extend(crate::index_job::catalogue_warnings(&library));
         self.index = Some(next_index);
         self.apply_index();
         let error = (!warnings.is_empty()).then(|| warnings.join("\n"));

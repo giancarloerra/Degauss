@@ -1006,15 +1006,16 @@ impl Library {
             }
             let path = item.path();
             let is_dir = entry_is_dir_checked(&item)?;
-            let extension = extension_of(&path);
+            // A folder left out of the listing leads nowhere whatever it holds.
+            let excluded = is_dir && (self.is_art_directory(&path, root) || self.is_skipped(&name));
             // A Neo Geo ROM set is a game whether zipped or not, so a folder
             // of nothing but sets is worth walking into; one the catalogue
             // hides would never be shown and is not.
             if let Some((catalogues, catalogue)) = &neogeo {
                 let candidate = if is_dir {
-                    !(self.is_art_directory(&path, root) || self.is_skipped(&name))
+                    !excluded
                 } else {
-                    extension == "zip" && !self.config.accepts(&path)
+                    extension_of(&path) == "zip" && !self.config.accepts(&path)
                 };
                 if candidate {
                     match catalogues.classify(catalogue, &path, &name, is_dir) {
@@ -1025,10 +1026,7 @@ impl Library {
                 }
             }
             if is_dir {
-                if self.is_art_directory(&path, root)
-                    || self.is_skipped(&name)
-                    || self.shows_nothing(&path, root, depth + 1)?
-                {
+                if excluded || self.shows_nothing(&path, root, depth + 1)? {
                     continue;
                 }
                 return Ok(false);
@@ -1036,6 +1034,7 @@ impl Library {
             // A file only counts if it is one this system can open, an
             // archive that opens like a folder, or a listing naming titles
             // held inside a disk image.
+            let extension = extension_of(&path);
             if extension == "zip" || (self.config.accepts(&path) && !is_not_a_game(&name)) {
                 return Ok(false);
             }
@@ -1329,10 +1328,21 @@ impl Library {
         // A ROM-set catalogue that could not be read is the same kind of
         // failure as a folder that could not be: its sets are then listed
         // as plain archives and folders, and the owner should know why.
-        if let Some(neogeo) = &self.neogeo {
-            audit.unreadable.extend(neogeo.problems());
-        }
+        audit.unreadable.extend(self.catalogue_problems());
         audit
+    }
+
+    /// Every Neo Geo ROM-set catalogue met so far that could not be read,
+    /// with the reason. The sets it would have named were listed as plain
+    /// archives and folders instead, which is why an index built from this
+    /// library reports them: on the screen a broken catalogue would
+    /// otherwise look like a folder of archives. Empty for every other
+    /// system.
+    pub fn catalogue_problems(&self) -> Vec<(PathBuf, String)> {
+        self.neogeo
+            .as_ref()
+            .map(crate::neogeo::Catalogues::problems)
+            .unwrap_or_default()
     }
 
     /// Whether each declared folder carries a metadata overlay, for the
@@ -2616,5 +2626,46 @@ mod tests {
         }
         assert_eq!(listings[0], listings[1]);
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn each_declared_folder_answers_to_its_own_catalogue() {
+        // A library split over the card and a USB stick or a network share
+        // is declared as two folders, and Main reads the romsets.xml of
+        // whichever one it is scanning. A set under the second folder must
+        // be named by the second catalogue, and one catalogue's entries
+        // must not make games out of the other folder's archives.
+        let first = temp("neogeo-root-a");
+        let second = temp("neogeo-root-b");
+        std::fs::write(first.join("romsets.xml"), ROMSETS).unwrap();
+        std::fs::write(
+            second.join("romsets.xml"),
+            r#"<romsets><romset name="lastblad" altname="The Last Blade"/></romsets>"#,
+        )
+        .unwrap();
+        std::fs::write(first.join("mslug.zip"), b"zip").unwrap();
+        std::fs::write(first.join("lastblad.zip"), crate::zip::tests_fixture()).unwrap();
+        std::fs::create_dir_all(second.join("Fighting/lastblad")).unwrap();
+        std::fs::write(second.join("Fighting/lastblad/prom"), b"p").unwrap();
+        std::fs::write(second.join("mslug.zip"), crate::zip::tests_fixture()).unwrap();
+
+        let mut config = neogeo_system(&first);
+        config.extra_paths = vec![second.to_string_lossy().into_owned()];
+        let library = Library::open(&config).unwrap();
+        let (a, stats) = library.list(&Place::Dir(first.clone()), false).unwrap();
+        assert_eq!(names_of(&a), vec!["lastblad", "Metal Slug"]);
+        assert_eq!((stats.games, stats.folders), (1, 1));
+        let (b, stats) = library.list(&Place::Dir(second.clone()), false).unwrap();
+        assert_eq!(names_of(&b), vec!["Fighting", "mslug"]);
+        assert_eq!((stats.games, stats.folders), (0, 2));
+        // A sub-folder of the second root answers to the second root's
+        // catalogue, not the first's.
+        let (fighting, stats) = library
+            .list(&Place::Dir(second.join("Fighting")), false)
+            .unwrap();
+        assert_eq!(names_of(&fighting), vec!["The Last Blade"]);
+        assert_eq!((stats.games, stats.folders), (1, 0));
+        std::fs::remove_dir_all(&first).ok();
+        std::fs::remove_dir_all(&second).ok();
     }
 }
