@@ -460,6 +460,48 @@ behaviour. ZIP64 is supported
 within the documented bounds. Metadata for a multi-game archive identifies each game
 by its full archive/member path; single-game archives retain legacy archive-level
 metadata. See [ZIP libraries](docs/zip-libraries.md) for details and launch limits.
+The one exception is a Neo Geo ROM set, described next: a ZIP the Neo Geo
+catalogue names is one game and is never opened.
+
+### Neo Geo ROM sets
+
+The Neo Geo core takes three kinds of game, and Degauss lists all three the
+way the stock menu does. A `.neo` file and an `.mgl` shortcut are games as
+before. A zipped ROM set such as `mslug.zip` and an unzipped one, a folder
+such as `mslug/` holding the raw ROM components, are recognised through
+`romsets.xml`, the catalogue shipped with the core and placed at the top of
+`games/NEOGEO`. A sub-folder carrying its own `romsets.xml` uses that one
+instead of the top-level catalogue, exactly as MiSTer Main does; any other
+sub-folder answers to the top-level catalogue. This applies to Neo Geo and
+Neo Geo MVS, which share the folder and the catalogue.
+
+A ZIP or folder whose name matches a catalogue entry, ignoring case and
+including every comma-separated alias the entry lists, is one game. It shows
+the catalogue's `altname`; a later alias of a multi-name entry shows as
+`Title (alias)`, as Main prints it; an entry with no `altname` keeps the name
+on the card. An entry carrying the `hide` attribute is not listed at all, and
+a folder holding only hidden sets counts as empty. A folder carrying its own
+`romset.xml` is a game titled by that file, whatever the catalogue says. A ZIP
+or folder the catalogue does not name keeps the generic behaviour: the ZIP
+opens as an archive and the folder as a folder, so organisational folders
+stay navigable and a Neo Geo folder can still hold ordinary sub-folders of
+`.neo` files.
+
+Nothing inside a set is read to list it. A recognised ZIP is never opened or
+extracted, a set folder is never entered, and its components are not counted
+or checked: Main validates and loads the selected set at launch, and the MGL
+Degauss writes names the complete ZIP or folder path in the same file slot a
+`.neo` uses. A favourite made from a set is the ordinary MGL MiSTer's own
+favourites script would write, with the absolute set path, so it works from
+the stock menu as well. Gamelist entries bind to a set by its path
+(`./mslug.zip` or `./mslug`), and an Artwork Pack matches it by set name.
+
+A catalogue or `romset.xml` that cannot be read is reported by `--report` and
+`--audit` as an unreadable file, and in the log. Its scope then holds no
+recognised sets, so ZIPs and folders there fall back to archives and folders,
+while every `.neo` and `.mgl` stays listed. After upgrading from a release
+that listed sets as folders, rebuild the Neo Geo system list once to pick the
+sets up; nothing else needs resetting.
 
 ### RetroAchievements and Unstable cores
 
@@ -778,9 +820,14 @@ is only what `<path>` points at:
   <image>./media/screenshots/zool2.png</image>
 </game>
 
-<!-- Neo Geo: the games are folders of ROMs -->
+<!-- Neo Geo: a ROM set is a folder of ROMs, or a ZIP of them -->
 <game>
   <path>./mslug</path>
+  <name>Metal Slug</name>
+  <screenshot>./media/screenshot/mslug.png</screenshot>
+</game>
+<game>
+  <path>./mslug.zip</path>
   <name>Metal Slug</name>
   <screenshot>./media/screenshot/mslug.png</screenshot>
 </game>
@@ -873,7 +920,10 @@ rows, system logos and category images remain independent of this choice.
 MRA entries are matched by their `<setname>`, including MGLs that point to an
 MRA. Large embedded hexadecimal ROM, patch and cheat payloads do not impose a
 whole-file size limit on that lookup. XML identity metadata remains bounded to
-1 MiB; this is separate from artwork image limits.
+1 MiB; this is separate from artwork image limits. Neo Geo ROM sets, zipped
+or unzipped, are matched by their set name (the ZIP's stem or the folder's
+name), which the Neo Geo database indexes with every catalogue alias; a set is
+never opened or hashed for the lookup.
 
 Selecting an Artwork Pack never edits or removes the existing gamelist or its
 media. Choose **Gamelist** again to restore them immediately. While Artwork
