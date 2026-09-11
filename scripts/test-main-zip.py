@@ -176,6 +176,30 @@ def main():
             if run_reader(main_reader, archive).returncode == 0:
                 raise SystemExit(f"Main iterator incorrectly accepted {name}")
             print(f"PASS {name}: unsupported member skipped and refused for launch, Main rejects")
+        # A masked local header (general-purpose bit 13) is refused by Main
+        # when it reads the central directory, before any member is looked
+        # up, so the whole archive has to fail in Degauss as well.
+        masked = bytearray(original)
+        masked[central + 9] = 32
+        archive = work / "masked.zip"
+        archive.write_bytes(masked)
+        if run_reader(degauss_reader, archive).returncode == 0:
+            raise SystemExit("Degauss listed an archive with a masked local header")
+        if run_reader(main_reader, archive).returncode != 1:
+            raise SystemExit("Pinned Main no longer refuses a masked local header at open; review the member-level skip")
+        print("PASS masked.zip: refused whole by both readers")
+        # A member disk number that is the ZIP64 sentinel is refused by Main
+        # as multi-disk without resolving the ZIP64 value, so Degauss never
+        # resolves it either and fails the archive.
+        sentinel = bytearray(original)
+        sentinel[central + 34:central + 36] = b"\xff\xff"
+        archive = work / "sentinel-disk.zip"
+        archive.write_bytes(sentinel)
+        if run_reader(degauss_reader, archive).returncode == 0:
+            raise SystemExit("Degauss listed an archive with a ZIP64 sentinel member disk number")
+        if run_reader(main_reader, archive).returncode != 1:
+            raise SystemExit("Pinned Main no longer refuses a sentinel member disk number at open; review the disk check")
+        print("PASS sentinel-disk.zip: refused whole by both readers")
         comment_archive = work / "comment-signature.zip"
         with zipfile.ZipFile(comment_archive, "w") as writer:
             writer.writestr("Root.rom", files["Root.rom"])

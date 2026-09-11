@@ -2999,6 +2999,25 @@ fn run_fresh_auto_pack_index_flow(root: &Path, window: Rc<MinimalSoftwareWindow>
     assert_operation_controls(&mut app, false, "A Details   B Back");
     capture_live_if_requested(&mut app, "source-auto-pack-finished-with-problems");
     app.handle(Action::Quit);
+    // Rebuild This System List on a Pack-prepared system runs through the
+    // source worker rather than the index terminal, and has to say the
+    // same thing: the archive and its reason, not a pointer to the log.
+    app.message = None;
+    app.rebuild_open_system_resolved();
+    app.finish_background_work_for_headless();
+    let message = app.message.clone().unwrap_or_default();
+    assert!(
+        message.starts_with("NES list rebuilt with problems:\n"),
+        "{message}"
+    );
+    assert!(
+        message.contains(&format!(
+            "NES: {}: skipped: zip archive is malformed: no valid end-of-directory record",
+            broken.display()
+        )),
+        "{message}"
+    );
+    assert_complete(&app, 3);
     std::fs::remove_file(&broken).unwrap();
     app.message = None;
     let before_failure = cache_snapshot(&app.cache_dir);

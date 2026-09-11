@@ -6727,24 +6727,21 @@ impl App {
                         self.system_cache = Some(cache);
                         self.library = None;
                     }
-                    let name = current
-                        .and_then(|at| self.all_systems.get(at))
-                        .map(|system| {
-                            crate::note(&format!(
-                                "index {}: {:.3}s, {} games",
-                                system.def.id,
-                                elapsed.as_secs_f64(),
-                                summary.map_or(0, |value| value.games)
-                            ));
-                            system.name().to_string()
-                        });
+                    let system = current.and_then(|at| self.all_systems.get(at));
+                    if let Some(system) = system {
+                        crate::note(&format!(
+                            "index {}: {:.3}s, {} games",
+                            system.def.id,
+                            elapsed.as_secs_f64(),
+                            summary.map_or(0, |value| value.games)
+                        ));
+                    }
                     // Named the way a failure is, so the report says which
                     // system's archive was left out.
+                    let name =
+                        system.map_or("System".to_string(), |system| system.name().to_string());
                     for warning in warnings {
-                        self.build_warning(match &name {
-                            Some(name) => format!("{name}: {warning}"),
-                            None => warning,
-                        });
+                        self.build_warning(format!("{name}: {warning}"));
                     }
                 }
                 crate::index_job::Event::Cancelled { index } => {
@@ -9873,10 +9870,10 @@ impl App {
             SourceRecoveryPurpose::OpenSystem => {
                 self.open_system_now();
                 if !self.source_recovery_warnings.is_empty() {
-                    self.message = Some(
-                        "Artwork Pack cache refreshed with problems.\nSee degauss.log for details."
-                            .to_string(),
-                    );
+                    self.message = Some(format!(
+                        "Artwork Pack cache refreshed with problems:\n{}",
+                        self.source_recovery_warnings.join("\n")
+                    ));
                 } else if self.message.is_none() {
                     self.message = Some("Artwork Pack cache refreshed.".to_string());
                 }
@@ -9892,10 +9889,15 @@ impl App {
                             .map(|system| system.name().to_string())
                     })
                     .unwrap_or_else(|| "System".to_string());
+                // The archive and reason are on screen, as they are for a
+                // full rebuild and for a system that is not Pack-prepared.
                 self.message = Some(if self.source_recovery_warnings.is_empty() {
                     format!("{name} list rebuilt.")
                 } else {
-                    format!("{name} list rebuilt with problems.\nSee degauss.log for details.")
+                    format!(
+                        "{name} list rebuilt with problems:\n{}",
+                        self.source_recovery_warnings.join("\n")
+                    )
                 });
             }
             SourceRecoveryPurpose::FullBuild => {

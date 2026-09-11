@@ -493,8 +493,7 @@ impl Library {
             }
             Place::Archive(archive) => self.list_archive(archive, "", show_empty)?,
             Place::ArchiveDirectory { archive, prefix } => {
-                let (rows, stats, _) = self.list_archive(archive, prefix, show_empty)?;
-                (rows, stats, Vec::new())
+                self.list_archive(archive, prefix, show_empty)?
             }
             Place::Listing { install, file } => {
                 let (rows, stats) = self.list_listing(install, file)?;
@@ -639,8 +638,8 @@ impl Library {
 
     /// The launchable files inside an archive. Only names are read; nothing
     /// is unpacked, because unpacking is the loader's job at launch time.
-    /// Members the reader left out are not rows; opening the archive itself
-    /// writes each of them to the log with its reason and hands them back.
+    /// Members the reader left out are not rows; the archive itself hands
+    /// them back for the index or audit that reads it to report once.
     fn list_archive(
         &self,
         archive: &Path,
@@ -650,14 +649,6 @@ impl Library {
         let contents = self.archive_cache.borrow_mut().read(archive)?;
         let entries = &contents.entries;
         let skipped = if prefix.is_empty() {
-            for skipped in &contents.skipped {
-                crate::note(&format!(
-                    "zip          {}: member {}: {}",
-                    archive.display(),
-                    skipped.member,
-                    skipped.reason
-                ));
-            }
             contents.skipped.clone()
         } else {
             Vec::new()
@@ -1257,11 +1248,17 @@ impl Library {
                 Ok((mut rows, _, skipped)) => {
                     // A member left out of an archive is a place that could
                     // not be read, for the same reason a folder that errors
-                    // is: it is what the audit exists to surface.
+                    // is: it is what the audit exists to surface. The log
+                    // gets every one, the printed report only the first few.
                     for skipped in skipped {
+                        crate::note(&format!(
+                            "zip          {}: {}",
+                            place.path().display(),
+                            skipped.describe()
+                        ));
                         audit
                             .unreadable
-                            .push((place.path().join(&skipped.member), skipped.reason));
+                            .push((place.path().join(skipped.shown()), skipped.reason));
                     }
                     project(&mut rows);
                     // Projection can replace a game's display name and sort

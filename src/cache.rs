@@ -317,6 +317,25 @@ pub fn build_system_observed(
     Ok(completed.map(|_| cache))
 }
 
+/// The reason an archive is skipped whole, when the error is the archive
+/// reader's own: its directory could not be read or does not hold together.
+/// The archive is named once by the caller; its own error would name it
+/// again, and the summary has to fit a screen.
+fn archive_skip_reason(error: &DegaussError, place: &Place) -> Option<String> {
+    let Place::Archive(archive) = place else {
+        return None;
+    };
+    match error {
+        DegaussError::Malformed { what, path, detail } if path == archive => {
+            Some(format!("{what} is malformed: {detail}"))
+        }
+        DegaussError::Io { what, path, source } if path == archive => {
+            Some(format!("{what} failed: {source}"))
+        }
+        _ => None,
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn walk_controlled(
     library: &Library,
@@ -353,11 +372,16 @@ fn walk_controlled(
     }
     let (mut rows, _, skipped) = library.list_reporting(place, true)?;
     if !skipped.is_empty() {
-        // One line per reason, with a count: the log already holds every
-        // member, and the summary on screen has to stay readable for an
-        // archive with hundreds of them.
+        // Every member goes to the log with its reason, once per scan. The
+        // summary on screen gets one line per reason, with a count, so it
+        // stays readable for an archive with hundreds of them.
         let mut reasons = BTreeMap::new();
         for skipped in skipped {
+            crate::note(&format!(
+                "zip          {}: {}",
+                place.path().display(),
+                skipped.describe()
+            ));
             *reasons.entry(skipped.reason).or_insert(0usize) += 1;
         }
         for (reason, count) in reasons {
@@ -381,7 +405,7 @@ fn walk_controlled(
                 *games_done += 1;
             }
             Kind::Enter(inner) => {
-                let before = seen.len();
+                let before = (seen.len(), *folders_done, *games_done);
                 let below = match walk_controlled(
                     library,
                     &inner.clone(),
@@ -396,34 +420,33 @@ fn walk_controlled(
                 ) {
                     Ok(Some(below)) => below,
                     Ok(None) => return Ok(None),
-                    Err(error) if matches!(inner, Place::Archive(_)) => {
+                    Err(error) => {
                         // An archive whose directory does not hold together
                         // is left out whole: every folder its subtree already
                         // wrote is taken back (its keys were pushed to `seen`
-                        // before being written), its row goes, and the rest
+                        // before being written), the progress counts it
+                        // raised go back with it, its row goes, and the rest
                         // of the system carries on. Nothing of it is ever
-                        // published half done.
-                        for key in seen.drain(before..) {
+                        // published half done. Any other failure under it,
+                        // such as the depth limit, is the system's as before.
+                        let Some(reason) = archive_skip_reason(&error, inner) else {
+                            return Err(error);
+                        };
+                        // The log gets the whole error here, whatever later
+                        // becomes of the summary this scan is building.
+                        crate::note(&format!(
+                            "zip          {}: skipped: {error}",
+                            inner.path().display()
+                        ));
+                        for key in seen.drain(before.0..) {
                             cache.folders.remove(&key);
                         }
-                        // The archive is named once; its own error would
-                        // name it again, and the summary has to fit a screen.
-                        let reason = match &error {
-                            DegaussError::Malformed { what, path, detail }
-                                if path == inner.path() =>
-                            {
-                                format!("{what} is malformed: {detail}")
-                            }
-                            DegaussError::Io { what, path, source } if path == inner.path() => {
-                                format!("{what} failed: {source}")
-                            }
-                            _ => error.to_string(),
-                        };
+                        *folders_done = before.1;
+                        *games_done = before.2;
                         warnings.push(format!("{}: skipped: {reason}", inner.path().display()));
                         dropped.push(index);
                         continue;
                     }
-                    Err(error) => return Err(error),
                 };
                 row.below = Some(below);
                 games += below;
@@ -1586,6 +1609,49 @@ mod tests {
         std::fs::remove_dir_all(games).unwrap();
     }
 
+    /// An archive that fails after part of it was walked (here, one taken
+    /// away between two of its folders) is taken back whole, and the
+    /// progress figures go back with it: the dashboard must not end on more
+    /// games than the cache it announces holds.
+    #[test]
+    fn a_skipped_archive_takes_its_progress_counts_back_with_it() {
+        let games = temp("skipped-archive-progress");
+        std::fs::write(games.join("Plain.d64"), b"rom").unwrap();
+        let archive = games.join("Gone.zip");
+        std::fs::write(
+            &archive,
+            crate::zip::tests_archive(&["a/one.d64", "b/two.d64"], false),
+        )
+        .unwrap();
+        let library = Library::open(&system(&games)).unwrap();
+        let mut warnings = Vec::new();
+        let mut last = None;
+        let cache = build_system_observed(
+            &library,
+            &AtomicBool::new(false),
+            &mut warnings,
+            &mut |place, folders, found, starting| {
+                if starting
+                    && matches!(place, Place::ArchiveDirectory { prefix, .. } if prefix == "b")
+                {
+                    assert_eq!(found, 1, "a/one.d64 was counted before b was entered");
+                    std::fs::remove_file(&archive).unwrap();
+                }
+                last = Some((folders, found));
+            },
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(cache.summary(&library.start()).games, 1);
+        assert_eq!(last, Some((cache.folders.len(), 1)));
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert!(
+            warnings[0].starts_with(&format!("{}: skipped: ", archive.display())),
+            "{warnings:?}"
+        );
+        std::fs::remove_dir_all(games).unwrap();
+    }
+
     /// Main splits its target at the first `.zip`, so an archive inside an
     /// archive can never be launched: that member is left out, the
     /// supported member beside it is written down and counted, and the
@@ -1621,6 +1687,30 @@ mod tests {
                 outer.display()
             )]
         );
+        std::fs::remove_dir_all(games).unwrap();
+    }
+
+    /// Only the archive reader's own failure skips an archive. A limit the
+    /// walk hits inside one, such as the folder depth, is not a damaged
+    /// archive and stays the system's failure it has always been: turning
+    /// it into a skip would quietly drop an archive that reads fine.
+    #[test]
+    fn a_depth_overflow_inside_an_archive_is_still_the_system_failure() {
+        let games = temp("archive-depth-overflow");
+        let deep = format!("{}game.d64", "d/".repeat(MAX_DEPTH + 1));
+        std::fs::write(
+            games.join("Deep.zip"),
+            crate::zip::tests_archive(&[deep.as_str()], false),
+        )
+        .unwrap();
+        let library = Library::open(&system(&games)).unwrap();
+        let mut warnings = Vec::new();
+        let error = build_system_checked(&library, &mut warnings).unwrap_err();
+        assert!(
+            error.to_string().contains("maximum folder depth"),
+            "{error}"
+        );
+        assert!(warnings.is_empty(), "{warnings:?}");
         std::fs::remove_dir_all(games).unwrap();
     }
 
