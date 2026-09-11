@@ -3130,6 +3130,217 @@ fn run_auto_source_choice_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
     app.ui.hide().unwrap();
 }
 
+fn run_degraded_pack_acknowledgement_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
+    use crate::artwork_pack::ProviderHealth;
+    use crate::pack_health::Acknowledgements;
+
+    let root = root.join("degraded-pack-acknowledgement");
+    let games = root.join("games/NES");
+    let docs = root.join("docs");
+    let artwork = docs.join("NES/Artwork");
+    for directory in [&games, &artwork] {
+        std::fs::create_dir_all(directory).unwrap();
+    }
+    std::fs::write(games.join("Known.nes"), b"first rom").unwrap();
+    std::fs::write(games.join("Second.nes"), b"second rom").unwrap();
+    let write_manifest = |keys: &[&str]| {
+        let rows: String = keys
+            .iter()
+            .map(|key| format!("{key}\tbox-2D\t3\n"))
+            .collect();
+        std::fs::write(
+            artwork.join("manifest.tsv"),
+            format!("#key\tstyle\tss_system_id\n{rows}"),
+        )
+        .unwrap();
+    };
+    write_manifest(&["Known", "Second"]);
+    std::fs::write(
+        artwork.join("index.tsv"),
+        "#name\tcrc\tsize\tkey\nKnown\t\t\tKnown\nSecond\t\t\tSecond\n",
+    )
+    .unwrap();
+    std::fs::write(
+        artwork.join("gameinfo.tsv"),
+        "#key\tname\tyear\tgenre\tdeveloper\tplayers\nKnown\tPack First\t1990\tAction\tStudio\t1\nSecond\tPack Second\t1991\tPuzzle\tStudio\t2\n",
+    )
+    .unwrap();
+    for key in ["Known", "Second"] {
+        std::fs::write(artwork.join(format!("{key}.jpg")), crate::covers::JPEG_16).unwrap();
+    }
+    let settings_path = root.join("settings.toml");
+    let warnings = crate::pack_health::path_beside(&settings_path);
+    assert_eq!(warnings.parent(), settings_path.parent());
+    let mut settings = Settings::default();
+    settings
+        .artwork_pack_roots
+        .insert("NES".into(), docs.to_string_lossy().into_owned());
+    settings.save(&settings_path).unwrap();
+    // Every start reads the card afresh, as a return from a game does.
+    let start = |window: Rc<MinimalSoftwareWindow>| {
+        let mut app = unopened_fixture_app(&root, window, Settings::load(&settings_path).unwrap());
+        app.open_system_by_index(0);
+        assert!(
+            app.source_resolution.is_none() && app.source_job.is_none(),
+            "a headless open must also finish the resolution that a cache recovery restarts"
+        );
+        assert!(app.build.is_none());
+        assert_eq!(app.open_system.as_deref(), Some("NES"), "{:?}", app.message);
+        app.leave_splash();
+        app
+    };
+    let message_contains = |app: &App, text: &str| {
+        app.message
+            .as_deref()
+            .is_some_and(|message| message.contains(text))
+    };
+    let reopen = |app: &mut App| {
+        app.handle(Action::Quit);
+        assert!(
+            app.open_system.is_none(),
+            "B on the top folder leaves the system"
+        );
+        app.open_system_by_index(0);
+        assert_eq!(app.open_system.as_deref(), Some("NES"), "{:?}", app.message);
+    };
+
+    // 6. A complete pack: no warning, and nothing written down.
+    let app = start(window.clone());
+    assert_eq!(
+        app.artwork_provider.as_ref().unwrap().health,
+        ProviderHealth::Ready,
+        "{:?}",
+        app.artwork_provider.as_ref().unwrap().diagnostics
+    );
+    assert!(app.message.is_none(), "{:?}", app.message);
+    assert!(
+        !warnings.exists(),
+        "a Ready pack must not create the acknowledgement file"
+    );
+    app.ui.hide().unwrap();
+    drop(app);
+
+    // 1. The first look at an incomplete pack warns, and remembers it.
+    std::fs::remove_file(artwork.join("Second.jpg")).unwrap();
+    let mut app = start(window.clone());
+    assert_eq!(
+        app.artwork_provider.as_ref().unwrap().health,
+        ProviderHealth::Degraded
+    );
+    assert!(message_contains(&app, "is incomplete"), "{:?}", app.message);
+    let first_digest = app.artwork_provider.as_ref().unwrap().health_digest();
+    assert!(
+        Acknowledgements::load(&warnings).acknowledged("NES", &first_digest),
+        "the shown warning is written down beside settings.toml before it is dismissed"
+    );
+    let first_file = std::fs::read_to_string(&warnings).unwrap();
+
+    // 2. Dismissed, left and re-entered in the same process: not again.
+    app.handle(Action::Accept);
+    assert!(app.message.is_none());
+    reopen(&mut app);
+    assert!(app.message.is_none(), "{:?}", app.message);
+    assert_eq!(std::fs::read_to_string(&warnings).unwrap(), first_file);
+
+    // 4. A new diagnostic on the same pack, noticed on re-entry, is a new
+    // warning even while the process that saw the old one is still running.
+    std::fs::remove_file(artwork.join("index.tsv")).unwrap();
+    reopen(&mut app);
+    assert!(message_contains(&app, "is incomplete"), "{:?}", app.message);
+    let no_index_digest = app.artwork_provider.as_ref().unwrap().health_digest();
+    assert_ne!(no_index_digest, first_digest);
+    assert!(app
+        .artwork_provider
+        .as_ref()
+        .unwrap()
+        .diagnostics
+        .iter()
+        .any(|diagnostic| diagnostic.contains("index.tsv is missing")));
+    let seen = Acknowledgements::load(&warnings);
+    assert!(seen.acknowledged("NES", &no_index_digest));
+    assert!(
+        !seen.acknowledged("NES", &first_digest),
+        "one acknowledgement per source group: the old state is gone"
+    );
+    app.handle(Action::Accept);
+    let no_index_file = std::fs::read_to_string(&warnings).unwrap();
+    app.ui.hide().unwrap();
+    drop(app);
+
+    // 3. Back from a game: a new process, the same pack, no warning.
+    let app = start(window.clone());
+    assert!(
+        app.message.is_none(),
+        "an unchanged degraded pack must not warn again after a restart: {:?}",
+        app.message
+    );
+    assert_eq!(
+        app.artwork_provider.as_ref().unwrap().health,
+        ProviderHealth::Degraded
+    );
+    assert_eq!(std::fs::read_to_string(&warnings).unwrap(), no_index_file);
+    app.ui.hide().unwrap();
+    drop(app);
+
+    // 4. An updated manifest is another pack state: warned about once more.
+    write_manifest(&["Known", "Second", "Third"]);
+    let mut app = start(window.clone());
+    assert!(message_contains(&app, "is incomplete"), "{:?}", app.message);
+    let updated_digest = app.artwork_provider.as_ref().unwrap().health_digest();
+    assert_ne!(updated_digest, no_index_digest);
+    assert!(Acknowledgements::load(&warnings).acknowledged("NES", &updated_digest));
+    app.handle(Action::Accept);
+    app.ui.hide().unwrap();
+    drop(app);
+
+    // 7. A broken acknowledgement file costs one more warning, nothing else.
+    std::fs::write(&warnings, "degraded = \"not a table").unwrap();
+    let mut app = start(window.clone());
+    assert!(message_contains(&app, "is incomplete"), "{:?}", app.message);
+    assert!(
+        Acknowledgements::load(&warnings).acknowledged("NES", &updated_digest),
+        "the broken file is replaced by a readable one"
+    );
+    app.handle(Action::Accept);
+    let acknowledged_file = std::fs::read_to_string(&warnings).unwrap();
+    app.ui.hide().unwrap();
+    drop(app);
+
+    // 5. Invalid and unavailable packs need acting on: shown every time,
+    // and never written down.
+    write_manifest(&["../escape"]);
+    for _ in 0..2 {
+        let mut app = start(window.clone());
+        assert_eq!(
+            app.artwork_provider.as_ref().unwrap().health,
+            ProviderHealth::Invalid
+        );
+        assert!(message_contains(&app, "is invalid"), "{:?}", app.message);
+        app.handle(Action::Accept);
+        app.ui.hide().unwrap();
+    }
+    std::fs::remove_dir_all(&artwork).unwrap();
+    for _ in 0..2 {
+        let mut app = start(window.clone());
+        assert_eq!(
+            app.artwork_provider.as_ref().unwrap().health,
+            ProviderHealth::Unavailable
+        );
+        assert!(
+            message_contains(&app, "is unavailable"),
+            "{:?}",
+            app.message
+        );
+        app.handle(Action::Accept);
+        app.ui.hide().unwrap();
+    }
+    assert_eq!(
+        std::fs::read_to_string(&warnings).unwrap(),
+        acknowledged_file,
+        "actionable failures leave the incomplete-pack acknowledgement alone"
+    );
+}
+
 pub(super) fn run_ui_acceptance_flow(window: Rc<MinimalSoftwareWindow>) {
     let root = fixture_directory();
     std::fs::create_dir_all(root.join("games/NES")).unwrap();
@@ -3145,6 +3356,7 @@ pub(super) fn run_ui_acceptance_flow(window: Rc<MinimalSoftwareWindow>) {
     run_artwork_matte_flow(&root, window.clone());
     run_fresh_auto_pack_index_flow(&root, window.clone());
     run_auto_source_choice_flow(&root, window.clone());
+    run_degraded_pack_acknowledgement_flow(&root, window.clone());
     let mut app = fixture_app(&root, window.clone(), Settings::default());
     run_selected_controls_flow(&mut app);
     run_artwork_visibility_flow(&mut app);

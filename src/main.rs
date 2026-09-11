@@ -30,6 +30,7 @@ mod launch;
 mod list_state;
 mod metrics;
 mod options;
+mod pack_health;
 mod provider_job;
 mod render;
 mod scraper;

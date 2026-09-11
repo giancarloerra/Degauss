@@ -2910,6 +2910,9 @@ pub struct App {
     /// A changed provider invalidates its group's entries so a new problem is
     /// still reported, while ordinary re-entry does not repeat the same modal.
     pack_health_shown: HashSet<String>,
+    /// Incomplete-pack warnings already seen in earlier runs, read from the
+    /// card the first time a warning is about to be shown and not before.
+    pack_health_acknowledged: Option<crate::pack_health::Acknowledgements>,
     /// Set while the card is being read into the cache, a system at a time
     /// so the screen can say how far it has got.
     build: Option<Building>,
@@ -3231,6 +3234,7 @@ impl App {
             provider_recovery_needed: HashSet::new(),
             provider_validated: HashSet::new(),
             pack_health_shown: HashSet::new(),
+            pack_health_acknowledged: None,
             build: None,
             index_return_screen: Screen::Browse,
             index_details: false,
@@ -5383,29 +5387,47 @@ impl App {
             return;
         }
         let group = crate::artwork_pack::source_group(&provider.system_id)
-            .unwrap_or(provider.system_id.as_str());
-        let detail = provider
-            .diagnostics
-            .first()
-            .map(String::as_str)
-            .unwrap_or("the selected installation could not be read");
-        let shown_key = format!(
-            "{group}\0{}\0{}\0{detail}",
-            provider.docs_root.display(),
-            provider.health.label()
-        );
+            .unwrap_or(provider.system_id.as_str())
+            .to_string();
+        let digest = provider.health_digest();
+        // The group prefix is what invalidating the group prunes on.
+        let shown_key = format!("{group}\0{digest}");
         if !self.pack_health_shown.insert(shown_key) {
             return;
         }
         let system = provider.system_id.clone();
         let root = provider.docs_root.display().to_string();
         let health = provider.health;
-        let detail = detail.to_string();
+        let detail = if provider.diagnostics.is_empty() {
+            "the selected installation could not be read".to_string()
+        } else {
+            provider.diagnostics.join("; ")
+        };
         crate::note(&format!(
             "artwork pack {} at {}: {detail}",
             health.label(),
             root
         ));
+        // An incomplete pack is still usable, so its warning is worth one
+        // look per snapshot, not one per start: this program exits for every
+        // launch. Unavailable and invalid packs need acting on and are shown
+        // every time. Written when shown, not when dismissed: the message is
+        // modal, and a headless render never dismisses.
+        if health == crate::artwork_pack::ProviderHealth::Degraded {
+            let path = crate::pack_health::path_beside(&self.settings_path);
+            let seen = self
+                .pack_health_acknowledged
+                .get_or_insert_with(|| crate::pack_health::Acknowledgements::load(&path));
+            if seen.acknowledged(&group, &digest) {
+                return;
+            }
+            seen.acknowledge(&group, &digest);
+            if let Err(error) = seen.save(&path) {
+                crate::note(&format!(
+                    "artwork pack warning acknowledgement not saved: {error}"
+                ));
+            }
+        }
         self.message = artwork_pack_health_message(&system, health);
         self.dirty = true;
     }
