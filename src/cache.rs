@@ -340,9 +340,7 @@ fn archive_skip_reason(error: &DegaussError, place: &Place) -> Option<String> {
         }
         DegaussError::Unsupported {
             what: MEMBER_DEPTH, ..
-        } => Some(format!(
-            "a member path exceeds the maximum folder depth of {MAX_DEPTH}"
-        )),
+        } => Some(crate::browse::member_depth_reason()),
         _ => None,
     }
 }
@@ -1774,8 +1772,9 @@ mod tests {
         assert_eq!(
             warnings,
             [format!(
-                "{}: skipped: a member path exceeds the maximum folder depth of {MAX_DEPTH}",
-                archive.display()
+                "{}: skipped: {}",
+                archive.display(),
+                crate::browse::member_depth_reason()
             )]
         );
 

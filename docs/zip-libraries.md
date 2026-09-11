@@ -15,7 +15,7 @@ A central directory that does not hold together fails the whole archive: the arc
 
 Every record is checked this way, including one that is about to be skipped on its own, because Main checks them all before it will open the archive.
 
-An archive one of whose member paths goes deeper than the folder depth the index walks (twelve levels below where the system starts, the folders holding the archive included) is also skipped whole, with `a member path exceeds the maximum folder depth of 12`: that is the walk's own limit rather than anything Main checks, and an archive the walk cannot finish is not listed in part. A folder that deep remains the system's failure.
+An archive one of whose member paths goes deeper than the folder depth the index walks (twelve levels below where the system starts, the folders holding the archive included) is also skipped whole, with `a member path exceeds the maximum folder depth of 12`: that is the walk's own limit rather than anything Main checks, and an archive the walk cannot finish is not listed in part. `--report` and `--audit` count the members they reach before that depth and name the archive with the same reason. A folder that deep remains the system's failure.
 
 A problem confined to one member skips only that member, with its exact reason, and the other members stay. That is any of:
 

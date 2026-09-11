@@ -39,6 +39,13 @@ const NOT_GAMES: [&str; 4] = ["boot.rom", "boot.vhd", "blank.vhd", "boot0.rom"];
 /// symlink loop must not be able to walk the whole card forever.
 pub const MAX_DEPTH: usize = 12;
 
+/// Why an archive one of whose member paths goes past [`MAX_DEPTH`] is left
+/// out whole, said the same way by the index that skips it and the audit
+/// that reports it.
+pub fn member_depth_reason() -> String {
+    format!("a member path exceeds the maximum folder depth of {MAX_DEPTH}")
+}
+
 /// Somewhere that can be listed.
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq, Eq)]
 pub enum Place {
@@ -1236,6 +1243,7 @@ impl Library {
             .map(|root| (Place::Dir(root.path.clone()), 0))
             .collect();
         let mut seen: HashSet<(String, Option<String>)> = HashSet::new();
+        let mut too_deep: HashSet<PathBuf> = HashSet::new();
 
         while let Some((place, depth)) = stack.pop() {
             if audit.places_read >= AUDIT_LIMIT {
@@ -1243,6 +1251,17 @@ impl Library {
                 break;
             }
             if depth > MAX_DEPTH {
+                // The index leaves an archive out whole when a member path
+                // goes this deep; the audit has already counted what it
+                // reached of the archive, so it says why the rest is not
+                // there, once per archive.
+                if let Place::ArchiveDirectory { archive, .. } = &place {
+                    if too_deep.insert(archive.clone()) {
+                        audit
+                            .unreadable
+                            .push((archive.clone(), member_depth_reason()));
+                    }
+                }
                 continue;
             }
             // The same folder reached twice is counted once. Organised
@@ -1767,6 +1786,32 @@ mod tests {
         assert_eq!(
             audit.places_read, 4,
             "root, archive and both member directories"
+        );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// The index skips an archive whole when a member path goes past the
+    /// depth the walk allows; the audit cannot take back what it counted
+    /// before it got that deep, so it has to name the archive and the
+    /// reason, once, or the report would show games a rebuild leaves out
+    /// with nothing to explain it.
+    #[test]
+    fn an_archive_with_a_member_past_the_depth_limit_is_named_once_by_the_audit() {
+        let dir = temp("audit-depth-limit");
+        let archive = dir.join("deep.zip");
+        let one = format!("{}One.d64", "a/".repeat(MAX_DEPTH + 1));
+        let two = format!("{}Two.d64", "b/".repeat(MAX_DEPTH + 1));
+        std::fs::write(
+            &archive,
+            crate::zip::tests_archive(&[one.as_str(), two.as_str(), "Shallow.d64"], false),
+        )
+        .unwrap();
+        let library = Library::open(&system(&dir)).unwrap();
+        let audit = library.audit(false);
+        assert_eq!(
+            audit.unreadable,
+            vec![(archive, member_depth_reason())],
+            "two member paths past the limit, one line"
         );
         std::fs::remove_dir_all(dir).unwrap();
     }
