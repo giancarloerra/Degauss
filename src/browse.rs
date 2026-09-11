@@ -1251,10 +1251,18 @@ impl Library {
                     // not be read, for the same reason a folder that errors
                     // is: it is what the audit exists to surface. The reader
                     // logged every one; the printed report has the first few.
+                    // Written as text rather than joined: a member name
+                    // starting with a slash (one of the reasons to be here)
+                    // would replace the archive path instead of following it.
                     for skipped in skipped {
-                        audit
-                            .unreadable
-                            .push((place.path().join(skipped.shown()), skipped.reason));
+                        audit.unreadable.push((
+                            PathBuf::from(format!(
+                                "{}/{}",
+                                place.path().display(),
+                                skipped.shown()
+                            )),
+                            skipped.reason,
+                        ));
                     }
                     project(&mut rows);
                     // Projection can replace a game's display name and sort
@@ -1760,7 +1768,16 @@ mod tests {
         let archive = dir.join("library.zip");
         std::fs::write(
             &archive,
-            crate::zip::tests_archive(&["Keep.d64", "inner.zip", "Twin.d64", "twin.d64"], false),
+            crate::zip::tests_archive(
+                &[
+                    "Keep.d64",
+                    "inner.zip",
+                    "Twin.d64",
+                    "twin.d64",
+                    "/rooted.d64",
+                ],
+                false,
+            ),
         )
         .unwrap();
         let library = Library::open(&system(&dir)).unwrap();
@@ -1771,25 +1788,35 @@ mod tests {
         assert_eq!(stats.games, 1);
         let audit = library.audit(false);
         assert_eq!(audit.games, 1);
+        // Compared as the text the report prints, which is what a card
+        // owner reads.
         let mut unreadable: Vec<_> = audit
             .unreadable
             .iter()
-            .map(|(path, reason)| (path.clone(), reason.as_str()))
+            .map(|(path, reason)| (path.display().to_string(), reason.as_str()))
             .collect();
         unreadable.sort();
+        let under = |member: &str| format!("{}/{member}", archive.display());
         assert_eq!(
             unreadable,
             vec![
+                // Named under the archive even though the name starts with
+                // a slash: a line naming only "/rooted.d64" would send the
+                // reader to the card's root.
                 (
-                    archive.join("Twin.d64"),
+                    under("/rooted.d64"),
+                    "name holds a traversal or empty path segment"
+                ),
+                (
+                    under("Twin.d64"),
                     "duplicate or case-ambiguous member paths under \"twin.d64\""
                 ),
                 (
-                    archive.join("inner.zip"),
+                    under("inner.zip"),
                     "nested archive member is unsupported by MiSTer Main"
                 ),
                 (
-                    archive.join("twin.d64"),
+                    under("twin.d64"),
                     "duplicate or case-ambiguous member paths under \"twin.d64\""
                 ),
             ]
