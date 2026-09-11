@@ -168,7 +168,7 @@ Click the image to watch Degauss 0.4.0 on YouTube.
 | **left / right** | scroll speed, 0.5x to 12x, or what **Left and Right Behaviour** says: letter jumps, page jumps, or plain movement. Inside an Options page, left chooses the previous ordered value and right chooses the next; either direction toggles two-choice values |
 | **A** (enter) | open a folder, launch a game; in Options, choose the next value or run an action |
 | **B** (escape) | back, out of the folder |
-| **X** (tab) | **Actions** for the current selection and location: Game Information, random game, random favourite, keep or drop a favourite, jump to letter, search, hide a row, rebuild this system, change view, etc. With **Hold X (1s) to Add/Remove Fav** enabled, hold X for one second over a game to use the favourite shortcut |
+| **X** (tab) | **Actions** for the current selection and location: Game Information, random game, random favourite, keep a favourite in Main Favourites or in a folder, drop a favourite, jump to letter, search, hide a row, rebuild this system, change view, etc. With **Hold X (1s) to Add/Remove Fav** enabled, hold X for one second over a game to use the favourite shortcut |
 | **Y** (space) | **Menu**: Options, Scripts, Help, About, Exit to MiSTer. Optional **Hold Y (1s) for Random Game** uses Random Game Behaviour while browsing inside a system; a short press still opens Menu |
 
 **Actions** groups the available controls into **Game**, **Find**, **Library**
@@ -178,10 +178,18 @@ control has an explanation below the list. The Categories home screen keeps
 its short, flat Actions menu for images and views.
 
 **Game** contains Game Information, separate **Random Game** and **Random
-Favourite** actions, and adding/removing favourites. Both random choices use
-the currently open folder and **Random Game Behaviour**. **Find** contains
-jump, search and hiding controls; **Library** contains scraping, core choice,
-data source and rebuilding; **Appearance** contains view and image controls.
+Favourite** actions, and adding/removing favourites. Adding one opens a
+chooser that lists **Main Favourites** (the `_@Favorites` folder itself)
+first, then the folders already inside it, then **New folder...**. Choosing
+Main Favourites writes the `.mgl`, or the link for a core file, directly
+under `_@Favorites`; no folder of that name is made, and a folder somebody
+has really called Main Favourites is listed after it as a folder of its own.
+On a card that had no `_@Favorites` when Degauss started, the first
+favourite makes it, but the Favourites shelf is only listed after **Rebuild
+All System Lists**. Both random choices use the currently open folder and
+**Random Game Behaviour**. **Find** contains jump, search and hiding
+controls; **Library** contains scraping, core choice, data source and
+rebuilding; **Appearance** contains view and image controls.
 
 A gamepad needs no extra setup and browsing and settings need no keyboard. While Degauss
 owns the screen, MiSTer sends the d-pad as arrows and the face buttons as
@@ -248,9 +256,9 @@ scripts report their underlying error.
 - **Full metadata.** Read the complete description and available publisher,
   developer, release date, players, language and genre in Game Information,
   from the system's selected Gamelist or Artwork Pack source.
-- **Favourites are MiSTer's favourites**, written into `_@Favorites` in
-  MiSTer's own format. One made here works in the stock menu; one made
-  anywhere else appears here.
+- **Favourites are MiSTer's favourites**, written directly into
+  `_@Favorites` or into one of its folders, in MiSTer's own format. One made
+  here works in the stock menu; one made anywhere else appears here.
 - **Awkward systems handled** without hassle: AmigaVision, DOS,
   Neo Geo, Arcade, X68000, and cores that are several machines.
 
@@ -552,7 +560,7 @@ require **A** and confirmation, never a sideways press.
 | Navigation | Scroll Speed | How fast a held direction moves through the list. 3x out of the box |
 | Navigation | Skip Artwork Faster Than | Above this speed, pictures wait until the list stops. 6x out of the box |
 | Navigation | Left and Right Behaviour | What left and right do while browsing: Scroll Speed Change (the default), Letter, Page or Direction. Letter and Page repeat while held; in Direction, left and right move one entry and up and down move a whole row in Tiled, Multi List and Gallery |
-| Navigation | Hold X (1s) to Add/Remove Fav | Off by default. Hold X for one second over a game to open the normal favourite-folder chooser, or to remove it when it is already a favourite. The shortcut does nothing in the master Favourites system |
+| Navigation | Hold X (1s) to Add/Remove Fav | Off by default. Hold X for one second over a game to open the normal favourite-folder chooser, Main Favourites first, or to remove it when it is already a favourite. The shortcut does nothing in the master Favourites system |
 | Navigation | Hold Y (1s) for Random Game | Off by default. Hold Y for one second while browsing inside a system to use Random Game. It follows Random Game Behaviour; a short Y still opens Menu. The hold shortcut is inactive in menus and during operations |
 | Navigation | Random Game Behaviour | Whether either random action starts the game, or only moves to it so you can look first |
 | Appearance | Theme | Left and right choose a palette. Press A to open the editor. Standard uses the colours in `degauss.toml`. See [Themes and colours](#themes-and-colours) |
