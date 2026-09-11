@@ -907,6 +907,231 @@ fn run_hold_y_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
     app.ui.hide().unwrap();
 }
 
+/// Open Actions over the selected game and accept one entry of its Game
+/// group, the way a controller reaches it.
+fn accept_game_action(app: &mut App, action: &str) {
+    assert_eq!(app.screen, Screen::Browse);
+    app.handle(Action::Context);
+    assert_eq!(app.screen, Screen::Context);
+    assert_eq!(
+        app.menu.first().map(String::as_str),
+        Some(ContextPage::Game.label())
+    );
+    app.menu_list.select(0);
+    app.handle(Action::Accept);
+    let index = app
+        .menu
+        .iter()
+        .position(|entry| entry == action)
+        .unwrap_or_else(|| panic!("{action} is offered: {:?}", app.menu));
+    app.menu_list.select(index);
+    app.handle(Action::Accept);
+}
+
+fn select_row_named(app: &mut App, name: &str) {
+    let index = app
+        .here
+        .iter()
+        .position(|row| row.name == name)
+        .unwrap_or_else(|| panic!("{name} is listed: {:?}", app.here));
+    app.game_list.select(index);
+}
+
+fn run_main_favourites_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
+    let root = root.join("main-favourites");
+    std::fs::create_dir_all(root.join("games/NES")).unwrap();
+    std::fs::create_dir(root.join("_Console")).unwrap();
+    std::fs::write(root.join("_Console/NES.rbf"), b"fixture core").unwrap();
+    let game = root.join("games/NES/First Game.nes");
+    std::fs::write(&game, b"fixture game").unwrap();
+    std::fs::write(
+        root.join("games/NES/gamelist.xml"),
+        "<gameList><game><path>First Game.nes</path><name>First Game</name></game></gameList>",
+    )
+    .unwrap();
+    // A ready-made descriptor is a core file to the favourites code: it is
+    // linked to rather than described again.
+    let core_file = root.join("games/NES/Core Game.mgl");
+    std::fs::write(
+        &core_file,
+        "<mistergamedescription><rbf>_Console/NES</rbf><file delay=\"1\" type=\"f\" index=\"1\" path=\"/media/fat/games/NES/Core Game.nes\"/></mistergamedescription>",
+    )
+    .unwrap();
+    let favorites_root = root.join("_@Favorites");
+    let mut app = fixture_app(&root, window, Settings::default());
+    assert!(
+        !favorites_root.exists(),
+        "the flow starts on a card that has no favourites yet"
+    );
+    // The master shelf, declared the way the shipped table declares it and
+    // pointed at this card's root, so the refresh after a write has a
+    // system to rewrite.
+    let mut favorites = crate::systems::parse_table(
+        include_str!("../assets/systems.toml"),
+        Path::new("systems.toml"),
+    )
+    .unwrap()
+    .into_iter()
+    .find(|system| system.id == "Favorites")
+    .unwrap();
+    favorites.folders = vec![favorites_root.to_string_lossy().into_owned()];
+    app.all_systems.push(FoundSystem {
+        def: favorites,
+        paths: vec![favorites_root.clone()],
+        logo_dir: None,
+        menu_folder: None,
+    });
+
+    // The chooser offers the root first even before the root exists.
+    select_row_named(&mut app, "First Game");
+    accept_game_action(&mut app, ADD_FAVORITE);
+    assert_eq!(app.screen, Screen::FavoriteFolder);
+    assert_eq!(app.menu, vec![MAIN_FAVORITES, NEW_FOLDER]);
+    assert_eq!(app.favorite_destinations[0], FavoriteDestination::Root);
+    assert_eq!(app.menu_list.selected(), 0);
+
+    // Choosing it writes the .mgl straight into _@Favorites and makes no
+    // folder named after the row.
+    app.handle(Action::Accept);
+    assert_eq!(app.screen, Screen::Browse);
+    let root_favorite = favorites_root.join("First Game.mgl");
+    assert!(
+        std::fs::symlink_metadata(&root_favorite).unwrap().is_file(),
+        "a game favourite in the root is a plain .mgl"
+    );
+    assert!(std::fs::read_to_string(&root_favorite)
+        .unwrap()
+        .contains("<mistergamedescription>"));
+    assert!(
+        !favorites_root.join(MAIN_FAVORITES).exists(),
+        "Main Favourites is the root, not a folder"
+    );
+    assert!(app.favorites.holds(&game));
+    assert!(app
+        .here
+        .iter()
+        .any(|row| row.name == "First Game" && row.favorite));
+
+    // The shelf shows it after the existing refresh, and the existing
+    // removal there takes a root-level favourite away.
+    app.open_system_by_index(1);
+    assert_eq!(app.open_system.as_deref(), Some("Favorites"));
+    assert!(app.in_favorites());
+    assert!(
+        app.here.iter().any(|row| {
+            row.name == "First Game"
+                && matches!(
+                    &row.kind,
+                    browse::Kind::Play(browse::Launch::File(path)) if path == &root_favorite
+                )
+        }),
+        "the shelf lists the root-level favourite: {:?}",
+        app.here
+    );
+    select_row_named(&mut app, "First Game");
+    accept_game_action(&mut app, REMOVE_FAVORITE);
+    assert_eq!(app.screen, Screen::Browse);
+    assert!(app.message.is_none(), "{:?}", app.message);
+    assert!(!root_favorite.exists());
+    assert!(!app.here.iter().any(|row| row.name == "First Game"));
+    assert!(!app.favorites.holds(&game));
+
+    // The held-X shortcut reaches the same chooser, and a core file kept
+    // in the root is the standard link.
+    app.open_system_by_index(0);
+    assert_eq!(app.open_system.as_deref(), Some("NES"));
+    select_option(&mut app, OptionsPage::Navigation, OptionId::HoldXFavorite);
+    app.handle(Action::Accept);
+    assert!(app.hold_x_favorite);
+    app.handle(Action::Quit);
+    app.handle(Action::Quit);
+    app.handle(Action::Quit);
+    assert_eq!(app.screen, Screen::Browse);
+    select_row_named(&mut app, "Core Game");
+    assert_eq!(app.favorite_change(), Some(FavoriteChange::Add));
+    app.handle(Action::FavoriteShortcut);
+    assert_eq!(app.screen, Screen::FavoriteFolder);
+    assert_eq!(app.menu.first().map(String::as_str), Some(MAIN_FAVORITES));
+    app.handle(Action::Accept);
+    assert_eq!(app.screen, Screen::Browse);
+    let root_link = favorites_root.join("Core Game.mgl");
+    assert!(std::fs::symlink_metadata(&root_link)
+        .unwrap()
+        .file_type()
+        .is_symlink());
+    assert_eq!(std::fs::read_link(&root_link).unwrap(), core_file);
+    assert!(app.favorites.holds(&core_file));
+    assert!(app
+        .here
+        .iter()
+        .any(|row| row.name == "Core Game" && row.favorite));
+
+    // A folder really called Main Favourites shows the same words as the
+    // root and stays a destination of its own, chosen by row rather than
+    // by label.
+    let named_folder = favorites_root.join(MAIN_FAVORITES);
+    std::fs::create_dir(&named_folder).unwrap();
+    select_row_named(&mut app, "First Game");
+    accept_game_action(&mut app, ADD_FAVORITE);
+    assert_eq!(app.screen, Screen::FavoriteFolder);
+    assert_eq!(app.menu, vec![MAIN_FAVORITES, MAIN_FAVORITES, NEW_FOLDER]);
+    assert_eq!(
+        app.favorite_destinations,
+        vec![
+            FavoriteDestination::Root,
+            FavoriteDestination::Folder(MAIN_FAVORITES.to_string()),
+            FavoriteDestination::NewFolder,
+        ]
+    );
+    app.menu_list.select(1);
+    app.handle(Action::Accept);
+    assert_eq!(app.screen, Screen::Browse);
+    assert!(named_folder.join("First Game.mgl").is_file());
+    assert!(
+        !root_favorite.exists(),
+        "the folder's row must not write into the root"
+    );
+    assert!(app.favorites.holds(&game));
+    select_row_named(&mut app, "First Game");
+    accept_game_action(&mut app, REMOVE_FAVORITE);
+    assert!(!named_folder.join("First Game.mgl").exists());
+    assert!(!app.favorites.holds(&game));
+    select_row_named(&mut app, "First Game");
+    accept_game_action(&mut app, ADD_FAVORITE);
+    assert_eq!(app.menu.len(), 3);
+    app.menu_list.select(0);
+    app.handle(Action::Accept);
+    assert!(root_favorite.is_file());
+    assert!(
+        !named_folder.join("First Game.mgl").exists(),
+        "the root's row must not write into the folder of the same name"
+    );
+    select_row_named(&mut app, "First Game");
+    accept_game_action(&mut app, REMOVE_FAVORITE);
+    assert!(!root_favorite.exists());
+    assert!(!app.favorites.holds(&game));
+
+    // Naming a new folder is still the last row and still makes the folder
+    // before writing into it.
+    select_row_named(&mut app, "First Game");
+    accept_game_action(&mut app, ADD_FAVORITE);
+    app.menu_list.select(app.menu.len() - 1);
+    app.handle(Action::Accept);
+    assert_eq!(app.screen, Screen::Find);
+    assert_eq!(app.find_mode, FindMode::NewFolder);
+    assert!(app.filter.is_empty());
+    app.filter = "ARCADE".into();
+    app.handle(Action::Quit);
+    assert_eq!(app.screen, Screen::Browse);
+    assert!(favorites_root.join("ARCADE/First Game.mgl").is_file());
+    assert!(
+        !favorites_root.join("First Game.mgl").exists(),
+        "the new folder's row must not write into the root"
+    );
+    assert!(app.favorites.holds(&game));
+    app.ui.hide().unwrap();
+}
+
 fn run_scraper_cache_refresh_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
     let root = root.join("scraper-refresh");
     let games = root.join("games/NES");
@@ -3574,6 +3799,7 @@ pub(super) fn run_ui_acceptance_flow(window: Rc<MinimalSoftwareWindow>) {
     drop(restarted);
     run_favorite_information_flow(&root, window.clone());
     run_hold_y_flow(&root, window.clone());
+    run_main_favourites_flow(&root, window.clone());
     run_scraper_cache_refresh_flow(&root, window.clone());
     run_indexing_ui_flow(&root, window.clone());
     capture_ui_if_requested(&root, window);

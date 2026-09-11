@@ -1570,6 +1570,50 @@ fn favorite_change(
     })
 }
 
+/// Where a favourite is kept: the root of MiSTer's favourites folder, one
+/// of the folders inside it, or a folder still to be named.
+///
+/// Typed rather than read back from the row's label: a folder somebody
+/// has really called "Main Favourites" shows the same words as the root
+/// and must stay a folder of its own.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum FavoriteDestination {
+    Root,
+    Folder(String),
+    NewFolder,
+}
+
+impl FavoriteDestination {
+    /// The words on the chooser's row.
+    fn label(&self) -> &str {
+        match self {
+            Self::Root => MAIN_FAVORITES,
+            Self::Folder(name) => name,
+            Self::NewFolder => NEW_FOLDER,
+        }
+    }
+
+    /// The folder a favourite goes into, under the favourites root. A
+    /// folder still to be named has none yet.
+    fn path(&self, root: &Path) -> Option<PathBuf> {
+        match self {
+            Self::Root => Some(root.to_path_buf()),
+            Self::Folder(name) => Some(root.join(name)),
+            Self::NewFolder => None,
+        }
+    }
+}
+
+/// The chooser's rows in order: the root first, the folders as they were
+/// listed, and the chance to name another last.
+fn favorite_destinations(folders: Vec<String>) -> Vec<FavoriteDestination> {
+    let mut destinations = Vec::with_capacity(folders.len() + 2);
+    destinations.push(FavoriteDestination::Root);
+    destinations.extend(folders.into_iter().map(FavoriteDestination::Folder));
+    destinations.push(FavoriteDestination::NewFolder);
+    destinations
+}
+
 /// Favourites keeps its familiar heart only when it has no real image.
 /// Suppressing an image unconditionally made `Favorites.png` discoverable
 /// by the category code but impossible to see in the Details view.
@@ -1659,7 +1703,7 @@ fn context_help(action: &str) -> &'static str {
         RANDOM_FAVORITE => {
             "Pick only from favourites under the open folder, using Random Game Behaviour."
         }
-        ADD_FAVORITE => "Choose a Favourites folder for the selected game.",
+        ADD_FAVORITE => "Keep the selected game in Main Favourites or in a Favourites folder.",
         REMOVE_FAVORITE => "Remove the selected favourite. The original game is not deleted.",
         JUMP => "Jump to the first entry beginning with the chosen letter.",
         SEARCH => "Filter this list by name. Back keeps the search until it is cleared.",
@@ -1704,6 +1748,9 @@ fn category_image_preview(
 
 /// The entry that spells out a folder name rather than picking one.
 const NEW_FOLDER: &str = "New folder...";
+/// The entry for the favourites root itself, which has no folder name of
+/// its own to show.
+const MAIN_FAVORITES: &str = "Main Favourites";
 
 /// What can be done where the cursor is, in groups.
 ///
@@ -2969,6 +3016,9 @@ pub struct App {
     category_picks: std::collections::BTreeMap<String, PathBuf>,
     /// The files offered by the category/system image picker while it is open.
     category_image_choices: Vec<crate::category_images::Choice>,
+    /// The places offered by the favourite-folder chooser while it is open,
+    /// one per row of `menu`.
+    favorite_destinations: Vec<FavoriteDestination>,
     /// The category or system whose image is being chosen.
     category_image_target: Option<ImageTarget>,
     /// When something was last pressed, for deciding the machine is idle.
@@ -3362,6 +3412,7 @@ impl App {
             show_bar,
             category_picks: std::collections::BTreeMap::new(),
             category_image_choices: Vec::new(),
+            favorite_destinations: Vec::new(),
             category_image_target: None,
             last_input: Instant::now(),
             status: crate::status::Status::read(),
@@ -7928,7 +7979,7 @@ impl App {
                 let name = self.filter.clone();
                 self.filter.clear();
                 match crate::favorites::make_folder(&self.favorites_root(), &name) {
-                    Ok(_) => self.add_favorite_in(&name),
+                    Ok(_) => self.add_favorite_in(&FavoriteDestination::Folder(name)),
                     Err(e) => {
                         self.message = Some(format!("{e}"));
                         self.screen = Screen::Browse;
@@ -8636,11 +8687,11 @@ impl App {
             && self.scraper_pending_terminal.is_none()
     }
 
-    /// Offer the folders MiSTer's favourites are already kept in, and the
-    /// chance to name another.
+    /// Offer the favourites folder itself, the folders MiSTer's favourites
+    /// are already kept in, and the chance to name another.
     fn open_favorite_folders(&mut self) {
-        let mut entries = match crate::favorites::folders(&self.favorites_root()) {
-            Ok(entries) => entries,
+        let folders = match crate::favorites::folders(&self.favorites_root()) {
+            Ok(folders) => folders,
             Err(e) => {
                 self.screen = Screen::Browse;
                 self.apply_geometry();
@@ -8649,20 +8700,33 @@ impl App {
                 return;
             }
         };
-        entries.push(NEW_FOLDER.to_string());
-        self.menu = entries;
+        self.favorite_destinations = favorite_destinations(folders);
+        self.menu = self
+            .favorite_destinations
+            .iter()
+            .map(|destination| destination.label().to_string())
+            .collect();
         self.menu_list = ListState::new(self.menu.len(), self.geometry.visible);
         self.screen = Screen::FavoriteFolder;
         self.apply_geometry();
     }
 
-    /// Keep the selected game in a folder of MiSTer's favourites.
+    /// Keep the selected game in MiSTer's favourites folder, or in one of
+    /// the folders inside it.
     ///
     /// Written the way its own script writes one: an `.mgl` naming the core
     /// and the file for a game, a link for a core file. Nothing here is
     /// Degauss's own format, so a favourite made here is a favourite in the
     /// stock menu too.
-    fn add_favorite_in(&mut self, folder: &str) {
+    fn add_favorite_in(&mut self, destination: &FavoriteDestination) {
+        let Some(target) = destination.path(&self.favorites_root()) else {
+            // A folder still to be named: the name grid comes back here
+            // with the folder once it has been spelt out.
+            self.filter.clear();
+            self.open_find(FindMode::NewFolder);
+            return;
+        };
+        let folder = destination.label();
         let Some(game) = self.selected_game() else {
             return;
         };
@@ -8674,7 +8738,6 @@ impl App {
             .get(self.game_list.selected())
             .map(|row| row.name.clone())
             .unwrap_or_default();
-        let target = self.favorites_root().join(folder);
 
         // A title rather than a file: written as an MGL that starts
         // AmigaVision, carrying the title in an element Main ignores.
@@ -12011,16 +12074,14 @@ impl App {
                 },
                 Screen::Find => self.pick_letter(),
                 Screen::FavoriteFolder => {
-                    let choice = self
-                        .menu
+                    // The row's destination, not its words: a folder can
+                    // share its name with the root's entry.
+                    if let Some(destination) = self
+                        .favorite_destinations
                         .get(self.menu_list.selected())
                         .cloned()
-                        .unwrap_or_default();
-                    if choice == NEW_FOLDER {
-                        self.filter.clear();
-                        self.open_find(FindMode::NewFolder);
-                    } else {
-                        self.add_favorite_in(&choice);
+                    {
+                        self.add_favorite_in(&destination);
                     }
                 }
                 Screen::CategoryImage => self.choose_category_image(),
@@ -16636,6 +16697,66 @@ mod tests {
             None,
             "the shortcut exists only while browsing"
         );
+    }
+
+    #[test]
+    fn main_favourites_is_the_first_destination_and_new_folder_the_last() {
+        // The root is where the stock menu shows favourites first, so it
+        // comes first; the existing folders keep their listed order and
+        // naming a new one stays the last row, where it has always been.
+        let destinations = favorite_destinations(vec!["Arcade".into(), "Consoles".into()]);
+        assert_eq!(
+            destinations,
+            vec![
+                FavoriteDestination::Root,
+                FavoriteDestination::Folder("Arcade".into()),
+                FavoriteDestination::Folder("Consoles".into()),
+                FavoriteDestination::NewFolder,
+            ]
+        );
+        assert_eq!(
+            destinations
+                .iter()
+                .map(FavoriteDestination::label)
+                .collect::<Vec<_>>(),
+            vec!["Main Favourites", "Arcade", "Consoles", "New folder..."]
+        );
+        let root = Path::new("/menu/_@Favorites");
+        // The root writes into the root itself, never into a folder named
+        // after its row.
+        assert_eq!(destinations[0].path(root), Some(root.to_path_buf()));
+        assert_eq!(destinations[1].path(root), Some(root.join("Arcade")));
+        assert_eq!(
+            destinations[3].path(root),
+            None,
+            "a folder still to be named has nowhere to write yet"
+        );
+        // A card with no folders offers the root and the chance to name one.
+        assert_eq!(
+            favorite_destinations(Vec::new()),
+            vec![FavoriteDestination::Root, FavoriteDestination::NewFolder]
+        );
+    }
+
+    #[test]
+    fn a_user_folder_called_main_favourites_stays_distinct_from_the_root() {
+        // Both rows read "Main Favourites", so the label cannot say which
+        // is which; the typed destination must, or the folder would be
+        // unreachable and a choice of the root could land in the folder.
+        let destinations = favorite_destinations(vec!["Main Favourites".into()]);
+        assert_eq!(destinations[0], FavoriteDestination::Root);
+        assert_eq!(
+            destinations[1],
+            FavoriteDestination::Folder("Main Favourites".into())
+        );
+        assert_eq!(destinations[0].label(), destinations[1].label());
+        let root = Path::new("/menu/_@Favorites");
+        assert_eq!(destinations[0].path(root), Some(root.to_path_buf()));
+        assert_eq!(
+            destinations[1].path(root),
+            Some(root.join("Main Favourites"))
+        );
+        assert_ne!(destinations[0].path(root), destinations[1].path(root));
     }
 
     #[test]

@@ -927,6 +927,69 @@ extensions = ["nes", "mgl"]
     }
 
     #[test]
+    fn a_game_favourite_can_be_kept_directly_in_the_root() {
+        // The stock menu lists what sits directly in _@Favorites before any
+        // folder, so the root is a destination in its own right. A card
+        // with no favourites yet has no root, and the first one has to make
+        // it rather than fail on it.
+        let root = temp("root-game");
+        std::fs::remove_dir_all(&root).ok();
+        assert!(!root.exists());
+        let mgl = "<mistergamedescription><rbf>_Console/NES</rbf><file delay=\"1\" type=\"f\" index=\"1\" path=\"/media/fat/games/NES/Game.nes\"/></mistergamedescription>";
+        let written = add_game(&root, "Game", mgl).expect("the first favourite makes the root");
+        assert_eq!(written, root.join("Game.mgl"));
+        assert!(
+            std::fs::symlink_metadata(&written).unwrap().is_file(),
+            "a game favourite is a plain .mgl file"
+        );
+        assert_eq!(std::fs::read_to_string(&written).unwrap(), mgl);
+        assert!(
+            std::fs::read_dir(&root)
+                .unwrap()
+                .all(|item| !item.unwrap().path().is_dir()),
+            "the root gets the file, not a folder"
+        );
+
+        let target = Path::new("/media/fat/games/NES/Game.nes");
+        let found = Favorites::read(&root);
+        assert!(found.holds(target), "a root-level favourite is read back");
+        assert_eq!(found.file_for(target), Some(written.as_path()));
+
+        remove(&written).unwrap();
+        assert!(!Favorites::read(&root).holds(target));
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_core_favourite_can_be_linked_directly_in_the_root() {
+        // A core file kept in the root is the same link the stock script
+        // writes, only one level up; the link goes, the original stays.
+        let root = temp("root-core");
+        let games = temp("root-core-games");
+        std::fs::remove_dir_all(&root).ok();
+        assert!(!root.exists());
+        let source = games.join("Game.mra");
+        std::fs::write(&source, b"fixture core").unwrap();
+
+        let written = add_core(&root, "Game.mra", &source).expect("the first link makes the root");
+        assert_eq!(written, root.join("Game.mra"));
+        assert!(std::fs::symlink_metadata(&written)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        assert_eq!(std::fs::read_link(&written).unwrap(), source);
+        assert!(Favorites::read(&root).holds(&source));
+
+        remove(&written).unwrap();
+        assert!(!written.exists());
+        assert!(source.is_file(), "removing the favourite keeps the game");
+        assert!(!Favorites::read(&root).holds(&source));
+        std::fs::remove_dir_all(&root).ok();
+        std::fs::remove_dir_all(&games).ok();
+    }
+
+    #[test]
     fn a_favourites_path_that_cannot_be_a_directory_is_reported() {
         // A storage/path failure must not look like an empty collection and
         // offer New folder as if nothing were wrong.
