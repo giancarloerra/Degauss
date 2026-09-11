@@ -232,7 +232,7 @@ fn real_service_policy_and_scope_matrix_is_non_destructive() {
     assert!(fresh_xml.contains("<name>"));
     let downloaded = only_downloaded_image(&fresh);
 
-    let partial = suite.case(&config, "partial-folder");
+    let partial = suite.case(&config, "partial-game");
     std::fs::copy(&downloaded, partial.join("existing.png"))
         .expect("copy a real downloaded image into the partial fixture");
     write_gamelist(
