@@ -973,17 +973,14 @@ fn response_status(response: &HttpResponse) -> Result<()> {
         if trimmed.to_lowercase().starts_with("erreur") {
             let body_error = text_error(trimmed);
             if response.status < 300 || body_error.kind == ErrorKind::Authentication {
-                crate::note(&match authentication_source(trimmed) {
+                crate::note(match authentication_source(trimmed) {
                     Some(AuthenticationSource::Application) => {
-                        "scraper      ScreenScraper rejected application authentication".to_string()
+                        "scraper      ScreenScraper rejected application authentication"
                     }
                     Some(AuthenticationSource::Account) => {
-                        "scraper      ScreenScraper rejected account authentication".to_string()
+                        "scraper      ScreenScraper rejected account authentication"
                     }
-                    None => format!(
-                        "scraper      ScreenScraper returned a body-level error: {}",
-                        excerpt(trimmed)
-                    ),
+                    None => "scraper      ScreenScraper returned a body-level error",
                 });
                 return Err(body_error);
             }
@@ -1043,21 +1040,6 @@ fn text_error(text: &str) -> Error {
                 "the ScreenScraper allowance is exhausted",
             );
         }
-        // The documented 431 text ("Faite du tri dans vos fichiers roms et
-        // repassez demain !") names no quota.
-        if lower.contains("tri dans vos fichiers") {
-            return Error::new(
-                ErrorKind::FailedQuota,
-                "the daily failed-search allowance is exhausted",
-            );
-        }
-        // Every documented 429 text, French or English, names threads.
-        if lower.contains("threads") {
-            return Error::new(
-                ErrorKind::RateLimited,
-                "ScreenScraper's concurrent or per-minute limit was reached",
-            );
-        }
         if lower.contains("introuv") || lower.contains("non trouv") {
             return Error::new(ErrorKind::NotFound, "no matching game");
         }
@@ -1115,12 +1097,15 @@ fn text_error(text: &str) -> Error {
 /// flood the log.
 fn excerpt(text: &str) -> String {
     const LIMIT: usize = 120;
-    let line = text.split_whitespace().collect::<Vec<_>>().join(" ");
-    if line.chars().count() <= LIMIT {
-        line
+    let mut chars = text
+        .split_whitespace()
+        .flat_map(|word| std::iter::once(' ').chain(word.chars()))
+        .skip(1);
+    let line: String = chars.by_ref().take(LIMIT).collect();
+    if chars.next().is_some() {
+        format!("{line}...")
     } else {
-        let cut: String = line.chars().take(LIMIT).collect();
-        format!("{cut}...")
+        line
     }
 }
 
@@ -2384,23 +2369,23 @@ mod tests {
             ),
             (
                 "Erreur : Faite du tri dans vos fichiers roms et repassez demain !",
-                ErrorKind::FailedQuota,
+                ErrorKind::Unavailable,
             ),
             (
                 "Erreur : Le nombre de threads autorisé pour le membre est atteint",
-                ErrorKind::RateLimited,
+                ErrorKind::Unavailable,
             ),
             (
                 "Erreur : Le nombre de threads par minute autorisé pour le membre est atteint",
-                ErrorKind::RateLimited,
+                ErrorKind::Unavailable,
             ),
             (
                 "Erreur : The maximum threads allowed to leecher users is already used",
-                ErrorKind::RateLimited,
+                ErrorKind::Unavailable,
             ),
             (
                 "Erreur : The maximum threads is already used",
-                ErrorKind::RateLimited,
+                ErrorKind::Unavailable,
             ),
             ("Erreur : Jeu non trouvée !", ErrorKind::NotFound),
             ("Service paused for maintenance", ErrorKind::Unavailable),
@@ -2435,9 +2420,10 @@ mod tests {
         .by_name(3, "Game")
         .unwrap_err();
         assert_eq!(closed.kind, ErrorKind::Unavailable);
-        // A limit or an exhausted failed-search allowance delivered as a
-        // 2xx text must keep its meaning: the batch stops instead of
-        // repeating a lookup the server is refusing for every game.
+        // The 429 and 431 texts are classified by their HTTP status; the
+        // same text in a 2xx body is an outage, as it always was: the batch
+        // stops instead of repeating a lookup the server is refusing for
+        // every game.
         let limited = client(HttpResponse {
             status: 200,
             content_type: Some("text/plain".into()),
@@ -2447,7 +2433,7 @@ mod tests {
         })
         .by_name(3, "Game")
         .unwrap_err();
-        assert_eq!(limited.kind, ErrorKind::RateLimited);
+        assert_eq!(limited.kind, ErrorKind::Unavailable);
         let exhausted = client(HttpResponse {
             status: 200,
             content_type: Some("text/plain".into()),
@@ -2457,7 +2443,7 @@ mod tests {
         })
         .by_name(3, "Game")
         .unwrap_err();
-        assert_eq!(exhausted.kind, ErrorKind::FailedQuota);
+        assert_eq!(exhausted.kind, ErrorKind::Unavailable);
         // A page that is not XML at all is not a match response for one
         // game: it stops the run like any other outage.
         let page = client(HttpResponse {
@@ -2526,6 +2512,12 @@ mod tests {
             "{}",
             plain.detail
         );
+        // The cut falls exactly at the limit, with the whitespace between
+        // words counted once, so a documented text is never shortened.
+        let exact = format!("{} {}", "a".repeat(60), "b".repeat(59));
+        assert_eq!(excerpt(&exact), exact);
+        assert_eq!(excerpt(&format!("{exact} c")), format!("{exact}..."));
+        assert_eq!(excerpt("  one \n\t two  "), "one two");
     }
 
     #[test]
