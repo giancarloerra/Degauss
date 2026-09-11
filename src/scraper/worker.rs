@@ -91,12 +91,12 @@ pub struct Progress {
     /// server response or interrupting an unattended scrape.
     pub manual_matches: Vec<Match>,
     /// Every game the run attempted and could not resolve, with the
-    /// reason: no match, several matches, no image to fetch, or a failed
-    /// lookup, download or write. A game whose image failed but whose
-    /// metadata was written is listed with the image error; games not
-    /// reached before a failure or cancellation are not listed. The report
-    /// names them after an unattended batch. Carried only by the terminal
-    /// event; progress snapshots leave it empty.
+    /// reason: no match, no searchable title, several matches, no image to
+    /// fetch, or a failed lookup, download or write. A game whose image
+    /// failed but whose metadata was written is listed with the image
+    /// error; games not reached before a failure or cancellation are not
+    /// listed. The report names them after an unattended batch. Carried
+    /// only by the terminal event; progress snapshots leave it empty.
     pub unresolved_games: Vec<UnresolvedGame>,
 }
 
@@ -1623,6 +1623,12 @@ enum WorkerMessage {
     Done,
 }
 
+/// Report reasons for a game counted as not found: ScreenScraper answered
+/// the lookup with no exact match, or no title search was sent because
+/// nothing remained to search for.
+const NO_MATCH: &str = "no match";
+const NO_SEARCHABLE_TITLE: &str = "no searchable title";
+
 struct Prepared {
     target: Target,
     needs: Needs,
@@ -1631,7 +1637,8 @@ struct Prepared {
     media_error: Option<Error>,
     no_media: bool,
     ambiguous: Option<usize>,
-    not_found: bool,
+    /// The report reason when the game was counted as not found.
+    not_found: Option<&'static str>,
     alternatives: Vec<Match>,
 }
 
@@ -1702,12 +1709,12 @@ fn prepare(
     let current = current_label(&target);
     let lookup = if let Some(matched) = selected {
         activity_text(events, &current, "Using selected match");
-        super::api::LookupResponse {
+        Some(super::api::LookupResponse {
             lookup: Lookup::Found(Box::new(matched)),
             alternatives: Vec::new(),
             account: None,
             server_miss: false,
-        }
+        })
     } else if let Some(path) = target.match_path.as_deref() {
         activity_text(events, &current, "Hashing ROM");
         match hashes::file(path, settings.hash_limit_bytes(), cancelled)? {
@@ -1731,7 +1738,7 @@ fn prepare(
                     Lookup::NotFound => search_by_title(
                         &target, &current, media_type, client, limits, cancelled, events,
                     )?,
-                    _ => result,
+                    _ => Some(result),
                 }
             }
             None => search_by_title(
@@ -1744,6 +1751,19 @@ fn prepare(
         )?
     };
 
+    let Some(lookup) = lookup else {
+        return Ok(Prepared {
+            target,
+            needs,
+            matched: None,
+            media: None,
+            media_error: None,
+            no_media: false,
+            ambiguous: None,
+            not_found: Some(NO_SEARCHABLE_TITLE),
+            alternatives: Vec::new(),
+        });
+    };
     let alternatives = if retain_alternatives {
         lookup.alternatives
     } else {
@@ -1758,7 +1778,7 @@ fn prepare(
             media_error: None,
             no_media: false,
             ambiguous: None,
-            not_found: true,
+            not_found: Some(NO_MATCH),
             alternatives,
         }),
         Lookup::Ambiguous(count) => Ok(Prepared {
@@ -1769,7 +1789,7 @@ fn prepare(
             media_error: None,
             no_media: false,
             ambiguous: Some(count),
-            not_found: false,
+            not_found: None,
             alternatives,
         }),
         Lookup::Found(matched) => {
@@ -1815,7 +1835,7 @@ fn prepare(
                 media_error,
                 no_media,
                 ambiguous: None,
-                not_found: false,
+                not_found: None,
                 alternatives: Vec::new(),
             })
         }
@@ -1866,10 +1886,10 @@ fn current_label(target: &Target) -> String {
 }
 
 /// Search ScreenScraper by title. A file named only by its extension and
-/// dump tags leaves nothing to send once those are removed; that is one
-/// game without a match, recorded like a server miss without a request or
-/// a failed-search reservation being spent, not a setup fault that should
-/// stop the run.
+/// dump tags leaves nothing to send once those are removed: no search is
+/// made and `None` is returned, so the game is counted as not found with
+/// its own reason, without a request or a failed-search reservation being
+/// spent and without a setup fault stopping the run.
 fn search_by_title(
     target: &Target,
     current: &str,
@@ -1878,18 +1898,13 @@ fn search_by_title(
     limits: &LimitedTransport,
     cancelled: &AtomicBool,
     events: &SyncSender<WorkerMessage>,
-) -> Result<super::api::LookupResponse> {
+) -> Result<Option<super::api::LookupResponse>> {
     if target.query.trim().is_empty() {
         log_scraper_detail(
             current,
             "no title remains to search for once the extension and dump tags are removed",
         );
-        return Ok(super::api::LookupResponse {
-            lookup: Lookup::NotFound,
-            alternatives: Vec::new(),
-            account: None,
-            server_miss: false,
-        });
+        return Ok(None);
     }
     activity_text(events, current, "Matching by name");
     retry(
@@ -1905,6 +1920,7 @@ fn search_by_title(
             })
         },
     )
+    .map(Some)
 }
 
 fn retry_status(error: &Error, delay: Duration) -> String {
@@ -1945,13 +1961,13 @@ struct Pending {
 
 fn stage(prepared: Prepared, progress: &mut Progress) -> Result<Option<Pending>> {
     let target_label = current_label(&prepared.target);
-    if prepared.not_found {
+    if let Some(reason) = prepared.not_found {
         log_scraper_detail(&target_label, "no exact ScreenScraper match; skipped");
         if !prepared.alternatives.is_empty() {
             progress.manual_matches = prepared.alternatives;
         }
         progress.not_found += 1;
-        progress.unresolved(&target_label, "no match");
+        progress.unresolved(&target_label, reason);
         return Ok(None);
     }
     if let Some(count) = prepared.ambiguous {
@@ -3288,10 +3304,11 @@ mod tests {
 
     #[test]
     fn a_rejected_individual_search_is_recorded_and_the_batch_continues() {
-        // One game ScreenScraper refuses, by HTTP 400 or by an error text it
-        // does not document as an outage, is that game's problem whether the
-        // refusal answers the hash lookup or the title search: the run still
-        // processes the next game and names the rejected one.
+        // One game ScreenScraper refuses, by HTTP 400 or by one of the
+        // error texts it documents for a bad request, is that game's
+        // problem whether the refusal answers the hash lookup or the title
+        // search: the run still processes the next game and names the
+        // rejected one.
         for (status, content_type, body, at_title_search) in [
             (
                 400,
@@ -3302,7 +3319,7 @@ mod tests {
             (
                 200,
                 "text/plain",
-                "Erreur : Problème dans le nom du fichier rom",
+                "Erreur : Champ crc, md5 ou sha1 erroné",
                 false,
             ),
             (
@@ -3314,7 +3331,7 @@ mod tests {
             (
                 200,
                 "text/plain",
-                "Erreur : Problème dans la recherche",
+                "Erreur : Il manque des champs obligatoires dans l'url",
                 true,
             ),
         ] {
@@ -3439,10 +3456,10 @@ mod tests {
     #[test]
     fn a_file_named_only_by_dump_tags_is_recorded_and_the_batch_continues() {
         // A system with several extensions keeps the extension in the row
-        // name, so a file called only by its tags searches for an empty
-        // term once the extension and tags are removed. That is one game
-        // without a match, whether it reaches the title search after a hash
-        // miss or directly: the run counts it like a server miss, spends no
+        // name, so a file called only by its tags would search for an empty
+        // term once the extension and tags are removed. Whether it reaches
+        // the title search after a hash miss or directly, no search is
+        // made: the run counts the game as not found, spends no
         // failed-search allowance on it, and writes the next game instead
         // of stopping on a setup error.
         let root = temp("tagless-title");
@@ -3472,16 +3489,18 @@ mod tests {
         progress
             .unresolved_games
             .sort_by(|a, b| a.label.cmp(&b.label));
+        // The report names the real cause: no search was made, which is
+        // not the same as ScreenScraper reporting the game missing.
         assert_eq!(
             progress.unresolved_games,
             vec![
                 UnresolvedGame {
                     label: "Nintendo: (Proto).cue".into(),
-                    reason: "no match".into(),
+                    reason: "no searchable title".into(),
                 },
                 UnresolvedGame {
                     label: "Nintendo: (Unl).bin".into(),
-                    reason: "no match".into(),
+                    reason: "no searchable title".into(),
                 },
             ]
         );
@@ -3527,35 +3546,59 @@ mod tests {
 
     #[test]
     fn a_page_instead_of_xml_still_stops_the_batch() {
-        // An HTML answer is not a match response for one game but a sign
-        // that the service is not answering; walking the queue would spend
-        // one request per remaining game for nothing.
-        let root = temp("html-page-mid-batch");
-        std::fs::write(root.join("Rejected.rom"), b"rejected").unwrap();
-        std::fs::write(root.join("Zebra.rom"), b"found").unwrap();
-        let Event::Failed { error, progress } = finish(
-            start_with_transport(
-                request(&root, settings(ImagePolicy::Off)),
-                Arc::new(RejectingMock {
-                    status: 200,
-                    content_type: "text/html",
-                    body: "<html><body>Maintenance</body></html>",
-                    at_title_search: false,
-                }),
-            )
-            .unwrap(),
-        ) else {
-            panic!("a non-XML page was treated as one game's problem");
-        };
-        assert_eq!(error.kind, ErrorKind::Unavailable);
-        assert_eq!(
-            progress.unresolved_games,
-            vec![UnresolvedGame {
-                label: "Nintendo: Rejected".into(),
-                reason: "ScreenScraper is unavailable".into(),
-            }]
-        );
-        let _ = std::fs::remove_dir_all(root);
+        // An HTML page, a plain notice, an empty body or an error text
+        // ScreenScraper has not documented is not a match response for one
+        // game but a sign that the service is not answering; walking the
+        // queue would spend one request per remaining game for nothing.
+        for (name, content_type, body, at_title_search) in [
+            (
+                "html-page",
+                "text/html",
+                "<html><body>Maintenance</body></html>",
+                false,
+            ),
+            (
+                "notice",
+                "text/plain",
+                "Service paused for maintenance",
+                true,
+            ),
+            ("empty", "application/xml", "", false),
+            (
+                "undocumented",
+                "text/plain",
+                "Erreur : Problème dans la recherche",
+                true,
+            ),
+        ] {
+            let root = temp(&format!("{name}-mid-batch"));
+            std::fs::write(root.join("Rejected.rom"), b"rejected").unwrap();
+            std::fs::write(root.join("Zebra.rom"), b"found").unwrap();
+            let Event::Failed { error, progress } = finish(
+                start_with_transport(
+                    request(&root, settings(ImagePolicy::Off)),
+                    Arc::new(RejectingMock {
+                        status: 200,
+                        content_type,
+                        body,
+                        at_title_search,
+                    }),
+                )
+                .unwrap(),
+            ) else {
+                panic!("a non-XML answer ({name}) was treated as one game's problem");
+            };
+            assert_eq!(error.kind, ErrorKind::Unavailable, "{name}");
+            assert_eq!(
+                progress.unresolved_games,
+                vec![UnresolvedGame {
+                    label: "Nintendo: Rejected".into(),
+                    reason: "ScreenScraper is unavailable".into(),
+                }],
+                "{name}"
+            );
+            let _ = std::fs::remove_dir_all(root);
+        }
     }
 
     #[test]

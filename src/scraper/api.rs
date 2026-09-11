@@ -1075,19 +1075,34 @@ fn text_error(text: &str) -> Error {
                 "this Degauss scraper client was refused by ScreenScraper",
             );
         }
-        // Any other error text on a successful status answers this one
-        // request: the run continues with the next game, and the log keeps
-        // the server's words so an undocumented refusal stays diagnosable.
+        // The documented HTTP 400 texts (a rom name carrying a path or not
+        // conforming, a malformed hash field, a call missing its fields)
+        // concern this one request: the run continues with the next game.
+        if lower.contains("fichier rom")
+            || lower.contains("l'url")
+            || lower.contains("crc, md5 ou sha1")
+        {
+            return Error::new(
+                ErrorKind::InvalidRequest,
+                format!("ScreenScraper rejected this request: {}", excerpt(text)),
+            );
+        }
+        // An error text ScreenScraper has not documented cannot be tied to
+        // the one request, so it stops the run as before rather than
+        // costing one lookup per remaining game; the log keeps the
+        // server's words so the cause stays diagnosable.
         return Error::new(
-            ErrorKind::InvalidRequest,
+            ErrorKind::Unavailable,
             format!(
-                "ScreenScraper returned an error response for this request: {}",
+                "ScreenScraper returned an unrecognised error response: {}",
                 excerpt(text)
             ),
         );
     }
+    // Neither XML nor an error text is not an answer to the one request
+    // (an empty body, a maintenance notice), so the run stops.
     Error::new(
-        ErrorKind::MalformedResponse,
+        ErrorKind::Unavailable,
         format!(
             "ScreenScraper returned a response that was not XML: {}",
             excerpt(text)
@@ -2318,10 +2333,12 @@ mod tests {
     }
 
     #[test]
-    fn only_service_wide_error_texts_are_classified_as_outages() {
-        // A closure or a refused client concerns every game in the run; an
-        // unrecognised error about one request must not stop the batch by
-        // masquerading as an outage.
+    fn only_documented_per_request_error_texts_leave_the_run_going() {
+        // The documented 400 texts concern one request and must not stop
+        // the batch by masquerading as an outage. A closure, a refused
+        // client, a text ScreenScraper has not documented, or a body that
+        // is no answer at all concerns every remaining game and stops the
+        // run instead of costing one lookup per game.
         for (body, kind) in [
             (
                 "Erreur : API fermé pour les non membres ou les membres inactifs",
@@ -2335,6 +2352,23 @@ mod tests {
             (
                 "Erreur : Problème dans le nom du fichier rom",
                 ErrorKind::InvalidRequest,
+            ),
+            (
+                "Erreur dans le nom du fichier rom : celui-ci contient un chemin d'accés",
+                ErrorKind::InvalidRequest,
+            ),
+            (
+                "Erreur : Champ crc, md5 ou sha1 erroné",
+                ErrorKind::InvalidRequest,
+            ),
+            (
+                "Erreur : Il manque des champs obligatoires dans l'url",
+                ErrorKind::InvalidRequest,
+            ),
+            ("Erreur : problème avec l'url", ErrorKind::InvalidRequest),
+            (
+                "Erreur : Problème dans la recherche",
+                ErrorKind::Unavailable,
             ),
             (
                 "Erreur de login : Vérifier vos identifiants développeur !",
@@ -2369,10 +2403,8 @@ mod tests {
                 ErrorKind::RateLimited,
             ),
             ("Erreur : Jeu non trouvée !", ErrorKind::NotFound),
-            (
-                "<html>not an error text</html>",
-                ErrorKind::MalformedResponse,
-            ),
+            ("Service paused for maintenance", ErrorKind::Unavailable),
+            ("", ErrorKind::Unavailable),
         ] {
             assert_eq!(text_error(body).kind, kind, "{body}");
         }
@@ -2387,6 +2419,14 @@ mod tests {
         .unwrap_err();
         assert_eq!(rejected.kind, ErrorKind::InvalidRequest);
         assert!(!rejected.retryable());
+        let undocumented = client(HttpResponse {
+            status: 200,
+            content_type: Some("text/plain".into()),
+            body: "Erreur : Problème dans la recherche".as_bytes().to_vec(),
+        })
+        .by_name(3, "Game")
+        .unwrap_err();
+        assert_eq!(undocumented.kind, ErrorKind::Unavailable);
         let closed = client(HttpResponse {
             status: 200,
             content_type: Some("text/plain".into()),
@@ -2429,15 +2469,45 @@ mod tests {
         .unwrap_err();
         assert_eq!(page.kind, ErrorKind::Unavailable);
         assert!(page.detail.contains("text/html"), "{}", page.detail);
+        // So does a plain-text body that is no error text, whatever its
+        // content type says, and so does an empty answer.
+        for (content_type, body) in [
+            (Some("text/plain"), "Service paused for maintenance"),
+            (Some("application/xml"), ""),
+            (None, "Service paused for maintenance"),
+        ] {
+            let notice = client(HttpResponse {
+                status: 200,
+                content_type: content_type.map(str::to_string),
+                body: body.as_bytes().to_vec(),
+            })
+            .by_name(3, "Game")
+            .unwrap_err();
+            assert_eq!(
+                notice.kind,
+                ErrorKind::Unavailable,
+                "{content_type:?} {body:?}"
+            );
+        }
     }
 
     #[test]
     fn an_undocumented_error_text_is_kept_in_the_diagnosis_but_bounded() {
-        // A per-game refusal no longer stops the run, so the only place the
-        // server's actual words can be seen is the log detail. A long body
-        // is cut so a page cannot flood it.
+        // The interface shows only the kind's fixed message, so the log
+        // detail is the one place the server's actual words can be seen,
+        // for a per-game refusal and for the unrecognised text that stopped
+        // a run alike. A long body is cut so a page cannot flood it.
+        let rejected = text_error("Erreur : Problème   dans le nom\ndu fichier rom");
+        assert_eq!(rejected.kind, ErrorKind::InvalidRequest);
+        assert!(
+            rejected
+                .detail
+                .ends_with(": Erreur : Problème dans le nom du fichier rom"),
+            "{}",
+            rejected.detail
+        );
         let error = text_error("Erreur : Problème   dans\nla recherche");
-        assert_eq!(error.kind, ErrorKind::InvalidRequest);
+        assert_eq!(error.kind, ErrorKind::Unavailable);
         assert!(
             error
                 .detail
@@ -2450,7 +2520,7 @@ mod tests {
         assert!(detail.ends_with("..."), "{detail}");
         assert!(detail.chars().count() < 200, "{detail}");
         let plain = text_error("Service paused for maintenance");
-        assert_eq!(plain.kind, ErrorKind::MalformedResponse);
+        assert_eq!(plain.kind, ErrorKind::Unavailable);
         assert!(
             plain.detail.ends_with(": Service paused for maintenance"),
             "{}",

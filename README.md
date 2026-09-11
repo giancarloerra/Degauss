@@ -965,12 +965,15 @@ artwork or metadata, set the corresponding Images or Metadata policy to
 
 Folder, system and all-systems scrapes never stop for a match choice. Missing
 and ambiguous ScreenScraper matches are counted, skipped without changes, and the remaining
-games continue. A request ScreenScraper rejects for one game or a match
-response it serves unreadable is counted as failed for that game and the run
-continues; a file whose name leaves nothing to search for once its extension
-and dump tags are removed is counted as a missing match without a request. A
-network failure, a rejected login, a rate limit, a service outage or an answer
-that is not XML at all still stops the run. Unsupported systems are also
+games continue. A request ScreenScraper rejects for one game (HTTP 400 or one
+of its documented bad-request texts) or a match response it serves unreadable
+is counted as failed for that game and the run continues; a file whose name
+leaves nothing to search for once its extension and dump tags are removed is
+counted as missing with the reason "no searchable title" and no title search
+is sent, although a hash lookup is still made for a file that can be hashed.
+A network failure, a rejected login, a rate limit, a service outage, an error
+text Degauss does not recognise or an answer that is neither XML nor an error
+text still stops the run. Unsupported systems are also
 skipped and counted. If two
 systems use the same folder but require different ScreenScraper platform IDs,
 the all-systems scrape skips that shared target; a per-system scrape remains
@@ -988,8 +991,8 @@ scrollable report with status, scope, current title, completed/total, written,
 unchanged, linked copies, unresolved and skipped/error breakdowns, allowance,
 throughput and the last problem. After the run, the report continues with
 every game the run attempted and could not resolve and the reason, one row
-per game: no match, several matches, no image to fetch, or a failed lookup,
-download or gamelist write. A game whose image failed but whose metadata was
+per game: no match, no searchable title, several matches, no image to fetch,
+or a failed lookup, download or gamelist write. A game whose image failed but whose metadata was
 written is listed with the image error. Games not reached before a failure
 or cancellation are not listed. A missing, ambiguous or rejected game can
 then be found and scraped individually. **B Overview** returns without
