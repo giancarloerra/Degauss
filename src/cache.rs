@@ -317,10 +317,16 @@ pub fn build_system_observed(
     Ok(completed.map(|_| cache))
 }
 
+/// The `what` of the error a member path deeper than the walk goes raises.
+/// Only the walk of an archive's own folders raises it, so under an archive
+/// it can only be that archive's.
+const MEMBER_DEPTH: &str = "zip member path";
+
 /// The reason an archive is skipped whole, when the error is the archive
-/// reader's own: its directory could not be read or does not hold together.
-/// The archive is named once by the caller; its own error would name it
-/// again, and the summary has to fit a screen.
+/// reader's own (its directory could not be read or does not hold together)
+/// or one of its member paths goes deeper than the walk does. The archive
+/// is named once by the caller; its own error would name it again, and the
+/// summary has to fit a screen.
 fn archive_skip_reason(error: &DegaussError, place: &Place) -> Option<String> {
     let Place::Archive(archive) = place else {
         return None;
@@ -332,6 +338,11 @@ fn archive_skip_reason(error: &DegaussError, place: &Place) -> Option<String> {
         DegaussError::Io { what, path, source } if path == archive => {
             Some(format!("{what} failed: {source}"))
         }
+        DegaussError::Unsupported {
+            what: MEMBER_DEPTH, ..
+        } => Some(format!(
+            "a member path exceeds the maximum folder depth of {MAX_DEPTH}"
+        )),
         _ => None,
     }
 }
@@ -354,13 +365,26 @@ fn walk_controlled(
     }
     let key = place.key();
     if depth > MAX_DEPTH {
-        return Err(DegaussError::unsupported(
-            "cache traversal",
-            format!(
-                "{} exceeds the maximum folder depth of {MAX_DEPTH}",
-                place.path().display()
+        return Err(match place {
+            // A member path deeper than the walk goes is that archive's
+            // condition, and the arm below leaves the archive out whole
+            // like one whose directory does not hold together; a folder
+            // this deep is the system's failure it has always been.
+            Place::ArchiveDirectory { archive, prefix } => DegaussError::unsupported(
+                MEMBER_DEPTH,
+                format!(
+                    "{}/{prefix} exceeds the maximum folder depth of {MAX_DEPTH}",
+                    archive.display()
+                ),
             ),
-        ));
+            _ => DegaussError::unsupported(
+                "cache traversal",
+                format!(
+                    "{} exceeds the maximum folder depth of {MAX_DEPTH}",
+                    place.path().display()
+                ),
+            ),
+        });
     }
     if seen.contains(&key) {
         return Ok(Some(0));
@@ -424,9 +448,9 @@ fn walk_controlled(
                         // raised and the member lines its listing added to
                         // the summary go back with it, its row goes, and the
                         // rest of the system carries on. Nothing of it is
-                        // ever published half done. Any other failure under
-                        // it, such as the depth limit, is the system's as
-                        // before.
+                        // ever published half done. So is one with a member
+                        // path deeper than the walk goes. Any other failure
+                        // under it is the system's as before.
                         let Some(reason) = archive_skip_reason(&error, inner) else {
                             return Err(error);
                         };
@@ -1714,20 +1738,55 @@ mod tests {
         std::fs::remove_dir_all(games).unwrap();
     }
 
-    /// Only the archive reader's own failure skips an archive. A limit the
-    /// walk hits inside one, such as the folder depth, is not a damaged
-    /// archive and stays the system's failure it has always been: turning
-    /// it into a skip would quietly drop an archive that reads fine.
+    /// A member path deeper than the walk goes is a condition of that
+    /// archive, so it is left out whole with a warning and the games beside
+    /// it are still published: an archive must never take a system down
+    /// with it. A folder that deep stays the system's failure it has always
+    /// been.
     #[test]
-    fn a_depth_overflow_inside_an_archive_is_still_the_system_failure() {
+    fn a_member_path_past_the_depth_limit_skips_only_that_archive() {
         let games = temp("archive-depth-overflow");
         let deep = format!("{}game.d64", "d/".repeat(MAX_DEPTH + 1));
+        let archive = games.join("Deep.zip");
         std::fs::write(
-            games.join("Deep.zip"),
-            crate::zip::tests_archive(&[deep.as_str()], false),
+            &archive,
+            crate::zip::tests_archive(&[deep.as_str(), "shallow.d64"], false),
         )
         .unwrap();
+        std::fs::write(games.join("Beside.d64"), b"x").unwrap();
         let library = Library::open(&system(&games)).unwrap();
+        let mut warnings = Vec::new();
+        let cache = build_system_checked(&library, &mut warnings).unwrap();
+        let root = cache.get(&library.start()).unwrap();
+        assert_eq!(
+            root.rows
+                .iter()
+                .map(|row| row.name.as_str())
+                .collect::<Vec<_>>(),
+            ["Beside"],
+            "the archive has no row, not even for its shallow member"
+        );
+        assert!(
+            cache.folders.keys().all(|key| !key.contains("Deep.zip")),
+            "{:?}",
+            cache.folders.keys().collect::<Vec<_>>()
+        );
+        assert_eq!(
+            warnings,
+            [format!(
+                "{}: skipped: a member path exceeds the maximum folder depth of {MAX_DEPTH}",
+                archive.display()
+            )]
+        );
+
+        let folders = temp("folder-depth-overflow");
+        let mut deep = folders.clone();
+        for _ in 0..=MAX_DEPTH {
+            deep.push("d");
+        }
+        std::fs::create_dir_all(&deep).unwrap();
+        std::fs::write(deep.join("game.d64"), b"x").unwrap();
+        let library = Library::open(&system(&folders)).unwrap();
         let mut warnings = Vec::new();
         let error = build_system_checked(&library, &mut warnings).unwrap_err();
         assert!(
@@ -1736,6 +1795,7 @@ mod tests {
         );
         assert!(warnings.is_empty(), "{warnings:?}");
         std::fs::remove_dir_all(games).unwrap();
+        std::fs::remove_dir_all(folders).unwrap();
     }
 
     #[test]
