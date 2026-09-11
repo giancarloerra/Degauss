@@ -4766,12 +4766,6 @@ impl App {
             Ok(cache) => cache,
             Err(error) => return Some(format!("{name}: {error}")),
         };
-        // An archive or member the scan left out is said out loud with the
-        // rest of the message, and logged like a full build's warning.
-        for warning in &mut warnings {
-            *warning = format!("{name}: {warning}");
-            crate::note(warning);
-        }
         let mut next_index = self.index.clone().unwrap_or_default();
         next_index
             .systems
@@ -4779,6 +4773,13 @@ impl App {
         match crate::cache::save_system_with_index(&self.cache_dir, id, &cache, &next_index) {
             Ok(installed) => warnings.extend(installed),
             Err(error) => return Some(format!("{name}: {error}")),
+        }
+        // An archive or member the scan left out, and anything publication
+        // had to say, is said out loud with the rest of the message and
+        // logged, named by the system the way a full build names them.
+        for warning in &mut warnings {
+            *warning = format!("{name}: {warning}");
+            crate::note(warning);
         }
         self.index = Some(next_index);
         self.apply_index();
