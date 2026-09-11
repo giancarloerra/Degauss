@@ -2241,12 +2241,12 @@ fn derived_folder_cover<'c>(
 /// nothing, and nothing is borrowed from the other source.
 fn play_cover<'c>(
     row: &'c browse::Row,
+    launch: &browse::Launch,
     provider: Option<&'c crate::artwork_pack::Provider>,
 ) -> Option<&'c Path> {
-    match (&row.kind, provider) {
-        (browse::Kind::Play(launch), Some(provider)) => provider.prepared_cover(launch),
-        (browse::Kind::Play(_), None) => row.cover.as_deref(),
-        (browse::Kind::Enter(_), _) => None,
+    match provider {
+        Some(provider) => provider.prepared_cover(launch),
+        None => row.cover.as_deref(),
     }
 }
 
@@ -2263,8 +2263,9 @@ struct FolderArt<'c> {
 
 /// Walk one folder for [`derived_folder_cover`]. False as soon as the
 /// answer is known to be nothing: a second distinct picture, or a game
-/// without one beside several that share one. A folder of many different
-/// games costs two games, not all of them.
+/// without one beside several that share one. A folder of games with
+/// different pictures costs two games; every other folder is walked to
+/// its last visible game, since only a picture can settle the answer.
 fn gather_folder_cover<'c>(
     cache: &'c crate::cache::SystemCache,
     place: &Place,
@@ -2294,7 +2295,7 @@ fn gather_folder_cover<'c>(
                     return false;
                 }
             }
-            browse::Kind::Play(_) => match (play_cover(row, provider), art.cover) {
+            browse::Kind::Play(launch) => match (play_cover(row, launch, provider), art.cover) {
                 (None, _) => {
                     if art.shared {
                         return false;
@@ -5715,6 +5716,11 @@ impl App {
             return;
         }
         let provider = self.artwork_provider.as_ref();
+        // A Pack that is unusable or not yet prepared answers nothing for
+        // any game, so there is nothing under any folder to find.
+        if provider.is_some_and(|provider| !provider.covers_prepared()) {
+            return;
+        }
         for row in rows.iter_mut() {
             if let browse::Kind::Enter(place) = &row.kind {
                 if row.below != Some(0) {
