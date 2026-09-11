@@ -260,6 +260,7 @@ fn option_operation(option: OptionId, input: OptionInput) -> OptionOperation {
         | OptionId::Font
         | OptionId::ShowArt
         | OptionId::ArtworkScale
+        | OptionId::DetailsStyle
         | OptionId::ShowHidden
         | OptionId::ShowEmpty
         | OptionId::ShowOther
@@ -809,6 +810,63 @@ impl ArtworkScale {
             "framebuffer dimensions are non-zero"
         );
         (width as f32 / height as f32) / display_aspect
+    }
+}
+
+/// How Details divides its width between the list and the picture, and
+/// whether the compact lines sit under the picture. The stored names are
+/// part of the settings format.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum DetailsStyle {
+    /// Preserve the original layout: the list beside a picture with the
+    /// compact summary, publisher and information hint under it.
+    #[default]
+    Information,
+    /// A wider picture taking the whole height of its column, with no
+    /// lines under it.
+    LargeArtwork,
+}
+
+impl DetailsStyle {
+    const ALL: [DetailsStyle; 2] = [DetailsStyle::Information, DetailsStyle::LargeArtwork];
+
+    fn setting(self) -> &'static str {
+        match self {
+            DetailsStyle::Information => "information",
+            DetailsStyle::LargeArtwork => "large-artwork",
+        }
+    }
+
+    fn shown(self) -> &'static str {
+        match self {
+            DetailsStyle::Information => "Information",
+            DetailsStyle::LargeArtwork => "Large Artwork",
+        }
+    }
+
+    fn parse(text: &str) -> Option<Self> {
+        match text {
+            "information" => Some(DetailsStyle::Information),
+            "large-artwork" => Some(DetailsStyle::LargeArtwork),
+            _ => None,
+        }
+    }
+
+    fn index(self) -> usize {
+        DetailsStyle::ALL
+            .iter()
+            .position(|&style| style == self)
+            .expect("every details style is listed")
+    }
+
+    /// What the picture's half of the safe width becomes while browsing
+    /// games: 42% for Information, which leaves the list room for a long
+    /// title, and 62% for Large Artwork.
+    fn art_factor(self) -> f32 {
+        match self {
+            DetailsStyle::Information => 0.84,
+            DetailsStyle::LargeArtwork => 1.24,
+        }
     }
 }
 
@@ -2822,6 +2880,7 @@ pub struct App {
     speed: usize,
     show_art: bool,
     artwork_scale: ArtworkScale,
+    details_style: DetailsStyle,
     show_stats: bool,
     show_hidden: bool,
     /// Every system found, before hiding is applied. `systems` is the
@@ -3100,6 +3159,11 @@ impl App {
             .as_deref()
             .and_then(ArtworkScale::parse)
             .unwrap_or_default();
+        let details_style = settings
+            .details_style
+            .as_deref()
+            .and_then(DetailsStyle::parse)
+            .unwrap_or_default();
         // Margins are saved when changed and read back here. Without this the
         // Options screen would show the saved figure while the screen kept
         // the one from the config file, and the two would disagree.
@@ -3188,6 +3252,7 @@ impl App {
                 .min(SPEED_STEPS.len() - 1),
             show_art: settings.show_art.unwrap_or(true),
             artwork_scale,
+            details_style,
             show_stats: settings.show_stats.unwrap_or(config.app.show_stats),
             show_hidden: settings.show_hidden.unwrap_or(false),
             all_systems: Vec::new(),
@@ -3490,8 +3555,9 @@ impl App {
             && self.browsing == Browsing::Games
             && self.layout == Layout::Details
         {
-            // The approved compact preview leaves more room for game titles.
-            geometry.art_width *= 0.84;
+            // The approved compact preview leaves more room for game titles;
+            // Large Artwork gives that room to the picture instead.
+            geometry.art_width *= self.details_style.art_factor();
         }
         let help_height = if matches!(
             self.screen,
@@ -7603,6 +7669,14 @@ impl App {
                 self.settings.artwork_scale = Some(self.artwork_scale.setting().to_string());
                 self.touch_selection();
             }
+            OptionId::DetailsStyle => {
+                let at = step(self.details_style.index(), delta, DetailsStyle::ALL.len());
+                self.details_style = DetailsStyle::ALL[at];
+                self.settings.details_style = Some(self.details_style.setting().to_string());
+                // Only the shape of the browse screen changes; the picture
+                // and the lists are what they were.
+                self.apply_geometry();
+            }
             OptionId::ShowStats => {
                 self.show_stats = !self.show_stats;
                 self.settings.show_stats = Some(self.show_stats);
@@ -7762,6 +7836,7 @@ impl App {
             },
             OptionId::ShowArt => on_off(self.show_art),
             OptionId::ArtworkScale => self.artwork_scale.shown().to_string(),
+            OptionId::DetailsStyle => self.details_style.shown().to_string(),
             OptionId::ShowStats => on_off(self.show_stats),
             OptionId::Present => capitalised(self.present_label),
             OptionId::ShowHidden => on_off(self.show_hidden),
@@ -12798,7 +12873,11 @@ impl App {
                 .is_some_and(|row| !row.is_folder());
         // Not the carousel: it is a row of pictures, and six lines of text
         // under them leaves the picture too small to be the point of it.
-        let wants = self.layout == Layout::Details && over_game;
+        // Not Large Artwork either: its rows go to the picture, and Game
+        // Information in Actions still carries every line.
+        let wants = self.layout == Layout::Details
+            && over_game
+            && self.details_style == DetailsStyle::Information;
         self.ui.set_detail_line(line);
         self.ui.set_detail_height(if wants { panel } else { 0.0 });
     }
@@ -15816,6 +15895,27 @@ mod tests {
             ArtworkScale::Framebuffer,
             "an absent setting must retain the original geometry"
         );
+    }
+
+    #[test]
+    fn every_details_style_is_reachable_and_round_trips() {
+        // The option cycles only through ALL and persists the setting token.
+        // Missing either side would make a style unreachable or forget it
+        // at the next start.
+        for (at, style) in DetailsStyle::ALL.iter().copied().enumerate() {
+            assert_eq!(style.index(), at);
+            assert_eq!(DetailsStyle::parse(style.setting()), Some(style));
+        }
+        assert_eq!(DetailsStyle::parse("nonsense"), None);
+        assert_eq!(
+            DetailsStyle::default(),
+            DetailsStyle::Information,
+            "an absent setting must draw the layout older installations have"
+        );
+        // Half the safe width times these factors is the 42% and 62% the
+        // two styles give the picture; the list keeps the rest.
+        assert!((0.5 * DetailsStyle::Information.art_factor() - 0.42).abs() < 0.0001);
+        assert!((0.5 * DetailsStyle::LargeArtwork.art_factor() - 0.62).abs() < 0.0001);
     }
 
     #[test]
