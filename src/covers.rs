@@ -339,8 +339,7 @@ pub struct CoverCache {
     max_edge: u32,
     capacity: usize,
     /// What transparent artwork is composited onto: the colour it is drawn
-    /// on. Part of the cache key by construction, since changing the theme
-    /// rebuilds the cache.
+    /// on. Changing this colour discards decoded pixels.
     ground: [u8; 3],
     images: HashMap<PathBuf, RgbImage>,
     /// Most recently used last.
@@ -434,6 +433,15 @@ impl CoverCache {
         self.capacity
     }
 
+    pub fn set_ground(&mut self, ground: [u8; 3]) {
+        if self.ground != ground {
+            self.ground = ground;
+            self.images.clear();
+            self.order.clear();
+            self.stats.bytes_held = 0;
+        }
+    }
+
     /// Forget only artwork beneath one provider-owned directory. A Pack
     /// style update can replace bytes at unchanged paths; unrelated gamelist,
     /// logo and other Pack entries remain warm.
@@ -493,6 +501,9 @@ impl CoverCache {
 }
 
 #[cfg(test)]
+pub(crate) use tests::JPEG_16;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -544,6 +555,49 @@ mod tests {
             corners.iter().any(|px| px != &[0xff, 0xff, 0xff]),
             "a logo that comes back all white is the bug this guards"
         );
+    }
+
+    #[test]
+    fn group_logo_matte_changes_only_transparent_pixels_not_opaque_art() {
+        let background = [97, 102, 101];
+        let surface = [31, 42, 53];
+        let group = decode(PNG_LOGO, Path::new("logo.png"), background).unwrap();
+        let game = decode(PNG_LOGO, Path::new("logo.png"), surface).unwrap();
+        assert_eq!(group.pixel(0, 0), background);
+        assert_eq!(game.pixel(0, 0), surface);
+        assert_eq!(group.pixel(1, 0), game.pixel(1, 0));
+        assert_eq!(over(&[200, 100, 50], 255, background), [200, 100, 50]);
+        assert_eq!(over(&[200, 100, 50], 0, background), background);
+        assert_ne!(
+            over(&[200, 100, 50], 128, background),
+            over(&[200, 100, 50], 128, surface)
+        );
+    }
+
+    #[test]
+    fn separate_group_cache_keeps_game_matte_and_redecodes_on_theme_change() {
+        let directory =
+            std::env::temp_dir().join(format!("degauss-group-matte-{}", std::process::id()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let path = directory.join("logo.png");
+        std::fs::write(&path, PNG_LOGO).unwrap();
+        let mut games = CoverCache::new(8, 8, [20, 30, 40]);
+        let mut groups = CoverCache::new(8, 8, [90, 100, 110]);
+        assert_eq!(games.get(&path).unwrap().pixel(0, 0), [20, 30, 40]);
+        assert_eq!(groups.get(&path).unwrap().pixel(0, 0), [90, 100, 110]);
+        assert_eq!(groups.get(&path).unwrap().pixel(1, 0), [255, 255, 255]);
+        assert_eq!(
+            groups.stats.decoded, 1,
+            "repeat rendering uses the decoded cache"
+        );
+        groups = CoverCache::new(8, 8, [120, 80, 60]);
+        assert_eq!(groups.get(&path).unwrap().pixel(0, 0), [120, 80, 60]);
+        assert_eq!(games.get(&path).unwrap().pixel(0, 0), [20, 30, 40]);
+        assert_eq!(
+            games.stats.decoded, 1,
+            "group theme changes do not redecode game art"
+        );
+        std::fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]
@@ -599,7 +653,7 @@ mod tests {
     /// A 16x16 JPEG: red top-left, blue bottom-right, green elsewhere.
     /// Big enough that chroma subsampling does not average the colour
     /// away, which a 2x2 fixture does.
-    const JPEG_16: &[u8] = &[
+    pub(crate) const JPEG_16: &[u8] = &[
         0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46, 0x49, 0x46, 0x00, 0x01, 0x01, 0x00, 0x00,
         0x48, 0x00, 0x48, 0x00, 0x00, 0xff, 0xe1, 0x00, 0x4c, 0x45, 0x78, 0x69, 0x66, 0x00, 0x00,
         0x4d, 0x4d, 0x00, 0x2a, 0x00, 0x00, 0x00, 0x08, 0x00, 0x01, 0x87, 0x69, 0x00, 0x04, 0x00,

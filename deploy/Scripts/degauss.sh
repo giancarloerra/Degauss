@@ -7,7 +7,7 @@
 #   left / right   scroll speed, 0.5x to 12x
 #   enter          open a system, or launch a game
 #   escape / back  go back
-#   tab            this folder: random, favourites, letter, search, view
+#   tab            actions: game information, random, favourites, search, view
 #   space          menu: options, help, about, exit
 #
 # A gamepad needs no setup: while Degauss owns the screen, MiSTer sends the

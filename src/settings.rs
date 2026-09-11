@@ -6,7 +6,7 @@
 //! `settings.toml` that overlays it. Delete that file and everything returns
 //! to the documented defaults.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsString;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -120,6 +120,8 @@ pub struct Settings {
     /// before the shortcut existed.
     #[serde(default)]
     pub hold_x_favorite: Option<bool>,
+    #[serde(default)]
+    pub hold_y_random: Option<bool>,
     /// Whether picking a random game starts it, or only moves the cursor to
     /// it. Absent means only moving the cursor.
     #[serde(default)]
@@ -159,14 +161,15 @@ pub struct Settings {
     pub show_utility: Option<bool>,
     /// Nightly cores are visible unless explicitly switched off.
     pub show_unstable: Option<bool>,
+    pub show_scripts: Option<bool>,
     /// Absent preserves standard-first launches.
     pub core_preference: Option<CorePreference>,
     /// Explicit per-system core version. Absence uses the global preference.
     /// Values are standard, ra, or an exact menu-relative Unstable RBF path.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub core_choices: BTreeMap<String, String>,
-    /// The strip along the bottom. Off by default: the screen is 240 lines
-    /// and the list is what it is for.
+    /// The browse strip is visible by default. Both On and Off are explicit
+    /// saved choices; only an absent value follows the default.
     pub show_bar: Option<bool>,
     /// Show folders that hold nothing. Off by default: a card collects
     /// empty folders, and every one of them is a dead end to walk into.
@@ -179,10 +182,14 @@ pub struct Settings {
     pub shift_x: Option<i32>,
     pub shift_y: Option<i32>,
     /// Local MiSTer Artwork Pack installations explicitly selected per
-    /// supported data-source group. An absent entry keeps the established
-    /// gamelist behaviour.
+    /// supported data-source group. These take precedence over Gamelist
+    /// choices in settings written manually or by older versions.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub artwork_pack_roots: BTreeMap<String, String>,
+    /// Explicit Gamelist choices, including systems without gamelist.xml.
+    /// Absence from both source settings means Automatic.
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub gamelist_sources: BTreeSet<String>,
 }
 
 impl Settings {
@@ -322,10 +329,12 @@ mod tests {
             settings.hold_x_favorite, None,
             "an older settings file must leave the opt-in shortcut off"
         );
+        assert_eq!(settings.hold_y_random, None);
         assert!(
             settings.artwork_pack_roots.is_empty(),
-            "v0.2.0 installations must remain on Gamelist"
+            "v0.2.0 installations have no explicit Pack choices"
         );
+        assert!(settings.gamelist_sources.is_empty());
     }
 
     #[test]
@@ -343,10 +352,12 @@ mod tests {
         assert!(settings.custom_views.is_empty());
         assert!(settings.artwork_scale.is_none());
         assert_eq!(settings.hold_x_favorite, None);
+        assert_eq!(settings.hold_y_random, None);
         assert!(
             settings.artwork_pack_roots.is_empty(),
-            "v0.3.0 installations must remain on Gamelist"
+            "v0.3.0 installations have no explicit Pack choices"
         );
+        assert!(settings.gamelist_sources.is_empty());
     }
 
     fn temp_path(tag: &str) -> std::path::PathBuf {
@@ -377,6 +388,7 @@ mod tests {
             theme_font_override: Some(true),
             theme: Some("amber".into()),
             hold_x_favorite: Some(true),
+            hold_y_random: Some(true),
             custom_views: CustomViews {
                 categories: Some("list".into()),
                 systems: [("Console".into(), "tiled".into())].into(),
@@ -393,6 +405,7 @@ mod tests {
             show_stats: Some(true),
             overscan_x: Some(24),
             artwork_pack_roots: [("SuperGrafx".into(), "/media/fat/docs".into())].into(),
+            gamelist_sources: ["NES".into()].into(),
             ..Default::default()
         };
         settings.save(&path).expect("saved");

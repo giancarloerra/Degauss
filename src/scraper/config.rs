@@ -99,6 +99,8 @@ pub struct ScraperSettings {
     pub max_media_mib: u64,
     #[serde(default = "default_media_type")]
     pub media_type: String,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub system_media_types: BTreeMap<String, String>,
     #[serde(default)]
     pub system_ids: BTreeMap<String, u32>,
 }
@@ -116,6 +118,7 @@ impl Default for ScraperSettings {
             hash_limit_mib: default_hash_limit_mib(),
             max_media_mib: default_media_limit_mib(),
             media_type: default_media_type(),
+            system_media_types: BTreeMap::new(),
             system_ids: BTreeMap::new(),
         }
     }
@@ -193,25 +196,34 @@ impl ScraperSettings {
                 "max_media_mib must be between 1 and 256",
             ));
         }
-        if self.media_type.is_empty()
-            || self.media_type.len() > 24
-            || !self
-                .media_type
-                .bytes()
-                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
-        {
-            return Err(Error::new(
-                ErrorKind::Configuration,
-                "media_type must contain only letters, digits or '-'",
-            ));
+        validate_media_type(&self.media_type)?;
+        let mut media_override_names = BTreeSet::new();
+        for (system, media_type) in &self.system_media_types {
+            if !valid_system_override_name(system) {
+                return Err(Error::new(
+                    ErrorKind::Configuration,
+                    format!("invalid ScreenScraper artwork override for {system:?}"),
+                ));
+            }
+            validate_media_type(media_type).map_err(|error| {
+                Error::new(
+                    ErrorKind::Configuration,
+                    format!(
+                        "invalid ScreenScraper artwork override for {system:?}: {}",
+                        error.detail
+                    ),
+                )
+            })?;
+            if !media_override_names.insert(system.to_ascii_lowercase()) {
+                return Err(Error::new(
+                    ErrorKind::Configuration,
+                    format!("more than one ScreenScraper artwork override matches {system:?}"),
+                ));
+            }
         }
         let mut override_names = BTreeSet::new();
         for (system, id) in &self.system_ids {
-            if system.is_empty()
-                || system.len() > 80
-                || system.chars().any(char::is_control)
-                || *id == 0
-            {
+            if !valid_system_override_name(system) || *id == 0 {
                 return Err(Error::new(
                     ErrorKind::Configuration,
                     format!("invalid ScreenScraper system override for {system:?}"),
@@ -223,6 +235,44 @@ impl ScraperSettings {
                     format!("more than one ScreenScraper system override matches {system:?}"),
                 ));
             }
+        }
+        Ok(())
+    }
+
+    /// Resolve by Degauss's stable system id, not the displayed name or the
+    /// numeric ScreenScraper platform shared by some distinct systems.
+    pub fn media_type_for(&self, system_id: &str) -> &str {
+        self.media_type_override(system_id)
+            .unwrap_or(&self.media_type)
+    }
+
+    pub fn media_type_override(&self, system_id: &str) -> Option<&str> {
+        self.system_media_types
+            .iter()
+            .find(|(key, _)| key.eq_ignore_ascii_case(system_id))
+            .map(|(_, media_type)| media_type.as_str())
+    }
+
+    /// None removes the override so later global changes apply again.
+    pub fn set_media_type_override(
+        &mut self,
+        system_id: &str,
+        media_type: Option<&str>,
+    ) -> Result<()> {
+        if !valid_system_override_name(system_id) {
+            return Err(Error::new(
+                ErrorKind::Configuration,
+                format!("invalid ScreenScraper artwork override for {system_id:?}"),
+            ));
+        }
+        if let Some(media_type) = media_type {
+            validate_media_type(media_type)?;
+        }
+        self.system_media_types
+            .retain(|key, _| !key.eq_ignore_ascii_case(system_id));
+        if let Some(media_type) = media_type {
+            self.system_media_types
+                .insert(system_id.to_string(), media_type.to_string());
         }
         Ok(())
     }
@@ -248,6 +298,25 @@ impl ScraperSettings {
         self.password.clear();
         self.accepted_plaintext_warning = false;
     }
+}
+
+fn valid_system_override_name(system: &str) -> bool {
+    !system.is_empty() && system.len() <= 80 && !system.chars().any(char::is_control)
+}
+
+pub(super) fn validate_media_type(media_type: &str) -> Result<()> {
+    if media_type.is_empty()
+        || media_type.len() > 24
+        || !media_type
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+    {
+        return Err(Error::new(
+            ErrorKind::Configuration,
+            "media_type must contain only letters, digits or '-'",
+        ));
+    }
+    Ok(())
 }
 
 fn validate_text(name: &str, value: &str, max: usize) -> Result<()> {
@@ -300,6 +369,7 @@ impl std::fmt::Debug for ScraperSettings {
             .field("hash_limit_mib", &self.hash_limit_mib)
             .field("max_media_mib", &self.max_media_mib)
             .field("media_type", &self.media_type)
+            .field("system_media_types", &self.system_media_types)
             .field("system_ids", &self.system_ids)
             .finish()
     }
@@ -407,6 +477,9 @@ mod tests {
         let settings = ScraperSettings::load(Path::new("/not/here/screenscraper.toml")).unwrap();
         assert_eq!(settings.image_policy, ImagePolicy::MissingOnly);
         assert_eq!(settings.metadata_policy, MetadataPolicy::FillMissing);
+        assert_eq!(settings.media_type, "ss");
+        assert!(settings.system_media_types.is_empty());
+        assert_eq!(settings.media_type_for("NES"), "ss");
         assert!(!settings.ready());
     }
 
@@ -417,15 +490,122 @@ mod tests {
             username: "player".into(),
             password: "not-a-real-password".into(),
             accepted_plaintext_warning: true,
+            media_type: "wheel-hd".into(),
+            system_media_types: [
+                ("NES".into(), "box-2D".into()),
+                ("Arcade".into(), "ss".into()),
+            ]
+            .into(),
             system_ids: [("FutureSystem".into(), 999)].into(),
             ..Default::default()
         };
         settings.save(&path).unwrap();
         let read = ScraperSettings::load(&path).unwrap();
         assert_eq!(read, settings);
+        assert_eq!(read.media_type_for("nes"), "box-2D");
+        assert_eq!(read.media_type_for("ARCADE"), "ss");
+        assert_eq!(read.media_type_for("FutureSystem"), "wheel-hd");
         let text = std::fs::read_to_string(&path).unwrap();
         assert!(!text.contains("developer_id"));
         let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn legacy_media_type_is_preserved_without_creating_system_overrides() {
+        let path = temp("legacy-media");
+        std::fs::write(
+            &path,
+            "username = 'player'\nmedia_type = 'sstitle'\n[system_ids]\nNES = 3\n",
+        )
+        .unwrap();
+        let settings = ScraperSettings::load(&path).unwrap();
+        assert_eq!(settings.media_type_for("NES"), "sstitle");
+        assert_eq!(settings.media_type_override("NES"), None);
+        assert_eq!(settings.system_ids.get("NES"), Some(&3));
+        settings.save(&path).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(!text.contains("system_media_types"));
+        assert_eq!(ScraperSettings::load(&path).unwrap(), settings);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn artwork_overrides_use_stable_case_insensitive_ids_and_can_inherit_again() {
+        let mut settings = ScraperSettings {
+            system_ids: [("NES".into(), 3), ("NESMusic".into(), 3)].into(),
+            ..Default::default()
+        };
+        settings
+            .set_media_type_override("NES", Some("box-2D"))
+            .unwrap();
+        assert_eq!(settings.media_type_for("nes"), "box-2D");
+        assert_eq!(settings.media_type_for("NESMusic"), "ss");
+        settings
+            .set_media_type_override("nes", Some("box-3D"))
+            .unwrap();
+        assert_eq!(settings.system_media_types.len(), 1);
+        assert_eq!(settings.media_type_for("NES"), "box-3D");
+        settings.media_type = "wheel-hd".into();
+        assert_eq!(settings.media_type_for("NES"), "box-3D");
+        assert_eq!(settings.media_type_for("NESMusic"), "wheel-hd");
+        settings.set_media_type_override("NeS", None).unwrap();
+        assert!(settings.system_media_types.is_empty());
+        assert_eq!(settings.media_type_for("NES"), "wheel-hd");
+    }
+
+    #[test]
+    fn invalid_artwork_overrides_are_rejected_without_replacing_saved_settings() {
+        let path = temp("invalid-media");
+        let settings = ScraperSettings {
+            system_media_types: [("NES".into(), "box-2D".into())].into(),
+            ..Default::default()
+        };
+        settings.save(&path).unwrap();
+        let previous = std::fs::read(&path).unwrap();
+        for (system, media_type) in [
+            (String::new(), "ss".to_string()),
+            ("N".repeat(81), "ss".to_string()),
+            ("NES\n".to_string(), "ss".to_string()),
+            ("NES".to_string(), String::new()),
+            ("NES".to_string(), "s".repeat(25)),
+            ("NES".to_string(), "box_2D".to_string()),
+            ("NES".to_string(), "box 2D".to_string()),
+            ("NES".to_string(), "ss\n".to_string()),
+        ] {
+            let mut invalid = settings.clone();
+            assert_eq!(
+                invalid
+                    .set_media_type_override(&system, Some(&media_type))
+                    .unwrap_err()
+                    .kind,
+                ErrorKind::Configuration
+            );
+            assert_eq!(
+                invalid, settings,
+                "failed edits must leave the old choice intact"
+            );
+            invalid.system_media_types = [(system, media_type)].into();
+            assert_eq!(
+                invalid.save(&path).unwrap_err().kind,
+                ErrorKind::Configuration
+            );
+            assert_eq!(std::fs::read(&path).unwrap(), previous);
+        }
+        let mut duplicate = settings;
+        duplicate
+            .system_media_types
+            .insert("nes".into(), "ss".into());
+        assert_eq!(
+            duplicate.save(&path).unwrap_err().kind,
+            ErrorKind::Configuration
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), previous);
+        std::fs::write(&path, "[system_media_types]\nNES = 'box-2D'\nnes = 'ss'\n").unwrap();
+        assert_eq!(
+            ScraperSettings::load(&path).unwrap_err().kind,
+            ErrorKind::Configuration
+        );
+        std::fs::remove_file(path).unwrap();
     }
 
     #[test]

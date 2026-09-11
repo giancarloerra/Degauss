@@ -44,6 +44,7 @@ pub enum Phase {
     #[default]
     Account,
     Enumerating,
+    Planning,
     Scraping,
     Finishing,
 }
@@ -53,6 +54,7 @@ impl Phase {
         match self {
             Self::Account => "Checking account",
             Self::Enumerating => "Scanning the card",
+            Self::Planning => "Checking existing data",
             Self::Scraping => "Scraping",
             Self::Finishing => "Finishing",
         }
@@ -77,6 +79,7 @@ pub struct Progress {
     pub skipped_artwork_pack: usize,
     pub system_errors: usize,
     pub ambiguous_targets: usize,
+    pub deduplicated_aliases: usize,
     pub workers: usize,
     pub account: Option<Account>,
     pub requests_started: u64,
@@ -716,7 +719,10 @@ fn run(
     }
     let keep_manual_matches =
         matches!(request.scope, Scope::Game { .. }) && selected_match.is_none();
-    let mut work = match plan_work(batch.targets, &settings, &mut progress, cancelled) {
+    progress.phase = Phase::Planning;
+    progress.activity = "Checking existing images and metadata".to_string();
+    emit(events, &progress);
+    let mut work = match plan_work(batch.targets, &settings, &mut progress, cancelled, events) {
         Ok(work) => work,
         Err(error) if error.kind == ErrorKind::Cancelled => {
             let _ = events.send(Event::Cancelled(progress));
@@ -760,6 +766,7 @@ fn run(
         return;
     }
 
+    progress.activity.clear();
     progress.phase = Phase::Account;
     emit(events, &progress);
     let Some(developer) = request.developer.clone() else {
@@ -1159,16 +1166,21 @@ fn plan_work(
     settings: &ScraperSettings,
     progress: &mut Progress,
     cancelled: &AtomicBool,
+    events: &SyncSender<Event>,
 ) -> Result<Vec<Work>> {
     let mut grouped: BTreeMap<PathBuf, Vec<Target>> = BTreeMap::new();
     for target in targets {
+        if cancelled.load(Ordering::Relaxed) {
+            return Err(Error::new(ErrorKind::Cancelled, "scrape cancelled"));
+        }
         grouped
             .entry(target.gamelist_path())
             .or_default()
             .push(target);
     }
     let mut work = Vec::new();
-    for (gamelist_path, targets) in grouped {
+    let mut last_progress = Instant::now();
+    for (gamelist_path, mut targets) in grouped {
         if cancelled.load(Ordering::Relaxed) {
             return Err(Error::new(ErrorKind::Cancelled, "scrape cancelled"));
         }
@@ -1176,7 +1188,7 @@ fn plan_work(
             .iter()
             .map(|target| target.relative_path.clone())
             .collect();
-        let outcomes = gamelist_edit::needs_many_with_fallback(
+        let outcomes = gamelist_edit::needs_many_controlled(
             &gamelist_path,
             &targets[0].folder,
             &relative_paths,
@@ -1186,18 +1198,45 @@ fn plan_work(
                 .collect::<Vec<_>>(),
             settings.image_policy,
             settings.metadata_policy,
+            &mut |at| {
+                if cancelled.load(Ordering::Relaxed) {
+                    return Err(Error::new(ErrorKind::Cancelled, "scrape cancelled"));
+                }
+                if last_progress.elapsed() >= Duration::from_millis(250) {
+                    if let Some(target) = targets.get(at) {
+                        progress.current = current_label(target);
+                    }
+                    emit(events, progress);
+                    last_progress = Instant::now();
+                }
+                Ok(())
+            },
         );
+        if cancelled.load(Ordering::Relaxed) {
+            return Err(Error::new(ErrorKind::Cancelled, "scrape cancelled"));
+        }
         match outcomes {
-            Ok(outcomes) => {
+            Ok(mut outcomes) => {
+                reconcile_alias_platforms(&mut targets, &mut outcomes, cancelled)?;
                 for (target, outcome) in targets.into_iter().zip(outcomes) {
+                    if cancelled.load(Ordering::Relaxed) {
+                        return Err(Error::new(ErrorKind::Cancelled, "scrape cancelled"));
+                    }
                     match outcome {
-                        Ok(needs) if needs.any() => work.push(Work {
-                            target,
-                            needs,
-                            selected: None,
-                            retain_alternatives: false,
-                        }),
-                        Ok(_) => {
+                        Ok(gamelist_edit::Eligibility::Needs(needs)) if needs.any() => {
+                            work.push(Work {
+                                target,
+                                needs,
+                                selected: None,
+                                retain_alternatives: false,
+                            })
+                        }
+                        Ok(gamelist_edit::Eligibility::Alias { .. }) => {
+                            progress.completed += 1;
+                            progress.deduplicated_aliases += 1;
+                            progress.current = target.title;
+                        }
+                        Ok(gamelist_edit::Eligibility::Needs(_)) => {
                             progress.completed += 1;
                             progress.unchanged += 1;
                             progress.current = target.title;
@@ -1213,6 +1252,7 @@ fn plan_work(
                     }
                 }
             }
+            Err(error) if error.kind == ErrorKind::Cancelled => return Err(error),
             Err(error) => {
                 progress.completed += targets.len();
                 progress.failed += targets.len();
@@ -1230,6 +1270,46 @@ fn plan_work(
 
 fn emit(events: &SyncSender<Event>, progress: &Progress) {
     let _ = events.try_send(Event::Progress(progress.clone()));
+}
+
+fn reconcile_alias_platforms(
+    targets: &mut [Target],
+    outcomes: &mut [Result<gamelist_edit::Eligibility>],
+    cancelled: &AtomicBool,
+) -> Result<()> {
+    let mut conflicts = HashSet::new();
+    let mut aliases = Vec::new();
+    for (at, outcome) in outcomes.iter().enumerate() {
+        if cancelled.load(Ordering::Relaxed) {
+            return Err(Error::new(ErrorKind::Cancelled, "scrape cancelled"));
+        }
+        if let Ok(gamelist_edit::Eligibility::Alias { representative }) = outcome {
+            if targets[at].screen_scraper_system_id
+                != targets[*representative].screen_scraper_system_id
+            {
+                conflicts.insert(*representative);
+            }
+            aliases.push((at, *representative));
+        }
+    }
+    for (at, representative) in aliases {
+        if cancelled.load(Ordering::Relaxed) {
+            return Err(Error::new(ErrorKind::Cancelled, "scrape cancelled"));
+        }
+        if conflicts.contains(&representative) {
+            let error =
+                Error::local("linked scrape targets resolve to different ScreenScraper platforms");
+            outcomes[at] = Err(error.clone());
+            outcomes[representative] = Err(error);
+        } else {
+            for id in targets[at].affected_system_ids.clone() {
+                if !targets[representative].affected_system_ids.contains(&id) {
+                    targets[representative].affected_system_ids.push(id);
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 fn finish_error(events: &SyncSender<Event>, error: Error, progress: Progress) {
@@ -1565,6 +1645,7 @@ fn prepare(
         selected,
         retain_alternatives,
     } = work;
+    let media_type = settings.media_type_for(&target.system_id);
     let current = current_label(&target);
     let lookup = if let Some(matched) = selected {
         activity_text(events, &current, "Using selected match");
@@ -1584,10 +1665,11 @@ fn prepare(
                     |error, delay| retry_activity(events, &current, error, delay),
                     || {
                         limited_lookup(limits, || {
-                            client.by_hash(
+                            client.by_hash_with_media_type(
                                 target.screen_scraper_system_id,
                                 target.file_name(),
                                 &hashes,
+                                media_type,
                             )
                         })
                     },
@@ -1600,7 +1682,11 @@ fn prepare(
                             |error, delay| retry_activity(events, &current, error, delay),
                             || {
                                 limited_lookup(limits, || {
-                                    client.by_name(target.screen_scraper_system_id, &target.query)
+                                    client.by_name_with_media_type(
+                                        target.screen_scraper_system_id,
+                                        &target.query,
+                                        media_type,
+                                    )
                                 })
                             },
                         )?
@@ -1615,7 +1701,11 @@ fn prepare(
                     |error, delay| retry_activity(events, &current, error, delay),
                     || {
                         limited_lookup(limits, || {
-                            client.by_name(target.screen_scraper_system_id, &target.query)
+                            client.by_name_with_media_type(
+                                target.screen_scraper_system_id,
+                                &target.query,
+                                media_type,
+                            )
                         })
                     },
                 )?
@@ -1628,7 +1718,11 @@ fn prepare(
             |error, delay| retry_activity(events, &current, error, delay),
             || {
                 limited_lookup(limits, || {
-                    client.by_name(target.screen_scraper_system_id, &target.query)
+                    client.by_name_with_media_type(
+                        target.screen_scraper_system_id,
+                        &target.query,
+                        media_type,
+                    )
                 })
             },
         )?
@@ -2139,7 +2233,7 @@ fn log_scraper_summary(outcome: &str, progress: &Progress) {
     log_scraper_detail(
         &format!("run {outcome}"),
         &format!(
-            "{}: {}/{} completed, {} written, {} unchanged, {} missing, {} ambiguous, {} without image, {} Artwork Pack, {} unsupported, {} shared, {} system, {} failed",
+            "{}: {}/{} completed, {} written, {} unchanged, {} missing, {} ambiguous, {} without image, {} Artwork Pack, {} unsupported, {} shared, {} linked copies, {} system, {} failed",
             one_line(&progress.scope),
             progress.completed,
             progress.total,
@@ -2151,6 +2245,7 @@ fn log_scraper_summary(outcome: &str, progress: &Progress) {
             progress.skipped_artwork_pack,
             progress.unsupported_systems,
             progress.ambiguous_targets,
+            progress.deduplicated_aliases,
             progress.system_errors,
             progress.failed,
         ),
@@ -2159,6 +2254,93 @@ fn log_scraper_summary(outcome: &str, progress: &Progress) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn alias_reconciliation_preserves_readers_and_rejects_cross_platform_groups() {
+        let target = |id: &str, platform| Target {
+            system_id: id.into(),
+            affected_system_ids: vec![id.into()],
+            system_name: id.into(),
+            screen_scraper_system_id: platform,
+            title: "Game".into(),
+            query: "Game".into(),
+            match_path: None,
+            folder: PathBuf::from("/synthetic"),
+            relative_path: "Game.rom".into(),
+            metadata_fallback: true,
+        };
+        let outcomes = || {
+            vec![
+                Ok(gamelist_edit::Eligibility::Needs(Needs {
+                    image: true,
+                    metadata: true,
+                })),
+                Ok(gamelist_edit::Eligibility::Alias { representative: 0 }),
+                Ok(gamelist_edit::Eligibility::Alias { representative: 0 }),
+            ]
+        };
+        let mut same = vec![target("first", 3), target("second", 3), target("third", 3)];
+        reconcile_alias_platforms(&mut same, &mut outcomes(), &AtomicBool::new(false)).unwrap();
+        assert_eq!(same[0].affected_system_ids, ["first", "second", "third"]);
+        let mut mixed = vec![target("first", 3), target("second", 4), target("third", 3)];
+        let mut rejected = outcomes();
+        reconcile_alias_platforms(&mut mixed, &mut rejected, &AtomicBool::new(false)).unwrap();
+        assert!(rejected.iter().all(|outcome| outcome
+            .as_ref()
+            .unwrap_err()
+            .to_string()
+            .contains("different ScreenScraper platforms")));
+        assert_eq!(mixed[0].affected_system_ids, ["first"]);
+        let mut cancelled = outcomes();
+        let error = reconcile_alias_platforms(&mut mixed, &mut cancelled, &AtomicBool::new(true))
+            .unwrap_err();
+        assert_eq!(error.kind, ErrorKind::Cancelled);
+        assert!(
+            cancelled.iter().all(Result::is_ok),
+            "cancellation must not convert remaining targets into failures"
+        );
+    }
+    #[cfg(unix)]
+    #[test]
+    fn physical_aliases_schedule_one_scrape_and_have_their_own_count() {
+        use std::os::unix::fs::symlink;
+        let root = temp("one-physical-game");
+        std::fs::write(root.join("Game.rom"), b"game").unwrap();
+        for directory in ["a", "z"] {
+            std::fs::create_dir_all(root.join(directory)).unwrap();
+            symlink(root.join("Game.rom"), root.join(directory).join("Game.rom")).unwrap();
+        }
+        std::fs::write(
+            root.join("gamelist.xml"),
+            "<gameList><game><path>./Game.rom</path><name>Game</name></game></gameList>",
+        )
+        .unwrap();
+        let mock = Arc::new(Mock {
+            api_calls: AtomicUsize::new(0),
+            media_calls: AtomicUsize::new(0),
+            quota_empty: false,
+            bad_media: false,
+            no_media: false,
+        });
+        let Event::Finished(progress) = finish(
+            start_with_transport(
+                request(&root, settings(ImagePolicy::MissingOnly)),
+                mock.clone(),
+            )
+            .unwrap(),
+        ) else {
+            panic!("alias scrape failed");
+        };
+        assert_eq!(progress.total, 3);
+        assert_eq!(progress.completed, 3);
+        assert_eq!(progress.updated, 1);
+        assert_eq!(progress.deduplicated_aliases, 2);
+        assert_eq!(progress.failed, 0);
+        assert_eq!(progress.unchanged, 0);
+        assert_eq!(progress.ambiguous_targets, 0);
+        assert_eq!(mock.media_calls.load(Ordering::Relaxed), 1);
+        assert_eq!(mock.api_calls.load(Ordering::Relaxed), 2);
+        std::fs::remove_dir_all(root).unwrap();
+    }
     use super::*;
     use crate::scraper::{ImagePolicy, MetadataPolicy};
     use std::path::PathBuf;
@@ -3546,6 +3728,159 @@ mod tests {
         assert_eq!(progress.unchanged, 1);
         assert_eq!(progress.updated, 0);
         assert_eq!(mock.api_calls.load(Ordering::Relaxed), 0);
+        assert_eq!(mock.media_calls.load(Ordering::Relaxed), 0);
+        let (sender, receiver) = mpsc::sync_channel(64);
+        run(
+            game_request(&root, settings(ImagePolicy::MissingOnly)),
+            mock.clone(),
+            &sender,
+            &Arc::new(AtomicBool::new(false)),
+            None,
+        );
+        let events: Vec<_> = receiver.try_iter().collect();
+        assert!(events.iter().any(|event| matches!(event, Event::Progress(progress)
+            if progress.total == 1 && progress.activity == "Checking existing images and metadata")),
+            "known target count must be published before eligibility planning");
+        assert!(
+            matches!(events.last(), Some(Event::Finished(progress)) if progress.unchanged == 1)
+        );
+        assert_eq!(mock.api_calls.load(Ordering::Relaxed), 0);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn all_system_scrape_selects_each_systems_media_without_changing_global_default() {
+        struct MediaChoices {
+            mock: Mock,
+            urls: Mutex<Vec<String>>,
+        }
+        impl Transport for MediaChoices {
+            fn get(
+                &self,
+                endpoint: &str,
+                params: &[(String, String)],
+                limit: u64,
+            ) -> Result<HttpResponse> {
+                let mut response = self.mock.get(endpoint, params, limit)?;
+                if endpoint == "jeuInfos.php" {
+                    let system = params
+                        .iter()
+                        .find(|(key, _)| key == "systemeid")
+                        .map(|(_, value)| value.as_str())
+                        .expect("system sent");
+                    let body = String::from_utf8(response.body).unwrap()
+                        .replace("https://media.screenscraper.fr/42.png", &format!("https://media.screenscraper.fr/{system}-ss.png"))
+                        .replace("</medias>", &format!("<media type='box-2d' region='wor' format='png'>https://media.screenscraper.fr/{system}-box.png</media><media type='wheel' region='wor' format='png'>https://media.screenscraper.fr/{system}-wheel.png</media></medias>"));
+                    response.body = body.into_bytes();
+                }
+                Ok(response)
+            }
+            fn get_media(&self, url: &str, limit: u64, speed: Option<u64>) -> Result<HttpResponse> {
+                self.urls.lock().unwrap().push(url.to_string());
+                self.mock.get_media(url, limit, speed)
+            }
+        }
+        let root = temp("mixed-system-media");
+        let mut systems = Vec::new();
+        for id in ["NES", "Arcade", "Genesis"] {
+            let folder = root.join(id);
+            std::fs::create_dir(&folder).unwrap();
+            std::fs::write(folder.join("Game.rom"), id.as_bytes()).unwrap();
+            let mut found = system(&folder);
+            found.def.id = id.into();
+            found.def.name = id.into();
+            systems.push(found);
+        }
+        let mut chosen = settings(ImagePolicy::MissingOnly);
+        chosen.media_type = "ss".into();
+        chosen.system_media_types = BTreeMap::from([
+            ("NES".into(), "box-2d".into()),
+            ("Arcade".into(), "wheel".into()),
+        ]);
+        let mut batch = request(&root, chosen);
+        batch.scope = Scope::All;
+        batch.systems = systems;
+        let mock = Arc::new(MediaChoices {
+            mock: Mock {
+                api_calls: AtomicUsize::new(0),
+                media_calls: AtomicUsize::new(0),
+                quota_empty: false,
+                bad_media: false,
+                no_media: false,
+            },
+            urls: Mutex::new(Vec::new()),
+        });
+        let Event::Finished(progress) = finish(start_with_transport(batch, mock.clone()).unwrap())
+        else {
+            panic!("mixed system scrape failed");
+        };
+        assert_eq!(progress.updated, 3);
+        let urls = mock.urls.lock().unwrap();
+        for (id, suffix) in [("NES", "box"), ("Arcade", "wheel"), ("Genesis", "ss")] {
+            let platform = crate::scraper::platform_id(id, &BTreeMap::new()).unwrap();
+            assert!(
+                urls.contains(&format!(
+                    "https://media.screenscraper.fr/{platform}-{suffix}.png"
+                )),
+                "wrong artwork choice for {id}: {urls:?}"
+            );
+        }
+        assert_eq!(urls.len(), 3);
+        drop(urls);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn unavailable_language_is_retried_without_redownloading_existing_image() {
+        let root = temp("missing-language-retry");
+        std::fs::write(root.join("Game.rom"), b"game").unwrap();
+        std::fs::write(root.join("art.png"), PNG).unwrap();
+        let xml = "<gameList><game><path>./Game.rom</path><name>Name</name><desc>Description</desc><publisher>Publisher</publisher><developer>Developer</developer><releasedate>19910000T000000</releasedate><players>1</players><genre>Action</genre><image>./art.png</image></game></gameList>";
+        std::fs::write(root.join("gamelist.xml"), xml).unwrap();
+        let mock = Arc::new(Mock {
+            api_calls: AtomicUsize::new(0),
+            media_calls: AtomicUsize::new(0),
+            quota_empty: false,
+            bad_media: false,
+            no_media: false,
+        });
+        for _ in 0..2 {
+            let before = mock.api_calls.load(Ordering::Relaxed);
+            let event = finish(
+                start_with_transport(
+                    request(&root, settings(ImagePolicy::MissingOnly)),
+                    mock.clone(),
+                )
+                .unwrap(),
+            );
+            let Event::Finished(progress) = event else {
+                panic!("partial metadata scrape did not finish");
+            };
+            assert_eq!(progress.updated, 0);
+            assert_eq!(progress.unchanged, 1);
+            assert!(mock.api_calls.load(Ordering::Relaxed) > before, "FillMissing must retry a still absent field; no negative cache is part of this policy");
+            assert_eq!(
+                mock.media_calls.load(Ordering::Relaxed),
+                0,
+                "metadata work must not redownload the existing image"
+            );
+            assert_eq!(
+                std::fs::read_to_string(root.join("gamelist.xml")).unwrap(),
+                xml
+            );
+        }
+        let before = mock.api_calls.load(Ordering::Relaxed);
+        let mut image_only = settings(ImagePolicy::MissingOnly);
+        image_only.metadata_policy = MetadataPolicy::Off;
+        assert!(matches!(
+            finish(start_with_transport(request(&root, image_only), mock.clone()).unwrap()),
+            Event::Finished(_)
+        ));
+        assert_eq!(
+            mock.api_calls.load(Ordering::Relaxed),
+            before,
+            "disabled metadata must not trigger account or game requests"
+        );
         assert_eq!(mock.media_calls.load(Ordering::Relaxed), 0);
         let _ = std::fs::remove_dir_all(root);
     }

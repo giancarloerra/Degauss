@@ -62,6 +62,7 @@ pub enum Action {
     Context,
     /// Add or remove the selected game as a favourite after X is held.
     FavoriteShortcut,
+    RandomShortcut,
 }
 
 impl Action {
@@ -144,6 +145,7 @@ pub struct Repeater {
     /// only while the optional favourite shortcut can act on the selected
     /// row, leaving X immediate everywhere else.
     favorite_hold: bool,
+    random_hold: bool,
 }
 
 impl Repeater {
@@ -153,6 +155,7 @@ impl Repeater {
             held: Vec::new(),
             horizontal_repeats: false,
             favorite_hold: false,
+            random_hold: false,
         }
     }
 
@@ -171,6 +174,26 @@ impl Repeater {
         }
     }
 
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    pub fn set_random_hold(&mut self, enabled: bool) {
+        if self.random_hold == enabled {
+            return;
+        }
+        self.random_hold = enabled;
+        if !enabled {
+            self.held.retain(|held| held.action != Action::Menu);
+        }
+    }
+
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    fn hold_action(&self, action: Action) -> Option<Action> {
+        match action {
+            Action::Context if self.favorite_hold => Some(Action::FavoriteShortcut),
+            Action::Menu if self.random_hold => Some(Action::RandomShortcut),
+            _ => None,
+        }
+    }
+
     /// Turn held-key repeat for left and right on or off. Turning it off
     /// also drops either of them if it is held right now, so a key pressed
     /// while browsing cannot keep firing into a screen opened under it.
@@ -182,7 +205,9 @@ impl Repeater {
         self.horizontal_repeats = enabled;
         if !enabled {
             self.held.retain(|held| {
-                held.action.repeats() || (self.favorite_hold && held.action == Action::Context)
+                held.action.repeats()
+                    || (self.favorite_hold && held.action == Action::Context)
+                    || (self.random_hold && held.action == Action::Menu)
             });
         }
     }
@@ -202,27 +227,27 @@ impl Repeater {
     /// A key went down. Returns the action to perform immediately.
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     pub fn press(&mut self, action: Action, now: Instant) -> Option<Action> {
+        if self.random_hold && action != Action::Menu {
+            self.held.retain(|held| held.action != Action::Menu);
+        }
         if self.favorite_hold && action != Action::Context {
             // The shortcut acts on the selected row. Moving or pressing
             // anything else while X is down cancels it, so the eventual
             // hold cannot add or remove a different row.
             self.held.retain(|held| held.action != Action::Context);
         }
-        if self.favorite_hold
-            && action == Action::Context
-            && self.held.iter().any(|held| held.action != Action::Context)
+        if self.hold_action(action).is_some() && self.held.iter().any(|held| held.action != action)
         {
-            // A direction already held can move the cursor during the next
-            // second. Keep X as the immediate contextual-menu action rather
-            // than arming a shortcut whose target would no longer be fixed.
-            return Some(Action::Context);
+            // A direction already held can change the shortcut's scope.
+            // Keep the ordinary menu action immediate in that case.
+            return Some(action);
         }
         if self.held.iter().any(|h| h.action == action) {
             return None;
         }
         let retained = action.repeats()
             || (self.horizontal_repeats && matches!(action, Action::Slower | Action::Faster))
-            || (self.favorite_hold && action == Action::Context);
+            || self.hold_action(action).is_some();
         if retained {
             self.held.push(Held {
                 action,
@@ -231,7 +256,7 @@ impl Repeater {
                 repeating: false,
             });
         }
-        if self.favorite_hold && action == Action::Context {
+        if self.hold_action(action).is_some() {
             None
         } else {
             Some(action)
@@ -246,11 +271,11 @@ impl Repeater {
             .position(|held| held.action == action)
             .map(|at| self.held.remove(at));
         let held = held?;
-        if self.favorite_hold && action == Action::Context && !held.repeating {
+        if let Some(shortcut) = self.hold_action(action).filter(|_| !held.repeating) {
             if now.duration_since(held.pressed_at) >= FAVORITE_HOLD {
-                Some(Action::FavoriteShortcut)
+                Some(shortcut)
             } else {
-                Some(Action::Context)
+                Some(action)
             }
         } else {
             None
@@ -262,10 +287,15 @@ impl Repeater {
     pub fn tick(&mut self, now: Instant) -> Vec<Action> {
         let mut due = Vec::new();
         for held in &mut self.held {
-            if self.favorite_hold && held.action == Action::Context {
+            let shortcut = match held.action {
+                Action::Context if self.favorite_hold => Some(Action::FavoriteShortcut),
+                Action::Menu if self.random_hold => Some(Action::RandomShortcut),
+                _ => None,
+            };
+            if let Some(shortcut) = shortcut {
                 if !held.repeating && now.duration_since(held.pressed_at) >= FAVORITE_HOLD {
                     held.repeating = true;
-                    due.push(Action::FavoriteShortcut);
+                    due.push(shortcut);
                 }
                 continue;
             }
@@ -782,6 +812,125 @@ mod elsewhere {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn y_stays_immediate_when_random_hold_is_off() {
+        let mut repeater = Repeater::new(RepeatConfig::default());
+        let now = Instant::now();
+        assert_eq!(repeater.press(Action::Menu, now), Some(Action::Menu));
+        assert!(repeater.tick(now + FAVORITE_HOLD).is_empty());
+        assert_eq!(repeater.release(Action::Menu, now + FAVORITE_HOLD), None);
+    }
+
+    #[test]
+    fn short_y_release_opens_menu_and_a_one_second_hold_picks_once() {
+        for released_at in [Duration::from_millis(999), FAVORITE_HOLD] {
+            let mut repeater = Repeater::new(RepeatConfig::default());
+            repeater.set_random_hold(true);
+            let now = Instant::now();
+            assert_eq!(repeater.press(Action::Menu, now), None);
+            assert_eq!(
+                repeater.release(Action::Menu, now + released_at),
+                Some(if released_at < FAVORITE_HOLD {
+                    Action::Menu
+                } else {
+                    Action::RandomShortcut
+                })
+            );
+            assert!(repeater.tick(now + Duration::from_secs(3)).is_empty());
+        }
+        let mut repeater = Repeater::new(RepeatConfig::default());
+        repeater.set_random_hold(true);
+        let now = Instant::now();
+        assert_eq!(repeater.press(Action::Menu, now), None);
+        assert!(repeater
+            .tick(now + FAVORITE_HOLD - Duration::from_millis(1))
+            .is_empty());
+        assert_eq!(
+            repeater.tick(now + FAVORITE_HOLD),
+            vec![Action::RandomShortcut]
+        );
+        assert!(repeater.tick(now + Duration::from_secs(4)).is_empty());
+        assert_eq!(
+            repeater.release(Action::Menu, now + Duration::from_secs(4)),
+            None
+        );
+    }
+
+    #[test]
+    fn disabling_y_hold_cancels_both_short_and_long_actions() {
+        let mut repeater = Repeater::new(RepeatConfig::default());
+        repeater.set_random_hold(true);
+        let now = Instant::now();
+        repeater.press(Action::Menu, now);
+        repeater.set_random_hold(false);
+        assert!(repeater.tick(now + FAVORITE_HOLD).is_empty());
+        assert_eq!(repeater.release(Action::Menu, now + FAVORITE_HOLD), None);
+        assert_eq!(
+            repeater.press(Action::Menu, now + FAVORITE_HOLD),
+            Some(Action::Menu)
+        );
+    }
+
+    #[test]
+    fn moving_or_pressing_another_button_cancels_y_hold() {
+        for action in [
+            Action::Up,
+            Action::Down,
+            Action::Slower,
+            Action::Faster,
+            Action::Accept,
+            Action::Quit,
+            Action::Context,
+        ] {
+            let mut repeater = Repeater::new(RepeatConfig::default());
+            repeater.set_random_hold(true);
+            let now = Instant::now();
+            repeater.press(Action::Menu, now);
+            repeater.press(action, now + Duration::from_millis(10));
+            assert!(!repeater
+                .tick(now + FAVORITE_HOLD)
+                .contains(&Action::RandomShortcut));
+            assert_eq!(repeater.release(Action::Menu, now + FAVORITE_HOLD), None);
+        }
+    }
+
+    #[test]
+    fn y_pressed_during_a_held_direction_opens_menu_without_arming_random() {
+        let mut repeater = Repeater::new(RepeatConfig::default());
+        repeater.set_random_hold(true);
+        let now = Instant::now();
+        repeater.press(Action::Down, now);
+        assert_eq!(repeater.press(Action::Menu, now), Some(Action::Menu));
+        assert!(!repeater
+            .tick(now + FAVORITE_HOLD)
+            .contains(&Action::RandomShortcut));
+        assert_eq!(repeater.release(Action::Menu, now + FAVORITE_HOLD), None);
+    }
+
+    #[test]
+    fn x_and_y_holds_cancel_each_other_without_losing_the_enabled_gesture() {
+        let mut repeater = Repeater::new(RepeatConfig::default());
+        repeater.set_favorite_hold(true);
+        repeater.set_random_hold(true);
+        let now = Instant::now();
+        repeater.press(Action::Context, now);
+        repeater.press(Action::Menu, now + Duration::from_millis(10));
+        repeater.set_horizontal_repeats(true);
+        repeater.set_horizontal_repeats(false);
+        assert_eq!(
+            repeater.tick(now + Duration::from_millis(1010)),
+            vec![Action::RandomShortcut]
+        );
+        assert_eq!(
+            repeater.release(Action::Context, now + Duration::from_secs(2)),
+            None
+        );
+        assert_eq!(
+            repeater.release(Action::Menu, now + Duration::from_secs(2)),
+            None
+        );
+    }
 
     #[test]
     fn the_keys_mister_sends_for_a_gamepad_map_to_movement_and_actions() {

@@ -251,6 +251,53 @@ pub fn mark_resuming() {
     let _ = std::fs::write(RESUME_MARKER, b"1");
 }
 
+#[cfg(unix)]
+fn save_script_resume(marker: &Path, script: &Path) -> Result<()> {
+    use std::os::unix::ffi::OsStrExt;
+    let mut bytes = b"script\0".to_vec();
+    bytes.extend_from_slice(script.as_os_str().as_bytes());
+    std::fs::write(marker, bytes)
+        .map_err(|error| DegaussError::io("save script return position", marker, error))
+}
+
+#[cfg(unix)]
+fn read_script_resume(marker: &Path) -> Result<Option<PathBuf>> {
+    use std::os::unix::ffi::OsStringExt;
+    let bytes = match std::fs::read(marker) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(DegaussError::io(
+                "read script return position",
+                marker,
+                error,
+            ));
+        }
+    };
+    let Some(path) = bytes.strip_prefix(b"script\0") else {
+        return Ok(None);
+    };
+    let path = PathBuf::from(std::ffi::OsString::from_vec(path.to_vec()));
+    if !path.is_absolute() {
+        return Err(DegaussError::malformed(
+            "script return position",
+            marker,
+            "expected an absolute script path",
+        ));
+    }
+    Ok(Some(path))
+}
+
+#[cfg(unix)]
+pub fn mark_script_resuming(script: &Path) -> Result<()> {
+    save_script_resume(Path::new(RESUME_MARKER), script)
+}
+
+#[cfg(unix)]
+pub fn resuming_script() -> Result<Option<PathBuf>> {
+    read_script_resume(Path::new(RESUME_MARKER))
+}
+
 pub fn is_resuming() -> bool {
     Path::new(RESUME_MARKER).exists()
 }
@@ -262,6 +309,32 @@ pub fn clear_resuming() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn script_return_marker_preserves_selection_and_legacy_game_resume() {
+        use std::os::unix::ffi::OsStringExt;
+        let directory =
+            std::env::temp_dir().join(format!("degauss-script-resume-{}", std::process::id()));
+        std::fs::create_dir(&directory).unwrap();
+        let marker = directory.join("resume");
+        assert_eq!(read_script_resume(&marker).unwrap(), None);
+        for content in [b"1".as_slice(), b"".as_slice()] {
+            std::fs::write(&marker, content).unwrap();
+            assert_eq!(read_script_resume(&marker).unwrap(), None);
+        }
+        let script = PathBuf::from(std::ffi::OsString::from_vec(
+            b"/media/fat/Scripts/sub folder/wifi-\xff.sh".to_vec(),
+        ));
+        save_script_resume(&marker, &script).unwrap();
+        assert_eq!(read_script_resume(&marker).unwrap(), Some(script));
+        std::fs::write(&marker, b"script\0relative.sh").unwrap();
+        assert!(read_script_resume(&marker).is_err());
+        assert!(read_script_resume(&directory).is_err());
+        assert!(save_script_resume(&directory, Path::new("/script.sh")).is_err());
+        std::fs::remove_file(marker).unwrap();
+        std::fs::remove_dir(directory).unwrap();
+    }
 
     #[test]
     fn a_resume_state_written_by_v0_2_0_still_resumes() {

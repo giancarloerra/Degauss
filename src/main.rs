@@ -10,6 +10,7 @@ slint::include_modules!();
 
 mod app;
 mod artwork_pack;
+mod artwork_source;
 mod browse;
 mod cache;
 mod category_images;
@@ -20,7 +21,10 @@ mod covers;
 mod error;
 mod favorites;
 mod font;
+mod frontend_session;
 mod gamelist;
+mod index_job;
+mod information_job;
 mod input;
 mod launch;
 mod list_state;
@@ -29,6 +33,7 @@ mod options;
 mod provider_job;
 mod render;
 mod scraper;
+mod scripts;
 mod settings;
 mod source_cache;
 mod state;
@@ -84,13 +89,14 @@ degauss - a fast game browser for MiSTer FPGA
   --frames <n>        frames per run for --bench and --selftest
   --layout <name>     details (default), tiled, list, carousel, multi-list
                       or gallery
-  --screen <name>     browse (default), menu, options, advanced, theme-editor,
-                      help, about, splash, find, context, category-image,
+  --screen <name>     browse (default), menu, scripts, options, advanced, theme-editor,
+                      help, about, splash, find, context, information, category-image,
                       screensaver, scraper, scraper-keyboard,
                       scraper-progress, game-data-source,
                       artwork-pack-location, artwork-pack-directory or
                       source-progress, for --render
   --select <n>        which entry to highlight in --render
+  --options-page <p>  navigation, appearance, library, display, developer
   --find <text>       a search already typed, with --screen find
   --geometry <WxH>    geometry for --render and --bench
   --format <fmt>      rgb565 or xrgb8888, for --render and --bench
@@ -167,6 +173,7 @@ struct Args {
     /// Only set by `--layout`. Absent means the user's saved view stands.
     layout: Option<Layout>,
     screen: Screen,
+    options_page: Option<crate::options::OptionsPage>,
     select: usize,
     /// A search to have already typed, for `--render`.
     find: Option<String>,
@@ -193,6 +200,7 @@ impl Default for Args {
             import_favorites: None,
             layout: None,
             screen: Screen::Browse,
+            options_page: None,
             select: 0,
             find: None,
         }
@@ -257,13 +265,16 @@ fn parse_from<I: Iterator<Item = String>>(argv: I) -> std::result::Result<Option
                 args.screen = match next(&mut argv, "--screen")?.as_str() {
                     "browse" => Screen::Browse,
                     "menu" => Screen::Menu,
-                    "options" => Screen::Options,
+                    "scripts" => Screen::Scripts,
+                    "options" => Screen::OptionsRoot,
                     "advanced" => Screen::Advanced,
                     "theme-editor" => Screen::ThemeEditor,
                     "help" => Screen::Help,
                     "about" => Screen::About,
                     "find" => Screen::Find,
                     "context" => Screen::Context,
+                    "actions" => Screen::Context,
+                    "information" => Screen::Information,
                     "category-image" => Screen::CategoryImage,
                     "splash" => Screen::Splash,
                     "screensaver" => Screen::Screensaver,
@@ -281,6 +292,13 @@ fn parse_from<I: Iterator<Item = String>>(argv: I) -> std::result::Result<Option
                 let value = next(&mut argv, "--layout")?;
                 args.layout =
                     Some(Layout::parse(&value).ok_or_else(|| format!("unknown layout {value:?}"))?);
+            }
+            "--options-page" => {
+                let value = next(&mut argv, "--options-page")?;
+                args.options_page = Some(
+                    crate::options::OptionsPage::parse(&value)
+                        .ok_or_else(|| format!("unknown Options page {value:?}"))?,
+                );
             }
             "--present" => {
                 args.present = match next(&mut argv, "--present")?.as_str() {
@@ -562,7 +580,7 @@ fn check_install(config_path: &Path) -> Result<()> {
 
     if let Some(settings) = loaded_settings.as_ref() {
         if settings.artwork_pack_roots.is_empty() {
-            println!("artwork pack no systems selected");
+            println!("artwork pack no explicit roots; Automatic may use installed SD/USB packs");
         } else {
             for (group, root) in &settings.artwork_pack_roots {
                 let provider = artwork_pack::Provider::load(group, Path::new(root), None);
@@ -573,6 +591,11 @@ fn check_install(config_path: &Path) -> Result<()> {
                 if !provider.health.usable() {
                     problems.push(format!("Artwork Pack {group}: {}", provider.status_line()));
                 }
+            }
+        }
+        for group in &settings.gamelist_sources {
+            if !settings.artwork_pack_roots.contains_key(group) {
+                println!("game source  {group}: explicit Gamelist");
             }
         }
     }
@@ -1043,6 +1066,9 @@ fn render_once(loaded: Loaded, args: Args, chosen: usize, path: &Path) -> Result
         Some(text) => app.search_for(text),
         None => {
             app.set_screen(args.screen);
+            if let Some(page) = args.options_page {
+                app.open_options_page(page);
+            }
             // The choice above moved the cursor in the folder, which is
             // what a context menu needs. The screens carrying lists of
             // their own take the choice themselves, or --select could
@@ -1050,6 +1076,8 @@ fn render_once(loaded: Loaded, args: Args, chosen: usize, path: &Path) -> Result
             if matches!(
                 args.screen,
                 Screen::Context
+                    | Screen::Scripts
+                    | Screen::OptionsRoot
                     | Screen::Options
                     | Screen::Advanced
                     | Screen::ThemeEditor
@@ -1062,7 +1090,8 @@ fn render_once(loaded: Loaded, args: Args, chosen: usize, path: &Path) -> Result
                     | Screen::ArtworkPackLocation
                     | Screen::ArtworkPackDirectory
                     | Screen::SourceProgress
-            ) {
+            ) || args.options_page.is_some()
+            {
                 app.select(args.select);
             }
         }
@@ -1234,10 +1263,18 @@ fn run_on_framebuffer(
     chosen: Option<usize>,
     started: Instant,
 ) -> Result<()> {
+    let Some(session) = frontend_session::UiSession::acquire(&args.device)? else {
+        return Ok(());
+    };
     let system_count = loaded.systems.len();
     log_start();
     let state_path = state_path_for(&loaded.settings_path);
     let resuming = state::is_resuming();
+    let script_return = match std::env::var_os(scripts::RETURN_ENV) {
+        Some(path) => Some(PathBuf::from(path)),
+        None => state::resuming_script()?,
+    };
+    std::env::remove_var(scripts::RETURN_ENV);
     let mut framebuffer = surface::Framebuffer::open(&args.device)?;
     let geometry = framebuffer.geometry();
     let vsync = framebuffer.wait_for_vsync()?;
@@ -1304,6 +1341,11 @@ fn run_on_framebuffer(
         note("system       opened from the command line");
     }
 
+    if let Some(script) = script_return {
+        app.skip_splash();
+        app.resume_scripts(&script);
+    }
+
     let mut input = input::InputReader::open()?;
     // Worth printing: when a controller does nothing, the first question is
     // always whether Degauss can see any input device at all.
@@ -1341,7 +1383,9 @@ fn run_on_framebuffer(
     let default = default_present_mode(framebuffer.mapping_source());
     let mode = app.initialize_presentation(default, args.present);
     let mut presenter = Presenter::new(geometry, mode);
-    let outcome = app.run(&mut framebuffer, &mut input, &mut presenter);
+    let outcome = app.run(&mut framebuffer, &mut input, &mut presenter, || {
+        session.owner_alive()
+    });
 
     terminal.restore();
     if let Some(console) = console.as_mut() {
@@ -1378,6 +1422,21 @@ fn run_on_framebuffer(
 
     match outcome {
         Outcome::Quit => note("ended        user quit"),
+        Outcome::LauncherReplaced => note("ended        MiSTer launcher was replaced"),
+        Outcome::Script(script) => {
+            app.position().save(&state_path)?;
+            state::mark_script_resuming(script.script())?;
+            note(&format!(
+                "ended        running {}",
+                script.script().display()
+            ));
+            drop(app);
+            drop(input);
+            drop(framebuffer);
+            let script = script.with_menu_owner(session.owner_token());
+            drop(session);
+            return script.exec().map(|never| match never {});
+        }
         Outcome::Launch { plan, name } => {
             // Written before the core is asked for: once the command goes
             // into the FIFO, MiSTer replaces this process and there is no
@@ -1411,9 +1470,38 @@ impl EffectiveLibrary {
     }
 }
 
+fn effective_source_members(systems: &[FoundSystem], id: &str) -> Vec<FoundSystem> {
+    let group = artwork_pack::source_group(id);
+    systems
+        .iter()
+        .filter(|member| group.is_some() && artwork_pack::source_group(&member.def.id) == group)
+        .cloned()
+        .collect()
+}
+
 fn effective_library(loaded: &Loaded, system: &FoundSystem) -> Result<EffectiveLibrary> {
     let id = &system.def.id;
-    let Some(root) = artwork_pack::selected_root(&loaded.settings.artwork_pack_roots, id) else {
+    let members = effective_source_members(&loaded.systems, id);
+    let resolved = artwork_source::resolve(
+        &members,
+        &loaded.settings,
+        &std::sync::atomic::AtomicBool::new(false),
+    )?
+    .ok_or_else(|| DegaussError::unsupported("game data source", "source resolution cancelled"))?;
+    effective_library_with_sources(loaded, system, &resolved)
+}
+
+fn effective_library_with_sources(
+    loaded: &Loaded,
+    system: &FoundSystem,
+    resolved: &artwork_source::Resolution,
+) -> Result<EffectiveLibrary> {
+    let id = &system.def.id;
+    if let Some(error) = artwork_pack::source_group(id).and_then(|group| resolved.errors.get(group))
+    {
+        return Err(DegaussError::unsupported("game data source", error));
+    }
+    let Some(root) = artwork_pack::selected_root(&resolved.roots, id) else {
         return Ok(EffectiveLibrary {
             library: browse::Library::open_with_names(&system.to_config(), loaded.names.clone())?,
             provider: None,
@@ -1571,8 +1659,15 @@ fn audit_everything(loaded: &Loaded) -> Result<()> {
     let mut total_art = 0usize;
     let mut problems: Vec<String> = Vec::new();
 
+    let resolved = artwork_source::resolve(
+        &loaded.systems,
+        &loaded.settings,
+        &std::sync::atomic::AtomicBool::new(false),
+    )?
+    .ok_or_else(|| DegaussError::unsupported("game data source", "source resolution cancelled"))?;
+
     for system in &loaded.systems {
-        let effective = match effective_library(loaded, system) {
+        let effective = match effective_library_with_sources(loaded, system, &resolved) {
             Ok(effective) => effective,
             Err(e) => {
                 println!("{:<26} FAILED: {e}", system.name());
@@ -1795,6 +1890,69 @@ category = "Favorites"
     }
 
     #[test]
+    fn cli_source_resolution_includes_the_other_shared_group_library_root() {
+        let (root, mut loaded) = diagnostic_fixture("shared-source");
+        loaded.systems[0].def.id = "NeoGeo".into();
+        loaded.systems[1].def.id = "NeoGeoMVS".into();
+        let extra = root.join("games/MVS");
+        std::fs::create_dir_all(&extra).unwrap();
+        std::fs::write(extra.join("gamelist.xml"), "<gameList/>").unwrap();
+        loaded.systems[1].paths = vec![extra.clone()];
+        let members = effective_source_members(&loaded.systems, "NeoGeo");
+        assert_eq!(
+            members.len(),
+            2,
+            "CLI and UI must resolve the complete shared source group"
+        );
+        assert!(members.iter().any(|system| system.paths.contains(&extra)));
+        assert!(effective_library(&loaded, &loaded.systems[0])
+            .unwrap()
+            .provider
+            .is_none());
+        assert!(effective_source_members(&loaded.systems, "Favorites").is_empty());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn cli_audit_reuses_source_snapshot_and_keeps_group_errors_isolated() {
+        let (root, mut loaded) = diagnostic_fixture("source-snapshot");
+        loaded.systems[0].def.id = "NeoGeo".into();
+        loaded.systems[1].def.id = "NeoGeoMVS".into();
+        let mut resolved = artwork_source::Resolution::default();
+        let group = artwork_pack::source_group("NeoGeo").unwrap();
+        resolved
+            .errors
+            .insert(group.into(), "pack manifest is unreadable".into());
+        for system in &loaded.systems[..2] {
+            let error = effective_library_with_sources(&loaded, system, &resolved)
+                .err()
+                .expect("both shared-group systems retain the source error");
+            assert!(error.to_string().contains("pack manifest is unreadable"));
+        }
+        assert!(
+            effective_library_with_sources(&loaded, &loaded.systems[2], &resolved)
+                .unwrap()
+                .provider
+                .is_none()
+        );
+        resolved.errors.clear();
+        loaded.settings.artwork_pack_roots.insert(
+            group.into(),
+            root.join("not-the-resolved-source")
+                .to_string_lossy()
+                .into_owned(),
+        );
+        assert!(
+            effective_library_with_sources(&loaded, &loaded.systems[0], &resolved)
+                .unwrap()
+                .provider
+                .is_none(),
+            "the audit consumes its snapshot without re-resolving settings"
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn diagnostic_favorite_uses_the_owning_system_core_choice() {
         let (root, mut loaded) = diagnostic_fixture("favorite-owner");
         std::fs::write(root.join("games/NES/Game.fds"), b"path fixture").unwrap();
@@ -1873,6 +2031,30 @@ category = "Favorites"
         assert!(
             section.contains("artwork-pack-directory or\n                      source-progress")
         );
+    }
+
+    #[test]
+    fn ui_capture_pages_and_actions_keep_the_legacy_screen_aliases() {
+        assert_eq!(parse(&["--screen", "context"]).screen, Screen::Context);
+        assert_eq!(parse(&["--screen", "actions"]).screen, Screen::Context);
+        assert_eq!(parse(&["--screen", "options"]).screen, Screen::OptionsRoot);
+        assert_eq!(parse(&["--screen", "advanced"]).screen, Screen::Advanced);
+        assert_eq!(
+            parse(&["--screen", "information"]).screen,
+            Screen::Information
+        );
+        for page in crate::options::OptionsPage::ALL {
+            assert_eq!(
+                parse(&["--options-page", page.key()]).options_page,
+                Some(page)
+            );
+        }
+        assert!(parse_from(
+            ["--options-page", "unknown"]
+                .map(str::to_string)
+                .into_iter()
+        )
+        .is_err());
     }
 
     #[test]

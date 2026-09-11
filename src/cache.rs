@@ -271,6 +271,18 @@ pub fn build_system_controlled(
     cancelled: &AtomicBool,
     progress: &mut impl FnMut(usize, usize),
 ) -> Result<Option<SystemCache>> {
+    build_system_observed(library, cancelled, &mut |_, folders, games, starting| {
+        if !starting {
+            progress(folders, games);
+        }
+    })
+}
+
+pub fn build_system_observed(
+    library: &Library,
+    cancelled: &AtomicBool,
+    progress: &mut impl FnMut(&Place, usize, usize, bool),
+) -> Result<Option<SystemCache>> {
     let mut cache = SystemCache {
         format: FORMAT,
         folders: BTreeMap::new(),
@@ -302,7 +314,7 @@ fn walk_controlled(
     cancelled: &AtomicBool,
     folders_done: &mut usize,
     games_done: &mut usize,
-    progress: &mut impl FnMut(usize, usize),
+    progress: &mut impl FnMut(&Place, usize, usize, bool),
 ) -> Result<Option<usize>> {
     if cancelled.load(Ordering::Relaxed) {
         return Ok(None);
@@ -321,6 +333,10 @@ fn walk_controlled(
         return Ok(Some(0));
     }
     seen.push(key.clone());
+    progress(place, *folders_done, *games_done, true);
+    if cancelled.load(Ordering::Relaxed) {
+        return Ok(None);
+    }
     let (mut rows, _) = library.list(place, true)?;
 
     let mut games = 0;
@@ -362,7 +378,7 @@ fn walk_controlled(
         },
     );
     *folders_done += 1;
-    progress(*folders_done, *games_done);
+    progress(place, *folders_done, *games_done, false);
     if cancelled.load(Ordering::Relaxed) {
         return Ok(None);
     }
@@ -1240,6 +1256,60 @@ mod tests {
     }
 
     #[test]
+    fn folder_observation_precedes_reading_and_preserves_cache_bytes() {
+        let games = temp("observed-walk");
+        let child = games.join("Child");
+        std::fs::create_dir_all(&child).unwrap();
+        std::fs::write(child.join("Game.d64"), b"rom").unwrap();
+        let library = Library::open_source_neutral(&system(&games), Default::default()).unwrap();
+        let original = build_system_checked(&library).unwrap();
+        let mut events = Vec::new();
+        let observed = build_system_observed(
+            &library,
+            &AtomicBool::new(false),
+            &mut |place, folders, found, starting| {
+                events.push((place.clone(), folders, found, starting));
+            },
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            postcard::to_stdvec(&original).unwrap(),
+            postcard::to_stdvec(&observed).unwrap()
+        );
+        assert_eq!(events[0], (library.start(), 0, 0, true));
+        let entered = events
+            .iter()
+            .position(|event| event.0 == Place::Dir(child.clone()) && event.3)
+            .unwrap();
+        let finished = events
+            .iter()
+            .position(|event| event.0 == Place::Dir(child.clone()) && !event.3)
+            .unwrap();
+        assert!(entered < finished);
+        assert_eq!(events.last().unwrap().2, 1);
+        std::fs::remove_dir_all(games).unwrap();
+    }
+
+    #[test]
+    fn cancellation_from_pre_read_observer_prevents_the_read() {
+        let games = temp("cancel-before-read");
+        let library = Library::open_source_neutral(&system(&games), Default::default()).unwrap();
+        std::fs::remove_dir(&games).unwrap();
+        std::fs::write(&games, b"not a directory").unwrap();
+        let cancelled = AtomicBool::new(false);
+        let result = build_system_observed(&library, &cancelled, &mut |_, _, _, starting| {
+            assert!(starting);
+            cancelled.store(true, Ordering::Relaxed);
+        });
+        assert!(
+            result.unwrap().is_none(),
+            "cancellation must run before the failing read_dir call"
+        );
+        std::fs::remove_file(games).unwrap();
+    }
+
+    #[test]
     fn an_unreadable_nested_branch_fails_instead_of_becoming_an_empty_cache() {
         let games = temp("nested-read-failure");
         let not_a_directory = games.join("not-a-directory");
@@ -1263,7 +1333,7 @@ mod tests {
             &cancelled,
             &mut folders,
             &mut games_done,
-            &mut |_, _| {},
+            &mut |_, _, _, _| {},
         )
         .unwrap_err();
 
@@ -1471,7 +1541,7 @@ mod tests {
             &AtomicBool::new(false),
             &mut 0,
             &mut 0,
-            &mut |_, _| {},
+            &mut |_, _, _, _| {},
         )
         .unwrap_err();
         assert!(error.to_string().contains("maximum folder depth"));
