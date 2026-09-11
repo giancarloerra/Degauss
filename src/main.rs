@@ -876,7 +876,6 @@ pub fn note(line: &str) {
     }
 }
 
-/// Beside the settings, which is beside the configuration.
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 /// Write a favourite for every line of a list.
 ///
@@ -1036,6 +1035,7 @@ fn import_favorites(loaded: &Loaded, list: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Beside the settings, which is beside the configuration.
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 fn state_path_for(settings: &Path) -> PathBuf {
     settings
