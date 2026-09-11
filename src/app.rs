@@ -4997,10 +4997,24 @@ impl App {
                     self.build = None;
                     self.ui.set_index_active(false);
                 }
-                self.message = Some(error.to_string());
+                self.report_source_check(action, Some(error.to_string()));
             }
         }
         self.dirty = true;
+    }
+
+    /// What the screen says once a source check is in. Startup keeps the
+    /// lines the first screen already carries, a theme or Details Style
+    /// problem waiting for a press, and puts the check's word under them;
+    /// every other check replaces its own "Checking..." line.
+    fn report_source_check(&mut self, action: SourceResolutionAction, text: Option<String>) {
+        self.message = match (action, self.message.take(), text) {
+            (SourceResolutionAction::Startup, Some(lines), Some(text)) => {
+                Some(format!("{lines}\n{text}"))
+            }
+            (SourceResolutionAction::Startup, lines, text) => lines.or(text),
+            (_, _, text) => text,
+        };
     }
 
     fn poll_artwork_sources(&mut self) {
@@ -5054,7 +5068,7 @@ impl App {
                     self.build = None;
                     self.ui.set_index_active(false);
                 }
-                self.message = Some(error.to_string());
+                self.report_source_check(action, Some(error.to_string()));
                 self.dirty = true;
                 return;
             }
@@ -5109,7 +5123,7 @@ impl App {
                 self.artwork_source_errors.insert(group, error.clone());
             }
         }
-        self.message = (!resolution.errors.is_empty()).then(|| {
+        let errors = (!resolution.errors.is_empty()).then(|| {
             resolution
                 .errors
                 .values()
@@ -5117,6 +5131,7 @@ impl App {
                 .collect::<Vec<_>>()
                 .join("\n")
         });
+        self.report_source_check(action, errors);
         match action {
             SourceResolutionAction::Startup => {
                 let missing_pack_cache = self.all_systems.iter().any(|system| {

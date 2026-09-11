@@ -3223,8 +3223,10 @@ fn run_details_style_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
     // A token that is neither name is not quietly drawn as Information:
     // the first screen says so, and the text stays in the setting for the
     // user to correct rather than being replaced by a choice never made.
+    // The startup source check finishes before anyone has read the line,
+    // so its result must go under the report rather than replace it.
     {
-        let app = unopened_fixture_app(
+        let mut app = unopened_fixture_app(
             root,
             window.clone(),
             Settings {
@@ -3238,12 +3240,24 @@ fn run_details_style_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
             Some("large_artwork"),
             "startup must not rewrite the text it could not read"
         );
+        app.finish_background_work_for_headless();
+        assert!(
+            app.source_resolution.is_none(),
+            "the startup source check must have finished"
+        );
         let message = app
             .message
             .clone()
-            .expect("an unreadable Details Style is reported at start");
+            .expect("an unreadable Details Style is still reported once the startup check is in");
         assert!(message.contains("large_artwork"), "{message}");
         assert!(message.contains("using Information"), "{message}");
+        app.leave_splash();
+        app.handle(Action::Accept);
+        assert!(
+            app.message.is_none(),
+            "a press takes the report down: {:?}",
+            app.message
+        );
         app.ui.hide().unwrap();
     }
 
@@ -3255,14 +3269,18 @@ fn run_details_style_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
         (DetailsStyle::LargeArtwork, "large-artwork"),
         (DetailsStyle::Information, "information"),
     ] {
-        let loads = app.art.loads;
         select_option(&mut app, OptionsPage::Appearance, OptionId::DetailsStyle);
+        // On the Options screen load_art wants no picture and only clears
+        // the request, so a handler that asked for one again would leave
+        // the flag raised.
+        app.load_art();
+        assert!(!app.art_pending);
         app.handle(Action::Faster);
         assert_eq!(app.details_style, style);
         assert_eq!(app.option_value(OptionId::DetailsStyle), style.shown());
-        assert_eq!(
-            app.art.loads, loads,
-            "a style change must not decode or load a picture"
+        assert!(
+            !app.art_pending,
+            "a style change must not ask for the picture again"
         );
         assert!(
             app.build.is_none(),
