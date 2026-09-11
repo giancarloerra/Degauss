@@ -973,11 +973,10 @@ counted as missing with the reason "no searchable title" and no title search
 is sent, although a hash lookup is still made for a file that can be hashed.
 A network failure, a rejected login, a rate limit, a service outage, an error
 text Degauss does not recognise or an answer that is neither XML nor an error
-text still stops the run. Unsupported systems are also
-skipped and counted. If two
-systems use the same folder but require different ScreenScraper platform IDs,
-the all-systems scrape skips that shared target; a per-system scrape remains
-available.
+text still stops the run. Unsupported systems are also skipped and counted.
+If two systems use the same folder but require different ScreenScraper
+platform IDs, the all-systems scrape skips that shared target; a per-system
+scrape remains available.
 
 Symlinked copies share a single scrape and gamelist update only when they point
 to the same physical file and the same existing gamelist entry; extra paths
@@ -990,13 +989,14 @@ written, unchanged, unresolved and failed counts. **A Details** opens a
 scrollable report with status, scope, current title, completed/total, written,
 unchanged, linked copies, unresolved and skipped/error breakdowns, allowance,
 throughput and the last problem. After the run, the report continues with
-every game the run attempted and could not resolve and the reason, one row
-per game: no match, no searchable title, several matches, no image to fetch,
-or a failed lookup, download or gamelist write. A game whose image failed but whose metadata was
-written is listed with the image error. Games not reached before a failure
-or cancellation are not listed. A missing, ambiguous or rejected game can
-then be found and scraped individually. **B Overview** returns without
-cancelling.
+every game the run attempted and could not resolve, one row per game with
+its reason: "no match", "no searchable title", the number of matches (for
+example "3 matches"), "no image", or the message of a failed lookup,
+download or gamelist write. A game whose image failed but whose metadata
+was written is listed with the image error. Games not reached before a
+failure or cancellation are not listed. A missing, ambiguous or rejected
+game can then be found and scraped individually. **B Overview** returns
+without cancelling.
 The report retains
 worker counts, account limits reported by ScreenScraper and Degauss's allowance
 estimate. Another

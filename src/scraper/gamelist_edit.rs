@@ -410,24 +410,6 @@ pub fn needs(
 }
 
 #[cfg(test)]
-pub fn needs_in_batch(
-    gamelist_path: &Path,
-    folder: &Path,
-    relative_game_path: &str,
-    image_policy: ImagePolicy,
-    metadata_policy: MetadataPolicy,
-) -> Result<Needs> {
-    needs_with_completeness(
-        gamelist_path,
-        folder,
-        relative_game_path,
-        image_policy,
-        metadata_policy,
-        FillCompleteness::AnyField,
-    )
-}
-
-#[cfg(test)]
 fn needs_with_completeness(
     gamelist_path: &Path,
     folder: &Path,
@@ -2409,12 +2391,13 @@ mod tests {
         // Seven optional fields are blank. A folder, system or all-systems
         // run must not send this game back to ScreenScraper every time.
         assert_eq!(
-            needs_in_batch(
+            needs_with_completeness(
                 &path,
                 &folder,
                 "./Game.rom",
                 ImagePolicy::MissingOnly,
                 MetadataPolicy::FillMissing,
+                FillCompleteness::AnyField,
             )
             .unwrap(),
             Needs::default()
@@ -2444,12 +2427,13 @@ mod tests {
         std::fs::write(folder.join("art.png"), b"image").unwrap();
         let batch = |xml: &str| {
             std::fs::write(&path, xml).unwrap();
-            needs_in_batch(
+            needs_with_completeness(
                 &path,
                 &folder,
                 "./Game.rom",
                 ImagePolicy::MissingOnly,
                 MetadataPolicy::FillMissing,
+                FillCompleteness::AnyField,
             )
             .unwrap()
         };

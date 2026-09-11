@@ -91,12 +91,13 @@ pub struct Progress {
     /// server response or interrupting an unattended scrape.
     pub manual_matches: Vec<Match>,
     /// Every game the run attempted and could not resolve, with the
-    /// reason: no match, no searchable title, several matches, no image to
-    /// fetch, or a failed lookup, download or write. A game whose image
-    /// failed but whose metadata was written is listed with the image
-    /// error; games not reached before a failure or cancellation are not
-    /// listed. The report names them after an unattended batch. Carried
-    /// only by the terminal event; progress snapshots leave it empty.
+    /// reason as the report shows it: "no match", "no searchable title",
+    /// the number of matches ("3 matches"), "no image", or the message of
+    /// a failed lookup, download or write. A game whose image failed but
+    /// whose metadata was written is listed with the image error; games
+    /// not reached before a failure or cancellation are not listed. The
+    /// report names them after an unattended batch. Carried only by the
+    /// terminal event; progress snapshots leave it empty.
     pub unresolved_games: Vec<UnresolvedGame>,
 }
 
@@ -1082,7 +1083,7 @@ fn run(
                         Ok(prepared) => {
                             progress.current = target_label.clone();
                             progress.failed_searches = limits.failed();
-                            match stage(prepared, &mut progress) {
+                            match stage(prepared, &target_label, &mut progress) {
                                 Ok(Some(item)) => {
                                     pending
                                         .entry(item.target.gamelist_path())
@@ -1959,27 +1960,37 @@ struct Pending {
     media: Option<InstalledMedia>,
 }
 
-fn stage(prepared: Prepared, progress: &mut Progress) -> Result<Option<Pending>> {
-    let target_label = current_label(&prepared.target);
+fn stage(
+    prepared: Prepared,
+    target_label: &str,
+    progress: &mut Progress,
+) -> Result<Option<Pending>> {
     if let Some(reason) = prepared.not_found {
-        log_scraper_detail(&target_label, "no exact ScreenScraper match; skipped");
+        // A file with no searchable title was never sent to ScreenScraper,
+        // so the log names that reason rather than a miss that did not
+        // happen.
+        if reason == NO_SEARCHABLE_TITLE {
+            log_scraper_detail(target_label, "no searchable title; skipped");
+        } else {
+            log_scraper_detail(target_label, "no exact ScreenScraper match; skipped");
+        }
         if !prepared.alternatives.is_empty() {
             progress.manual_matches = prepared.alternatives;
         }
         progress.not_found += 1;
-        progress.unresolved(&target_label, reason);
+        progress.unresolved(target_label, reason);
         return Ok(None);
     }
     if let Some(count) = prepared.ambiguous {
         log_scraper_detail(
-            &target_label,
+            target_label,
             &format!("{count} automatic ScreenScraper matches; skipped"),
         );
         if !prepared.alternatives.is_empty() {
             progress.manual_matches = prepared.alternatives;
         }
         progress.ambiguous += 1;
-        progress.unresolved(&target_label, &format!("{count} matches"));
+        progress.unresolved(target_label, &format!("{count} matches"));
         return Ok(None);
     }
     let matched = prepared
@@ -1988,8 +1999,8 @@ fn stage(prepared: Prepared, progress: &mut Progress) -> Result<Option<Pending>>
     let media_failed = prepared.media_error.is_some();
     if let Some(error) = prepared.media_error {
         progress.failed += 1;
-        log_scraper_problem(&target_label, &error);
-        progress.unresolved(&target_label, error.user_message());
+        log_scraper_problem(target_label, &error);
+        progress.unresolved(target_label, error.user_message());
         progress.last_problem = Some(error.user_message().to_string());
         if !prepared.needs.metadata {
             return Ok(None);
@@ -1997,7 +2008,7 @@ fn stage(prepared: Prepared, progress: &mut Progress) -> Result<Option<Pending>>
     }
     if prepared.no_media {
         log_scraper_detail(
-            &target_label,
+            target_label,
             "the match has no selected ScreenScraper image",
         );
         progress.no_media += 1;
@@ -2010,7 +2021,7 @@ fn stage(prepared: Prepared, progress: &mut Progress) -> Result<Option<Pending>>
             progress.unchanged += 1;
         }
         if prepared.no_media {
-            progress.unresolved(&target_label, "no image");
+            progress.unresolved(target_label, "no image");
         }
         return Ok(None);
     }
@@ -3032,6 +3043,63 @@ mod tests {
         let gamelist = std::fs::read_to_string(root.join("gamelist.xml")).unwrap();
         assert!(gamelist.contains("<name>Chosen Game</name>"));
         assert!(gamelist.contains("<desc>Description for Chosen Game</desc>"));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn a_selected_match_fills_individual_empty_fields_and_keeps_the_existing_picture() {
+        // Search Manually forces a new search but still applies the chosen
+        // image and metadata policies: with a picture on disk and one
+        // stored field, the selected match fills the empty fields one by
+        // one without fetching the picture it offers or replacing the
+        // local name.
+        let root = temp("selected-match-partial");
+        std::fs::write(root.join("Game.rom"), b"game").unwrap();
+        std::fs::write(root.join("art.png"), PNG).unwrap();
+        std::fs::write(
+            root.join("gamelist.xml"),
+            "<gameList><game><path>./Game.rom</path><name>Local Name</name><image>./art.png</image></game></gameList>",
+        )
+        .unwrap();
+        let mock = Arc::new(Mock {
+            api_calls: AtomicUsize::new(0),
+            media_calls: AtomicUsize::new(0),
+            quota_empty: false,
+            bad_media: false,
+            no_media: false,
+        });
+        let event = finish(
+            start_with_transport_and_cancel_selected(
+                game_request(&root, settings(ImagePolicy::MissingOnly)),
+                mock.clone(),
+                Arc::new(AtomicBool::new(false)),
+                Some(matched("77", "Chosen Game", true)),
+            )
+            .unwrap(),
+        );
+        let Event::Finished(progress) = event else {
+            panic!("selected match on a partial entry did not finish");
+        };
+        assert_eq!(progress.updated, 1);
+        assert_eq!(progress.unchanged, 0);
+        assert_eq!(
+            mock.api_calls.load(Ordering::Relaxed),
+            1,
+            "only the account preflight is made; the selected match replaces the lookup"
+        );
+        assert_eq!(
+            mock.media_calls.load(Ordering::Relaxed),
+            0,
+            "the existing picture is kept under Missing only"
+        );
+        let text = std::fs::read_to_string(root.join("gamelist.xml")).unwrap();
+        assert!(text.contains("<name>Local Name</name>"), "{text}");
+        assert!(!text.contains("Chosen Game</name>"), "{text}");
+        assert!(
+            text.contains("<desc>Description for Chosen Game</desc>"),
+            "{text}"
+        );
+        assert!(text.contains("<image>./art.png</image>"), "{text}");
         let _ = std::fs::remove_dir_all(root);
     }
 
