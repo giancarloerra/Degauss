@@ -493,15 +493,21 @@ or checked: Main validates and loads the selected set at launch, and the MGL
 Degauss writes names the complete ZIP or folder path in the same file slot a
 `.neo` uses. A favourite made from a set is the ordinary MGL MiSTer's own
 favourites script would write, with the absolute set path, so it works from
-the stock menu as well. Gamelist entries bind to a set by its path
-(`./mslug.zip` or `./mslug`), and an Artwork Pack matches it by set name.
+the stock menu as well for any set the catalogue names. A folder known only
+by its own `romset.xml` is the exception: given an absolute path, Main looks
+for that file under the card root and, not finding it, falls back to the
+catalogue, so such a favourite starts only if the catalogue names the folder
+too. Gamelist entries bind to a set by its path (`./mslug.zip` or
+`./mslug`), and an Artwork Pack matches it by set name.
 
 A catalogue or `romset.xml` that cannot be read is reported by `--report` and
 `--audit` as an unreadable file, and in the log. Its scope then holds no
 recognised sets, so ZIPs and folders there fall back to archives and folders,
 while every `.neo` and `.mgl` stays listed. After upgrading from a release
-that listed sets as folders, rebuild the Neo Geo system list once to pick the
-sets up; nothing else needs resetting.
+that listed sets as folders, rebuild the system list of Neo Geo and of Neo
+Geo MVS once each (or run one full rebuild) to pick the sets up: the two keep
+separate caches even when they share the folder. Nothing else needs
+resetting.
 
 ### RetroAchievements and Unstable cores
 
