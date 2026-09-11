@@ -13698,8 +13698,12 @@ impl App {
             self.poll_provider_job();
             self.start_provider_job_if_ready();
             self.poll_information();
+            // A finished cache recovery reopens its system through another
+            // source resolution; that one has to finish as well before the
+            // only frame is drawn.
             if self.build.is_none()
                 && self.information.is_none()
+                && self.source_resolution.is_none()
                 && self.source_job.is_none()
                 && self.provider_job.is_none()
                 && self.provider_requests.is_empty()
