@@ -3332,10 +3332,17 @@ fn run_degraded_pack_acknowledgement_flow(root: &Path, window: Rc<MinimalSoftwar
     app.ui.hide().unwrap();
     drop(app);
 
-    // 7. A broken acknowledgement file costs one more warning, nothing else.
+    // 7. A broken acknowledgement file costs one more warning, nothing
+    // else; that warning says the file was set aside, and why, because the
+    // press that dismisses it writes over what was there.
     std::fs::write(&warnings, "degraded = \"not a table").unwrap();
     let mut app = start(window.clone());
     assert!(message_contains(&app, "is incomplete"), "{:?}", app.message);
+    assert!(
+        message_contains(&app, "could not be read and will be replaced"),
+        "a file set aside as malformed must be said on screen with its cause: {:?}",
+        app.message
+    );
     app.handle(Action::Accept);
     assert!(
         acknowledged("NES", &updated_digest),

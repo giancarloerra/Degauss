@@ -35,14 +35,20 @@ pub struct Acknowledgements {
     /// Source group to the health digest whose incomplete warning was shown.
     #[serde(default)]
     degraded: BTreeMap<String, String>,
+    /// Why the file read as empty, when it was there but could not be
+    /// parsed: the warning it would have silenced says so, and that the
+    /// next dismissal writes over it.
+    #[serde(skip)]
+    malformed: Option<String>,
 }
 
 impl Acknowledgements {
     /// Read it back. A missing file is the normal case, and one that cannot
-    /// be parsed is written to the log and read as empty, so the warning is
-    /// shown once more and the next acknowledgement replaces it. A file that
-    /// is there but cannot be read is an error: saving over it would throw
-    /// away every acknowledgement it holds.
+    /// be parsed is written to the log and read as empty with the reason
+    /// kept in `malformed`, so the warning is shown once more, saying why,
+    /// and the next acknowledgement replaces it. A file that is there but
+    /// cannot be read is an error: saving over it would throw away every
+    /// acknowledgement it holds.
     pub fn load(path: &Path) -> Result<Self> {
         match std::fs::read_to_string(path) {
             Ok(text) => match toml::from_str(&text) {
@@ -52,7 +58,10 @@ impl Acknowledgements {
                         "artwork pack warnings: {} is malformed: {error}",
                         path.display()
                     ));
-                    Ok(Self::default())
+                    Ok(Self {
+                        malformed: Some(error.to_string()),
+                        ..Self::default()
+                    })
                 }
             },
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Self::default()),
@@ -66,6 +75,11 @@ impl Acknowledgements {
 
     pub fn acknowledged(&self, group: &str, digest: &str) -> bool {
         self.degraded.get(group).is_some_and(|seen| seen == digest)
+    }
+
+    /// Why the file was read as empty, when that is what happened.
+    pub fn malformed(&self) -> Option<&str> {
+        self.malformed.as_deref()
     }
 
     /// Record the snapshot whose warning was dismissed. One entry per
@@ -184,11 +198,18 @@ mod tests {
             !read.acknowledged("NES", "abc"),
             "a broken file must cost one more warning, never a refusal to start"
         );
+        assert!(
+            read.malformed().is_some(),
+            "the warning shown in its place must be able to say why the file was set aside"
+        );
         read.acknowledge("NES", "abc");
         read.save(&path).unwrap();
-        assert!(Acknowledgements::load(&path)
-            .unwrap()
-            .acknowledged("NES", "abc"));
+        let replaced = Acknowledgements::load(&path).unwrap();
+        assert!(replaced.acknowledged("NES", "abc"));
+        assert!(
+            replaced.malformed().is_none(),
+            "the replacement reads back clean; the reason must not be written into it"
+        );
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

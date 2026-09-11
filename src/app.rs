@@ -5429,7 +5429,16 @@ impl App {
             let path = crate::pack_health::path_beside(&self.settings_path);
             match crate::pack_health::Acknowledgements::load(&path) {
                 Ok(seen) if seen.acknowledged(&group, &digest) => return,
-                Ok(_) => {
+                // A file that could not be parsed read as empty; the press
+                // that dismisses this warning writes over it, so say why.
+                Ok(seen) => {
+                    if let Some(error) = seen.malformed() {
+                        message = message.map(|message| {
+                            format!(
+                                "{message}\n\nThe list of dismissed warnings could not be read and will be replaced: {error}"
+                            )
+                        });
+                    }
                     self.pack_health_pending = message.clone().map(|message| PendingPackHealth {
                         group,
                         digest,
