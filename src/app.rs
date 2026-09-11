@@ -2992,6 +2992,8 @@ pub struct App {
     system_cache: Option<crate::cache::SystemCache>,
     /// Whether the open system has an image chosen for it. Asked of the
     /// card once, as the system opens, so listing a folder never has to.
+    /// Read only there: an image is chosen or cleared from the system
+    /// list, where no system is open, and opening one reads it again.
     system_image_chosen: bool,
     /// Current read-only Pack snapshot. Present only for a Pack-selected
     /// system, including an unusable snapshot whose health is shown.
@@ -9027,16 +9029,6 @@ impl App {
         self.dirty = true;
     }
 
-    /// Keep what the open system knows about its chosen image current,
-    /// when the image just chosen or cleared is that system's.
-    fn note_system_image(&mut self, target: &ImageTarget, chosen: bool) {
-        if let ImageTarget::System { id, .. } = target {
-            if self.open_system.as_deref() == Some(id.as_str()) {
-                self.system_image_chosen = chosen;
-            }
-        }
-    }
-
     fn refresh_category_image(&mut self) {
         self.category_image_choices.clear();
         self.category_image_target = None;
@@ -9065,10 +9057,7 @@ impl App {
             return;
         };
         match target.install(logo_dir, &choice.path) {
-            Ok(_) => {
-                self.note_system_image(&target, true);
-                self.refresh_category_image();
-            }
+            Ok(_) => self.refresh_category_image(),
             Err(error) => {
                 crate::note(&format!("custom art could not be saved: {error}"));
                 self.message =
@@ -9084,10 +9073,7 @@ impl App {
             return;
         };
         match target.clear(logo_dir) {
-            Ok(_) => {
-                self.note_system_image(target, false);
-                self.refresh_category_image();
-            }
+            Ok(_) => self.refresh_category_image(),
             Err(error) => {
                 crate::note(&format!("custom art could not be cleared: {error}"));
                 self.message = Some("Degauss could not clear the custom image.".to_string());
