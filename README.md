@@ -529,14 +529,15 @@ counted through every subfolder, and can sit before the games or after
 them. Favourites carry a heart in every view and can be gathered at the
 top of their folder.
 
-A folder or ZIP that holds one game, or several entries that share one
-picture such as a multi-disc game, shows that game's artwork in Details,
-Tiled, Carousel and Gallery before it is opened. It is still a folder: it
-keeps its own name and count, opens as a folder, and inherits nothing else
-from the game. A folder holding different games, or no artwork, keeps the
-system logo. List and Multi list stay text. Hidden entries never
-contribute their artwork, Favourites shelves keep their heart, and the
-picture follows the selected data source of the system.
+A folder or ZIP that holds one game with artwork, or several entries that
+all share one picture such as a multi-disc game, shows that game's artwork
+in Details, Tiled, Carousel and Gallery before it is opened. It is still a
+folder: it keeps its own name and count, opens as a folder, and inherits
+nothing else from the game. A folder holding different games, no artwork,
+or several entries sharing a picture beside one without, keeps the system
+logo. List and Multi list stay text. Hidden entries never contribute their
+artwork, Favourites shelves keep their heart, and the picture follows the
+selected data source of the system.
 
 **Hide This**, in **Actions → Find**, takes any row out of the list: a
 game, a folder, or a whole system while you are looking at the system

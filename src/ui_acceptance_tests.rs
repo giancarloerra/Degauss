@@ -3306,6 +3306,92 @@ fn run_folder_artwork_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
     assert_eq!(app.here[at].below, Some(1));
     assert_eq!(app.here[at].cover.as_deref(), Some(image.as_path()));
 
+    // With the Pack selected the folder's picture is the Pack's, asked
+    // through the same listing the screen is drawn from. While the Pack
+    // is not yet prepared, or cannot be used, the folder shows nothing:
+    // the gamelist picture still on the card is not borrowed.
+    let docs = root.join("docs");
+    let art = docs.join("NES/Artwork");
+    std::fs::create_dir_all(&art).unwrap();
+    let pack_cover = art.join("Example Game.jpg");
+    std::fs::write(&pack_cover, crate::covers::JPEG_16).unwrap();
+    std::fs::write(
+        art.join("manifest.tsv"),
+        "#key\tstyle\tss_system_id\nExample Game\tbox-2D\t3\n",
+    )
+    .unwrap();
+    std::fs::write(
+        art.join("index.tsv"),
+        "#name\tcrc\tsize\tkey\nExample Game\t\t\tExample Game\n",
+    )
+    .unwrap();
+    let pack_library = Library::open_source_neutral(
+        &app.all_systems[0].to_config(),
+        browse::DisplayNames::default(),
+    )
+    .unwrap();
+    let pack_cache = crate::cache::build_system(&pack_library);
+    let gamelist_cache = app
+        .system_cache
+        .replace(pack_cache.clone())
+        .expect("the gamelist cache was open");
+    assert!(image.is_file(), "the gamelist picture stays on the card");
+    let mut provider = crate::artwork_pack::Provider::load("NES", &docs, Some("en"));
+    assert!(provider.health.usable());
+    app.artwork_provider = Some(provider.clone());
+    app.relist_here();
+    let at = folder_at(&app);
+    assert_eq!(
+        app.here[at].cover, None,
+        "a Pack not yet prepared: nothing, not the gamelist picture"
+    );
+    provider
+        .prepare_for_cache(
+            &pack_cache,
+            &crate::cache::ContentFingerprints::new(),
+            &std::sync::atomic::AtomicBool::new(false),
+        )
+        .unwrap()
+        .expect("the Pack is prepared");
+    app.artwork_provider = Some(provider);
+    app.relist_here();
+    let at = folder_at(&app);
+    assert!(app.here[at].is_folder());
+    assert_eq!(app.here[at].name, "Example Game");
+    assert_eq!(app.here[at].cover.as_deref(), Some(pack_cover.as_path()));
+    app.game_list.select(at);
+    assert_eq!(
+        app.current_art(),
+        (
+            Some(pack_cover.clone()),
+            "Example Game".to_string(),
+            false,
+            true
+        )
+    );
+    let mut unusable = crate::artwork_pack::Provider::load("NoSuchSystem", &docs, Some("en"));
+    assert!(!unusable.health.usable());
+    unusable
+        .prepare_for_cache(
+            &pack_cache,
+            &crate::cache::ContentFingerprints::new(),
+            &std::sync::atomic::AtomicBool::new(false),
+        )
+        .unwrap();
+    app.artwork_provider = Some(unusable);
+    app.relist_here();
+    let at = folder_at(&app);
+    assert_eq!(app.here[at].cover, None, "an unusable Pack: nothing");
+    app.artwork_provider = None;
+    app.system_cache = Some(gamelist_cache);
+    app.relist_here();
+    let at = folder_at(&app);
+    assert_eq!(
+        app.here[at].cover.as_deref(),
+        Some(image.as_path()),
+        "back on the gamelist, its picture again"
+    );
+
     // A shelf inside favourites is left alone: no picture, the heart.
     let shelf = root.join("_@Favorites/Shelf");
     std::fs::create_dir_all(&shelf).unwrap();
