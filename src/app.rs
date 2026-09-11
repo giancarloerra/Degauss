@@ -3055,6 +3055,10 @@ pub struct App {
     /// Seed for picking a game at random.
     seed: u64,
     message: Option<String>,
+    /// The theme and Details Style problem lines the first screen carries,
+    /// kept apart so the startup source check can tell them from whatever
+    /// has been put on screen since.
+    startup_problems: Option<String>,
     dirty: bool,
 }
 
@@ -3452,6 +3456,7 @@ impl App {
             message_after_build: None,
             skipped_systems: false,
             message: None,
+            startup_problems: None,
             dirty: true,
         };
         app.all_systems = std::mem::take(&mut app.systems);
@@ -3489,6 +3494,7 @@ impl App {
         // first screen. Any press takes it down.
         if !theme_problems.is_empty() {
             app.message = Some(theme_problems.join("\n"));
+            app.startup_problems = app.message.clone();
         }
         app.resolve_artwork_sources(None, SourceResolutionAction::Startup);
         app.apply_geometry();
@@ -5004,16 +5010,22 @@ impl App {
     }
 
     /// What the screen says once a source check is in. Startup keeps the
-    /// lines the first screen already carries, a theme or Details Style
-    /// problem waiting for a press, and puts the check's word under them;
-    /// every other check replaces its own "Checking..." line.
+    /// lines the first screen carries, a theme or Details Style problem
+    /// waiting for a press, and puts the check's word under them; once
+    /// something else is on screen, the build report opened with a press
+    /// or nothing at all, the check's word stands alone. Every other check
+    /// replaces its own "Checking..." line.
     fn report_source_check(&mut self, action: SourceResolutionAction, text: Option<String>) {
-        self.message = match (action, self.message.take(), text) {
-            (SourceResolutionAction::Startup, Some(lines), Some(text)) => {
-                Some(format!("{lines}\n{text}"))
-            }
-            (SourceResolutionAction::Startup, lines, text) => lines.or(text),
-            (_, _, text) => text,
+        let lines = match action {
+            SourceResolutionAction::Startup => self
+                .startup_problems
+                .take()
+                .filter(|lines| self.message.as_deref() == Some(lines.as_str())),
+            _ => None,
+        };
+        self.message = match (lines, text) {
+            (Some(lines), Some(text)) => Some(format!("{lines}\n{text}")),
+            (lines, text) => lines.or(text),
         };
     }
 

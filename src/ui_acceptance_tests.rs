@@ -3261,6 +3261,52 @@ fn run_details_style_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
         app.ui.hide().unwrap();
     }
 
+    // A first start reads the card, and a press while the startup check is
+    // pending opens the build report in place of the problem lines. A
+    // check that then fails must say only its own word: the report it did
+    // not write, ending in "No problems reported", must not stand above
+    // the failure.
+    {
+        let first = root.join("details-style-first-start");
+        std::fs::create_dir_all(first.join("games/NES")).unwrap();
+        std::fs::write(first.join("games/NES/First Game.nes"), b"fixture").unwrap();
+        let mut app = unopened_fixture_app(
+            &first,
+            window.clone(),
+            Settings {
+                details_style: Some("large_artwork".into()),
+                ..Default::default()
+            },
+        );
+        assert!(app.build.is_some(), "a first start reads the card");
+        assert!(
+            app.source_resolution.is_some(),
+            "the startup check is still pending"
+        );
+        assert!(
+            app.message
+                .as_deref()
+                .is_some_and(|message| message.contains("large_artwork")),
+            "{:?}",
+            app.message
+        );
+        app.leave_splash();
+        app.handle(Action::Accept);
+        assert!(app.index_details, "a press opens the build report");
+        let report = app.message.clone().expect("the build report is on screen");
+        assert!(report.contains("No problems reported"), "{report}");
+        app.report_source_check(
+            SourceResolutionAction::Startup,
+            Some("Game data source check failed".into()),
+        );
+        assert_eq!(
+            app.message.as_deref(),
+            Some("Game data source check failed"),
+            "a failed check replaces the report it did not write"
+        );
+        app.ui.hide().unwrap();
+    }
+
     // Both styles persist: the choice is written when the page is left and
     // survives a fresh App from the reloaded file, in both directions.
     let mut app = fixture_app(root, window.clone(), Settings::default());
