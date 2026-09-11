@@ -470,7 +470,7 @@ impl Library {
     /// The rows of a place, folders first and then games, each in the order
     /// a person reads them.
     pub fn list(&self, place: &Place, show_empty: bool) -> Result<(Vec<Row>, ListStats)> {
-        self.list_reporting(place, show_empty)
+        self.list_at(place, show_empty, false)
             .map(|(rows, stats, _)| (rows, stats))
     }
 
@@ -482,6 +482,15 @@ impl Library {
         place: &Place,
         show_empty: bool,
     ) -> Result<(Vec<Row>, ListStats, Vec<crate::zip::Skipped>)> {
+        self.list_at(place, show_empty, true)
+    }
+
+    fn list_at(
+        &self,
+        place: &Place,
+        show_empty: bool,
+        report: bool,
+    ) -> Result<(Vec<Row>, ListStats, Vec<crate::zip::Skipped>)> {
         let (mut rows, stats, skipped) = match place {
             Place::Roots => {
                 let (rows, stats) = self.list_roots(show_empty)?;
@@ -491,9 +500,9 @@ impl Library {
                 let (rows, stats) = self.list_dir(dir, show_empty)?;
                 (rows, stats, Vec::new())
             }
-            Place::Archive(archive) => self.list_archive(archive, "", show_empty)?,
+            Place::Archive(archive) => self.list_archive(archive, "", show_empty, report)?,
             Place::ArchiveDirectory { archive, prefix } => {
-                self.list_archive(archive, prefix, show_empty)?
+                self.list_archive(archive, prefix, show_empty, report)?
             }
             Place::Listing { install, file } => {
                 let (rows, stats) = self.list_listing(install, file)?;
@@ -639,17 +648,20 @@ impl Library {
     /// The launchable files inside an archive. Only names are read; nothing
     /// is unpacked, because unpacking is the loader's job at launch time.
     /// Members the reader left out are not rows; the archive itself hands
-    /// them back for the index or audit that reads it to summarise, and the
-    /// reader has already logged each of them when it read the archive.
+    /// them back, when asked to `report`, for the index or audit that reads
+    /// it to summarise, and the reader has already logged each of them when
+    /// it read the archive. A listing that only wants rows does not copy
+    /// them.
     fn list_archive(
         &self,
         archive: &Path,
         prefix: &str,
         show_empty: bool,
+        report: bool,
     ) -> Result<(Vec<Row>, ListStats, Vec<crate::zip::Skipped>)> {
         let contents = self.archive_cache.borrow_mut().read(archive)?;
         let entries = &contents.entries;
-        let skipped = if prefix.is_empty() {
+        let skipped = if report && prefix.is_empty() {
             contents.skipped.clone()
         } else {
             Vec::new()
