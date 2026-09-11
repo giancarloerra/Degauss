@@ -391,15 +391,18 @@ impl Catalogues {
 }
 
 /// The rule that starts a ROM set, where the system's own rules cover
-/// only extensions.
+/// only extensions. Asked for a file the caller has already found no rule
+/// of the system covers.
 ///
 /// A set has no extension of its own (a folder) or one no rule names (a
 /// ZIP), and Main loads both through the same file slot as a `.neo`: an
 /// MGL `<file>` for the Neo Geo core goes to the ROM-set loader whatever
-/// it points at. So a set borrows the `.neo` rule. [`None`] for every
-/// other system, and whenever a rule already covers the file.
-pub fn romset_rule<'a>(system: &'a SystemConfig, game: &Path) -> Option<&'a LaunchRule> {
-    if !is_romset_system(system) || system.rule_for(game).is_some() {
+/// it points at, with no look at the name. So in a ROM-set system every
+/// file without a rule of its own borrows the `.neo` rule, which is also
+/// what keeps a set folder with a dot in its name launchable. [`None`]
+/// for every other system.
+pub fn romset_rule(system: &SystemConfig) -> Option<&LaunchRule> {
+    if !is_romset_system(system) {
         return None;
     }
     system.launch.iter().find(|rule| {
@@ -676,16 +679,14 @@ mod tests {
     }
 
     #[test]
-    fn a_set_borrows_the_neo_rule_and_nothing_else_does() {
+    fn only_a_rom_set_system_lends_its_neo_rule() {
         let neogeo = shipped("NeoGeo");
-        let rule =
-            romset_rule(&neogeo, Path::new("/games/NEOGEO/mslug.zip")).expect("the neo rule");
+        let rule = romset_rule(&neogeo).expect("the neo rule");
         assert_eq!((rule.kind.as_str(), rule.index, rule.delay), ("f", 1, 1));
-        assert!(romset_rule(&neogeo, Path::new("/games/NEOGEO/mslug")).is_some());
-        // A file a rule already covers keeps that rule.
-        assert!(romset_rule(&neogeo, Path::new("/games/NEOGEO/mslug.neo")).is_none());
-        // Another system's ZIP is still refused rather than guessed at.
-        assert!(romset_rule(&shipped("NES"), Path::new("/games/NES/game.zip")).is_none());
-        assert!(romset_rule(&shipped("NeoGeoCD"), Path::new("/games/NEOGEO/mslug.zip")).is_none());
+        assert!(romset_rule(&shipped("NeoGeoMVS")).is_some());
+        // Any other system's unruled file is still refused rather than
+        // guessed at, the Neo Geo CD's included.
+        assert!(romset_rule(&shipped("NES")).is_none());
+        assert!(romset_rule(&shipped("NeoGeoCD")).is_none());
     }
 }

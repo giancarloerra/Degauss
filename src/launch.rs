@@ -386,12 +386,14 @@ pub fn favorite_mgl(system: &SystemConfig, game: &Path) -> Result<Option<String>
 }
 
 /// The rule that starts this file: the one the system declares for its
-/// extension, or, for a Neo Geo ROM set, the `.neo` rule that Main loads a
-/// set through as well. Anything else is refused rather than guessed at.
+/// extension, or, in a Neo Geo ROM-set system, the `.neo` rule for any
+/// file no rule covers, since Main hands whatever fills the Neo Geo file
+/// slot to its ROM-set loader. In every other system a file without a
+/// rule is refused rather than guessed at.
 fn rule_for<'a>(system: &'a SystemConfig, game: &Path) -> Result<&'a LaunchRule> {
     system
         .rule_for(game)
-        .or_else(|| crate::neogeo::romset_rule(system, game))
+        .or_else(|| crate::neogeo::romset_rule(system))
         .ok_or_else(|| {
             DegaussError::unsupported(
                 "launch rule",
@@ -1272,6 +1274,28 @@ mod tests {
         assert!(
             err.to_string().contains("no [[systems.launch]] rule"),
             "got: {err}"
+        );
+        // The name is not looked at, exactly as Main routes whatever fills
+        // the Neo Geo file slot to its ROM-set loader: a set folder with a
+        // dot in its name is a set, and so is anything else no rule covers.
+        let system = neogeo();
+        for set in ["mslug", "v1.2", "notes.txt"] {
+            let rule = rule_for(&system, &Path::new("/media/fat/games/NEOGEO").join(set))
+                .unwrap_or_else(|error| panic!("{set}: {error}"));
+            assert_eq!((rule.index, rule.kind.as_str()), (1, "f"), "{set}");
+        }
+        // A rule the system declares is never displaced by the borrowed
+        // one: a user's table may route another extension to a second
+        // slot, and that file must still go where the table says.
+        let mut two_slots = neogeo();
+        two_slots.launch.push(rule(&["bin"], "f", 2, 1));
+        let declared = rule_for(&two_slots, Path::new("/media/fat/games/NEOGEO/x.bin")).unwrap();
+        assert_eq!(declared.index, 2);
+        assert_eq!(
+            rule_for(&two_slots, Path::new("/media/fat/games/NEOGEO/mslug.zip"))
+                .unwrap()
+                .index,
+            1
         );
     }
 
