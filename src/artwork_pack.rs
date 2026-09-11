@@ -4309,6 +4309,7 @@ mod tests {
         let games = base.join("games/NEOGEO");
         std::fs::create_dir_all(games.join("kof98n")).unwrap();
         std::fs::write(games.join("MSLUG.zip"), b"not an archive").unwrap();
+        std::fs::write(games.join("kof98n.zip"), b"not an archive").unwrap();
         for id in ["NeoGeo", "NeoGeoMVS"] {
             let provider = Provider::load(id, &docs, None);
             assert_eq!(
@@ -4345,14 +4346,35 @@ mod tests {
                 Some(MatchMethod::IndexName),
                 "{id}"
             );
-            // The fingerprint pass has nothing to do for a set: it would
-            // otherwise open the ZIP and fail on these bytes.
+            // The fingerprint pass has nothing to do for a set. A ZIP the
+            // Pack knows only by metadata, with no cover to stop the pass
+            // early, is where this shows: known by its set name and with no
+            // hash_path, it is left closed, where a whole ZIP of any other
+            // system would be read end to end for its CRC.
+            let unpictured = Launch::File(games.join("kof98n.zip"));
+            let identity = provider
+                .identity_for_launch(&unpictured, &AtomicBool::new(false))
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                (identity.name.as_str(), identity.hash_path.as_deref()),
+                ("kof98n", None)
+            );
             assert_eq!(
                 provider
-                    .fingerprint_for_launch(&zipped, &AtomicBool::new(false), &mut |_| {})
-                    .unwrap(),
-                None
+                    .resolve(&identity)
+                    .map(|presentation| (presentation.cover.is_some(), presentation.name)),
+                Some((false, Some("The King of Fighters '98".to_string()))),
+                "{id}: metadata only, so nothing short-circuits the fingerprint"
             );
+            for set in [&zipped, &unpictured] {
+                assert_eq!(
+                    provider
+                        .fingerprint_for_launch(set, &AtomicBool::new(false), &mut |_| {})
+                        .unwrap(),
+                    None
+                );
+            }
         }
         // A .neo keeps its ordinary identity, hashing included.
         let provider = Provider::load("NeoGeo", &docs, None);

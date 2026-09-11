@@ -3134,8 +3134,8 @@ fn run_auto_source_choice_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
 /// the interface: the rows a card owner sees are games, choosing one hands
 /// Main the complete set path, and a favourite made here is the ordinary
 /// MGL the stock menu reads, back on its row after a restart.
-fn run_neogeo_romset_flow(window: Rc<MinimalSoftwareWindow>) {
-    let root = fixture_directory();
+fn run_neogeo_romset_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
+    let root = root.join("neogeo");
     let games = root.join("games/NEOGEO");
     std::fs::create_dir_all(games.join("kof98")).unwrap();
     std::fs::create_dir_all(root.join("_Console")).unwrap();
@@ -3288,7 +3288,7 @@ pub(super) fn run_ui_acceptance_flow(window: Rc<MinimalSoftwareWindow>) {
     std::fs::write(&gamelist_path, &gamelist_xml).unwrap();
     run_browse_bar_settings_flow(&root, window.clone());
     run_scripts_flow(&root, window.clone());
-    run_neogeo_romset_flow(window.clone());
+    run_neogeo_romset_flow(&root, window.clone());
     run_artwork_matte_flow(&root, window.clone());
     run_fresh_auto_pack_index_flow(&root, window.clone());
     run_auto_source_choice_flow(&root, window.clone());
