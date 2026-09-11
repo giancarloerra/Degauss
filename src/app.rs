@@ -15949,14 +15949,18 @@ mod tests {
         std::fs::create_dir_all(&art).unwrap();
         let pack_cover = art.join("Disk Name.jpg");
         std::fs::write(&pack_cover, b"pack image").unwrap();
+        // A second key with its own picture keeps the Pack usable once
+        // the game's picture is taken away below: a Pack with no picture
+        // at all is refused outright, which is a different case.
+        std::fs::write(art.join("Other Disk.jpg"), b"other image").unwrap();
         std::fs::write(
             art.join("manifest.tsv"),
-            "#key\tstyle\tss_system_id\nDisk Name\tbox-2D\t105\n",
+            "#key\tstyle\tss_system_id\nDisk Name\tbox-2D\t105\nOther Disk\tbox-2D\t105\n",
         )
         .unwrap();
         std::fs::write(
             art.join("index.tsv"),
-            "#name\tcrc\tsize\tkey\nDisk Name\t\t\tDisk Name\n",
+            "#name\tcrc\tsize\tkey\nDisk Name\t\t\tDisk Name\nOther Disk\t\t\tOther Disk\n",
         )
         .unwrap();
         let config =
@@ -15994,6 +15998,12 @@ mod tests {
         let through = |provider: &crate::artwork_pack::Provider| {
             derived_folder_cover(&pack_cache, &folder, &[], Some(provider))
         };
+        // The same walk over rows that do carry the gamelist picture: the
+        // only answer a fall-back to the written-down row could give, so
+        // a Pack that borrowed it would be caught here.
+        let over_gamelist_rows = |provider: &crate::artwork_pack::Provider| {
+            derived_folder_cover(&gamelist_cache, &folder, &[], Some(provider))
+        };
 
         let mut provider = crate::artwork_pack::Provider::load("SuperGrafx", &docs, Some("en"));
         assert!(provider.health.usable());
@@ -16001,6 +16011,11 @@ mod tests {
             through(&provider),
             None,
             "a Pack not yet prepared offers nothing, not the gamelist picture"
+        );
+        assert_eq!(
+            over_gamelist_rows(&provider),
+            None,
+            "not even from a row that carries the gamelist picture"
         );
         assert_eq!(prepared(&mut provider), 1);
         assert_eq!(through(&provider).as_deref(), Some(pack_cover.as_path()));
@@ -16016,12 +16031,22 @@ mod tests {
 
         std::fs::remove_file(&pack_cover).unwrap();
         let mut provider = crate::artwork_pack::Provider::load("SuperGrafx", &docs, Some("en"));
+        assert!(
+            provider.health.usable(),
+            "one picture missing leaves the Pack usable"
+        );
         prepared(&mut provider);
+        assert!(provider.covers_prepared());
         assert!(gamelist_cover.is_file());
         assert_eq!(
             through(&provider),
             None,
             "a Pack without the picture must not borrow the gamelist's"
+        );
+        assert_eq!(
+            over_gamelist_rows(&provider),
+            None,
+            "not even from a row that carries the gamelist picture"
         );
         std::fs::remove_dir_all(root).ok();
     }

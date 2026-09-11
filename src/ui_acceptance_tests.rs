@@ -3309,23 +3309,61 @@ fn run_folder_artwork_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
     let at = folder_at(&app);
     assert_eq!(app.here[at].cover.as_deref(), Some(image.as_path()));
 
-    // Reading the system again is answered from the new cache: a second,
-    // different game in the folder takes the picture away, and its
-    // removal gives it back.
+    // Reading the system again is answered from the new cache, listed by
+    // the reading itself: a second, different game in the folder takes
+    // the picture away once Index All has run, and its removal gives it
+    // back once the library refresh that follows a scrape has.
     std::fs::write(games.join("Example Game/Other Game.nes"), b"fixture").unwrap();
     write_gamelist("<game><path>./Example Game/Other Game.nes</path><name>Other Game</name><image>./media/other.png</image></game>");
-    assert!(app.refresh_system("NES").is_none());
-    app.relist_here();
+    app.start_build(true);
+    app.finish_background_work_for_headless();
+    assert_eq!(app.index_terminal.as_ref().unwrap().state, "Complete");
+    app.handle(Action::Quit);
+    assert_eq!(app.screen, Screen::Browse);
     let at = folder_at(&app);
     assert_eq!(app.here[at].below, Some(2));
     assert_eq!(app.here[at].cover, None, "two games: the logo again");
     std::fs::remove_file(games.join("Example Game/Other Game.nes")).unwrap();
     write_gamelist("");
-    assert!(app.refresh_system("NES").is_none());
-    app.relist_here();
+    app.screen = Screen::ScraperProgress;
+    app.scraper_return = Screen::Browse;
+    app.scraper_details = false;
+    app.scraper_terminal = None;
+    app.scraper_progress = crate::scraper::Progress {
+        phase: crate::scraper::Phase::Finishing,
+        scope: "Fixture System".into(),
+        total: 1,
+        completed: 1,
+        updated: 1,
+        updated_systems: vec!["NES".into()],
+        ..Default::default()
+    };
+    app.begin_scraper_finish(ScraperTerminal::Finished);
+    let refreshed = app
+        .refreshing
+        .take()
+        .expect("a scrape that updated the system refreshes it");
+    app.start_scraper_cache_refresh(refreshed);
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while app.scraper_refresh_job.is_some() {
+        assert!(
+            Instant::now() < deadline,
+            "the library refresh after the scrape did not finish"
+        );
+        app.poll_scraper_cache_refresh();
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    assert_eq!(app.scraper_terminal, Some(ScraperTerminal::Finished));
+    assert_eq!(app.scraper_progress.system_errors, 0);
+    app.handle(Action::Quit);
+    assert_eq!(app.screen, Screen::Browse);
     let at = folder_at(&app);
     assert_eq!(app.here[at].below, Some(1));
-    assert_eq!(app.here[at].cover.as_deref(), Some(image.as_path()));
+    assert_eq!(
+        app.here[at].cover.as_deref(),
+        Some(image.as_path()),
+        "one game again: its picture, listed by the refresh"
+    );
 
     // With the Pack selected the folder's picture is the Pack's, asked
     // through the same listing the screen is drawn from. While the Pack
@@ -3336,14 +3374,17 @@ fn run_folder_artwork_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
     std::fs::create_dir_all(&art).unwrap();
     let pack_cover = art.join("Example Game.jpg");
     std::fs::write(&pack_cover, crate::covers::JPEG_16).unwrap();
+    // The second game's picture keeps the Pack usable while the folder's
+    // game has none, below; a Pack with no picture at all is refused.
+    std::fs::write(art.join("Second Game.jpg"), crate::covers::JPEG_16).unwrap();
     std::fs::write(
         art.join("manifest.tsv"),
-        "#key\tstyle\tss_system_id\nExample Game\tbox-2D\t3\n",
+        "#key\tstyle\tss_system_id\nExample Game\tbox-2D\t3\nSecond Game\tbox-2D\t3\n",
     )
     .unwrap();
     std::fs::write(
         art.join("index.tsv"),
-        "#name\tcrc\tsize\tkey\nExample Game\t\t\tExample Game\n",
+        "#name\tcrc\tsize\tkey\nExample Game\t\t\tExample Game\nSecond Game\t\t\tSecond Game\n",
     )
     .unwrap();
     let pack_library = Library::open_source_neutral(
@@ -3352,10 +3393,6 @@ fn run_folder_artwork_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
     )
     .unwrap();
     let pack_cache = crate::cache::build_system(&pack_library);
-    let gamelist_cache = app
-        .system_cache
-        .replace(pack_cache.clone())
-        .expect("the gamelist cache was open");
     assert!(image.is_file(), "the gamelist picture stays on the card");
     let mut provider = crate::artwork_pack::Provider::load("NES", &docs, Some("en"));
     assert!(provider.health.usable());
@@ -3364,8 +3401,15 @@ fn run_folder_artwork_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
     let at = folder_at(&app);
     assert_eq!(
         app.here[at].cover, None,
-        "a Pack not yet prepared: nothing, not the gamelist picture"
+        "a Pack not yet prepared: nothing, whichever rows are listed"
     );
+    let gamelist_cache = app
+        .system_cache
+        .replace(pack_cache.clone())
+        .expect("the gamelist cache was open");
+    app.relist_here();
+    let at = folder_at(&app);
+    assert_eq!(app.here[at].cover, None, "nor over the Pack's own rows");
     provider
         .prepare_for_cache(
             &pack_cache,
@@ -3407,8 +3451,30 @@ fn run_folder_artwork_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
     app.relist_here();
     let at = folder_at(&app);
     assert_eq!(app.here[at].cover, None, "so it has nothing to answer");
-    app.artwork_provider = None;
+    // A prepared Pack with no picture for the game, listed over the
+    // gamelist rows, which do carry one: the walk asks only the Pack, so
+    // the folder shows nothing rather than the rows' picture.
+    std::fs::remove_file(&pack_cover).unwrap();
+    let mut without = crate::artwork_pack::Provider::load("NES", &docs, Some("en"));
+    assert!(without.health.usable());
+    without
+        .prepare_for_cache(
+            &pack_cache,
+            &crate::cache::ContentFingerprints::new(),
+            &std::sync::atomic::AtomicBool::new(false),
+        )
+        .unwrap()
+        .expect("the Pack is prepared");
+    assert!(without.covers_prepared());
+    app.artwork_provider = Some(without);
     app.system_cache = Some(gamelist_cache);
+    app.relist_here();
+    let at = folder_at(&app);
+    assert_eq!(
+        app.here[at].cover, None,
+        "a Pack without the picture does not borrow the gamelist's"
+    );
+    app.artwork_provider = None;
     app.relist_here();
     let at = folder_at(&app);
     assert_eq!(
@@ -3416,6 +3482,59 @@ fn run_folder_artwork_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
         Some(image.as_path()),
         "back on the gamelist, its picture again"
     );
+
+    // The same change of source made the way it is made from the menu:
+    // choosing the Pack lists the folder with the Pack's picture once the
+    // switch has completed, reading the system again under the Pack
+    // follows the Pack as it is now, and choosing the gamelist again
+    // brings its picture back. Nothing here lists by hand.
+    std::fs::write(&pack_cover, crate::covers::JPEG_16).unwrap();
+    app.open_game_data_source();
+    assert_eq!(app.screen, Screen::GameDataSource);
+    app.begin_source_switch(crate::source_cache::Target::ArtworkPack {
+        docs_root: docs.clone(),
+    });
+    assert!(app.source_job.is_some(), "the switch runs on its worker");
+    app.finish_background_work_for_headless();
+    assert_eq!(app.screen, Screen::Browse);
+    assert_eq!(app.message.as_deref(), Some("Now using Artwork Pack."));
+    assert!(app.artwork_provider.is_some());
+    let at = folder_at(&app);
+    assert!(app.here[at].is_folder());
+    assert_eq!(
+        app.here[at].cover.as_deref(),
+        Some(pack_cover.as_path()),
+        "the switch itself lists the folder with the Pack's picture"
+    );
+    std::fs::remove_file(&pack_cover).unwrap();
+    app.rebuild_open_system_resolved();
+    assert!(
+        app.source_job.is_some(),
+        "the Pack is read again on its worker"
+    );
+    app.finish_background_work_for_headless();
+    assert_eq!(app.message.as_deref(), Some("NES list rebuilt."));
+    assert!(image.is_file(), "the gamelist picture is still on the card");
+    let reread = app.artwork_provider.as_ref().expect("the Pack is attached");
+    assert!(reread.health.usable() && reread.covers_prepared());
+    let at = folder_at(&app);
+    assert_eq!(
+        app.here[at].cover, None,
+        "the Pack lost the picture, and the gamelist's is not borrowed"
+    );
+    app.open_game_data_source();
+    app.begin_source_switch(crate::source_cache::Target::Gamelist);
+    assert!(app.source_job.is_some());
+    app.finish_background_work_for_headless();
+    assert_eq!(app.message.as_deref(), Some("Now using Gamelist."));
+    assert!(app.artwork_provider.is_none());
+    let at = folder_at(&app);
+    assert_eq!(
+        app.here[at].cover.as_deref(),
+        Some(image.as_path()),
+        "the switch back lists the folder with the gamelist picture"
+    );
+    app.message = None;
 
     // A shelf inside favourites is left alone: no picture, the heart. The
     // favourite on it, which names the game inside the folder, is listed
