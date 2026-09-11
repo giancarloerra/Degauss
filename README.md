@@ -521,8 +521,9 @@ inspect long values and the full description; left/right moves by a page.
 **B** or **X** returns to Actions / Game, and backing out restores the same game
 without launching it or changing the view. Information comes from the system's
 selected Gamelist or Artwork Pack source, including for favourites. Missing
-fields remain empty. Details keeps the compact summary; Information is where
-all available fields and the complete description can be read.
+fields remain empty. Details in its Information style keeps the compact
+summary and Large Artwork drops it; Information is where all available fields
+and the complete description can be read.
 
 Complete descriptions are read only when Game Information opens, with a visible
 loading or error state. Existing compact caches remain valid; no library rebuild
@@ -563,7 +564,7 @@ require **A** and confirmation, never a sideways press.
 | Appearance | Theme | Left and right choose a palette. Press A to open the editor. Standard uses the colours in `degauss.toml`. See [Themes and colours](#themes-and-colours) |
 | Appearance | View | The global default for places without a custom view: Details, Tiled, Carousel, List, Multi List or Gallery |
 | Appearance | Reset All Custom Views | With A and confirmation, remove every place-specific view without changing the global View setting |
-| Appearance | Details Style | How Details shares the screen while browsing games. Information (default) keeps the list beside a picture of about 42% of the width with the compact summary under it; Large Artwork gives the picture about 62% of the width and the whole height of its column, with no lines under it. Home, category and system screens and the other views are unchanged, and switching does not rebuild the library or the artwork cache |
+| Appearance | Details Style | How Details shares the screen while browsing games. Information (default) keeps the list beside a picture of about 42% of the width with the compact summary under it; Large Artwork gives the picture about 62% of the width and the whole height of its column, with no lines under it. Home, category and system screens and the other views are unchanged, and switching does not rebuild the library or the artwork cache. Pictures are decoded to `cover_size` in `degauss.toml` or half the screen, whichever is larger, so on a screen wider than about twice that edge Large Artwork enlarges a landscape picture a little; a larger `cover_size` keeps it sharp |
 | Appearance | Text | The typeface: Smooth, Pixel (a DOS font on whole pixels), and the bolder Smooth 2 and Pixel 2 |
 | Appearance | Artwork | Turn pictures off entirely |
 | Appearance | Artwork Scale Factor | Framebuffer keeps the original square-pixel fit and is the default. 4:3 and 16:9 correct game artwork for that physical display shape in Details, Tiled, Carousel and Gallery. Category logos, system logos and the screensaver are unchanged |

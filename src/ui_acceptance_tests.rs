@@ -3389,6 +3389,32 @@ fn run_details_style_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
         assert!(app.ui.get_has_art());
     }
 
+    // The display correction belongs to the picture, not to the style:
+    // 4:3 artwork on a 4:3 tube needs the same horizontal stretch whether
+    // its column is the narrow one or the wide one.
+    app.game_list.select(1);
+    app.artwork_scale = ArtworkScale::FourThree;
+    let corrected = artwork_horizontal(ArtworkScale::FourThree, app.width, app.height, true);
+    assert!(
+        (corrected - 1.0).abs() > 0.01,
+        "the fixture screen must need correction for this to prove anything"
+    );
+    for style in DetailsStyle::ALL {
+        app.details_style = style;
+        app.apply_geometry();
+        app.load_art();
+        app.refresh();
+        assert!(app.ui.get_has_art());
+        assert_eq!(
+            app.ui.get_art_scale_x(),
+            corrected,
+            "{style:?} must keep the artwork aspect correction"
+        );
+    }
+    app.artwork_scale = ArtworkScale::Framebuffer;
+    app.load_art();
+    assert_eq!(app.ui.get_art_scale_x(), 1.0);
+
     // The tube first, then the higher resolutions: every one of them
     // draws through the same split and hands the picture the whole column
     // in Large Artwork.
