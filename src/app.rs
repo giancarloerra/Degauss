@@ -16133,6 +16133,104 @@ mod tests {
         std::fs::remove_dir_all(root).ok();
     }
 
+    /// A favourite made of the disc inside a one-disc folder is a shortcut
+    /// to the disc, not to the folder: it is answered from the disc's own
+    /// written-down row, picture and name and genre and details, through
+    /// the MGL a disc system writes for it, while the folder row derives
+    /// only the picture. Neither one reads the other.
+    #[test]
+    fn a_favourite_to_a_nested_chd_is_answered_from_the_disc_itself() {
+        let root = picker_temp("favourite-nested-chd");
+        let games = root.join("games");
+        let cache_dir = root.join("cache");
+        std::fs::create_dir_all(games.join("Sole")).unwrap();
+        std::fs::create_dir_all(games.join("media")).unwrap();
+        std::fs::create_dir_all(&cache_dir).unwrap();
+        let table = crate::systems::parse_table(
+            include_str!("../assets/systems.toml"),
+            Path::new("systems.toml"),
+        )
+        .unwrap();
+        let def = table
+            .iter()
+            .find(|def| def.id == "PSX")
+            .cloned()
+            .expect("the table has a Playstation entry");
+        let system = FoundSystem {
+            def,
+            paths: vec![games.clone()],
+            logo_dir: None,
+            menu_folder: None,
+        };
+        let config = system.to_config();
+        let disc = games.join("Sole/Only.chd");
+        assert_eq!(
+            config.rule_for(&disc).map(|rule| rule.kind.as_str()),
+            Some("s"),
+            "a CHD is mounted as a disc, not loaded as a file"
+        );
+        std::fs::write(&disc, b"disc").unwrap();
+        std::fs::write(games.join("media/only.png"), b"picture").unwrap();
+        std::fs::write(
+            games.join("gamelist.xml"),
+            "<gameList><game><path>./Sole/Only.chd</path><name>Only Game</name><image>./media/only.png</image><genre>Puzzle</genre><publisher>Example Publisher</publisher></game></gameList>",
+        )
+        .unwrap();
+        let library = Library::open_with_names(&config, browse::DisplayNames::default()).unwrap();
+        let cache = crate::cache::build_system(&library);
+        crate::cache::save_system(&cache_dir, "PSX", &cache).unwrap();
+        let folder = Place::Dir(games.join("Sole"));
+        let game = cache.get(&folder).expect("the folder is written down").rows[0].clone();
+        assert_eq!(game.name, "Only Game");
+        assert_eq!(
+            game.cover.as_deref(),
+            Some(games.join("media/only.png").as_path())
+        );
+        assert_eq!(game.genre.as_deref(), Some("Puzzle"));
+        assert_eq!(game.details.publisher, "Example Publisher");
+        assert_eq!(
+            derived_folder_cover(&cache, &folder, &[], None),
+            game.cover,
+            "the folder shows the disc's picture"
+        );
+
+        let shelf = root.join("_@Favorites");
+        std::fs::create_dir_all(&shelf).unwrap();
+        let favorite = shelf.join("Only.mgl");
+        let mgl = crate::launch::favorite_mgl(&config, &disc)
+            .unwrap()
+            .expect("a disc favourite is an MGL");
+        assert!(mgl.contains("type=\"s\""), "{mgl}");
+        std::fs::write(&favorite, mgl).unwrap();
+        let mut rows = vec![browse::Row {
+            name: "Only".to_string(),
+            sort_key: "only".to_string(),
+            kind: browse::Kind::Play(browse::Launch::File(favorite.clone())),
+            cover: None,
+            genre: None,
+            favorite: true,
+            below: None,
+            details: browse::Details::default(),
+        }];
+        enrich_favorite_rows(
+            &mut rows,
+            &[system],
+            &Default::default(),
+            &cache_dir,
+            |_, _, _| None,
+        );
+        assert_eq!(
+            rows[0].kind,
+            browse::Kind::Play(browse::Launch::File(favorite))
+        );
+        assert_eq!(rows[0].name, game.name, "the disc's name, not the folder's");
+        assert_eq!(rows[0].cover, game.cover);
+        assert_eq!(rows[0].genre, game.genre);
+        assert_eq!(rows[0].details, game.details);
+        assert!(rows[0].favorite);
+        std::fs::remove_dir_all(root).ok();
+    }
+
     #[test]
     fn released_folder_views_migrate_only_to_one_proven_owner() {
         let nes_key = "d:/media/fat/games/NES";
