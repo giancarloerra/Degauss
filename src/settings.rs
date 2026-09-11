@@ -244,13 +244,13 @@ impl Settings {
         })();
         if let Err(error) = write_result {
             drop(handle);
-            return Err(cleanup_temporary(&temporary, error));
+            return Err(cleanup_temporary("writing settings", &temporary, error));
         }
         drop(handle);
 
         if let Err(error) = std::fs::rename(&temporary, path) {
             let error = DegaussError::io("installing settings", path, error);
-            return Err(cleanup_temporary(&temporary, error));
+            return Err(cleanup_temporary("writing settings", &temporary, error));
         }
 
         match sync_directory(parent) {
@@ -264,12 +264,20 @@ impl Settings {
     }
 }
 
-fn cleanup_temporary(path: &Path, error: DegaussError) -> DegaussError {
+/// The failure that stopped a save, with the leftover temporary file
+/// removed; when even that fails the error says so under `what`, because
+/// a stray file beside the settings is worth knowing about. Shared with
+/// the other writer that installs a file beside the settings.
+pub(crate) fn cleanup_temporary(
+    what: &'static str,
+    path: &Path,
+    error: DegaussError,
+) -> DegaussError {
     match std::fs::remove_file(path) {
         Ok(()) => error,
         Err(cleanup) if cleanup.kind() == std::io::ErrorKind::NotFound => error,
         Err(cleanup) => DegaussError::unsupported(
-            "writing settings",
+            what,
             format!(
                 "{error}; removing the temporary file {} also failed: {cleanup}",
                 path.display()
@@ -598,5 +606,36 @@ mod tests {
         let decoded: Settings = toml::from_str(&encoded).unwrap();
         assert_eq!(decoded.core_choices, settings.core_choices);
         assert_eq!(decoded.core_preference, None);
+    }
+
+    #[test]
+    fn a_temporary_file_that_cannot_be_removed_is_part_of_the_reported_failure() {
+        let dir =
+            std::env::temp_dir().join(format!("degauss-settings-stuck-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let stuck = dir.join("stuck.tmp");
+        std::fs::create_dir_all(&stuck).unwrap();
+        let error = cleanup_temporary(
+            "writing settings",
+            &stuck,
+            DegaussError::unsupported("writing settings", "the save failed"),
+        );
+        let text = error.to_string();
+        assert!(
+            text.contains("the save failed") && text.contains("also failed"),
+            "both failures must reach the screen, or a stray file goes unexplained: {text}"
+        );
+        assert!(text.contains(&stuck.display().to_string()));
+        let gone = cleanup_temporary(
+            "writing artwork pack warnings",
+            &dir.join("never-written.tmp"),
+            DegaussError::unsupported("writing artwork pack warnings", "the save failed"),
+        );
+        assert_eq!(
+            gone.to_string(),
+            "writing artwork pack warnings unsupported: the save failed",
+            "a temporary file that was never written is nothing to report, whichever writer asks"
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

@@ -21,7 +21,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::error::{DegaussError, Result};
-use crate::settings::SaveOutcome;
+use crate::settings::{cleanup_temporary, SaveOutcome};
 
 pub const FILE: &str = "artwork-pack-warnings.toml";
 
@@ -90,8 +90,8 @@ impl Acknowledgements {
     /// is flushed afterwards like the settings are, so the move itself
     /// survives a power cut; when that flush fails the file is in place and
     /// the outcome says what could not be confirmed. A temporary file left
-    /// by a failed write or move is removed, and when that fails too the
-    /// error says so, as the settings writer does.
+    /// by a failed write or move is removed by the settings writer's
+    /// cleanup, which folds a removal failure into the error.
     pub fn save(&self, path: &Path) -> Result<SaveOutcome> {
         let text = toml::to_string_pretty(self).map_err(|error| {
             DegaussError::malformed("artwork pack warnings", path, error.to_string())
@@ -127,11 +127,19 @@ impl Acknowledgements {
         })();
         drop(file);
         if let Err(error) = written {
-            return Err(cleanup_temporary(&temporary, error));
+            return Err(cleanup_temporary(
+                "writing artwork pack warnings",
+                &temporary,
+                error,
+            ));
         }
         if let Err(error) = std::fs::rename(&temporary, path) {
             let error = DegaussError::io("installing artwork pack warnings", path, error);
-            return Err(cleanup_temporary(&temporary, error));
+            return Err(cleanup_temporary(
+                "writing artwork pack warnings",
+                &temporary,
+                error,
+            ));
         }
         match std::fs::File::open(parent).and_then(|directory| directory.sync_all()) {
             Ok(()) => Ok(SaveOutcome::Durable),
@@ -141,23 +149,6 @@ impl Acknowledgements {
                 error,
             ))),
         }
-    }
-}
-
-/// The failure that stopped the save, with the leftover temporary file
-/// removed; when even that fails the error says so, because a stray file
-/// beside the settings is worth knowing about.
-fn cleanup_temporary(path: &Path, error: DegaussError) -> DegaussError {
-    match std::fs::remove_file(path) {
-        Ok(()) => error,
-        Err(cleanup) if cleanup.kind() == std::io::ErrorKind::NotFound => error,
-        Err(cleanup) => DegaussError::unsupported(
-            "writing artwork pack warnings",
-            format!(
-                "{error}; removing the temporary file {} also failed: {cleanup}",
-                path.display()
-            ),
-        ),
     }
 }
 
@@ -335,33 +326,6 @@ mod tests {
             names,
             vec![FILE.to_string()],
             "the written temporary file must not be left beside the settings"
-        );
-        std::fs::remove_dir_all(&dir).unwrap();
-    }
-
-    #[test]
-    fn a_temporary_file_that_cannot_be_removed_is_part_of_the_reported_failure() {
-        let dir = temp("stuck");
-        let stuck = dir.join("stuck.tmp");
-        std::fs::create_dir(&stuck).unwrap();
-        let error = cleanup_temporary(
-            &stuck,
-            DegaussError::unsupported("writing artwork pack warnings", "the save failed"),
-        );
-        let text = error.to_string();
-        assert!(
-            text.contains("the save failed") && text.contains("also failed"),
-            "both failures must reach the screen, or a stray file goes unexplained: {text}"
-        );
-        assert!(text.contains(&stuck.display().to_string()));
-        let gone = cleanup_temporary(
-            &dir.join("never-written.tmp"),
-            DegaussError::unsupported("writing artwork pack warnings", "the save failed"),
-        );
-        assert_eq!(
-            gone.to_string(),
-            "writing artwork pack warnings unsupported: the save failed",
-            "a temporary file that was never written is nothing to report"
         );
         std::fs::remove_dir_all(&dir).unwrap();
     }
