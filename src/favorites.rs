@@ -666,8 +666,9 @@ fn normalize_path(path: PathBuf) -> PathBuf {
 pub fn folders(root: &Path) -> Result<Vec<String>> {
     let listing = match std::fs::read_dir(root) {
         Ok(listing) => listing,
-        // A card with no favourites yet has no root. The New folder entry is
-        // how the first one is created, so absence is an empty collection.
+        // A card with no favourites yet has no root. The Main Favourites and
+        // New folder entries are how the first one is created, so absence
+        // is an empty collection.
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
         Err(e) => return Err(DegaussError::io("reading favourite folders", root, e)),
     };

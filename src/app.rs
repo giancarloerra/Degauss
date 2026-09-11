@@ -8759,6 +8759,7 @@ impl App {
                 crate::launch::favorite_mgl_amiga(&config, &install, &title).and_then(|mgl| {
                     crate::favorites::add_game(&target, &sanitise(&title), &mgl).map(|_| title)
                 });
+            let mut outcome_error = None;
             let mut refresh_error = None;
             match outcome {
                 Ok(what) => {
@@ -8766,12 +8767,12 @@ impl App {
                     self.reread_favorites();
                     refresh_error = self.refresh_favorites_system();
                 }
-                Err(e) => self.message = Some(format!("{e}")),
+                Err(e) => outcome_error = Some(format!("{e}")),
             }
             self.screen = Screen::Browse;
             self.apply_geometry();
             self.relist_here();
-            if let Some(error) = refresh_error {
+            if let Some(error) = outcome_error.or(refresh_error) {
                 // Set after show_here, which clears the message field as
                 // part of its redraw; set before, the error would never be
                 // seen.
@@ -8814,6 +8815,7 @@ impl App {
             Err(e) => Err(e),
         };
 
+        let mut outcome_error = None;
         let mut refresh_error = None;
         match outcome {
             Ok(what) => {
@@ -8821,12 +8823,12 @@ impl App {
                 self.reread_favorites();
                 refresh_error = self.refresh_favorites_system();
             }
-            Err(e) => self.message = Some(format!("{e}")),
+            Err(e) => outcome_error = Some(format!("{e}")),
         }
         self.screen = Screen::Browse;
         self.apply_geometry();
         self.relist_here();
-        if let Some(error) = refresh_error {
+        if let Some(error) = outcome_error.or(refresh_error) {
             // Set after show_here, which clears the message field as
             // part of its redraw; set before, the error would never be
             // seen.
@@ -8856,18 +8858,19 @@ impl App {
         let Some(file) = file else {
             return;
         };
+        let mut outcome_error = None;
         let mut refresh_error = None;
         match crate::favorites::remove(&file) {
             Ok(()) => {
                 self.reread_favorites();
                 refresh_error = self.refresh_favorites_system();
             }
-            Err(e) => self.message = Some(format!("{e}")),
+            Err(e) => outcome_error = Some(format!("{e}")),
         }
         self.screen = Screen::Browse;
         self.apply_geometry();
         self.relist_here();
-        if let Some(error) = refresh_error {
+        if let Some(error) = outcome_error.or(refresh_error) {
             // Set after show_here, which clears the message field as
             // part of its redraw; set before, the error would never be
             // seen.

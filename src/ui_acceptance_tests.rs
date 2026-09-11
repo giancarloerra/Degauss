@@ -1011,6 +1011,26 @@ fn run_main_favourites_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
         .here
         .iter()
         .any(|row| row.name == "First Game" && row.favorite));
+    // The refresh rewrote the shelf's cache with the root-level file, and
+    // said nothing: a shelf listed live would look the same on screen while
+    // a failed refresh went unreported.
+    assert!(app.message.is_none(), "{:?}", app.message);
+    let shelf_cache = crate::cache::load_system(&app.cache_dir, "Favorites")
+        .expect("the Favorites cache is written by the refresh");
+    assert!(
+        shelf_cache
+            .folders
+            .values()
+            .flat_map(|folder| &folder.rows)
+            .any(|row| {
+                matches!(
+                    &row.kind,
+                    browse::Kind::Play(browse::Launch::File(path)) if path == &root_favorite
+                )
+            }),
+        "the refreshed cache lists the root-level favourite: {:?}",
+        shelf_cache.folders
+    );
 
     // The shelf shows it after the existing refresh, and the existing
     // removal there takes a root-level favourite away.
@@ -1065,6 +1085,36 @@ fn run_main_favourites_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
         .here
         .iter()
         .any(|row| row.name == "Core Game" && row.favorite));
+
+    // A root-level favourite made outside Degauss, for another file but
+    // under this game's name, is not this game's favourite, so the game is
+    // still offered Add to Favourites. The write is refused by name, and
+    // the refusal is shown rather than lost to the redraw that follows it.
+    std::fs::write(
+        &root_favorite,
+        "<mistergamedescription><rbf>_Console/NES</rbf><file delay=\"1\" type=\"f\" index=\"1\" path=\"/media/fat/games/NES/Other Game.nes\"/></mistergamedescription>",
+    )
+    .unwrap();
+    select_row_named(&mut app, "First Game");
+    accept_game_action(&mut app, ADD_FAVORITE);
+    assert_eq!(app.screen, Screen::FavoriteFolder);
+    assert_eq!(app.menu_list.selected(), 0);
+    app.handle(Action::Accept);
+    assert_eq!(app.screen, Screen::Browse);
+    let refusal = app.message.clone().expect("a failed write is reported");
+    assert!(
+        refusal.contains("already has a favourite called First Game"),
+        "the real cause is shown: {refusal}"
+    );
+    assert!(
+        !app.favorites.holds(&game),
+        "a refused write does not mark the game"
+    );
+    // The next press dismisses the message and is spent on that.
+    app.handle(Action::Quit);
+    assert!(app.message.is_none());
+    assert_eq!(app.screen, Screen::Browse);
+    std::fs::remove_file(&root_favorite).unwrap();
 
     // A folder really called Main Favourites shows the same words as the
     // root and stays a destination of its own, chosen by row rather than
