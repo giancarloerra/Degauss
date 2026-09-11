@@ -919,20 +919,27 @@ policies for pictures and metadata:
 | **Images: Missing only** | Keeps the effective `<image>`, `<screenshot>` or `<thumbnail>` when its file exists, and fetches a picture only when artwork is absent or broken. |
 | **Images: Replace existing** | Downloads the selected ScreenScraper media and makes it the entry's `<image>`. The previous media file is not overwritten or deleted. |
 | **Metadata: Off** | Never changes metadata. |
-| **Metadata: Fill missing** | Fills empty fields and preserves every non-empty local or inherited value. |
+| **Metadata: Fill missing** | Fills empty fields and preserves every non-empty local or inherited value. A folder, system or all-systems run treats an entry with any stored field as complete; **Scrape This Game** fills its empty fields one by one. |
 | **Metadata: Replace existing** | Replaces only fields ScreenScraper actually returned. A missing upstream value never erases a local one. |
 
 Both settings cannot be Off when a scrape starts. The metadata fields are
 name, description, publisher, developer, release date, players, genre and
 language.
 
-When the selected image exists and every enabled metadata field is populated,
-Degauss skips the game before making any ScreenScraper request. Fill missing
-still checks all eight fields: a blank language, publisher or other field can
-therefore cause another metadata lookup even when the picture and description
-are present. A field ScreenScraper does not supply remains blank and may be
-retried on a later run; existing artwork is not downloaded again for that
-metadata lookup.
+Pictures and metadata are checked independently before any ScreenScraper
+request. Under **Images: Missing only** a picture is requested only when the
+effective image is absent or its file does not exist. In a folder, system or
+all-systems run, **Metadata: Fill missing** requests metadata only when every
+one of the eight fields is empty: a game with an existing picture and at least
+one stored field is skipped without a request, so a blank language, publisher
+or other optional field does not send the same games back on every run. An
+entry with metadata but no picture receives only its picture; an entry with a
+picture but no metadata receives only metadata, and its picture is not
+downloaded again. **Scrape This Game** and **Search Manually** keep filling
+individual empty fields, because choosing one game is permission to complete
+that record field by field; a field ScreenScraper does not supply remains
+blank and is retried on the next single-game scrape. **Replace existing**
+requests and replaces the selected data as before.
 
 Ordinary ROM files are matched by CRC32, MD5 and SHA-1 when they are no more
 than 64 MiB. Larger files, archives, `.mgl`, `.mra` and other wrappers use an
@@ -958,7 +965,10 @@ artwork or metadata, set the corresponding Images or Metadata policy to
 
 Folder, system and all-systems scrapes never stop for a match choice. Missing
 and ambiguous ScreenScraper matches are counted, skipped without changes, and the remaining
-games continue. Unsupported systems are also skipped and counted. If two
+games continue. A search ScreenScraper rejects for one game, or a match
+response it serves unreadable, is counted as failed for that game and the run
+continues; a network failure, a rejected login, a rate limit or a service
+outage still stops the run. Unsupported systems are also skipped and counted. If two
 systems use the same folder but require different ScreenScraper platform IDs,
 the all-systems scrape skips that shared target; a per-system scrape remains
 available.
@@ -973,7 +983,10 @@ During a run, the progress dashboard shows current work, game progress,
 written, unchanged, unresolved and failed counts. **A Details** opens a
 scrollable report with status, scope, current title, completed/total, written,
 unchanged, linked copies, unresolved and skipped/error breakdowns, allowance,
-throughput and the last problem. **B Overview** returns without cancelling.
+throughput and the last problem. After the run, the report continues with
+every game that was not written and the reason, one row per game, so a
+missing, ambiguous or rejected game can be found and scraped individually.
+**B Overview** returns without cancelling.
 The report retains
 worker counts, account limits reported by ScreenScraper and Degauss's allowance
 estimate. Another

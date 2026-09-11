@@ -12,7 +12,7 @@ use crate::systems::FoundSystem;
 use sha1::{Digest, Sha1};
 
 use super::api::{Client, CurlTransport, HttpResponse, Lookup, Transport};
-use super::gamelist_edit::{self, Backups, Needs, Update};
+use super::gamelist_edit::{self, Backups, FillCompleteness, Needs, Update};
 use super::hashes;
 use super::{
     Account, DeveloperCredentials, Error, ErrorKind, Match, Result, Scope, ScraperSettings, Target,
@@ -90,9 +90,26 @@ pub struct Progress {
     /// Batch runs keep counting unresolved entries without carrying every
     /// server response or interrupting an unattended scrape.
     pub manual_matches: Vec<Match>,
+    /// Every game the run did not write, with the reason, so the report can
+    /// name them after an unattended batch. Carried only by the terminal
+    /// event; progress snapshots leave it empty.
+    pub unresolved_games: Vec<UnresolvedGame>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnresolvedGame {
+    pub label: String,
+    pub reason: String,
 }
 
 impl Progress {
+    fn unresolved(&mut self, label: &str, reason: &str) {
+        self.unresolved_games.push(UnresolvedGame {
+            label: label.to_string(),
+            reason: reason.to_string(),
+        });
+    }
+
     pub fn requests_left(&self) -> Option<u64> {
         Some(
             self.account
@@ -617,7 +634,7 @@ fn run(
         phase: Phase::Enumerating,
         ..Default::default()
     };
-    emit(events, &progress);
+    emit(events, &mut progress);
 
     let mut settings = request.settings.clone();
     let batch = match super::targets::collect(
@@ -630,7 +647,7 @@ fn run(
         &mut |system| {
             progress.current = system.to_string();
             progress.activity = "Enumerating game folders".to_string();
-            emit(events, &progress);
+            emit(events, &mut progress);
         },
     ) {
         Ok(batch) => batch,
@@ -719,10 +736,26 @@ fn run(
     }
     let keep_manual_matches =
         matches!(request.scope, Scope::Game { .. }) && selected_match.is_none();
+    // Choosing one game is permission to complete it field by field; a
+    // batch treats any stored metadata as complete so optional fields
+    // ScreenScraper never supplies do not send the same games back on
+    // every run.
+    let completeness = if matches!(request.scope, Scope::Game { .. }) {
+        FillCompleteness::EveryField
+    } else {
+        FillCompleteness::AnyField
+    };
     progress.phase = Phase::Planning;
     progress.activity = "Checking existing images and metadata".to_string();
-    emit(events, &progress);
-    let mut work = match plan_work(batch.targets, &settings, &mut progress, cancelled, events) {
+    emit(events, &mut progress);
+    let mut work = match plan_work(
+        batch.targets,
+        &settings,
+        completeness,
+        &mut progress,
+        cancelled,
+        events,
+    ) {
         Ok(work) => work,
         Err(error) if error.kind == ErrorKind::Cancelled => {
             let _ = events.send(Event::Cancelled(progress));
@@ -754,7 +787,7 @@ fn run(
             item.selected = Some(selected);
         }
     }
-    emit(events, &progress);
+    emit(events, &mut progress);
     if cancelled.load(Ordering::Relaxed) {
         let _ = events.send(Event::Cancelled(progress));
         return;
@@ -768,7 +801,7 @@ fn run(
 
     progress.activity.clear();
     progress.phase = Phase::Account;
-    emit(events, &progress);
+    emit(events, &mut progress);
     let Some(developer) = request.developer.clone() else {
         finish_error(
             events,
@@ -792,7 +825,7 @@ fn run(
         cancelled,
         |error, delay| {
             progress.activity = retry_status(error, delay);
-            emit(events, &progress);
+            emit(events, &mut progress);
         },
         || {
             account_requests.fetch_add(1, Ordering::Relaxed);
@@ -935,7 +968,7 @@ fn run(
     progress.workers = workers;
     progress.phase = Phase::Scraping;
     progress.activity.clear();
-    emit(events, &progress);
+    emit(events, &mut progress);
 
     let limits = Arc::new(LimitedTransport::new(
         transport,
@@ -1009,6 +1042,7 @@ fn run(
                     if results
                         .send(WorkerMessage::Target {
                             gamelist_path,
+                            target_label,
                             result: Box::new(result),
                         })
                         .is_err()
@@ -1031,20 +1065,20 @@ fn run(
                 WorkerMessage::Activity { current, status } => {
                     progress.current = current;
                     progress.activity = status;
-                    emit(events, &progress);
+                    emit(events, &mut progress);
                 }
                 WorkerMessage::Target {
                     gamelist_path,
+                    target_label,
                     result,
                 } => {
                     progress.completed += 1;
                     progress.activity = "Recording result".to_string();
                     match *result {
                         Ok(prepared) => {
-                            progress.current = current_label(&prepared.target);
+                            progress.current = target_label.clone();
                             progress.failed_searches = limits.failed();
-                            let target_label = current_label(&prepared.target);
-                            match stage(prepared, &settings, &mut progress) {
+                            match stage(prepared, &mut progress) {
                                 Ok(Some(item)) => {
                                     pending
                                         .entry(item.target.gamelist_path())
@@ -1055,6 +1089,7 @@ fn run(
                                 Err(error) => {
                                     progress.failed += 1;
                                     log_scraper_problem(&target_label, &error);
+                                    progress.unresolved(&target_label, error.user_message());
                                     progress.last_problem = Some(error.user_message().to_string());
                                     if fatal_for_run(&error) {
                                         let cancel = cancel_in_flight(&error);
@@ -1072,6 +1107,7 @@ fn run(
                         }
                         Err(error) => {
                             progress.failed += 1;
+                            progress.unresolved(&target_label, error.user_message());
                             progress.last_problem = Some(error.user_message().to_string());
                             if fatal_for_run(&error) {
                                 let cancel = cancel_in_flight(&error);
@@ -1104,7 +1140,7 @@ fn run(
                             );
                         }
                     }
-                    emit(events, &progress);
+                    emit(events, &mut progress);
                 }
             }
         }
@@ -1114,7 +1150,7 @@ fn run(
     progress.activity.clear();
     progress.requests_started = limits.used();
     progress.failed_searches = limits.failed();
-    emit(events, &progress);
+    emit(events, &mut progress);
     flush_pending(pending, &settings, &mut backups, &mut progress, events);
     if let Some(error) = fatal {
         finish_error(events, error, progress);
@@ -1164,6 +1200,7 @@ struct Work {
 fn plan_work(
     targets: Vec<Target>,
     settings: &ScraperSettings,
+    completeness: FillCompleteness,
     progress: &mut Progress,
     cancelled: &AtomicBool,
     events: &SyncSender<Event>,
@@ -1198,6 +1235,7 @@ fn plan_work(
                 .collect::<Vec<_>>(),
             settings.image_policy,
             settings.metadata_policy,
+            completeness,
             &mut |at| {
                 if cancelled.load(Ordering::Relaxed) {
                     return Err(Error::new(ErrorKind::Cancelled, "scrape cancelled"));
@@ -1247,6 +1285,7 @@ fn plan_work(
                             let target_label = current_label(&target);
                             progress.current = target.title;
                             log_scraper_problem(&target_label, &error);
+                            progress.unresolved(&target_label, error.user_message());
                             progress.last_problem = Some(error.user_message().to_string());
                         }
                     }
@@ -1261,6 +1300,9 @@ fn plan_work(
                     .map(|target| target.title.clone())
                     .unwrap_or_default();
                 log_scraper_problem(&gamelist_path.display().to_string(), &error);
+                for target in &targets {
+                    progress.unresolved(&current_label(target), error.user_message());
+                }
                 progress.last_problem = Some(error.user_message().to_string());
             }
         }
@@ -1268,8 +1310,13 @@ fn plan_work(
     Ok(work)
 }
 
-fn emit(events: &SyncSender<Event>, progress: &Progress) {
+fn emit(events: &SyncSender<Event>, progress: &mut Progress) {
+    // Snapshots carry counts only. The unresolved list grows with the run
+    // and travels once, on the terminal event, rather than being cloned
+    // into the event queue for every update of a full-library scrape.
+    let unresolved = std::mem::take(&mut progress.unresolved_games);
     let _ = events.try_send(Event::Progress(progress.clone()));
+    progress.unresolved_games = unresolved;
 }
 
 fn reconcile_alias_platforms(
@@ -1566,6 +1613,7 @@ enum WorkerMessage {
     },
     Target {
         gamelist_path: PathBuf,
+        target_label: String,
         result: Box<Result<Prepared>>,
     },
     Done,
@@ -1573,6 +1621,7 @@ enum WorkerMessage {
 
 struct Prepared {
     target: Target,
+    needs: Needs,
     matched: Option<Match>,
     media: Option<InstalledMedia>,
     media_error: Option<Error>,
@@ -1736,6 +1785,7 @@ fn prepare(
     match lookup.lookup {
         Lookup::NotFound => Ok(Prepared {
             target,
+            needs,
             matched: None,
             media: None,
             media_error: None,
@@ -1746,6 +1796,7 @@ fn prepare(
         }),
         Lookup::Ambiguous(count) => Ok(Prepared {
             target,
+            needs,
             matched: None,
             media: None,
             media_error: None,
@@ -1783,6 +1834,7 @@ fn prepare(
             };
             Ok(Prepared {
                 target,
+                needs,
                 matched: Some(*matched),
                 media,
                 media_error,
@@ -1869,15 +1921,12 @@ fn retry_activity(
 
 struct Pending {
     target: Target,
+    needs: Needs,
     metadata: super::Metadata,
     media: Option<InstalledMedia>,
 }
 
-fn stage(
-    prepared: Prepared,
-    settings: &ScraperSettings,
-    progress: &mut Progress,
-) -> Result<Option<Pending>> {
+fn stage(prepared: Prepared, progress: &mut Progress) -> Result<Option<Pending>> {
     let target_label = current_label(&prepared.target);
     if prepared.not_found {
         log_scraper_detail(&target_label, "no exact ScreenScraper match; skipped");
@@ -1885,6 +1934,7 @@ fn stage(
             progress.manual_matches = prepared.alternatives;
         }
         progress.not_found += 1;
+        progress.unresolved(&target_label, "no match");
         return Ok(None);
     }
     if let Some(count) = prepared.ambiguous {
@@ -1896,6 +1946,7 @@ fn stage(
             progress.manual_matches = prepared.alternatives;
         }
         progress.ambiguous += 1;
+        progress.unresolved(&target_label, &format!("{count} matches"));
         return Ok(None);
     }
     let matched = prepared
@@ -1905,8 +1956,9 @@ fn stage(
     if let Some(error) = prepared.media_error {
         progress.failed += 1;
         log_scraper_problem(&target_label, &error);
+        progress.unresolved(&target_label, error.user_message());
         progress.last_problem = Some(error.user_message().to_string());
-        if settings.metadata_policy == super::MetadataPolicy::Off {
+        if !prepared.needs.metadata {
             return Ok(None);
         }
     }
@@ -1917,8 +1969,9 @@ fn stage(
         );
         progress.no_media += 1;
     }
-    let metadata_selected =
-        settings.metadata_policy != super::MetadataPolicy::Off && matched.metadata.has_value();
+    // Metadata the planning step found complete is left alone even though
+    // the match carries some: an image-only entry writes only its image.
+    let metadata_selected = prepared.needs.metadata && matched.metadata.has_value();
     if prepared.media.is_none() && !metadata_selected {
         if !media_failed {
             progress.unchanged += 1;
@@ -1927,6 +1980,7 @@ fn stage(
     }
     Ok(Some(Pending {
         target: prepared.target,
+        needs: prepared.needs,
         metadata: matched.metadata,
         media: prepared.media,
     }))
@@ -1960,7 +2014,11 @@ fn flush_one_gamelist(
             image_path: item.media.as_ref().map(|media| media.relative_path.clone()),
             image_created: item.media.as_ref().is_some_and(|media| media.created),
             image_policy: settings.image_policy,
-            metadata_policy: settings.metadata_policy,
+            metadata_policy: if item.needs.metadata {
+                settings.metadata_policy
+            } else {
+                super::MetadataPolicy::Off
+            },
         })
         .collect();
     match gamelist_edit::apply_many_with_fallback(
@@ -1992,7 +2050,9 @@ fn flush_one_gamelist(
                     Ok(_) => progress.unchanged += 1,
                     Err(error) => {
                         progress.failed += 1;
-                        log_scraper_problem(&current_label(&item.target), &error);
+                        let target_label = current_label(&item.target);
+                        log_scraper_problem(&target_label, &error);
+                        progress.unresolved(&target_label, error.user_message());
                         progress.last_problem = Some(error.user_message().to_string());
                     }
                 }
@@ -2005,6 +2065,9 @@ fn flush_one_gamelist(
                 .map(|item| item.target.title.clone())
                 .unwrap_or_default();
             log_scraper_problem(&gamelist_path.display().to_string(), &error);
+            for item in &pending {
+                progress.unresolved(&current_label(&item.target), error.user_message());
+            }
             progress.last_problem = Some(error.user_message().to_string());
         }
     }
@@ -2205,8 +2268,18 @@ fn safe_component(value: &str) -> String {
     }
 }
 
+/// Whether one game's failure stops the batch. A request ScreenScraper
+/// rejected, or a match response it served unreadable, concerns that game
+/// alone; transport, login, quota and service outages concern every game
+/// still queued.
 fn fatal_for_run(error: &Error) -> bool {
-    !matches!(error.kind, ErrorKind::Local | ErrorKind::NotFound)
+    !matches!(
+        error.kind,
+        ErrorKind::Local
+            | ErrorKind::NotFound
+            | ErrorKind::InvalidRequest
+            | ErrorKind::MalformedResponse
+    )
 }
 
 fn cancel_in_flight(error: &Error) -> bool {
@@ -3054,23 +3127,210 @@ mod tests {
         let root = temp("batch-continues-after-miss");
         std::fs::write(root.join("Missing.rom"), b"missing").unwrap();
         std::fs::write(root.join("Found.rom"), b"found").unwrap();
-        let Event::Finished(progress) = finish(
-            start_with_transport(
-                request(&root, settings(ImagePolicy::Off)),
-                Arc::new(MixedBatchMock),
-            )
-            .unwrap(),
-        ) else {
-            panic!("batch stopped at an unresolved game");
+        let job = start_with_transport(
+            request(&root, settings(ImagePolicy::Off)),
+            Arc::new(MixedBatchMock),
+        )
+        .unwrap();
+        let mut snapshots = 0;
+        let progress = loop {
+            match job.events.recv_timeout(Duration::from_secs(5)).unwrap() {
+                Event::Progress(progress) => {
+                    snapshots += 1;
+                    assert!(
+                        progress.unresolved_games.is_empty(),
+                        "progress snapshots must not carry the growing unresolved list"
+                    );
+                }
+                Event::Finished(progress) => break progress,
+                Event::Cancelled(_) | Event::Failed { .. } => {
+                    panic!("batch stopped at an unresolved game")
+                }
+            }
         };
+        assert!(snapshots > 0);
         assert_eq!(progress.total, 2);
         assert_eq!(progress.completed, 2);
         assert_eq!(progress.not_found, 1);
         assert_eq!(progress.updated, 1);
         assert!(progress.manual_matches.is_empty());
+        assert_eq!(
+            progress.unresolved_games,
+            vec![UnresolvedGame {
+                label: "Nintendo: Missing".into(),
+                reason: "no match".into(),
+            }],
+            "the report must name the game the run could not write"
+        );
         let gamelist = std::fs::read_to_string(root.join("gamelist.xml")).unwrap();
         assert!(gamelist.contains("<path>./Found.rom</path>"));
         assert!(!gamelist.contains("Missing.rom"));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// Answers the hash lookup for `Rejected.rom` with a configured
+    /// response and matches every other game.
+    struct RejectingMock {
+        status: u16,
+        content_type: &'static str,
+        body: &'static str,
+    }
+
+    impl Transport for RejectingMock {
+        fn get(
+            &self,
+            endpoint: &str,
+            params: &[(String, String)],
+            _limit: u64,
+        ) -> Result<HttpResponse> {
+            let parameter = |name: &str| {
+                params
+                    .iter()
+                    .find(|(key, _)| key == name)
+                    .map(|(_, value)| value.as_str())
+                    .unwrap_or_default()
+            };
+            let body = match endpoint {
+                "ssuserInfos.php" => "<Data><ssuser><niveau>1</niveau><maxthreads>1</maxthreads><maxdownloadspeed>256</maxdownloadspeed><requeststoday>0</requeststoday><requestskotoday>0</requestskotoday><maxrequestspermin>60</maxrequestspermin><maxrequestsperday>20</maxrequestsperday><maxrequestskoperday>20</maxrequestskoperday></ssuser></Data>".to_string(),
+                "jeuInfos.php" if parameter("romnom") == "Rejected.rom" => {
+                    return Ok(HttpResponse {
+                        status: self.status,
+                        content_type: Some(self.content_type.into()),
+                        body: self.body.as_bytes().to_vec(),
+                    });
+                }
+                "jeuInfos.php" => {
+                    let md5 = parameter("md5");
+                    format!("<Data><jeux><jeu id='42'><noms><nom region='wor'>Found</nom></noms><rom><rommd5>{md5}</rommd5></rom></jeu></jeux></Data>")
+                }
+                other => panic!("unexpected endpoint {other}"),
+            };
+            Ok(HttpResponse {
+                status: 200,
+                content_type: Some("application/xml".into()),
+                body: body.into_bytes(),
+            })
+        }
+
+        fn get_media(
+            &self,
+            _url: &str,
+            _limit: u64,
+            _max_kib_per_second: Option<u64>,
+        ) -> Result<HttpResponse> {
+            unreachable!()
+        }
+    }
+
+    #[test]
+    fn a_rejected_individual_search_is_recorded_and_the_batch_continues() {
+        // One game ScreenScraper refuses, by HTTP 400 or by an error text it
+        // does not document as an outage, is that game's problem: the run
+        // still processes the next game and names the rejected one.
+        for (status, content_type, body) in [
+            (
+                400,
+                "text/plain",
+                "Erreur : Problème dans le nom du fichier rom",
+            ),
+            (
+                200,
+                "text/plain",
+                "Erreur : Problème dans le nom du fichier rom",
+            ),
+        ] {
+            let root = temp(&format!("rejected-search-{status}"));
+            std::fs::write(root.join("Rejected.rom"), b"rejected").unwrap();
+            std::fs::write(root.join("Zebra.rom"), b"found").unwrap();
+            let Event::Finished(progress) = finish(
+                start_with_transport(
+                    request(&root, settings(ImagePolicy::Off)),
+                    Arc::new(RejectingMock {
+                        status,
+                        content_type,
+                        body,
+                    }),
+                )
+                .unwrap(),
+            ) else {
+                panic!("a rejected search stopped the batch (HTTP {status})");
+            };
+            assert_eq!(progress.completed, 2);
+            assert_eq!(progress.failed, 1);
+            assert_eq!(progress.updated, 1);
+            assert_eq!(
+                progress.unresolved_games,
+                vec![UnresolvedGame {
+                    label: "Nintendo: Rejected".into(),
+                    reason: "ScreenScraper rejected this search".into(),
+                }]
+            );
+            let gamelist = std::fs::read_to_string(root.join("gamelist.xml")).unwrap();
+            assert!(gamelist.contains("<path>./Zebra.rom</path>"));
+            assert!(!gamelist.contains("Rejected.rom"));
+            let _ = std::fs::remove_dir_all(root);
+        }
+    }
+
+    #[test]
+    fn an_unreadable_match_response_is_recorded_and_the_batch_continues() {
+        let root = temp("unreadable-match");
+        std::fs::write(root.join("Rejected.rom"), b"rejected").unwrap();
+        std::fs::write(root.join("Zebra.rom"), b"found").unwrap();
+        let Event::Finished(progress) = finish(
+            start_with_transport(
+                request(&root, settings(ImagePolicy::Off)),
+                Arc::new(RejectingMock {
+                    status: 200,
+                    content_type: "application/xml",
+                    body: "<Data><message>no game list here</message></Data>",
+                }),
+            )
+            .unwrap(),
+        ) else {
+            panic!("an unusable match response stopped the batch");
+        };
+        assert_eq!(progress.failed, 1);
+        assert_eq!(progress.updated, 1);
+        assert_eq!(
+            progress.unresolved_games,
+            vec![UnresolvedGame {
+                label: "Nintendo: Rejected".into(),
+                reason: "ScreenScraper response was unreadable".into(),
+            }]
+        );
+        assert!(std::fs::read_to_string(root.join("gamelist.xml"))
+            .unwrap()
+            .contains("<path>./Zebra.rom</path>"));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn a_documented_closure_text_still_stops_the_batch() {
+        let root = temp("closure-text");
+        std::fs::write(root.join("Rejected.rom"), b"rejected").unwrap();
+        std::fs::write(root.join("Zebra.rom"), b"found").unwrap();
+        let Event::Failed { error, progress } = finish(
+            start_with_transport(
+                request(&root, settings(ImagePolicy::Off)),
+                Arc::new(RejectingMock {
+                    status: 200,
+                    content_type: "text/plain",
+                    body: "Erreur : API totalement fermé",
+                }),
+            )
+            .unwrap(),
+        ) else {
+            panic!("a service closure was treated as one game's problem");
+        };
+        assert_eq!(error.kind, ErrorKind::Unavailable);
+        assert_eq!(
+            progress.unresolved_games,
+            vec![UnresolvedGame {
+                label: "Nintendo: Rejected".into(),
+                reason: "ScreenScraper is unavailable".into(),
+            }]
+        );
         let _ = std::fs::remove_dir_all(root);
     }
 
@@ -3748,6 +4008,185 @@ mod tests {
         let _ = std::fs::remove_dir_all(root);
     }
 
+    fn mock() -> Arc<Mock> {
+        Arc::new(Mock {
+            api_calls: AtomicUsize::new(0),
+            media_calls: AtomicUsize::new(0),
+            quota_empty: false,
+            bad_media: false,
+            no_media: false,
+        })
+    }
+
+    #[test]
+    fn a_batch_entry_with_an_image_and_one_field_makes_no_request() {
+        let root = temp("batch-one-field-complete");
+        std::fs::write(root.join("Game.rom"), b"game").unwrap();
+        std::fs::write(root.join("art.png"), PNG).unwrap();
+        let xml = "<gameList><game><path>./Game.rom</path><name>Name</name><image>./art.png</image></game></gameList>";
+        std::fs::write(root.join("gamelist.xml"), xml).unwrap();
+        let mock = mock();
+        for scope_root in [request(&root, settings(ImagePolicy::MissingOnly)), {
+            let mut folder = request(&root, settings(ImagePolicy::MissingOnly));
+            folder.scope = Scope::Folder {
+                system_id: "NES".into(),
+                place: crate::browse::Place::Dir(root.clone()),
+                display_name: "Nintendo".into(),
+            };
+            folder
+        }] {
+            let Event::Finished(progress) =
+                finish(start_with_transport(scope_root, mock.clone()).unwrap())
+            else {
+                panic!("complete batch entry did not finish");
+            };
+            assert_eq!(progress.completed, 1);
+            assert_eq!(progress.unchanged, 1);
+            assert_eq!(progress.updated, 0);
+        }
+        assert_eq!(
+            mock.api_calls.load(Ordering::Relaxed),
+            0,
+            "an image plus one stored field is complete for a batch: no lookup"
+        );
+        assert_eq!(mock.media_calls.load(Ordering::Relaxed), 0);
+        assert_eq!(
+            std::fs::read_to_string(root.join("gamelist.xml")).unwrap(),
+            xml
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn scrape_this_game_fills_individual_empty_fields_without_redownloading() {
+        let root = temp("one-game-fills-fields");
+        std::fs::write(root.join("Game.rom"), b"game").unwrap();
+        std::fs::write(root.join("art.png"), PNG).unwrap();
+        std::fs::write(
+            root.join("gamelist.xml"),
+            "<gameList><game><path>./Game.rom</path><name>Local Name</name><image>./art.png</image></game></gameList>",
+        )
+        .unwrap();
+        let mock = mock();
+        let Event::Finished(progress) = finish(
+            start_with_transport(
+                game_request(&root, settings(ImagePolicy::MissingOnly)),
+                mock.clone(),
+            )
+            .unwrap(),
+        ) else {
+            panic!("single-game fill did not finish");
+        };
+        assert_eq!(progress.updated, 1);
+        assert_eq!(
+            mock.api_calls.load(Ordering::Relaxed),
+            2,
+            "account preflight plus the one lookup the chosen game is entitled to"
+        );
+        assert_eq!(mock.media_calls.load(Ordering::Relaxed), 0);
+        let text = std::fs::read_to_string(root.join("gamelist.xml")).unwrap();
+        assert!(text.contains("<name>Local Name</name>"));
+        assert!(text.contains("<desc>Remote description</desc>"));
+        assert!(text.contains("<image>./art.png</image>"));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn a_batch_entry_with_metadata_but_no_image_writes_only_the_image() {
+        let root = temp("batch-image-only");
+        std::fs::write(root.join("Game.rom"), b"game").unwrap();
+        std::fs::write(
+            root.join("gamelist.xml"),
+            "<gameList><game><path>./Game.rom</path><name>Local Name</name></game></gameList>",
+        )
+        .unwrap();
+        let mock = mock();
+        let Event::Finished(progress) = finish(
+            start_with_transport(
+                request(&root, settings(ImagePolicy::MissingOnly)),
+                mock.clone(),
+            )
+            .unwrap(),
+        ) else {
+            panic!("image-only batch entry did not finish");
+        };
+        assert_eq!(progress.updated, 1);
+        assert_eq!(mock.api_calls.load(Ordering::Relaxed), 2);
+        assert_eq!(mock.media_calls.load(Ordering::Relaxed), 1);
+        let text = std::fs::read_to_string(root.join("gamelist.xml")).unwrap();
+        assert!(text.contains("<image>./media/screenscraper/3-42-"));
+        assert!(text.contains("<name>Local Name</name>"));
+        assert!(
+            !text.contains("<desc>"),
+            "metadata the batch found complete is not touched by an image-only match"
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn a_batch_entry_with_an_image_but_no_metadata_writes_only_metadata() {
+        let root = temp("batch-metadata-only");
+        std::fs::write(root.join("Game.rom"), b"game").unwrap();
+        std::fs::write(root.join("art.png"), PNG).unwrap();
+        std::fs::write(
+            root.join("gamelist.xml"),
+            "<gameList><game><path>./Game.rom</path><image>./art.png</image></game></gameList>",
+        )
+        .unwrap();
+        let mock = mock();
+        let Event::Finished(progress) = finish(
+            start_with_transport(
+                request(&root, settings(ImagePolicy::MissingOnly)),
+                mock.clone(),
+            )
+            .unwrap(),
+        ) else {
+            panic!("metadata-only batch entry did not finish");
+        };
+        assert_eq!(progress.updated, 1);
+        assert_eq!(mock.api_calls.load(Ordering::Relaxed), 2);
+        assert_eq!(
+            mock.media_calls.load(Ordering::Relaxed),
+            0,
+            "an existing image is never downloaded again under Missing only"
+        );
+        let text = std::fs::read_to_string(root.join("gamelist.xml")).unwrap();
+        assert!(text.contains("<name>Remote Game</name>"));
+        assert!(text.contains("<image>./art.png</image>"));
+        assert!(!root.join("media").exists());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn replace_existing_still_requests_and_replaces_a_complete_batch_entry() {
+        let root = temp("batch-replace-complete");
+        std::fs::write(root.join("Game.rom"), b"game").unwrap();
+        std::fs::write(root.join("art.png"), PNG).unwrap();
+        std::fs::write(
+            root.join("gamelist.xml"),
+            "<gameList><game><path>./Game.rom</path><name>Name</name><desc>Description</desc><publisher>Publisher</publisher><developer>Developer</developer><releasedate>19910000T000000</releasedate><players>1</players><genre>Action</genre><lang>en</lang><image>./art.png</image></game></gameList>",
+        )
+        .unwrap();
+        let mut replace = settings(ImagePolicy::ReplaceExisting);
+        replace.metadata_policy = MetadataPolicy::ReplaceExisting;
+        let mock = mock();
+        let Event::Finished(progress) =
+            finish(start_with_transport(request(&root, replace), mock.clone()).unwrap())
+        else {
+            panic!("replace scrape did not finish");
+        };
+        assert_eq!(progress.updated, 1);
+        assert_eq!(mock.api_calls.load(Ordering::Relaxed), 2);
+        assert_eq!(mock.media_calls.load(Ordering::Relaxed), 1);
+        let text = std::fs::read_to_string(root.join("gamelist.xml")).unwrap();
+        assert!(text.contains("<name>Remote Game</name>"));
+        assert!(text.contains("<desc>Remote description</desc>"));
+        assert!(text.contains("<image>./media/screenscraper/3-42-"));
+        assert!(!text.contains("<image>./art.png</image>"));
+        assert!(root.join("art.png").is_file(), "the previous file is kept");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
     #[test]
     fn all_system_scrape_selects_each_systems_media_without_changing_global_default() {
         struct MediaChoices {
@@ -3844,11 +4283,26 @@ mod tests {
             bad_media: false,
             no_media: false,
         });
+        let Event::Finished(progress) = finish(
+            start_with_transport(
+                request(&root, settings(ImagePolicy::MissingOnly)),
+                mock.clone(),
+            )
+            .unwrap(),
+        ) else {
+            panic!("partial metadata batch scrape did not finish");
+        };
+        assert_eq!(progress.unchanged, 1);
+        assert_eq!(
+            mock.api_calls.load(Ordering::Relaxed),
+            0,
+            "a batch treats seven stored fields and an image as complete: one blank optional field must not send the game back every run"
+        );
         for _ in 0..2 {
             let before = mock.api_calls.load(Ordering::Relaxed);
             let event = finish(
                 start_with_transport(
-                    request(&root, settings(ImagePolicy::MissingOnly)),
+                    game_request(&root, settings(ImagePolicy::MissingOnly)),
                     mock.clone(),
                 )
                 .unwrap(),
@@ -3858,7 +4312,7 @@ mod tests {
             };
             assert_eq!(progress.updated, 0);
             assert_eq!(progress.unchanged, 1);
-            assert!(mock.api_calls.load(Ordering::Relaxed) > before, "FillMissing must retry a still absent field; no negative cache is part of this policy");
+            assert!(mock.api_calls.load(Ordering::Relaxed) > before, "Scrape This Game with Fill missing must retry a still absent field; no negative cache is part of this policy");
             assert_eq!(
                 mock.media_calls.load(Ordering::Relaxed),
                 0,
@@ -4018,6 +4472,10 @@ mod tests {
         let pending = |created| {
             vec![Pending {
                 target: target.clone(),
+                needs: Needs {
+                    image: true,
+                    metadata: false,
+                },
                 metadata: super::super::Metadata::default(),
                 media: Some(InstalledMedia {
                     relative_path: relative.clone(),

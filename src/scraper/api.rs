@@ -917,8 +917,11 @@ pub struct LookupResponse {
 fn status(code: u16) -> Result<()> {
     match code {
         200..=299 => Ok(()),
+        // ScreenScraper documents 400 only for problems with the one
+        // request (a rom name carrying a path, a bad hash, missing fields),
+        // so it stops that game rather than the run.
         400 => Err(Error::new(
-            ErrorKind::Configuration,
+            ErrorKind::InvalidRequest,
             "ScreenScraper rejected the request parameters (HTTP 400)",
         )),
         401 | 423 => Err(Error::new(
@@ -1033,9 +1036,25 @@ fn text_error(text: &str) -> Error {
         if lower.contains("introuv") || lower.contains("non trouv") {
             return Error::new(ErrorKind::NotFound, "no matching game");
         }
+        // The documented closure texts ("API fermé pour les non membres",
+        // "API totalement fermé") describe the service, not the request.
+        if lower.contains("ferm") {
+            return Error::new(
+                ErrorKind::Unavailable,
+                "ScreenScraper reported that the API is closed",
+            );
+        }
+        if lower.contains("blacklist") {
+            return Error::new(
+                ErrorKind::Configuration,
+                "this Degauss scraper client was refused by ScreenScraper",
+            );
+        }
+        // Any other error text on a successful status answers this one
+        // request: the run continues with the next game.
         return Error::new(
-            ErrorKind::Unavailable,
-            "ScreenScraper returned an error response",
+            ErrorKind::InvalidRequest,
+            "ScreenScraper returned an error response for this request",
         );
     }
     Error::new(
@@ -1734,7 +1753,7 @@ mod tests {
     #[test]
     fn every_documented_status_has_a_specific_meaning() {
         for (code, kind) in [
-            (400, ErrorKind::Configuration),
+            (400, ErrorKind::InvalidRequest),
             (401, ErrorKind::Unavailable),
             (403, ErrorKind::Authentication),
             (404, ErrorKind::NotFound),
@@ -2247,6 +2266,66 @@ mod tests {
         .unwrap();
         assert_eq!(result.lookup, Lookup::NotFound);
         assert!(result.server_miss);
+    }
+
+    #[test]
+    fn only_service_wide_error_texts_are_classified_as_outages() {
+        // A closure or a refused client concerns every game in the run; an
+        // unrecognised error about one request must not stop the batch by
+        // masquerading as an outage.
+        for (body, kind) in [
+            (
+                "Erreur : API fermé pour les non membres ou les membres inactifs",
+                ErrorKind::Unavailable,
+            ),
+            ("Erreur : API totalement fermé", ErrorKind::Unavailable),
+            (
+                "Erreur : Le logiciel de scrape utilisé a été blacklisté",
+                ErrorKind::Configuration,
+            ),
+            (
+                "Erreur : Problème dans le nom du fichier rom",
+                ErrorKind::InvalidRequest,
+            ),
+            (
+                "Erreur de login : Vérifier vos identifiants développeur !",
+                ErrorKind::Authentication,
+            ),
+            (
+                "Erreur de login : Vérifier les identifiants utilisateurs !",
+                ErrorKind::Authentication,
+            ),
+            (
+                "Erreur : Votre quota de scrape est dépassé pour aujourd'hui !",
+                ErrorKind::DailyQuota,
+            ),
+            ("Erreur : Jeu non trouvée !", ErrorKind::NotFound),
+            (
+                "<html>not an error text</html>",
+                ErrorKind::MalformedResponse,
+            ),
+        ] {
+            assert_eq!(text_error(body).kind, kind, "{body}");
+        }
+        let rejected = client(HttpResponse {
+            status: 200,
+            content_type: Some("text/plain".into()),
+            body: "Erreur : Problème dans le nom du fichier rom"
+                .as_bytes()
+                .to_vec(),
+        })
+        .by_name(3, "Game")
+        .unwrap_err();
+        assert_eq!(rejected.kind, ErrorKind::InvalidRequest);
+        assert!(!rejected.retryable());
+        let closed = client(HttpResponse {
+            status: 200,
+            content_type: Some("text/plain".into()),
+            body: "Erreur : API totalement fermé".as_bytes().to_vec(),
+        })
+        .by_name(3, "Game")
+        .unwrap_err();
+        assert_eq!(closed.kind, ErrorKind::Unavailable);
     }
 
     #[test]
