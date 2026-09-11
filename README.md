@@ -503,9 +503,13 @@ running under Degauss Main already have the Frontend menu and shortcut.
 The Details Style changes only the games level of Details: the Home,
 category and system screens and the other views keep their proportions, and
 switching it does not rebuild the library or the artwork cache. Pictures are
-decoded to `cover_size` in `degauss.toml` or half the screen, whichever is
-larger, so on a screen wider than about twice that edge Large Artwork
-enlarges a landscape picture a little; a larger `cover_size` keeps it sharp.
+decoded to `cover_size` in `degauss.toml` or half the longer screen edge,
+whichever is larger. With the default `cover_size` the Large Artwork box
+outgrows that decode on screens wider than about 580 pixels, so a picture is
+drawn a little enlarged there: up to about a tenth wider for a landscape
+picture, and up to about a quarter taller for a portrait one on a 4:3 or 5:4
+screen. A `cover_size` of at least two thirds of the screen width keeps every
+picture within its decode.
 
 **Options → Appearance → View** is the global default. Every browse place can instead
 keep its own custom view: the Categories screen, each category's Systems
