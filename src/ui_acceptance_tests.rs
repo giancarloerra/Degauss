@@ -3130,6 +3130,231 @@ fn run_auto_source_choice_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
     app.ui.hide().unwrap();
 }
 
+/// A folder holding one game shows that game's picture before it is
+/// opened, in the views that draw pictures, and stays a folder in every
+/// other respect. Everything here goes through the same listing the
+/// screen is drawn from, so a picture that reached the row but not the
+/// view, or a folder that stopped opening, fails here.
+fn run_folder_artwork_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
+    let root = root.join("folder-artwork");
+    let games = root.join("games/NES");
+    let logos = root.join("logos");
+    std::fs::create_dir_all(games.join("Example Game")).unwrap();
+    std::fs::create_dir_all(games.join("media")).unwrap();
+    std::fs::create_dir_all(&logos).unwrap();
+    let shipped = Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/logos/NES.png");
+    let image = games.join("media/example.png");
+    let second_image = games.join("media/second.png");
+    let other_image = games.join("media/other.png");
+    let logo = logos.join("NES.png");
+    let custom = logos.join("custom.png");
+    for target in [&image, &second_image, &other_image, &logo, &custom] {
+        std::fs::copy(&shipped, target).unwrap();
+    }
+    std::fs::write(games.join("Example Game/Example Game.nes"), b"fixture").unwrap();
+    std::fs::write(games.join("Second Game.nes"), b"fixture").unwrap();
+    let write_gamelist = |extra: &str| {
+        std::fs::write(
+            games.join("gamelist.xml"),
+            format!(
+                "<gameList><game><path>./Example Game/Example Game.nes</path><name>Example Game</name><image>./media/example.png</image></game><game><path>./Second Game.nes</path><name>Second Game</name><image>./media/second.png</image></game>{extra}</gameList>"
+            ),
+        )
+        .unwrap();
+    };
+    write_gamelist("");
+    let mut app = fixture_app(&root, window, Settings::default());
+    app.logo_dir = Some(logos.clone());
+    app.all_systems[0].logo_dir = Some(logos.clone());
+    app.artwork_scale = ArtworkScale::FourThree;
+    let folder_place = Place::Dir(games.join("Example Game"));
+    let folder_at = |app: &App| {
+        app.here
+            .iter()
+            .position(|row| row.kind == browse::Kind::Enter(folder_place.clone()))
+            .expect("the folder is listed")
+    };
+
+    // Only the picture is taken: the row is still the folder, under its
+    // own name, with its own count, and nothing about it is a favourite.
+    let at = folder_at(&app);
+    let folder = app.here[at].clone();
+    assert!(folder.is_folder());
+    assert_eq!(folder.cover.as_deref(), Some(image.as_path()));
+    assert_eq!(folder.name, "Example Game");
+    assert!(!folder.favorite);
+    assert_eq!(folder.below, Some(1));
+    assert_eq!(folder.details, browse::Details::default());
+    assert_eq!(folder.genre, None);
+    app.game_list.select(at);
+
+    // Details draws it as game artwork; the grid and strip views draw it
+    // on the row, corrected like a game's picture; the text views stay
+    // text.
+    app.set_layout(Layout::Details);
+    assert_eq!(
+        app.current_art(),
+        (Some(image.clone()), "Example Game".to_string(), false, true)
+    );
+    for layout in [Layout::Tiled, Layout::Carousel, Layout::Gallery] {
+        app.screen = Screen::Browse;
+        app.set_layout(layout);
+        app.load_art();
+        app.refresh();
+        let (range, _) = app.game_list.window();
+        let row = app.rows.row_data(at - range.start).unwrap();
+        assert!(
+            row.has_cover,
+            "{}: the folder row carries the picture",
+            layout.label()
+        );
+        assert_eq!(
+            row.art_scale_x,
+            artwork_horizontal(ArtworkScale::FourThree, app.width, app.height, true),
+            "{}: the picture is corrected as game artwork",
+            layout.label()
+        );
+        assert_eq!(row.title.as_str(), "[ Example Game ]");
+    }
+    for layout in [Layout::List, Layout::MultiList] {
+        app.set_layout(layout);
+        app.load_art();
+        app.refresh();
+        let (range, _) = app.game_list.window();
+        let row = app.rows.row_data(at - range.start).unwrap();
+        assert!(!row.has_cover, "{}: text only", layout.label());
+        assert_eq!(row.art_scale_x, 1.0);
+    }
+    app.set_layout(Layout::Details);
+
+    // Selecting it opens it, and coming back lands on it with its picture.
+    app.handle(Action::Accept);
+    assert_eq!(app.trail.len(), 2);
+    assert_eq!(app.here.len(), 1);
+    assert_eq!(app.here[0].cover.as_deref(), Some(image.as_path()));
+    assert!(matches!(app.here[0].kind, browse::Kind::Play(_)));
+    app.handle(Action::Quit);
+    assert_eq!(app.trail.len(), 1);
+    assert_eq!(app.game_list.selected(), folder_at(&app));
+    assert_eq!(
+        app.here[app.game_list.selected()].cover.as_deref(),
+        Some(image.as_path())
+    );
+
+    // Hiding the only game takes its picture off the folder, which then
+    // falls back to the logo; showing hidden rows does not put it back,
+    // because they are still hidden; unhiding does.
+    app.handle(Action::Accept);
+    app.game_list.select(0);
+    app.toggle_hidden();
+    app.handle(Action::Quit);
+    let at = folder_at(&app);
+    app.game_list.select(at);
+    assert_eq!(app.here[at].cover, None);
+    assert_eq!(
+        app.current_art(),
+        (Some(logo.clone()), "Example Game".to_string(), false, false)
+    );
+    app.show_hidden = true;
+    app.relist_here();
+    let at = folder_at(&app);
+    app.game_list.select(at);
+    assert_eq!(app.here[at].cover, None, "shown, but still hidden");
+    app.handle(Action::Accept);
+    assert_eq!(app.here.len(), 1);
+    app.game_list.select(0);
+    app.toggle_hidden();
+    assert!(app.settings.hidden_paths.is_empty());
+    app.handle(Action::Quit);
+    app.show_hidden = false;
+    app.relist_here();
+    let at = folder_at(&app);
+    app.game_list.select(at);
+    assert_eq!(app.here[at].cover.as_deref(), Some(image.as_path()));
+
+    // An image chosen for the system stands on its folders, as it did
+    // before; clearing it brings the game's picture back.
+    let managed = crate::category_images::install_system(&logos, "NES", &custom).unwrap();
+    app.relist_here();
+    let at = folder_at(&app);
+    app.game_list.select(at);
+    assert_eq!(app.here[at].cover, None);
+    assert_eq!(
+        app.current_art(),
+        (Some(managed), "Example Game".to_string(), false, false)
+    );
+    assert!(crate::category_images::clear_system(&logos, "NES").unwrap());
+    app.relist_here();
+    let at = folder_at(&app);
+    assert_eq!(app.here[at].cover.as_deref(), Some(image.as_path()));
+
+    // Reading the system again is answered from the new cache: a second,
+    // different game in the folder takes the picture away, and its
+    // removal gives it back.
+    std::fs::write(games.join("Example Game/Other Game.nes"), b"fixture").unwrap();
+    write_gamelist("<game><path>./Example Game/Other Game.nes</path><name>Other Game</name><image>./media/other.png</image></game>");
+    assert!(app.refresh_system("NES").is_none());
+    app.relist_here();
+    let at = folder_at(&app);
+    assert_eq!(app.here[at].below, Some(2));
+    assert_eq!(app.here[at].cover, None, "two games: the logo again");
+    std::fs::remove_file(games.join("Example Game/Other Game.nes")).unwrap();
+    write_gamelist("");
+    assert!(app.refresh_system("NES").is_none());
+    app.relist_here();
+    let at = folder_at(&app);
+    assert_eq!(app.here[at].below, Some(1));
+    assert_eq!(app.here[at].cover.as_deref(), Some(image.as_path()));
+
+    // A shelf inside favourites is left alone: no picture, the heart.
+    let shelf = root.join("_@Favorites/Shelf");
+    std::fs::create_dir_all(&shelf).unwrap();
+    let favorite = shelf.join("Example Game.mgl");
+    let mgl = crate::launch::favorite_mgl(
+        &app.all_systems[0].to_config(),
+        &games.join("Example Game/Example Game.nes"),
+    )
+    .unwrap()
+    .unwrap();
+    std::fs::write(&favorite, mgl).unwrap();
+    let mut favorites = app.all_systems[0].clone();
+    favorites.def.id = "Favorites".into();
+    favorites.def.name = "Favorites".into();
+    favorites.def.category = Some("Favorites".into());
+    favorites.paths = vec![root.join("_@Favorites")];
+    let favorites_library =
+        Library::open_with_names(&favorites.to_config(), browse::DisplayNames::default()).unwrap();
+    let mut favorites_cache = crate::cache::build_system(&favorites_library);
+    for folder in favorites_cache.folders.values_mut() {
+        for row in &mut folder.rows {
+            if matches!(row.kind, browse::Kind::Play(_)) {
+                row.cover = Some(image.clone());
+            }
+        }
+    }
+    app.all_systems.push(favorites);
+    app.open_system = Some("Favorites".into());
+    app.system_cache = Some(favorites_cache);
+    app.artwork_provider = None;
+    assert!(app.in_favorites());
+    let mut rows = vec![browse::Row {
+        name: "Shelf".into(),
+        sort_key: "shelf".into(),
+        kind: browse::Kind::Enter(Place::Dir(shelf)),
+        cover: None,
+        genre: None,
+        favorite: false,
+        below: Some(1),
+        details: browse::Details::default(),
+    }];
+    app.derive_folder_covers(&mut rows);
+    assert_eq!(rows[0].cover, None, "a shelf has no artwork and never will");
+    app.here = rows;
+    app.game_list = ListState::new(1, app.geometry.visible);
+    assert_eq!(app.current_art(), (None, "Shelf".to_string(), true, false));
+    app.ui.hide().unwrap();
+}
+
 pub(super) fn run_ui_acceptance_flow(window: Rc<MinimalSoftwareWindow>) {
     let root = fixture_directory();
     std::fs::create_dir_all(root.join("games/NES")).unwrap();
@@ -3145,6 +3370,7 @@ pub(super) fn run_ui_acceptance_flow(window: Rc<MinimalSoftwareWindow>) {
     run_artwork_matte_flow(&root, window.clone());
     run_fresh_auto_pack_index_flow(&root, window.clone());
     run_auto_source_choice_flow(&root, window.clone());
+    run_folder_artwork_flow(&root, window.clone());
     let mut app = fixture_app(&root, window.clone(), Settings::default());
     run_selected_controls_flow(&mut app);
     run_artwork_visibility_flow(&mut app);

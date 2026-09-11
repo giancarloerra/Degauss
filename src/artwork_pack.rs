@@ -734,6 +734,20 @@ impl Provider {
         matched
     }
 
+    /// The prepared picture for one playable row, for a caller that wants
+    /// only the picture: the same lookup `apply_prepared` makes, with the
+    /// same answer of nothing when the Pack is unusable or unprepared.
+    pub fn prepared_cover(&self, launch: &Launch) -> Option<&Path> {
+        if !self.health.usable() {
+            return None;
+        }
+        self.prepared
+            .as_ref()?
+            .get(&launch_cache_key(launch))?
+            .cover
+            .as_deref()
+    }
+
     pub fn apply_with_fingerprints(
         &self,
         rows: &mut [Row],
