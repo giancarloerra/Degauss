@@ -1954,6 +1954,65 @@ category = "Favorites"
     }
 
     #[test]
+    fn a_report_of_an_incomplete_pack_keeps_every_diagnostic_once_its_warning_was_dismissed() {
+        // The acknowledgement silences the screen, never the report: the
+        // complete diagnostic is what a person runs `--report` for, and it
+        // must read the same before and after the warning was dismissed.
+        let (root, mut loaded) = diagnostic_fixture("acknowledged-report");
+        let docs = root.join("docs");
+        let artwork = docs.join("NES/Artwork");
+        std::fs::create_dir_all(&artwork).unwrap();
+        std::fs::write(root.join("games/NES/Known.nes"), b"first rom").unwrap();
+        std::fs::write(root.join("games/NES/Second.nes"), b"second rom").unwrap();
+        std::fs::write(
+            artwork.join("manifest.tsv"),
+            "#key\tstyle\tss_system_id\nKnown\tbox-2D\t3\nSecond\tbox-2D\t3\n",
+        )
+        .unwrap();
+        std::fs::write(
+            artwork.join("index.tsv"),
+            "#name\tcrc\tsize\tkey\nKnown\t\t\tKnown\nSecond\t\t\tSecond\n",
+        )
+        .unwrap();
+        std::fs::write(
+            artwork.join("gameinfo.tsv"),
+            "#key\tname\tyear\tgenre\tdeveloper\tplayers\nKnown\tPack First\t1990\tAction\tStudio\t1\nSecond\tPack Second\t1991\tPuzzle\tStudio\t2\n",
+        )
+        .unwrap();
+        std::fs::write(artwork.join("Known.jpg"), covers::JPEG_16).unwrap();
+        loaded
+            .settings
+            .artwork_pack_roots
+            .insert("NES".into(), docs.to_string_lossy().into_owned());
+
+        let before = effective_library(&loaded, &loaded.systems[0]).unwrap();
+        let provider = before.provider.as_ref().unwrap();
+        assert_eq!(
+            provider.health,
+            artwork_pack::ProviderHealth::Degraded,
+            "{:?}",
+            provider.diagnostics
+        );
+        assert!(
+            !provider.diagnostics.is_empty(),
+            "an incomplete pack has something to report"
+        );
+        let mut seen = pack_health::Acknowledgements::default();
+        seen.acknowledge("NES", &provider.health_digest());
+        seen.save(&pack_health::path_beside(&loaded.settings_path))
+            .unwrap();
+
+        let after = effective_library(&loaded, &loaded.systems[0]).unwrap();
+        let acknowledged = after.provider.as_ref().unwrap();
+        assert_eq!(acknowledged.health, artwork_pack::ProviderHealth::Degraded);
+        assert_eq!(
+            acknowledged.diagnostics, provider.diagnostics,
+            "a dismissed warning must not shorten what --report says about the pack"
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn diagnostic_favorite_uses_the_owning_system_core_choice() {
         let (root, mut loaded) = diagnostic_fixture("favorite-owner");
         std::fs::write(root.join("games/NES/Game.fds"), b"path fixture").unwrap();
