@@ -3268,6 +3268,20 @@ fn run_degraded_pack_acknowledgement_flow(root: &Path, window: Rc<MinimalSoftwar
     app.ui.hide().unwrap();
     drop(app);
 
+    // A press that takes another message off the screen, put up over the
+    // warning meanwhile, has not seen the warning: nothing is written down.
+    let mut app = start(window.clone());
+    assert!(message_contains(&app, "is incomplete"), "{:?}", app.message);
+    app.message = Some("Put up over the warning before any press".into());
+    app.handle(Action::Accept);
+    assert!(app.message.is_none(), "{:?}", app.message);
+    assert!(
+        !warnings.exists(),
+        "dismissing another message is not seeing the warning under it"
+    );
+    app.ui.hide().unwrap();
+    drop(app);
+
     // The same pack in the next process: still not seen, so warned again;
     // dismissing it is what writes it down.
     let mut app = start(window.clone());
@@ -3315,12 +3329,28 @@ fn run_degraded_pack_acknowledgement_flow(root: &Path, window: Rc<MinimalSoftwar
         "one acknowledgement per source group: the old state is gone"
     );
     let no_index_file = std::fs::read_to_string(&warnings).unwrap();
+    let no_index_diagnostics = app.artwork_provider.as_ref().unwrap().diagnostics.clone();
+    assert_eq!(
+        no_index_diagnostics.len(),
+        2,
+        "a missing image and a missing table are two diagnostics: {no_index_diagnostics:?}"
+    );
     app.ui.hide().unwrap();
     drop(app);
 
     // 3. Back from a game: a new process, the same pack, no warning. The
     // log still gets the whole diagnostic, every part of it, acknowledged
-    // or not: the screen is quiet, the record is not.
+    // or not: the screen is quiet, the record is not. The warning just
+    // dismissed wrote the same line, so only one more line proves it.
+    let logged_line = format!(
+        "artwork pack Degraded at {}: {}",
+        docs.display(),
+        no_index_diagnostics.join("; ")
+    );
+    let logged_before = std::fs::read_to_string(crate::LOG_PATH)
+        .unwrap()
+        .matches(&logged_line)
+        .count();
     let app = start(window.clone());
     assert!(
         app.message.is_none(),
@@ -3329,21 +3359,14 @@ fn run_degraded_pack_acknowledgement_flow(root: &Path, window: Rc<MinimalSoftwar
     );
     let provider = app.artwork_provider.as_ref().unwrap();
     assert_eq!(provider.health, ProviderHealth::Degraded);
+    assert_eq!(provider.diagnostics, no_index_diagnostics);
     assert_eq!(
-        provider.diagnostics.len(),
-        2,
-        "a missing image and a missing table are two diagnostics: {:?}",
-        provider.diagnostics
-    );
-    let logged = std::fs::read_to_string(crate::LOG_PATH).unwrap();
-    let expected = format!(
-        "artwork pack Degraded at {}: {}",
-        docs.display(),
-        provider.diagnostics.join("; ")
-    );
-    assert!(
-        logged.contains(&expected),
-        "an acknowledged warning must still be written to the log in full: {expected:?}"
+        std::fs::read_to_string(crate::LOG_PATH)
+            .unwrap()
+            .matches(&logged_line)
+            .count(),
+        logged_before + 1,
+        "an acknowledged warning must still be written to the log in full: {logged_line:?}"
     );
     assert_eq!(std::fs::read_to_string(&warnings).unwrap(), no_index_file);
     app.ui.hide().unwrap();
@@ -3414,16 +3437,19 @@ fn run_degraded_pack_acknowledgement_flow(root: &Path, window: Rc<MinimalSoftwar
     app.ui.hide().unwrap();
     drop(app);
 
-    // A save that fails when the warning is dismissed is said on screen with
-    // its cause, and the warning comes back on the next start.
+    // A dismissal whose acknowledgement cannot be written down is said on
+    // screen with its cause, and the warning comes back on the next start.
+    // The file is read again before the save, so a file turned into a
+    // directory after the warning went up fails at that read.
     std::fs::remove_dir(&warnings).unwrap();
     let mut app = start(window.clone());
     assert!(message_contains(&app, "is incomplete"), "{:?}", app.message);
     std::fs::create_dir(&warnings).unwrap();
     app.handle(Action::Accept);
     assert!(
-        message_contains(&app, "not remembered"),
-        "a failed save must not be silent: {:?}",
+        message_contains(&app, "not remembered")
+            && message_contains(&app, "reading artwork pack warnings failed for"),
+        "a failed acknowledgement must say which step failed: {:?}",
         app.message
     );
     app.handle(Action::Accept);
