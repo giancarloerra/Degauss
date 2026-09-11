@@ -3145,19 +3145,18 @@ fn details_half_width(app: &App) -> f32 {
     .art_width
 }
 
-/// The multiplier each style applies to that half while browsing games:
-/// 42% of the width for Information, 62% for Large Artwork.
-fn details_style_factor(style: DetailsStyle) -> f32 {
-    match style {
-        DetailsStyle::Information => 0.84,
-        DetailsStyle::LargeArtwork => 1.24,
-    }
-}
-
 fn assert_details_split(app: &App, style: DetailsStyle, over_game: bool, context: &str) {
     assert_eq!(app.details_style, style, "{context}");
     assert_eq!(app.layout, Layout::Details, "{context}");
-    let expected = details_half_width(app) * details_style_factor(style);
+    // The picture's share of the safe width while browsing games, 42% for
+    // Information and 62% for Large Artwork, pinned as the share itself
+    // rather than the multiplier applied to the half, so a drift in either
+    // the base split or the factor fails here.
+    let share = match style {
+        DetailsStyle::Information => 0.42,
+        DetailsStyle::LargeArtwork => 0.62,
+    };
+    let expected = 2.0 * details_half_width(app) * share;
     assert!(
         (app.ui.get_art_width() - expected).abs() < 0.01,
         "{context}: {style:?} must give the picture {expected} of the width, not {}",
@@ -3304,7 +3303,6 @@ fn run_details_style_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
         .cycle()
         .take(120)
         .collect();
-    assert_eq!(long_title.chars().count(), 120);
     let game = |name: &str, cover: Option<PathBuf>| {
         let mut row = information_row();
         row.name = name.to_string();
