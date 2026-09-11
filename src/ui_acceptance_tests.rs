@@ -3233,6 +3233,15 @@ fn run_degraded_pack_acknowledgement_flow(root: &Path, window: Rc<MinimalSoftwar
             .unwrap()
             .acknowledged(group, digest)
     };
+    // The log is one file for every process on the host, appended to by
+    // whatever else runs; counted lines carry this fixture's path, so only
+    // this flow adds to them. Read as bytes: a stray byte from elsewhere is
+    // no reason to fail, and a log that cannot be read at all is named.
+    let logged = |line: &str| {
+        let bytes = std::fs::read(crate::LOG_PATH)
+            .unwrap_or_else(|error| panic!("{} could not be read: {error}", crate::LOG_PATH));
+        String::from_utf8_lossy(&bytes).matches(line).count()
+    };
 
     // 6. A complete pack: no warning, and nothing written down.
     let app = start(window.clone());
@@ -3347,10 +3356,7 @@ fn run_degraded_pack_acknowledgement_flow(root: &Path, window: Rc<MinimalSoftwar
         docs.display(),
         no_index_diagnostics.join("; ")
     );
-    let logged_before = std::fs::read_to_string(crate::LOG_PATH)
-        .unwrap()
-        .matches(&logged_line)
-        .count();
+    let logged_before = logged(&logged_line);
     let app = start(window.clone());
     assert!(
         app.message.is_none(),
@@ -3361,12 +3367,10 @@ fn run_degraded_pack_acknowledgement_flow(root: &Path, window: Rc<MinimalSoftwar
     assert_eq!(provider.health, ProviderHealth::Degraded);
     assert_eq!(provider.diagnostics, no_index_diagnostics);
     assert_eq!(
-        std::fs::read_to_string(crate::LOG_PATH)
-            .unwrap()
-            .matches(&logged_line)
-            .count(),
+        logged(&logged_line),
         logged_before + 1,
-        "an acknowledged warning must still be written to the log in full: {logged_line:?}"
+        "an acknowledged warning must still be written to {} in full: {logged_line:?}",
+        crate::LOG_PATH
     );
     assert_eq!(std::fs::read_to_string(&warnings).unwrap(), no_index_file);
     app.ui.hide().unwrap();
@@ -3387,10 +3391,7 @@ fn run_degraded_pack_acknowledgement_flow(root: &Path, window: Rc<MinimalSoftwar
         "artwork pack warnings: {} is malformed:",
         warnings.display()
     );
-    let malformed_before = std::fs::read_to_string(crate::LOG_PATH)
-        .unwrap()
-        .matches(&malformed_line)
-        .count();
+    let malformed_before = logged(&malformed_line);
     let mut app = start(window.clone());
     assert!(
         message_contains(&app, "is incomplete"),
@@ -3418,12 +3419,10 @@ fn run_degraded_pack_acknowledgement_flow(root: &Path, window: Rc<MinimalSoftwar
         app.message
     );
     assert_eq!(
-        std::fs::read_to_string(crate::LOG_PATH)
-            .unwrap()
-            .matches(&malformed_line)
-            .count(),
+        logged(&malformed_line),
         malformed_before + 1,
-        "the replacement of a file that broke meanwhile must reach the log"
+        "the replacement of a file that broke meanwhile must reach {}",
+        crate::LOG_PATH
     );
     assert!(
         acknowledged("NES", &extra_digest),
@@ -3462,10 +3461,7 @@ fn run_degraded_pack_acknowledgement_flow(root: &Path, window: Rc<MinimalSoftwar
     // else; that warning says the file was set aside, and why, because the
     // press that dismisses it writes over what was there.
     std::fs::write(&warnings, "degraded = \"not a table").unwrap();
-    let malformed_before = std::fs::read_to_string(crate::LOG_PATH)
-        .unwrap()
-        .matches(&malformed_line)
-        .count();
+    let malformed_before = logged(&malformed_line);
     let mut app = start(window.clone());
     assert!(message_contains(&app, "is incomplete"), "{:?}", app.message);
     assert!(
@@ -3479,12 +3475,10 @@ fn run_degraded_pack_acknowledgement_flow(root: &Path, window: Rc<MinimalSoftwar
         "the broken file is replaced by a readable one"
     );
     assert_eq!(
-        std::fs::read_to_string(crate::LOG_PATH)
-            .unwrap()
-            .matches(&malformed_line)
-            .count(),
+        logged(&malformed_line),
         malformed_before + 1,
-        "one broken file is one log line, not one per read of it"
+        "one broken file is one line in {}, not one per read of it",
+        crate::LOG_PATH
     );
     let acknowledged_file = std::fs::read_to_string(&warnings).unwrap();
     app.ui.hide().unwrap();
