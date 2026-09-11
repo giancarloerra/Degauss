@@ -10060,8 +10060,13 @@ impl App {
         for warning in &warnings {
             crate::note(&format!("game source  installed with warning: {warning}"));
         }
+        // The archive and reason are on screen, as they are when a Pack
+        // system is rebuilt or prepared on opening.
         self.message = Some(match warnings.is_empty() {
-            false => format!("Now using {label}.\nFinished with problems; see degauss.log."),
+            false => format!(
+                "Now using {label}.\nFinished with problems:\n{}",
+                warnings.join("\n")
+            ),
             true => format!("Now using {label}."),
         });
         self.dirty = true;

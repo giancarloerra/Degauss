@@ -575,6 +575,9 @@ fn contents_controlled(path: &Path, cancelled: &AtomicBool) -> Result<Option<Con
         // The disk number is never resolved from the ZIP64 field: Main
         // refuses the record outright when it is the sentinel, without
         // reading that value, so the sentinel is another disk here too.
+        // Main also lets a record saying disk 1 into a disk-0 archive;
+        // here every record has to say the directory's disk, which only
+        // ever leaves an archive out, never offers one Main refuses.
         if disk != directory.disk {
             return Err(bad(path, "member starts on another disk"));
         }
@@ -656,8 +659,10 @@ fn contents_controlled(path: &Path, cancelled: &AtomicBool) -> Result<Option<Con
                 free.insert((name.to_string(), is_dir));
             }
         }
-        // Main refuses these two conditions separately when it extracts,
-        // encryption (bits 0 and 6) before a compressed patch (bit 5).
+        // Main's extract iterator refuses bits 0, 6 and 5 together as
+        // unsupported encryption; the two reasons are kept apart here
+        // because the issue asks for the exact one, in the order Main's
+        // directory scan tests them (encryption, then a compressed patch).
         let problem = if flags & (1 | 64) != 0 {
             Some("encrypted member is unsupported".to_string())
         } else if flags & 32 != 0 {
@@ -761,6 +766,17 @@ fn contents_controlled(path: &Path, cancelled: &AtomicBool) -> Result<Option<Con
     // Browse uses a stable case-insensitive sort. Exact Unicode directory names
     // can share that sort key, so their input order must not come from HashMap.
     directories.sort_unstable();
+    // Every member left out goes to the log here, where the archive is
+    // read, so whatever reads it (an index, an audit, a listing straight
+    // from the card, a launch check) leaves the diagnostic once per read,
+    // in one write however many members there are.
+    if !skipped.is_empty() {
+        let lines: Vec<String> = skipped
+            .iter()
+            .map(|skipped| format!("zip          {}: {}", path.display(), skipped.describe()))
+            .collect();
+        crate::note(&lines.join("\n"));
+    }
     Ok(Some(Contents {
         entries,
         directories,
@@ -1249,7 +1265,13 @@ mod tests {
     /// conflict too, and the whole group goes, never one side of it.
     #[test]
     fn a_retained_member_cannot_share_a_name_with_a_skipped_one() {
-        for (index, (flags, method)) in [(1u16, 0u16), (0, 12)].into_iter().enumerate() {
+        for (index, (flags, method, reason)) in [
+            (1u16, 0u16, "encrypted member is unsupported"),
+            (0, 12, "unsupported compression method 12"),
+        ]
+        .into_iter()
+        .enumerate()
+        {
             let entries = [
                 TestEntry {
                     name: b"Game.neo",
@@ -1278,12 +1300,7 @@ mod tests {
             assert_eq!(names_of(&contents), ["ok.neo"], "case {index}");
             let skipped = skipped_of(&contents);
             assert_eq!(skipped.len(), 2, "case {index}: {skipped:?}");
-            assert!(
-                skipped[0].0 == "Game.neo"
-                    && (skipped[0].1.contains("encrypted")
-                        || skipped[0].1.contains("compression method 12")),
-                "case {index}: {skipped:?}"
-            );
+            assert_eq!(skipped[0], ("Game.neo", reason), "case {index}");
             assert_eq!(
                 skipped[1],
                 (
@@ -1418,10 +1435,13 @@ mod tests {
 
     /// Main opens a classic archive only when its end record says disk 0
     /// or disk 1 throughout, and refuses any record whose disk number is
-    /// not that disk or is the ZIP64 sentinel, which it never resolves. A
-    /// member Main would not open the archive for cannot be offered, so
-    /// each of those is the whole archive's failure here, and the one
-    /// layout Main does accept still lists.
+    /// the ZIP64 sentinel, which it never resolves, or is neither that
+    /// disk nor 1. A member Main would not open the archive for cannot be
+    /// offered, so each of those is the whole archive's failure here. A
+    /// record saying disk 1 in a disk-0 archive, which Main lets through,
+    /// is a multi-disk structure all the same and fails here too: that
+    /// leaves out an archive, never offers one Main refuses. The
+    /// disk-1-throughout layout still lists.
     #[test]
     fn multi_disk_end_records_and_member_disk_numbers_fail_the_archive() {
         for (index, (zip64, at_end, value, reason)) in [

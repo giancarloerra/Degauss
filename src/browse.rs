@@ -639,7 +639,8 @@ impl Library {
     /// The launchable files inside an archive. Only names are read; nothing
     /// is unpacked, because unpacking is the loader's job at launch time.
     /// Members the reader left out are not rows; the archive itself hands
-    /// them back for the index or audit that reads it to report once.
+    /// them back for the index or audit that reads it to summarise, and the
+    /// reader has already logged each of them when it read the archive.
     fn list_archive(
         &self,
         archive: &Path,
@@ -1248,14 +1249,9 @@ impl Library {
                 Ok((mut rows, _, skipped)) => {
                     // A member left out of an archive is a place that could
                     // not be read, for the same reason a folder that errors
-                    // is: it is what the audit exists to surface. The log
-                    // gets every one, the printed report only the first few.
+                    // is: it is what the audit exists to surface. The reader
+                    // logged every one; the printed report has the first few.
                     for skipped in skipped {
-                        crate::note(&format!(
-                            "zip          {}: {}",
-                            place.path().display(),
-                            skipped.describe()
-                        ));
                         audit
                             .unreadable
                             .push((place.path().join(skipped.shown()), skipped.reason));

@@ -372,16 +372,12 @@ fn walk_controlled(
     }
     let (mut rows, _, skipped) = library.list_reporting(place, true)?;
     if !skipped.is_empty() {
-        // Every member goes to the log with its reason, once per scan. The
-        // summary on screen gets one line per reason, with a count, so it
-        // stays readable for an archive with hundreds of them.
+        // The reader wrote every member to the log with its reason when it
+        // read the archive. The summary on screen gets one line per reason,
+        // with a count, so it stays readable for an archive with hundreds
+        // of them.
         let mut reasons = BTreeMap::new();
         for skipped in skipped {
-            crate::note(&format!(
-                "zip          {}: {}",
-                place.path().display(),
-                skipped.describe()
-            ));
             *reasons.entry(skipped.reason).or_insert(0usize) += 1;
         }
         for (reason, count) in reasons {
@@ -405,7 +401,7 @@ fn walk_controlled(
                 *games_done += 1;
             }
             Kind::Enter(inner) => {
-                let before = (seen.len(), *folders_done, *games_done);
+                let before = (seen.len(), *folders_done, *games_done, warnings.len());
                 let below = match walk_controlled(
                     library,
                     &inner.clone(),
@@ -425,10 +421,12 @@ fn walk_controlled(
                         // is left out whole: every folder its subtree already
                         // wrote is taken back (its keys were pushed to `seen`
                         // before being written), the progress counts it
-                        // raised go back with it, its row goes, and the rest
-                        // of the system carries on. Nothing of it is ever
-                        // published half done. Any other failure under it,
-                        // such as the depth limit, is the system's as before.
+                        // raised and the member lines its listing added to
+                        // the summary go back with it, its row goes, and the
+                        // rest of the system carries on. Nothing of it is
+                        // ever published half done. Any other failure under
+                        // it, such as the depth limit, is the system's as
+                        // before.
                         let Some(reason) = archive_skip_reason(&error, inner) else {
                             return Err(error);
                         };
@@ -443,6 +441,7 @@ fn walk_controlled(
                         }
                         *folders_done = before.1;
                         *games_done = before.2;
+                        warnings.truncate(before.3);
                         warnings.push(format!("{}: skipped: {reason}", inner.path().display()));
                         dropped.push(index);
                         continue;
@@ -1612,15 +1611,36 @@ mod tests {
     /// An archive that fails after part of it was walked (here, one taken
     /// away between two of its folders) is taken back whole, and the
     /// progress figures go back with it: the dashboard must not end on more
-    /// games than the cache it announces holds.
+    /// games than the cache it announces holds. The member line its
+    /// listing put in the summary goes back too: an archive nothing is
+    /// published from is reported once, as skipped, not also as holding a
+    /// skipped member.
     #[test]
     fn a_skipped_archive_takes_its_progress_counts_back_with_it() {
         let games = temp("skipped-archive-progress");
         std::fs::write(games.join("Plain.d64"), b"rom").unwrap();
         let archive = games.join("Gone.zip");
+        let plain = |name: &'static [u8]| crate::zip::TestEntry {
+            name,
+            flags: 0,
+            method: 0,
+            extra: &[],
+        };
         std::fs::write(
             &archive,
-            crate::zip::tests_archive(&["a/one.d64", "b/two.d64"], false),
+            crate::zip::tests_archive_entries(
+                &[
+                    plain(b"a/one.d64"),
+                    plain(b"b/two.d64"),
+                    crate::zip::TestEntry {
+                        name: b"locked.d64",
+                        flags: 1,
+                        method: 0,
+                        extra: &[],
+                    },
+                ],
+                false,
+            ),
         )
         .unwrap();
         let library = Library::open(&system(&games)).unwrap();
@@ -1644,7 +1664,11 @@ mod tests {
         .unwrap();
         assert_eq!(cache.summary(&library.start()).games, 1);
         assert_eq!(last, Some((cache.folders.len(), 1)));
-        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert_eq!(
+            warnings.len(),
+            1,
+            "the line for locked.d64 must go back with the archive: {warnings:?}"
+        );
         assert!(
             warnings[0].starts_with(&format!("{}: skipped: ", archive.display())),
             "{warnings:?}"

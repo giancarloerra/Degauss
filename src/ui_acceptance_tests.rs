@@ -3251,6 +3251,65 @@ fn run_auto_source_choice_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
     assert_eq!(cache_snapshot(&app.cache_dir), restarted_cache);
     assert!(app.source_job.is_none());
     assert!(app.provider_job.is_none());
+
+    // Changing the game data source scans the system again, and an archive
+    // that scan leaves out has to be named in the completion message with
+    // its reason, as every other completion is: a pointer to the log would
+    // leave the person at the screen without the cause.
+    let docs = root.join("docs");
+    let artwork = docs.join("NES/Artwork");
+    std::fs::create_dir_all(&artwork).unwrap();
+    std::fs::write(
+        artwork.join("manifest.tsv"),
+        "#key\tstyle\tss_system_id\nFirst Game\tbox-2D\t3\n",
+    )
+    .unwrap();
+    std::fs::write(
+        artwork.join("index.tsv"),
+        "#name\tcrc\tsize\tkey\nFirst Game\t\t\tFirst Game\n",
+    )
+    .unwrap();
+    std::fs::write(
+        artwork.join("gameinfo.tsv"),
+        "#key\tname\tyear\tgenre\tdeveloper\tplayers\n",
+    )
+    .unwrap();
+    std::fs::write(artwork.join("First Game.jpg"), crate::covers::JPEG_16).unwrap();
+    let broken = games.join("Broken.zip");
+    std::fs::write(&broken, b"not an archive").unwrap();
+    app.open_game_data_source();
+    app.source_switch_automatic = false;
+    app.begin_source_switch(crate::source_cache::Target::ArtworkPack {
+        docs_root: docs.clone(),
+    });
+    assert!(app.source_job.is_some(), "a new source must be prepared");
+    app.finish_background_work_for_headless();
+    let message = app.message.clone().unwrap_or_default();
+    assert!(
+        message.starts_with("Now using Artwork Pack.\nFinished with problems:\n"),
+        "{message}"
+    );
+    assert!(
+        message.contains(&format!(
+            "NES: {}: skipped: zip archive is malformed: no valid end-of-directory record",
+            broken.display()
+        )),
+        "{message}"
+    );
+    assert_eq!(
+        crate::artwork_source::mode(&app.settings, "NES"),
+        Mode::ArtworkPack
+    );
+    assert_eq!(
+        crate::cache::load_artwork_pack_data(&app.cache_dir, "NES")
+            .unwrap()
+            .cache
+            .summary(&Place::Dir(games.clone()))
+            .games,
+        2,
+        "the healthy games are prepared beside the skipped archive"
+    );
+    std::fs::remove_file(&broken).unwrap();
     app.ui.hide().unwrap();
 }
 

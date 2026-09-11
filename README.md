@@ -444,8 +444,9 @@ reports its error and keeps that system's previous complete list. A malformed
 archive, or a member inside one that MiSTer cannot launch, is skipped with a
 warning and the rest of the system is published; the rebuild then finishes as
 **Finished With Problems**, naming the system, the archive and the reason
-(a system prepared from an Artwork Pack names them in its completion message),
-with every skipped member written to `/tmp/degauss.log`.
+(a system prepared from an Artwork Pack names them in its completion message,
+as does a change of its game data source), with every skipped member written
+to `/tmp/degauss.log`.
 
 Global and single-system rebuilds show a progress dashboard with the active
 system and folder, processed systems, folder/game counts and elapsed time.
