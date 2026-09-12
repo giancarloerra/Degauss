@@ -313,11 +313,7 @@ fn install_with_directory_sync(
 /// The failure that stopped a save, with the leftover temporary file
 /// removed; when even that fails the error says so under `what`, because
 /// a stray file beside the settings is worth knowing about.
-pub(crate) fn cleanup_temporary(
-    what: &'static str,
-    path: &Path,
-    error: DegaussError,
-) -> DegaussError {
+fn cleanup_temporary(what: &'static str, path: &Path, error: DegaussError) -> DegaussError {
     match std::fs::remove_file(path) {
         Ok(()) => error,
         Err(cleanup) if cleanup.kind() == std::io::ErrorKind::NotFound => error,
