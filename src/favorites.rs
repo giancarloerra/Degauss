@@ -275,7 +275,7 @@ pub fn reference_of_with_systems(
                 || crate::core_choices::is_unstable_reference(&config, rbf))
                 && (config.accepts(Path::new(&raw))
                     || (crate::neogeo::is_romset_system(&config)
-                        && crate::neogeo::set_like_name(Path::new(&raw))))
+                        && crate::neogeo::set_like_name(Path::new(&raw), &system.paths)))
                 && (rbf.starts_with("_RA_Cores/Cores/")
                     && set.is_some_and(|s| s.eq_ignore_ascii_case(core))
                     || match (config.setname.as_deref(), set) {
@@ -865,7 +865,10 @@ extensions = ["fds"]
         let games = root.join("NEOGEO");
         std::fs::create_dir_all(games.join("kof98")).unwrap();
         std::fs::write(games.join("kof98/prom"), b"p").unwrap();
+        std::fs::create_dir_all(games.join("kof98.v2")).unwrap();
+        std::fs::write(games.join("kof98.v2/prom"), b"p").unwrap();
         std::fs::write(games.join("mslug.zip"), b"not an archive").unwrap();
+        std::fs::write(games.join("bonus.bin"), b"b").unwrap();
         std::fs::create_dir_all(games.join("Fighting")).unwrap();
         let defs = crate::systems::parse_table(
             r#"
@@ -895,8 +898,11 @@ extensions = ["nes"]
             })
             .collect();
         let neogeo = systems[0].to_config();
+        // A set folder with a dot in its name is the one case where the
+        // card is looked at to claim a bare name.
         for (set, core) in [
             ("kof98", "_Console/NeoGeo"),
+            ("kof98.v2", "_Console/NeoGeo"),
             ("mslug.zip", "_Console/NeoGeo"),
         ] {
             let favorite = root.join(format!("{set}.mgl"));
@@ -912,6 +918,15 @@ extensions = ["nes"]
                 "{set}: {relocated}"
             );
         }
+        // A file with an extension the system does not accept is not
+        // claimed, folder or not: with the Neo Geo CD row sharing the
+        // core, its bare disc favourites would otherwise gain a second
+        // owner and resolve to nothing.
+        let text = "<mistergamedescription><rbf>_Console/NeoGeo</rbf><file delay=\"1\" type=\"f\" index=\"1\" path=\"bonus.bin\"/></mistergamedescription>";
+        let favorite = root.join("bonus.mgl");
+        std::fs::write(&favorite, text).unwrap();
+        let reference = reference_of_with_systems(&favorite, &systems).unwrap();
+        assert_eq!(reference.owner_target, root.join("bonus.bin"));
         // A folder is a set only in a ROM-set system: elsewhere a bare
         // name that is a folder stays unresolved, as before.
         let nes = systems[1].to_config();
