@@ -932,7 +932,8 @@ A Update   B Keep Current
 **Update** prepares that one system again and replaces the previous result
 only once the new one is complete. **Keep Current** keeps browsing on the
 previous mapping and is remembered for that change, so it is not asked about
-again until the pack changes once more. When the system's own list changed,
+again until the pack, the language or the system's own list changes once
+more. When the system's own list changed,
 after **Rebuild All System Lists**, the previous mapping is applied to the
 new list: games it knows keep their pack data, games added since have none
 until the pack is prepared again. When the prepared list itself is gone,
