@@ -9809,10 +9809,12 @@ impl App {
         };
         // What the scan left out comes first: it is the cause, and a later
         // storage warning must not push it out of the message. A full
-        // build logs each warning once it drains them below; the other
-        // purposes log them here.
+        // build still in progress logs each warning once it drains them
+        // below; every other case, the group a finished build left for
+        // this step included, has nothing to drain them and logs them here.
+        let drained_by_build = purpose == SourceRecoveryPurpose::FullBuild && self.build.is_some();
         for warning in scan_warnings.into_iter().chain(install_warnings) {
-            if purpose != SourceRecoveryPurpose::FullBuild {
+            if !drained_by_build {
                 crate::note(&format!("cache        recovery warning: {warning}"));
             }
             self.source_recovery_warnings.push(warning);

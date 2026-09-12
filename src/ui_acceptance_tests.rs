@@ -3099,6 +3099,36 @@ fn run_fresh_auto_pack_index_flow(root: &Path, window: Rc<MinimalSoftwareWindow>
     );
     assert_complete(&app, 3);
     capture_live_if_requested(&mut app, "source-auto-pack-rebuilt-with-problems");
+    // A Pack group whose game data source is unresolved is left out of a
+    // full build and prepared by the recovery step after the build's
+    // terminal has gone. With no terminal to drain them, that step is the
+    // one place its warnings can reach the log, and it must write them once.
+    let group = crate::artwork_pack::source_group("NES").unwrap();
+    app.artwork_source_errors
+        .insert(group.to_string(), "source check pending".into());
+    app.message = None;
+    let log_before = log_since(0).len();
+    app.start_build(true);
+    app.finish_background_work_for_headless();
+    let message = app.message.clone().unwrap_or_default();
+    assert!(
+        message.starts_with("Library rebuild finished with problems:\n"),
+        "{message}"
+    );
+    assert!(message.contains(&warning), "{message}");
+    let log = log_since(log_before);
+    assert_eq!(
+        log.lines().filter(|line| *line == recovery_line).count(),
+        1,
+        "the recovery step after a finished build must log the warning once: {log}"
+    );
+    assert!(
+        !log.lines().any(|line| line == warning),
+        "no build terminal drained the warning, so it has no bare line: {log}"
+    );
+    assert_complete(&app, 3);
+    app.artwork_source_errors.remove(group);
+    app.message = None;
     std::fs::remove_file(&broken).unwrap();
     app.message = None;
     let before_failure = cache_snapshot(&app.cache_dir);

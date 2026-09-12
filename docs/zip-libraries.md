@@ -19,7 +19,7 @@ A folder inside an archive that sits deeper than the folder depth the index walk
 
 A problem confined to one member skips only that member, with its exact reason, and the other members stay. That is any of:
 
-- an encrypted entry (except the stored case below, which fails the archive), or a compressed-patch entry;
+- an encrypted entry (except a stored one whose DOS time is zero, which fails the archive, as described below), or a compressed-patch entry;
 - another compression method, named by its number;
 - a nested archive member (Main refuses a second `.zip` in a target);
 - a traversal or empty path segment, a backslash or colon, a control character, or leading or trailing whitespace in the name;
@@ -49,7 +49,7 @@ Use complete relative metadata paths for individual games:
 
 An archive containing more than one game supported by the system uses only exact member metadata paths. A single supported game retains existing archive/title metadata matching. Scraping a single member preserves Keep/Fill policies but writes a separate exact member entry when an update is needed; it never overwrites the archive-level metadata row. Artwork remains an external file alongside the library.
 
-Replacing an archive is reflected by **Rebuild this system list** or a full rebuild. A successful scan replaces the current contents. A malformed archive or an unsupported member is skipped with a warning and the healthy remainder of the system is published in the same transaction; the rebuild finishes as **Finished With Problems**, and the summary names the system, the archive and the reason, one line per archive and reason with a count of members. For a system prepared from an Artwork Pack, **Rebuild this system list**, the preparation on opening and a change of its game data source show the same archive and reason lines in their completion message. The scraper's **Refreshing Lists** step rebuilds each affected system the same way: a skipped archive or member is shown as the dashboard's last problem, named by the system, and is not counted as a failed system, because the system's list was replaced.
+Replacing an archive is reflected by **Rebuild this system list** or a full rebuild. A successful scan replaces the current contents. A malformed archive or an unsupported member is skipped with a warning and the healthy remainder of the system is published in the same transaction; the rebuild finishes as **Finished With Problems**, and the summary names the system, the archive and the reason: one line per skipped archive, one line per folder skipped for its depth, and for skipped members one line per archive and reason with a count of the members it covers. For a system prepared from an Artwork Pack, **Rebuild this system list**, the preparation on opening and a change of its game data source show the same archive and reason lines in their completion message. The scraper's **Refreshing Lists** step rebuilds each affected system the same way: a skipped archive or member is shown as the dashboard's last problem, named by the system, and is not counted as a failed system, because the system's list was replaced.
 
 A system holding only rejected content completes with zero games and that warning. An unreadable system folder, a cancellation or a failure to publish remains a failed transaction that preserves the previous valid cache and summary. Existing cache, Favorites and state formats remain readable.
 
