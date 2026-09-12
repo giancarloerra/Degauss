@@ -3198,12 +3198,16 @@ fn run_folder_artwork_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
 
     // Details draws it as game artwork; the grid and strip views draw it
     // on the row, corrected like a game's picture; the text views stay
-    // text.
+    // text. The logo is taken away while the picture views are checked:
+    // a folder without a picture is drawn with the system's logo, so
+    // with one in reach a drawn row would not say which of the two it
+    // carries.
     app.set_layout(Layout::Details);
     assert_eq!(
         app.current_art(),
         (Some(image.clone()), "Example Game".to_string(), false, true)
     );
+    app.all_systems[0].logo_dir = None;
     for layout in [Layout::Tiled, Layout::Carousel, Layout::Gallery] {
         app.screen = Screen::Browse;
         app.set_layout(layout);
@@ -3213,7 +3217,7 @@ fn run_folder_artwork_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
         let row = app.rows.row_data(at - range.start).unwrap();
         assert!(
             row.has_cover,
-            "{}: the folder row carries the picture",
+            "{}: the folder row carries the picture, with no logo to stand in",
             layout.label()
         );
         assert_eq!(
@@ -3224,6 +3228,7 @@ fn run_folder_artwork_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
         );
         assert_eq!(row.title.as_str(), "[ Example Game ]");
     }
+    app.all_systems[0].logo_dir = Some(logos.clone());
     for layout in [Layout::List, Layout::MultiList] {
         app.set_layout(layout);
         app.load_art();
