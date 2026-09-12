@@ -1505,12 +1505,12 @@ fn limited_lookup(
 ) -> Result<super::api::LookupResponse> {
     let reservation = limits.reserve_possible_failure()?;
     let result = operation();
-    if let Ok(response) = &result {
-        reservation.finish(response.server_miss);
-    }
     // ScreenScraper counts a KO only for a negative answer (rom or game
     // not found), so a rejected or unreadable lookup releases its slot
     // uncounted.
+    if let Ok(response) = &result {
+        reservation.finish(response.server_miss);
+    }
     result
 }
 
@@ -1902,12 +1902,9 @@ fn current_label(target: &Target) -> String {
     format!("{}: {}", target.system_name, target.title)
 }
 
-/// Search ScreenScraper by title. A file named only by its extension and
-/// dump tags leaves nothing to send once those are removed: no search is
-/// made and `None` is returned, so the game is counted as not found with
-/// its own reason (logged once by `stage`), without a request or a
-/// failed-search reservation being spent and without a setup fault
-/// stopping the run.
+/// Search ScreenScraper by title. A name that leaves nothing to search for
+/// once its extension and dump tags are removed sends no request and
+/// returns `None`: `stage` counts that game as not found.
 fn search_by_title(
     target: &Target,
     current: &str,
@@ -2334,14 +2331,9 @@ fn safe_component(value: &str) -> String {
     }
 }
 
-/// Whether one game's failure stops the batch. A request ScreenScraper
-/// rejected (by HTTP 400, by a documented bad-request text or by an error
-/// text it does not document answering that game's lookup), or a match
-/// response it served unreadable, concerns that game alone; transport,
-/// login, rate limit, quota and service outages (which include an answer
-/// that is not XML at all, or a page whose root element is not
-/// ScreenScraper's `<Data>`, whatever its content type or status) concern
-/// every game still queued.
+/// Whether one game's failure stops the batch: a request ScreenScraper
+/// rejected or answered unreadably concerns that game alone; transport,
+/// login, limit and service outages concern every game still queued.
 fn fatal_for_run(error: &Error) -> bool {
     !matches!(
         error.kind,

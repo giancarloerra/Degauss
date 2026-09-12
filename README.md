@@ -1022,7 +1022,10 @@ available. No helper or background service stays running after Degauss exits.
 
 Connection and server failures remain on the progress screen until they are
 dismissed. The on-screen message is kept concise; technical curl and HTTP
-details are written to `/tmp/degauss.log` without request URLs or login data.
+details are written to `/tmp/degauss.log`. Degauss never writes its own
+request URLs or login data there; a server error text quoted in the log is
+cut to one line and has its login and developer credential parameters
+replaced by "[redacted]".
 Degauss allows 10 seconds to establish each connection and 60 seconds for an
 ordinary API request. An image transfer receives 60 to 300 seconds according
 to its size and the account's reported speed. Retryable failures receive up

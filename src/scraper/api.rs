@@ -974,14 +974,9 @@ fn status(code: u16) -> Result<()> {
 /// Interpret a body-level ScreenScraper error before losing its more precise
 /// login diagnosis to a generic HTTP status. In particular, the service can
 /// use HTTP 403 for either developer credentials or an end-user login and
-/// states which pair failed only in its plain-text response. HTTP 400 no
-/// longer stops the run, so a documented text under it keeps the text's
-/// classification: a service-wide text (a closure, a limit, an exhausted
-/// allowance, a refused client) stops the run instead of passing as one
-/// game's rejection, a per-request text keeps the server's words in its
-/// detail and a not-found text is that game's miss. An unrecognised text
-/// under HTTP 400 keeps the status's meaning for `answer`, with the
-/// server's words in the detail so the log shows what was rejected.
+/// states which pair failed only in its plain-text response. A documented
+/// error text keeps its classification under HTTP 400 as well; any other
+/// body under that status is classified by `rejected_request`.
 fn response_status(response: &HttpResponse, answer: Answer) -> Result<()> {
     let text = std::str::from_utf8(&response.body)
         .ok()
@@ -1015,16 +1010,9 @@ fn response_status(response: &HttpResponse, answer: Answer) -> Result<()> {
     }
 }
 
-/// HTTP 400. ScreenScraper documents it only for problems with the one
-/// request (a rom name carrying a path, a bad hash, missing fields) and
-/// answers it with an error text, so on a lookup or a media transfer it
-/// stops that game rather than the run, with the server's words in the
-/// detail; the account check sends only the credential fields, so a 400
-/// there is a setup fault, as before. The XML endpoints answer HTTP 400
-/// with text: a page, an empty body or a body that is not text under that
-/// status is an intermediary's answer, not ScreenScraper's, and stops the
-/// run as it would on a successful status. An image transfer answers with
-/// bytes, so that rule does not apply to it.
+/// HTTP 400 is one game's rejection on a lookup or a media transfer and a
+/// setup fault at the account check. The XML endpoints answer it with text,
+/// so markup, a page content type, an empty or non-text body stops the run.
 fn rejected_request(response: &HttpResponse, text: Option<&str>, answer: Answer) -> Error {
     let text = text.map(str::trim).filter(|text| !text.is_empty());
     let kind = match answer {
@@ -1040,6 +1028,9 @@ fn rejected_request(response: &HttpResponse, text: Option<&str>, answer: Answer)
         }
         if text.is_none() {
             return not_an_answer("no error text under HTTP 400");
+        }
+        if text.is_some_and(|text| text.starts_with('<')) {
+            return not_an_answer("markup instead of an error text under HTTP 400");
         }
     }
     let rejected = "ScreenScraper rejected the request parameters (HTTP 400)";
@@ -1185,12 +1176,8 @@ fn documented_error(lower: &str, text: &str) -> Option<Error> {
     None
 }
 
-/// An error text ScreenScraper has not documented. On a lookup it is that
-/// game's rejection, the invalid search the batch must continue past,
-/// with the server's words in the detail; a service-wide text present
-/// when the run starts still stops it at the account check, which runs
-/// before any game, and a media transfer is not a search, so both keep
-/// the outage classification.
+/// An error text ScreenScraper has not documented: one game's rejection
+/// on a lookup, an outage at the account check or on a media transfer.
 fn unrecognised_error(text: &str, answer: Answer) -> Error {
     match answer {
         Answer::Lookup => Error::new(
@@ -1366,7 +1353,8 @@ fn parse(
             Ok(Event::Start(element)) => {
                 let tag = element.name().as_ref().to_ascii_lowercase();
                 if !saw_data_root {
-                    saw_data_root = require_data_root(&tag)?;
+                    require_data_root(&tag)?;
+                    saw_data_root = true;
                 }
                 let attributes = xml_attributes(&element)?;
                 let parent = stack.last().map(String::as_str);
@@ -1464,8 +1452,8 @@ fn parse(
             }
             Ok(Event::Empty(element)) => {
                 if !saw_data_root {
-                    saw_data_root =
-                        require_data_root(&element.name().as_ref().to_ascii_lowercase())?;
+                    require_data_root(&element.name().as_ref().to_ascii_lowercase())?;
+                    saw_data_root = true;
                 }
                 xml_attributes(&element)?;
                 if element.name().as_ref().eq_ignore_ascii_case("jeux") {
@@ -1542,11 +1530,11 @@ fn parse(
     Ok(parsed)
 }
 
-/// True for ScreenScraper's `<Data>` root; any other root element is a
+/// Accepts ScreenScraper's `<Data>` root; any other root element is a
 /// page the service did not answer with.
-fn require_data_root(tag: &str) -> Result<bool> {
+fn require_data_root(tag: &str) -> Result<()> {
     if tag == "data" {
-        return Ok(true);
+        return Ok(());
     }
     Err(not_an_answer(&format!("root element <{}>", excerpt(tag))))
 }
@@ -2913,13 +2901,14 @@ mod tests {
 
     #[test]
     fn a_page_under_http_400_stops_the_run_and_a_text_names_the_rejection() {
-        // ScreenScraper answers HTTP 400 with an error text. An HTML page,
-        // an empty body or a body that is not text under that status comes
-        // from an intermediary, as it would on a successful status, and
-        // must not cost one lookup per remaining game while the log stays
-        // silent about the cause. A text that is not one of the documented
-        // error texts is still that game's rejection, with the server's
-        // words in the log detail.
+        // ScreenScraper answers HTTP 400 with an error text. An HTML page
+        // (whatever content type it is served with, or none), an empty body
+        // or a body that is not text under that status comes from an
+        // intermediary, as it would on a successful status, and must not
+        // cost one lookup per remaining game while the log stays silent
+        // about the cause. A text that is not one of the documented error
+        // texts is still that game's rejection, with the server's words in
+        // the log detail.
         let hashes = Hashes {
             size: 3,
             crc32: "352441C2".into(),
@@ -2931,6 +2920,16 @@ mod tests {
                 Some("text/html"),
                 &b"<html><body>Bad request</body></html>"[..],
                 "content type text/html",
+            ),
+            (
+                None,
+                &b"<html><body>Bad request</body></html>"[..],
+                "markup instead of an error text",
+            ),
+            (
+                Some("application/xml"),
+                &b"<!DOCTYPE html><html><body><p>Bad request</html>"[..],
+                "markup instead of an error text",
             ),
             (Some("application/xml"), &b""[..], "no error text"),
             (Some("text/plain"), &b" \n"[..], "no error text"),

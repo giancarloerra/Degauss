@@ -1129,6 +1129,10 @@ fn run_scraper_unresolved_report_flow(root: &Path, window: Rc<MinimalSoftwareWin
     assert!(!app.scraper_details);
     app.handle(Action::Quit);
     assert_eq!(app.screen, Screen::Browse);
+    assert!(
+        app.scraper_progress.unresolved_games.is_empty(),
+        "the closed report cannot be reopened, so its list is released rather than kept until the next scrape"
+    );
 
     let job = crate::scraper::start(crate::scraper::Request {
         scope: crate::scraper::Scope::All,

@@ -11417,6 +11417,9 @@ impl App {
             return;
         }
         self.scraper_terminal = None;
+        // The report is unreachable once the run is closed; a full-library
+        // list would otherwise stay in memory until the next scrape.
+        self.scraper_progress.unresolved_games = Vec::new();
         self.screen = self.scraper_return;
         self.resolve_view();
         self.apply_geometry();
