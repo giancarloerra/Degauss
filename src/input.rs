@@ -415,6 +415,36 @@ pub fn key_edge(action: Action, value: i32) -> Option<KeyEdge> {
     }
 }
 
+/// Merge the edges one device delivered, `edges[split..]`, into those the
+/// devices before it delivered, `edges[..split]`, by stamp. Devices are
+/// drained one after another, so without this a batch carries one
+/// device's later edges before another's earlier ones, and the guard and
+/// the repeater take the edges in turn: a press placed before the release
+/// it followed reaches the repeater while that action is still held, and
+/// the press is lost. Each device's own order is kept whatever its stamps
+/// say, so a wall-clock step between a press and its release cannot swap
+/// them and leave the key held. Nothing is allocated unless both sides
+/// hold edges.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+pub fn merge_by_stamp(edges: &mut Vec<(KeyEdge, SystemTime)>, split: usize) {
+    if split == 0 || split == edges.len() {
+        return;
+    }
+    let later = edges.split_off(split);
+    let earlier = std::mem::replace(edges, Vec::with_capacity(split + later.len()));
+    let mut earlier = earlier.into_iter().peekable();
+    let mut later = later.into_iter().peekable();
+    while let (Some(&(_, before)), Some(&(_, after))) = (earlier.peek(), later.peek()) {
+        if after < before {
+            edges.extend(later.next());
+        } else {
+            edges.extend(earlier.next());
+        }
+    }
+    edges.extend(earlier);
+    edges.extend(later);
+}
+
 /// A second press of the same action closer than this to the accepted one
 /// is the same physical press arriving twice, not a deliberate second tap.
 pub const DUPLICATE_WINDOW: Duration = Duration::from_millis(40);
@@ -502,11 +532,12 @@ impl DuplicateGuard {
     /// An accepted press clears any release still owed, so a duplicate whose
     /// release never arrives cannot swallow a later genuine release.
     ///
-    /// The window reaches both ways from the accepted press. Devices are
-    /// drained one after another, so the second device's copy of a press
-    /// can carry an earlier stamp than the first's; and the stamps come
-    /// from the wall clock, which can step. A step larger than the window
-    /// lets one press through and the next accepted press re-anchors.
+    /// The window reaches both ways from the accepted press. A poll merges
+    /// what it drained by stamp, but a copy injected on one device just
+    /// after that device was read reaches the next poll behind the other
+    /// device's copy stamped later; and the stamps come from the wall
+    /// clock, which can step. A step larger than the window lets one press
+    /// through and the next accepted press re-anchors.
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     pub fn admit(&mut self, edge: KeyEdge, at: SystemTime) -> Option<KeyEdge> {
         match edge {
@@ -551,7 +582,7 @@ mod linux {
 
     use evdev::{Device, EventSummary};
 
-    use super::{action_for_key, key_edge, KeyEdge};
+    use super::{action_for_key, key_edge, merge_by_stamp, KeyEdge};
     use crate::error::{DegaussError, Result};
 
     /// What was opened, so Degauss can show whether it is actually
@@ -615,7 +646,7 @@ mod linux {
         }
 
         /// Drain whatever is waiting, each edge with the time the kernel
-        /// stamped on its event. Never blocks.
+        /// stamped on its event, in stamp order. Never blocks.
         pub fn poll(&mut self) -> Vec<(KeyEdge, SystemTime)> {
             let mut edges = Vec::new();
             for (_, device) in &mut self.devices {
@@ -624,6 +655,7 @@ mod linux {
                     // WouldBlock simply means nothing is waiting.
                     Err(_) => continue,
                 };
+                let drained = edges.len();
                 for event in events {
                     let at = event.timestamp();
                     if let EventSummary::Key(_, code, value) = event.destructure() {
@@ -635,6 +667,7 @@ mod linux {
                         }
                     }
                 }
+                merge_by_stamp(&mut edges, drained);
             }
             edges
         }
@@ -1478,13 +1511,31 @@ mod tests {
         }
 
         /// One loop iteration at `now` dispatching the edges one poll
-        /// drained, each stamped `at` milliseconds by the kernel.
+        /// drained from one device, each stamped `at` milliseconds by the
+        /// kernel.
         fn batch(&mut self, now: u64, edges: &[(KeyEdge, u64)]) -> Vec<Action> {
+            self.devices(now, &[edges])
+        }
+
+        /// One loop iteration at `now` dispatching the edges one poll
+        /// drained from several devices, given in the order the devices
+        /// were drained, merged as the poll merges them.
+        fn devices(&mut self, now: u64, drained: &[&[(KeyEdge, u64)]]) -> Vec<Action> {
             let now = self.t0 + ms(now);
+            let mut edges: Vec<(KeyEdge, SystemTime)> = Vec::new();
+            for device in drained {
+                let split = edges.len();
+                edges.extend(
+                    device
+                        .iter()
+                        .map(|&(edge, at)| (edge, SystemTime::UNIX_EPOCH + ms(at))),
+                );
+                merge_by_stamp(&mut edges, split);
+            }
             let mut dispatched = Vec::new();
-            for &(edge, at) in edges {
+            for (edge, at) in edges {
                 let edge = match &mut self.guard {
-                    Some(guard) => match guard.admit(edge, SystemTime::UNIX_EPOCH + ms(at)) {
+                    Some(guard) => match guard.admit(edge, at) {
                         Some(edge) => edge,
                         None => continue,
                     },
@@ -1661,10 +1712,12 @@ mod tests {
 
     #[test]
     fn a_second_device_stamped_earlier_is_still_the_same_press() {
-        // Devices are drained one after another, so the second device's
-        // copy of a press can carry an earlier stamp than the copy already
-        // accepted from the first. The window has to reach both ways or
-        // that copy would pass and move the selection again.
+        // Devices are drained one after another. A copy of a press
+        // injected on one device just after that device was read waits
+        // for the next poll, behind the other device's copy stamped a
+        // little later, so the copy already accepted can carry the later
+        // stamp. The window has to reach both ways or the earlier copy
+        // would pass and move the selection again.
         let mut guarded = Pipeline::guarded(Repeater::new(RepeatConfig::default()));
         assert_eq!(
             guarded.batch(
@@ -1672,11 +1725,19 @@ mod tests {
                 &[
                     (KeyEdge::Down(Action::Down), 12),
                     (KeyEdge::Up(Action::Down), 18),
+                ]
+            ),
+            vec![Action::Down]
+        );
+        assert_eq!(
+            guarded.batch(
+                36,
+                &[
                     (KeyEdge::Down(Action::Down), 10),
                     (KeyEdge::Up(Action::Down), 16),
                 ]
             ),
-            vec![Action::Down]
+            vec![]
         );
         assert!(!guarded.repeater.anything_held());
         assert_eq!(
@@ -1700,6 +1761,75 @@ mod tests {
             ]),
             vec![Action::Down, Action::Down],
             "the press at 970 ms is inside the window of the one at 960 ms"
+        );
+    }
+
+    #[test]
+    fn a_poll_batch_is_dispatched_in_stamp_order_across_devices() {
+        // Two devices report one press; the second copy is rejected and
+        // its release is owed. A frame then stalls across the genuine
+        // release and the next deliberate tap. The poll drains the first
+        // device, which holds that release and the new press, before the
+        // second, which holds the duplicate's release. In drain order the
+        // owed release swallows the genuine one, the new press reaches the
+        // repeater while it still holds the action and dispatches nothing,
+        // and the duplicate's release then ends the hold: a deliberate tap
+        // lost. In stamp order the two releases come first and the tap
+        // acts.
+        let mut guarded = Pipeline::guarded(Repeater::new(RepeatConfig::default()));
+        assert_eq!(
+            guarded.feed(&[
+                (KeyEdge::Down(Action::Down), 0),
+                (KeyEdge::Down(Action::Down), 2),
+            ]),
+            vec![Action::Down]
+        );
+        assert_eq!(
+            guarded.devices(
+                400,
+                &[
+                    &[
+                        (KeyEdge::Up(Action::Down), 300),
+                        (KeyEdge::Down(Action::Down), 350),
+                    ],
+                    &[(KeyEdge::Up(Action::Down), 302)],
+                ]
+            ),
+            vec![Action::Down],
+            "the tap at 350 ms must act whichever device was drained first"
+        );
+        assert!(
+            guarded.repeater.anything_held(),
+            "the tap at 350 ms is still held when the frame ends"
+        );
+        assert_eq!(guarded.edge(KeyEdge::Up(Action::Down), 500), None);
+        assert!(!guarded.repeater.anything_held());
+
+        // A device's own order is kept whatever its stamps say: the wall
+        // clock stepped back between a press and its release queued in
+        // one frame. Sorted on the stamps alone, the release would come
+        // first and the press would leave the key held.
+        let mut guarded = Pipeline::guarded(Repeater::new(RepeatConfig::default()));
+        assert_eq!(
+            guarded.devices(
+                1000,
+                &[
+                    &[
+                        (KeyEdge::Down(Action::Up), 1000),
+                        (KeyEdge::Up(Action::Up), 5)
+                    ],
+                    &[
+                        (KeyEdge::Down(Action::Down), 8),
+                        (KeyEdge::Up(Action::Down), 12)
+                    ],
+                ]
+            ),
+            vec![Action::Down, Action::Up],
+            "the other device's edges are merged in by stamp"
+        );
+        assert!(
+            !guarded.repeater.anything_held(),
+            "the release still follows its press"
         );
     }
 

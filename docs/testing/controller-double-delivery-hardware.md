@@ -24,6 +24,6 @@ Use a controller or input stack that delivers one press as two pairs.
 4. Hold a direction. The scroll starts after the initial delay, runs at the configured speed and stops on release; nothing keeps scrolling afterwards.
 5. Reverse direction quickly, and alternate left and right quickly. Every change of direction acts immediately.
 6. Hold X and Y for one second with their shortcuts enabled. Each shortcut fires once, and releasing the button afterwards does nothing.
-7. Connect the ordinary controller alongside the affected one and repeat the taps. One press is one action whichever controller sends it.
+7. Connect the ordinary controller alongside the affected one and repeat the taps. One press is one action whichever controller sends it. Repeat check 7 of the previous section with both connected: both deliberate taps move once the screen catches up.
 
 Record which controller and MiSTer input configuration was used and which checks were performed. A check not performed is not a pass.
