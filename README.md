@@ -883,11 +883,18 @@ making a request.
 
 Degauss rechecks a selected database when the system is entered. After Update
 All replaces a style or updates the database, leave and reopen the system to
-load the current files. A damaged database is reported as incomplete; a
-missing or invalid database remains selected and produces no stale or
-gamelist fallback data. Reconnect its storage, repair it through Update All,
-or choose **Gamelist**. Games remain browseable and launchable from their
-normal filesystem entries.
+load the current files. A damaged database is reported as incomplete once per
+database state: dismissing the warning writes it down in
+`artwork-pack-warnings.toml` beside `settings.toml`, so it does not come back
+after a game launch or a restart until the selected location, the database
+content, its health or its diagnostic changes. A missing or invalid database
+is reported again at every start of Degauss; it remains selected and produces
+no stale or gamelist fallback data. Reconnect its storage, repair it through
+Update All, or choose **Gamelist**. The complete diagnostic is still written
+to `/tmp/degauss.log` and printed by `--system <id> --report`; delete
+`artwork-pack-warnings.toml` and restart Degauss to see acknowledged warnings
+again. Games remain browseable and launchable from their normal filesystem
+entries.
 
 Only systems with a reviewed database mapping show **Game Data Source**.
 Currently supported systems are 3DO, Amiga CD32, Arcade, Atari 2600, Atari

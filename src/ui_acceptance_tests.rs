@@ -317,6 +317,19 @@ fn fixture_directory() -> PathBuf {
 }
 
 fn unopened_fixture_app(root: &Path, window: Rc<MinimalSoftwareWindow>, settings: Settings) -> App {
+    unopened_fixture_app_with_systems(root, window, settings, &["NES"], "games/NES")
+}
+
+/// The given systems, in that order, all over one games directory under
+/// the root: the members of a shared source group share their folder on
+/// the card.
+fn unopened_fixture_app_with_systems(
+    root: &Path,
+    window: Rc<MinimalSoftwareWindow>,
+    settings: Settings,
+    ids: &[&str],
+    games: &str,
+) -> App {
     let mut config = Config::parse("[app]", &root.join("degauss.toml")).unwrap();
     config.menu_root = root.to_string_lossy().into_owned();
     config.game_roots = vec![root.join("games").to_string_lossy().into_owned()];
@@ -325,18 +338,30 @@ fn unopened_fixture_app(root: &Path, window: Rc<MinimalSoftwareWindow>, settings
         Path::new("systems.toml"),
     )
     .unwrap();
-    let def = table.into_iter().find(|system| system.id == "NES").unwrap();
+    let defs: Vec<_> = ids
+        .iter()
+        .map(|id| {
+            table
+                .iter()
+                .find(|system| system.id == *id)
+                .unwrap()
+                .clone()
+        })
+        .collect();
     let loaded = Loaded {
         config,
         settings,
         settings_path: root.join("settings.toml"),
-        systems: vec![FoundSystem {
-            def: def.clone(),
-            paths: vec![root.join("games/NES")],
-            logo_dir: None,
-            menu_folder: None,
-        }],
-        table: vec![def],
+        systems: defs
+            .iter()
+            .map(|def| FoundSystem {
+                def: def.clone(),
+                paths: vec![root.join(games)],
+                logo_dir: None,
+                menu_folder: None,
+            })
+            .collect(),
+        table: defs,
         names: Default::default(),
         logo_dir: None,
         themes_dir: root.join("themes"),
@@ -3130,6 +3155,560 @@ fn run_auto_source_choice_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
     app.ui.hide().unwrap();
 }
 
+fn run_degraded_pack_acknowledgement_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
+    use crate::artwork_pack::ProviderHealth;
+    use crate::pack_health::Acknowledgements;
+
+    let root = root.join("degraded-pack-acknowledgement");
+    let games = root.join("games/NES");
+    let docs = root.join("docs");
+    let artwork = docs.join("NES/Artwork");
+    for directory in [&games, &artwork] {
+        std::fs::create_dir_all(directory).unwrap();
+    }
+    std::fs::write(games.join("Known.nes"), b"first rom").unwrap();
+    std::fs::write(games.join("Second.nes"), b"second rom").unwrap();
+    let write_manifest = |keys: &[&str]| {
+        let rows: String = keys
+            .iter()
+            .map(|key| format!("{key}\tbox-2D\t3\n"))
+            .collect();
+        std::fs::write(
+            artwork.join("manifest.tsv"),
+            format!("#key\tstyle\tss_system_id\n{rows}"),
+        )
+        .unwrap();
+    };
+    write_manifest(&["Known", "Second"]);
+    std::fs::write(
+        artwork.join("index.tsv"),
+        "#name\tcrc\tsize\tkey\nKnown\t\t\tKnown\nSecond\t\t\tSecond\n",
+    )
+    .unwrap();
+    std::fs::write(
+        artwork.join("gameinfo.tsv"),
+        "#key\tname\tyear\tgenre\tdeveloper\tplayers\nKnown\tPack First\t1990\tAction\tStudio\t1\nSecond\tPack Second\t1991\tPuzzle\tStudio\t2\n",
+    )
+    .unwrap();
+    for key in ["Known", "Second"] {
+        std::fs::write(artwork.join(format!("{key}.jpg")), crate::covers::JPEG_16).unwrap();
+    }
+    let settings_path = root.join("settings.toml");
+    let warnings = crate::pack_health::path_beside(&settings_path);
+    assert_eq!(warnings.parent(), settings_path.parent());
+    let mut settings = Settings::default();
+    settings
+        .artwork_pack_roots
+        .insert("NES".into(), docs.to_string_lossy().into_owned());
+    settings.save(&settings_path).unwrap();
+    // Every start reads the card afresh, as a return from a game does.
+    let start = |window: Rc<MinimalSoftwareWindow>| {
+        let mut app = unopened_fixture_app(&root, window, Settings::load(&settings_path).unwrap());
+        app.open_system_by_index(0);
+        assert!(
+            app.source_resolution.is_none() && app.source_job.is_none(),
+            "a headless open must also finish the resolution that a cache recovery restarts"
+        );
+        assert!(app.build.is_none());
+        assert_eq!(app.open_system.as_deref(), Some("NES"), "{:?}", app.message);
+        app.leave_splash();
+        app
+    };
+    let message_contains = |app: &App, text: &str| {
+        app.message
+            .as_deref()
+            .is_some_and(|message| message.contains(text))
+    };
+    // The overlay is small and names no file: the cause of a file that
+    // could not be read or written stays in the log. The cause is the one
+    // the read itself gives, whatever words it uses.
+    let names_the_file = |app: &App, cause: &str| {
+        message_contains(app, &warnings.display().to_string()) || message_contains(app, cause)
+    };
+    let malformed_cause = || {
+        Acknowledgements::load(&warnings)
+            .unwrap()
+            .malformed()
+            .expect("the file written as broken must read as malformed")
+            .to_string()
+    };
+    let reopen = |app: &mut App| {
+        app.handle(Action::Quit);
+        assert!(
+            app.open_system.is_none(),
+            "B on the top folder leaves the system"
+        );
+        app.open_system_by_index(0);
+        assert_eq!(app.open_system.as_deref(), Some("NES"), "{:?}", app.message);
+    };
+    let acknowledged = |group: &str, digest: &str| {
+        Acknowledgements::load(&warnings)
+            .unwrap()
+            .acknowledged(group, digest)
+    };
+    // The log is one file for every process on the host, appended to by
+    // whatever else runs; counted lines carry this fixture's path, so only
+    // this flow adds to them. Read as bytes: a stray byte from elsewhere is
+    // no reason to fail, and a log that cannot be read at all is named. A
+    // log nobody has started yet holds no lines.
+    let logged = |line: &str| {
+        let bytes = match std::fs::read(crate::LOG_PATH) {
+            Ok(bytes) => bytes,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+            Err(error) => panic!("{} could not be read: {error}", crate::LOG_PATH),
+        };
+        String::from_utf8_lossy(&bytes).matches(line).count()
+    };
+    // Writing the log is best effort and never stops the program, so a
+    // host where the file cannot be written would fail the counts below
+    // as if nothing had been logged. One probe line first: a missing probe
+    // is the environment, not the acknowledgement.
+    let probe = format!(
+        "degraded pack acknowledgement flow probe at {}",
+        docs.display()
+    );
+    let probed_before = logged(&probe);
+    crate::note(&probe);
+    assert_eq!(
+        logged(&probe),
+        probed_before + 1,
+        "{} must take what note() appends on this host; the log counts below depend on it",
+        crate::LOG_PATH
+    );
+
+    // 6. A complete pack: no warning, and nothing written down.
+    let app = start(window.clone());
+    assert_eq!(
+        app.artwork_provider.as_ref().unwrap().health,
+        ProviderHealth::Ready,
+        "{:?}",
+        app.artwork_provider.as_ref().unwrap().diagnostics
+    );
+    assert!(app.message.is_none(), "{:?}", app.message);
+    assert!(
+        !warnings.exists(),
+        "a Ready pack must not create the acknowledgement file"
+    );
+    app.ui.hide().unwrap();
+    drop(app);
+
+    // 1. The first look at an incomplete pack warns. Putting the warning up
+    // is not seeing it: a headless render opens a system the same way and
+    // nobody dismisses what it draws, so nothing is written down yet.
+    std::fs::remove_file(artwork.join("Second.jpg")).unwrap();
+    let app = start(window.clone());
+    assert_eq!(
+        app.artwork_provider.as_ref().unwrap().health,
+        ProviderHealth::Degraded
+    );
+    assert!(message_contains(&app, "is incomplete"), "{:?}", app.message);
+    let first_digest = app.artwork_provider.as_ref().unwrap().health_digest();
+    assert!(
+        !warnings.exists(),
+        "a warning nobody dismissed must not be written down"
+    );
+    app.ui.hide().unwrap();
+    drop(app);
+
+    // A press that takes another message off the screen, put up over the
+    // warning meanwhile, has not seen the warning: nothing is written down.
+    let mut app = start(window.clone());
+    assert!(message_contains(&app, "is incomplete"), "{:?}", app.message);
+    app.message = Some("Put up over the warning before any press".into());
+    app.handle(Action::Accept);
+    assert!(app.message.is_none(), "{:?}", app.message);
+    assert!(
+        !warnings.exists(),
+        "dismissing another message is not seeing the warning under it"
+    );
+    app.ui.hide().unwrap();
+    drop(app);
+
+    // The same pack in the next process: still not seen, so warned again;
+    // dismissing it is what writes it down.
+    let mut app = start(window.clone());
+    assert!(
+        message_contains(&app, "is incomplete"),
+        "an undismissed warning must come back: {:?}",
+        app.message
+    );
+    app.handle(Action::Accept);
+    assert!(app.message.is_none(), "{:?}", app.message);
+    assert!(
+        acknowledged("NES", &first_digest),
+        "the dismissed warning is written down beside settings.toml"
+    );
+    let first_file = std::fs::read_to_string(&warnings).unwrap();
+
+    // 2. Dismissed, left and re-entered in the same process: not again.
+    reopen(&mut app);
+    assert!(app.message.is_none(), "{:?}", app.message);
+    assert_eq!(std::fs::read_to_string(&warnings).unwrap(), first_file);
+
+    // 4. A new diagnostic on the same pack, noticed on re-entry, is a new
+    // warning even while the process that saw the old one is still running.
+    std::fs::remove_file(artwork.join("index.tsv")).unwrap();
+    reopen(&mut app);
+    assert!(message_contains(&app, "is incomplete"), "{:?}", app.message);
+    let no_index_digest = app.artwork_provider.as_ref().unwrap().health_digest();
+    assert_ne!(no_index_digest, first_digest);
+    assert!(app
+        .artwork_provider
+        .as_ref()
+        .unwrap()
+        .diagnostics
+        .iter()
+        .any(|diagnostic| diagnostic.contains("index.tsv is missing")));
+    assert_eq!(
+        std::fs::read_to_string(&warnings).unwrap(),
+        first_file,
+        "nothing is written until the new warning is dismissed"
+    );
+    app.handle(Action::Accept);
+    assert!(acknowledged("NES", &no_index_digest));
+    assert!(
+        !acknowledged("NES", &first_digest),
+        "one acknowledgement per source group: the old state is gone"
+    );
+    let no_index_file = std::fs::read_to_string(&warnings).unwrap();
+    let no_index_diagnostics = app.artwork_provider.as_ref().unwrap().diagnostics.clone();
+    assert_eq!(
+        no_index_diagnostics.len(),
+        2,
+        "a missing image and a missing table are two diagnostics: {no_index_diagnostics:?}"
+    );
+    app.ui.hide().unwrap();
+    drop(app);
+
+    // 3. Back from a game: a new process, the same pack, no warning. The
+    // log still gets the whole diagnostic, every part of it, acknowledged
+    // or not: the screen is quiet, the record is not. The warning just
+    // dismissed wrote the same line, so only one more line proves it.
+    let logged_line = format!(
+        "artwork pack Degraded at {}: {}",
+        docs.display(),
+        no_index_diagnostics.join("; ")
+    );
+    let logged_before = logged(&logged_line);
+    let app = start(window.clone());
+    assert!(
+        app.message.is_none(),
+        "an unchanged degraded pack must not warn again after a restart: {:?}",
+        app.message
+    );
+    let provider = app.artwork_provider.as_ref().unwrap();
+    assert_eq!(provider.health, ProviderHealth::Degraded);
+    assert_eq!(provider.diagnostics, no_index_diagnostics);
+    assert_eq!(
+        logged(&logged_line),
+        logged_before + 1,
+        "an acknowledged warning must still be written to {} in full: {logged_line:?}",
+        crate::LOG_PATH
+    );
+    assert_eq!(std::fs::read_to_string(&warnings).unwrap(), no_index_file);
+    app.ui.hide().unwrap();
+    drop(app);
+
+    // 4. Pack content updated without a new diagnostic: a well-formed row
+    // added to gameinfo.tsv changes only the source fingerprint, and that
+    // alone brings the warning back in a new process. Meanwhile the file
+    // on the card breaks after the warning went up, so the warning could
+    // not say so: the press that writes over it says it instead, on screen
+    // and in the log.
+    std::fs::write(
+        artwork.join("gameinfo.tsv"),
+        "#key\tname\tyear\tgenre\tdeveloper\tplayers\nKnown\tPack First\t1990\tAction\tStudio\t1\nSecond\tPack Second\t1991\tPuzzle\tStudio\t2\nExtra\tPack Extra\t1992\tAction\tStudio\t1\n",
+    )
+    .unwrap();
+    let malformed_line = |cause: &str| {
+        format!(
+            "artwork pack warnings: {} is malformed: {cause}",
+            warnings.display()
+        )
+    };
+    let mut app = start(window.clone());
+    assert!(
+        message_contains(&app, "is incomplete"),
+        "changed content with an unchanged diagnostic is a warning not yet seen: {:?}",
+        app.message
+    );
+    assert!(
+        !message_contains(&app, "could not be read"),
+        "the file was whole when the warning went up: {:?}",
+        app.message
+    );
+    let provider = app.artwork_provider.as_ref().unwrap();
+    assert_eq!(
+        provider.diagnostics, no_index_diagnostics,
+        "the diagnostic is unchanged; only the content is"
+    );
+    let extra_digest = provider.health_digest();
+    assert_ne!(extra_digest, no_index_digest);
+    std::fs::write(&warnings, "degraded = \"not a table").unwrap();
+    let cause = malformed_cause();
+    let malformed_before = logged(&malformed_line(&cause));
+    app.handle(Action::Accept);
+    assert!(
+        message_contains(&app, "remembered")
+            && message_contains(&app, "could not be read and was replaced"),
+        "a file that broke between the warning and the press is said at the press: {:?}",
+        app.message
+    );
+    assert!(
+        !names_the_file(&app, &cause),
+        "the press says the file was replaced, not the parse error or the path: {:?}",
+        app.message
+    );
+    assert_eq!(
+        logged(&malformed_line(&cause)),
+        malformed_before + 1,
+        "the replacement of a file that broke meanwhile must reach {} with its cause",
+        crate::LOG_PATH
+    );
+    assert!(
+        acknowledged("NES", &extra_digest),
+        "the broken file is replaced by a readable one"
+    );
+    app.handle(Action::Accept);
+    assert!(app.message.is_none(), "{:?}", app.message);
+    app.ui.hide().unwrap();
+    drop(app);
+
+    // 4. An updated manifest is another pack state: warned about once more.
+    // Meanwhile the file on the card was replaced by hand while this
+    // process runs (another group's acknowledgement, this one's gone): the
+    // save must start from what is on the card, not from what was read
+    // earlier, or the deletion is undone and the other group's entry lost.
+    write_manifest(&["Known", "Second", "Third"]);
+    let mut app = start(window.clone());
+    assert!(message_contains(&app, "is incomplete"), "{:?}", app.message);
+    let updated_digest = app.artwork_provider.as_ref().unwrap().health_digest();
+    assert_ne!(updated_digest, extra_digest);
+    let mut by_hand = Acknowledgements::default();
+    by_hand.acknowledge("SNES", "kept");
+    by_hand.save(&warnings).unwrap();
+    app.handle(Action::Accept);
+    assert!(app.message.is_none(), "{:?}", app.message);
+    assert!(acknowledged("NES", &updated_digest));
+    assert!(
+        acknowledged("SNES", "kept"),
+        "an entry written by hand while the program runs must survive the next save"
+    );
+    assert!(!acknowledged("NES", &extra_digest));
+    app.ui.hide().unwrap();
+    drop(app);
+
+    // 7. A broken acknowledgement file costs one more warning, nothing
+    // else; that warning says the file was set aside, and why, because the
+    // press that dismisses it writes over what was there.
+    std::fs::write(&warnings, "degraded = \"not a table").unwrap();
+    let cause = malformed_cause();
+    let malformed_before = logged(&malformed_line(&cause));
+    let mut app = start(window.clone());
+    assert!(message_contains(&app, "is incomplete"), "{:?}", app.message);
+    assert!(
+        message_contains(&app, "could not be read and will be replaced"),
+        "a file set aside as malformed must be said on screen: {:?}",
+        app.message
+    );
+    assert!(
+        !names_the_file(&app, &cause),
+        "the parse error and the path belong in the log, not on the overlay: {:?}",
+        app.message
+    );
+    app.handle(Action::Accept);
+    assert!(
+        acknowledged("NES", &updated_digest),
+        "the broken file is replaced by a readable one"
+    );
+    assert_eq!(
+        logged(&malformed_line(&cause)),
+        malformed_before + 1,
+        "one broken file is one line in {}, with its cause, not one per read of it",
+        crate::LOG_PATH
+    );
+    let acknowledged_file = std::fs::read_to_string(&warnings).unwrap();
+    app.ui.hide().unwrap();
+    drop(app);
+
+    // A file that is there but cannot be read is another matter: it may
+    // hold acknowledgements, so the warning is shown with the reason and
+    // nothing is written over it.
+    std::fs::remove_file(&warnings).unwrap();
+    std::fs::create_dir(&warnings).unwrap();
+    let cause = Acknowledgements::load(&warnings)
+        .expect_err("a directory in the file's place cannot be read")
+        .to_string();
+    let mut app = start(window.clone());
+    assert!(message_contains(&app, "is incomplete"), "{:?}", app.message);
+    assert!(
+        message_contains(&app, "cannot be remembered"),
+        "an unreadable file must be said on screen: {:?}",
+        app.message
+    );
+    assert!(
+        !names_the_file(&app, &cause),
+        "the read error and the path belong in the log, not on the overlay: {:?}",
+        app.message
+    );
+    app.handle(Action::Accept);
+    assert!(app.message.is_none(), "{:?}", app.message);
+    assert!(
+        warnings.is_dir(),
+        "an unreadable file must not be replaced by a fresh list"
+    );
+    app.ui.hide().unwrap();
+    drop(app);
+
+    // A dismissal whose acknowledgement cannot be written down is said on
+    // screen with its cause, and the warning comes back on the next start.
+    // The file is read again before the save, so a file turned into a
+    // directory after the warning went up fails at that read.
+    std::fs::remove_dir(&warnings).unwrap();
+    let mut app = start(window.clone());
+    assert!(message_contains(&app, "is incomplete"), "{:?}", app.message);
+    std::fs::create_dir(&warnings).unwrap();
+    app.handle(Action::Accept);
+    assert!(
+        message_contains(&app, "not remembered")
+            && message_contains(&app, "reading artwork pack warnings failed for"),
+        "a failed acknowledgement must say which step failed: {:?}",
+        app.message
+    );
+    app.handle(Action::Accept);
+    assert!(app.message.is_none(), "{:?}", app.message);
+    assert!(warnings.is_dir());
+    app.ui.hide().unwrap();
+    drop(app);
+    std::fs::remove_dir(&warnings).unwrap();
+    std::fs::write(&warnings, &acknowledged_file).unwrap();
+    let app = start(window.clone());
+    assert!(
+        app.message.is_none(),
+        "the acknowledgement put back reads as before: {:?}",
+        app.message
+    );
+    app.ui.hide().unwrap();
+    drop(app);
+
+    // 5. Invalid and unavailable packs need acting on: shown at every start,
+    // and never written down.
+    write_manifest(&["../escape"]);
+    for _ in 0..2 {
+        let mut app = start(window.clone());
+        assert_eq!(
+            app.artwork_provider.as_ref().unwrap().health,
+            ProviderHealth::Invalid
+        );
+        assert!(message_contains(&app, "is invalid"), "{:?}", app.message);
+        app.handle(Action::Accept);
+        app.ui.hide().unwrap();
+    }
+    std::fs::remove_dir_all(&artwork).unwrap();
+    for _ in 0..2 {
+        let mut app = start(window.clone());
+        assert_eq!(
+            app.artwork_provider.as_ref().unwrap().health,
+            ProviderHealth::Unavailable
+        );
+        assert!(
+            message_contains(&app, "is unavailable"),
+            "{:?}",
+            app.message
+        );
+        app.handle(Action::Accept);
+        app.ui.hide().unwrap();
+    }
+    assert_eq!(
+        std::fs::read_to_string(&warnings).unwrap(),
+        acknowledged_file,
+        "actionable failures leave the incomplete-pack acknowledgement alone"
+    );
+
+    // Two systems, one source: NeoGeo and NeoGeoMVS read the same NEOGEO
+    // pack, so its warning is one warning. Dismissed from one member, it
+    // must stay dismissed for the other in the next process.
+    let shared = root.join("shared-group");
+    let shared_games = shared.join("games/NEOGEO");
+    let shared_docs = shared.join("docs");
+    let shared_artwork = shared_docs.join("NEOGEO/Artwork");
+    for directory in [&shared_games, &shared_artwork] {
+        std::fs::create_dir_all(directory).unwrap();
+    }
+    std::fs::write(shared_games.join("One.neo"), b"first rom").unwrap();
+    std::fs::write(shared_games.join("Two.neo"), b"second rom").unwrap();
+    std::fs::write(
+        shared_artwork.join("manifest.tsv"),
+        "#key\tstyle\tss_system_id\nOne\tbox-2D\t142\nTwo\tbox-2D\t142\n",
+    )
+    .unwrap();
+    std::fs::write(
+        shared_artwork.join("index.tsv"),
+        "#name\tcrc\tsize\tkey\nOne\t\t\tOne\nTwo\t\t\tTwo\n",
+    )
+    .unwrap();
+    std::fs::write(
+        shared_artwork.join("gameinfo.tsv"),
+        "#key\tname\tyear\tgenre\tdeveloper\tplayers\nOne\tPack One\t1990\tAction\tStudio\t1\nTwo\tPack Two\t1991\tPuzzle\tStudio\t2\n",
+    )
+    .unwrap();
+    std::fs::write(shared_artwork.join("One.jpg"), crate::covers::JPEG_16).unwrap();
+    let shared_settings_path = shared.join("settings.toml");
+    let shared_warnings = crate::pack_health::path_beside(&shared_settings_path);
+    let mut shared_settings = Settings::default();
+    shared_settings
+        .artwork_pack_roots
+        .insert("NeoGeo".into(), shared_docs.to_string_lossy().into_owned());
+    shared_settings.save(&shared_settings_path).unwrap();
+    let start_member = |window: Rc<MinimalSoftwareWindow>, index: usize, id: &str| {
+        let mut app = unopened_fixture_app_with_systems(
+            &shared,
+            window,
+            Settings::load(&shared_settings_path).unwrap(),
+            &["NeoGeoMVS", "NeoGeo"],
+            "games/NEOGEO",
+        );
+        app.open_system_by_index(index);
+        assert!(app.source_resolution.is_none() && app.source_job.is_none());
+        assert!(app.build.is_none());
+        assert_eq!(app.open_system.as_deref(), Some(id), "{:?}", app.message);
+        assert_eq!(
+            app.artwork_provider.as_ref().unwrap().health,
+            ProviderHealth::Degraded,
+            "{:?}",
+            app.artwork_provider.as_ref().unwrap().diagnostics
+        );
+        app.leave_splash();
+        app
+    };
+    let mut app = start_member(window.clone(), 0, "NeoGeoMVS");
+    assert!(message_contains(&app, "is incomplete"), "{:?}", app.message);
+    let group_digest = app.artwork_provider.as_ref().unwrap().health_digest();
+    app.handle(Action::Accept);
+    assert!(app.message.is_none(), "{:?}", app.message);
+    let group_seen = Acknowledgements::load(&shared_warnings).unwrap();
+    assert!(
+        group_seen.acknowledged("NeoGeo", &group_digest),
+        "the acknowledgement is written under the source group, not the system"
+    );
+    assert!(!group_seen.acknowledged("NeoGeoMVS", &group_digest));
+    app.ui.hide().unwrap();
+    drop(app);
+    let app = start_member(window.clone(), 1, "NeoGeo");
+    assert_eq!(
+        app.artwork_provider.as_ref().unwrap().health_digest(),
+        group_digest,
+        "both members of the group read the same pack as the same snapshot"
+    );
+    assert!(
+        app.message.is_none(),
+        "a warning dismissed from the other member of the group must not come back: {:?}",
+        app.message
+    );
+    app.ui.hide().unwrap();
+    drop(app);
+}
+
 pub(super) fn run_ui_acceptance_flow(window: Rc<MinimalSoftwareWindow>) {
     let root = fixture_directory();
     std::fs::create_dir_all(root.join("games/NES")).unwrap();
@@ -3145,6 +3724,7 @@ pub(super) fn run_ui_acceptance_flow(window: Rc<MinimalSoftwareWindow>) {
     run_artwork_matte_flow(&root, window.clone());
     run_fresh_auto_pack_index_flow(&root, window.clone());
     run_auto_source_choice_flow(&root, window.clone());
+    run_degraded_pack_acknowledgement_flow(&root, window.clone());
     let mut app = fixture_app(&root, window.clone(), Settings::default());
     run_selected_controls_flow(&mut app);
     run_artwork_visibility_flow(&mut app);

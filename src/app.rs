@@ -1919,6 +1919,21 @@ struct IndexOverview {
     report: String,
 }
 
+/// An incomplete-pack warning on screen, written down once a press
+/// dismisses it and not before: a headless render never dismisses, and
+/// only the press says somebody saw it.
+struct PendingPackHealth {
+    group: String,
+    digest: String,
+    /// The text that was put up. A press that dismisses something else,
+    /// put up over it meanwhile, does not count as having seen this.
+    message: String,
+    /// Whether that text already says the acknowledgement file could not
+    /// be parsed and will be written over. A file that breaks after the
+    /// warning went up is only found at the press, which then has to say so.
+    malformed_announced: bool,
+}
+
 struct Building {
     /// Indices into `all_systems`, in reverse so the next one is popped.
     left: Vec<usize>,
@@ -2910,6 +2925,8 @@ pub struct App {
     /// A changed provider invalidates its group's entries so a new problem is
     /// still reported, while ordinary re-entry does not repeat the same modal.
     pack_health_shown: HashSet<String>,
+    /// The incomplete-pack warning waiting to be dismissed, if one is up.
+    pack_health_pending: Option<PendingPackHealth>,
     /// Set while the card is being read into the cache, a system at a time
     /// so the screen can say how far it has got.
     build: Option<Building>,
@@ -3231,6 +3248,7 @@ impl App {
             provider_recovery_needed: HashSet::new(),
             provider_validated: HashSet::new(),
             pack_health_shown: HashSet::new(),
+            pack_health_pending: None,
             build: None,
             index_return_screen: Screen::Browse,
             index_details: false,
@@ -5383,31 +5401,130 @@ impl App {
             return;
         }
         let group = crate::artwork_pack::source_group(&provider.system_id)
-            .unwrap_or(provider.system_id.as_str());
-        let detail = provider
-            .diagnostics
-            .first()
-            .map(String::as_str)
-            .unwrap_or("the selected installation could not be read");
-        let shown_key = format!(
-            "{group}\0{}\0{}\0{detail}",
-            provider.docs_root.display(),
-            provider.health.label()
-        );
+            .unwrap_or(provider.system_id.as_str())
+            .to_string();
+        let digest = provider.health_digest();
+        // The group prefix is what invalidating the group prunes on.
+        let shown_key = format!("{group}\0{digest}");
         if !self.pack_health_shown.insert(shown_key) {
             return;
         }
         let system = provider.system_id.clone();
         let root = provider.docs_root.display().to_string();
         let health = provider.health;
-        let detail = detail.to_string();
+        let detail = if provider.diagnostics.is_empty() {
+            "the selected installation could not be read".to_string()
+        } else {
+            provider.diagnostics.join("; ")
+        };
         crate::note(&format!(
             "artwork pack {} at {}: {detail}",
             health.label(),
             root
         ));
-        self.message = artwork_pack_health_message(&system, health);
+        let mut message = artwork_pack_health_message(&system, health);
+        // An incomplete pack is still usable, so its warning is worth one
+        // look per snapshot, not one per start: this program exits for every
+        // launch. Unavailable and invalid packs need acting on and are shown
+        // again on every start. The file is read each time and never kept
+        // in memory, so a deletion made while this program runs is not
+        // undone by the next save.
+        if health == crate::artwork_pack::ProviderHealth::Degraded {
+            let path = crate::pack_health::path_beside(&self.settings_path);
+            match crate::pack_health::Acknowledgements::load(&path) {
+                Ok(seen) if seen.acknowledged(&group, &digest) => return,
+                // A file that could not be parsed read as empty; the press
+                // that dismisses this warning writes over it, so say so
+                // here and why in the log. The read before that save is the
+                // same file and is not logged again unless it broke
+                // meanwhile.
+                Ok(seen) => {
+                    let malformed_announced = seen.malformed().is_some();
+                    if let Some(error) = seen.malformed() {
+                        crate::note(&format!(
+                            "artwork pack warnings: {} is malformed: {error}",
+                            path.display()
+                        ));
+                        message = message.map(|message| {
+                            format!(
+                                "{message}\n\nThe list of dismissed warnings could not be read and will be replaced; see degauss.log."
+                            )
+                        });
+                    }
+                    self.pack_health_pending = message.clone().map(|message| PendingPackHealth {
+                        group,
+                        digest,
+                        message,
+                        malformed_announced,
+                    });
+                }
+                // Nothing is written down over a file that could not be
+                // read: it may hold other groups' acknowledgements.
+                Err(error) => {
+                    crate::note(&format!("artwork pack warnings not read: {error}"));
+                    message = message.map(|message| {
+                        format!("{message}\n\nThis warning cannot be remembered; see degauss.log.")
+                    });
+                }
+            }
+        }
+        self.message = message;
         self.dirty = true;
+    }
+
+    /// The press that took an incomplete-pack warning off the screen: write
+    /// it down, so the next start does not put it up again. What is on disk
+    /// is read again first, so a deletion made while this program runs
+    /// stays deleted. A failure is said on screen with its cause, as a
+    /// settings save failure is. A file that broke after the warning went
+    /// up is said too, its cause in the log: the save writes over it, and
+    /// nothing else has said so.
+    fn acknowledge_pack_health(&mut self, dismissed: Option<&str>) {
+        let Some(pending) = self.pack_health_pending.take() else {
+            return;
+        };
+        if dismissed != Some(pending.message.as_str()) {
+            return;
+        }
+        let path = crate::pack_health::path_beside(&self.settings_path);
+        let outcome = crate::pack_health::Acknowledgements::load(&path).and_then(|mut seen| {
+            let replaced = seen
+                .malformed()
+                .filter(|_| !pending.malformed_announced)
+                .map(str::to_string);
+            seen.acknowledge(&pending.group, &pending.digest);
+            seen.save(&path).map(|outcome| (outcome, replaced))
+        });
+        match outcome {
+            Ok((outcome, replaced)) => {
+                let replaced = replaced.map(|error| {
+                    crate::note(&format!(
+                        "artwork pack warnings: {} is malformed: {error}",
+                        path.display()
+                    ));
+                    "The list of dismissed warnings could not be read and was replaced; see degauss.log."
+                        .to_string()
+                });
+                self.message = match (outcome, replaced) {
+                    (SaveOutcome::Durable, None) => None,
+                    (SaveOutcome::Durable, Some(replaced)) => {
+                        Some(format!("Artwork Pack warning remembered. {replaced}"))
+                    }
+                    (SaveOutcome::InstalledWithWarning(warning), replaced) => Some(format!(
+                        "Artwork Pack warning remembered, but durability could not be confirmed: {warning}{}",
+                        replaced.map(|replaced| format!("\n\n{replaced}")).unwrap_or_default()
+                    )),
+                };
+            }
+            Err(error) => {
+                crate::note(&format!(
+                    "artwork pack warning acknowledgement not saved: {error}"
+                ));
+                self.message = Some(format!(
+                    "Artwork Pack warning not remembered, so it returns on the next start: {error}"
+                ));
+            }
+        }
     }
 
     fn has_custom_view(&self) -> bool {
@@ -7471,8 +7588,9 @@ impl App {
             if self.scroll_message(action) {
                 return;
             }
-            self.message = None;
+            let dismissed = self.message.take();
             self.dirty = true;
+            self.acknowledge_pack_health(dismissed.as_deref());
             return;
         }
         let Some(editor) = self.theme_editor.as_mut() else {
@@ -11807,8 +11925,9 @@ impl App {
             if self.scroll_message(action) {
                 return None;
             }
-            self.message = None;
+            let dismissed = self.message.take();
             self.dirty = true;
+            self.acknowledge_pack_health(dismissed.as_deref());
             return None;
         }
 
@@ -13698,8 +13817,12 @@ impl App {
             self.poll_provider_job();
             self.start_provider_job_if_ready();
             self.poll_information();
+            // A finished cache recovery reopens its system through another
+            // source resolution; that one has to finish as well before the
+            // only frame is drawn.
             if self.build.is_none()
                 && self.information.is_none()
+                && self.source_resolution.is_none()
                 && self.source_job.is_none()
                 && self.provider_job.is_none()
                 && self.provider_requests.is_empty()
