@@ -1628,11 +1628,24 @@ enum WorkerMessage {
     Done,
 }
 
-// Report reasons for a game counted as not found: ScreenScraper answered
-// the lookup with no exact match, or no title search was sent because
-// nothing remained to search for.
-const NO_MATCH: &str = "no match";
-const NO_SEARCHABLE_TITLE: &str = "no searchable title";
+/// Why a game was counted as not found: ScreenScraper answered the lookup
+/// with no exact match, or no title search was sent because nothing
+/// remained to search for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NotFound {
+    NoMatch,
+    NoSearchableTitle,
+}
+
+impl NotFound {
+    /// The report row text.
+    fn reason(self) -> &'static str {
+        match self {
+            Self::NoMatch => "no match",
+            Self::NoSearchableTitle => "no searchable title",
+        }
+    }
+}
 
 struct Prepared {
     target: Target,
@@ -1642,8 +1655,7 @@ struct Prepared {
     media_error: Option<Error>,
     no_media: bool,
     ambiguous: Option<usize>,
-    /// The report reason when the game was counted as not found.
-    not_found: Option<&'static str>,
+    not_found: Option<NotFound>,
     alternatives: Vec<Match>,
 }
 
@@ -1765,7 +1777,7 @@ fn prepare(
             media_error: None,
             no_media: false,
             ambiguous: None,
-            not_found: Some(NO_SEARCHABLE_TITLE),
+            not_found: Some(NotFound::NoSearchableTitle),
             alternatives: Vec::new(),
         });
     };
@@ -1783,7 +1795,7 @@ fn prepare(
             media_error: None,
             no_media: false,
             ambiguous: None,
-            not_found: Some(NO_MATCH),
+            not_found: Some(NotFound::NoMatch),
             alternatives,
         }),
         Lookup::Ambiguous(count) => Ok(Prepared {
@@ -1969,20 +1981,23 @@ fn stage(
     target_label: &str,
     progress: &mut Progress,
 ) -> Result<Option<Pending>> {
-    if let Some(reason) = prepared.not_found {
+    if let Some(not_found) = prepared.not_found {
         // A file with no searchable title was never sent to ScreenScraper,
         // so the log names that reason rather than a miss that did not
         // happen.
-        if reason == NO_SEARCHABLE_TITLE {
-            log_scraper_detail(target_label, "no searchable title; skipped");
-        } else {
-            log_scraper_detail(target_label, "no exact ScreenScraper match; skipped");
+        match not_found {
+            NotFound::NoMatch => {
+                log_scraper_detail(target_label, "no exact ScreenScraper match; skipped");
+            }
+            NotFound::NoSearchableTitle => {
+                log_scraper_detail(target_label, "no searchable title; skipped");
+            }
         }
         if !prepared.alternatives.is_empty() {
             progress.manual_matches = prepared.alternatives;
         }
         progress.not_found += 1;
-        progress.unresolved(target_label, reason);
+        progress.unresolved(target_label, not_found.reason());
         return Ok(None);
     }
     if let Some(count) = prepared.ambiguous {

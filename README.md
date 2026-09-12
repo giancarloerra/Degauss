@@ -919,7 +919,7 @@ policies for pictures and metadata:
 | **Images: Missing only** | Keeps the effective `<image>`, `<screenshot>` or `<thumbnail>` when its file exists, and fetches a picture only when artwork is absent or broken. |
 | **Images: Replace existing** | Downloads the selected ScreenScraper media and makes it the entry's `<image>`. The previous media file is not overwritten or deleted. |
 | **Metadata: Off** | Never changes metadata. |
-| **Metadata: Fill missing** | Fills empty fields and preserves every non-empty local or inherited value. A folder, system or all-systems run treats an entry with any stored field as complete; **Scrape This Game** and **Search Manually** fill its empty fields one by one. |
+| **Metadata: Fill missing** | Fills empty fields and preserves every non-empty local or inherited value. A folder, system or all-systems run treats an entry with any non-empty local or inherited field as complete; **Scrape This Game** and **Search Manually** fill its empty fields one by one. |
 | **Metadata: Replace existing** | Replaces only fields ScreenScraper actually returned. A missing upstream value never erases a local one. |
 
 Both settings cannot be Off when a scrape starts. The metadata fields are
@@ -930,16 +930,16 @@ Pictures and metadata are checked independently before any ScreenScraper
 request. Under **Images: Missing only** a picture is requested only when the
 effective image is absent or its file does not exist. In a folder, system or
 all-systems run, **Metadata: Fill missing** requests metadata only when every
-one of the eight fields is empty: a game with an existing picture and at least
-one stored field is skipped without a request, so a blank language, publisher
-or other optional field does not send the same games back on every run. An
-entry with metadata but no picture receives only its picture; an entry with a
-picture but no metadata receives only metadata, and its picture is not
-downloaded again. **Scrape This Game** and **Search Manually** keep filling
-individual empty fields, because choosing one game is permission to complete
-that record field by field; a field ScreenScraper does not supply remains
-blank and is retried on the next single-game scrape. **Replace existing**
-requests and replaces the selected data as before.
+one of the eight fields is empty: a game with an existing picture and at
+least one non-empty local or inherited field is skipped without a request, so
+a blank language, publisher or other optional field does not send the same
+games back on every run. An entry with metadata but no picture receives only
+its picture; an entry with a picture but no metadata receives only metadata,
+and its picture is not downloaded again. **Scrape This Game** and **Search
+Manually** keep filling individual empty fields, because choosing one game is
+permission to complete that record field by field; a field ScreenScraper does
+not supply remains blank and is retried on the next single-game scrape.
+**Replace existing** requests and replaces the selected data as before.
 
 Ordinary ROM files are matched by CRC32, MD5 and SHA-1 when they are no more
 than 64 MiB. Larger files, archives, `.mgl`, `.mra` and other wrappers use an
@@ -968,7 +968,9 @@ and ambiguous ScreenScraper matches are counted, skipped without changes, and th
 games continue. A request ScreenScraper rejects for one game (HTTP 400 or one
 of its documented texts about that game's rom name or hash fields) or a
 ScreenScraper XML answer it serves unreadable is counted as failed for that
-game and the run continues; a file whose name leaves nothing to search for
+game and the run continues; a picture request it rejects the same way keeps
+the metadata already fetched for that game, which is written, and lists the
+game with the picture error. A file whose name leaves nothing to search for
 once its extension and dump tags are removed is counted as missing with the
 reason "no searchable title" and no title search is sent, although a hash
 lookup is still made for a file that can be hashed. A network failure, a

@@ -48,9 +48,10 @@ pub enum Eligibility {
 pub enum FillCompleteness {
     /// One explicitly chosen game: any empty field is worth a lookup.
     EveryField,
-    /// Folder, system and all-systems batches: any stored field completes
-    /// the entry, so optional fields ScreenScraper never supplies do not
-    /// send the same game back on every run.
+    /// Folder, system and all-systems batches: any non-empty field, local
+    /// or inherited from the parent entry, completes the entry, so optional
+    /// fields ScreenScraper never supplies do not send the same game back
+    /// on every run.
     AnyField,
 }
 
