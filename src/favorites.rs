@@ -278,7 +278,7 @@ pub fn reference_of_with_systems(
                         && crate::neogeo::set_like_name(Path::new(&raw))))
                 && (rbf.starts_with("_RA_Cores/Cores/")
                     && set.is_some_and(|s| s.eq_ignore_ascii_case(core))
-                    || match (system.to_config().setname.as_deref(), set) {
+                    || match (config.setname.as_deref(), set) {
                         (Some(expected), Some(actual)) => expected.eq_ignore_ascii_case(actual),
                         (None, None) => true,
                         (None, Some(actual)) => actual.eq_ignore_ascii_case(core),
