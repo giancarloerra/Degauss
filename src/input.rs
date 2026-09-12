@@ -71,12 +71,8 @@ pub enum Action {
 }
 
 impl Action {
-    /// Every variant in declaration order. The [`DuplicateGuard`] sizes its
-    /// table from this list and indexes it by discriminant. The check under
-    /// it proves the listed variants sit at their own discriminants and
-    /// refuses a variant that has no arm in its match; it cannot see a
-    /// variant that has an arm but no entry here, so append the entry with
-    /// the arm, or the first press of that variant indexes past the table.
+    /// Every variant in declaration order; sizes the [`DuplicateGuard`]
+    /// table, see the check under `ACTION_SLOTS`.
     pub const ALL: [Action; 15] = [
         Action::Up,
         Action::Down,
@@ -455,8 +451,9 @@ const ACTION_SLOTS: usize = Action::ALL.len();
 // `Action::ALL` must hold every variant at its own discriminant, or the
 // guard would index past its table on the first press of the missing one.
 // The match is exhaustive: a variant added to the enum does not compile
-// until it has an arm here, and the arm is only right once the variant is
-// appended to `ALL` as well.
+// until it has an arm here, and the assertion refuses a list out of
+// declaration order. What the check cannot see is a variant that has an
+// arm but no entry in `ALL`, so append the entry with the arm.
 const _: () = {
     let mut i = 0;
     while i < ACTION_SLOTS {
@@ -2033,9 +2030,11 @@ mod tests {
     fn face_buttons_act_once_per_physical_press_with_and_without_hold_shortcuts() {
         // The repeater does not retain Accept, Back, Menu or Context, so
         // without the guard a double delivery launches twice or backs out
-        // two levels. With a hold shortcut enabled the duplicate press must
-        // neither fire the shortcut twice nor let a release leak the short
-        // action into the screen the shortcut opened.
+        // two levels. With a hold shortcut enabled the repeater retains the
+        // button, so a second press while it is held is already ignored;
+        // what the guard adds is that the duplicate's release cannot end
+        // the hold as a short press before the shortcut fires, and no
+        // release afterwards may leak into the screen the shortcut opened.
         for action in [Action::Accept, Action::Quit, Action::Menu, Action::Context] {
             let mut unguarded = Pipeline::unguarded(Repeater::new(RepeatConfig::default()));
             assert_eq!(
@@ -2060,10 +2059,32 @@ mod tests {
                 Action::RandomShortcut,
             ),
         ] {
+            // Two devices report the press, and the duplicate's release
+            // arrives while the button is still held.
+            let mut unguarded = Pipeline::unguarded(Repeater::new(RepeatConfig::default()));
+            enable(&mut unguarded.repeater, true);
+            assert_eq!(
+                unguarded.feed(&[
+                    (KeyEdge::Down(button), 0),
+                    (KeyEdge::Down(button), 5),
+                    (KeyEdge::Up(button), 8),
+                ]),
+                vec![button],
+                "the repeater alone takes the duplicate's release as a short {button:?}"
+            );
+            assert!(
+                unguarded.tick(1000).is_empty(),
+                "and the hold it ended never fires the shortcut"
+            );
+
             let mut guarded = Pipeline::guarded(Repeater::new(RepeatConfig::default()));
             enable(&mut guarded.repeater, true);
             assert_eq!(
-                guarded.feed(&[(KeyEdge::Down(button), 0), (KeyEdge::Down(button), 5)]),
+                guarded.feed(&[
+                    (KeyEdge::Down(button), 0),
+                    (KeyEdge::Down(button), 5),
+                    (KeyEdge::Up(button), 8),
+                ]),
                 vec![]
             );
             assert_eq!(
@@ -2075,9 +2096,9 @@ mod tests {
             // The shortcut opened another screen, which disables the gesture.
             enable(&mut guarded.repeater, false);
             assert_eq!(
-                guarded.feed(&[(KeyEdge::Up(button), 1010), (KeyEdge::Up(button), 1012)]),
-                vec![],
-                "neither release may act on the new screen"
+                guarded.edge(KeyEdge::Up(button), 1010),
+                None,
+                "the release may not act on the new screen"
             );
             assert!(!guarded.repeater.anything_held());
 
@@ -2107,9 +2128,10 @@ mod tests {
     #[test]
     fn ordinary_taps_and_holds_are_unchanged_without_duplicate_delivery() {
         // A keyboard or controller that delivers each press once must feel
-        // exactly as before: every tap acts, and a hold repeats on the same
-        // schedule as a repeater with no guard in front of it. The two
-        // shortcuts are left out: only the repeater produces them.
+        // exactly as before: every tap acts, and a hold starts on the
+        // press, repeats what the delay and interval give and ends on the
+        // release. The two shortcuts are left out: only the repeater
+        // produces them.
         let actions: Vec<Action> = Action::ALL
             .into_iter()
             .filter(|action| !matches!(action, Action::FavoriteShortcut | Action::RandomShortcut))
@@ -2126,24 +2148,23 @@ mod tests {
         assert_eq!(guarded.feed(&taps), actions);
         assert!(!guarded.repeater.anything_held());
 
-        let mut guarded = Pipeline::guarded(Repeater::new(RepeatConfig::default()));
-        let mut unguarded = Pipeline::unguarded(Repeater::new(RepeatConfig::default()));
+        let config = RepeatConfig::default();
+        let mut guarded = Pipeline::guarded(Repeater::new(config));
         assert_eq!(
             guarded.edge(KeyEdge::Down(Action::Down), 0),
-            unguarded.edge(KeyEdge::Down(Action::Down), 0)
+            Some(Action::Down)
         );
         let mut fired = 0;
-        for at in (0..=500).step_by(10) {
-            let due = guarded.tick(at);
-            assert_eq!(due, unguarded.tick(at), "tick at {at} ms");
-            fired += due.len();
+        for at in 0..=500 {
+            fired += guarded.tick(at).len();
         }
-        assert!(fired > 1, "a 500 ms hold must have repeated");
+        let expected = 1 + (500 - config.delay.as_millis()) / config.interval.as_millis();
         assert_eq!(
-            guarded.edge(KeyEdge::Up(Action::Down), 500),
-            unguarded.edge(KeyEdge::Up(Action::Down), 500)
+            fired, expected as usize,
+            "a 500 ms hold repeats what the delay and the interval give"
         );
+        assert_eq!(guarded.edge(KeyEdge::Up(Action::Down), 500), None);
         assert!(!guarded.repeater.anything_held());
-        assert!(!unguarded.repeater.anything_held());
+        assert!(guarded.tick(1000).is_empty());
     }
 }
