@@ -965,19 +965,20 @@ artwork or metadata, set the corresponding Images or Metadata policy to
 
 Folder, system and all-systems scrapes never stop for a match choice. Missing
 and ambiguous ScreenScraper matches are counted, skipped without changes, and the remaining
-games continue. A search ScreenScraper rejects for one game, or an answer it
-serves unreadable for one game, is counted as failed for that game and the
-run continues. If only the picture request is rejected, any metadata the run
-was also asked to fill for that game is still written and the game is listed
-with the picture error; a game whose metadata was already complete is only
-listed. A file whose name leaves nothing to search for once its extension
-and dump tags are removed is counted as missing with the reason "no
-searchable title" and no title search is sent, although a hash lookup is
-still made for a file that can be hashed. A network failure, a rejected
-login, a rate limit, a service outage, a refused client, an exhausted
-allowance, a request address reported as incomplete (Degauss sends the same
-fields for every game) or an answer that is not a ScreenScraper answer at
-all, such as a maintenance or intermediary page, stops the run. The log
+games continue. A search ScreenScraper rejects for one game, or a genuine
+ScreenScraper answer for one game whose content cannot be read, is counted
+as failed for that game and the run continues. If only the picture request
+is rejected, any metadata the run was also asked to fill for that game is
+still written and the game is listed with the picture error; a game whose
+metadata was already complete is only listed. A file whose name leaves
+nothing to search for once its extension and dump tags are removed is
+counted as missing with the reason "no searchable title" and no title search
+is sent, although a hash lookup is still made for a file that can be hashed.
+A network failure, a rejected login, a rate limit, a service outage, a
+refused client, an exhausted allowance, a request address reported as
+incomplete (Degauss sends the same fields for every game) or a response that
+is not a ScreenScraper answer at all (an empty body, a body that is neither
+text nor XML, or a maintenance or intermediary page) stops the run. The log
 names the rejection or page behind each of these. Unsupported systems are
 also skipped and counted. If two systems use the same folder but require
 different ScreenScraper platform IDs, the all-systems scrape skips that
