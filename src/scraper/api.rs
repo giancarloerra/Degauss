@@ -563,8 +563,8 @@ impl Client {
         let response = self
             .transport
             .get("ssuserInfos.php", &self.auth(), MAX_XML_BYTES)?;
-        response_status(&response)?;
-        content_is_xml(&response)?;
+        response_status(&response, Answer::Account)?;
+        content_is_xml(&response, Answer::Account)?;
         parse(
             &response.body,
             self.region.as_deref(),
@@ -624,7 +624,7 @@ impl Client {
             ("sha1".into(), hashes.sha1.clone()),
         ]);
         let response = self.transport.get("jeuInfos.php", &params, MAX_XML_BYTES)?;
-        match response_status(&response) {
+        match response_status(&response, Answer::Lookup) {
             Err(error) if error.kind == ErrorKind::NotFound => {
                 return Ok(LookupResponse {
                     lookup: Lookup::NotFound,
@@ -636,7 +636,7 @@ impl Client {
             Err(error) => return Err(error),
             Ok(()) => {}
         }
-        if let Err(error) = content_is_xml(&response) {
+        if let Err(error) = content_is_xml(&response, Answer::Lookup) {
             if error.kind == ErrorKind::NotFound {
                 return Ok(LookupResponse {
                     lookup: Lookup::NotFound,
@@ -711,7 +711,7 @@ impl Client {
         let response = self
             .transport
             .get("jeuRecherche.php", &params, MAX_XML_BYTES)?;
-        match response_status(&response) {
+        match response_status(&response, Answer::Lookup) {
             Err(error) if error.kind == ErrorKind::NotFound => {
                 return Ok(LookupResponse {
                     lookup: Lookup::NotFound,
@@ -723,7 +723,7 @@ impl Client {
             Err(error) => return Err(error),
             Ok(()) => {}
         }
-        if let Err(error) = content_is_xml(&response) {
+        if let Err(error) = content_is_xml(&response, Answer::Lookup) {
             if error.kind == ErrorKind::NotFound {
                 return Ok(LookupResponse {
                     lookup: Lookup::NotFound,
@@ -790,7 +790,7 @@ impl Client {
 
     pub fn media(&self, media: &Media, limit: u64) -> Result<HttpResponse> {
         let response = self.transport.get_media(&media.url, limit, None)?;
-        response_status(&response)?;
+        response_status(&response, Answer::Media)?;
         if std::str::from_utf8(&response.body)
             .ok()
             .is_some_and(|text| text.trim().eq_ignore_ascii_case("NOMEDIA"))
@@ -914,16 +914,24 @@ pub struct LookupResponse {
     pub server_miss: bool,
 }
 
+/// What a response answers, which decides whose problem a rejection is:
+/// a lookup's concerns the one game, the account check runs before any
+/// game, and a media transfer answers with an image rather than text.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Answer {
+    /// `jeuInfos.php` or `jeuRecherche.php` for one game.
+    Lookup,
+    /// `ssuserInfos.php` before the run.
+    Account,
+    /// An image download for a matched game.
+    Media,
+}
+
+/// The meaning of an HTTP status other than 400, which `rejected_request`
+/// classifies from the body.
 fn status(code: u16) -> Result<()> {
     match code {
         200..=299 => Ok(()),
-        // ScreenScraper documents 400 only for problems with the one
-        // request (a rom name carrying a path, a bad hash, missing fields),
-        // so it stops that game rather than the run.
-        400 => Err(Error::new(
-            ErrorKind::InvalidRequest,
-            "ScreenScraper rejected the request parameters (HTTP 400)",
-        )),
         401 | 423 => Err(Error::new(
             ErrorKind::Unavailable,
             format!("ScreenScraper is temporarily closed (HTTP {code})"),
@@ -972,16 +980,18 @@ fn status(code: u16) -> Result<()> {
 /// allowance, a refused client) stops the run instead of passing as one
 /// game's rejection, a per-request text keeps the server's words in its
 /// detail and a not-found text is that game's miss. An unrecognised text
-/// under HTTP 400 keeps the status's per-game meaning, with the server's
-/// words in the detail so the log shows what was rejected.
-fn response_status(response: &HttpResponse) -> Result<()> {
-    if let Ok(text) = std::str::from_utf8(&response.body) {
-        let trimmed = text.trim_start_matches('\u{feff}').trim_start();
+/// under HTTP 400 keeps the status's meaning for `answer`, with the
+/// server's words in the detail so the log shows what was rejected.
+fn response_status(response: &HttpResponse, answer: Answer) -> Result<()> {
+    let text = std::str::from_utf8(&response.body)
+        .ok()
+        .map(|text| text.trim_start_matches('\u{feff}').trim_start());
+    if let Some(trimmed) = text {
         let lower = trimmed.to_lowercase();
         if lower.starts_with("erreur") {
             let documented = documented_error(&lower, trimmed);
             let documented_under_400 = response.status == 400 && documented.is_some();
-            let body_error = documented.unwrap_or_else(|| unrecognised_error(trimmed));
+            let body_error = documented.unwrap_or_else(|| unrecognised_error(trimmed, answer));
             if response.status < 300
                 || body_error.kind == ErrorKind::Authentication
                 || documented_under_400
@@ -997,29 +1007,67 @@ fn response_status(response: &HttpResponse) -> Result<()> {
                 });
                 return Err(body_error);
             }
-            if response.status == 400 {
-                return Err(Error::new(
-                    ErrorKind::InvalidRequest,
-                    format!(
-                        "ScreenScraper rejected the request parameters (HTTP 400): {}",
-                        excerpt(trimmed)
-                    ),
-                ));
-            }
         }
     }
-    status(response.status)
+    match response.status {
+        400 => Err(rejected_request(response, text, answer)),
+        code => status(code),
+    }
 }
 
-fn content_is_xml(response: &HttpResponse) -> Result<()> {
+/// HTTP 400. ScreenScraper documents it only for problems with the one
+/// request (a rom name carrying a path, a bad hash, missing fields) and
+/// answers it with an error text, so on a lookup or a media transfer it
+/// stops that game rather than the run, with the server's words in the
+/// detail; the account check sends only the credential fields, so a 400
+/// there is a setup fault, as before. The XML endpoints answer HTTP 400
+/// with text: a page, an empty body or a body that is not text under that
+/// status is an intermediary's answer, not ScreenScraper's, and stops the
+/// run as it would on a successful status. An image transfer answers with
+/// bytes, so that rule does not apply to it.
+fn rejected_request(response: &HttpResponse, text: Option<&str>, answer: Answer) -> Error {
+    let text = text.map(str::trim).filter(|text| !text.is_empty());
+    let kind = match answer {
+        Answer::Account => ErrorKind::Configuration,
+        Answer::Lookup | Answer::Media => ErrorKind::InvalidRequest,
+    };
+    if answer != Answer::Media {
+        if let Some(content_type) = page_content_type(response) {
+            return not_an_answer(&format!(
+                "content type {} under HTTP 400",
+                excerpt(content_type)
+            ));
+        }
+        if text.is_none() {
+            return not_an_answer("no error text under HTTP 400");
+        }
+    }
+    let rejected = "ScreenScraper rejected the request parameters (HTTP 400)";
+    Error::new(
+        kind,
+        match text {
+            Some(text) => format!("{rejected}: {}", excerpt(text)),
+            None => rejected.into(),
+        },
+    )
+}
+
+/// The content type of a body that is neither XML nor plain text: a
+/// maintenance or intermediary page rather than a ScreenScraper answer.
+fn page_content_type(response: &HttpResponse) -> Option<&str> {
+    response.content_type.as_deref().filter(|value| {
+        let value = value.to_ascii_lowercase();
+        !value.contains("xml") && !value.starts_with("text/plain")
+    })
+}
+
+fn content_is_xml(response: &HttpResponse, answer: Answer) -> Result<()> {
     // ScreenScraper answers with XML or a plain-text error. Any other
     // content type (a maintenance or intermediary page) is not an answer
     // to the one request, so it counts as the service being unavailable
-    // rather than as one game's unreadable match.
-    if let Some(content_type) = response.content_type.as_deref().filter(|value| {
-        let value = value.to_ascii_lowercase();
-        !value.contains("xml") && !value.starts_with("text/plain")
-    }) {
+    // rather than as one game's unreadable match. So does a body that is
+    // not text at all: no `<Data>` answer can be read from it.
+    if let Some(content_type) = page_content_type(response) {
         return Err(Error::new(
             ErrorKind::Unavailable,
             format!(
@@ -1028,20 +1076,15 @@ fn content_is_xml(response: &HttpResponse) -> Result<()> {
             ),
         ));
     }
-    let text = std::str::from_utf8(&response.body).map_err(|_| {
-        Error::new(
-            ErrorKind::MalformedResponse,
-            "ScreenScraper returned non-UTF-8 XML",
-        )
-    })?;
+    let text = std::str::from_utf8(&response.body).map_err(|_| not_an_answer("non-UTF-8 body"))?;
     let trimmed = text.trim_start_matches('\u{feff}').trim_start();
     if !trimmed.starts_with('<') {
-        return Err(text_error(trimmed));
+        return Err(text_error(trimmed, answer));
     }
     Ok(())
 }
 
-fn text_error(text: &str) -> Error {
+fn text_error(text: &str, answer: Answer) -> Error {
     if text.trim().is_empty() {
         return Error::new(
             ErrorKind::Unavailable,
@@ -1050,7 +1093,7 @@ fn text_error(text: &str) -> Error {
     }
     let lower = text.to_lowercase();
     if lower.starts_with("erreur") {
-        return documented_error(&lower, text).unwrap_or_else(|| unrecognised_error(text));
+        return documented_error(&lower, text).unwrap_or_else(|| unrecognised_error(text, answer));
     }
     // Neither XML nor an error text is not an answer to the one request
     // (a maintenance notice), so the run stops.
@@ -1142,18 +1185,29 @@ fn documented_error(lower: &str, text: &str) -> Option<Error> {
     None
 }
 
-/// An error text ScreenScraper has not documented cannot be tied to the
-/// one request, so it stops the run as before rather than costing one
-/// lookup per remaining game; the log keeps the server's words so the
-/// cause stays diagnosable.
-fn unrecognised_error(text: &str) -> Error {
-    Error::new(
-        ErrorKind::Unavailable,
-        format!(
-            "ScreenScraper returned an unrecognised error response: {}",
-            excerpt(text)
+/// An error text ScreenScraper has not documented. On a lookup it is that
+/// game's rejection, the invalid search the batch must continue past,
+/// with the server's words in the detail; a service-wide text present
+/// when the run starts still stops it at the account check, which runs
+/// before any game, and a media transfer is not a search, so both keep
+/// the outage classification.
+fn unrecognised_error(text: &str, answer: Answer) -> Error {
+    match answer {
+        Answer::Lookup => Error::new(
+            ErrorKind::InvalidRequest,
+            format!(
+                "ScreenScraper rejected this request (unrecognised error text): {}",
+                excerpt(text)
+            ),
         ),
-    )
+        Answer::Account | Answer::Media => Error::new(
+            ErrorKind::Unavailable,
+            format!(
+                "ScreenScraper returned an unrecognised error response: {}",
+                excerpt(text)
+            ),
+        ),
+    }
 }
 
 /// One bounded line of a server text for the log. The documented error
@@ -1930,6 +1984,8 @@ mod tests {
 
     #[test]
     fn every_documented_status_has_a_specific_meaning() {
+        // HTTP 400 is classified from its body, so every status goes
+        // through `response_status` with a text that is no error text.
         for (code, kind) in [
             (400, ErrorKind::InvalidRequest),
             (401, ErrorKind::Unavailable),
@@ -1942,7 +1998,15 @@ mod tests {
             (431, ErrorKind::FailedQuota),
             (503, ErrorKind::Server),
         ] {
-            let error = status(code).unwrap_err();
+            let error = response_status(
+                &HttpResponse {
+                    status: code,
+                    content_type: Some("text/plain".into()),
+                    body: b"Rejected".to_vec(),
+                },
+                Answer::Lookup,
+            )
+            .unwrap_err();
             assert_eq!(error.kind, kind);
             assert!(
                 error.detail.contains(&code.to_string()),
@@ -2260,7 +2324,8 @@ mod tests {
         // like an answer, so the content type alone cannot tell it apart.
         // Without the root check it would count as one game's unreadable
         // match and a batch would spend one lookup per remaining game
-        // against a service that is not answering.
+        // against a service that is not answering. A body that is not
+        // text at all carries no `<Data>` root either.
         let hashes = Hashes {
             size: 3,
             crc32: "352441C2".into(),
@@ -2268,24 +2333,30 @@ mod tests {
             sha1: "A9993E364706816ABA3E25717850C26C9CD0D89D".into(),
         };
         for (content_type, body) in [
-            (None, "<html><body>Maintenance</body></html>"),
+            (None, &b"<html><body>Maintenance</body></html>"[..]),
             (
                 Some("application/xml"),
-                "<html><body>Maintenance</body></html>",
+                &b"<html><body>Maintenance</body></html>"[..],
             ),
-            (None, "<!DOCTYPE html><html><body><p>Maintenance</html>"),
+            (
+                None,
+                &b"<!DOCTYPE html><html><body><p>Maintenance</html>"[..],
+            ),
             (
                 Some("text/xml"),
-                "<?xml version='1.0'?><Response>busy</Response>",
+                &b"<?xml version='1.0'?><Response>busy</Response>"[..],
             ),
-            (None, "<!-- nothing -->"),
-            (None, "<<<"),
+            (None, &b"<!-- nothing -->"[..]),
+            (None, &b"<<<"[..]),
+            (None, &b"<html>Maint\xe9nance</html>"[..]),
+            (Some("application/xml"), &b"\xff\xfe<Data/>"[..]),
         ] {
             let response = HttpResponse {
                 status: 200,
                 content_type: content_type.map(str::to_string),
-                body: body.as_bytes().to_vec(),
+                body: body.to_vec(),
             };
+            let body = String::from_utf8_lossy(body);
             let searched = client(response.clone()).by_name(3, "Game").unwrap_err();
             assert_eq!(searched.kind, ErrorKind::Unavailable, "{body}");
             assert!(
@@ -2341,7 +2412,7 @@ mod tests {
             format!("Erreur : Problème dans la recherche {echo}"),
             format!("Bad request {echo}"),
         ] {
-            let detail = text_error(&text).detail;
+            let detail = text_error(&text, Answer::Lookup).detail;
             for marker in ["=dm1", "=ds1", "=um1", "=us1"] {
                 assert!(!detail.contains(marker), "{detail}");
             }
@@ -2559,15 +2630,16 @@ mod tests {
 
     #[test]
     fn only_documented_per_request_error_texts_leave_the_run_going() {
-        // The documented 400 texts about one rom name or hash field concern
-        // one request and must not stop the batch by masquerading as an
+        // The documented 400 texts about one rom name or hash field, and a
+        // text ScreenScraper has not documented answering a game's lookup
+        // (the invalid search the batch must continue past), concern one
+        // request and must not stop the batch by masquerading as an
         // outage. The documented 400 texts about the request address concern
         // every game, because Degauss sends the same fields for each. A
         // closure, a refused client (the blacklist text is classified like
-        // HTTP 426, which carries it), a text ScreenScraper has not
-        // documented, or a body that is no answer at all concerns every
-        // remaining game and stops the run instead of costing one lookup
-        // per game.
+        // HTTP 426, which carries it), or a body that is no answer at all
+        // concerns every remaining game and stops the run instead of
+        // costing one lookup per game.
         for (body, kind) in [
             (
                 "Erreur : API fermé pour les non membres ou les membres inactifs",
@@ -2597,7 +2669,7 @@ mod tests {
             ("Erreur : problème avec l'url", ErrorKind::Configuration),
             (
                 "Erreur : Problème dans la recherche",
-                ErrorKind::Unavailable,
+                ErrorKind::InvalidRequest,
             ),
             (
                 "Erreur de login : Vérifier vos identifiants développeur !",
@@ -2635,7 +2707,7 @@ mod tests {
             ("Service paused for maintenance", ErrorKind::Unavailable),
             ("", ErrorKind::Unavailable),
         ] {
-            assert_eq!(text_error(body).kind, kind, "{body}");
+            assert_eq!(text_error(body, Answer::Lookup).kind, kind, "{body}");
         }
         let rejected = client(HttpResponse {
             status: 200,
@@ -2658,14 +2730,38 @@ mod tests {
         .by_name(3, "Game")
         .unwrap_err();
         assert_eq!(incomplete.kind, ErrorKind::Configuration);
-        let undocumented = client(HttpResponse {
+        let undocumented = HttpResponse {
             status: 200,
             content_type: Some("text/plain".into()),
             body: "Erreur : Problème dans la recherche".as_bytes().to_vec(),
-        })
-        .by_name(3, "Game")
-        .unwrap_err();
-        assert_eq!(undocumented.kind, ErrorKind::Unavailable);
+        };
+        assert_eq!(
+            client(undocumented.clone())
+                .by_name(3, "Game")
+                .unwrap_err()
+                .kind,
+            ErrorKind::InvalidRequest
+        );
+        // The same text before the run, at the account check, or on an
+        // image transfer cannot be one game's invalid search: an outage.
+        assert_eq!(
+            client(undocumented.clone()).account().unwrap_err().kind,
+            ErrorKind::Unavailable
+        );
+        assert_eq!(
+            client(undocumented)
+                .media(
+                    &Media {
+                        url: "https://media.screenscraper.fr/box.png".into(),
+                        format: None,
+                    },
+                    1024,
+                )
+                .err()
+                .expect("an undocumented error text on a media transfer was accepted")
+                .kind,
+            ErrorKind::Unavailable
+        );
         let closed = client(HttpResponse {
             status: 200,
             content_type: Some("text/plain".into()),
@@ -2816,12 +2912,107 @@ mod tests {
     }
 
     #[test]
+    fn a_page_under_http_400_stops_the_run_and_a_text_names_the_rejection() {
+        // ScreenScraper answers HTTP 400 with an error text. An HTML page,
+        // an empty body or a body that is not text under that status comes
+        // from an intermediary, as it would on a successful status, and
+        // must not cost one lookup per remaining game while the log stays
+        // silent about the cause. A text that is not one of the documented
+        // error texts is still that game's rejection, with the server's
+        // words in the log detail.
+        let hashes = Hashes {
+            size: 3,
+            crc32: "352441C2".into(),
+            md5: "900150983CD24FB0D6963F7D28E17F72".into(),
+            sha1: "A9993E364706816ABA3E25717850C26C9CD0D89D".into(),
+        };
+        for (content_type, body, what) in [
+            (
+                Some("text/html"),
+                &b"<html><body>Bad request</body></html>"[..],
+                "content type text/html",
+            ),
+            (Some("application/xml"), &b""[..], "no error text"),
+            (Some("text/plain"), &b" \n"[..], "no error text"),
+            (None, &b"Bad requ\xe9st"[..], "no error text"),
+        ] {
+            let response = HttpResponse {
+                status: 400,
+                content_type: content_type.map(str::to_string),
+                body: body.to_vec(),
+            };
+            let body = String::from_utf8_lossy(body);
+            for error in [
+                client(response.clone()).by_name(3, "Game").unwrap_err(),
+                client(response.clone())
+                    .by_hash(3, "Game.rom", &hashes)
+                    .unwrap_err(),
+                client(response.clone()).account().unwrap_err(),
+            ] {
+                assert_eq!(
+                    error.kind,
+                    ErrorKind::Unavailable,
+                    "{content_type:?} {body:?}"
+                );
+                assert!(
+                    error.detail.contains(what) && error.detail.contains("HTTP 400"),
+                    "{}",
+                    error.detail
+                );
+            }
+        }
+        let response = HttpResponse {
+            status: 400,
+            content_type: Some("text/plain".into()),
+            body: b"Bad request".to_vec(),
+        };
+        let rejected = client(response.clone()).by_name(3, "Game").unwrap_err();
+        assert_eq!(rejected.kind, ErrorKind::InvalidRequest);
+        assert!(
+            rejected.detail.ends_with("(HTTP 400): Bad request"),
+            "{}",
+            rejected.detail
+        );
+        // The account check sends only the credential fields, so a
+        // rejection there is a setup fault as it always was.
+        let setup = client(response).account().unwrap_err();
+        assert_eq!(setup.kind, ErrorKind::Configuration);
+        assert!(
+            setup.detail.ends_with("(HTTP 400): Bad request"),
+            "{}",
+            setup.detail
+        );
+        // An image transfer answers with bytes: a rejection there is that
+        // game's picture failure whatever the body holds.
+        for body in [&b"<html>Bad request</html>"[..], &b""[..], &b"\x89PNG"[..]] {
+            let error = client(HttpResponse {
+                status: 400,
+                content_type: Some("text/html".into()),
+                body: body.to_vec(),
+            })
+            .media(
+                &Media {
+                    url: "https://media.screenscraper.fr/box.png".into(),
+                    format: None,
+                },
+                1024,
+            )
+            .err()
+            .expect("HTTP 400 on a media transfer was accepted");
+            assert_eq!(error.kind, ErrorKind::InvalidRequest, "{body:?}");
+        }
+    }
+
+    #[test]
     fn an_undocumented_error_text_is_kept_in_the_diagnosis_but_bounded() {
         // The interface shows only the kind's fixed message, so the log
         // detail is the one place the server's actual words can be seen,
         // for a per-game refusal and for the unrecognised text that stopped
         // a run alike. A long body is cut so a page cannot flood it.
-        let rejected = text_error("Erreur : Problème   dans le nom\ndu fichier rom");
+        let rejected = text_error(
+            "Erreur : Problème   dans le nom\ndu fichier rom",
+            Answer::Lookup,
+        );
         assert_eq!(rejected.kind, ErrorKind::InvalidRequest);
         assert!(
             rejected
@@ -2830,20 +3021,25 @@ mod tests {
             "{}",
             rejected.detail
         );
-        let error = text_error("Erreur : Problème   dans\nla recherche");
-        assert_eq!(error.kind, ErrorKind::Unavailable);
-        assert!(
-            error
-                .detail
-                .ends_with(": Erreur : Problème dans la recherche"),
-            "{}",
-            error.detail
-        );
+        for (answer, kind) in [
+            (Answer::Lookup, ErrorKind::InvalidRequest),
+            (Answer::Account, ErrorKind::Unavailable),
+        ] {
+            let error = text_error("Erreur : Problème   dans\nla recherche", answer);
+            assert_eq!(error.kind, kind, "{answer:?}");
+            assert!(
+                error
+                    .detail
+                    .ends_with(": Erreur : Problème dans la recherche"),
+                "{}",
+                error.detail
+            );
+        }
         let long = format!("Erreur : {}", "é".repeat(500));
-        let detail = text_error(&long).detail;
+        let detail = text_error(&long, Answer::Lookup).detail;
         assert!(detail.ends_with("..."), "{detail}");
         assert!(detail.chars().count() < 200, "{detail}");
-        let plain = text_error("Service paused for maintenance");
+        let plain = text_error("Service paused for maintenance", Answer::Lookup);
         assert_eq!(plain.kind, ErrorKind::Unavailable);
         assert!(
             plain.detail.ends_with(": Service paused for maintenance"),
@@ -2853,7 +3049,7 @@ mod tests {
         // An empty answer has no words to keep: the detail names the
         // emptiness instead of ending in a bare colon.
         for empty in ["", " \n\t"] {
-            let error = text_error(empty);
+            let error = text_error(empty, Answer::Lookup);
             assert_eq!(error.kind, ErrorKind::Unavailable);
             assert_eq!(error.detail, "ScreenScraper returned an empty response");
         }

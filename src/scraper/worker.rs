@@ -1632,12 +1632,12 @@ enum WorkerMessage {
 /// with no exact match, or no title search was sent because nothing
 /// remained to search for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum NotFound {
+enum Miss {
     NoMatch,
     NoSearchableTitle,
 }
 
-impl NotFound {
+impl Miss {
     /// The report row text.
     fn reason(self) -> &'static str {
         match self {
@@ -1655,7 +1655,7 @@ struct Prepared {
     media_error: Option<Error>,
     no_media: bool,
     ambiguous: Option<usize>,
-    not_found: Option<NotFound>,
+    not_found: Option<Miss>,
     alternatives: Vec<Match>,
 }
 
@@ -1777,7 +1777,7 @@ fn prepare(
             media_error: None,
             no_media: false,
             ambiguous: None,
-            not_found: Some(NotFound::NoSearchableTitle),
+            not_found: Some(Miss::NoSearchableTitle),
             alternatives: Vec::new(),
         });
     };
@@ -1795,7 +1795,7 @@ fn prepare(
             media_error: None,
             no_media: false,
             ambiguous: None,
-            not_found: Some(NotFound::NoMatch),
+            not_found: Some(Miss::NoMatch),
             alternatives,
         }),
         Lookup::Ambiguous(count) => Ok(Prepared {
@@ -1905,8 +1905,9 @@ fn current_label(target: &Target) -> String {
 /// Search ScreenScraper by title. A file named only by its extension and
 /// dump tags leaves nothing to send once those are removed: no search is
 /// made and `None` is returned, so the game is counted as not found with
-/// its own reason, without a request or a failed-search reservation being
-/// spent and without a setup fault stopping the run.
+/// its own reason (logged once by `stage`), without a request or a
+/// failed-search reservation being spent and without a setup fault
+/// stopping the run.
 fn search_by_title(
     target: &Target,
     current: &str,
@@ -1917,10 +1918,6 @@ fn search_by_title(
     events: &SyncSender<WorkerMessage>,
 ) -> Result<Option<super::api::LookupResponse>> {
     if target.query.trim().is_empty() {
-        log_scraper_detail(
-            current,
-            "no title remains to search for once the extension and dump tags are removed",
-        );
         return Ok(None);
     }
     activity_text(events, current, "Matching by name");
@@ -1986,11 +1983,14 @@ fn stage(
         // so the log names that reason rather than a miss that did not
         // happen.
         match not_found {
-            NotFound::NoMatch => {
+            Miss::NoMatch => {
                 log_scraper_detail(target_label, "no exact ScreenScraper match; skipped");
             }
-            NotFound::NoSearchableTitle => {
-                log_scraper_detail(target_label, "no searchable title; skipped");
+            Miss::NoSearchableTitle => {
+                log_scraper_detail(
+                    target_label,
+                    "no searchable title once the extension and dump tags are removed; skipped",
+                );
             }
         }
         if !prepared.alternatives.is_empty() {
@@ -2335,10 +2335,12 @@ fn safe_component(value: &str) -> String {
 }
 
 /// Whether one game's failure stops the batch. A request ScreenScraper
-/// rejected, or a match response it served unreadable, concerns that game
-/// alone; transport, login, rate limit, quota and service outages (which
-/// include an answer that is not XML at all, or a page whose root element
-/// is not ScreenScraper's `<Data>`, whatever its content type) concern
+/// rejected (by HTTP 400, by a documented bad-request text or by an error
+/// text it does not document answering that game's lookup), or a match
+/// response it served unreadable, concerns that game alone; transport,
+/// login, rate limit, quota and service outages (which include an answer
+/// that is not XML at all, or a page whose root element is not
+/// ScreenScraper's `<Data>`, whatever its content type or status) concern
 /// every game still queued.
 fn fatal_for_run(error: &Error) -> bool {
     !matches!(
@@ -3395,38 +3397,51 @@ mod tests {
 
     #[test]
     fn a_rejected_individual_search_is_recorded_and_the_batch_continues() {
-        // One game ScreenScraper refuses, by HTTP 400 or by one of the
-        // error texts it documents for a bad request, is that game's
-        // problem whether the refusal answers the hash lookup or the title
-        // search: the run still processes the next game and names the
-        // rejected one.
-        for (status, content_type, body, at_title_search) in [
+        // One game ScreenScraper refuses, by HTTP 400, by one of the error
+        // texts it documents for a bad request, or by an error text it
+        // does not document answering that game's lookup on a successful
+        // status (the invalid search that used to stop the whole batch as
+        // an outage), is that game's problem whether the refusal answers
+        // the hash lookup or the title search: the run still processes
+        // the next game and names the rejected one.
+        for (name, status, content_type, body, at_title_search) in [
             (
+                "documented-400",
                 400,
                 "text/plain",
                 "Erreur : Problème dans le nom du fichier rom",
                 false,
             ),
             (
+                "documented-2xx",
                 200,
                 "text/plain",
                 "Erreur : Champ crc, md5 ou sha1 erroné",
                 false,
             ),
             (
+                "undocumented-400",
                 400,
                 "text/plain",
                 "Erreur : Problème dans la recherche",
                 true,
             ),
             (
+                "undocumented-2xx",
+                200,
+                "text/plain",
+                "Erreur : Problème dans la recherche",
+                true,
+            ),
+            (
+                "documented-2xx-title",
                 200,
                 "text/plain",
                 "Erreur dans le nom du fichier rom : celui-ci contient un chemin d'accés",
                 true,
             ),
         ] {
-            let root = temp(&format!("rejected-search-{status}-{at_title_search}"));
+            let root = temp(&format!("rejected-search-{name}"));
             std::fs::write(root.join("Rejected.rom"), b"rejected").unwrap();
             std::fs::write(root.join("Zebra.rom"), b"found").unwrap();
             let Event::Finished(progress) = finish(
@@ -3441,19 +3456,18 @@ mod tests {
                 )
                 .unwrap(),
             ) else {
-                panic!(
-                    "a rejected search stopped the batch (HTTP {status}, title search {at_title_search})"
-                );
+                panic!("a rejected search stopped the batch ({name})");
             };
-            assert_eq!(progress.completed, 2);
-            assert_eq!(progress.failed, 1);
-            assert_eq!(progress.updated, 1);
+            assert_eq!(progress.completed, 2, "{name}");
+            assert_eq!(progress.failed, 1, "{name}");
+            assert_eq!(progress.updated, 1, "{name}");
             assert_eq!(
                 progress.unresolved_games,
                 vec![UnresolvedGame {
                     label: "Nintendo: Rejected".into(),
                     reason: "ScreenScraper rejected this request".into(),
-                }]
+                }],
+                "{name}"
             );
             let gamelist = std::fs::read_to_string(root.join("gamelist.xml")).unwrap();
             assert!(gamelist.contains("<path>./Zebra.rom</path>"));
@@ -3637,43 +3651,49 @@ mod tests {
 
     #[test]
     fn a_page_instead_of_xml_still_stops_the_batch() {
-        // An HTML page (whatever content type it is served with, or none),
-        // a plain notice, an empty body or an error text ScreenScraper has
-        // not documented is not a match response for one game but a sign
-        // that the service is not answering; walking the queue would spend
-        // one request per remaining game for nothing.
-        for (name, content_type, body, at_title_search) in [
+        // An HTML page (whatever content type or status it is served with,
+        // or no content type), a plain notice or an empty body is not a
+        // match response for one game but a sign that the service is not
+        // answering; walking the queue would spend one request per
+        // remaining game for nothing.
+        for (name, status, content_type, body, at_title_search) in [
             (
                 "html-page",
+                200,
                 "text/html",
                 "<html><body>Maintenance</body></html>",
                 false,
             ),
             (
                 "untyped-html-page",
+                200,
                 "",
                 "<html><body>Maintenance</body></html>",
                 false,
             ),
             (
                 "xml-labelled-html-page",
+                200,
                 "application/xml",
                 "<!DOCTYPE html><html><body><p>Maintenance</html>",
                 true,
             ),
             (
                 "notice",
+                200,
                 "text/plain",
                 "Service paused for maintenance",
                 true,
             ),
-            ("empty", "application/xml", "", false),
+            ("empty", 200, "application/xml", "", false),
             (
-                "undocumented",
-                "text/plain",
-                "Erreur : Problème dans la recherche",
+                "html-page-400",
+                400,
+                "text/html",
+                "<html><body>Bad request</body></html>",
                 true,
             ),
+            ("empty-400", 400, "text/plain", "", false),
         ] {
             let root = temp(&format!("{name}-mid-batch"));
             std::fs::write(root.join("Rejected.rom"), b"rejected").unwrap();
@@ -3682,7 +3702,7 @@ mod tests {
                 start_with_transport(
                     request(&root, settings(ImagePolicy::Off)),
                     Arc::new(RejectingMock {
-                        status: 200,
+                        status,
                         content_type,
                         body,
                         at_title_search,
@@ -4533,10 +4553,22 @@ mod tests {
 
     #[test]
     fn a_batch_entry_with_an_image_and_one_field_makes_no_request() {
+        // One populated field beside the picture is complete for a batch,
+        // whether the other seven fields are absent or written as empty
+        // elements, so the game is not sent back to ScreenScraper on
+        // every system or full-library run.
+        for xml in [
+            "<gameList><game><path>./Game.rom</path><name>Name</name><image>./art.png</image></game></gameList>",
+            "<gameList><game><path>./Game.rom</path><name>Name</name><desc></desc><publisher></publisher><developer></developer><releasedate></releasedate><players></players><genre></genre><lang></lang><image>./art.png</image></game></gameList>",
+        ] {
+            a_batch_entry_makes_no_request(xml);
+        }
+    }
+
+    fn a_batch_entry_makes_no_request(xml: &str) {
         let root = temp("batch-one-field-complete");
         std::fs::write(root.join("Game.rom"), b"game").unwrap();
         std::fs::write(root.join("art.png"), PNG).unwrap();
-        let xml = "<gameList><game><path>./Game.rom</path><name>Name</name><image>./art.png</image></game></gameList>";
         std::fs::write(root.join("gamelist.xml"), xml).unwrap();
         let mock = Arc::new(Mock {
             api_calls: AtomicUsize::new(0),

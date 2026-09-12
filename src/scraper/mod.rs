@@ -101,7 +101,8 @@ pub enum ErrorKind {
     FailedQuota,
     NotFound,
     /// ScreenScraper refused this one request (a rejected search term,
-    /// parameter or media address). Unlike an outage, the next game can
+    /// parameter or media address, or an error text it does not document
+    /// answering one game's lookup). Unlike an outage, the next game can
     /// still be looked up.
     InvalidRequest,
     MalformedResponse,
