@@ -233,9 +233,14 @@ pub(crate) struct SaveLabels {
     pub creating_temporary: &'static str,
     pub writing_temporary: &'static str,
     pub flushing_temporary: &'static str,
-    /// The save as a whole: a temporary file that could not be reserved,
-    /// or one that could not be removed after a failure.
+    /// The save as a whole: a path without a file name, a temporary file
+    /// that could not be reserved, or one that could not be removed after
+    /// a failure.
     pub writing: &'static str,
+    /// The details under `writing` for the first two of those, so each
+    /// writer's message names its own file.
+    pub no_file_name: &'static str,
+    pub could_not_reserve: &'static str,
     pub installing: &'static str,
     pub flushing_directory: &'static str,
 }
@@ -245,6 +250,8 @@ const SETTINGS_LABELS: SaveLabels = SaveLabels {
     writing_temporary: "writing temporary settings",
     flushing_temporary: "flushing temporary settings",
     writing: "writing settings",
+    no_file_name: "settings path has no file name",
+    could_not_reserve: "could not reserve a temporary settings file",
     installing: "installing settings",
     flushing_directory: "flushing settings directory",
 };
@@ -275,9 +282,9 @@ fn install_with_directory_sync(
         .parent()
         .filter(|parent| !parent.as_os_str().is_empty())
         .unwrap_or_else(|| Path::new("."));
-    let file_name = path.file_name().ok_or_else(|| {
-        DegaussError::unsupported(labels.writing, "the path to write has no file name")
-    })?;
+    let file_name = path
+        .file_name()
+        .ok_or_else(|| DegaussError::unsupported(labels.writing, labels.no_file_name))?;
     let (temporary, mut handle) = temporary_file(labels, parent, file_name)?;
 
     let write_result: Result<()> = (|| {
@@ -357,7 +364,7 @@ fn temporary_file(
     }
     Err(DegaussError::unsupported(
         labels.writing,
-        "could not reserve a temporary file",
+        labels.could_not_reserve,
     ))
 }
 
@@ -684,5 +691,25 @@ mod tests {
             "a temporary file that was never written is nothing to report, whichever writer asks"
         );
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_path_without_a_file_name_is_refused_in_each_writers_own_words() {
+        // The install is shared, the words are not: a failure must name the
+        // file it was for, and the settings writer must say exactly what it
+        // said before the install was shared, so nothing reads as a new
+        // failure after an update.
+        let error = Settings::default().save(Path::new("/")).unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "writing settings unsupported: settings path has no file name"
+        );
+        let error = crate::pack_health::Acknowledgements::default()
+            .save(Path::new("/"))
+            .unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "writing artwork pack warnings unsupported: artwork pack warnings path has no file name"
+        );
     }
 }

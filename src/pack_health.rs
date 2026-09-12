@@ -111,6 +111,8 @@ const LABELS: SaveLabels = SaveLabels {
     writing_temporary: "writing temporary artwork pack warnings",
     flushing_temporary: "flushing temporary artwork pack warnings",
     writing: "writing artwork pack warnings",
+    no_file_name: "artwork pack warnings path has no file name",
+    could_not_reserve: "could not reserve a temporary artwork pack warnings file",
     installing: "installing artwork pack warnings",
     flushing_directory: "flushing artwork pack warnings directory",
 };
