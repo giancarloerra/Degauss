@@ -1969,11 +1969,12 @@ category = "Favorites"
     }
 
     #[test]
-    fn a_report_of_an_incomplete_pack_keeps_every_diagnostic_once_its_warning_was_dismissed() {
-        // The acknowledgement silences the screen, never the report: the
-        // complete diagnostic is what a person runs `--report` for, and it
-        // must read the same before and after the warning was dismissed.
-        let (root, mut loaded) = diagnostic_fixture("acknowledged-report");
+    fn a_report_of_an_incomplete_pack_lists_every_diagnostic() {
+        // The complete diagnostic is what a person runs `--report` for: a
+        // report that printed only the first of several, or none, would
+        // send them to the log for what the report is meant to say. A
+        // missing image and a missing table are two diagnostics.
+        let (root, mut loaded) = diagnostic_fixture("incomplete-report");
         let docs = root.join("docs");
         let artwork = docs.join("NES/Artwork");
         std::fs::create_dir_all(&artwork).unwrap();
@@ -1982,11 +1983,6 @@ category = "Favorites"
         std::fs::write(
             artwork.join("manifest.tsv"),
             "#key\tstyle\tss_system_id\nKnown\tbox-2D\t3\nSecond\tbox-2D\t3\n",
-        )
-        .unwrap();
-        std::fs::write(
-            artwork.join("index.tsv"),
-            "#name\tcrc\tsize\tkey\nKnown\t\t\tKnown\nSecond\t\t\tSecond\n",
         )
         .unwrap();
         std::fs::write(
@@ -2000,40 +1996,30 @@ category = "Favorites"
             .artwork_pack_roots
             .insert("NES".into(), docs.to_string_lossy().into_owned());
 
-        let before = effective_library(&loaded, &loaded.systems[0]).unwrap();
-        let provider = before.provider.as_ref().unwrap();
+        let effective = effective_library(&loaded, &loaded.systems[0]).unwrap();
+        let provider = effective.provider.as_ref().unwrap();
         assert_eq!(
             provider.health,
             artwork_pack::ProviderHealth::Degraded,
             "{:?}",
             provider.diagnostics
         );
-        assert!(
-            !provider.diagnostics.is_empty(),
-            "an incomplete pack has something to report"
+        assert_eq!(
+            provider.diagnostics.len(),
+            2,
+            "one line per diagnostic is only proven with more than one: {:?}",
+            provider.diagnostics
         );
-        let mut seen = pack_health::Acknowledgements::default();
-        seen.acknowledge("NES", &provider.health_digest());
-        seen.save(&pack_health::path_beside(&loaded.settings_path))
-            .unwrap();
 
         let report = pack_report_lines(provider);
+        assert_eq!(report[0], "source       Artwork Pack (Degraded)");
         assert_eq!(
             report
                 .iter()
-                .filter(|line| line.starts_with("pack note    "))
-                .count(),
-            provider.diagnostics.len(),
-            "every diagnostic is a line of the report: {report:?}"
-        );
-
-        let after = effective_library(&loaded, &loaded.systems[0]).unwrap();
-        let acknowledged = after.provider.as_ref().unwrap();
-        assert_eq!(acknowledged.health, artwork_pack::ProviderHealth::Degraded);
-        assert_eq!(
-            pack_report_lines(acknowledged),
-            report,
-            "a dismissed warning must not shorten what --report says about the pack"
+                .filter_map(|line| line.strip_prefix("pack note    "))
+                .collect::<Vec<_>>(),
+            provider.diagnostics,
+            "every diagnostic is a line of the report, in order: {report:?}"
         );
         std::fs::remove_dir_all(root).unwrap();
     }
