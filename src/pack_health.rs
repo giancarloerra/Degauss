@@ -46,22 +46,25 @@ pub struct Acknowledgements {
 
 impl Acknowledgements {
     /// Read it back. A missing file is the normal case, and one that cannot
-    /// be parsed is read as empty with the reason kept in `malformed`, so
-    /// the warning is shown once more, saying why, and the next
-    /// acknowledgement replaces it. Nothing is logged here: the file is read
-    /// again before that save, and the caller that puts the warning up
-    /// writes the reason down once. A file that is there but cannot be read
-    /// is an error: saving over it would throw away every acknowledgement
-    /// it holds.
+    /// be parsed, as text or as TOML, is read as empty with the reason kept
+    /// in `malformed`, so the warning is shown once more, saying why, and
+    /// the next acknowledgement replaces it. Nothing is logged here: the
+    /// file is read again before that save, and the caller that puts the
+    /// warning up writes the reason down once. A file that is there but
+    /// cannot be read is an error: saving over it would throw away every
+    /// acknowledgement it holds.
     pub fn load(path: &Path) -> Result<Self> {
-        match std::fs::read_to_string(path) {
-            Ok(text) => match toml::from_str(&text) {
-                Ok(parsed) => Ok(parsed),
-                Err(error) => Ok(Self {
-                    malformed: Some(error.to_string()),
+        match std::fs::read(path) {
+            Ok(bytes) => {
+                let parsed = match String::from_utf8(bytes) {
+                    Ok(text) => toml::from_str::<Self>(&text).map_err(|error| error.to_string()),
+                    Err(error) => Err(error.to_string()),
+                };
+                Ok(parsed.unwrap_or_else(|malformed| Self {
+                    malformed: Some(malformed),
                     ..Self::default()
-                }),
-            },
+                }))
+            }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Self::default()),
             Err(error) => Err(DegaussError::io(
                 "reading artwork pack warnings",
@@ -182,6 +185,32 @@ mod tests {
             replaced.malformed().is_none(),
             "the replacement reads back clean; the reason must not be written into it"
         );
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_file_that_is_not_text_is_malformed_not_unreadable() {
+        // Bytes that are not UTF-8 are a broken file like broken TOML is:
+        // read as an error, nothing would ever write over it and the
+        // warning would return at every start with no way to dismiss it.
+        let dir = temp("not-text");
+        let path = dir.join(FILE);
+        std::fs::write(&path, [0xff, 0xfe, b'd', b'e', b'g']).unwrap();
+        let mut read = Acknowledgements::load(&path)
+            .expect("a file that is not text costs one more warning, never an error");
+        assert!(!read.acknowledged("NES", "abc"));
+        assert!(
+            read.malformed().is_some(),
+            "the warning shown in its place must be able to say why the file was set aside"
+        );
+        read.acknowledge("NES", "abc");
+        read.save(&path).unwrap();
+        let replaced = Acknowledgements::load(&path).unwrap();
+        assert!(
+            replaced.acknowledged("NES", "abc"),
+            "the next dismissal must replace the broken file"
+        );
+        assert!(replaced.malformed().is_none());
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
