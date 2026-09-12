@@ -486,9 +486,9 @@ struct Slot {
     /// run of duplicates cannot keep the window open.
     accepted_at: Option<SystemTime>,
     /// A rejected duplicate is still down as far as its device is
-    /// concerned, so a release is owed for it. That release must be
-    /// swallowed rather than end the genuine hold under it.
-    duplicate_down: bool,
+    /// concerned, so a release is owed for each one. Those releases must
+    /// be swallowed rather than end the genuine hold under them.
+    duplicates_down: u8,
 }
 
 /// Drops the second delivery of one physical press before it reaches the
@@ -514,7 +514,7 @@ impl DuplicateGuard {
         DuplicateGuard {
             slots: [Slot {
                 accepted_at: None,
-                duplicate_down: false,
+                duplicates_down: 0,
             }; ACTION_SLOTS],
         }
     }
@@ -524,10 +524,12 @@ impl DuplicateGuard {
     ///
     /// A press inside [`DUPLICATE_WINDOW`] of the last accepted press of the
     /// same action is a duplicate: rejected, and its eventual release is
-    /// swallowed too. A press exactly at the window's end is accepted. A
-    /// different action is never affected, an opposite direction included.
-    /// An accepted press clears any release still owed, so a duplicate whose
-    /// release never arrives cannot swallow a later genuine release.
+    /// swallowed too, one release per rejected press, so a press delivered
+    /// three times still ends its hold on the last release. A press exactly
+    /// at the window's end is accepted. A different action is never
+    /// affected, an opposite direction included. An accepted press clears
+    /// any releases still owed, so a duplicate whose release never arrives
+    /// cannot swallow a later genuine release.
     ///
     /// The window reaches both ways from the accepted press. A poll merges
     /// what it drained by stamp, but a copy injected on one device just
@@ -547,17 +549,17 @@ impl DuplicateGuard {
                     };
                     apart < DUPLICATE_WINDOW
                 }) {
-                    slot.duplicate_down = true;
+                    slot.duplicates_down = slot.duplicates_down.saturating_add(1);
                     return None;
                 }
                 slot.accepted_at = Some(at);
-                slot.duplicate_down = false;
+                slot.duplicates_down = 0;
                 Some(edge)
             }
             KeyEdge::Up(action) => {
                 let slot = &mut self.slots[action as usize];
-                if slot.duplicate_down {
-                    slot.duplicate_down = false;
+                if slot.duplicates_down > 0 {
+                    slot.duplicates_down -= 1;
                     return None;
                 }
                 Some(edge)
@@ -1939,6 +1941,64 @@ mod tests {
         assert_eq!(guarded.edge(KeyEdge::Up(Action::Down), 32), None);
         assert!(!guarded.repeater.anything_held());
         assert!(guarded.tick(1000).is_empty(), "nothing may stay held");
+    }
+
+    #[test]
+    fn a_press_delivered_three_times_ends_its_hold_on_the_last_release() {
+        // Three copies of one press owe three releases. The guard counts
+        // the rejected copies, so only their releases are swallowed and the
+        // hold ends on the genuine one; a single flag would let the second
+        // release through and stop the scroll while the key is still down.
+        let config = RepeatConfig {
+            delay: ms(10),
+            interval: ms(10),
+        };
+        let mut guarded = Pipeline::guarded(Repeater::new(config));
+        assert_eq!(
+            guarded.feed(&[
+                (KeyEdge::Down(Action::Down), 0),
+                (KeyEdge::Down(Action::Down), 2),
+                (KeyEdge::Down(Action::Down), 4),
+                (KeyEdge::Up(Action::Down), 5),
+                (KeyEdge::Up(Action::Down), 6),
+            ]),
+            vec![Action::Down]
+        );
+        assert_eq!(
+            guarded.tick(10),
+            vec![Action::Down],
+            "two releases of three do not end the hold"
+        );
+        assert_eq!(guarded.tick(20), vec![Action::Down]);
+        assert_eq!(guarded.edge(KeyEdge::Up(Action::Down), 500), None);
+        assert!(!guarded.repeater.anything_held());
+        assert!(guarded.tick(1000).is_empty(), "nothing may stay held");
+
+        // Copies whose releases never come leave releases owed while the
+        // key stays down. The next accepted press clears them, so that
+        // press's own release still ends the hold instead of being
+        // swallowed as the old debt.
+        assert_eq!(
+            guarded.feed(&[
+                (KeyEdge::Down(Action::Down), 1000),
+                (KeyEdge::Down(Action::Down), 1002),
+                (KeyEdge::Down(Action::Down), 1004),
+                (KeyEdge::Up(Action::Down), 1005),
+            ]),
+            vec![Action::Down]
+        );
+        assert!(guarded.repeater.anything_held(), "one release of three");
+        assert_eq!(
+            guarded.feed(&[
+                (KeyEdge::Down(Action::Down), 1100),
+                (KeyEdge::Up(Action::Down), 1105),
+            ]),
+            vec![]
+        );
+        assert!(
+            !guarded.repeater.anything_held(),
+            "the owed releases were cleared"
+        );
     }
 
     #[test]
