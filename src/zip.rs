@@ -1281,8 +1281,9 @@ mod tests {
     /// Main finds a member by comparing the requested bytes with every
     /// record, ASCII case-insensitively, and a member already left out is
     /// still a record it can land on. A supported member that shares a
-    /// name with an encrypted or unusually compressed one is therefore a
-    /// conflict too, and the whole group goes, never one side of it.
+    /// name with an encrypted one, or one using an unsupported compression
+    /// method, is therefore a conflict too, and the whole group goes, never
+    /// one side of it.
     #[test]
     fn a_retained_member_cannot_share_a_name_with_a_skipped_one() {
         for (index, (flags, method, reason)) in [
