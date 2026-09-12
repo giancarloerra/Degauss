@@ -1,6 +1,6 @@
 # Controller double delivery hardware checks
 
-Some controllers, or the input stack between them and Degauss, deliver one physical press as two very fast press and release pairs. Degauss drops the second pair of the same action when its press arrives less than 40 ms after the first press, measured between the two presses on the kernel's event timestamps (a press exactly 40 ms later is a new press), before the press reaches its own held-key repeater. Pairs inside that window cannot be produced by hand: the host tests feed them directly, and the checks below need a real MiSTer, a keyboard, an ordinary controller and, for the last section, a controller known to deliver presses twice.
+Some controllers, or the input stack between them and Degauss, deliver one physical press as two very fast press and release pairs. Degauss drops the second pair of the same action when its press arrives less than 40 ms after the first press, measured between the two presses on the kernel's event timestamps (a press exactly 40 ms later is a new press), before the press reaches its own held-key repeater. Pairs inside that window cannot be produced by hand: the host tests in `src/input.rs` feed them directly (`deliberate_taps_outside_the_window_both_count` holds the boundary, a second press 39 ms later dropped and one 40 ms later accepted), and the checks below need a real MiSTer, a keyboard, an ordinary controller and, for the last section, a controller known to deliver presses twice.
 
 ## Ordinary keyboard and controller
 
