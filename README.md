@@ -510,14 +510,11 @@ unless a library read starts at the same time and takes the screen first,
 and always in `/tmp/degauss.log`, which is the copy that survives such a
 read. Pictures are decoded to `cover_size` in `degauss.toml` or half the
 longer screen edge, whichever is larger. With the shipped `cover_size` of
-320 and the default 5% screen margins, the Large Artwork box outgrows that
-decode on screens wider than about 590 pixels for a landscape picture, and
-for a portrait picture from about 570 pixels on a 4:3 screen and about 540
-pixels on a 5:4 screen, so a picture is drawn a little enlarged there: up
-to about a tenth wider, and up to about a quarter taller in the portrait
-case. Smaller margins lower those widths. A `cover_size` of at least two
-thirds of the screen width keeps every picture within its decode at the
-default margins.
+320 and the default screen margins, the Large Artwork box outgrows that
+decode on screens wider than about 600 pixels (a little sooner for a
+portrait picture on a 4:3 or 5:4 screen), so a picture is drawn slightly
+enlarged there; a `cover_size` of at least two thirds of the screen width
+keeps every picture within its decode.
 
 **Options → Appearance → View** is the global default. Every browse place can instead
 keep its own custom view: the Categories screen, each category's Systems
@@ -692,9 +689,9 @@ is running appears after the next start. `Green Mono`, `Modern` and `Neon` remai
 available without files because they are built into Degauss. The chosen theme
 is remembered by name in `settings.toml`. If that name resolves to neither a
 built-in theme nor a valid card-theme file, Degauss uses the standard palette
-and a message says so. A same-name card file takes precedence over a built-in;
-if that file is broken, Degauss reports it instead of concealing it with the
-built-in theme.
+and a message says so on the first screen and in `/tmp/degauss.log`. A
+same-name card file takes precedence over a built-in; if that file is broken,
+Degauss reports it instead of concealing it with the built-in theme.
 
 #### Editing a theme on-device
 
