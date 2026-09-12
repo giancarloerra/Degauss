@@ -525,7 +525,7 @@ impl Library {
         let neogeo = self
             .neogeo
             .as_ref()
-            .map(|catalogues| (catalogues, catalogues.for_dir(dir, root)));
+            .map(|catalogues| (catalogues, catalogues.for_dir(dir)));
         let install = amiga_install_of(dir);
         // An AmigaVision install keeps its whole library inside one disk
         // image, and the only trace of it on disk is a folder of text files
@@ -994,7 +994,7 @@ impl Library {
         let neogeo = self
             .neogeo
             .as_ref()
-            .map(|catalogues| (catalogues, catalogues.for_dir(dir, root)));
+            .map(|catalogues| (catalogues, catalogues.for_dir(dir)));
         let listing = std::fs::read_dir(dir)
             .map_err(|error| DegaussError::io("reading folder", dir, error))?;
         for item in listing {
@@ -2629,14 +2629,18 @@ mod tests {
     }
 
     #[test]
-    fn each_declared_folder_answers_to_its_own_catalogue() {
+    fn a_folder_without_its_own_catalogue_answers_to_the_first_declared_folders() {
         // A library split over the card and a USB stick or a network share
-        // is declared as two folders, and Main reads the romsets.xml of
-        // whichever one it is scanning. A set under the second folder must
-        // be named by the second catalogue, and one catalogue's entries
-        // must not make games out of the other folder's archives.
+        // is declared as more than one folder. Main reads the romsets.xml
+        // of the folder it is scanning when there is one, and otherwise
+        // the one at the top of the core's home folder, which is a single
+        // folder: the first its search order finds, and the first declared
+        // here. So a second folder with its own catalogue answers to it,
+        // and a second folder or sub-folder without one answers to the
+        // first folder's, not to an empty list and not to its parent's.
         let first = temp("neogeo-root-a");
         let second = temp("neogeo-root-b");
+        let third = temp("neogeo-root-c");
         std::fs::write(first.join("romsets.xml"), ROMSETS).unwrap();
         std::fs::write(
             second.join("romsets.xml"),
@@ -2645,27 +2649,48 @@ mod tests {
         .unwrap();
         std::fs::write(first.join("mslug.zip"), b"zip").unwrap();
         std::fs::write(first.join("lastblad.zip"), crate::zip::tests_fixture()).unwrap();
-        std::fs::create_dir_all(second.join("Fighting/lastblad")).unwrap();
-        std::fs::write(second.join("Fighting/lastblad/prom"), b"p").unwrap();
+        std::fs::write(second.join("lastblad.zip"), b"zip").unwrap();
         std::fs::write(second.join("mslug.zip"), crate::zip::tests_fixture()).unwrap();
+        std::fs::create_dir_all(second.join("Fighting/lastblad")).unwrap();
+        std::fs::write(second.join("Fighting/lastblad/Other.neo"), b"neo").unwrap();
+        std::fs::create_dir_all(second.join("Fighting/kof98")).unwrap();
+        std::fs::write(second.join("Fighting/kof98/prom"), b"p").unwrap();
+        std::fs::write(third.join("mslug.zip"), b"zip").unwrap();
+        std::fs::write(third.join("lastblad.zip"), crate::zip::tests_fixture()).unwrap();
 
         let mut config = neogeo_system(&first);
-        config.extra_paths = vec![second.to_string_lossy().into_owned()];
+        config.extra_paths = vec![
+            second.to_string_lossy().into_owned(),
+            third.to_string_lossy().into_owned(),
+        ];
         let library = Library::open(&config).unwrap();
         let (a, stats) = library.list(&Place::Dir(first.clone()), false).unwrap();
         assert_eq!(names_of(&a), vec!["lastblad", "Metal Slug"]);
         assert_eq!((stats.games, stats.folders), (1, 1));
+        // The second folder carries its own catalogue and answers to it
+        // alone: the first folder's entries do not reach into it.
         let (b, stats) = library.list(&Place::Dir(second.clone()), false).unwrap();
-        assert_eq!(names_of(&b), vec!["Fighting", "mslug"]);
-        assert_eq!((stats.games, stats.folders), (0, 2));
-        // A sub-folder of the second root answers to the second root's
-        // catalogue, not the first's.
+        assert_eq!(names_of(&b), vec!["Fighting", "mslug", "The Last Blade"]);
+        assert_eq!((stats.games, stats.folders), (1, 2));
+        // A sub-folder of the second folder has no catalogue of its own,
+        // so it answers to the first declared folder's, as Main's home
+        // folder lookup does, and not to the folder above it: lastblad is
+        // an ordinary folder here, holding a .neo to stay listed.
         let (fighting, stats) = library
             .list(&Place::Dir(second.join("Fighting")), false)
             .unwrap();
-        assert_eq!(names_of(&fighting), vec!["The Last Blade"]);
-        assert_eq!((stats.games, stats.folders), (1, 0));
+        assert_eq!(
+            names_of(&fighting),
+            vec!["lastblad", "The King of Fighters '98"]
+        );
+        assert_eq!((stats.games, stats.folders), (1, 1));
+        // A declared folder without a catalogue answers to the first
+        // declared folder's too, rather than listing its sets as archives.
+        let (c, stats) = library.list(&Place::Dir(third.clone()), false).unwrap();
+        assert_eq!(names_of(&c), vec!["lastblad", "Metal Slug"]);
+        assert_eq!((stats.games, stats.folders), (1, 1));
         std::fs::remove_dir_all(&first).ok();
         std::fs::remove_dir_all(&second).ok();
+        std::fs::remove_dir_all(&third).ok();
     }
 }

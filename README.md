@@ -470,10 +470,13 @@ way the stock menu does. A `.neo` file and an `.mgl` shortcut are games as
 before. A zipped ROM set such as `mslug.zip` and an unzipped one, a folder
 such as `mslug/` holding the raw ROM components, are recognised through
 `romsets.xml`, the catalogue shipped with the core and placed at the top of
-`games/NEOGEO`. A sub-folder carrying its own `romsets.xml` uses that one
-instead of the top-level catalogue, exactly as MiSTer Main does; any other
-sub-folder answers to the top-level catalogue. This applies to Neo Geo and
-Neo Geo MVS, which share the folder and the catalogue.
+`games/NEOGEO`. A folder carrying its own `romsets.xml` uses that one
+instead, exactly as MiSTer Main does; any other folder answers to the
+catalogue at the top of the first declared game folder, the one MiSTer Main
+treats as the core's home folder. A library declared over more than one
+folder (card, USB stick, network share) therefore shares that one catalogue
+unless a folder carries its own. This applies to Neo Geo and Neo Geo MVS,
+which share the folder and the catalogue.
 
 A ZIP or folder whose name matches a catalogue entry, ignoring case and
 including every comma-separated alias the entry lists, is one game. It shows

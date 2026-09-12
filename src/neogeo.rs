@@ -276,15 +276,18 @@ pub fn romset_title(dir: &Path) -> Result<Option<String>> {
 /// The catalogues one system's folders answer to, read once each.
 ///
 /// Main reads the catalogue of the folder being scanned when it has one,
-/// and the system folder's otherwise. The root catalogues are read when
-/// the library is opened; a sub-folder's own is read the first time that
-/// folder is listed and kept, so listing costs one lookup per entry rather
-/// than a parse. Every file that could not be read is remembered, once, so
-/// the audit can name it.
+/// and the core's home folder's otherwise: one folder, the first the
+/// core's search order finds, which is the first folder declared here.
+/// The root catalogues are read when the library is opened; a sub-folder's
+/// own is read the first time that folder is listed and kept, so listing
+/// costs one lookup per entry rather than a parse. Every file that could
+/// not be read is remembered, once, so the audit can name it.
 pub struct Catalogues {
-    roots: Vec<(PathBuf, Arc<Catalogue>)>,
+    /// Each declared folder with its own catalogue, [`None`] where the
+    /// folder carries no file and answers to the first folder's.
+    roots: Vec<(PathBuf, Option<Arc<Catalogue>>)>,
     /// A sub-folder's own catalogue, or [`None`] once it is known to have
-    /// none and answers to its root's.
+    /// none and answers to the first declared folder's.
     local: RefCell<BTreeMap<PathBuf, Option<Arc<Catalogue>>>>,
     problems: RefCell<Vec<(PathBuf, String)>>,
 }
@@ -301,9 +304,7 @@ impl Catalogues {
         let roots = roots
             .into_iter()
             .map(|root| {
-                let catalogue = catalogues
-                    .read(&root.join("romsets.xml"))
-                    .unwrap_or_default();
+                let catalogue = catalogues.read(&root.join("romsets.xml"));
                 (root.to_path_buf(), catalogue)
             })
             .collect();
@@ -329,24 +330,27 @@ impl Catalogues {
         }))
     }
 
-    /// The catalogue that answers for the entries of `dir`, which sits in
-    /// the declared folder `root`.
-    pub fn for_dir(&self, dir: &Path, root: Option<usize>) -> Arc<Catalogue> {
-        if let Some((_, catalogue)) = self.roots.iter().find(|(path, _)| path == dir) {
-            return catalogue.clone();
-        }
-        let known = self.local.borrow().get(dir).cloned();
-        let own = match known {
-            Some(known) => known,
+    /// The catalogue that answers for the entries of `dir`: its own when
+    /// it carries one, else the one at the top of the first declared
+    /// folder, which is where Main looks for every folder without one.
+    pub fn for_dir(&self, dir: &Path) -> Arc<Catalogue> {
+        let own = match self.roots.iter().find(|(path, _)| path == dir) {
+            Some((_, catalogue)) => catalogue.clone(),
             None => {
-                let read = self.read(&dir.join("romsets.xml"));
-                self.local
-                    .borrow_mut()
-                    .insert(dir.to_path_buf(), read.clone());
-                read
+                let known = self.local.borrow().get(dir).cloned();
+                match known {
+                    Some(known) => known,
+                    None => {
+                        let read = self.read(&dir.join("romsets.xml"));
+                        self.local
+                            .borrow_mut()
+                            .insert(dir.to_path_buf(), read.clone());
+                        read
+                    }
+                }
             }
         };
-        own.or_else(|| root.map(|index| self.roots[index].1.clone()))
+        own.or_else(|| self.roots.first().and_then(|(_, home)| home.clone()))
             .unwrap_or_default()
     }
 
@@ -590,7 +594,7 @@ mod tests {
         )
         .unwrap();
         let catalogues = Catalogues::open([dir.as_path()]);
-        let catalogue = catalogues.for_dir(&dir, Some(0));
+        let catalogue = catalogues.for_dir(&dir);
         assert_eq!(
             catalogues.classify(&catalogue, &dir.join("own"), "own", true),
             Recognition::Game("Own Title".into())
@@ -620,7 +624,7 @@ mod tests {
         )
         .unwrap();
         let catalogues = Catalogues::open([dir.as_path()]);
-        let gog = catalogues.for_dir(&dir.join("gog"), Some(0));
+        let gog = catalogues.for_dir(&dir.join("gog"));
         assert_eq!(gog.recognise("gog"), Recognition::Game("GOG Game".into()));
         assert_eq!(
             gog.recognise("root"),
@@ -628,7 +632,7 @@ mod tests {
             "a folder's own catalogue replaces the root's rather than extending it"
         );
         // A folder without one answers to the root's catalogue.
-        let plain = catalogues.for_dir(&dir.join("plain"), Some(0));
+        let plain = catalogues.for_dir(&dir.join("plain"));
         assert_eq!(
             plain.recognise("root"),
             Recognition::Game("Root Game".into())
@@ -640,10 +644,7 @@ mod tests {
             r#"<romsets><romset name="gog" altname="Changed"/></romsets>"#,
         )
         .unwrap();
-        assert!(Arc::ptr_eq(
-            &gog,
-            &catalogues.for_dir(&dir.join("gog"), Some(0))
-        ));
+        assert!(Arc::ptr_eq(&gog, &catalogues.for_dir(&dir.join("gog"))));
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -652,7 +653,7 @@ mod tests {
         let dir = temp("reported");
         std::fs::write(dir.join("romsets.xml"), "<romsets><romset").unwrap();
         let catalogues = Catalogues::open([dir.as_path()]);
-        let catalogue = catalogues.for_dir(&dir, Some(0));
+        let catalogue = catalogues.for_dir(&dir);
         assert_eq!(catalogue.recognise("anything"), Recognition::Unrecognised);
         let problems = catalogues.problems();
         assert_eq!(problems.len(), 1);
