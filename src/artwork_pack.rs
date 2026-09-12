@@ -1180,10 +1180,15 @@ pub fn entry_failure(error: &DegaussError) -> Option<&'static str> {
 
 /// Write down a row the walk could not identify and let the walk go on,
 /// or hand the error back when it is not about the row. Logged here, at
-/// the moment it happens, with the path the screen does not show.
+/// the moment it happens, with the path the screen does not show, and
+/// once: a row the validation walk wrote down is opened again by the
+/// fingerprint walk of the same preparation, which finds it as broken.
 fn skip_entry(skipped: &mut SkippedEntries, launch: &Launch, error: DegaussError) -> Result<()> {
     let Some(category) = entry_failure(&error) else {
         return Err(error);
+    };
+    let std::collections::hash_map::Entry::Vacant(entry) = skipped.entry(launch.clone()) else {
+        return Ok(());
     };
     let path = match launch {
         Launch::File(path) => path.clone(),
@@ -1193,7 +1198,7 @@ fn skip_entry(skipped: &mut SkippedEntries, launch: &Launch, error: DegaussError
         "pack entry   {}: skipped: {category}: {error}",
         shown_path(&path)
     ));
-    skipped.entry(launch.clone()).or_insert(SkippedEntry {
+    entry.insert(SkippedEntry {
         path,
         category,
         detail: error.to_string(),
@@ -5816,7 +5821,9 @@ mod tests {
     /// A row that fails in the fingerprint walk is written down once and
     /// not opened again by the matching walk: the same preparation found
     /// it unreadable moments ago. The file is repaired between the walks
-    /// to prove the second one did not look.
+    /// to prove the second one did not look. The validation walk that
+    /// `--report` runs first does open the row again in the fingerprint
+    /// walk, and the log names it once, not once per walk.
     #[test]
     fn fingerprints_and_matching_record_a_broken_row_once() {
         let root = temp("skipped-once");
@@ -5830,12 +5837,56 @@ mod tests {
         let mut provider = Provider::load("Arcade", &docs, None);
         let homes = crate::mgl::Homes::default();
         let cancelled = AtomicBool::new(false);
+        // The log is shared by every process on the host; only what is
+        // appended from here on is read, and the line counted carries
+        // this fixture's path. A probe line first: a host whose log
+        // cannot be written fails on the probe, not on the count.
+        let log_from = std::fs::metadata(crate::LOG_PATH)
+            .map(|metadata| metadata.len() as usize)
+            .unwrap_or(0);
+        let probe = format!("skipped-once probe at {}", root.display());
+        crate::note(&probe);
+        let log_since = || {
+            let logged = std::fs::read(crate::LOG_PATH).unwrap_or_default();
+            String::from_utf8_lossy(&logged[log_from.min(logged.len())..]).into_owned()
+        };
+        assert_eq!(
+            log_since().matches(&probe).count(),
+            1,
+            "{} must take what note() appends on this host",
+            crate::LOG_PATH
+        );
         let mut skipped = SkippedEntries::new();
+        assert_eq!(
+            provider
+                .cached_fingerprints_are_current(
+                    &cache,
+                    &crate::cache::ContentFingerprints::new(),
+                    true,
+                    &homes,
+                    &cancelled,
+                    &mut skipped,
+                )
+                .unwrap(),
+            Some(true),
+            "the validation walk passes over the broken row"
+        );
+        assert_eq!(skipped.len(), 1);
         let fingerprints = provider
             .fingerprints_for_cache(&cache, &homes, &cancelled, &mut |_, _| {}, &mut skipped)
             .unwrap()
             .unwrap();
         assert_eq!(skipped.len(), 1);
+        let skip_line = format!(
+            "pack entry   {}: skipped: malformed descriptor",
+            repaired.display()
+        );
+        assert_eq!(
+            log_since().matches(&skip_line).count(),
+            1,
+            "the row is named once in the log, not once per walk:\n{}",
+            log_since()
+        );
         std::fs::write(
             &repaired,
             "<misterromdescription><setname>fixed</setname></misterromdescription>",

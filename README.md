@@ -839,8 +839,9 @@ no pack work at all, however many packs are installed, and installing every
 pack through Update All does not make the first run prepare them. With
 neither a gamelist nor a pack, the usual filesystem presentation remains
 available. A candidate location that cannot be looked at is reported, not
-silently skipped to another source. Existing saved Artwork Pack locations
-retain their meaning.
+silently skipped to another source; a `docs` that is a link to somewhere
+outside its own mount is not offered, and `degauss.log` says so. Existing
+saved Artwork Pack locations retain their meaning.
 
 Older settings did not record an explicit Gamelist choice. An existing settings
 file without a saved Pack choice therefore uses Automatic, so an installed pack

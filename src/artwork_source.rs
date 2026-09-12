@@ -159,6 +159,10 @@ pub fn gamelist_present(system: &FoundSystem) -> Result<bool> {
 /// there: the first base, in priority order, whose `docs` holds a mapped
 /// Artwork directory of the system. Only those exact directories are
 /// stat'd; nothing under a base is listed and nothing in the Pack is read.
+/// A `docs` that is a link out of its base is not that base's Pack and is
+/// passed over, as the explicit location list passes it over: what is
+/// offered here is written down as the accepted root once the user says
+/// yes, so it stays under the location it was found at.
 pub fn candidate_root(system_id: &str, bases: &[PathBuf]) -> Result<Option<PathBuf>> {
     let folders = artwork_pack::expected_folders(system_id);
     let mut probes = BTreeMap::new();
@@ -166,7 +170,19 @@ pub fn candidate_root(system_id: &str, bases: &[PathBuf]) -> Result<Option<PathB
         let docs = base.join("docs");
         for folder in folders {
             if exists_checked(&docs.join(folder).join("Artwork"), &mut probes)? {
-                return Ok(Some(docs));
+                let resolved = std::fs::canonicalize(&docs)
+                    .map_err(|error| DegaussError::io("probing artwork source", &docs, error))?;
+                let allowed = std::fs::canonicalize(base)
+                    .map_err(|error| DegaussError::io("probing artwork source", base, error))?;
+                if resolved.starts_with(&allowed) {
+                    return Ok(Some(docs));
+                }
+                crate::note(&format!(
+                    "artwork pack {system_id}: candidate at {} resolves outside {}, not offered",
+                    docs.display(),
+                    base.display()
+                ));
+                break;
             }
         }
     }
@@ -580,6 +596,39 @@ mod tests {
         assert_eq!(
             candidate_root("SuperGrafx", std::slice::from_ref(&base)).unwrap(),
             Some(base.join("docs"))
+        );
+    }
+
+    /// A `docs` that links out of its base is not that base's Pack: the
+    /// root offered here is the one written down on Prepare, and it must
+    /// stay under the location it was found at, as the explicit location
+    /// list keeps it. A link that stays inside the base is the base's own
+    /// layout and is offered, under the name it was probed at.
+    #[cfg(unix)]
+    #[test]
+    fn candidate_root_passes_over_a_docs_link_out_of_its_base() {
+        let fixture = Fixture::new();
+        let elsewhere = fixture.pack("elsewhere", "SuperGrafx");
+        let linked = fixture.0.join("linked");
+        std::fs::create_dir_all(&linked).unwrap();
+        std::os::unix::fs::symlink(elsewhere.join("docs"), linked.join("docs")).unwrap();
+        assert_eq!(
+            candidate_root("SuperGrafx", std::slice::from_ref(&linked)).unwrap(),
+            None
+        );
+        let valid = fixture.pack("valid", "SuperGrafx");
+        assert_eq!(
+            candidate_root("SuperGrafx", &[linked, valid.clone()]).unwrap(),
+            Some(valid.join("docs")),
+            "the next base in priority order is the candidate"
+        );
+
+        let inside = fixture.0.join("inside");
+        std::fs::create_dir_all(inside.join("packs/docs/SuperGrafx/Artwork")).unwrap();
+        std::os::unix::fs::symlink(inside.join("packs/docs"), inside.join("docs")).unwrap();
+        assert_eq!(
+            candidate_root("SuperGrafx", std::slice::from_ref(&inside)).unwrap(),
+            Some(inside.join("docs"))
         );
     }
 
