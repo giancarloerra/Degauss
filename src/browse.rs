@@ -609,11 +609,12 @@ impl Library {
                 continue;
             }
 
-            // An archive opens as a folder unless the core takes it whole.
-            if extension == "zip" && !self.config.accepts(&path) {
-                // A zipped Neo Geo ROM set is one game under the name the
-                // catalogue gives it. Main hands the whole ZIP to the
-                // loader, so it is never opened here, not even to look.
+            // A zipped Neo Geo ROM set is one game under the name the
+            // catalogue gives it, or none at all if the catalogue hides
+            // it, whether or not the system's own extensions take a ZIP
+            // whole. Main hands the whole ZIP to the loader, so it is
+            // never opened here, not even to look.
+            if extension == "zip" {
                 if let Some((catalogues, catalogue)) = &neogeo {
                     match catalogues.classify(catalogue, &path, &name, false) {
                         crate::neogeo::Recognition::Game(title) => {
@@ -624,6 +625,9 @@ impl Library {
                         crate::neogeo::Recognition::Unrecognised => {}
                     }
                 }
+            }
+            // An archive opens as a folder unless the core takes it whole.
+            if extension == "zip" && !self.config.accepts(&path) {
                 stats.folders += 1;
                 // Shown without the extension, the way the stock menu shows
                 // an archive it can reach into.
@@ -1031,12 +1035,13 @@ impl Library {
             let accepted = !is_dir && self.config.accepts(&path);
             // A Neo Geo ROM set is a game whether zipped or not, so a folder
             // of nothing but sets is worth walking into; one the catalogue
-            // hides would never be shown and is not.
+            // hides would never be shown and is not, even where the
+            // system's own extensions take a ZIP whole.
             if let Some((catalogues, catalogue)) = &neogeo {
                 let candidate = if is_dir {
                     !excluded
                 } else {
-                    extension == "zip" && !accepted
+                    extension == "zip"
                 };
                 if candidate {
                     match catalogues.classify(catalogue, &path, &name, is_dir) {
@@ -2582,6 +2587,36 @@ mod tests {
         assert_eq!(names_of(&all), vec!["Drafts", "untitled"]);
         let (drafts, _) = library.list(&Place::Dir(dir.join("Drafts")), true).unwrap();
         assert!(drafts.is_empty(), "got: {:?}", names_of(&drafts));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn the_catalogue_names_and_hides_sets_even_where_the_table_takes_a_zip_whole() {
+        // A table edited to list `zip` among the Neo Geo extensions makes
+        // every ZIP a game the core takes whole, which is what a set is
+        // anyway. The catalogue still says what it is called and which
+        // ones are not to be shown: read only for ZIPs the table refuses,
+        // a hidden set would surface under its file name and a folder of
+        // nothing but hidden sets would look worth entering.
+        let dir = temp("neogeo-zip-accepted");
+        std::fs::write(dir.join("romsets.xml"), ROMSETS).unwrap();
+        std::fs::write(dir.join("MSLUG.zip"), b"not an archive").unwrap();
+        std::fs::write(dir.join("secret.zip"), b"zip").unwrap();
+        std::fs::write(dir.join("homebrew.zip"), b"zip").unwrap();
+        std::fs::create_dir_all(dir.join("Drafts")).unwrap();
+        std::fs::write(dir.join("Drafts/SECRET.zip"), b"zip").unwrap();
+        let mut system = neogeo_system(&dir);
+        system.extensions.push("zip".to_string());
+
+        let library = Library::open(&system).unwrap();
+        let (rows, stats) = library.list(&library.start(), false).unwrap();
+        // The ZIP the catalogue does not name is the whole-file game the
+        // table asks for, shown as any accepted file is, not an archive
+        // to enter.
+        assert_eq!(names_of(&rows), vec!["homebrew.zip", "Metal Slug"]);
+        assert_eq!((stats.games, stats.folders), (2, 0));
+        assert_eq!(stats.empty_folders_hidden, 1);
+        assert_eq!(play_target(&rows[0]), dir.join("homebrew.zip"));
         std::fs::remove_dir_all(&dir).ok();
     }
 
