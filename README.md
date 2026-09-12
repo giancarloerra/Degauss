@@ -445,7 +445,11 @@ not opened until its system is entered and you say so. Ordinary folder
 libraries then reuse their saved lists:
 **Options → Library → Rebuild All System Lists** is how you tell Degauss the
 card has changed (for example after adding new games). New images and metadata
-are read on the fly. Automatic Artwork Pack preparation is described
+are read on the fly. A system whose Artwork Pack was prepared, whether you
+chose the pack or said yes to it, is prepared again as part of that rebuild,
+without a question, and any pack change you had chosen to keep is superseded
+by the current pack; a system that declined its pack, or was never asked, is
+read the ordinary way. Automatic Artwork Pack preparation is described
 [below](#using-mister-game-artwork-databases).
 Adding games to one system does not need the whole card read again:
 **X Actions → Library → Rebuild This System List** inside that system reads just its folders.
@@ -837,8 +841,9 @@ retain their meaning.
 
 Older settings did not record an explicit Gamelist choice. An existing settings
 file without a saved Pack choice therefore uses Automatic, so an installed pack
-can now appear when no root `gamelist.xml` exists. Choosing **Gamelist** now saves
-that explicit choice. No migration or reset is needed.
+is offered when the system is entered and no root `gamelist.xml` exists.
+Choosing **Gamelist** now saves that explicit choice. No migration or reset is
+needed.
 
 Install and update a database through **Update All → Settings → Extra Content
 → Game Artwork DBs**. Update All also chooses its 2D, 3D or mixed artwork
@@ -885,11 +890,19 @@ system, the pack location, a signature of the pack's tables, the language the
 descriptions were prepared for, the version of the matching rules and the
 list the mapping was prepared from. Entering the system again, after a game or
 a restart, checks that signature against the pack with a handful of file
-stats and a checksum of the small manifest, then opens at once: no table is
-parsed, no row is walked and no ROM is checked again. Images are read from the pack on demand as before, so an image
-replaced at its path shows its new picture without any rebuild. Favourites
-and the screensaver use the same written-down mapping; a system that has not
-been prepared contributes its ordinary data to them.
+stats and a checksum of the manifest, whose size grows with the number of
+images in the pack, then opens at once: no table is parsed, no row is walked
+and no ROM is checked again. The stats cover the tables that were there at
+preparation and the fixed names, `index.tsv`, `gameinfo.tsv`, `manifest.tsv`
+and the synopsis tables of the preferred language and of English; a synopsis
+in another language added later is picked up by **Rebuild This System
+List**. Images are read from the pack on demand as before, so an image
+replaced at its path shows its new picture without any rebuild: a file
+renamed or copied into place is noticed at the next entry, a file overwritten
+in place at the next start. Favourites and the screensaver use the same
+written-down mapping; a system that has not been prepared contributes its
+ordinary data to them. A state file beside the cache that cannot be read is
+reported when the system is entered, and nothing is asked or written over it.
 
 When the check finds that a table, the pack location, the language or the
 system's own list has changed since the preparation, Degauss asks before doing
@@ -914,10 +927,10 @@ whose pack was declined it asks the question again first. A cancelled or
 failed preparation writes nothing: without a previous result the system
 opens with its ordinary data, with one the previous result stays in use, and
 the next entry asks again. If the storage holding a prepared pack is missing,
-the system says so and opens on its ordinary rows behind that message; the
-prepared result is kept for when the storage is back. Two systems that share
-one database, such as Neo Geo and Neo Geo MVS, are each asked about and
-prepared on their own.
+the system says so at every entry while it is missing, and opens on its
+ordinary rows only behind that message; the prepared result is kept for when
+the storage is back. Two systems that share one database, such as Neo Geo and
+Neo Geo MVS, are each asked about and prepared on their own.
 
 Explicit choices need no question: **Artwork Pack** is the consent, and the
 pack is prepared as the source is switched; **Gamelist** stops every pack
@@ -925,7 +938,10 @@ check and question for that system. Caches prepared by the previous release
 keep working: each is tied to its pack the first time its system is entered,
 by one worker read with the usual overlay, and reused from then on. Nothing
 is reprocessed at startup and nothing needs a reset. A cache that no longer
-matches the pack installed now is kept and asked about instead.
+matches the pack installed now is kept and asked about instead: **Keep
+Current** there keeps the file but opens the system with its ordinary data,
+since that cache cannot stand for the pack; **Rebuild This System List**, and
+**Update** when it asks, is the way to use the pack again.
 
 The two effective sources are deliberately exclusive:
 
