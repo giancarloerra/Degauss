@@ -1469,11 +1469,17 @@ fn parse(
                 }
             }
             Ok(Event::Text(value)) => {
+                if !saw_data_root && !value.xml10_content().trim().is_empty() {
+                    return Err(not_an_answer("text before the root element"));
+                }
                 if let Some(capture) = capture.as_mut() {
                     capture.text.push_str(&value.xml10_content());
                 }
             }
             Ok(Event::CData(value)) => {
+                if !saw_data_root {
+                    return Err(not_an_answer("text before the root element"));
+                }
                 if let Some(capture) = capture.as_mut() {
                     capture.text.push_str(value.as_ref());
                 }
@@ -2338,6 +2344,21 @@ mod tests {
             (None, &b"<<<"[..]),
             (None, &b"<html>Maint\xe9nance</html>"[..]),
             (Some("application/xml"), &b"\xff\xfe<Data/>"[..]),
+            // A notice placed between the XML declaration and the `<Data>`
+            // root is text the service never emits; without the check it
+            // would pass as a miss for every game.
+            (
+                None,
+                &b"<?xml version=\"1.0\"?>Maintenance<Data><jeux/></Data>"[..],
+            ),
+            (
+                Some("text/xml"),
+                &b"<?xml version=\"1.0\"?>\n  Maintenance\n<Data><jeux/></Data>"[..],
+            ),
+            (
+                None,
+                &b"<?xml version=\"1.0\"?><![CDATA[Maintenance]]><Data><jeux/></Data>"[..],
+            ),
         ] {
             let response = HttpResponse {
                 status: 200,
@@ -2366,6 +2387,18 @@ mod tests {
                 "{body}"
             );
         }
+        // A byte order mark and whitespace between the declaration and the
+        // root are ordinary XML layout, and the empty game list behind them
+        // is a server miss.
+        let response = client(HttpResponse {
+            status: 200,
+            content_type: Some("text/xml".into()),
+            body: b"\xef\xbb\xbf<?xml version=\"1.0\"?>\n  \n<Data>\n  <jeux/>\n</Data>\n".to_vec(),
+        })
+        .by_name(3, "Game")
+        .unwrap();
+        assert_eq!(response.lookup, Lookup::NotFound);
+        assert!(response.server_miss);
         // A `<Data>` answer that is cut short or carries no game list is
         // still that one request's unreadable answer.
         for body in [
