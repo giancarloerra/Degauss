@@ -72,8 +72,11 @@ pub enum Action {
 
 impl Action {
     /// Every variant in declaration order. The [`DuplicateGuard`] sizes its
-    /// table from this list and indexes it by discriminant, and the check
-    /// under it refuses to compile until a new variant is appended here.
+    /// table from this list and indexes it by discriminant. The check under
+    /// it proves the listed variants sit at their own discriminants and
+    /// refuses a variant that has no arm in its match; it cannot see a
+    /// variant that has an arm but no entry here, so append the entry with
+    /// the arm, or the first press of that variant indexes past the table.
     pub const ALL: [Action; 15] = [
         Action::Up,
         Action::Down,
@@ -2012,26 +2015,5 @@ mod tests {
         );
         assert!(!guarded.repeater.anything_held());
         assert!(!unguarded.repeater.anything_held());
-    }
-
-    #[test]
-    fn every_action_has_a_slot() {
-        // The guard indexes a table sized from `Action::ALL` by discriminant.
-        // A first press and release of every listed action must pass, so a
-        // table that is too small, or a list out of declaration order that
-        // slipped past the compile-time check, shows up here rather than
-        // on the device.
-        let mut guard = DuplicateGuard::new();
-        let now = SystemTime::UNIX_EPOCH + ms(1000);
-        for action in Action::ALL {
-            assert_eq!(
-                guard.admit(KeyEdge::Down(action), now),
-                Some(KeyEdge::Down(action))
-            );
-            assert_eq!(
-                guard.admit(KeyEdge::Up(action), now),
-                Some(KeyEdge::Up(action))
-            );
-        }
     }
 }
