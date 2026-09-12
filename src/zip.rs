@@ -117,8 +117,9 @@ pub struct Contents {
 
 /// A bounded, operation-local archive cache. Opening the file and checking its
 /// identity on every use keeps ordinary browsing responsive to replacement;
-/// launch confirmation deliberately calls `entries` directly instead. A read
-/// through here is the one that writes the members it left out to the log.
+/// launch confirmation deliberately calls `entries` directly instead. Nothing
+/// read through here is logged: the members an archive leaves out are written
+/// down by the index and the audit that list it, not by every reader.
 #[derive(Debug, Default)]
 pub struct ArchiveCache {
     last: Option<(PathBuf, ArchiveStamp, std::sync::Arc<Contents>)>,
@@ -174,21 +175,6 @@ impl ArchiveCache {
         let Some(contents) = contents_controlled(path, cancelled)? else {
             return Ok(None);
         };
-        // Every member left out goes to the log here, where a listing
-        // reads the archive (an index, an audit, a listing straight from
-        // the card), once per read and in one write however many members
-        // there are. The direct reads of `contents` stay silent: a launch
-        // check reports the chosen member's reason in its own message, and
-        // a start with many favourites in one archive reads it once per
-        // favourite, which must not repeat the block each time.
-        if !contents.skipped.is_empty() {
-            let lines: Vec<String> = contents
-                .skipped
-                .iter()
-                .map(|skipped| format!("zip          {}: {}", path.display(), skipped.describe()))
-                .collect();
-            crate::note(&lines.join("\n"));
-        }
         let entries = std::sync::Arc::new(contents);
         self.last = Some((path.to_path_buf(), stamp, entries.clone()));
         Ok(Some(entries))

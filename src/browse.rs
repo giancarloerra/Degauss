@@ -658,9 +658,11 @@ impl Library {
     /// is unpacked, because unpacking is the loader's job at launch time.
     /// Members the reader left out are not rows; the archive itself hands
     /// them back, when asked to `report`, for the index or audit that reads
-    /// it to summarise, and the reader has already logged each of them when
-    /// it read the archive. A listing that only wants rows does not copy
-    /// them.
+    /// it to summarise, and writes them to the log at the same time, once
+    /// per archive and in one write however many there are. A listing that
+    /// only wants rows neither copies nor logs them: the Details view, the
+    /// Artwork Pack passes and a start resolving favourites read archives
+    /// too, and must not repeat the block on every read.
     fn list_archive(
         &self,
         archive: &Path,
@@ -671,6 +673,16 @@ impl Library {
         let contents = self.archive_cache.borrow_mut().read(archive)?;
         let entries = &contents.entries;
         let skipped = if report && prefix.is_empty() {
+            if !contents.skipped.is_empty() {
+                let lines: Vec<String> = contents
+                    .skipped
+                    .iter()
+                    .map(|skipped| {
+                        format!("zip          {}: {}", archive.display(), skipped.describe())
+                    })
+                    .collect();
+                crate::note(&lines.join("\n"));
+            }
             contents.skipped.clone()
         } else {
             Vec::new()
@@ -1280,7 +1292,7 @@ impl Library {
                 Ok((mut rows, _, skipped)) => {
                     // A member left out of an archive is a place that could
                     // not be read, for the same reason a folder that errors
-                    // is: it is what the audit exists to surface. The reader
+                    // is: it is what the audit exists to surface. The listing
                     // logged every one; the printed report has the first few.
                     // Written as text rather than joined: a member name
                     // starting with a slash (one of the reasons to be here)

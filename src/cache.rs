@@ -372,7 +372,7 @@ fn walk_controlled(
     }
     let (mut rows, _, skipped) = library.list_reporting(place, true)?;
     if !skipped.is_empty() {
-        // The reader wrote every member to the log with its reason when it
+        // The listing wrote every member to the log with its reason when it
         // read the archive. The summary on screen gets one line per reason,
         // with a count, so it stays readable for an archive with hundreds
         // of them.
