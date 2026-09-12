@@ -995,7 +995,13 @@ impl Provider {
                     };
                     field(fingerprint.directory_modified.to_string().as_bytes());
                     for (name, size, modified, content_crc32) in &fingerprint.tables {
-                        field(format!("{name}\0{size}\0{modified}\0{content_crc32:?}").as_bytes());
+                        field(name.as_bytes());
+                        field(size.to_string().as_bytes());
+                        field(modified.to_string().as_bytes());
+                        match content_crc32 {
+                            Some(crc32) => field(crc32.to_string().as_bytes()),
+                            None => field(b"no-crc32"),
+                        }
                     }
                 }
             }
