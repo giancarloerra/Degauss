@@ -883,8 +883,10 @@ accepted as a pack, and `degauss.log` names the folder.
 
 The choice applies to the complete system, including all of its game folders.
 Neo Geo and Neo Geo MVS share one choice because they use the same library and
-database. Favourites have no separate choice: each one follows the current
-source of the system that owns its game.
+database; what they share is the saved mode, so under Automatic each of the
+two is still asked about, prepared and remembered on its own. Favourites have
+no separate choice: each one follows the current source of the system that
+owns its game.
 
 The source menu shows both the saved mode and its effective source. Under
 Automatic a `gamelist.xml` in any of the system's library roots always comes
