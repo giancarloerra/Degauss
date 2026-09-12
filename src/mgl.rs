@@ -167,6 +167,7 @@ impl Homes {
                     Component::Missing { raw, tried } if tried.is_empty() => Component::Missing {
                         tried: home_name
                             .as_deref()
+                            .and_then(folder_name)
                             .map(|name| {
                                 self.roots
                                     .iter()
@@ -261,10 +262,25 @@ impl Homes {
                 }
             }
         };
-        if homes.is_empty() && !name.is_empty() {
-            homes.extend(crate::systems::existing_folder(&name, &self.roots));
+        if homes.is_empty() {
+            if let Some(name) = folder_name(&name) {
+                homes.extend(crate::systems::existing_folder(name, &self.roots));
+            }
         }
         (recognised, (!name.is_empty()).then_some(name), homes)
+    }
+}
+
+/// The name as one folder under `games`, or nothing when it is not one:
+/// empty, or carrying a `/`, a `.` or a `..` step. Main joins a
+/// `<setname>` to `games` as written, so such a value would lead out of
+/// the game roots; here it is looked for nowhere, and the descriptor
+/// reports its component as missing with the name it gave.
+fn folder_name(name: &str) -> Option<&str> {
+    let mut steps = Path::new(name).components();
+    match (steps.next(), steps.next()) {
+        (Some(std::path::Component::Normal(_)), None) => Some(name),
+        _ => None,
     }
 }
 
@@ -419,7 +435,7 @@ pub fn ambiguous_error(descriptor: &Path, raw: &str, existing: &[PathBuf]) -> De
     DegaussError::unsupported(
         "MGL component",
         format!(
-            "{raw} in {} exists in both {}; MiSTer would load one of them and Degauss cannot tell which",
+            "{raw} in {} exists in each of {}; MiSTer would load one of them and Degauss cannot tell which",
             descriptor.display(),
             listed(existing)
         ),
@@ -871,6 +887,50 @@ mod tests {
         );
         assert_eq!(unknown.class, Class::Game);
         assert_eq!(unknown.game_target().unwrap(), Some(other.join("Game.fds")));
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    /// Main joins a `<setname>` to `games` as written, so a value with a
+    /// path step in it names a folder outside the game roots. Nothing is
+    /// looked for there: a component of such a descriptor is missing, and
+    /// no path outside the roots is named as tried.
+    #[test]
+    fn a_setname_with_path_steps_is_looked_for_nowhere() {
+        let root = temp("setname-steps");
+        let games = root.join("games");
+        let outside = root.join("outside");
+        std::fs::create_dir_all(&games).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(outside.join("Game.fds"), b"disk outside the roots").unwrap();
+        let homes = Homes::new(&[games.to_string_lossy().into_owned()], &[]);
+        for setname in ["../outside", "./outside", "..", "sub/outside"] {
+            let mgl = root.join("Escape.mgl");
+            std::fs::write(
+                &mgl,
+                format!("<mistergamedescription><rbf>_Arcade/cores/Escape</rbf><setname>{setname}</setname><file delay=\"1\" type=\"f\" index=\"1\" path=\"Game.fds\"/></mistergamedescription>"),
+            )
+            .unwrap();
+            let resolved = homes.resolve(&mgl).unwrap();
+            assert_eq!(
+                resolved.components,
+                vec![Component::Missing {
+                    raw: "Game.fds".into(),
+                    tried: Vec::new(),
+                }],
+                "{setname}: the file outside the roots is never found, and no path there is listed"
+            );
+            let error = resolved.verify().unwrap_err();
+            assert!(
+                matches!(&error, DegaussError::Io { what: "MGL component", path, .. } if path == &mgl),
+                "{setname}: {error}"
+            );
+            assert!(error.to_string().contains(setname), "{setname}: {error}");
+        }
+        assert_eq!(
+            folder_name("Rock & Roll"),
+            Some("Rock & Roll"),
+            "an ordinary set name is one folder"
+        );
         std::fs::remove_dir_all(root).ok();
     }
 

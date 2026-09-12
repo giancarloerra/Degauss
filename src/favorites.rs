@@ -245,7 +245,10 @@ pub fn reference_of(path: &Path, homes: &crate::mgl::Homes) -> Option<FavoriteRe
 
 /// What a resolved descriptor stands for: its game for a game descriptor,
 /// the descriptor itself for a core set, and the descriptor itself with
-/// the reason when the game cannot be placed.
+/// the reason when the game cannot be placed. A game descriptor whose
+/// game is placed still carries the reason when a companion written
+/// ahead of it is not: the launch relocates every file, so that
+/// favourite fails to start, and the shelf says so before then.
 fn placed(
     resolved: &crate::mgl::Resolved,
     descriptor: &Path,
@@ -253,8 +256,8 @@ fn placed(
     match resolved.class {
         crate::mgl::Class::CoreSet => (descriptor.to_path_buf(), resolved.diagnostic()),
         crate::mgl::Class::Game => match resolved.game_target() {
-            Ok(Some(target)) => (target, None),
-            Ok(None) => (descriptor.to_path_buf(), None),
+            Ok(Some(target)) => (target, resolved.diagnostic()),
+            Ok(None) => (descriptor.to_path_buf(), resolved.diagnostic()),
             Err(_) => (descriptor.to_path_buf(), resolved.diagnostic()),
         },
     }
@@ -798,6 +801,55 @@ extensions = ["fds"]
                 menu_folder: None,
             })
             .collect()
+    }
+
+    /// A game descriptor lists a companion ahead of its game. When the
+    /// game is in one of the system's folders but the companion is in two,
+    /// the favourite is still that game (its identity is the last file)
+    /// and still says what is wrong: the launch places every file and
+    /// refuses that companion, so a shelf that called it healthy would
+    /// send the user into a failed start with nothing said beforehand.
+    #[test]
+    fn a_placed_game_with_an_unplaceable_companion_keeps_its_identity_and_the_reason() {
+        let root = temp("context-companion");
+        let primary = root.join("primary");
+        let secondary = root.join("secondary");
+        std::fs::create_dir_all(&primary).unwrap();
+        std::fs::create_dir_all(&secondary).unwrap();
+        std::fs::write(primary.join("Game.fds"), b"the game").unwrap();
+        for folder in [&primary, &secondary] {
+            std::fs::write(folder.join("Companion.bin"), b"companion").unwrap();
+        }
+        let systems = ra_fixture_systems(&[primary.clone(), secondary.clone()]);
+        let homes = crate::mgl::Homes::new(&[], &systems);
+        let favorite = root.join("Game.mgl");
+        std::fs::write(&favorite, "<mistergamedescription><rbf>_RA_Cores/Cores/NES</rbf><setname same_dir=\"1\">RA_NES</setname><file delay=\"1\" type=\"f\" index=\"2\" path=\"Companion.bin\"/><file delay=\"1\" type=\"f\" index=\"1\" path=\"Game.fds\"/></mistergamedescription>").unwrap();
+        let reference = reference_of(&favorite, &homes).unwrap();
+        assert_eq!(
+            reference.owner_target,
+            primary.join("Game.fds"),
+            "the game is the last file, whatever the companion's state"
+        );
+        let crate::mgl::Diagnostic::Ambiguous(diagnostic) = reference
+            .diagnostic
+            .expect("a companion in two folders is the favourite's problem, said on the favourite")
+        else {
+            panic!("two companions found is ambiguity, not absence");
+        };
+        assert!(diagnostic.contains("Companion.bin"), "{diagnostic}");
+        let text = std::fs::read_to_string(&favorite).unwrap();
+        let error = relocate_mgl(&text, &favorite, &systems[0].to_config()).unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            diagnostic,
+            "the shelf's reason is the launch's refusal, word for word"
+        );
+
+        std::fs::remove_file(secondary.join("Companion.bin")).unwrap();
+        let reference = reference_of(&favorite, &homes).unwrap();
+        assert_eq!(reference.owner_target, primary.join("Game.fds"));
+        assert_eq!(reference.diagnostic, None);
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     /// An RA launcher favourite keeps the core's own folders (`same_dir`),

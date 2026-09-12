@@ -253,10 +253,10 @@ scripts report their underlying error.
   anywhere else appears here: the stock script's absolute paths, the
   root-relative paths Degauss writes, and hand-written paths relative to
   the core's games folder are all read the way MiSTer Main reads them. A
-  favourite whose file sits in two of its system's folders at once is
-  kept, reported in `/tmp/degauss.log` and Game Information, and refused
-  at launch with the same line, rather than pointed at one of them by
-  folder order.
+  favourite any of whose files sits in two of its system's folders at once
+  is kept, reported in `/tmp/degauss.log` and Game Information, and
+  refused at launch with the same line, rather than pointed at one of them
+  by folder order.
 - **Awkward systems handled** without hassle: AmigaVision, DOS,
   Neo Geo, Arcade, X68000, and cores that are several machines.
 
@@ -895,7 +895,9 @@ spelled out as several files under `_Arcade`, is identified by its own name
 and `<setname>`: every file it names has to exist under that home
 directory, and none of them is hashed. A file present in two of a system's
 folders at once is reported in `/tmp/degauss.log` and left unmatched rather
-than picked by folder order.
+than picked by folder order. A `<setname>` that is not one folder name (a
+`/`, `.` or `..` step in it) is looked for nowhere, so no MGL can point
+the lookup outside the game roots.
 
 Selecting an Artwork Pack never edits or removes the existing gamelist or its
 media. Choose **Gamelist** again to restore them immediately. While Artwork
