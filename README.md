@@ -440,9 +440,9 @@ system** or a full rebuild. A layout the defaults do not cover is one
 `game_roots` edit in `degauss.toml` away.
 
 The first run reads the card and writes an index, about a minute for a
-full one of 97k+ games. It reads the card only: an installed Artwork Pack is
-not opened until its system is entered and you say so. Ordinary folder
-libraries then reuse their saved lists:
+full one of 97k+ games. It reads the ordinary game libraries only: an
+installed Artwork Pack is not opened until its system is entered and you say
+so. Ordinary folder libraries then reuse their saved lists:
 **Options → Library → Rebuild All System Lists** is how you tell Degauss the
 card has changed (for example after adding new games). New images and metadata
 are read on the fly. A system whose Artwork Pack you chose yourself is
