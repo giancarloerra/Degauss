@@ -3145,9 +3145,10 @@ fn run_automatic_pack_consent_flow(root: &Path, window: Rc<MinimalSoftwareWindow
     app.finish_background_work_for_headless();
     assert!(app.source_job.is_none());
     let message = app.message.clone().expect("a failed preparation says so");
-    assert!(
-        message.starts_with("NES Artwork Pack was not prepared."),
-        "{message}"
+    assert_eq!(
+        message,
+        "NES Artwork Pack was not prepared.\nArtwork Pack invalid: repair it and try again.",
+        "the category the worker found is on screen, without its detail"
     );
     assert!(!message.contains("previous complete cache"));
     assert!(!message.contains('/'), "no path on screen: {message}");
@@ -4081,9 +4082,11 @@ fn run_legacy_pack_cache_adoption_flow(root: &Path, window: Rc<MinimalSoftwareWi
     drop(app);
 
     // 24. Automatic from before, with a cache that no longer tells the
-    // truth about its games: kept as it is and asked about. Keep Current
-    // opens the ordinary system and is remembered; Rebuild This System
-    // List is the way to prepare it, and it asks once more first.
+    // truth about its games: kept as it is and asked about, with the
+    // question saying that a No opens the system without Pack data, as
+    // there is no current result to keep. Not Now opens the ordinary
+    // system and is remembered; Rebuild This System List is the way to
+    // prepare it, and it asks once more first.
     let root = root.with_file_name("legacy-automatic-changed");
     let games = root.join("games/NES");
     std::fs::create_dir_all(&games).unwrap();
@@ -4107,10 +4110,11 @@ fn run_legacy_pack_cache_adoption_flow(root: &Path, window: Rc<MinimalSoftwareWi
         "{:?}",
         app.message
     );
-    assert!(app
-        .message
-        .as_deref()
-        .is_some_and(|message| message.starts_with("Artwork Pack Changed")));
+    assert_eq!(
+        app.message.as_deref(),
+        Some("Artwork Pack Changed\n\nThe installed Artwork Pack data for NES has changed, and its prepared data from before cannot stand for it. Update its prepared artwork and metadata now? Not Now opens the system without Pack data.\n\nA Update   B Not Now"),
+        "the question does not promise a current result that is not there"
+    );
     assert!(log_since(logged_from).contains("artwork pack NES: prompt shown: changed"));
     assert_eq!(
         pack_files(&app.cache_dir, "NES")[0].as_deref(),
@@ -4122,7 +4126,7 @@ fn run_legacy_pack_cache_adoption_flow(root: &Path, window: Rc<MinimalSoftwareWi
     assert_eq!(app.open_system.as_deref(), Some("NES"), "{:?}", app.message);
     assert!(
         app.artwork_provider.is_none(),
-        "Keep Current on a cache that cannot be tied to the Pack opens without it"
+        "Not Now on a cache that cannot be tied to the Pack opens without it"
     );
     assert_eq!(app.here.len(), 2, "{:?}", app.here);
     assert_eq!(app.here[0].name, "Extra.nes");
@@ -4207,6 +4211,130 @@ fn run_legacy_pack_cache_adoption_flow(root: &Path, window: Rc<MinimalSoftwareWi
         .unwrap()
         .unwrap();
     assert!(state.accepted.is_some() && state.declined.is_none());
+    app.ui.hide().unwrap();
+    drop(app);
+
+    // 24. Two systems on one catalogue: one prepared under this release,
+    // one carrying a cache from before. Adopting the second reads
+    // nothing for the first and writes nothing over its state, so the
+    // Pack change made in between is still asked about when the first
+    // is entered. Read on a fresh start, as an upgrade is: no provider
+    // is in memory.
+    let root = root.with_file_name("legacy-shared-group");
+    let games = root.join("games/NEOGEO");
+    let artwork = root.join("docs/NEOGEO/Artwork");
+    for directory in [&games, &artwork] {
+        std::fs::create_dir_all(directory).unwrap();
+    }
+    std::fs::write(games.join("One.neo"), b"first rom").unwrap();
+    std::fs::write(
+        artwork.join("manifest.tsv"),
+        "#key\tstyle\tss_system_id\nOne\tbox-2D\t142\n",
+    )
+    .unwrap();
+    std::fs::write(
+        artwork.join("index.tsv"),
+        "#name\tcrc\tsize\tkey\nOne\t\t\tOne\n",
+    )
+    .unwrap();
+    let gameinfo = artwork.join("gameinfo.tsv");
+    std::fs::write(
+        &gameinfo,
+        "#key\tname\tyear\tgenre\tdeveloper\tplayers\nOne\tPack One\t1990\tAction\tStudio\t1\n",
+    )
+    .unwrap();
+    std::fs::write(artwork.join("One.jpg"), crate::covers::JPEG_16).unwrap();
+    let mut app = unopened_fixture_app_with_systems(
+        &root,
+        window.clone(),
+        Settings::default(),
+        &["NeoGeoMVS", "NeoGeo"],
+        "games/NEOGEO",
+    );
+    app.pack_candidate_bases = vec![root.clone()];
+    app.leave_splash();
+    app.finish_background_work_for_headless();
+    app.open_system_by_index(0);
+    assert!(matches!(app.pending, Some(Pending::PrepareArtworkPack(_))));
+    app.handle(Action::Accept);
+    app.finish_background_work_for_headless();
+    assert_eq!(
+        app.open_system.as_deref(),
+        Some("NeoGeoMVS"),
+        "{:?}",
+        app.message
+    );
+    let prepared_mvs = pack_files(&app.cache_dir, "NeoGeoMVS");
+    assert!(prepared_mvs.iter().all(Option::is_some));
+    let cache_dir = app.cache_dir.clone();
+    app.ui.hide().unwrap();
+    drop(app);
+    // The other member's cache from before, complete and without state,
+    // and a Pack table edited after the first member was prepared.
+    let neogeo = fixture_system(&root, "NeoGeo", "games/NEOGEO");
+    let library = Library::open_source_neutral(&neogeo.to_config(), Default::default()).unwrap();
+    crate::cache::install_transactional(
+        &cache_dir,
+        crate::cache::CacheKind::ArtworkPack,
+        &[crate::cache::StagedSystemCache {
+            id: "NeoGeo".into(),
+            cache: crate::cache::build_system(&library),
+            fingerprints: Default::default(),
+            fingerprints_complete: true,
+        }],
+    )
+    .unwrap();
+    std::fs::write(
+        &gameinfo,
+        "#key\tname\tyear\tgenre\tdeveloper\tplayers\nOne\tPack One Renamed\t1990\tAction\tStudio\t1\n",
+    )
+    .unwrap();
+    let mut app = unopened_fixture_app_with_systems(
+        &root,
+        window.clone(),
+        Settings::default(),
+        &["NeoGeoMVS", "NeoGeo"],
+        "games/NEOGEO",
+    );
+    app.pack_candidate_bases = vec![root.clone()];
+    app.leave_splash();
+    app.finish_background_work_for_headless();
+    assert!(app.build.is_none());
+    assert!(app.artwork_provider_cache.is_empty());
+    let logged_from = log_len();
+    app.open_system_by_index(1);
+    assert_eq!(
+        app.open_system.as_deref(),
+        Some("NeoGeo"),
+        "{:?}",
+        app.message
+    );
+    assert!(app.pending.is_none(), "{:?}", app.message);
+    let logged = log_since(logged_from);
+    assert!(logged.contains("artwork pack NeoGeo: adopting legacy cache"));
+    assert!(logged.contains("artwork pack NeoGeo: state written"));
+    assert!(
+        !logged.contains("artwork pack NeoGeoMVS"),
+        "the prepared member is not read on the other one's adoption: {logged}"
+    );
+    assert_eq!(
+        pack_files(&app.cache_dir, "NeoGeoMVS"),
+        prepared_mvs,
+        "the prepared member's files are not written over"
+    );
+    app.enter(Place::Dir(games.clone()));
+    assert_eq!(app.here[0].name, "Pack One Renamed");
+    leave_system(&mut app);
+    app.open_system_by_index(0);
+    assert!(
+        matches!(app.pending, Some(Pending::UpdateArtworkPack(_))),
+        "the prepared member's own entry sees the change: {:?}",
+        app.message
+    );
+    assert!(app
+        .message
+        .as_deref()
+        .is_some_and(|message| message.starts_with("Artwork Pack Changed")));
     app.ui.hide().unwrap();
 }
 
@@ -4521,7 +4649,7 @@ fn run_arcade_descriptor_failures_flow(root: &Path, window: Rc<MinimalSoftwareWi
     app.finish_background_work_for_headless();
     assert_eq!(
         app.message.as_deref(),
-        Some("Arcade list was not rebuilt.\nCheck degauss.log for details, then try again.\nThe previous complete cache remains in use.")
+        Some("Arcade list was not rebuilt.\nArtwork Pack unavailable: reconnect its storage and try again.\nThe previous complete cache remains in use.")
     );
     assert_eq!(pack_files(&app.cache_dir, "Arcade"), complete);
     assert_enriched(&app, &healthy, "Pack Healthy", "healthy");

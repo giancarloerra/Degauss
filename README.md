@@ -941,10 +941,12 @@ check and question for that system. Caches prepared by the previous release
 keep working: each is tied to its pack the first time its system is entered,
 by one worker read with the usual overlay, and reused from then on. Nothing
 is reprocessed at startup and nothing needs a reset. A cache that no longer
-matches the pack installed now is kept and asked about instead: **Keep
-Current** there keeps the file but opens the system with its ordinary data,
-since that cache cannot stand for the pack; **Rebuild This System List**, and
-**Update** when it asks, is the way to use the pack again.
+matches the pack installed now is kept and asked about instead, with the
+question saying so (`A Update   B Not Now`, and that Not Now opens the
+system without pack data): there is no current result to keep browsing on,
+so **Not Now** keeps the file but opens the system with its ordinary data;
+**Rebuild This System List**, and **Update** when it asks, is the way to use
+the pack again.
 
 The two effective sources are deliberately exclusive:
 
@@ -1535,7 +1537,7 @@ to point somewhere else. `degauss.sh` passes them explicitly.
 |---|---|
 | `--audit` | Every system, one line each: games found, artwork bound, folders and any selected Artwork Pack health problem. A Gamelist system with a `gamelist.xml` but no artwork bound, a usable Pack that resolves no pictures, or a system with no games is listed again underneath as a problem. A whole card checked without opening a hundred systems by hand. |
 | `--list-systems` | Which systems this card actually has, and where each one resolved. The answer to "why is my system missing". |
-| `--check-install` | The installation itself, including every saved Artwork Pack root and every Automatic pack decision written down (accepted, with the games left without pack data, or declined): what is present, missing, broken or left half-migrated. The first thing to run when something looks wrong. |
+| `--check-install` | The installation itself, including every saved Artwork Pack root and every pack state file written beside a system cache, read under the source the settings choose for that system now: an Automatic acceptance or decline, an explicit Artwork Pack choice's preparation (with the games left without pack data), or a state kept behind a later Gamelist choice. What is present, missing, broken or left half-migrated. The first thing to run when something looks wrong. |
 | `--report` | One system in detail, with `--system <id>`. It identifies Gamelist or Artwork Pack; for a Pack it also reports the selected root, health and the first game's local match method, a match that fails on an MGL names the file the MGL asked for and the folder it was looked for in, and a descriptor left out of the mapping is counted under its reason. Under Automatic it also says what the pack decision stands at: prepared and current, changed, unavailable, declined, or a candidate not yet asked about. |
 | `--dry-run-launch` | The MGL that *would* be written to start a game, printed instead of run. The answer to "why does this game not start". |
 

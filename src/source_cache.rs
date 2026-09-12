@@ -199,9 +199,17 @@ fn run(request: Request, events: &SyncSender<Event>, cancelled: &Arc<AtomicBool>
                 // rows with nothing in them. Only a system with no complete
                 // cache to keep is staged with its ordinary rows, so it can
                 // open and show the real health error.
-                let complete_before =
-                    crate::cache::load_artwork_pack_data(&request.cache_dir, &system.id)
-                        .is_some_and(|data| data.fingerprints_complete);
+                let complete_before = match crate::cache::load_artwork_pack_data_checked(
+                    &request.cache_dir,
+                    &system.id,
+                ) {
+                    Ok(cached) => cached.is_some_and(|data| data.fingerprints_complete),
+                    // Not known to be absent: nothing is staged over it.
+                    Err(error) => {
+                        let _ = events.send(Event::Failed { error, progress });
+                        return;
+                    }
+                };
                 if request.require_usable_provider || complete_before {
                     let _ = events.send(Event::Failed {
                         error: DegaussError::unsupported("Artwork Pack", provider.status_line()),
@@ -723,10 +731,26 @@ mod tests {
         assert_eq!(
             installed
                 .cache
-                .summary(&crate::browse::Place::Dir(games))
+                .summary(&crate::browse::Place::Dir(games.clone()))
                 .games,
             1
         );
+
+        // A previous cache that is there but cannot be read at that
+        // moment is not a missing one: nothing is staged over it, and
+        // the recovery fails with the read error, not the Pack's health.
+        let cache_path = crate::cache::artwork_pack_system_path(&cache_dir, "SuperGrafx");
+        std::fs::remove_file(&cache_path).unwrap();
+        std::fs::create_dir(&cache_path).unwrap();
+        let mut recovery = start(request(false)).unwrap();
+        let Event::Failed { error, .. } = terminal(&mut recovery) else {
+            panic!("a cache that cannot be read must not be replaced by ordinary rows");
+        };
+        assert!(
+            error.to_string().contains("reading the Artwork Pack cache"),
+            "{error}"
+        );
+        assert!(cache_path.is_dir(), "the unreadable cache is left as it is");
         std::fs::remove_dir_all(root).ok();
     }
 

@@ -605,8 +605,10 @@ fn check_install(config_path: &Path) -> Result<()> {
                 println!("game source  {group}: explicit Gamelist");
             }
         }
-        // What was decided for Automatic systems, one line per state file,
-        // read as the frontend reads them: without opening a Pack.
+        // What was written down beside each Pack cache, one line per
+        // state file, read as the frontend reads them: without opening a
+        // Pack, and under the source the settings choose for the system
+        // now.
         match pack_source_states(&cache::dir_for(&settings_path)) {
             Ok(states) => {
                 for (id, state) in states {
@@ -624,14 +626,8 @@ fn check_install(config_path: &Path) -> Result<()> {
                             continue;
                         }
                     };
-                    if let Some(accepted) = &state.accepted {
-                        println!(
-                            "artwork pack {id}: Automatic accepted at {}, {} without Pack data",
-                            accepted.docs_root,
-                            games_count(accepted.skipped_entries)
-                        );
-                    } else if let Some(declined) = &state.declined {
-                        println!("artwork pack {id}: declined at {}", declined.docs_root);
+                    if let Some(line) = pack_state_line(settings, &id, &state) {
+                        println!("artwork pack {id}: {line}");
                     }
                 }
             }
@@ -1191,6 +1187,38 @@ fn automatic_source_notes(loaded: &Loaded, system: &FoundSystem) -> Vec<String> 
             "Automatic: candidate location not checked: {error}"
         )],
     }
+}
+
+/// One state file as `--check-install` lists it: what was written down,
+/// under the source the settings choose for the system now. A state is
+/// written for an explicit Artwork Pack choice as it is for an Automatic
+/// acceptance, and it stays beside the cache when Gamelist is chosen
+/// afterwards, so the line says which of the three it stands for.
+fn pack_state_line(
+    settings: &Settings,
+    id: &str,
+    state: &cache::PackSourceState,
+) -> Option<String> {
+    let mode = artwork_source::mode(settings, id);
+    if let Some(accepted) = &state.accepted {
+        let decision = match mode {
+            artwork_source::Mode::ArtworkPack => "explicit Artwork Pack, prepared",
+            artwork_source::Mode::Automatic => "Automatic accepted",
+            artwork_source::Mode::Gamelist => "Gamelist chosen; prepared state kept",
+        };
+        return Some(format!(
+            "{decision} at {}, {} without Pack data",
+            accepted.docs_root,
+            games_count(accepted.skipped_entries)
+        ));
+    }
+    let declined = state.declined.as_ref()?;
+    Some(match mode {
+        artwork_source::Mode::Gamelist => {
+            format!("Gamelist chosen; decline kept at {}", declined.docs_root)
+        }
+        _ => format!("declined at {}", declined.docs_root),
+    })
 }
 
 /// "1 game" or "n games", as the preparation report counts them.
@@ -2219,6 +2247,38 @@ category = "Favorites"
                 .collect::<Vec<_>>(),
             [("Arcade", true), ("NES", false)]
         );
+        // The listing says what the state stands for under the source the
+        // settings choose now: the same file is an Automatic acceptance,
+        // an explicit choice's preparation, or a leftover behind Gamelist.
+        let arcade_state = listed[0].1.as_ref().unwrap().as_ref().unwrap();
+        let nes_state = listed[1].1.as_ref().unwrap().as_ref().unwrap();
+        let mut settings = Settings::default();
+        assert_eq!(
+            pack_state_line(&settings, "Arcade", arcade_state).unwrap(),
+            format!(
+                "Automatic accepted at {}, 1 game without Pack data",
+                docs.display()
+            )
+        );
+        assert_eq!(
+            pack_state_line(&settings, "NES", nes_state).unwrap(),
+            format!("declined at {}", docs.display())
+        );
+        settings
+            .artwork_pack_roots
+            .insert("Arcade".into(), docs.to_string_lossy().into_owned());
+        assert!(pack_state_line(&settings, "Arcade", arcade_state)
+            .unwrap()
+            .starts_with("explicit Artwork Pack, prepared at"));
+        settings.gamelist_sources.insert("NES".into());
+        assert!(pack_state_line(&settings, "NES", nes_state)
+            .unwrap()
+            .starts_with("Gamelist chosen; decline kept at"));
+        settings.artwork_pack_roots.clear();
+        settings.gamelist_sources.insert("Arcade".into());
+        assert!(pack_state_line(&settings, "Arcade", arcade_state)
+            .unwrap()
+            .starts_with("Gamelist chosen; prepared state kept at"));
         assert_eq!(
             automatic_source_notes(&loaded, &loaded.systems[0]),
             [format!(
@@ -2247,6 +2307,8 @@ category = "Favorites"
         nes.def.id = "NES".into();
         assert!(automatic_source_notes(&loaded, &nes)[0].contains("state not read"));
         std::fs::remove_dir(&nes_state).unwrap();
+        // Declined as the NES side of the docs stands, with no NES folder
+        // installed: current until one appears.
         cache::save_pack_source_state(
             &cache_dir,
             "NES",
@@ -2256,23 +2318,40 @@ category = "Favorites"
                     docs_root: docs.to_string_lossy().into_owned(),
                     language: None,
                     signature: Some(
-                        artwork_pack::known_tables_signature("Arcade", &docs, None).unwrap(),
+                        artwork_pack::known_tables_signature("NES", &docs, None).unwrap(),
                     ),
                     cache_marker: None,
                 }),
             },
         )
         .unwrap();
+        let mut nes = loaded.systems[0].clone();
+        nes.def.id = "NES".into();
+        assert!(
+            automatic_source_notes(&loaded, &nes)[0].contains("declined for the current signature"),
+            "{:?}",
+            automatic_source_notes(&loaded, &nes)
+        );
         std::fs::write(
             docs.join("Arcade/Artwork/gameinfo.tsv"),
             "#key\tname\tyear\tgenre\tdeveloper\tplayers\nhealthy\tRenamed\t1990\tShooter\tStudio\t2\n",
         )
         .unwrap();
         assert!(automatic_source_notes(&loaded, &loaded.systems[0])[0].contains("state changed"));
-        let mut nes = loaded.systems[0].clone();
-        nes.def.id = "NES".into();
         assert!(
-            automatic_source_notes(&loaded, &nes)[0].contains("declined"),
+            automatic_source_notes(&loaded, &nes)[0].contains("declined for the current signature"),
+            "another system's table is not this system's change: {:?}",
+            automatic_source_notes(&loaded, &nes)
+        );
+        std::fs::create_dir_all(docs.join("NES/Artwork")).unwrap();
+        std::fs::write(
+            docs.join("NES/Artwork/manifest.tsv"),
+            "#key\tstyle\tss_system_id\nOne\tbox-2D\t3\n",
+        )
+        .unwrap();
+        assert!(
+            automatic_source_notes(&loaded, &nes)[0]
+                .contains("declined for an earlier signature; asks on the next entry"),
             "{:?}",
             automatic_source_notes(&loaded, &nes)
         );

@@ -204,15 +204,38 @@ pub fn load_artwork_pack_system(dir: &Path, id: &str) -> Option<SystemCache> {
 }
 
 pub fn load_artwork_pack_data(dir: &Path, id: &str) -> Option<ArtworkPackData> {
-    let bytes = std::fs::read(artwork_pack_system_path(dir, id)).ok()?;
-    let cache: ArtworkPackCache = postcard::from_bytes(&bytes).ok()?;
-    (cache.format == ARTWORK_PACK_FORMAT && cache.cache.format == FORMAT).then_some(
-        ArtworkPackData {
-            cache: cache.cache,
-            fingerprints: cache.fingerprints,
-            fingerprints_complete: cache.fingerprints_complete,
-            marker: crc32fast::hash(&bytes),
-        },
+    load_artwork_pack_data_checked(dir, id).ok().flatten()
+}
+
+/// The same, telling a cache that is not there from one that cannot be
+/// read: where the answer decides whether a complete result exists to be
+/// kept, a file that cannot be read at that moment is not a missing one.
+/// A file that does not decode is no cache, as it is for every cache.
+pub fn load_artwork_pack_data_checked(dir: &Path, id: &str) -> Result<Option<ArtworkPackData>> {
+    let path = artwork_pack_system_path(dir, id);
+    let bytes = match std::fs::read(&path) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(DegaussError::io(
+                "reading the Artwork Pack cache",
+                &path,
+                error,
+            ))
+        }
+    };
+    let Ok(cache) = postcard::from_bytes::<ArtworkPackCache>(&bytes) else {
+        return Ok(None);
+    };
+    Ok(
+        (cache.format == ARTWORK_PACK_FORMAT && cache.cache.format == FORMAT).then_some(
+            ArtworkPackData {
+                cache: cache.cache,
+                fingerprints: cache.fingerprints,
+                fingerprints_complete: cache.fingerprints_complete,
+                marker: crc32fast::hash(&bytes),
+            },
+        ),
     )
 }
 
@@ -499,13 +522,13 @@ impl PreparedCacheGroup {
             artwork_pack_prepared_path(dir, id),
             prepared,
             "prepared",
-            |written| decode_pack_prepared(written).is_some(),
+            |written| matches!(decode_pack_prepared(written), Ok(Some(_))),
         )?;
         self.stage_extra_file(
             artwork_pack_source_path(dir, id),
             source,
             "state",
-            |written| decode_pack_source(written).is_some(),
+            |written| matches!(decode_pack_source(written), Ok(Some(_))),
         )?;
         Ok(self)
     }
@@ -932,8 +955,8 @@ pub fn encode_pack_source(state: &PackSourceState) -> Result<Vec<u8>> {
     .map_err(|error| DegaussError::unsupported("artwork pack state", error.to_string()))
 }
 
-/// The same shape as [`PackPreparedFile`], borrowed: the map is written
-/// out of the worker's own without copying every row's presentation.
+/// The same shape as [`PackPreparedFile`], borrowed: the rows handed in
+/// are encoded as they are, not copied into an owned file first.
 #[derive(Serialize)]
 struct PackPreparedFileRef<'a> {
     format: u32,
@@ -948,24 +971,44 @@ pub fn encode_pack_prepared(prepared: &PackPreparedMap) -> Result<Vec<u8>> {
     .map_err(|error| DegaussError::unsupported("artwork pack state", error.to_string()))
 }
 
-fn decode_pack_source(bytes: &[u8]) -> Option<PackSourceState> {
-    let file: PackSourceFile = postcard::from_bytes(bytes).ok()?;
-    (file.format == PACK_SOURCE_FORMAT).then_some(file.state)
+/// The version written at the front of a state file, read on its own
+/// before the body: a file written under another version is told apart
+/// from one of this version that is cut short or damaged.
+fn written_format(bytes: &[u8]) -> std::result::Result<u32, postcard::Error> {
+    postcard::take_from_bytes::<u32>(bytes).map(|(format, _)| format)
 }
 
-fn decode_pack_prepared(bytes: &[u8]) -> Option<PackPreparedMap> {
-    let file: PackPreparedFile = postcard::from_bytes(bytes).ok()?;
-    (file.format == PACK_PREPARED_FORMAT).then_some(file.prepared)
+fn decode_pack_source(
+    bytes: &[u8],
+) -> std::result::Result<Option<PackSourceState>, postcard::Error> {
+    if written_format(bytes)? != PACK_SOURCE_FORMAT {
+        return Ok(None);
+    }
+    let file: PackSourceFile = postcard::from_bytes(bytes)?;
+    Ok(Some(file.state))
+}
+
+fn decode_pack_prepared(
+    bytes: &[u8],
+) -> std::result::Result<Option<PackPreparedMap>, postcard::Error> {
+    if written_format(bytes)? != PACK_PREPARED_FORMAT {
+        return Ok(None);
+    }
+    let file: PackPreparedFile = postcard::from_bytes(bytes)?;
+    Ok(Some(file.prepared))
 }
 
 /// Read a state file. A missing file is the ordinary case and says
-/// nothing. One that is there but cannot be read is an error for the
-/// caller to show: what was decided is unknown, and a question or a
-/// preparation in its place would write over the decision. One that is
-/// there but does not decode was written under another version of the
-/// state or the matching policy, by design read as no state and prepared
-/// again; the log says so.
-fn load_state_file<T>(path: &Path, decode: impl FnOnce(&[u8]) -> Option<T>) -> Result<Option<T>> {
+/// nothing. One that is there but cannot be read, or that carries this
+/// version and does not decode (cut short, or damaged), is an error for
+/// the caller to show: what was decided is unknown, and a question or a
+/// preparation in its place would write over the decision. One written
+/// under another version of the state or the matching policy is by
+/// design read as no state and prepared again; the log says so.
+fn load_state_file<T>(
+    path: &Path,
+    decode: impl FnOnce(&[u8]) -> std::result::Result<Option<T>, postcard::Error>,
+) -> Result<Option<T>> {
     let bytes = match std::fs::read(path) {
         Ok(bytes) => bytes,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
@@ -977,10 +1020,11 @@ fn load_state_file<T>(path: &Path, decode: impl FnOnce(&[u8]) -> Option<T>) -> R
             ))
         }
     };
-    let decoded = decode(&bytes);
+    let decoded = decode(&bytes)
+        .map_err(|error| DegaussError::malformed("Artwork Pack state", path, error.to_string()))?;
     if decoded.is_none() {
         crate::note(&format!(
-            "artwork pack state {}: not decoded, read as no state: written under another version, prepared again on consent",
+            "artwork pack state {}: written under another version, read as no state, prepared again on consent",
             path.display()
         ));
     }
@@ -1930,9 +1974,24 @@ mod tests {
             load_pack_source_state(&store, "Test").unwrap().unwrap(),
             accepted_state(9)
         );
+        // Cut short, as a write that did not finish leaves it: the
+        // version at the front is this one, so the decision is not read
+        // as never taken; the error names the file.
         let source_path = artwork_pack_source_path(&store, "Test");
-        std::fs::write(&source_path, b"not a state file").unwrap();
-        assert!(load_pack_source_state(&store, "Test").unwrap().is_none());
+        let written = std::fs::read(&source_path).unwrap();
+        std::fs::write(&source_path, &written[..written.len() / 2]).unwrap();
+        let error = load_pack_source_state(&store, "Test").unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("Artwork Pack state is malformed at"),
+            "{error}"
+        );
+        std::fs::write(&source_path, b"").unwrap();
+        assert!(
+            load_pack_source_state(&store, "Test").is_err(),
+            "an empty file has no version to read: not no state"
+        );
         let stale = postcard::to_stdvec(&PackSourceFile {
             format: PACK_SOURCE_FORMAT + 1,
             state: accepted_state(9),
