@@ -5752,6 +5752,18 @@ impl App {
                 let at = reselect(&self.here, remembered, crumb.selected);
                 self.game_list.select(at);
                 self.message = None;
+                // Rows read straight from the card have no build report to
+                // carry a broken ROM-set catalogue, and its sets have just
+                // been listed as archives and folders: said here, once.
+                if let Some(library) = self.library.as_ref() {
+                    let problems = library.unannounced_catalogue_problems();
+                    if !problems.is_empty() {
+                        self.message = Some(
+                            crate::index_job::catalogue_lines(library.system_name(), problems)
+                                .join("\n"),
+                        );
+                    }
+                }
                 self.apply_geometry();
                 self.touch_selection();
             }

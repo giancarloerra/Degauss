@@ -1365,6 +1365,21 @@ impl Library {
             .unwrap_or_default()
     }
 
+    /// The catalogue problems met since this was last asked, for a
+    /// listing read straight from the card with no index to report them:
+    /// each is said once, with the folder whose sets it degraded.
+    pub fn unannounced_catalogue_problems(&self) -> Vec<(PathBuf, String)> {
+        self.neogeo
+            .as_ref()
+            .map(crate::neogeo::Catalogues::unannounced_problems)
+            .unwrap_or_default()
+    }
+
+    /// The system's name as its definition gives it.
+    pub fn system_name(&self) -> &str {
+        &self.config.name
+    }
+
     /// Whether each declared folder carries a metadata overlay, for the
     /// audit: a system with no artwork and no gamelist is explained, one
     /// with a gamelist and no artwork is a problem.

@@ -383,13 +383,20 @@ fn run(
     }))
 }
 
-/// One line per Neo Geo catalogue the library could not read, in the
-/// form the audit prints.
+/// One line per Neo Geo catalogue the library could not read: the
+/// system, then the file and the reason in the form the audit prints.
+/// The system is named because two systems can share one folder, as Neo
+/// Geo and Neo Geo MVS do, and a build of both meets the same file twice.
 pub fn catalogue_warnings(library: &Library) -> Vec<String> {
-    library
-        .catalogue_problems()
+    catalogue_lines(library.system_name(), library.catalogue_problems())
+}
+
+/// The lines [`catalogue_warnings`] prints, for problems gathered
+/// elsewhere.
+pub fn catalogue_lines(system: &str, problems: Vec<(PathBuf, String)>) -> Vec<String> {
+    problems
         .into_iter()
-        .map(|(path, reason)| format!("{}: {reason}", path.display()))
+        .map(|(path, reason)| format!("{system}: {}: {reason}", path.display()))
         .collect()
 }
 
@@ -535,10 +542,10 @@ mod tests {
         assert_eq!(summary.games, 3);
         assert!(crate::cache::load_system(&dir, "Test").is_some());
         assert_eq!(warnings.len(), 1, "got: {warnings:?}");
-        let expected = games.join("romsets.xml").display().to_string();
+        let expected = format!("Test: {}", games.join("romsets.xml").display());
         assert!(
             warnings[0].starts_with(&expected) && warnings[0].contains("malformed"),
-            "the file and the reason are named: {}",
+            "the system, the file and the reason are named: {}",
             warnings[0]
         );
         std::fs::remove_dir_all(root).unwrap();

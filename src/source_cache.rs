@@ -541,7 +541,10 @@ mod tests {
         // the index job, and the walk records a romsets.xml it could not
         // read only in the library it drops. The sets are then cached as
         // archives and folders; the report of the build must say why,
-        // exactly as it does for a system the index job walks.
+        // exactly as it does for a system the index job walks. Neo Geo
+        // and Neo Geo MVS share the folder, so one build meets the file
+        // twice: each line names its system, or the second reads as a
+        // repeat of the first.
         let root = temp("neogeo-broken-catalogue");
         let docs = root.join("docs");
         let artwork = docs.join("NEOGEO/Artwork");
@@ -567,16 +570,20 @@ mod tests {
         std::fs::write(games.join("romsets.xml"), "<romsets><romset name=\"mslug\"").unwrap();
         std::fs::write(games.join("mslug.zip"), crate::zip::tests_fixture()).unwrap();
         std::fs::write(games.join("Known.neo"), b"rom").unwrap();
-        let mut neogeo = config(&games, "neo");
-        neogeo.rbf = "_Console/NeoGeo".to_string();
+        let systems = ["Neo Geo", "Neo Geo MVS"].map(|name| {
+            let mut neogeo = config(&games, "neo");
+            neogeo.name = name.to_string();
+            neogeo.rbf = "_Console/NeoGeo".to_string();
+            System {
+                id: name.replace(' ', ""),
+                name: name.to_string(),
+                config: neogeo,
+            }
+        });
 
         let mut job = start(Request {
             target: Target::ArtworkPack { docs_root: docs },
-            systems: vec![System {
-                id: "NeoGeo".to_string(),
-                name: "Neo Geo".to_string(),
-                config: neogeo,
-            }],
+            systems: systems.to_vec(),
             names: DisplayNames::default(),
             synopsis_language: Some("en".to_string()),
             cache_dir: root.join("cache"),
@@ -589,13 +596,14 @@ mod tests {
         else {
             panic!("a broken catalogue must not fail the Pack build");
         };
-        assert_eq!(warnings.len(), 1, "got: {warnings:?}");
-        let expected = games.join("romsets.xml").display().to_string();
-        assert!(
-            warnings[0].starts_with(&expected) && warnings[0].contains("malformed"),
-            "the file and the reason are named: {}",
-            warnings[0]
-        );
+        assert_eq!(warnings.len(), 2, "got: {warnings:?}");
+        for (warning, system) in warnings.iter().zip(["Neo Geo", "Neo Geo MVS"]) {
+            let expected = format!("{system}: {}", games.join("romsets.xml").display());
+            assert!(
+                warning.starts_with(&expected) && warning.contains("malformed"),
+                "the system, the file and the reason are named: {warning}"
+            );
+        }
         // The .neo is a game and the set ZIP fell back to an archive that
         // was entered: its two .neo members are counted, which a
         // recognised set's never are.

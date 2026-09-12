@@ -16,7 +16,7 @@
 //! answers for a name, and a folder carrying its own `romset.xml` is a game
 //! before the catalogue is consulted at all.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, HashMap};
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -303,6 +303,9 @@ pub struct Catalogues {
     /// none and answers to the first declared folder's.
     local: RefCell<BTreeMap<PathBuf, Option<Arc<Catalogue>>>>,
     problems: RefCell<Vec<(PathBuf, String)>>,
+    /// How many of `problems` have been handed out by
+    /// [`Catalogues::unannounced_problems`].
+    announced: Cell<usize>,
 }
 
 impl Catalogues {
@@ -313,6 +316,7 @@ impl Catalogues {
             roots: Vec::new(),
             local: RefCell::new(BTreeMap::new()),
             problems: RefCell::new(Vec::new()),
+            announced: Cell::new(0),
         };
         let roots = roots
             .into_iter()
@@ -376,7 +380,8 @@ impl Catalogues {
     /// A folder carrying its own `romset.xml` is a game before the
     /// catalogue is asked, as in Main; a broken one is reported and the
     /// folder is then judged by the catalogue like any other. A ZIP is
-    /// looked up by its name without the extension, and is never opened.
+    /// looked up by its name without the extension, and is never opened;
+    /// a file that is not a `.zip` is nothing the catalogue knows.
     pub fn classify(
         &self,
         catalogue: &Catalogue,
@@ -403,6 +408,15 @@ impl Catalogues {
     /// Every catalogue file that could not be read, with the reason.
     pub fn problems(&self) -> Vec<(PathBuf, String)> {
         self.problems.borrow().clone()
+    }
+
+    /// The problems recorded since this was last asked, each handed out
+    /// once, so a screen can say them with the listing that met them
+    /// without repeating them at every folder.
+    pub fn unannounced_problems(&self) -> Vec<(PathBuf, String)> {
+        let problems = self.problems.borrow();
+        let from = self.announced.replace(problems.len());
+        problems[from..].to_vec()
     }
 
     fn record_problem(&self, path: &Path, reason: String) {

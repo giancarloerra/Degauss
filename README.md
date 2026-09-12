@@ -501,8 +501,12 @@ by its own `romset.xml` is the exception: given an absolute path, Main looks
 for that file under the card root and, not finding it, falls back to the
 catalogue, so such a favourite starts only if the catalogue names the folder
 too. A favourite written elsewhere with a bare set name (`mslug` or
-`mslug.zip`, no folder) starts the set: the name is looked up in the
-system's game folder, as Main looks it up in the core's home folder.
+`mslug.zip`, no folder) starts the set as well: the MGL is handed to Main
+as written, and Main prefixes the core's home folder to a bare path. Degauss
+looks such a name up in the system's game folder to mark the favourite on
+its row only when one Neo Geo system claims the name; with the shipped
+table, where Neo Geo and Neo Geo MVS declare the same folder, the row keeps
+no heart for it.
 Gamelist entries bind to a set by its path (`./mslug.zip` or `./mslug`),
 and an Artwork Pack matches it by set name, an `.mgl` pointing at a set
 included.
@@ -510,9 +514,14 @@ included.
 A catalogue or `romset.xml` that cannot be read, or whose presence cannot
 be established, is reported by `--report` and `--audit` as an unreadable
 file, in the log, and with the report of the library build or system rebuild
-that met it, whether the system uses a Gamelist or an Artwork Pack. Its scope
-then holds no recognised sets, so ZIPs and folders there fall back to
-archives and folders, while every `.neo` and `.mgl` stays listed. After
+that met it, whether the system uses a Gamelist or an Artwork Pack; each line
+of that report names the system, since Neo Geo and Neo Geo MVS share the
+folder and a full rebuild meets the file once for each. A folder listed
+straight from the card, with no index to report through, says the same line
+on screen once. Its scope then holds no recognised sets, so ZIPs and folders
+there fall back to archives and folders, while every `.neo` and `.mgl` stays
+listed. `--report` also prints the time the catalogues took to read on its
+`metadata` line. After
 upgrading from a release that listed sets as folders, rebuild the system list
 of Neo Geo and of Neo Geo MVS once each (or run one full rebuild) to pick the
 sets up: the two keep separate caches even when they share the folder.

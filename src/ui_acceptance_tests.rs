@@ -3273,6 +3273,34 @@ fn run_neogeo_romset_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
     assert!(!app.here[position(&app, "Metal Slug")].favorite);
     assert!(app.here[position(&app, "The King of Fighters '98")].favorite);
     assert!(app.message.is_none(), "{:?}", app.message);
+
+    // A catalogue broken after the index was written is met by a listing
+    // read from the card, which has no build report to carry it. The
+    // zipped set then shows as an archive and the set folder, holding
+    // nothing the system opens, is hidden as empty; the screen says why
+    // with that listing, once, or a card owner would see two games gone
+    // and nothing but the log to explain it.
+    std::fs::write(games.join("romsets.xml"), "<romsets><romset name=\"mslug\"").unwrap();
+    app.system_cache = None;
+    app.library = None;
+    app.relist_here();
+    let names: Vec<&str> = app.here.iter().map(|row| row.name.as_str()).collect();
+    assert_eq!(names, ["mslug", "Blazing Star.neo"]);
+    let expected = format!("Neo Geo: {}", games.join("romsets.xml").display());
+    let message = app
+        .message
+        .clone()
+        .expect("the broken catalogue is said on screen");
+    assert!(
+        message.starts_with(&expected) && message.contains("malformed"),
+        "the system, the file and the reason: {message}"
+    );
+    app.relist_here();
+    assert!(
+        app.message.is_none(),
+        "said once, not at every folder: {:?}",
+        app.message
+    );
     app.ui.hide().unwrap();
 }
 
