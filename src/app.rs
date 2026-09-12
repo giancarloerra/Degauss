@@ -1147,6 +1147,30 @@ fn artwork_directory_children(
     Ok(children)
 }
 
+/// The docs root a manually chosen directory stands for: `Ok(None)` when it
+/// holds no mapped Artwork directory for the system, `Err(path)` when one of
+/// the mapped Artwork directories it holds resolves outside the available
+/// MiSTer storage. The Pack read from a root covers every mapped folder under
+/// it, so a link out of the storage is refused here as the picker never lists
+/// such a directory, and as `candidate_root` refuses one out of its base.
+fn chosen_pack_root(
+    system_id: &str,
+    chosen: &Path,
+    game_roots: &[String],
+) -> std::result::Result<Option<PathBuf>, PathBuf> {
+    let Some(root) = crate::artwork_pack::normalize_docs_root(system_id, chosen) else {
+        return Ok(None);
+    };
+    match crate::artwork_pack::expected_folders(system_id)
+        .iter()
+        .map(|folder| root.join(folder).join("Artwork"))
+        .find(|artwork| artwork.is_dir() && !directory_allowed_for(artwork, game_roots))
+    {
+        Some(artwork) => Err(artwork),
+        None => Ok(Some(root)),
+    }
+}
+
 fn pack_folders_at(system_id: &str, docs_root: &Path) -> String {
     let present: Vec<&str> = crate::artwork_pack::expected_folders(system_id)
         .iter()
@@ -9992,10 +10016,22 @@ impl App {
             history.push(canonical.clone());
         }
 
-        let valid_root = self
-            .source_system_id
-            .as_deref()
-            .and_then(|system_id| crate::artwork_pack::normalize_docs_root(system_id, &canonical));
+        let mut outside_storage = None;
+        let valid_root = self.source_system_id.as_deref().and_then(|system_id| {
+            chosen_pack_root(system_id, &canonical, &self.config.game_roots).unwrap_or_else(
+                |artwork| {
+                    crate::note(&format!(
+                        "artwork pack directory {}: {} resolves outside the available storage, not offered",
+                        canonical.display(),
+                        artwork.display()
+                    ));
+                    outside_storage = Some(
+                        "This Artwork Pack points outside the available MiSTer storage.".to_string(),
+                    );
+                    None
+                },
+            )
+        });
         let children =
             match artwork_directory_children(&canonical, &self.config.game_roots, &history) {
                 Ok(children) => children,
@@ -10029,7 +10065,7 @@ impl App {
         }
         self.menu_list = ListState::new(self.menu.len(), self.geometry.visible);
         self.screen = Screen::ArtworkPackDirectory;
-        self.message = None;
+        self.message = outside_storage;
         self.apply_geometry();
         self.dirty = true;
         true
@@ -10064,12 +10100,28 @@ impl App {
                 let Some(current) = self.source_directory.as_deref() else {
                     return;
                 };
-                let Some(root) = crate::artwork_pack::normalize_docs_root(system_id, current)
-                else {
-                    self.message =
-                        Some("This directory does not contain a valid Artwork Pack.".to_string());
-                    self.dirty = true;
-                    return;
+                let root = match chosen_pack_root(system_id, current, &self.config.game_roots) {
+                    Ok(Some(root)) => root,
+                    Ok(None) => {
+                        self.message = Some(
+                            "This directory does not contain a valid Artwork Pack.".to_string(),
+                        );
+                        self.dirty = true;
+                        return;
+                    }
+                    Err(artwork) => {
+                        crate::note(&format!(
+                            "artwork pack directory {}: {} resolves outside the available storage, not used",
+                            current.display(),
+                            artwork.display()
+                        ));
+                        self.message = Some(
+                            "This Artwork Pack points outside the available MiSTer storage."
+                                .to_string(),
+                        );
+                        self.dirty = true;
+                        return;
+                    }
                 };
                 self.begin_source_switch(crate::source_cache::Target::ArtworkPack {
                     docs_root: root,
@@ -16013,6 +16065,57 @@ mod tests {
             "aliases of one directory are deduplicated"
         );
         assert_eq!(children[0].1, std::fs::canonicalize(child).unwrap());
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn chosen_pack_root_refuses_a_mapped_artwork_link_out_of_the_storage() {
+        use std::os::unix::fs::symlink;
+
+        // The provider reads every mapped Artwork directory under the root
+        // the user picks, so a link that leaves the available storage would
+        // be read from a place the picker itself never shows.
+        let root = picker_temp("pack-root-link");
+        let mount = root.join("mount");
+        let games = mount.join("games");
+        let docs = mount.join("docs");
+        let outside = root.join("outside").join("Artwork");
+        std::fs::create_dir_all(&games).unwrap();
+        std::fs::create_dir_all(docs.join("NES")).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        let game_roots = vec![games.to_string_lossy().into_owned()];
+        let canonical_docs = std::fs::canonicalize(&docs).unwrap();
+
+        assert_eq!(
+            chosen_pack_root("NES", &docs, &game_roots),
+            Ok(None),
+            "no mapped Artwork directory is no pack"
+        );
+        symlink(&outside, docs.join("NES").join("Artwork")).unwrap();
+        assert_eq!(
+            chosen_pack_root("NES", &docs, &game_roots),
+            Err(canonical_docs.join("NES").join("Artwork")),
+            "a mapped Artwork directory linked out of the storage is refused by its path"
+        );
+        std::fs::remove_file(docs.join("NES").join("Artwork")).unwrap();
+        std::fs::create_dir_all(docs.join("NES").join("Artwork")).unwrap();
+        assert_eq!(
+            chosen_pack_root("NES", &docs, &game_roots),
+            Ok(Some(canonical_docs.clone()))
+        );
+        std::fs::remove_dir_all(docs.join("NES").join("Artwork")).unwrap();
+        std::fs::create_dir_all(mount.join("elsewhere").join("Artwork")).unwrap();
+        symlink(
+            mount.join("elsewhere").join("Artwork"),
+            docs.join("NES").join("Artwork"),
+        )
+        .unwrap();
+        assert_eq!(
+            chosen_pack_root("NES", &docs, &game_roots),
+            Ok(Some(canonical_docs)),
+            "a link that stays inside the storage is the user's arrangement to make"
+        );
         std::fs::remove_dir_all(root).ok();
     }
 

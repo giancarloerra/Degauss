@@ -877,7 +877,9 @@ by configured game roots. A normal installation is under
 `/media/usb0/docs/SuperGrafx/Artwork`. Games and artwork do not have to be on
 the same device. A directory browser is available for a valid installation in
 another permitted MiSTer storage location; it starts at `/media`, above the
-normal SD, USB, network and CIFS mount directories.
+normal SD, USB, network and CIFS mount directories. A directory whose mapped
+Artwork folder is a link to somewhere outside that permitted storage is not
+accepted as a pack, and `degauss.log` names the folder.
 
 The choice applies to the complete system, including all of its game folders.
 Neo Geo and Neo Geo MVS share one choice because they use the same library and
