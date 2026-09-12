@@ -3249,12 +3249,32 @@ fn run_degraded_pack_acknowledgement_flow(root: &Path, window: Rc<MinimalSoftwar
     // The log is one file for every process on the host, appended to by
     // whatever else runs; counted lines carry this fixture's path, so only
     // this flow adds to them. Read as bytes: a stray byte from elsewhere is
-    // no reason to fail, and a log that cannot be read at all is named.
+    // no reason to fail, and a log that cannot be read at all is named. A
+    // log nobody has started yet holds no lines.
     let logged = |line: &str| {
-        let bytes = std::fs::read(crate::LOG_PATH)
-            .unwrap_or_else(|error| panic!("{} could not be read: {error}", crate::LOG_PATH));
+        let bytes = match std::fs::read(crate::LOG_PATH) {
+            Ok(bytes) => bytes,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+            Err(error) => panic!("{} could not be read: {error}", crate::LOG_PATH),
+        };
         String::from_utf8_lossy(&bytes).matches(line).count()
     };
+    // Writing the log is best effort and never stops the program, so a
+    // host where the file cannot be written would fail the counts below
+    // as if nothing had been logged. One probe line first: a missing probe
+    // is the environment, not the acknowledgement.
+    let probe = format!(
+        "degraded pack acknowledgement flow probe at {}",
+        docs.display()
+    );
+    let probed_before = logged(&probe);
+    crate::note(&probe);
+    assert_eq!(
+        logged(&probe),
+        probed_before + 1,
+        "{} must take what note() appends on this host; the log counts below depend on it",
+        crate::LOG_PATH
+    );
 
     // 6. A complete pack: no warning, and nothing written down.
     let app = start(window.clone());
