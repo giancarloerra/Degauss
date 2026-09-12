@@ -11,7 +11,7 @@ Use a keyboard and a controller that deliver each press once. Nothing about them
 3. Tap A, B, X and Y once each where they apply. Each press acts once: one folder opened, one level backed out, one Actions list, one Menu.
 4. Hold up and down through the initial delay at every **Scroll Speed**, including the fastest. The scroll starts after the same delay and runs at the same cadence as before. Hold left and right with **Left and Right Behaviour** set to Letter, to Page and to Direction, and confirm each starts after the same delay and runs at the same cadence as before.
 5. Enable **Hold X (1s) to Add/Remove Fav** and **Hold Y (1s) for Random Game**. A one-second hold fires each shortcut once; a short press still opens Actions or Menu. Releasing the button on the screen a shortcut opened does nothing there.
-6. Tap the same direction twice in quick succession, deliberately. Both taps move.
+6. Tap the same direction twice in quick succession, deliberately, with more than 40 ms between the taps. Both taps move.
 7. Open a large system and tap the same direction twice, deliberately, while its list is still being read; repeat while a rebuild of the library is running. Both taps move once the screen catches up: presses that queue up behind a slow frame are judged on the time each was delivered, not on the frame that dispatches them.
 
 ## Affected controller
