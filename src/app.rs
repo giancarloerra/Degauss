@@ -2221,11 +2221,11 @@ fn reselect(rows: &[browse::Row], remembered: Option<&str>, fallback: usize) -> 
 /// written-down row in Gamelist mode. Nothing here reads the card, and
 /// nothing is copied on the way: the paths are lent by the cache and the
 /// Pack for as long as they are.
-fn derived_folder_cover<'c>(
-    cache: &'c crate::cache::SystemCache,
+fn derived_folder_cover(
+    cache: &crate::cache::SystemCache,
     place: &Place,
     hidden: &[String],
-    provider: Option<&'c crate::artwork_pack::Provider>,
+    provider: Option<&crate::artwork_pack::Provider>,
 ) -> Option<PathBuf> {
     let mut art = FolderArt::default();
     if gather_folder_cover(cache, place, hidden, provider, 0, &mut art) {
@@ -16207,7 +16207,19 @@ mod tests {
                 ("Outer/Inner/Deep.chd", Some("deep.png")),
             ],
         );
-        let game_key = |path: &str| format!("f:{}", games.join(path).display());
+        // The key of a game as it is written down, made the way the hidden
+        // list is read, so the test fails on a game that is not hidden and
+        // not on the key's spelling.
+        let game_key = |path: &str| {
+            let path = games.join(path);
+            let folder = Place::Dir(path.parent().unwrap().to_path_buf());
+            let rows = &cache.get(&folder).expect("folder is written down").rows;
+            let row = rows
+                .iter()
+                .find(|row| row.kind == browse::Kind::Play(browse::Launch::File(path.clone())))
+                .expect("game is written down");
+            row_key(row)
+        };
         let derived = |folder: &str, hidden: &[String]| {
             derived_folder_cover(&cache, &Place::Dir(games.join(folder)), hidden, None)
         };
