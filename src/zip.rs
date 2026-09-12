@@ -117,7 +117,8 @@ pub struct Contents {
 
 /// A bounded, operation-local archive cache. Opening the file and checking its
 /// identity on every use keeps ordinary browsing responsive to replacement;
-/// launch confirmation deliberately calls `entries` directly instead.
+/// launch confirmation deliberately calls `entries` directly instead. A read
+/// through here is the one that writes the members it left out to the log.
 #[derive(Debug, Default)]
 pub struct ArchiveCache {
     last: Option<(PathBuf, ArchiveStamp, std::sync::Arc<Contents>)>,
@@ -173,6 +174,21 @@ impl ArchiveCache {
         let Some(contents) = contents_controlled(path, cancelled)? else {
             return Ok(None);
         };
+        // Every member left out goes to the log here, where a listing
+        // reads the archive (an index, an audit, a listing straight from
+        // the card), once per read and in one write however many members
+        // there are. The direct reads of `contents` stay silent: a launch
+        // check reports the chosen member's reason in its own message, and
+        // a start with many favourites in one archive reads it once per
+        // favourite, which must not repeat the block each time.
+        if !contents.skipped.is_empty() {
+            let lines: Vec<String> = contents
+                .skipped
+                .iter()
+                .map(|skipped| format!("zip          {}: {}", path.display(), skipped.describe()))
+                .collect();
+            crate::note(&lines.join("\n"));
+        }
         let entries = std::sync::Arc::new(contents);
         self.last = Some((path.to_path_buf(), stamp, entries.clone()));
         Ok(Some(entries))
@@ -786,17 +802,6 @@ fn contents_controlled(path: &Path, cancelled: &AtomicBool) -> Result<Option<Con
     // Browse uses a stable case-insensitive sort. Exact Unicode directory names
     // can share that sort key, so their input order must not come from HashMap.
     directories.sort_unstable();
-    // Every member left out goes to the log here, where the archive is
-    // read, so whatever reads it (an index, an audit, a listing straight
-    // from the card, a launch check) leaves the diagnostic once per read,
-    // in one write however many members there are.
-    if !skipped.is_empty() {
-        let lines: Vec<String> = skipped
-            .iter()
-            .map(|skipped| format!("zip          {}: {}", path.display(), skipped.describe()))
-            .collect();
-        crate::note(&lines.join("\n"));
-    }
     Ok(Some(Contents {
         entries,
         directories,

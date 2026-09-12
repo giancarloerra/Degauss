@@ -121,8 +121,9 @@ def main():
             '#![allow(dead_code)]\n'
             f'#[path={json.dumps(str(repository / "src/error.rs"), ensure_ascii=False)}] mod error;\n'
             f'#[path={json.dumps(str(repository / "src/zip.rs"), ensure_ascii=False)}] mod zip;\n'
-            # The reader logs the members it leaves out through the crate
-            # root; here that is stderr, so stdout stays the listing.
+            # The reader's archive cache logs the members it leaves out
+            # through the crate root, which the standalone compile has to
+            # define; here that is stderr, so stdout stays the listing.
             'pub fn note(line: &str) { eprintln!("{line}"); }\n'
             'fn main() { let args: Vec<_> = std::env::args().collect(); let path = std::path::Path::new(&args[1]);\n'
             'let result = if let Some(member) = args.get(2) { zip::validate_member_for_launch(&path.join(member)).map(|e| vec![e]) } else { zip::entries(path) };\n'
