@@ -1267,8 +1267,16 @@ impl Library {
                 // The index leaves a folder inside an archive out, with
                 // whatever is under it, when it sits this deep; the audit
                 // names the same folder with the same reason, so the report
-                // says why games a rebuild leaves out are not there.
+                // says why games a rebuild leaves out are not there, and
+                // logs it as the index does, so the log holds every line
+                // the report has room for only the first few of.
                 if let Place::ArchiveDirectory { archive, prefix } = &place {
+                    let line = format!(
+                        "{}/{prefix}: skipped: {}",
+                        archive.display(),
+                        member_depth_reason()
+                    );
+                    crate::note(&format!("zip          {line}"));
                     audit.unreadable.push((
                         PathBuf::from(format!("{}/{prefix}", archive.display())),
                         member_depth_reason(),
@@ -1335,9 +1343,16 @@ impl Library {
                         }
                     }
                 }
-                Err(e) => audit
-                    .unreadable
-                    .push((place.path().to_path_buf(), e.to_string())),
+                Err(e) => {
+                    // An archive that cannot be read is logged with its
+                    // complete error, as the index logs one it skips.
+                    if let Place::Archive(archive) = &place {
+                        crate::note(&format!("zip          {}: skipped: {e}", archive.display()));
+                    }
+                    audit
+                        .unreadable
+                        .push((place.path().to_path_buf(), e.to_string()));
+                }
             }
         }
         audit
@@ -1840,6 +1855,85 @@ mod tests {
                 (past_the_limit("b"), member_depth_reason()),
             ],
             "one line per folder past the limit"
+        );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// `--report` prints the first few `unreadable` lines and `--audit`
+    /// fewer, so the log is where the rest live: the audit has to write a
+    /// skipped member, a skipped archive and a folder past the depth limit
+    /// there, as the index does. A listing that only wants rows writes
+    /// nothing, because the Details view, the Artwork Pack passes and a
+    /// start resolving favourites read archives too and would repeat the
+    /// block on every read. Only what the log gains here counts, searched
+    /// by this fixture's own paths, because the log is shared by every
+    /// test that writes one and kept across runs.
+    #[test]
+    fn the_audit_logs_every_skip_and_a_plain_listing_logs_none() {
+        let dir = temp("audit-log-lines");
+        let held = dir.join("held.zip");
+        let deep = format!("{}Deep.d64", "a/".repeat(MAX_DEPTH + 1));
+        std::fs::write(
+            &held,
+            crate::zip::tests_archive(&["Keep.d64", "inner.zip", deep.as_str()], false),
+        )
+        .unwrap();
+        let broken = dir.join("broken.zip");
+        std::fs::write(&broken, b"broken archive").unwrap();
+        let log_since = |from: usize| {
+            let log = std::fs::read_to_string(crate::LOG_PATH).unwrap_or_default();
+            log[from.min(log.len())..].to_string()
+        };
+        let held_line = format!("zip          {}", held.display());
+        let broken_line = format!("zip          {}", broken.display());
+        let mentions = |log: &str, prefix: &str| {
+            log.lines()
+                .filter(|line| line.starts_with(prefix))
+                .map(str::to_string)
+                .collect::<Vec<_>>()
+        };
+        let library = Library::open(&system(&dir)).unwrap();
+        let before = log_since(0).len();
+        let (rows, _) = library.list(&Place::Archive(held.clone()), false).unwrap();
+        assert_eq!(names_of(&rows), vec!["a", "Keep.d64"]);
+        assert!(
+            library
+                .list(&Place::Archive(broken.clone()), false)
+                .is_err(),
+            "the broken archive is an error to list"
+        );
+        let log = log_since(before);
+        assert!(
+            mentions(&log, &held_line).is_empty() && mentions(&log, &broken_line).is_empty(),
+            "a plain listing wrote to the log: {log:?}"
+        );
+        let before = log_since(0).len();
+        let audit = library.audit(false);
+        assert_eq!(audit.games, 1, "Keep.d64 alone");
+        assert_eq!(audit.unreadable.len(), 3, "{:?}", audit.unreadable);
+        let log = log_since(before);
+        let folder = format!("{}/{}", held.display(), ["a"; MAX_DEPTH].join("/"));
+        assert_eq!(
+            mentions(&log, &held_line),
+            vec![
+                format!(
+                    "{held_line}: member inner.zip: nested archive member is unsupported by MiSTer Main"
+                ),
+                format!("zip          {folder}: skipped: {}", member_depth_reason()),
+            ],
+            "the member and the folder past the limit"
+        );
+        let skipped = format!("{broken_line}: skipped: ");
+        let error = mentions(&log, &broken_line);
+        let [error] = error.as_slice() else {
+            panic!("one line for the broken archive, not {error:?}");
+        };
+        let error = error
+            .strip_prefix(&skipped)
+            .unwrap_or_else(|| panic!("the archive line starts {skipped:?}, not {error:?}"));
+        assert!(
+            error.contains(&broken.display().to_string()) && error.contains("malformed"),
+            "the archive line carries the complete error: {error:?}"
         );
         std::fs::remove_dir_all(dir).unwrap();
     }
