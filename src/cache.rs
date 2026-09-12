@@ -932,10 +932,18 @@ pub fn encode_pack_source(state: &PackSourceState) -> Result<Vec<u8>> {
     .map_err(|error| DegaussError::unsupported("artwork pack state", error.to_string()))
 }
 
+/// The same shape as [`PackPreparedFile`], borrowed: the map is written
+/// out of the worker's own without copying every row's presentation.
+#[derive(Serialize)]
+struct PackPreparedFileRef<'a> {
+    format: u32,
+    prepared: &'a PackPreparedMap,
+}
+
 pub fn encode_pack_prepared(prepared: &PackPreparedMap) -> Result<Vec<u8>> {
-    postcard::to_stdvec(&PackPreparedFile {
+    postcard::to_stdvec(&PackPreparedFileRef {
         format: PACK_PREPARED_FORMAT,
-        prepared: prepared.clone(),
+        prepared,
     })
     .map_err(|error| DegaussError::unsupported("artwork pack state", error.to_string()))
 }
@@ -950,38 +958,40 @@ fn decode_pack_prepared(bytes: &[u8]) -> Option<PackPreparedMap> {
     (file.format == PACK_PREPARED_FORMAT).then_some(file.prepared)
 }
 
-/// Read a state file the way the other cache files are read: a missing
-/// file is the ordinary case and says nothing; a file that is there but
-/// cannot be read or decoded is written to the log and read as no state.
-/// The visible consequence of no state is a question or a preparation,
-/// never a wrong answer.
-fn load_state_file<T>(path: &Path, decode: impl FnOnce(&[u8]) -> Option<T>) -> Option<T> {
+/// Read a state file. A missing file is the ordinary case and says
+/// nothing. One that is there but cannot be read is an error for the
+/// caller to show: what was decided is unknown, and a question or a
+/// preparation in its place would write over the decision. One that is
+/// there but does not decode was written under another version of the
+/// state or the matching policy, by design read as no state and prepared
+/// again; the log says so.
+fn load_state_file<T>(path: &Path, decode: impl FnOnce(&[u8]) -> Option<T>) -> Result<Option<T>> {
     let bytes = match std::fs::read(path) {
         Ok(bytes) => bytes,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return None,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(error) => {
-            crate::note(&format!(
-                "artwork pack state {}: not read: {error}",
-                path.display()
-            ));
-            return None;
+            return Err(DegaussError::io(
+                "reading the Artwork Pack state",
+                path,
+                error,
+            ))
         }
     };
     let decoded = decode(&bytes);
     if decoded.is_none() {
         crate::note(&format!(
-            "artwork pack state {}: not decoded, read as no state",
+            "artwork pack state {}: not decoded, read as no state: written under another version, prepared again on consent",
             path.display()
         ));
     }
-    decoded
+    Ok(decoded)
 }
 
-pub fn load_pack_source_state(dir: &Path, id: &str) -> Option<PackSourceState> {
+pub fn load_pack_source_state(dir: &Path, id: &str) -> Result<Option<PackSourceState>> {
     load_state_file(&artwork_pack_source_path(dir, id), decode_pack_source)
 }
 
-pub fn load_pack_prepared_map(dir: &Path, id: &str) -> Option<PackPreparedMap> {
+pub fn load_pack_prepared_map(dir: &Path, id: &str) -> Result<Option<PackPreparedMap>> {
     load_state_file(&artwork_pack_prepared_path(dir, id), decode_pack_prepared)
 }
 
@@ -1886,10 +1896,13 @@ mod tests {
         );
         assert_eq!(crc32fast::hash(&std::fs::read(&rows_path).unwrap()), marker);
         assert_eq!(
-            load_pack_source_state(&store, "Test").unwrap(),
+            load_pack_source_state(&store, "Test").unwrap().unwrap(),
             accepted_state(marker)
         );
-        assert_eq!(load_pack_prepared_map(&store, "Test").unwrap(), Vec::new());
+        assert_eq!(
+            load_pack_prepared_map(&store, "Test").unwrap().unwrap(),
+            Vec::new()
+        );
         assert_eq!(
             std::fs::read_dir(rows_path.parent().unwrap())
                 .unwrap()
@@ -1901,23 +1914,25 @@ mod tests {
     }
 
     /// A state file that is not there says nothing, as the other cache
-    /// files do; one that is there but cannot be read or decoded reads as
-    /// no state and is written to the log, never as a wrong state. Either
-    /// way the consequence is a question or a preparation, which is
-    /// visible, rather than rows drawn from a decision nobody made.
+    /// files do. One that does not decode was written under another
+    /// version and reads as no state: the consequence is a question or a
+    /// preparation, which is visible, rather than rows drawn from a
+    /// decision nobody made. One that is there but cannot be read is an
+    /// error and not no state: reading it as no state would let a
+    /// question or a preparation write over a decision that still exists.
     #[test]
-    fn an_unreadable_or_stale_state_file_reads_as_no_state() {
+    fn a_stale_state_file_reads_as_no_state_and_an_unreadable_one_is_an_error() {
         let store = temp("pack-state-loading");
-        assert!(load_pack_source_state(&store, "Test").is_none());
-        assert!(load_pack_prepared_map(&store, "Test").is_none());
+        assert!(load_pack_source_state(&store, "Test").unwrap().is_none());
+        assert!(load_pack_prepared_map(&store, "Test").unwrap().is_none());
         save_pack_state(&store, "Test", &accepted_state(9), &Vec::new()).unwrap();
         assert_eq!(
-            load_pack_source_state(&store, "Test").unwrap(),
+            load_pack_source_state(&store, "Test").unwrap().unwrap(),
             accepted_state(9)
         );
         let source_path = artwork_pack_source_path(&store, "Test");
         std::fs::write(&source_path, b"not a state file").unwrap();
-        assert!(load_pack_source_state(&store, "Test").is_none());
+        assert!(load_pack_source_state(&store, "Test").unwrap().is_none());
         let stale = postcard::to_stdvec(&PackSourceFile {
             format: PACK_SOURCE_FORMAT + 1,
             state: accepted_state(9),
@@ -1925,14 +1940,18 @@ mod tests {
         .unwrap();
         std::fs::write(&source_path, stale).unwrap();
         assert!(
-            load_pack_source_state(&store, "Test").is_none(),
+            load_pack_source_state(&store, "Test").unwrap().is_none(),
             "a state written under another policy is prepared again, not misread"
         );
         std::fs::remove_file(&source_path).unwrap();
         std::fs::create_dir(&source_path).unwrap();
-        assert!(load_pack_source_state(&store, "Test").is_none());
+        let error = load_pack_source_state(&store, "Test").unwrap_err();
         assert!(
-            load_pack_prepared_map(&store, "Test").is_some(),
+            error.to_string().contains("reading the Artwork Pack state"),
+            "{error}"
+        );
+        assert!(
+            load_pack_prepared_map(&store, "Test").unwrap().is_some(),
             "the other file is read on its own"
         );
         std::fs::remove_dir_all(store).ok();

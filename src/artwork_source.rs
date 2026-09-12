@@ -76,9 +76,16 @@ pub fn resolve(
         if let Some(root) = settings.artwork_pack_roots.get(group) {
             resolved.roots.insert(system.def.id.clone(), root.clone());
         } else if mode(settings, &system.def.id) == Mode::Automatic {
-            let Some(state) = crate::cache::load_pack_source_state(cache_dir, &system.def.id)
-            else {
-                continue;
+            // A state file that cannot be read is the group's problem to
+            // show, as an unreadable gamelist probe is: what was decided
+            // for the system is unknown, not undecided.
+            let state = match crate::cache::load_pack_source_state(cache_dir, &system.def.id) {
+                Ok(Some(state)) => state,
+                Ok(None) => continue,
+                Err(error) => {
+                    resolved.errors.insert(group.to_string(), error.to_string());
+                    continue;
+                }
             };
             if let Some(root) = state.accepted.map(|accepted| accepted.docs_root) {
                 accepted.entry(group).or_default().push((system, root));
@@ -430,6 +437,27 @@ mod tests {
         let resolved = fixture.resolve(&systems, &Settings::default());
         assert!(resolved.roots.is_empty());
         assert!(resolved.errors["NeoGeo"].contains("gamelist.xml"));
+    }
+
+    /// An accepted system whose state file is there but cannot be read
+    /// is reported for its group, not started as undecided: reading it as
+    /// no state would drop the accepted root and let the next entry ask a
+    /// question whose answer writes over the decision that still exists.
+    #[test]
+    fn an_unreadable_state_file_is_the_groups_error_not_no_decision() {
+        let fixture = Fixture::new();
+        let systems = [fixture.system("NeoGeo", &["first"])];
+        let docs = fixture.pack("sd", "NEOGEO").join("docs");
+        fixture.accept("NeoGeo", &docs);
+        let state_path = crate::cache::artwork_pack_source_path(&fixture.cache_dir(), "NeoGeo");
+        std::fs::remove_file(&state_path).unwrap();
+        std::fs::create_dir(&state_path).unwrap();
+        let resolved = fixture.resolve(&systems, &Settings::default());
+        assert!(resolved.roots.is_empty());
+        assert!(
+            resolved.errors["NeoGeo"].contains("reading the Artwork Pack state"),
+            "{resolved:?}"
+        );
     }
 
     /// An explicit choice is spelled out for every member of its group and

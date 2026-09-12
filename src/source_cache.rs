@@ -65,9 +65,11 @@ pub enum Event {
         prepared: PreparedCacheGroup,
         providers: Vec<crate::artwork_pack::Provider>,
         progress: Progress,
-        /// Archives and members the scan left out, each line prefixed with
-        /// its system's name. The group still stages: a ZIP problem is not
-        /// a reason to fail every system in it.
+        /// Rows the preparation left without Pack data because their own
+        /// descriptor could not be read: one count line per reason,
+        /// prefixed with the system's name and without a path. The group
+        /// still stages: one broken descriptor is not a reason to fail
+        /// every row in it.
         warnings: Vec<String>,
     },
     Cancelled(Progress),
@@ -894,13 +896,16 @@ mod tests {
         let markers = prepared.markers().to_vec();
         for id in ["NeoGeo", "NeoGeoMVS"] {
             assert!(
-                crate::cache::load_pack_source_state(&cache_dir, id).is_none(),
+                crate::cache::load_pack_source_state(&cache_dir, id)
+                    .unwrap()
+                    .is_none(),
                 "nothing is live before the install"
             );
         }
         prepared.install().unwrap();
         for (position, id) in ["NeoGeo", "NeoGeoMVS"].into_iter().enumerate() {
             let state = crate::cache::load_pack_source_state(&cache_dir, id)
+                .unwrap()
                 .unwrap_or_else(|| panic!("{id} has its decision written down"));
             let accepted = state.accepted.expect("a preparation is an acceptance");
             assert!(state.declined.is_none());
@@ -916,7 +921,9 @@ mod tests {
             assert_eq!(accepted.health, crate::artwork_pack::ProviderHealth::Ready);
             assert_eq!(accepted.skipped_entries, 0);
             assert!(accepted.signature.is_some());
-            let prepared = crate::cache::load_pack_prepared_map(&cache_dir, id).unwrap();
+            let prepared = crate::cache::load_pack_prepared_map(&cache_dir, id)
+                .unwrap()
+                .unwrap();
             assert_eq!(
                 prepared.len(),
                 1,
@@ -1001,7 +1008,9 @@ mod tests {
                 .any(|row| row.name == "Broken" && row.cover.is_none()),
             "{rows:?}"
         );
-        let state = crate::cache::load_pack_source_state(&cache_dir, "Arcade").unwrap();
+        let state = crate::cache::load_pack_source_state(&cache_dir, "Arcade")
+            .unwrap()
+            .unwrap();
         assert_eq!(state.accepted.as_ref().unwrap().skipped_entries, 1);
         assert_eq!(
             state.accepted.as_ref().unwrap().health,
@@ -1035,6 +1044,7 @@ mod tests {
         assert_eq!(providers[0].apply_prepared(&mut rows), 2);
         assert_eq!(
             crate::cache::load_pack_source_state(&cache_dir, "Arcade")
+                .unwrap()
                 .unwrap()
                 .accepted
                 .unwrap()
@@ -1086,7 +1096,9 @@ mod tests {
         let (caches, _) = prepared.install().unwrap();
         assert!(!caches[0].fingerprints_complete);
         assert!(
-            crate::cache::load_pack_source_state(&empty_store, "Arcade").is_none(),
+            crate::cache::load_pack_source_state(&empty_store, "Arcade")
+                .unwrap()
+                .is_none(),
             "an unusable Pack is not written down as accepted"
         );
         std::fs::remove_dir_all(root).ok();

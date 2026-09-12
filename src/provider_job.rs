@@ -775,6 +775,7 @@ mod tests {
             ["Arcade: 1 game left without Pack data: malformed descriptor"]
         );
         let state = crate::cache::load_pack_source_state(&cache_dir, "Arcade")
+            .unwrap()
             .expect("the validated adoption is written down");
         let accepted = state.accepted.unwrap();
         assert_eq!(accepted.docs_root, docs.to_str().unwrap());
@@ -787,7 +788,9 @@ mod tests {
                 .marker
         );
         assert_eq!(accepted.health, crate::artwork_pack::ProviderHealth::Ready);
-        let prepared = crate::cache::load_pack_prepared_map(&cache_dir, "Arcade").unwrap();
+        let prepared = crate::cache::load_pack_prepared_map(&cache_dir, "Arcade")
+            .unwrap()
+            .unwrap();
         assert_eq!(prepared.len(), 1);
         assert_eq!(prepared[0].1.name.as_deref(), Some("Pack Healthy"));
         assert_eq!(snapshot.provider.prepared_pairs().len(), 1);
@@ -812,7 +815,9 @@ mod tests {
             };
             assert!(error.to_string().contains("writing the cache"), "{error}");
             assert!(
-                crate::cache::load_pack_source_state(&cache_dir, "Arcade").is_none(),
+                crate::cache::load_pack_source_state(&cache_dir, "Arcade")
+                    .unwrap()
+                    .is_none(),
                 "no decision is written without its rows"
             );
         }
@@ -824,7 +829,9 @@ mod tests {
         .unwrap();
         assert!(matches!(terminal(&mut job), Event::Loaded { .. }));
         assert!(
-            crate::cache::load_pack_source_state(&cache_dir, "Arcade").is_none(),
+            crate::cache::load_pack_source_state(&cache_dir, "Arcade")
+                .unwrap()
+                .is_none(),
             "a location check decides nothing"
         );
         std::fs::remove_dir_all(root).ok();

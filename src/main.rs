@@ -610,10 +610,25 @@ fn check_install(config_path: &Path) -> Result<()> {
         match pack_source_states(&cache::dir_for(&settings_path)) {
             Ok(states) => {
                 for (id, state) in states {
+                    let state = match state {
+                        Ok(Some(state)) => state,
+                        Ok(None) => {
+                            println!(
+                                "artwork pack {id}: state file written under another version, read as no state"
+                            );
+                            continue;
+                        }
+                        Err(error) => {
+                            println!("artwork pack {id}: STATE NOT READ");
+                            problems.push(error.to_string());
+                            continue;
+                        }
+                    };
                     if let Some(accepted) = &state.accepted {
                         println!(
-                            "artwork pack {id}: Automatic accepted at {}, {} games without Pack data",
-                            accepted.docs_root, accepted.skipped_entries
+                            "artwork pack {id}: Automatic accepted at {}, {} without Pack data",
+                            accepted.docs_root,
+                            games_count(accepted.skipped_entries)
                         );
                     } else if let Some(declined) = &state.declined {
                         println!("artwork pack {id}: declined at {}", declined.docs_root);
@@ -1068,11 +1083,14 @@ fn homes_of(loaded: &Loaded) -> mgl::Homes {
     mgl::Homes::new(&loaded.config.game_roots, &loaded.systems)
 }
 
-/// Every `<id>.source.bin` under the cache, by system id, in name order.
-/// No Pack folder yet is the ordinary case and lists nothing; a folder
-/// that cannot be listed is an error. A file that cannot be read or
-/// decoded is left out here and named in the log, as the frontend does.
-fn pack_source_states(cache_dir: &Path) -> Result<Vec<(String, cache::PackSourceState)>> {
+/// Every `<id>.source.bin` under the cache, by system id, in name order,
+/// each read as the frontend reads it: the state, nothing for a file
+/// written under another version, or the error of one that cannot be
+/// read. No Pack folder yet is the ordinary case and lists nothing; a
+/// folder that cannot be listed is an error.
+type PackSourceStates = Vec<(String, Result<Option<cache::PackSourceState>>)>;
+
+fn pack_source_states(cache_dir: &Path) -> Result<PackSourceStates> {
     let store = cache_dir.join("artwork-pack");
     let entries = match std::fs::read_dir(&store) {
         Ok(entries) => entries,
@@ -1097,7 +1115,10 @@ fn pack_source_states(cache_dir: &Path) -> Result<Vec<(String, cache::PackSource
     ids.sort();
     Ok(ids
         .into_iter()
-        .filter_map(|id| cache::load_pack_source_state(cache_dir, &id).map(|state| (id, state)))
+        .map(|id| {
+            let state = cache::load_pack_source_state(cache_dir, &id);
+            (id, state)
+        })
         .collect())
 }
 
@@ -1112,11 +1133,18 @@ fn automatic_source_notes(loaded: &Loaded, system: &FoundSystem) -> Vec<String> 
         return Vec::new();
     }
     let cache_dir = cache::dir_for(&loaded.settings_path);
-    let state = cache::load_pack_source_state(&cache_dir, id).unwrap_or_default();
+    let state = match cache::load_pack_source_state(&cache_dir, id) {
+        Ok(state) => state.unwrap_or_default(),
+        Err(error) => return vec![format!("Automatic: Artwork Pack state not read: {error}")],
+    };
     if let Some(accepted) = &state.accepted {
         let root = Path::new(&accepted.docs_root);
+        // Seen through the tables of the language the rows were prepared
+        // for: the frontend's own check compares the language separately.
+        let language = accepted.language.as_deref();
         let status = match &accepted.signature {
-            Some(signature) => match artwork_pack::snapshot_status(id, signature, root).0 {
+            Some(signature) => match artwork_pack::snapshot_status(id, signature, root, language).0
+            {
                 artwork_pack::SnapshotStatus::Current => "current",
                 artwork_pack::SnapshotStatus::ImagesOnly => "images changed",
                 artwork_pack::SnapshotStatus::Changed => "changed",
@@ -1130,14 +1158,15 @@ fn automatic_source_notes(loaded: &Loaded, system: &FoundSystem) -> Vec<String> 
             ""
         };
         return vec![format!(
-            "Automatic: Artwork Pack prepared at {}, state {status}{kept}, {} games left without Pack data at preparation",
-            accepted.docs_root, accepted.skipped_entries
+            "Automatic: Artwork Pack prepared at {}, state {status}{kept}, {} left without Pack data at preparation",
+            accepted.docs_root,
+            games_count(accepted.skipped_entries)
         )];
     }
     if let Some(declined) = &state.declined {
         let root = Path::new(&declined.docs_root);
         let current = declined.signature.as_ref().is_some_and(|signature| {
-            artwork_pack::snapshot_status(id, signature, root).0
+            artwork_pack::snapshot_status(id, signature, root, declined.language.as_deref()).0
                 == artwork_pack::SnapshotStatus::Current
         });
         return vec![if current {
@@ -1162,6 +1191,11 @@ fn automatic_source_notes(loaded: &Loaded, system: &FoundSystem) -> Vec<String> 
             "Automatic: candidate location not checked: {error}"
         )],
     }
+}
+
+/// "1 game" or "n games", as the preparation report counts them.
+fn games_count(count: u32) -> String {
+    format!("{count} game{}", if count == 1 { "" } else { "s" })
 }
 
 /// Beside the settings, which is beside the configuration.
@@ -2141,7 +2175,7 @@ category = "Favorites"
         assert!(automatic_source_notes(&loaded, &loaded.systems[0]).is_empty());
 
         let provider = artwork_pack::Provider::load("Arcade", &docs, None);
-        let signature = artwork_pack::known_tables_signature("Arcade", &docs).unwrap();
+        let signature = artwork_pack::known_tables_signature("Arcade", &docs, None).unwrap();
         cache::save_pack_state(
             &cache_dir,
             "Arcade",
@@ -2178,17 +2212,57 @@ category = "Favorites"
         assert_eq!(
             listed
                 .iter()
-                .map(|(id, state)| (id.as_str(), state.accepted.is_some()))
+                .map(|(id, state)| (
+                    id.as_str(),
+                    state.as_ref().unwrap().as_ref().unwrap().accepted.is_some()
+                ))
                 .collect::<Vec<_>>(),
             [("Arcade", true), ("NES", false)]
         );
         assert_eq!(
             automatic_source_notes(&loaded, &loaded.systems[0]),
             [format!(
-                "Automatic: Artwork Pack prepared at {}, state current, 1 games left without Pack data at preparation",
+                "Automatic: Artwork Pack prepared at {}, state current, 1 game left without Pack data at preparation",
                 docs.display()
             )]
         );
+        // A state file that cannot be read is listed by its error, not
+        // left out: the listing is where that state is looked for.
+        let nes_state = cache::artwork_pack_source_path(&cache_dir, "NES");
+        std::fs::remove_file(&nes_state).unwrap();
+        std::fs::create_dir(&nes_state).unwrap();
+        let listed = pack_source_states(&cache_dir).unwrap();
+        assert_eq!(listed[1].0, "NES");
+        assert!(
+            listed[1]
+                .1
+                .as_ref()
+                .unwrap_err()
+                .to_string()
+                .contains("reading the Artwork Pack state"),
+            "{:?}",
+            listed[1].1
+        );
+        let mut nes = loaded.systems[0].clone();
+        nes.def.id = "NES".into();
+        assert!(automatic_source_notes(&loaded, &nes)[0].contains("state not read"));
+        std::fs::remove_dir(&nes_state).unwrap();
+        cache::save_pack_source_state(
+            &cache_dir,
+            "NES",
+            &cache::PackSourceState {
+                accepted: None,
+                declined: Some(cache::DeclinedSource {
+                    docs_root: docs.to_string_lossy().into_owned(),
+                    language: None,
+                    signature: Some(
+                        artwork_pack::known_tables_signature("Arcade", &docs, None).unwrap(),
+                    ),
+                    cache_marker: None,
+                }),
+            },
+        )
+        .unwrap();
         std::fs::write(
             docs.join("Arcade/Artwork/gameinfo.tsv"),
             "#key\tname\tyear\tgenre\tdeveloper\tplayers\nhealthy\tRenamed\t1990\tShooter\tStudio\t2\n",

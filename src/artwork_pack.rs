@@ -1577,12 +1577,17 @@ impl SourceFingerprint {
 
     /// The bounded check made when a prepared system is entered: the docs
     /// root, each mapped Artwork directory, the tables written down and the
-    /// three fixed table names are stat'd; the manifest is hashed again.
+    /// fixed table names are stat'd; the manifest is hashed again.
     /// Nothing is listed, so a directory of thousands of images costs a
     /// handful of stats. The signature returned is the source as it is
     /// now, seen through the same names, for writing down when the rows
     /// are kept.
-    fn status(&self, mapping: Mapping, docs_root: &Path) -> (SnapshotStatus, SourceFingerprint) {
+    fn status(
+        &self,
+        mapping: Mapping,
+        docs_root: &Path,
+        language: Option<&str>,
+    ) -> (SnapshotStatus, SourceFingerprint) {
         match std::fs::metadata(docs_root) {
             Ok(metadata) if metadata.is_dir() => {}
             Ok(_) => return (SnapshotStatus::Unavailable, self.clone()),
@@ -1603,9 +1608,12 @@ impl SourceFingerprint {
                 .zip(mapping.folders)
                 .all(|((recorded, _), current)| recorded == current);
         if !same_layout {
-            return match known_tables_fingerprint(mapping, docs_root) {
+            return match known_tables_fingerprint(mapping, docs_root, language) {
                 Ok(refreshed) => (SnapshotStatus::Changed, refreshed),
-                Err(_) => (SnapshotStatus::Unavailable, self.clone()),
+                Err(error) => {
+                    crate::note(&format!("artwork pack {}: {error}", docs_root.display()));
+                    (SnapshotStatus::Unavailable, self.clone())
+                }
             };
         }
         let mut status = SnapshotStatus::Current;
@@ -1614,7 +1622,7 @@ impl SourceFingerprint {
             self.0.iter().zip(mapping.folders).enumerate()
         {
             let artwork = docs_root.join(current_folder).join("Artwork");
-            let now = match refreshed_fingerprint(&artwork, recorded.as_ref()) {
+            let now = match refreshed_fingerprint(&artwork, recorded.as_ref(), language) {
                 Ok(now) => now,
                 Err(error) => {
                     crate::note(&format!("artwork pack {}: {error}", artwork.display()));
@@ -1645,14 +1653,16 @@ impl SourceFingerprint {
 }
 
 /// The entry check for one system: see [`SourceFingerprint::status`]. A
-/// system without a Pack mapping has no signature to check against.
+/// system without a Pack mapping has no signature to check against. The
+/// language is the one whose synopsis table is looked for by name.
 pub(crate) fn snapshot_status(
     system_id: &str,
     signature: &SourceFingerprint,
     docs_root: &Path,
+    language: Option<&str>,
 ) -> (SnapshotStatus, SourceFingerprint) {
     match mapping(system_id) {
-        Some(mapping) => signature.status(mapping, docs_root),
+        Some(mapping) => signature.status(mapping, docs_root, language),
         None => (SnapshotStatus::Changed, signature.clone()),
     }
 }
@@ -1661,13 +1671,17 @@ pub(crate) fn snapshot_status(
 /// each mapped Artwork directory's mtime, without listing it. What a
 /// declined offer is remembered by, so the same unchanged Pack is not
 /// offered again while a changed one is.
-fn known_tables_fingerprint(mapping: Mapping, docs_root: &Path) -> Result<SourceFingerprint> {
+fn known_tables_fingerprint(
+    mapping: Mapping,
+    docs_root: &Path,
+    language: Option<&str>,
+) -> Result<SourceFingerprint> {
     let mut directories = Vec::with_capacity(mapping.folders.len());
     for folder in mapping.folders {
         let artwork = docs_root.join(folder).join("Artwork");
         directories.push((
             (*folder).to_string(),
-            refreshed_fingerprint(&artwork, None)?,
+            refreshed_fingerprint(&artwork, None, language)?,
         ));
     }
     Ok(SourceFingerprint(directories))
@@ -1677,6 +1691,7 @@ fn known_tables_fingerprint(mapping: Mapping, docs_root: &Path) -> Result<Source
 pub(crate) fn known_tables_signature(
     system_id: &str,
     docs_root: &Path,
+    language: Option<&str>,
 ) -> Result<SourceFingerprint> {
     let mapping = mapping(system_id).ok_or_else(|| {
         DegaussError::unsupported(
@@ -1684,16 +1699,39 @@ pub(crate) fn known_tables_signature(
             format!("{system_id} has no Artwork Pack mapping"),
         )
     })?;
-    known_tables_fingerprint(mapping, docs_root)
+    known_tables_fingerprint(mapping, docs_root, language)
+}
+
+/// The fixed table names, stat'd whether or not they were there last
+/// time: the three every Pack has, and the synopsis tables the
+/// preparation reads first, the preferred language's and English's. A
+/// synopsis in another language added later is not seen by name; Rebuild
+/// This System List reads the directory.
+fn fixed_table_names(language: Option<&str>) -> Vec<String> {
+    let mut names: Vec<String> = ["index.tsv", "gameinfo.tsv", "manifest.tsv"]
+        .into_iter()
+        .map(str::to_string)
+        .collect();
+    for language in normalized_language(language)
+        .into_iter()
+        .chain(std::iter::once("en".to_string()))
+    {
+        let name = format!("synopsis_{language}.tsv");
+        if !names.iter().any(|known| known.eq_ignore_ascii_case(&name)) {
+            names.push(name);
+        }
+    }
+    names
 }
 
 /// One Artwork directory seen through known names only: the tables written
-/// down last time plus the three fixed names, each stat'd, the manifest
-/// hashed. `None` when the directory is not there; an error when it or a
-/// table cannot be looked at.
+/// down last time plus the fixed names, each stat'd, the manifest hashed.
+/// `None` when the directory is not there; an error when it or a table
+/// cannot be looked at.
 fn refreshed_fingerprint(
     artwork: &Path,
     recorded: Option<&Fingerprint>,
+    language: Option<&str>,
 ) -> Result<Option<Fingerprint>> {
     let directory = match std::fs::metadata(artwork) {
         Ok(metadata) if metadata.is_dir() => metadata,
@@ -1716,9 +1754,9 @@ fn refreshed_fingerprint(
                 .collect()
         })
         .unwrap_or_default();
-    for fixed in ["index.tsv", "gameinfo.tsv", "manifest.tsv"] {
-        if !names.iter().any(|name| name.eq_ignore_ascii_case(fixed)) {
-            names.push(fixed.to_string());
+    for fixed in fixed_table_names(language) {
+        if !names.iter().any(|name| name.eq_ignore_ascii_case(&fixed)) {
+            names.push(fixed);
         }
     }
     let mut tables = Vec::with_capacity(names.len());
@@ -5147,7 +5185,7 @@ mod tests {
 
         let original_mode = std::fs::metadata(&art).unwrap().permissions().mode();
         std::fs::set_permissions(&art, std::fs::Permissions::from_mode(0o111)).unwrap();
-        let (status, refreshed) = snapshot_status("SuperGrafx", &signature, &root);
+        let (status, refreshed) = snapshot_status("SuperGrafx", &signature, &root, None);
         std::fs::set_permissions(&art, std::fs::Permissions::from_mode(original_mode)).unwrap();
         assert_eq!(status, SnapshotStatus::Current);
         assert_eq!(
@@ -5156,7 +5194,7 @@ mod tests {
         );
 
         std::fs::write(art.join("Another.jpg"), b"jpeg").unwrap();
-        let (status, refreshed) = snapshot_status("SuperGrafx", &signature, &root);
+        let (status, refreshed) = snapshot_status("SuperGrafx", &signature, &root, None);
         assert_eq!(
             status,
             SnapshotStatus::ImagesOnly,
@@ -5164,7 +5202,7 @@ mod tests {
         );
         assert_ne!(refreshed, signature);
         assert_eq!(
-            snapshot_status("SuperGrafx", &refreshed, &root).0,
+            snapshot_status("SuperGrafx", &refreshed, &root, None).0,
             SnapshotStatus::Current,
             "the refreshed signature is the new baseline"
         );
@@ -5175,14 +5213,14 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            snapshot_status("SuperGrafx", &refreshed, &root).0,
+            snapshot_status("SuperGrafx", &refreshed, &root, None).0,
             SnapshotStatus::Changed,
             "an edited table changes what the rows would say"
         );
 
         std::fs::rename(&root, root.with_extension("away")).unwrap();
         assert_eq!(
-            snapshot_status("SuperGrafx", &refreshed, &root).0,
+            snapshot_status("SuperGrafx", &refreshed, &root, None).0,
             SnapshotStatus::Unavailable,
             "a docs root that is gone is not an unchanged Pack"
         );
@@ -5203,7 +5241,7 @@ mod tests {
             .any(|(name, _, _, _)| name == "index.tsv"));
         std::fs::write(art.join("index.tsv"), "#name\tcrc\tsize\tkey\n").unwrap();
         assert_eq!(
-            snapshot_status("SuperGrafx", &signature, &root).0,
+            snapshot_status("SuperGrafx", &signature, &root, None).0,
             SnapshotStatus::Changed
         );
         std::fs::remove_dir_all(root.parent().unwrap()).ok();
@@ -5217,12 +5255,12 @@ mod tests {
         assert_eq!(signature.0.len(), 2);
         assert!(signature.0[1].1.is_none(), "Satellaview is not installed");
         assert_eq!(
-            snapshot_status("SNES", &signature, &docs).0,
+            snapshot_status("SNES", &signature, &docs, None).0,
             SnapshotStatus::Current
         );
         ready_directory(&docs, "Satellaview", "Other", "Other", "Other Title");
         assert_eq!(
-            snapshot_status("SNES", &signature, &docs).0,
+            snapshot_status("SNES", &signature, &docs, None).0,
             SnapshotStatus::Changed,
             "a mapped folder that appeared changes the catalogue"
         );
@@ -5230,13 +5268,13 @@ mod tests {
         let both = provider.snapshot().cloned().unwrap();
         std::fs::remove_dir_all(docs.join("Satellaview")).unwrap();
         assert_eq!(
-            snapshot_status("SNES", &both, &docs).0,
+            snapshot_status("SNES", &both, &docs, None).0,
             SnapshotStatus::Changed,
             "a secondary folder that is gone is a change, not an outage"
         );
         std::fs::remove_dir_all(docs.join("SNES")).unwrap();
         assert_eq!(
-            snapshot_status("SNES", &both, &docs).0,
+            snapshot_status("SNES", &both, &docs, None).0,
             SnapshotStatus::Unavailable,
             "the primary folder gone is the Pack gone"
         );
@@ -5255,7 +5293,7 @@ mod tests {
         ready_tables(&art, "", "");
         let original_mode = std::fs::metadata(&art).unwrap().permissions().mode();
         std::fs::set_permissions(&art, std::fs::Permissions::from_mode(0o111)).unwrap();
-        let signature = known_tables_signature("SuperGrafx", &root);
+        let signature = known_tables_signature("SuperGrafx", &root, None);
         std::fs::set_permissions(&art, std::fs::Permissions::from_mode(original_mode)).unwrap();
         let signature = signature.expect("known names are stat'd through an unlistable directory");
         let recorded = signature.0[0].1.as_ref().unwrap();
@@ -5265,7 +5303,7 @@ mod tests {
             .iter()
             .any(|(name, _, _, crc)| name == "manifest.tsv" && crc.is_some()));
         assert_eq!(
-            snapshot_status("SuperGrafx", &signature, &root).0,
+            snapshot_status("SuperGrafx", &signature, &root, None).0,
             SnapshotStatus::Current
         );
 
@@ -5275,13 +5313,35 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            snapshot_status("SuperGrafx", &signature, &root).0,
+            snapshot_status("SuperGrafx", &signature, &root, None).0,
             SnapshotStatus::Changed,
             "the Pack the user declined is not the Pack that is there now"
         );
         assert!(
-            known_tables_signature("Unknown", &root).is_err(),
+            known_tables_signature("Unknown", &root, None).is_err(),
             "a system without a mapping has no Pack to sign"
+        );
+
+        // The synopsis tables the preparation reads first are seen by
+        // name too: one appearing for the preferred language, or for
+        // English, is a change to what the rows would say.
+        let signature = known_tables_signature("SuperGrafx", &root, Some("It")).unwrap();
+        assert_eq!(
+            snapshot_status("SuperGrafx", &signature, &root, Some("it")).0,
+            SnapshotStatus::Current
+        );
+        std::fs::write(art.join("synopsis_it.tsv"), "#key\tsynopsis\n").unwrap();
+        assert_eq!(
+            snapshot_status("SuperGrafx", &signature, &root, Some("it")).0,
+            SnapshotStatus::Changed,
+            "a synopsis in the preferred language added later is a changed Pack"
+        );
+        let signature = known_tables_signature("SuperGrafx", &root, Some("it")).unwrap();
+        std::fs::write(art.join("synopsis_en.tsv"), "#key\tsynopsis\n").unwrap();
+        assert_eq!(
+            snapshot_status("SuperGrafx", &signature, &root, Some("it")).0,
+            SnapshotStatus::Changed,
+            "the English fallback is looked for as well"
         );
         std::fs::remove_dir_all(root.parent().unwrap()).ok();
     }
@@ -5352,7 +5412,9 @@ mod tests {
         };
         crate::cache::save_pack_state(&store, "SuperGrafx", &state, &provider.prepared_pairs())
             .unwrap();
-        let read = crate::cache::load_pack_source_state(&store, "SuperGrafx").unwrap();
+        let read = crate::cache::load_pack_source_state(&store, "SuperGrafx")
+            .unwrap()
+            .unwrap();
         assert_eq!(
             read, state,
             "the u128 fields of the signature survive the file"
@@ -5365,7 +5427,9 @@ mod tests {
             accepted.health,
             accepted.diagnostics,
             accepted.signature,
-            crate::cache::load_pack_prepared_map(&store, "SuperGrafx").unwrap(),
+            crate::cache::load_pack_prepared_map(&store, "SuperGrafx")
+                .unwrap()
+                .unwrap(),
         );
         assert_eq!(
             restored.health_digest(),
