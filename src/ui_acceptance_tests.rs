@@ -3220,10 +3220,17 @@ fn run_degraded_pack_acknowledgement_flow(root: &Path, window: Rc<MinimalSoftwar
             .is_some_and(|message| message.contains(text))
     };
     // The overlay is small and names no file: the cause of a file that
-    // could not be read or written stays in the log.
-    let names_the_file = |app: &App| {
-        message_contains(app, &warnings.display().to_string())
-            || message_contains(app, "not a table")
+    // could not be read or written stays in the log. The cause is the one
+    // the read itself gives, whatever words it uses.
+    let names_the_file = |app: &App, cause: &str| {
+        message_contains(app, &warnings.display().to_string()) || message_contains(app, cause)
+    };
+    let malformed_cause = || {
+        Acknowledgements::load(&warnings)
+            .unwrap()
+            .malformed()
+            .expect("the file written as broken must read as malformed")
+            .to_string()
     };
     let reopen = |app: &mut App| {
         app.handle(Action::Quit);
@@ -3393,11 +3400,12 @@ fn run_degraded_pack_acknowledgement_flow(root: &Path, window: Rc<MinimalSoftwar
         "#key\tname\tyear\tgenre\tdeveloper\tplayers\nKnown\tPack First\t1990\tAction\tStudio\t1\nSecond\tPack Second\t1991\tPuzzle\tStudio\t2\nExtra\tPack Extra\t1992\tAction\tStudio\t1\n",
     )
     .unwrap();
-    let malformed_line = format!(
-        "artwork pack warnings: {} is malformed:",
-        warnings.display()
-    );
-    let malformed_before = logged(&malformed_line);
+    let malformed_line = |cause: &str| {
+        format!(
+            "artwork pack warnings: {} is malformed: {cause}",
+            warnings.display()
+        )
+    };
     let mut app = start(window.clone());
     assert!(
         message_contains(&app, "is incomplete"),
@@ -3417,6 +3425,8 @@ fn run_degraded_pack_acknowledgement_flow(root: &Path, window: Rc<MinimalSoftwar
     let extra_digest = provider.health_digest();
     assert_ne!(extra_digest, no_index_digest);
     std::fs::write(&warnings, "degraded = \"not a table").unwrap();
+    let cause = malformed_cause();
+    let malformed_before = logged(&malformed_line(&cause));
     app.handle(Action::Accept);
     assert!(
         message_contains(&app, "remembered")
@@ -3425,14 +3435,14 @@ fn run_degraded_pack_acknowledgement_flow(root: &Path, window: Rc<MinimalSoftwar
         app.message
     );
     assert!(
-        !names_the_file(&app),
+        !names_the_file(&app, &cause),
         "the press says the file was replaced, not the parse error or the path: {:?}",
         app.message
     );
     assert_eq!(
-        logged(&malformed_line),
+        logged(&malformed_line(&cause)),
         malformed_before + 1,
-        "the replacement of a file that broke meanwhile must reach {}",
+        "the replacement of a file that broke meanwhile must reach {} with its cause",
         crate::LOG_PATH
     );
     assert!(
@@ -3472,7 +3482,8 @@ fn run_degraded_pack_acknowledgement_flow(root: &Path, window: Rc<MinimalSoftwar
     // else; that warning says the file was set aside, and why, because the
     // press that dismisses it writes over what was there.
     std::fs::write(&warnings, "degraded = \"not a table").unwrap();
-    let malformed_before = logged(&malformed_line);
+    let cause = malformed_cause();
+    let malformed_before = logged(&malformed_line(&cause));
     let mut app = start(window.clone());
     assert!(message_contains(&app, "is incomplete"), "{:?}", app.message);
     assert!(
@@ -3481,7 +3492,7 @@ fn run_degraded_pack_acknowledgement_flow(root: &Path, window: Rc<MinimalSoftwar
         app.message
     );
     assert!(
-        !names_the_file(&app),
+        !names_the_file(&app, &cause),
         "the parse error and the path belong in the log, not on the overlay: {:?}",
         app.message
     );
@@ -3491,9 +3502,9 @@ fn run_degraded_pack_acknowledgement_flow(root: &Path, window: Rc<MinimalSoftwar
         "the broken file is replaced by a readable one"
     );
     assert_eq!(
-        logged(&malformed_line),
+        logged(&malformed_line(&cause)),
         malformed_before + 1,
-        "one broken file is one line in {}, not one per read of it",
+        "one broken file is one line in {}, with its cause, not one per read of it",
         crate::LOG_PATH
     );
     let acknowledged_file = std::fs::read_to_string(&warnings).unwrap();
@@ -3505,6 +3516,9 @@ fn run_degraded_pack_acknowledgement_flow(root: &Path, window: Rc<MinimalSoftwar
     // nothing is written over it.
     std::fs::remove_file(&warnings).unwrap();
     std::fs::create_dir(&warnings).unwrap();
+    let cause = Acknowledgements::load(&warnings)
+        .expect_err("a directory in the file's place cannot be read")
+        .to_string();
     let mut app = start(window.clone());
     assert!(message_contains(&app, "is incomplete"), "{:?}", app.message);
     assert!(
@@ -3513,7 +3527,7 @@ fn run_degraded_pack_acknowledgement_flow(root: &Path, window: Rc<MinimalSoftwar
         app.message
     );
     assert!(
-        !names_the_file(&app),
+        !names_the_file(&app, &cause),
         "the read error and the path belong in the log, not on the overlay: {:?}",
         app.message
     );
