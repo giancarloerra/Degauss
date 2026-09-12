@@ -967,26 +967,24 @@ fn status(code: u16) -> Result<()> {
 /// login diagnosis to a generic HTTP status. In particular, the service can
 /// use HTTP 403 for either developer credentials or an end-user login and
 /// states which pair failed only in its plain-text response. HTTP 400 no
-/// longer stops the run, so a documented service-wide text under it (a
-/// closure, an exhausted allowance, a refused client) keeps the text's
-/// classification instead of passing as one game's rejection.
+/// longer stops the run, so a documented text under it keeps the text's
+/// classification: a service-wide text (a closure, a limit, an exhausted
+/// allowance, a refused client) stops the run instead of passing as one
+/// game's rejection, a per-request text keeps the server's words in its
+/// detail and a not-found text is that game's miss. An unrecognised text
+/// under HTTP 400 keeps the status's per-game meaning, with the server's
+/// words in the detail so the log shows what was rejected.
 fn response_status(response: &HttpResponse) -> Result<()> {
     if let Ok(text) = std::str::from_utf8(&response.body) {
         let trimmed = text.trim_start_matches('\u{feff}').trim_start();
         let lower = trimmed.to_lowercase();
         if lower.starts_with("erreur") {
             let documented = documented_error(&lower, trimmed);
-            let service_wide_under_400 = response.status == 400
-                && documented.as_ref().is_some_and(|error| {
-                    matches!(
-                        error.kind,
-                        ErrorKind::Configuration | ErrorKind::DailyQuota | ErrorKind::Unavailable
-                    )
-                });
+            let documented_under_400 = response.status == 400 && documented.is_some();
             let body_error = documented.unwrap_or_else(|| unrecognised_error(trimmed));
             if response.status < 300
                 || body_error.kind == ErrorKind::Authentication
-                || service_wide_under_400
+                || documented_under_400
             {
                 crate::note(match authentication_source(trimmed) {
                     Some(AuthenticationSource::Application) => {
@@ -998,6 +996,15 @@ fn response_status(response: &HttpResponse) -> Result<()> {
                     None => "scraper      ScreenScraper returned a body-level error",
                 });
                 return Err(body_error);
+            }
+            if response.status == 400 {
+                return Err(Error::new(
+                    ErrorKind::InvalidRequest,
+                    format!(
+                        "ScreenScraper rejected the request parameters (HTTP 400): {}",
+                        excerpt(trimmed)
+                    ),
+                ));
             }
         }
     }
@@ -1086,6 +1093,22 @@ fn documented_error(lower: &str, text: &str) -> Option<Error> {
         return Some(Error::new(
             ErrorKind::Unavailable,
             "ScreenScraper reported that the API is closed",
+        ));
+    }
+    // The documented HTTP 429 texts (every one names "threads") and the
+    // HTTP 431 text describe the account's limits, not the request. Their
+    // HTTP statuses carry the retryable and allowance kinds; the text on
+    // its own stops the run like any other outage, wherever it arrives.
+    if lower.contains("threads") {
+        return Some(Error::new(
+            ErrorKind::Unavailable,
+            "ScreenScraper reported that its thread limit is reached",
+        ));
+    }
+    if lower.contains("faite du tri") || lower.contains("repassez demain") {
+        return Some(Error::new(
+            ErrorKind::Unavailable,
+            "the ScreenScraper failed-search allowance is exhausted",
         ));
     }
     // The blacklist text is the one HTTP 426 carries: the same kind, so a
@@ -2711,10 +2734,12 @@ mod tests {
     #[test]
     fn a_service_wide_text_under_http_400_still_stops_the_run() {
         // HTTP 400 is one game's rejection, so it no longer stops the run.
-        // A documented closure, allowance or refused-client text delivered
-        // with that status would otherwise cost one lookup per remaining
-        // game; a per-request text, a not-found text, or one ScreenScraper
-        // has not documented keeps the status's per-game meaning.
+        // A documented closure, limit, allowance or refused-client text
+        // delivered with that status would otherwise cost one lookup per
+        // remaining game. A per-request text and one ScreenScraper has not
+        // documented keep the status's per-game meaning, and the log detail
+        // keeps the server's words either way, because the fixed HTTP 400
+        // message alone would not say which rejection was sent.
         for (body, kind) in [
             ("Erreur : API totalement fermé", ErrorKind::Unavailable),
             (
@@ -2726,6 +2751,18 @@ mod tests {
                 ErrorKind::DailyQuota,
             ),
             (
+                "Erreur : Le nombre de threads par minute autorisé pour le membre est atteint",
+                ErrorKind::Unavailable,
+            ),
+            (
+                "Erreur : The maximum threads is already used",
+                ErrorKind::Unavailable,
+            ),
+            (
+                "Erreur : Faite du tri dans vos fichiers roms et repassez demain !",
+                ErrorKind::Unavailable,
+            ),
+            (
                 "Erreur : Il manque des champs obligatoires dans l'url",
                 ErrorKind::Configuration,
             ),
@@ -2733,7 +2770,6 @@ mod tests {
                 "Erreur : Problème dans le nom du fichier rom",
                 ErrorKind::InvalidRequest,
             ),
-            ("Erreur : Jeu non trouvée !", ErrorKind::InvalidRequest),
             (
                 "Erreur : Problème dans la recherche",
                 ErrorKind::InvalidRequest,
@@ -2747,7 +2783,26 @@ mod tests {
             .by_name(3, "Game")
             .unwrap_err();
             assert_eq!(error.kind, kind, "{body}");
+            if kind == ErrorKind::InvalidRequest {
+                assert!(
+                    error.detail.ends_with(&format!(": {body}")),
+                    "{body}: {}",
+                    error.detail
+                );
+            }
         }
+        // A documented not-found text keeps its own meaning under HTTP 400
+        // as it does on a successful status: the game is a server miss,
+        // not a rejection.
+        let missed = client(HttpResponse {
+            status: 400,
+            content_type: Some("text/plain".into()),
+            body: "Erreur : Jeu non trouvée !".as_bytes().to_vec(),
+        })
+        .by_name(3, "Game")
+        .unwrap();
+        assert_eq!(missed.lookup, Lookup::NotFound);
+        assert!(missed.server_miss);
         // Other statuses keep their own meaning over a body text, so a
         // rate limit stays retryable whatever the text says.
         let limited = client(HttpResponse {
