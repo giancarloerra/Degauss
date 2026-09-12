@@ -1767,15 +1767,30 @@ fn effective_library_with_sources(
     })
 }
 
+/// What the report says about an Artwork Pack: its health, its root and
+/// every diagnostic. A dismissed warning never shortens this; the complete
+/// diagnostic is what the report is for.
+fn pack_report_lines(provider: &artwork_pack::Provider) -> Vec<String> {
+    let mut lines = vec![
+        format!("source       Artwork Pack ({})", provider.health.label()),
+        format!("pack root    {}", provider.docs_root.display()),
+    ];
+    lines.extend(
+        provider
+            .diagnostics
+            .iter()
+            .map(|diagnostic| format!("pack note    {diagnostic}")),
+    );
+    lines
+}
+
 fn print_report(system: &FoundSystem, effective: &EffectiveLibrary, audit: &browse::Audit) {
     let library = &effective.library;
     println!("system       {} ({})", system.name(), system.category());
     match effective.provider.as_ref() {
         Some(provider) => {
-            println!("source       Artwork Pack ({})", provider.health.label());
-            println!("pack root    {}", provider.docs_root.display());
-            for diagnostic in &provider.diagnostics {
-                println!("pack note    {diagnostic}");
+            for line in pack_report_lines(provider) {
+                println!("{line}");
             }
         }
         None => println!("source       Gamelist"),
@@ -2396,6 +2411,62 @@ category = "Favorites"
                 .provider
                 .is_none(),
             "the audit consumes its snapshot without re-resolving settings"
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn a_report_of_an_incomplete_pack_lists_every_diagnostic() {
+        // The complete diagnostic is what a person runs `--report` for: a
+        // report that printed only the first of several, or none, would
+        // send them to the log for what the report is meant to say. A
+        // missing image and a missing table are two diagnostics.
+        let (root, mut loaded) = diagnostic_fixture("incomplete-report");
+        let docs = root.join("docs");
+        let artwork = docs.join("NES/Artwork");
+        std::fs::create_dir_all(&artwork).unwrap();
+        std::fs::write(root.join("games/NES/Known.nes"), b"first rom").unwrap();
+        std::fs::write(root.join("games/NES/Second.nes"), b"second rom").unwrap();
+        std::fs::write(
+            artwork.join("manifest.tsv"),
+            "#key\tstyle\tss_system_id\nKnown\tbox-2D\t3\nSecond\tbox-2D\t3\n",
+        )
+        .unwrap();
+        std::fs::write(
+            artwork.join("gameinfo.tsv"),
+            "#key\tname\tyear\tgenre\tdeveloper\tplayers\nKnown\tPack First\t1990\tAction\tStudio\t1\nSecond\tPack Second\t1991\tPuzzle\tStudio\t2\n",
+        )
+        .unwrap();
+        std::fs::write(artwork.join("Known.jpg"), covers::JPEG_16).unwrap();
+        loaded
+            .settings
+            .artwork_pack_roots
+            .insert("NES".into(), docs.to_string_lossy().into_owned());
+
+        let effective = effective_library(&loaded, &loaded.systems[0]).unwrap();
+        let provider = effective.provider.as_ref().unwrap();
+        assert_eq!(
+            provider.health,
+            artwork_pack::ProviderHealth::Degraded,
+            "{:?}",
+            provider.diagnostics
+        );
+        assert_eq!(
+            provider.diagnostics.len(),
+            2,
+            "one line per diagnostic is only proven with more than one: {:?}",
+            provider.diagnostics
+        );
+
+        let report = pack_report_lines(provider);
+        assert_eq!(report[0], "source       Artwork Pack (Degraded)");
+        assert_eq!(
+            report
+                .iter()
+                .filter_map(|line| line.strip_prefix("pack note    "))
+                .collect::<Vec<_>>(),
+            provider.diagnostics,
+            "every diagnostic is a line of the report, in order: {report:?}"
         );
         std::fs::remove_dir_all(root).unwrap();
     }

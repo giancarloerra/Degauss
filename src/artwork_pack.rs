@@ -1089,6 +1089,8 @@ impl Provider {
     /// source fingerprint. The system is left out so systems sharing one
     /// mapping share one acknowledgement, as they share one source.
     pub fn health_digest(&self) -> String {
+        use std::fmt::Write as _;
+
         let mut hasher = Sha1::new();
         let mut field = |bytes: &[u8]| {
             hasher.update(bytes);
@@ -1108,18 +1110,24 @@ impl Provider {
                         field(b"absent");
                         continue;
                     };
-                    field(fingerprint.directory_modified.to_string().as_bytes());
+                    field(&fingerprint.directory_modified.to_le_bytes());
                     for (name, size, modified, content_crc32) in &fingerprint.tables {
-                        field(format!("{name}\0{size}\0{modified}\0{content_crc32:?}").as_bytes());
+                        field(name.as_bytes());
+                        field(&size.to_le_bytes());
+                        field(&modified.to_le_bytes());
+                        match content_crc32 {
+                            Some(crc32) => field(&crc32.to_le_bytes()),
+                            None => field(b"no-crc32"),
+                        }
                     }
                 }
             }
         }
-        hasher
-            .finalize()
-            .iter()
-            .map(|byte| format!("{byte:02x}"))
-            .collect()
+        let mut digest = String::with_capacity(40);
+        for byte in hasher.finalize() {
+            let _ = write!(digest, "{byte:02x}");
+        }
+        digest
     }
 }
 
@@ -3513,6 +3521,23 @@ mod tests {
             .iter()
             .any(|diagnostic| diagnostic.contains("1 manifest images are missing")));
 
+        // A well-formed row added to gameinfo.tsv changes the table's size
+        // and nothing that the diagnostics or the health report: only the
+        // source fingerprint tells this state from the one already seen.
+        ready_tables(
+            &art,
+            "Chosen Game (USA)\t\t\tChosen Game (USA)\n",
+            "Chosen Game (USA)\tChosen Game\t1990\t\t\t\n",
+        );
+        let more_gameinfo = Provider::load("SuperGrafx", &root, None);
+        assert_eq!(more_gameinfo.health, missing_one.health);
+        assert_eq!(more_gameinfo.diagnostics, missing_one.diagnostics);
+        assert_ne!(
+            missing_one.health_digest(),
+            more_gameinfo.health_digest(),
+            "updated pack content with the same diagnostic is a new pack state whose warning has not been seen"
+        );
+
         std::fs::write(
             art.join("manifest.tsv"),
             "#key\tstyle\tss_system_id\nChosen Game (USA)\tbox-2D\t105\nMissing\tbox-2D\t105\nAlso Missing\tbox-2D\t105\n",
@@ -3521,7 +3546,7 @@ mod tests {
         let missing_two = Provider::load("SuperGrafx", &root, None);
         assert_eq!(missing_two.health, ProviderHealth::Degraded);
         assert_ne!(
-            missing_one.health_digest(),
+            more_gameinfo.health_digest(),
             missing_two.health_digest(),
             "an updated manifest is a new pack state whose warning has not been seen"
         );

@@ -223,53 +223,109 @@ impl Settings {
              # The documented defaults live in degauss.toml; delete this file\n\
              # to go back to them.\n\n{text}"
         );
-
-        let parent = path
-            .parent()
-            .filter(|parent| !parent.as_os_str().is_empty())
-            .unwrap_or_else(|| Path::new("."));
-        let file_name = path.file_name().ok_or_else(|| {
-            DegaussError::unsupported("writing settings", "settings path has no file name")
-        })?;
-        let (temporary, mut handle) = temporary_file(parent, file_name)?;
-
-        let write_result: Result<()> = (|| {
-            handle.write_all(body.as_bytes()).map_err(|error| {
-                DegaussError::io("writing temporary settings", &temporary, error)
-            })?;
-            handle.sync_all().map_err(|error| {
-                DegaussError::io("flushing temporary settings", &temporary, error)
-            })?;
-            Ok(())
-        })();
-        if let Err(error) = write_result {
-            drop(handle);
-            return Err(cleanup_temporary(&temporary, error));
-        }
-        drop(handle);
-
-        if let Err(error) = std::fs::rename(&temporary, path) {
-            let error = DegaussError::io("installing settings", path, error);
-            return Err(cleanup_temporary(&temporary, error));
-        }
-
-        match sync_directory(parent) {
-            Ok(()) => Ok(SaveOutcome::Durable),
-            Err(error) => Ok(SaveOutcome::InstalledWithWarning(DegaussError::io(
-                "flushing settings directory",
-                parent,
-                error,
-            ))),
-        }
+        install_with_directory_sync(&SETTINGS_LABELS, path, &body, sync_directory)
     }
 }
 
-fn cleanup_temporary(path: &Path, error: DegaussError) -> DegaussError {
+/// The words each step of a save is reported under. One set per file
+/// written beside the settings, so a failure names the file it was for.
+pub(crate) struct SaveLabels {
+    pub creating_temporary: &'static str,
+    pub writing_temporary: &'static str,
+    pub flushing_temporary: &'static str,
+    /// The save as a whole: a path without a file name, a temporary file
+    /// that could not be reserved, or one that could not be removed after
+    /// a failure.
+    pub writing: &'static str,
+    /// The details under `writing` for the first two of those, so each
+    /// writer's message names its own file.
+    pub no_file_name: &'static str,
+    pub could_not_reserve: &'static str,
+    pub installing: &'static str,
+    pub flushing_directory: &'static str,
+}
+
+const SETTINGS_LABELS: SaveLabels = SaveLabels {
+    creating_temporary: "creating temporary settings",
+    writing_temporary: "writing temporary settings",
+    flushing_temporary: "flushing temporary settings",
+    writing: "writing settings",
+    no_file_name: "settings path has no file name",
+    could_not_reserve: "could not reserve a temporary settings file",
+    installing: "installing settings",
+    flushing_directory: "flushing settings directory",
+};
+
+/// Write `body` to a temporary file beside `path`, flush it and move it
+/// into place, then flush the directory so the move itself survives a
+/// power cut. A file cut short is never read back as a shorter one. When
+/// the directory flush fails the file is in place and the outcome says
+/// what could not be confirmed. Shared with the other writer that installs
+/// a file beside the settings.
+pub(crate) fn install_beside_settings(
+    labels: &SaveLabels,
+    path: &Path,
+    body: &str,
+) -> Result<SaveOutcome> {
+    install_with_directory_sync(labels, path, body, |parent| {
+        std::fs::File::open(parent).and_then(|directory| directory.sync_all())
+    })
+}
+
+fn install_with_directory_sync(
+    labels: &SaveLabels,
+    path: &Path,
+    body: &str,
+    sync_directory: impl FnOnce(&Path) -> std::io::Result<()>,
+) -> Result<SaveOutcome> {
+    let parent = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let file_name = path
+        .file_name()
+        .ok_or_else(|| DegaussError::unsupported(labels.writing, labels.no_file_name))?;
+    let (temporary, mut handle) = temporary_file(labels, parent, file_name)?;
+
+    let write_result: Result<()> = (|| {
+        handle
+            .write_all(body.as_bytes())
+            .map_err(|error| DegaussError::io(labels.writing_temporary, &temporary, error))?;
+        handle
+            .sync_all()
+            .map_err(|error| DegaussError::io(labels.flushing_temporary, &temporary, error))?;
+        Ok(())
+    })();
+    if let Err(error) = write_result {
+        drop(handle);
+        return Err(cleanup_temporary(labels.writing, &temporary, error));
+    }
+    drop(handle);
+
+    if let Err(error) = std::fs::rename(&temporary, path) {
+        let error = DegaussError::io(labels.installing, path, error);
+        return Err(cleanup_temporary(labels.writing, &temporary, error));
+    }
+
+    match sync_directory(parent) {
+        Ok(()) => Ok(SaveOutcome::Durable),
+        Err(error) => Ok(SaveOutcome::InstalledWithWarning(DegaussError::io(
+            labels.flushing_directory,
+            parent,
+            error,
+        ))),
+    }
+}
+
+/// The failure that stopped a save, with the leftover temporary file
+/// removed; when even that fails the error says so under `what`, because
+/// a stray file beside the settings is worth knowing about.
+fn cleanup_temporary(what: &'static str, path: &Path, error: DegaussError) -> DegaussError {
     match std::fs::remove_file(path) {
         Ok(()) => error,
         Err(cleanup) if cleanup.kind() == std::io::ErrorKind::NotFound => error,
         Err(cleanup) => DegaussError::unsupported(
-            "writing settings",
+            what,
             format!(
                 "{error}; removing the temporary file {} also failed: {cleanup}",
                 path.display()
@@ -278,7 +334,13 @@ fn cleanup_temporary(path: &Path, error: DegaussError) -> DegaussError {
     }
 }
 
-fn temporary_file(parent: &Path, file_name: &std::ffi::OsStr) -> Result<(PathBuf, std::fs::File)> {
+/// A fresh temporary file beside the target: never an existing one, so a
+/// leftover of another run is not written over and read back as this one.
+fn temporary_file(
+    labels: &SaveLabels,
+    parent: &Path,
+    file_name: &std::ffi::OsStr,
+) -> Result<(PathBuf, std::fs::File)> {
     for attempt in 0..1000 {
         let mut temporary_name = OsString::from(".");
         temporary_name.push(file_name);
@@ -293,7 +355,7 @@ fn temporary_file(parent: &Path, file_name: &std::ffi::OsStr) -> Result<(PathBuf
             Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
             Err(error) => {
                 return Err(DegaussError::io(
-                    "creating temporary settings",
+                    labels.creating_temporary,
                     &temporary,
                     error,
                 ));
@@ -301,8 +363,8 @@ fn temporary_file(parent: &Path, file_name: &std::ffi::OsStr) -> Result<(PathBuf
         }
     }
     Err(DegaussError::unsupported(
-        "writing settings",
-        "could not reserve a temporary settings file",
+        labels.writing,
+        labels.could_not_reserve,
     ))
 }
 
@@ -598,5 +660,56 @@ mod tests {
         let decoded: Settings = toml::from_str(&encoded).unwrap();
         assert_eq!(decoded.core_choices, settings.core_choices);
         assert_eq!(decoded.core_preference, None);
+    }
+
+    #[test]
+    fn a_temporary_file_that_cannot_be_removed_is_part_of_the_reported_failure() {
+        let dir =
+            std::env::temp_dir().join(format!("degauss-settings-stuck-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let stuck = dir.join("stuck.tmp");
+        std::fs::create_dir_all(&stuck).unwrap();
+        let error = cleanup_temporary(
+            "writing settings",
+            &stuck,
+            DegaussError::unsupported("writing settings", "the save failed"),
+        );
+        let text = error.to_string();
+        assert!(
+            text.contains("the save failed") && text.contains("also failed"),
+            "both failures must reach the screen, or a stray file goes unexplained: {text}"
+        );
+        assert!(text.contains(&stuck.display().to_string()));
+        let gone = cleanup_temporary(
+            "writing artwork pack warnings",
+            &dir.join("never-written.tmp"),
+            DegaussError::unsupported("writing artwork pack warnings", "the save failed"),
+        );
+        assert_eq!(
+            gone.to_string(),
+            "writing artwork pack warnings unsupported: the save failed",
+            "a temporary file that was never written is nothing to report, whichever writer asks"
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_path_without_a_file_name_is_refused_in_each_writers_own_words() {
+        // The install is shared, the words are not: a failure must name the
+        // file it was for, and the settings writer must say exactly what it
+        // said before the install was shared, so nothing reads as a new
+        // failure after an update.
+        let error = Settings::default().save(Path::new("/")).unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "writing settings unsupported: settings path has no file name"
+        );
+        let error = crate::pack_health::Acknowledgements::default()
+            .save(Path::new("/"))
+            .unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "writing artwork pack warnings unsupported: artwork pack warnings path has no file name"
+        );
     }
 }
