@@ -473,11 +473,14 @@ fn walk_controlled(
         }
     }
     if !dropped.is_empty() {
+        // `dropped` was filled in row order, so one cursor over it meets
+        // each dropped row as `retain` reaches it.
+        let mut next = dropped.iter().copied().peekable();
         let mut index = 0;
         rows.retain(|_| {
-            let keep = !dropped.contains(&index);
+            let drop = next.next_if_eq(&index).is_some();
             index += 1;
-            keep
+            !drop
         });
     }
     cache.folders.insert(
@@ -1721,6 +1724,49 @@ mod tests {
             );
             std::fs::remove_dir_all(games).unwrap();
         }
+    }
+
+    /// Several rejected archives in one folder each lose exactly their own
+    /// row. The rows are taken out by position once the folder is walked,
+    /// so a folder holding rejected archives before, between and after
+    /// the ones it keeps is where a position out of step would drop a
+    /// healthy archive or publish a rejected one.
+    #[test]
+    fn several_rejected_archives_in_one_folder_each_lose_only_their_own_row() {
+        let games = temp("several-rejected-archives");
+        let healthy = crate::zip::tests_archive(&["One.d64"], false);
+        let broken = ["A-Broken.zip", "M-Broken.zip", "Z-Broken.zip"];
+        for name in broken {
+            std::fs::write(games.join(name), b"broken archive").unwrap();
+        }
+        for name in ["B-Good.zip", "N-Good.zip"] {
+            std::fs::write(games.join(name), &healthy).unwrap();
+        }
+        std::fs::write(games.join("Plain.d64"), b"rom").unwrap();
+        let library = Library::open(&system(&games)).unwrap();
+        let mut warnings = Vec::new();
+        let cache = build_system_checked(&library, &mut warnings).unwrap();
+        assert_eq!(cache.summary(&library.start()).games, 3);
+        let top = cache.get(&library.start()).unwrap();
+        assert_eq!(
+            top.rows
+                .iter()
+                .map(|row| (row.name.as_str(), row.below))
+                .collect::<Vec<_>>(),
+            [("B-Good", Some(1)), ("N-Good", Some(1)), ("Plain", None)]
+        );
+        assert_eq!(warnings.len(), 3, "{warnings:?}");
+        for name in broken {
+            let prefix = format!("{}: skipped: ", games.join(name).display());
+            assert!(
+                warnings.iter().any(|warning| warning.starts_with(&prefix)),
+                "{name}: {warnings:?}"
+            );
+            assert!(!cache
+                .folders
+                .contains_key(&Place::Archive(games.join(name)).key()));
+        }
+        std::fs::remove_dir_all(games).unwrap();
     }
 
     /// The summary on screen is one line per archive and reason; the log
