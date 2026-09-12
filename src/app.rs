@@ -2209,6 +2209,112 @@ fn reselect(rows: &[browse::Row], remembered: Option<&str>, fallback: usize) -> 
         .unwrap_or(fallback)
 }
 
+/// The one picture that names the game under a place, from what was
+/// written down: the picture of the one game below it that has one, at
+/// any depth, or the picture every game below it shares. Hidden rows are
+/// left out. Two different pictures, none at all, or several games
+/// sharing one beside a game without is nothing, and the folder keeps
+/// the system's logo.
+///
+/// Which picture a game has depends on the data source, which is why the
+/// Pack is passed in: the prepared Pack answers in Artwork Pack mode, the
+/// written-down row in Gamelist mode. Nothing here reads the card, and
+/// nothing is copied on the way: the paths are lent by the cache and the
+/// Pack for as long as they are.
+fn derived_folder_cover(
+    cache: &crate::cache::SystemCache,
+    place: &Place,
+    hidden: &[String],
+    provider: Option<&crate::artwork_pack::Provider>,
+) -> Option<PathBuf> {
+    let mut art = FolderArt::default();
+    if gather_folder_cover(cache, place, hidden, provider, 0, &mut art) {
+        art.cover.map(Path::to_path_buf)
+    } else {
+        None
+    }
+}
+
+/// The picture one playable row has under the data source in force: the
+/// prepared Pack's while a Pack is loaded, the written-down row's while
+/// the gamelist is. A Pack that is unusable or not yet prepared answers
+/// nothing, and nothing is borrowed from the other source.
+fn play_cover<'c>(
+    row: &'c browse::Row,
+    launch: &browse::Launch,
+    provider: Option<&'c crate::artwork_pack::Provider>,
+) -> Option<&'c Path> {
+    match provider {
+        Some(provider) => provider.prepared_cover(launch),
+        None => row.cover.as_deref(),
+    }
+}
+
+/// What a walk over the games under a folder has seen so far.
+#[derive(Default)]
+struct FolderArt<'c> {
+    /// The one picture seen, once one has been.
+    cover: Option<&'c Path>,
+    /// Whether a second game carried that same picture.
+    shared: bool,
+    /// Whether a game without a picture was passed.
+    bare: bool,
+}
+
+/// Walk one folder for [`derived_folder_cover`]. False as soon as the
+/// answer is known to be nothing: a second distinct picture, or a game
+/// without one beside several that share one. A folder of games with
+/// different pictures costs two games; every other folder is walked to
+/// its last visible game, since only a picture can settle the answer.
+fn gather_folder_cover<'c>(
+    cache: &'c crate::cache::SystemCache,
+    place: &Place,
+    hidden: &[String],
+    provider: Option<&'c crate::artwork_pack::Provider>,
+    depth: usize,
+    art: &mut FolderArt<'c>,
+) -> bool {
+    if depth > browse::MAX_DEPTH {
+        return true;
+    }
+    let Some(folder) = cache.get(place) else {
+        return true;
+    };
+    for row in &folder.rows {
+        // The key costs an allocation, so it is only made while
+        // something is hidden, which is the unusual case.
+        if !hidden.is_empty() && hidden.contains(&row_key(row)) {
+            continue;
+        }
+        match &row.kind {
+            browse::Kind::Enter(inner) => {
+                if row.below == Some(0) {
+                    continue;
+                }
+                if !gather_folder_cover(cache, inner, hidden, provider, depth + 1, art) {
+                    return false;
+                }
+            }
+            browse::Kind::Play(launch) => match (play_cover(row, launch, provider), art.cover) {
+                (None, _) => {
+                    if art.shared {
+                        return false;
+                    }
+                    art.bare = true;
+                }
+                (Some(cover), Some(held)) => {
+                    if held != cover || art.bare {
+                        return false;
+                    }
+                    art.shared = true;
+                }
+                (Some(cover), None) => art.cover = Some(cover),
+            },
+        }
+    }
+    true
+}
+
 /// A title with the characters MiSTer's favourites script refuses taken
 /// out, so a name made here is one it would have made.
 fn sanitise(name: &str) -> String {
@@ -2885,6 +2991,11 @@ pub struct App {
     index: Option<crate::cache::Index>,
     /// The open system's folders, when they have been written down.
     system_cache: Option<crate::cache::SystemCache>,
+    /// Whether the open system has an image chosen for it. Asked of the
+    /// card once, as the system opens, so listing a folder never has to.
+    /// Read only there: an image is chosen or cleared from the system
+    /// list, where no system is open, and opening one reads it again.
+    system_image_chosen: bool,
     /// Current read-only Pack snapshot. Present only for a Pack-selected
     /// system, including an unusable snapshot whose health is shown.
     artwork_provider: Option<crate::artwork_pack::Provider>,
@@ -3219,6 +3330,7 @@ impl App {
             cache_dir: crate::cache::dir_for(&settings_path),
             index: None,
             system_cache: None,
+            system_image_chosen: false,
             artwork_provider: None,
             artwork_provider_cache: HashMap::new(),
             effective_artwork_pack_roots,
@@ -4470,6 +4582,10 @@ impl App {
             self.screen = Screen::Browse;
             self.apply_geometry();
         }
+        self.system_image_chosen = self
+            .logo_dir
+            .as_deref()
+            .is_some_and(|dir| crate::category_images::has_system_override(dir, &id));
         self.opened_config = Some(config.clone());
         if self.system_cache.is_some() {
             self.library = None;
@@ -5580,6 +5696,41 @@ impl App {
         }
     }
 
+    /// A folder holding one game shows that game's picture before it is
+    /// opened, and so does a folder of one game's several discs. Answered
+    /// from the written-down rows and the prepared Pack, never the card,
+    /// and only the picture is taken: the row stays a folder under its own
+    /// name, with its own count, and opens as one.
+    ///
+    /// Inside favourites a folder is a shelf and keeps its heart. A system
+    /// given its own image keeps that on its folders, as it does today;
+    /// whether it has one was looked up as the system opened.
+    fn derive_folder_covers(&self, rows: &mut [browse::Row]) {
+        if self.in_favorites() {
+            return;
+        }
+        let Some(cache) = self.system_cache.as_ref() else {
+            return;
+        };
+        if self.system_image_chosen {
+            return;
+        }
+        let provider = self.artwork_provider.as_ref();
+        // A Pack that is unusable or not yet prepared answers nothing for
+        // any game, so there is nothing under any folder to find.
+        if provider.is_some_and(|provider| !provider.covers_prepared()) {
+            return;
+        }
+        for row in rows.iter_mut() {
+            if let browse::Kind::Enter(place) = &row.kind {
+                if row.below != Some(0) {
+                    row.cover =
+                        derived_folder_cover(cache, place, &self.settings.hidden_paths, provider);
+                }
+            }
+        }
+    }
+
     /// How many playable things are under a place, skipping what is hidden.
     fn count_under(&self, cache: &crate::cache::SystemCache, place: &Place, depth: usize) -> usize {
         if depth > browse::MAX_DEPTH {
@@ -5735,6 +5886,7 @@ impl App {
                 self.enrich_favorites(&mut rows);
                 self.correct_counts(&mut rows);
                 self.drop_hidden(&mut rows);
+                self.derive_folder_covers(&mut rows);
                 self.mark_favorites(&mut rows);
                 // A search belongs to the folder it was typed in.
                 self.filter.clear();
@@ -12229,8 +12381,9 @@ impl App {
                         // name is already the row: the mark says more.
                         let heart =
                             self.in_favorites() && matches!(row.kind, browse::Kind::Enter(_));
-                        let game_art =
-                            matches!(&row.kind, browse::Kind::Play(_)) && row.cover.is_some();
+                        // A folder's picture, when it has one, is a game's
+                        // artwork too: a logo is never written into a row.
+                        let game_art = row.cover.is_some();
                         (
                             row.cover.clone().or_else(|| {
                                 if heart {
@@ -12545,9 +12698,7 @@ impl App {
                             None
                         };
                         for index in range {
-                            let game_art = with_art
-                                && matches!(&self.here[index].kind, browse::Kind::Play(_))
-                                && self.here[index].cover.is_some();
+                            let game_art = with_art && self.here[index].cover.is_some();
                             let art_scale_x = artwork_horizontal(
                                 self.artwork_scale,
                                 self.width,
@@ -15555,6 +15706,670 @@ mod tests {
         let key = crate::favorites::amiga_key(&install, "Lotus II");
 
         assert_eq!(owner_of_path(&systems, &key).as_deref(), Some("Amiga"));
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    /// A games folder holding `games` (relative path, picture name), with a
+    /// gamelist naming each picture under `media`, indexed as the card
+    /// would be. Games given no picture are left out of the gamelist. A
+    /// game inside an archive (`.zip/` in its path) is only named in the
+    /// gamelist: the archive holding it is written by the test.
+    fn gamelist_cache(
+        games_dir: &Path,
+        config: &SystemConfig,
+        games: &[(&str, Option<&str>)],
+    ) -> crate::cache::SystemCache {
+        std::fs::create_dir_all(games_dir.join("media")).unwrap();
+        let mut gamelist = String::from("<gameList>");
+        for (game, image) in games {
+            let path = games_dir.join(game);
+            if !game.contains(".zip/") {
+                std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+                if !path.exists() {
+                    std::fs::write(&path, b"rom").unwrap();
+                }
+            }
+            if let Some(image) = image {
+                std::fs::write(games_dir.join("media").join(image), b"picture").unwrap();
+                gamelist.push_str(&format!(
+                    "<game><path>./{game}</path><image>./media/{image}</image></game>"
+                ));
+            }
+        }
+        gamelist.push_str("</gameList>");
+        std::fs::write(games_dir.join("gamelist.xml"), gamelist).unwrap();
+        let library = Library::open_with_names(config, browse::DisplayNames::default()).unwrap();
+        crate::cache::build_system(&library)
+    }
+
+    fn disc_config(games_dir: &Path) -> SystemConfig {
+        found_system_with_extensions("Disc", vec![games_dir.to_path_buf()], &["chd"]).to_config()
+    }
+
+    /// The folder rows the cache lists at a place, as a system would show
+    /// them: written down without a picture, whatever is inside.
+    fn assert_cached_folders_carry_no_picture(cache: &crate::cache::SystemCache, place: &Place) {
+        for row in &cache.get(place).expect("place is written down").rows {
+            if row.is_folder() {
+                assert_eq!(
+                    row.cover, None,
+                    "{}: a folder is written down bare",
+                    row.name
+                );
+            }
+        }
+    }
+
+    /// One disc per folder is how optical libraries are kept, so this is
+    /// the case the whole feature exists for. Driven by the table itself,
+    /// so a system added with a disc launch rule is covered without anyone
+    /// remembering to add it here; the systems named below are the ones
+    /// the issue asks for, and each must be among those exercised.
+    #[test]
+    fn every_disc_system_shows_its_sole_game_on_the_folder() {
+        const DISC: [&str; 4] = ["cue", "chd", "iso", "cdi"];
+        let table = crate::systems::parse_table(
+            include_str!("../assets/systems.toml"),
+            Path::new("systems.toml"),
+        )
+        .unwrap();
+        let disc_systems: Vec<(SystemDef, String)> = table
+            .iter()
+            .filter_map(|def| {
+                let extension = def
+                    .launch
+                    .iter()
+                    .flat_map(|rule| rule.extensions.iter())
+                    .find(|extension| DISC.contains(&extension.as_str()))?;
+                Some((def.clone(), extension.clone()))
+            })
+            .collect();
+        let ids: std::collections::BTreeSet<&str> = disc_systems
+            .iter()
+            .map(|(def, _)| def.id.as_str())
+            .collect();
+        for id in [
+            "3DO",
+            "AmigaCD32",
+            "CDI",
+            "DOS",
+            "JaguarCD",
+            "MegaCD",
+            "NeoGeoCD",
+            "PSX",
+            "Saturn",
+            "TurboGrafx16CD",
+        ] {
+            assert!(
+                ids.contains(id),
+                "{id} has a disc launch rule and is covered"
+            );
+        }
+        for (def, extension) in disc_systems {
+            let root = picker_temp(&format!("disc-folder-{}", def.id));
+            let games = root.join("games");
+            let config = FoundSystem {
+                def: def.clone(),
+                paths: vec![games.clone()],
+                logo_dir: None,
+                menu_folder: None,
+            }
+            .to_config();
+            let game = format!("Example Game/Example Game.{extension}");
+            let cache = gamelist_cache(&games, &config, &[(&game, Some("example.png"))]);
+            let start = Place::Dir(games.clone());
+            let folder = Place::Dir(games.join("Example Game"));
+            assert_cached_folders_carry_no_picture(&cache, &start);
+            let listed = &cache.get(&start).unwrap().rows;
+            assert_eq!(listed.len(), 1, "{}: one folder at the top", def.id);
+            assert_eq!(listed[0].kind, browse::Kind::Enter(folder.clone()));
+            assert_eq!(listed[0].below, Some(1));
+            assert_eq!(
+                derived_folder_cover(&cache, &folder, &[], None).as_deref(),
+                Some(games.join("media/example.png").as_path()),
+                "{}: the folder shows its one disc's picture before it is opened",
+                def.id
+            );
+            std::fs::remove_dir_all(root).ok();
+        }
+    }
+
+    /// Nothing about the rule is optical: the folder does not know what
+    /// kind of file is inside it, so a cartridge system laid out the same
+    /// way gets the same picture.
+    #[test]
+    fn a_non_disc_system_with_one_game_per_folder_behaves_the_same() {
+        let root = picker_temp("cartridge-folder");
+        let games = root.join("games");
+        let config = found_system_with_extensions("NES", vec![games.clone()], &["nes"]).to_config();
+        let cache = gamelist_cache(
+            &games,
+            &config,
+            &[("Example Game/Example Game.nes", Some("example.png"))],
+        );
+        assert_eq!(
+            derived_folder_cover(&cache, &Place::Dir(games.join("Example Game")), &[], None)
+                .as_deref(),
+            Some(games.join("media/example.png").as_path())
+        );
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    /// A folder one level up from the game, an archive opened as a folder,
+    /// and a directory inside an archive are all containers of one game:
+    /// the picture climbs through the folder in between, through the
+    /// archive's own directory, and the archive row stays a row to enter.
+    /// The game inside the archive's directory is named by its exact
+    /// archive path, the only way a nested member is named. An archive of
+    /// several members is read by the same rule as a folder of several
+    /// files: one picture shared by every member is the game's, two
+    /// pictures are two games.
+    #[test]
+    fn a_nested_folder_and_a_one_game_zip_derive_the_same_way() {
+        let root = picker_temp("nested-and-zip");
+        let games = root.join("games");
+        std::fs::create_dir_all(&games).unwrap();
+        let archive = games.join("Sole.zip");
+        std::fs::write(
+            &archive,
+            crate::zip::tests_archive(&["Sole Game.nes"], false),
+        )
+        .unwrap();
+        let nested = games.join("Nested.zip");
+        std::fs::write(
+            &nested,
+            crate::zip::tests_archive(&["Folder/Game.nes"], false),
+        )
+        .unwrap();
+        let shared = games.join("Shared.zip");
+        std::fs::write(
+            &shared,
+            crate::zip::tests_archive(&["Game (Disc 1).nes", "Game (Disc 2).nes"], false),
+        )
+        .unwrap();
+        let different = games.join("Different.zip");
+        std::fs::write(
+            &different,
+            crate::zip::tests_archive(&["First.nes", "Second.nes"], false),
+        )
+        .unwrap();
+        let config = found_system_with_extensions("NES", vec![games.clone()], &["nes"]).to_config();
+        let cache = gamelist_cache(
+            &games,
+            &config,
+            &[
+                ("Outer/Inner/Game.nes", Some("game.png")),
+                ("Sole.zip", Some("sole.png")),
+                ("Nested.zip/Folder/Game.nes", Some("nested.png")),
+                ("Shared.zip/Game (Disc 1).nes", Some("shared.png")),
+                ("Shared.zip/Game (Disc 2).nes", Some("shared.png")),
+                ("Different.zip/First.nes", Some("first.png")),
+                ("Different.zip/Second.nes", Some("second.png")),
+            ],
+        );
+        let start = Place::Dir(games.clone());
+        let listed = &cache.get(&start).unwrap().rows;
+        assert_eq!(
+            listed
+                .iter()
+                .map(|row| row.kind.clone())
+                .collect::<Vec<_>>(),
+            [
+                browse::Kind::Enter(Place::Archive(different.clone())),
+                browse::Kind::Enter(Place::Archive(nested.clone())),
+                browse::Kind::Enter(Place::Dir(games.join("Outer"))),
+                browse::Kind::Enter(Place::Archive(shared.clone())),
+                browse::Kind::Enter(Place::Archive(archive.clone())),
+            ]
+        );
+        assert_eq!(
+            derived_folder_cover(&cache, &Place::Dir(games.join("Outer")), &[], None).as_deref(),
+            Some(games.join("media/game.png").as_path()),
+            "the outer folder shows the game two levels down"
+        );
+        assert_eq!(
+            derived_folder_cover(&cache, &Place::Archive(archive), &[], None).as_deref(),
+            Some(games.join("media/sole.png").as_path()),
+            "the archive shows the one game inside it"
+        );
+        let directory = Place::ArchiveDirectory {
+            archive: nested.clone(),
+            prefix: "Folder".into(),
+        };
+        let inside = &cache.get(&Place::Archive(nested.clone())).unwrap().rows;
+        assert_eq!(
+            inside
+                .iter()
+                .map(|row| (row.kind.clone(), row.below))
+                .collect::<Vec<_>>(),
+            [(browse::Kind::Enter(directory.clone()), Some(1))],
+            "the archive lists its directory as a folder to enter"
+        );
+        assert_eq!(
+            derived_folder_cover(&cache, &directory, &[], None).as_deref(),
+            Some(games.join("media/nested.png").as_path()),
+            "the directory inside the archive shows its one game"
+        );
+        assert_eq!(
+            derived_folder_cover(&cache, &Place::Archive(nested), &[], None).as_deref(),
+            Some(games.join("media/nested.png").as_path()),
+            "and so does the archive above it"
+        );
+        assert_eq!(
+            cache
+                .get(&Place::Archive(shared.clone()))
+                .unwrap()
+                .rows
+                .len(),
+            2,
+            "the archive of two discs lists both"
+        );
+        assert_eq!(
+            derived_folder_cover(&cache, &Place::Archive(shared), &[], None).as_deref(),
+            Some(games.join("media/shared.png").as_path()),
+            "an archive whose members share one picture shows it"
+        );
+        assert_eq!(
+            derived_folder_cover(&cache, &Place::Archive(different), &[], None),
+            None,
+            "an archive of two games with their own pictures shows neither"
+        );
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    /// The picture on a folder comes from the source the system is set
+    /// to, and from nowhere else: with the Pack selected a gamelist picture
+    /// on the card is not the Pack's answer, and a Pack that is not ready
+    /// has no answer at all rather than a borrowed one. The Pack's
+    /// pictures are read by the same rule as the gamelist's: several
+    /// discs the Pack maps to one key share its picture, and discs mapped
+    /// to two keys are two games.
+    #[test]
+    fn artwork_pack_folders_use_only_prepared_pack_covers() {
+        let root = picker_temp("pack-folder");
+        let games = root.join("games");
+        let docs = root.join("docs");
+        let art = docs.join("SuperGrafx/Artwork");
+        std::fs::create_dir_all(&art).unwrap();
+        let pack_cover = art.join("Disk Name.jpg");
+        std::fs::write(&pack_cover, b"pack image").unwrap();
+        // A second key with its own picture keeps the Pack usable once
+        // the game's picture is taken away below: a Pack with no picture
+        // at all is refused outright, which is a different case.
+        std::fs::write(art.join("Other Disk.jpg"), b"other image").unwrap();
+        std::fs::write(
+            art.join("manifest.tsv"),
+            "#key\tstyle\tss_system_id\nDisk Name\tbox-2D\t105\nOther Disk\tbox-2D\t105\n",
+        )
+        .unwrap();
+        // The index names each disc of the two-disc game after the one
+        // key, so the Pack answers one picture for both.
+        std::fs::write(
+            art.join("index.tsv"),
+            "#name\tcrc\tsize\tkey\nDisk Name\t\t\tDisk Name\nOther Disk\t\t\tOther Disk\n\
+             Disk Name (Disc 1)\t\t\tDisk Name\nDisk Name (Disc 2)\t\t\tDisk Name\n",
+        )
+        .unwrap();
+        let config =
+            found_system_with_extensions("SuperGrafx", vec![games.clone()], &["sgx"]).to_config();
+        let gamelist_cache = gamelist_cache(
+            &games,
+            &config,
+            &[
+                ("Disk Name/Disk Name.sgx", Some("gamelist.jpg")),
+                ("Multi/Disk Name (Disc 1).sgx", Some("multi.jpg")),
+                ("Multi/Disk Name (Disc 2).sgx", Some("multi.jpg")),
+                ("Mixed/Disk Name (Disc 1).sgx", Some("mixed-first.jpg")),
+                ("Mixed/Other Disk.sgx", Some("mixed-second.jpg")),
+            ],
+        );
+        let folder = Place::Dir(games.join("Disk Name"));
+        let multi = Place::Dir(games.join("Multi"));
+        let mixed = Place::Dir(games.join("Mixed"));
+        let gamelist_cover = games.join("media/gamelist.jpg");
+        assert_eq!(
+            derived_folder_cover(&gamelist_cache, &folder, &[], None).as_deref(),
+            Some(gamelist_cover.as_path())
+        );
+
+        let pack_library =
+            Library::open_source_neutral(&config, browse::DisplayNames::default()).unwrap();
+        let pack_cache = crate::cache::build_system(&pack_library);
+        assert_eq!(
+            derived_folder_cover(&pack_cache, &folder, &[], None),
+            None,
+            "source-neutral rows are written down without pictures"
+        );
+        let prepared = |provider: &mut crate::artwork_pack::Provider| {
+            provider
+                .prepare_for_cache(
+                    &pack_cache,
+                    &crate::cache::ContentFingerprints::new(),
+                    &std::sync::atomic::AtomicBool::new(false),
+                )
+                .unwrap()
+                .expect("test provider preparation completes")
+        };
+        let through = |provider: &crate::artwork_pack::Provider| {
+            derived_folder_cover(&pack_cache, &folder, &[], Some(provider))
+        };
+        // The same walk over rows that do carry the gamelist picture: the
+        // only answer a fall-back to the written-down row could give, so
+        // a Pack that borrowed it would be caught here.
+        let over_gamelist_rows = |provider: &crate::artwork_pack::Provider| {
+            derived_folder_cover(&gamelist_cache, &folder, &[], Some(provider))
+        };
+
+        let mut provider = crate::artwork_pack::Provider::load("SuperGrafx", &docs, Some("en"));
+        assert!(provider.health.usable());
+        assert_eq!(
+            through(&provider),
+            None,
+            "a Pack not yet prepared offers nothing, not the gamelist picture"
+        );
+        assert_eq!(
+            over_gamelist_rows(&provider),
+            None,
+            "not even from a row that carries the gamelist picture"
+        );
+        assert_eq!(prepared(&mut provider), 5, "every disc is matched");
+        assert_eq!(through(&provider).as_deref(), Some(pack_cover.as_path()));
+        assert_eq!(
+            derived_folder_cover(&pack_cache, &multi, &[], Some(&provider)).as_deref(),
+            Some(pack_cover.as_path()),
+            "two discs the Pack maps to one key share its picture"
+        );
+        assert_eq!(
+            derived_folder_cover(&gamelist_cache, &multi, &[], Some(&provider)).as_deref(),
+            Some(pack_cover.as_path()),
+            "the Pack's picture, not the one the gamelist rows carry"
+        );
+        assert_eq!(
+            derived_folder_cover(&pack_cache, &mixed, &[], Some(&provider)),
+            None,
+            "discs the Pack maps to two keys are two games"
+        );
+
+        let mut unmapped = crate::artwork_pack::Provider::load("NoSuchSystem", &docs, Some("en"));
+        assert!(!unmapped.health.usable());
+        assert_eq!(
+            prepared(&mut unmapped),
+            0,
+            "an unusable Pack prepares no row, so it has nothing to answer"
+        );
+        assert_eq!(through(&unmapped), None);
+
+        std::fs::remove_file(&pack_cover).unwrap();
+        let mut provider = crate::artwork_pack::Provider::load("SuperGrafx", &docs, Some("en"));
+        assert!(
+            provider.health.usable(),
+            "one picture missing leaves the Pack usable"
+        );
+        assert_eq!(
+            prepared(&mut provider),
+            1,
+            "only the disc under the other key is still matched"
+        );
+        assert!(provider.covers_prepared());
+        assert!(gamelist_cover.is_file());
+        assert_eq!(
+            through(&provider),
+            None,
+            "a Pack without the picture must not borrow the gamelist's"
+        );
+        assert_eq!(
+            over_gamelist_rows(&provider),
+            None,
+            "not even from a row that carries the gamelist picture"
+        );
+        assert_eq!(
+            derived_folder_cover(&gamelist_cache, &multi, &[], Some(&provider)),
+            None,
+            "nor for two discs whose gamelist rows share a picture"
+        );
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    /// A multi-disc game is several files with one picture, and is one
+    /// game to the eye; a folder of different games is not, and showing
+    /// the first one's picture would name the folder after the wrong game.
+    /// One game with a picture beside one without is still one game with
+    /// a picture; several sharing a picture beside one without is no
+    /// longer every entry agreeing, and the folder says nothing rather
+    /// than guess which game the bare one is. The answer must not depend
+    /// on where the bare game sorts, which the walk sees first, so the
+    /// cases with a bare game are given in both orders, checked against
+    /// the order the folder is written down in.
+    #[test]
+    fn shared_disc_images_show_but_different_games_fall_back() {
+        let root = picker_temp("shared-and-conflicting");
+        let games = root.join("games");
+        let config = disc_config(&games);
+        let cache = gamelist_cache(
+            &games,
+            &config,
+            &[
+                ("Multi/Game (Disc 1).chd", Some("multi.png")),
+                ("Multi/Game (Disc 2).chd", Some("multi.png")),
+                ("Different/First.chd", Some("first.png")),
+                ("Different/Second.chd", Some("second.png")),
+                ("Partial/With Art.chd", Some("partial.png")),
+                ("Partial/Without Art.chd", None),
+                ("Partial First/A Blank Disc.chd", None),
+                ("Partial First/With Art.chd", Some("partial-first.png")),
+                ("Bare/One.chd", None),
+                ("Bare/Two.chd", None),
+                ("Uneven/Game (Disc 1).chd", Some("uneven.png")),
+                ("Uneven/Game (Disc 2).chd", Some("uneven.png")),
+                ("Uneven/Game (Disc 3).chd", None),
+                ("Bare First/A Blank Disc.chd", None),
+                ("Bare First/Game (Disc 1).chd", Some("bare-first.png")),
+                ("Bare First/Game (Disc 2).chd", Some("bare-first.png")),
+            ],
+        );
+        let derived =
+            |folder: &str| derived_folder_cover(&cache, &Place::Dir(games.join(folder)), &[], None);
+        // The walk takes the rows as they are written down, sorted by
+        // name, so the bare game's place in the order is what the folder
+        // is named for, not the order the fixture lists it in.
+        let bare_positions = |folder: &str| -> Vec<bool> {
+            cache
+                .get(&Place::Dir(games.join(folder)))
+                .expect("folder is written down")
+                .rows
+                .iter()
+                .map(|row| row.cover.is_none())
+                .collect()
+        };
+        assert_eq!(bare_positions("Partial"), [false, true]);
+        assert_eq!(bare_positions("Partial First"), [true, false]);
+        assert_eq!(bare_positions("Uneven"), [false, false, true]);
+        assert_eq!(bare_positions("Bare First"), [true, false, false]);
+        assert_eq!(
+            derived("Multi").as_deref(),
+            Some(games.join("media/multi.png").as_path()),
+            "one picture shared by every disc is the game's picture"
+        );
+        assert_eq!(derived("Different"), None, "two pictures is two games");
+        assert_eq!(
+            derived("Partial").as_deref(),
+            Some(games.join("media/partial.png").as_path()),
+            "a disc without a picture does not contradict the one that has it"
+        );
+        assert_eq!(
+            derived("Partial First").as_deref(),
+            Some(games.join("media/partial-first.png").as_path()),
+            "the same pair with the bare disc listed first is the same answer"
+        );
+        assert_eq!(derived("Bare"), None, "no picture anywhere is no picture");
+        assert_eq!(
+            derived("Uneven"),
+            None,
+            "two discs sharing a picture and a third without is not every disc agreeing"
+        );
+        assert_eq!(
+            derived("Bare First"),
+            None,
+            "the same folder with the bare disc listed first is the same answer"
+        );
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    /// Hiding a game is meant to take it out of sight. Its picture standing
+    /// on the folder would put it back, and a hidden folder would leak
+    /// everything under it.
+    #[test]
+    fn hidden_games_do_not_leak_their_artwork() {
+        let root = picker_temp("hidden-folder-art");
+        let games = root.join("games");
+        let config = disc_config(&games);
+        let cache = gamelist_cache(
+            &games,
+            &config,
+            &[
+                ("Sole/Only.chd", Some("only.png")),
+                ("Different/First.chd", Some("first.png")),
+                ("Different/Second.chd", Some("second.png")),
+                ("Outer/Inner/Deep.chd", Some("deep.png")),
+            ],
+        );
+        // The key of a game as it is written down, made the way the hidden
+        // list is read, so the test fails on a game that is not hidden and
+        // not on the key's spelling.
+        let game_key = |path: &str| {
+            let path = games.join(path);
+            let folder = Place::Dir(path.parent().unwrap().to_path_buf());
+            let rows = &cache.get(&folder).expect("folder is written down").rows;
+            let row = rows
+                .iter()
+                .find(|row| row.kind == browse::Kind::Play(browse::Launch::File(path.clone())))
+                .expect("game is written down");
+            row_key(row)
+        };
+        let derived = |folder: &str, hidden: &[String]| {
+            derived_folder_cover(&cache, &Place::Dir(games.join(folder)), hidden, None)
+        };
+        assert_eq!(
+            derived("Sole", &[]).as_deref(),
+            Some(games.join("media/only.png").as_path())
+        );
+        assert_eq!(
+            derived("Sole", &[game_key("Sole/Only.chd")]),
+            None,
+            "the only game hidden leaves the folder without a picture"
+        );
+        assert_eq!(
+            derived("Different", &[game_key("Different/Second.chd")]).as_deref(),
+            Some(games.join("media/first.png").as_path()),
+            "hiding one of two different games leaves one unambiguous game"
+        );
+        assert_eq!(
+            derived("Outer", &[]).as_deref(),
+            Some(games.join("media/deep.png").as_path())
+        );
+        assert_eq!(
+            derived("Outer", &[Place::Dir(games.join("Outer/Inner")).key()]),
+            None,
+            "a hidden folder is not walked into"
+        );
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    /// A favourite made of the disc inside a one-disc folder is a shortcut
+    /// to the disc, not to the folder: it is answered from the disc's own
+    /// written-down row, picture and name and genre and details, through
+    /// the MGL a disc system writes for it, while the folder row derives
+    /// only the picture. Neither one reads the other.
+    #[test]
+    fn a_favourite_to_a_nested_chd_is_answered_from_the_disc_itself() {
+        let root = picker_temp("favourite-nested-chd");
+        let games = root.join("games");
+        let cache_dir = root.join("cache");
+        std::fs::create_dir_all(games.join("Sole")).unwrap();
+        std::fs::create_dir_all(games.join("media")).unwrap();
+        std::fs::create_dir_all(&cache_dir).unwrap();
+        let table = crate::systems::parse_table(
+            include_str!("../assets/systems.toml"),
+            Path::new("systems.toml"),
+        )
+        .unwrap();
+        let def = table
+            .iter()
+            .find(|def| def.id == "PSX")
+            .cloned()
+            .expect("the table has a Playstation entry");
+        let system = FoundSystem {
+            def,
+            paths: vec![games.clone()],
+            logo_dir: None,
+            menu_folder: None,
+        };
+        let config = system.to_config();
+        let disc = games.join("Sole/Only.chd");
+        assert_eq!(
+            config.rule_for(&disc).map(|rule| rule.kind.as_str()),
+            Some("s"),
+            "a CHD is mounted as a disc, not loaded as a file"
+        );
+        std::fs::write(&disc, b"disc").unwrap();
+        std::fs::write(games.join("media/only.png"), b"picture").unwrap();
+        std::fs::write(
+            games.join("gamelist.xml"),
+            "<gameList><game><path>./Sole/Only.chd</path><name>Only Game</name><image>./media/only.png</image><genre>Puzzle</genre><publisher>Example Publisher</publisher></game></gameList>",
+        )
+        .unwrap();
+        let library = Library::open_with_names(&config, browse::DisplayNames::default()).unwrap();
+        let cache = crate::cache::build_system(&library);
+        crate::cache::save_system(&cache_dir, "PSX", &cache).unwrap();
+        let folder = Place::Dir(games.join("Sole"));
+        let game = cache.get(&folder).expect("the folder is written down").rows[0].clone();
+        assert_eq!(game.name, "Only Game");
+        assert_eq!(
+            game.cover.as_deref(),
+            Some(games.join("media/only.png").as_path())
+        );
+        assert_eq!(game.genre.as_deref(), Some("Puzzle"));
+        assert_eq!(game.details.publisher, "Example Publisher");
+        assert_eq!(
+            derived_folder_cover(&cache, &folder, &[], None),
+            game.cover,
+            "the folder shows the disc's picture"
+        );
+
+        let shelf = root.join("_@Favorites");
+        std::fs::create_dir_all(&shelf).unwrap();
+        let favorite = shelf.join("Only.mgl");
+        let mgl = crate::launch::favorite_mgl(&config, &disc)
+            .unwrap()
+            .expect("a disc favourite is an MGL");
+        assert!(mgl.contains("type=\"s\""), "{mgl}");
+        std::fs::write(&favorite, mgl).unwrap();
+        let mut rows = vec![browse::Row {
+            name: "Only".to_string(),
+            sort_key: "only".to_string(),
+            kind: browse::Kind::Play(browse::Launch::File(favorite.clone())),
+            cover: None,
+            genre: None,
+            favorite: true,
+            below: None,
+            details: browse::Details::default(),
+        }];
+        enrich_favorite_rows(
+            &mut rows,
+            &[system],
+            &Default::default(),
+            &cache_dir,
+            |_, _, _| None,
+        );
+        assert_eq!(
+            rows[0].kind,
+            browse::Kind::Play(browse::Launch::File(favorite))
+        );
+        assert_eq!(rows[0].name, game.name, "the disc's name, not the folder's");
+        assert_eq!(rows[0].cover, game.cover);
+        assert_eq!(rows[0].genre, game.genre);
+        assert_eq!(rows[0].details, game.details);
+        assert!(rows[0].favorite);
         std::fs::remove_dir_all(root).ok();
     }
 

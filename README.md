@@ -459,7 +459,9 @@ the library. Systems that already launch ZIP files as individual games keep that
 behaviour. ZIP64 is supported
 within the documented bounds. Metadata for a multi-game archive identifies each game
 by its full archive/member path; single-game archives retain legacy archive-level
-metadata. See [ZIP libraries](docs/zip-libraries.md) for details and launch limits.
+metadata. An archive holding one game with artwork shows that artwork on its row
+before it is opened. See [ZIP libraries](docs/zip-libraries.md) for details and
+launch limits.
 
 ### RetroAchievements and Unstable cores
 
@@ -528,6 +530,20 @@ counted through every subfolder, and can sit before the games or after
 them. Favourites carry a heart in every view and can be gathered at the
 top of their folder.
 
+A folder or ZIP that holds exactly one game with artwork, whatever else
+without a picture sits beside it, or several entries that all share one
+picture such as a multi-disc game, shows that game's artwork in Details,
+Tiled, Carousel and Gallery before it is opened. It is still a folder: it
+keeps its own name and count, opens as a folder, and inherits nothing else
+from the game. A folder holding two or more games with different pictures,
+no artwork at all, or several entries sharing a picture beside one without,
+keeps the system logo. List and Multi list stay text.
+Hidden entries never contribute their artwork, Favourites shelves keep
+their heart, and the picture follows the selected data source of the
+system. The picture is answered from the system's saved list, so a system
+browsed before its list has been written keeps the system logo on its
+folders until it is indexed or rebuilt.
+
 **Hide This**, in **Actions → Find**, takes any row out of the list: a
 game, a folder, or a whole system while you are looking at the system
 list. That is separate from the folders and systems left out because they
@@ -560,7 +576,7 @@ require **A** and confirmation, never a sideways press.
 | Appearance | Reset All Custom Views | With A and confirmation, remove every place-specific view without changing the global View setting |
 | Appearance | Text | The typeface: Smooth, Pixel (a DOS font on whole pixels), and the bolder Smooth 2 and Pixel 2 |
 | Appearance | Artwork | Turn pictures off entirely |
-| Appearance | Artwork Scale Factor | Framebuffer keeps the original square-pixel fit and is the default. 4:3 and 16:9 correct game artwork for that physical display shape in Details, Tiled, Carousel and Gallery. Category logos, system logos and the screensaver are unchanged |
+| Appearance | Artwork Scale Factor | Framebuffer keeps the original square-pixel fit and is the default. 4:3 and 16:9 correct game artwork for that physical display shape in Details, Tiled, Carousel and Gallery, including a folder showing its game's artwork. Category logos, system logos and the screensaver are unchanged |
 | Appearance | Bottom Bar While Browsing | On by default. Show the time and button hints while browsing. A saved Off choice stays Off after updating or restarting; menus and operation controls remain visible |
 | Appearance | Screensaver | How long with nothing pressed before pictures start |
 | Library | Favourites First | Show favourites first in each folder, keeping them in alphabetical order |
@@ -867,8 +883,10 @@ The two effective sources are deliberately exclusive:
 If an individual game or field is absent from the database, Degauss keeps the
 filesystem-derived game name and leaves that artwork or field empty. It never
 fills the gap from the gamelist or ScreenScraper. Publisher and game language
-also remain empty because the database format does not provide them. Folder
-rows, system logos and category images remain independent of this choice.
+also remain empty because the database format does not provide them. A folder
+showing its game's artwork takes that picture from the selected source too, and
+keeps the system logo while the Pack is unusable or has no picture for the
+game. System logos and category images remain independent of this choice.
 
 MRA entries are matched by their `<setname>`, including MGLs that point to an
 MRA. Large embedded hexadecimal ROM, patch and cheat payloads do not impose a
@@ -1267,6 +1285,11 @@ Image** appears for a category or system that has such a selection; it removes
 only the managed copy. Categories then return to their normal named image,
 random system-logo choice, or Favourites heart. Systems return to their normal
 image named after the system ID.
+
+A system's custom image also stands on that system's folder rows, and takes
+precedence over the game artwork a folder holding one game would otherwise
+show. **Clear Custom Image** restores that derived artwork, or the image named
+after the system ID where there is none.
 
 `Arcade.png` is already included as the default fixed image for the Arcade
 category.

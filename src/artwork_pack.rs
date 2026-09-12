@@ -267,7 +267,7 @@ pub struct Provider {
     /// Effective Pack presentation keyed by stable launch identity. It is
     /// prepared by a background worker so browse projection performs no game
     /// descriptor, archive, ROM, or Pack filesystem I/O.
-    prepared: Option<Arc<HashMap<String, PackPresentation>>>,
+    prepared: Option<Arc<HashMap<Launch, PackPresentation>>>,
     archive_cache: Arc<std::sync::Mutex<crate::zip::ArchiveCache>>,
 }
 
@@ -308,7 +308,7 @@ impl Provider {
                 "Artwork Pack matching is not prepared; reopen the system",
             )
         })?;
-        let Some(presentation) = prepared.get(&launch_cache_key(launch)) else {
+        let Some(presentation) = prepared.get(launch) else {
             return Ok(None);
         };
         let Some(diagnostic) = presentation.diagnostic.as_ref() else {
@@ -691,8 +691,7 @@ impl Provider {
                 let Kind::Play(launch) = &row.kind else {
                     continue;
                 };
-                let key = launch_cache_key(launch);
-                if !inspected.insert(key.clone()) {
+                if !inspected.insert(launch) {
                     continue;
                 }
                 let presentation =
@@ -701,7 +700,7 @@ impl Provider {
                     return Ok(None);
                 }
                 if let Some(presentation) = presentation {
-                    prepared.insert(key, presentation);
+                    prepared.insert(launch.clone(), presentation);
                 }
             }
         }
@@ -725,13 +724,30 @@ impl Provider {
             let Kind::Play(launch) = &row.kind else {
                 continue;
             };
-            let Some(presentation) = prepared.get(&launch_cache_key(launch)) else {
+            let Some(presentation) = prepared.get(launch) else {
                 continue;
             };
             apply_presentation(row, presentation.clone());
             matched += 1;
         }
         matched
+    }
+
+    /// The prepared picture for one playable row, for a caller that wants
+    /// only the picture: the same lookup `apply_prepared` makes, with the
+    /// same answer of nothing when the Pack is unusable or unprepared.
+    pub fn prepared_cover(&self, launch: &Launch) -> Option<&Path> {
+        if !self.covers_prepared() {
+            return None;
+        }
+        self.prepared.as_ref()?.get(launch)?.cover.as_deref()
+    }
+
+    /// Whether `prepared_cover` can answer for any row: the Pack is usable
+    /// and a worker has prepared it. Until then a walk over the rows under
+    /// a folder finds no picture, so a caller can spare itself the walk.
+    pub fn covers_prepared(&self) -> bool {
+        self.health.usable() && self.prepared.is_some()
     }
 
     pub fn apply_with_fingerprints(
@@ -832,7 +848,7 @@ impl Provider {
                 let Kind::Play(launch) = &row.kind else {
                     continue;
                 };
-                if !inspected.insert(launch_cache_key(launch)) {
+                if !inspected.insert(launch) {
                     continue;
                 }
                 let fingerprint = self.fingerprint_for_launch(launch, cancelled, &mut |read| {
@@ -881,7 +897,7 @@ impl Provider {
                 let Kind::Play(launch) = &row.kind else {
                     continue;
                 };
-                if !inspected.insert(launch_cache_key(launch)) {
+                if !inspected.insert(launch) {
                     continue;
                 }
                 let identity = self.identity_for_launch(launch, cancelled)?;
@@ -975,15 +991,6 @@ fn apply_presentation(row: &mut Row, presentation: PackPresentation) {
     row.cover = presentation.cover;
     row.genre = presentation.genre;
     row.details = presentation.details;
-}
-
-fn launch_cache_key(launch: &Launch) -> String {
-    match launch {
-        Launch::File(path) => format!("file:{}", path.display()),
-        Launch::AmigaVision { install, title } => {
-            format!("amigavision:{}\0{title}", install.display())
-        }
-    }
 }
 
 #[derive(Debug, Clone, Copy)]
