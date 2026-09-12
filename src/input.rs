@@ -32,6 +32,27 @@
 
 use std::time::{Duration, Instant, SystemTime};
 
+/// Declares [`Action`] and [`Action::ALL`] from one list of variants, so
+/// the list that sizes the [`DuplicateGuard`] table cannot miss a variant
+/// or hold one out of declaration order: the guard indexes that table by
+/// discriminant, and a variant absent from the list would send its first
+/// press past the end.
+macro_rules! actions {
+    ($(#[$outer:meta])* pub enum Action { $($(#[$inner:meta])* $variant:ident,)* }) => {
+        $(#[$outer])*
+        pub enum Action {
+            $($(#[$inner])* $variant,)*
+        }
+
+        impl Action {
+            /// Every variant in declaration order, generated from the enum's
+            /// own variant list.
+            pub const ALL: [Action; [$(Action::$variant),*].len()] = [$(Action::$variant),*];
+        }
+    };
+}
+
+actions! {
 /// What Degauss does, independent of which key or button produced it.
 ///
 /// Only the device build turns real key codes into these; a development
@@ -69,28 +90,9 @@ pub enum Action {
     FavoriteShortcut,
     RandomShortcut,
 }
+}
 
 impl Action {
-    /// Every variant in declaration order; sizes the [`DuplicateGuard`]
-    /// table, see the check under `ACTION_SLOTS`.
-    pub const ALL: [Action; 15] = [
-        Action::Up,
-        Action::Down,
-        Action::Slower,
-        Action::Faster,
-        Action::PageUp,
-        Action::PageDown,
-        Action::Home,
-        Action::End,
-        Action::Accept,
-        Action::Quit,
-        Action::CyclePresent,
-        Action::Menu,
-        Action::Context,
-        Action::FavoriteShortcut,
-        Action::RandomShortcut,
-    ];
-
     /// Whether holding the key always repeats. Only movement repeats:
     /// repeating "launch" would be dangerous, and repeating a speed change
     /// would run the whole ladder off one press. Left and right join in
@@ -445,39 +447,10 @@ pub fn merge_by_stamp(edges: &mut Vec<(KeyEdge, SystemTime)>, split: usize) {
 /// is the same physical press arriving twice, not a deliberate second tap.
 pub const DUPLICATE_WINDOW: Duration = Duration::from_millis(40);
 
-/// One slot per [`Action`], indexed by discriminant.
+/// One slot per [`Action`], indexed by discriminant. `Action::ALL` is
+/// generated from the enum's own variant list, so the table always has a
+/// slot for every variant at its discriminant.
 const ACTION_SLOTS: usize = Action::ALL.len();
-
-// `Action::ALL` must hold every variant at its own discriminant, or the
-// guard would index past its table on the first press of the missing one.
-// The match is exhaustive: a variant added to the enum does not compile
-// until it has an arm here, and the assertion refuses a list out of
-// declaration order. What the check cannot see is a variant that has an
-// arm but no entry in `ALL`, so append the entry with the arm.
-const _: () = {
-    let mut i = 0;
-    while i < ACTION_SLOTS {
-        let listed = match Action::ALL[i] {
-            Action::Up
-            | Action::Down
-            | Action::Slower
-            | Action::Faster
-            | Action::PageUp
-            | Action::PageDown
-            | Action::Home
-            | Action::End
-            | Action::Accept
-            | Action::Quit
-            | Action::CyclePresent
-            | Action::Menu
-            | Action::Context
-            | Action::FavoriteShortcut
-            | Action::RandomShortcut => Action::ALL[i] as usize,
-        };
-        assert!(listed == i, "Action::ALL is not in declaration order");
-        i += 1;
-    }
-};
 
 #[derive(Debug, Clone, Copy)]
 struct Slot {
