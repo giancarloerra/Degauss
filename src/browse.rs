@@ -1345,8 +1345,15 @@ impl Library {
                 }
                 Err(e) => {
                     // An archive that cannot be read is logged with its
-                    // complete error, as the index logs one it skips.
-                    if let Place::Archive(archive) = &place {
+                    // complete error, as the index logs one it skips. One
+                    // of its folders fails the same way when the archive
+                    // changed or went between its root listing and the
+                    // folder's turn, and is logged as the archive too: the
+                    // entry names the archive, and the index would leave
+                    // the archive out whole for it.
+                    if let Place::Archive(archive) | Place::ArchiveDirectory { archive, .. } =
+                        &place
+                    {
                         crate::note(&format!("zip          {}: skipped: {e}", archive.display()));
                     }
                     audit
@@ -1934,6 +1941,62 @@ mod tests {
         assert!(
             error.contains(&broken.display().to_string()) && error.contains("malformed"),
             "the archive line carries the complete error: {error:?}"
+        );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// An archive can change or go between its root listing and the turn
+    /// of one of its folders, and the folder then fails to list. The audit
+    /// names the archive with that error, and the log has to hold the same
+    /// line as it does for an archive that fails at its root: the report
+    /// prints only the first few lines, and the index would leave the
+    /// archive out whole for the same error.
+    #[test]
+    fn a_folder_of_an_archive_that_changed_under_the_audit_is_logged_as_the_archive() {
+        let dir = temp("audit-log-changed-archive");
+        let archive = dir.join("changed.zip");
+        std::fs::write(
+            &archive,
+            crate::zip::tests_archive(&["sub/Game.d64"], false),
+        )
+        .unwrap();
+        let log_since = |from: usize| {
+            let log = std::fs::read_to_string(crate::LOG_PATH).unwrap_or_default();
+            log[from.min(log.len())..].to_string()
+        };
+        let library = Library::open(&system(&dir)).unwrap();
+        let before = log_since(0).len();
+        let audit = library.audit_projected(false, &mut |rows| {
+            // The archive's root listing is the last read before its
+            // folder is opened: the archive loses the folder here.
+            if rows
+                .iter()
+                .any(|row| matches!(&row.kind, Kind::Enter(Place::ArchiveDirectory { .. })))
+            {
+                std::fs::write(&archive, crate::zip::tests_archive(&["Renamed.d64"], false))
+                    .unwrap();
+            }
+        });
+        assert_eq!(audit.games, 0, "the folder was never listed");
+        let [(path, error)] = audit.unreadable.as_slice() else {
+            panic!(
+                "the archive alone is unreadable, not {:?}",
+                audit.unreadable
+            );
+        };
+        assert_eq!(path, &archive, "the entry names the archive");
+        assert!(
+            error.contains("virtual directory \"sub\" is missing or was renamed"),
+            "the folder's error: {error:?}"
+        );
+        let line = format!("zip          {}: skipped: {error}", archive.display());
+        assert_eq!(
+            log_since(before)
+                .lines()
+                .filter(|logged| logged.starts_with(&format!("zip          {}", archive.display())))
+                .collect::<Vec<_>>(),
+            vec![line.as_str()],
+            "one archive line carrying the folder's error"
         );
         std::fs::remove_dir_all(dir).unwrap();
     }
