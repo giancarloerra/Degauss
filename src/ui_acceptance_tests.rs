@@ -1019,6 +1019,65 @@ fn run_scraper_cache_refresh_flow(root: &Path, window: Rc<MinimalSoftwareWindow>
     begin(&mut app);
     finish(&mut app);
     assert_eq!(app.scraper_progress.system_errors, 0, "refresh is reusable");
+
+    // A member the refresh leaves out is the scrape's last problem, named
+    // by the system, the archive and the reason the way a rebuild names
+    // it, and written to the log. The list was replaced, so it is not a
+    // failed refresh: the dashboard would otherwise count a system whose
+    // list is there as a failed one and call the refresh failed.
+    let outer = games.join("Outer.zip");
+    std::fs::write(
+        &outer,
+        crate::zip::tests_archive(&["Inner Game.nes", "inner.zip"], false),
+    )
+    .unwrap();
+    let before_outer = cache_snapshot(&app.cache_dir);
+    let log_since = |from: usize| {
+        let log = std::fs::read_to_string(crate::LOG_PATH).unwrap_or_default();
+        log[from.min(log.len())..].to_string()
+    };
+    let log_before = log_since(0).len();
+    begin(&mut app);
+    finish(&mut app);
+    assert_eq!(app.scraper_terminal, Some(ScraperTerminal::Finished));
+    assert_eq!(
+        app.scraper_progress.system_errors, 0,
+        "a skipped member is not a failed refresh"
+    );
+    let problem = format!(
+        "NES: {}: 1 member skipped: nested archive member is unsupported by MiSTer Main",
+        outer.display()
+    );
+    assert_eq!(
+        app.scraper_progress.last_problem.as_deref(),
+        Some(problem.as_str())
+    );
+    assert!(
+        log_since(log_before).lines().any(|line| line == problem),
+        "no line {problem:?} in the log"
+    );
+    assert_eq!(app.index.as_ref().unwrap().systems["NES"].games, 3);
+    assert_ne!(
+        cache_snapshot(&app.cache_dir),
+        before_outer,
+        "the list holding the retained member replaced the previous one"
+    );
+    let published = crate::cache::load_system(&app.cache_dir, "NES").unwrap();
+    assert_eq!(
+        published.folders[&Place::Archive(outer.clone()).key()]
+            .rows
+            .iter()
+            .map(|row| row.name.as_str())
+            .collect::<Vec<_>>(),
+        ["Inner Game.nes"],
+        "the inner archive is not a row"
+    );
+    std::fs::remove_file(&outer).unwrap();
+    begin(&mut app);
+    finish(&mut app);
+    assert_eq!(app.scraper_progress.system_errors, 0);
+    assert_eq!(app.scraper_progress.last_problem, None);
+    assert_eq!(app.index.as_ref().unwrap().systems["NES"].games, 2);
     let stable_cache = cache_snapshot(&app.cache_dir);
     let stable_index = app.index.as_ref().unwrap().systems.clone();
     std::fs::rename(&games, root.join("games/NES-moved")).unwrap();

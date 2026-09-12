@@ -11357,7 +11357,7 @@ impl App {
                 crate::index_job::Event::Ready {
                     index,
                     cache,
-                    warnings,
+                    mut warnings,
                     folders,
                     games,
                     ..
@@ -11365,10 +11365,12 @@ impl App {
                     self.index = Some(index);
                     self.scraper_refresh_folders = folders;
                     self.scraper_refresh_games = games;
+                    let mut name = None;
                     if let Some(id) = &self.scraper_refresh_id {
                         if let Some(system) =
                             self.all_systems.iter().find(|system| system.def.id == *id)
                         {
+                            name = Some(system.name().to_string());
                             for path in &system.paths {
                                 self.covers.invalidate_under(path);
                                 self.gallery_covers.invalidate_under(path);
@@ -11389,7 +11391,20 @@ impl App {
                     {
                         self.relist_here();
                     }
-                    (!warnings.is_empty()).then(|| warnings.join("\n"))
+                    // An archive or member the refresh left out, and
+                    // anything publication had to say, is the scrape's
+                    // last problem, named by the system the way a rebuild
+                    // names it. The list was replaced, so it is not a
+                    // failed refresh.
+                    if !warnings.is_empty() {
+                        let name = name.unwrap_or_else(|| "System".to_string());
+                        for warning in &mut warnings {
+                            *warning = format!("{name}: {warning}");
+                            crate::note(warning);
+                        }
+                        self.scraper_progress.last_problem = Some(warnings.join("\n"));
+                    }
+                    None
                 }
                 crate::index_job::Event::Failed { error, index } => {
                     self.index = Some(index);

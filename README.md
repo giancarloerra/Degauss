@@ -1000,7 +1000,9 @@ complete list, including after a single-game scrape. This work runs in a
 Degauss-owned worker, with the system/folder and read counts shown while the
 interface remains responsive. It is not a targeted one-game refresh. The
 dashboard shows safe finishing until that work completes; Details remains
-available. No helper or background service stays running after Degauss exits.
+available. An archive or member a refresh skips is shown as the last problem,
+named by the system, and is not counted as a failed system. No helper or
+background service stays running after Degauss exits.
 
 Connection and server failures remain on the progress screen until they are
 dismissed. The on-screen message is kept concise; technical curl and HTTP
