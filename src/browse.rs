@@ -343,6 +343,9 @@ pub struct Library {
 #[derive(Debug, Clone, Copy, Default)]
 pub struct OpenCost {
     pub gamelist_ms: u128,
+    /// Reading the ROM-set catalogues of a Neo Geo system; zero for
+    /// every other system, which reads none.
+    pub catalogue_ms: u128,
     pub art_ms: u128,
     pub art_files: usize,
 }
@@ -452,8 +455,10 @@ impl Library {
                 art,
             });
         }
+        let started = std::time::Instant::now();
         let neogeo = crate::neogeo::is_romset_system(config)
             .then(|| crate::neogeo::Catalogues::open(roots.iter().map(|root| root.path.as_path())));
+        cost.catalogue_ms = started.elapsed().as_millis();
         Ok(Library {
             config: config.clone(),
             roots,
