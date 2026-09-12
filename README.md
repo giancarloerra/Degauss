@@ -820,7 +820,7 @@ system's library roots keeps the whole system on Gamelist. Otherwise, when
 the system is entered, Degauss looks for an installed pack for it under
 `docs` on SD, then USB0 through USB7, and asks before reading it:
 
-```
+```text
 Artwork Pack Available
 
 An installed Artwork Pack was found for NES. Prepare its artwork and metadata now?
@@ -915,7 +915,7 @@ When the check finds that a table, the pack location, the language or the
 system's own list has changed since the preparation, Degauss asks before doing
 the work again:
 
-```
+```text
 Artwork Pack Changed
 
 The installed Artwork Pack data for NES has changed. Update its prepared artwork and metadata now?

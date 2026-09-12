@@ -6297,7 +6297,13 @@ impl App {
         let homes = self.homes();
         let artwork_pack_roots = self.effective_artwork_pack_roots.clone();
         let cache_dir = self.cache_dir.clone();
+        // Each owning system is resolved once, and the provider it gives
+        // is the one the rows are drawn with: one prepared for another
+        // language is handed back without being held, so it is kept here
+        // rather than looked for again in memory.
+        let mut providers: HashMap<String, crate::artwork_pack::Provider> = HashMap::new();
         let mut missing = Vec::new();
+        let mut seen = HashSet::new();
         for row in rows.iter() {
             let browse::Kind::Play(browse::Launch::File(path)) = &row.kind else {
                 continue;
@@ -6308,18 +6314,19 @@ impl App {
             let Some(id) = owner_of_favorite(&systems, &reference) else {
                 continue;
             };
+            if !seen.insert(id.clone()) {
+                continue;
+            }
             let Some(root) =
                 crate::artwork_pack::selected_root(&artwork_pack_roots, &id).map(Path::to_path_buf)
             else {
                 continue;
             };
             match self.provider_from_state(&id, &root) {
-                Ok(Some(_)) => {}
-                Ok(None) => {
-                    if !missing.contains(&id) {
-                        missing.push(id);
-                    }
+                Ok(Some(provider)) => {
+                    providers.insert(id, provider);
                 }
+                Ok(None) => missing.push(id),
                 // Not read as undecided: no worker, and the favourite is
                 // shown as its game is without the Pack. The next entry
                 // into the system says what is wrong.
@@ -6336,7 +6343,7 @@ impl App {
             &homes,
             &artwork_pack_roots,
             &cache_dir,
-            |id, _, _| self.artwork_provider_cache.get(id).cloned(),
+            |id, _, _| providers.get(id).cloned(),
         );
         if !self.artwork_source_errors.is_empty() {
             for row in rows.iter_mut() {
@@ -10386,10 +10393,18 @@ impl App {
             }
         }
         if !warnings.is_empty() && self.source_job.is_none() {
-            self.add_to_message(format!(
+            let report = format!(
                 "Artwork Pack for {name} prepared with problems:\n{}",
                 warnings.join("\n")
-            ));
+            );
+            // Said under whatever the entry or the rebuild puts up: a
+            // rebuild's progress takes the message down, so the report
+            // goes into its overview instead.
+            if self.build.is_some() {
+                self.build_warning(report);
+            } else {
+                self.add_to_message(report);
+            }
         }
     }
 

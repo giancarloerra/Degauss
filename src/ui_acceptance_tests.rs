@@ -3370,6 +3370,42 @@ fn run_automatic_pack_consent_flow(root: &Path, window: Rc<MinimalSoftwareWindow
     app.scraper_settings.language = Some("it".into());
     open(&mut app);
     assert_prompt(&app, changed);
+    // While the question stands, nothing is kept about the new language:
+    // the rows prepared for the previous one are handed to the favourites
+    // shelf without being held in memory, and the shelf draws with them
+    // all the same, once per owning system rather than once per row.
+    {
+        let mut favorites = app.all_systems[0].clone();
+        favorites.def.id = "Favorites".into();
+        favorites.def.name = "Favorites".into();
+        favorites.def.category = Some("Favorites".into());
+        favorites.paths = Vec::new();
+        app.all_systems.push(favorites);
+        let (was_open, was_pending, was_message) = (
+            app.open_system.replace("Favorites".into()),
+            app.pending.take(),
+            app.message.take(),
+        );
+        app.artwork_provider_cache.clear();
+        let mut shelf = [favorite_row(), favorite_row()];
+        app.enrich_favorites(&mut shelf);
+        assert!(
+            !app.artwork_provider_cache.contains_key("NES"),
+            "rows prepared for another language are not held while the question stands"
+        );
+        for row in &shelf {
+            assert_eq!(
+                row.name, "Pack First",
+                "the favourite draws with the rows the shelf was handed"
+            );
+            assert_eq!(row.cover, Some(artwork.join("Known.jpg")));
+        }
+        assert!(app.provider_job.is_none() && app.provider_requests.is_empty());
+        app.all_systems.pop();
+        app.open_system = was_open;
+        app.pending = was_pending;
+        app.message = was_message;
+    }
     app.handle(Action::Quit);
     assert!(app.pending.is_none(), "{:?}", app.message);
     assert_eq!(app.open_system.as_deref(), Some("NES"), "{:?}", app.message);
