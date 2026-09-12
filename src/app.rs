@@ -13220,11 +13220,14 @@ impl App {
             repeater.set_horizontal_repeats(self.horizontal_scrolls());
             repeater.set_favorite_hold(self.favorite_change().is_some());
             repeater.set_random_hold(self.random_shortcut_enabled());
-            for edge in input.poll() {
+            for (edge, at) in input.poll() {
                 // Some controllers deliver one press as two very fast press
                 // and release pairs. The second pair is dropped here, before
                 // the repeater, so the held-scroll cadence is not touched.
-                let Some(edge) = duplicates.admit(edge, now) else {
+                // Judged on the kernel's stamp for each event rather than
+                // this frame's `now`: a frame stalled on a system read
+                // drains every press queued behind it in one poll.
+                let Some(edge) = duplicates.admit(edge, at) else {
                     continue;
                 };
                 let action = match edge {
