@@ -204,11 +204,19 @@ fn run(
             continue;
         }
         // Read with its marker: the state written below records the
-        // rows the mapping was prepared from.
-        let cached =
-            crate::cache::load_artwork_pack_data_marked(&request.cache_dir, &request.system_id)
-                .ok()
-                .flatten();
+        // rows the mapping was prepared from. A cache that is there and
+        // cannot be read is not a missing one: taken as missing, it would
+        // be recovered over, so it is a failure instead.
+        let cached = match crate::cache::load_artwork_pack_data_marked(
+            &request.cache_dir,
+            &request.system_id,
+        ) {
+            Ok(cached) => cached,
+            Err(error) => {
+                let _ = events.send(Event::Failed { error, progress });
+                return;
+            }
+        };
         let mut skipped = crate::artwork_pack::SkippedEntries::new();
         let (fingerprints, cache_needs_recovery) = match cached.as_ref() {
             Some(_) if !provider.health.usable() => {
@@ -752,6 +760,35 @@ mod tests {
         )
         .unwrap();
         (root, docs, cache_dir)
+    }
+
+    /// A cache that is there and cannot be read must not pass for a
+    /// missing one: taken as missing, the worker would report the rows
+    /// as needing recovery and the previous complete result would be
+    /// rebuilt over instead of kept.
+    #[test]
+    fn an_unreadable_source_cache_is_a_failure_not_a_recovery() {
+        let (root, docs, cache_dir) = legacy_arcade("unreadable-cache");
+        let cache = crate::cache::artwork_pack_system_path(&cache_dir, "Arcade");
+        std::fs::remove_file(&cache).unwrap();
+        std::fs::create_dir(&cache).unwrap();
+        let mut job = start(vec![adoption(&docs, &cache_dir, true)]).unwrap();
+        let Event::Failed { error, progress } = terminal(&mut job) else {
+            panic!("a cache that cannot be read must be a visible failure");
+        };
+        assert!(
+            error.to_string().contains("reading the Artwork Pack cache"),
+            "{error}"
+        );
+        assert_eq!(progress.current, "Arcade");
+        assert!(
+            crate::cache::load_pack_source_state(&cache_dir, "Arcade")
+                .unwrap()
+                .is_none(),
+            "nothing is decided on a cache that could not be read"
+        );
+        assert!(cache.is_dir(), "the unreadable cache is left as it is");
+        std::fs::remove_dir_all(root).ok();
     }
 
     fn adoption(docs: &Path, cache_dir: &Path, write_state: bool) -> Request {
