@@ -29,6 +29,7 @@ mod input;
 mod launch;
 mod list_state;
 mod metrics;
+mod mgl;
 mod options;
 mod pack_health;
 mod provider_job;
@@ -466,11 +467,16 @@ fn diagnostic_launch_plan(
         zip::validate_member_for_launch(path)?;
     }
     let reference = if systems::is_favorites(system.category()) {
-        favorites::reference_of_with_systems(path, &loaded.systems)
+        favorites::reference_of(path, &homes_of(loaded))
     } else {
         None
     };
     if let Some(reference) = &reference {
+        // As the interactive launch refuses it: MiSTer would start one of
+        // the files found, and this run cannot say which.
+        if let Some(mgl::Diagnostic::Ambiguous(text)) = &reference.diagnostic {
+            return Err(DegaussError::unsupported("MGL component", text.clone()));
+        }
         if zip::split_member_path(&reference.owner_target).is_some() {
             zip::validate_member_for_launch(&reference.owner_target)?;
         }
@@ -889,7 +895,8 @@ fn import_favorites(loaded: &Loaded, list: &Path) -> Result<()> {
     let text = std::fs::read_to_string(list)
         .map_err(|e| error::DegaussError::io("reading the list", list, e))?;
     let root = PathBuf::from(&loaded.config.menu_root).join(favorites::FAVORITES_DIR);
-    let already = favorites::Favorites::read_with_systems(&root, &loaded.systems);
+    let homes = homes_of(loaded);
+    let already = favorites::Favorites::read_with(&root, &homes);
 
     let (mut written, mut skipped, mut missing, mut failed) = (0, 0, 0, 0);
     for line in text.lines() {
@@ -935,7 +942,7 @@ fn import_favorites(loaded: &Loaded, list: &Path) -> Result<()> {
             }
         }
         let reference = if title.is_empty() {
-            favorites::reference_of_with_systems(&path, &loaded.systems)
+            favorites::reference_of(&path, &homes)
         } else {
             None
         };
@@ -1033,6 +1040,12 @@ fn import_favorites(loaded: &Loaded, list: &Path) -> Result<()> {
         "favourites   {written} written, {skipped} already there, {missing} gone, {failed} failed"
     );
     Ok(())
+}
+
+/// Where the paths inside an MGL point on this card, for every headless
+/// command that reads a favourite or matches a Pack.
+fn homes_of(loaded: &Loaded) -> mgl::Homes {
+    mgl::Homes::new(&loaded.config.game_roots, &loaded.systems)
 }
 
 /// Beside the settings, which is beside the configuration.
@@ -1457,6 +1470,7 @@ struct EffectiveLibrary {
     library: browse::Library,
     provider: Option<artwork_pack::Provider>,
     fingerprints: cache::ContentFingerprints,
+    homes: mgl::Homes,
     notes: Vec<String>,
 }
 
@@ -1464,7 +1478,7 @@ impl EffectiveLibrary {
     fn audit(&self, show_empty: bool) -> browse::Audit {
         match self.provider.as_ref() {
             Some(provider) => self.library.audit_projected(show_empty, &mut |rows| {
-                let _ = provider.apply_with_fingerprints(rows, &self.fingerprints);
+                let _ = provider.apply_with_fingerprints(rows, &self.fingerprints, &self.homes);
             }),
             None => self.library.audit(show_empty),
         }
@@ -1507,6 +1521,7 @@ fn effective_library_with_sources(
             library: browse::Library::open_with_names(&system.to_config(), loaded.names.clone())?,
             provider: None,
             fingerprints: cache::ContentFingerprints::new(),
+            homes: homes_of(loaded),
             notes: Vec::new(),
         });
     };
@@ -1524,6 +1539,7 @@ fn effective_library_with_sources(
     };
     let provider = artwork_pack::Provider::load(id, root, language.as_deref());
     let library = browse::Library::open_source_neutral(&system.to_config(), loaded.names.clone())?;
+    let homes = homes_of(loaded);
     let cancelled = std::sync::atomic::AtomicBool::new(false);
     let cached = cache::load_artwork_pack_data(&cache::dir_for(&loaded.settings_path), id);
     let cached_is_current = match cached.as_ref() {
@@ -1532,6 +1548,7 @@ fn effective_library_with_sources(
                 &data.cache,
                 &data.fingerprints,
                 data.fingerprints_complete,
+                &homes,
                 &cancelled,
             )?
             .unwrap_or(false),
@@ -1545,7 +1562,7 @@ fn effective_library_with_sources(
             None => cache::build_system_checked(&library)?,
         };
         provider
-            .fingerprints_for_cache(&source_cache, &cancelled, &mut |_, _| {})?
+            .fingerprints_for_cache(&source_cache, &homes, &cancelled, &mut |_, _| {})?
             .unwrap_or_default()
     } else {
         cache::ContentFingerprints::new()
@@ -1554,6 +1571,7 @@ fn effective_library_with_sources(
         library,
         provider: Some(provider),
         fingerprints,
+        homes,
         notes,
     })
 }
@@ -1612,9 +1630,11 @@ fn print_report(system: &FoundSystem, effective: &EffectiveLibrary, audit: &brow
         if let (Some(provider), browse::Kind::Play(launch)) =
             (effective.provider.as_ref(), &first.kind)
         {
-            match provider
-                .presentation_for_launch_with_fingerprints(launch, &effective.fingerprints)
-            {
+            match provider.presentation_for_launch_with_fingerprints(
+                launch,
+                &effective.fingerprints,
+                &effective.homes,
+            ) {
                 Ok(Some(presentation)) => {
                     if let Some(diagnostic) = presentation.diagnostic {
                         println!(
@@ -1981,6 +2001,57 @@ category = "Favorites"
                 .mgl
                 .contains("<setname same_dir=\"1\">RA_NES</setname>"));
         }
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    /// The same name in two of the system's folders is two games. Handing
+    /// the favourite to MiSTer would start whichever its folder order
+    /// finds first; the dry run says so instead, as the interface does.
+    #[test]
+    fn diagnostic_favorite_in_two_alias_folders_is_refused_not_started() {
+        let (root, mut loaded) = diagnostic_fixture("favorite-ambiguous");
+        let other = root.join("games/Nintendo");
+        std::fs::create_dir_all(&other).unwrap();
+        loaded.systems[0].paths = vec![root.join("games/NES"), other.clone()];
+        std::fs::write(root.join("games/NES/Game.nes"), b"one build").unwrap();
+        std::fs::write(other.join("Game.nes"), b"another build").unwrap();
+        let favorite = root.join("_@Favorites/Game.mgl");
+        std::fs::write(&favorite, "<mistergamedescription><rbf>_Console/NES</rbf><file delay=\"1\" type=\"f\" index=\"1\" path=\"Game.nes\"/></mistergamedescription>").unwrap();
+        let error = diagnostic_launch_plan(
+            &loaded,
+            &loaded.systems[2],
+            &favorite,
+            &root.join("temp.mgl"),
+        )
+        .unwrap_err();
+        assert!(
+            matches!(
+                &error,
+                DegaussError::Unsupported {
+                    what: "MGL component",
+                    ..
+                }
+            ),
+            "{error}"
+        );
+        let text = error.to_string();
+        assert!(text.contains(&root.join("games/NES/Game.nes").display().to_string()));
+        assert!(text.contains(&other.join("Game.nes").display().to_string()));
+
+        std::fs::remove_file(other.join("Game.nes")).unwrap();
+        let plan = diagnostic_launch_plan(
+            &loaded,
+            &loaded.systems[2],
+            &favorite,
+            &root.join("temp.mgl"),
+        )
+        .unwrap();
+        assert!(
+            plan.mgl
+                .contains(&root.join("games/NES/Game.nes").display().to_string()),
+            "one file left is the game: {}",
+            plan.mgl
+        );
         std::fs::remove_dir_all(root).unwrap();
     }
 

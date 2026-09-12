@@ -31,6 +31,11 @@ const MAX_MGL_VALUE_BYTES: usize = 4096;
 /// distinguish systems sharing one folder and file extension. `cache_target`
 /// preserves the exact target used by MiSTer's Favorites representation;
 /// `owner_target` may be the game named inside a linked MGL.
+///
+/// A descriptor whose paths cannot be placed (a component missing from
+/// its home directory, or found in two of its system's folders) is still
+/// a favourite: it is keyed under its own file, so it lists and can be
+/// removed, and `diagnostic` says what is wrong with it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FavoriteReference {
     pub cache_target: PathBuf,
@@ -38,13 +43,20 @@ pub struct FavoriteReference {
     pub rbf: Option<String>,
     pub setname: Option<String>,
     pub mgl: bool,
+    pub diagnostic: Option<crate::mgl::Diagnostic>,
 }
 
+/// An MGL or MRA as written: its file paths in document order, exactly as
+/// the attribute has them, and the core and set it names. Where the paths
+/// point is the resolver's business (`crate::mgl`), not the parser's.
 #[derive(Debug, Default)]
-struct DescriptorReference {
-    target: Option<PathBuf>,
-    rbf: Option<String>,
-    setname: Option<String>,
+pub(crate) struct DescriptorReference {
+    pub files: Vec<String>,
+    pub rbf: Option<String>,
+    pub setname: Option<String>,
+    /// `<setname same_dir="1">`: Main keeps the core's own games folder
+    /// instead of one named after the set.
+    pub same_dir: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -65,18 +77,18 @@ impl Favorites {
     /// an error.
     #[cfg(test)]
     pub fn read(root: &Path) -> Favorites {
+        Favorites::read_with(root, &crate::mgl::Homes::default())
+    }
+
+    /// Read the folder, placing each descriptor's paths the way MiSTer
+    /// Main would, through `homes`.
+    pub fn read_with(root: &Path, homes: &crate::mgl::Homes) -> Favorites {
         let mut found = Favorites::default();
-        found.walk(root, 0, &[]);
+        found.walk(root, 0, homes);
         found
     }
 
-    pub fn read_with_systems(root: &Path, systems: &[crate::systems::FoundSystem]) -> Favorites {
-        let mut found = Favorites::default();
-        found.walk(root, 0, systems);
-        found
-    }
-
-    fn walk(&mut self, dir: &Path, depth: usize, systems: &[crate::systems::FoundSystem]) {
+    fn walk(&mut self, dir: &Path, depth: usize, homes: &crate::mgl::Homes) {
         if depth > 6 {
             return;
         }
@@ -103,7 +115,7 @@ impl Favorites {
                 continue;
             }
             if meta.is_dir() {
-                self.walk(&path, depth + 1, systems);
+                self.walk(&path, depth + 1, homes);
                 continue;
             }
             if path
@@ -117,7 +129,12 @@ impl Favorites {
                     self.by_target.insert(amiga_key(&install, &title), path);
                     continue;
                 }
-                if let Some(reference) = reference_of_with_systems(&path, systems) {
+                if let Some(reference) = reference_of(&path, homes) {
+                    // Said once per read, so the log names the favourite
+                    // that cannot be placed and what was found instead.
+                    if let Some(diagnostic) = &reference.diagnostic {
+                        crate::note(&format!("mgl          {}: {diagnostic}", path.display()));
+                    }
                     self.by_target.insert(reference.cache_target, path);
                 }
             }
@@ -146,13 +163,19 @@ impl Favorites {
 /// name the title itself is looked up by, so both kinds compare equal.
 #[cfg(test)]
 pub fn target_of(path: &Path) -> Option<PathBuf> {
-    reference_of(path).map(|reference| reference.cache_target)
+    reference_of(path, &crate::mgl::Homes::default()).map(|reference| reference.cache_target)
 }
 
 /// Resolve the Favorite target while retaining core/set evidence for callers
 /// that need to identify the owning system. This reads only the same symlink,
 /// MGL or MRA that represents the Favorite and never changes it.
-pub fn reference_of(path: &Path) -> Option<FavoriteReference> {
+///
+/// The paths inside an MGL are placed as MiSTer Main places them, through
+/// `homes`: a game descriptor is known by its game, and a descriptor for a
+/// core outside the systems table (an arcade set) by the descriptor itself.
+/// One whose paths cannot be placed is keyed under its own file and carries
+/// the reason in `diagnostic` rather than being dropped or guessed at.
+pub fn reference_of(path: &Path, homes: &crate::mgl::Homes) -> Option<FavoriteReference> {
     if let Ok(target) = std::fs::read_link(path) {
         let cache_target = resolve_link_target(path, target);
         let extension = cache_target
@@ -160,33 +183,32 @@ pub fn reference_of(path: &Path) -> Option<FavoriteReference> {
             .and_then(|extension| extension.to_str())
             .unwrap_or("")
             .to_ascii_lowercase();
-        let descriptor = if matches!(extension.as_str(), "mgl" | "mra") {
-            descriptor_reference(
-                &cache_target,
-                if extension == "mgl" {
-                    "favourite MGL"
-                } else {
-                    "favourite MRA"
-                },
-            )
-            .ok()
-        } else {
-            None
+        let (owner_target, rbf, setname, diagnostic) = match extension.as_str() {
+            "mgl" => match homes.resolve(&cache_target) {
+                Ok(resolved) => {
+                    let (owner_target, diagnostic) = placed(&resolved, &cache_target);
+                    (owner_target, resolved.rbf, resolved.setname, diagnostic)
+                }
+                Err(_) => (cache_target.clone(), None, None, None),
+            },
+            "mra" => match descriptor_reference(&cache_target, "favourite MRA") {
+                Ok(descriptor) => (
+                    cache_target.clone(),
+                    descriptor.rbf,
+                    descriptor.setname,
+                    None,
+                ),
+                Err(_) => (cache_target.clone(), None, None, None),
+            },
+            _ => (cache_target.clone(), None, None, None),
         };
-        let owner_target = descriptor
-            .as_ref()
-            .and_then(|descriptor| descriptor.target.clone())
-            .unwrap_or_else(|| cache_target.clone());
         return Some(FavoriteReference {
             cache_target,
             owner_target,
-            rbf: descriptor
-                .as_ref()
-                .and_then(|descriptor| descriptor.rbf.clone()),
-            setname: descriptor
-                .as_ref()
-                .and_then(|descriptor| descriptor.setname.clone()),
+            rbf,
+            setname,
             mgl: extension == "mgl",
+            diagnostic,
         });
     }
     if path
@@ -201,108 +223,47 @@ pub fn reference_of(path: &Path) -> Option<FavoriteReference> {
                 rbf: None,
                 setname: None,
                 mgl: true,
+                diagnostic: None,
             });
         }
-        let descriptor = descriptor_reference(path, "favourite MGL").ok()?;
-        let target = descriptor.target?;
+        let resolved = homes.resolve(path).ok()?;
+        if resolved.class == crate::mgl::Class::Game && resolved.components.is_empty() {
+            return None;
+        }
+        let (target, diagnostic) = placed(&resolved, path);
         return Some(FavoriteReference {
             cache_target: target.clone(),
             owner_target: target,
-            rbf: descriptor.rbf,
-            setname: descriptor.setname,
+            rbf: resolved.rbf,
+            setname: resolved.setname,
             mgl: true,
+            diagnostic,
         });
     }
     None
 }
 
-/// Resolve bare file names using the owning system's discovered game folders.
-/// Absolute paths and existing parent-relative conventions retain their meaning.
-/// Ambiguous owners are left unresolved rather than assigned to another system.
-pub fn reference_of_with_systems(
-    path: &Path,
-    systems: &[crate::systems::FoundSystem],
-) -> Option<FavoriteReference> {
-    let mut reference = reference_of(path)?;
-    if !reference.mgl || is_amiga_key(&reference.owner_target) {
-        return Some(reference);
+/// What a resolved descriptor stands for: its game for a game descriptor,
+/// the descriptor itself for a core set, and the descriptor itself with
+/// the reason when the game cannot be placed.
+fn placed(
+    resolved: &crate::mgl::Resolved,
+    descriptor: &Path,
+) -> (PathBuf, Option<crate::mgl::Diagnostic>) {
+    match resolved.class {
+        crate::mgl::Class::CoreSet => (descriptor.to_path_buf(), resolved.diagnostic()),
+        crate::mgl::Class::Game => match resolved.game_target() {
+            Ok(Some(target)) => (target, None),
+            Ok(None) => (descriptor.to_path_buf(), None),
+            Err(_) => (descriptor.to_path_buf(), resolved.diagnostic()),
+        },
     }
-    let descriptor_path = std::fs::read_link(path)
-        .map(|target| resolve_link_target(path, target))
-        .unwrap_or_else(|_| path.to_path_buf());
-    let text = read_mgl_text(&descriptor_path, "favourite MGL").ok()?;
-    let mut reader = Reader::from_str(&text);
-    let mut raw = None;
-    loop {
-        match reader.read_event() {
-            Ok(Event::Start(e) | Event::Empty(e))
-                if e.name().as_ref().eq_ignore_ascii_case("file") =>
-            {
-                for a in e.attributes() {
-                    let a = a.ok()?;
-                    if a.key.as_ref().eq_ignore_ascii_case("path") {
-                        raw = Some(
-                            a.normalized_value(XmlVersion::Implicit1_0)
-                                .ok()?
-                                .into_owned(),
-                        );
-                    }
-                }
-            }
-            Ok(Event::Eof) => break,
-            Err(_) => return None,
-            _ => {}
-        }
-    }
-    let raw = raw?;
-    if raw.starts_with('/') || raw.starts_with("../") || raw.starts_with("./") {
-        return Some(reference);
-    }
-    let rbf = reference.rbf.as_deref()?;
-    let core = Path::new(rbf).file_name()?.to_str()?;
-    let set = reference
-        .setname
-        .as_deref()
-        .map(|s| s.strip_prefix("RA_").unwrap_or(s));
-    let owners: Vec<_> = systems
-        .iter()
-        .filter(|system| {
-            let configured_core = Path::new(&system.def.rbf)
-                .file_name()
-                .and_then(|s| s.to_str());
-            (configured_core.is_some_and(|s| crate::core_variants::same_core_identity(s, core))
-                || crate::core_choices::is_unstable_reference(&system.to_config(), rbf))
-                && system.to_config().accepts(Path::new(&raw))
-                && (rbf.starts_with("_RA_Cores/Cores/")
-                    && set.is_some_and(|s| s.eq_ignore_ascii_case(core))
-                    || match (system.to_config().setname.as_deref(), set) {
-                        (Some(expected), Some(actual)) => expected.eq_ignore_ascii_case(actual),
-                        (None, None) => true,
-                        (None, Some(actual)) => actual.eq_ignore_ascii_case(core),
-                        _ => false,
-                    })
-        })
-        .collect();
-    let [owner] = owners.as_slice() else {
-        return Some(reference);
-    };
-    let candidates: Vec<_> = owner
-        .paths
-        .iter()
-        .map(|root| normalize_path(root.join(&raw)))
-        .filter(|p| p.is_file() || crate::zip::validate_member(p).is_ok())
-        .collect();
-    if let Some(target) = candidates.first() {
-        if reference.cache_target == reference.owner_target {
-            reference.cache_target = target.clone();
-        }
-        reference.owner_target = target.clone();
-    }
-    Some(reference)
 }
 
-/// Bare paths need the same explicit system-root resolution used for metadata.
-pub fn has_bare_paths(path: &Path) -> Result<bool> {
+/// Whether any file path is one Main would join to the core's home
+/// directory (bare, `./x` or `../x`): those are placed through the owning
+/// system's folders before launch, the way metadata places them.
+pub fn has_home_relative_paths(path: &Path) -> Result<bool> {
     let text = read_mgl_text(path, "favourite MGL")?;
     let mut reader = Reader::from_str(&text);
     loop {
@@ -319,10 +280,7 @@ pub fn has_bare_paths(path: &Path) -> Result<bool> {
                         let raw = a.normalized_value(XmlVersion::Implicit1_0).map_err(|e| {
                             DegaussError::malformed("favourite MGL", path, e.to_string())
                         })?;
-                        if !raw.starts_with('/')
-                            && !raw.starts_with("../")
-                            && !raw.starts_with("./")
-                        {
+                        if crate::mgl::needs_home(&raw) {
                             return Ok(true);
                         }
                     }
@@ -336,6 +294,10 @@ pub fn has_bare_paths(path: &Path) -> Result<bool> {
 
 /// Relocating an MGL must not change the meaning of its relative file paths.
 /// Replace only path attribute values, preserving other actions and attributes.
+///
+/// A path Main would join to the home directory is placed in the owning
+/// system's folders, as MiSTer would place it in the core's own; one found
+/// in none of them, or in two, is an error rather than a guess.
 pub fn relocate_mgl(
     text: &str,
     original: &Path,
@@ -345,6 +307,11 @@ pub fn relocate_mgl(
         .ok()
         .map(|target| resolve_link_target(original, target));
     let original = linked.as_deref().unwrap_or(original);
+    let folders: Vec<PathBuf> = std::iter::once(&system.path)
+        .chain(system.extra_paths.iter())
+        .filter(|folder| !folder.is_empty())
+        .map(PathBuf::from)
+        .collect();
     let mut reader = Reader::from_str(text);
     let mut patches = Vec::new();
     loop {
@@ -367,22 +334,19 @@ pub fn relocate_mgl(
                     if raw.starts_with('/') {
                         continue;
                     }
-                    let target = if raw.starts_with("../") || raw.starts_with("./") {
-                        resolve_mgl_path(original, &raw)
-                    } else {
-                        std::iter::once(&system.path)
-                            .chain(system.extra_paths.iter())
-                            .map(|root| Path::new(root).join(raw.as_ref()))
-                            .find(|p| p.is_file() || crate::zip::validate_member(p).is_ok())
-                            .ok_or_else(|| {
-                                DegaussError::unsupported(
-                                    "favourite file",
-                                    format!(
-                                        "cannot resolve {raw:?} in {} game folders",
-                                        system.name
-                                    ),
-                                )
-                            })?
+                    let target = match crate::mgl::component(&raw, &folders, true) {
+                        crate::mgl::Component::Absolute(target)
+                        | crate::mgl::Component::RootRelative(target)
+                        | crate::mgl::Component::Home(target) => target,
+                        crate::mgl::Component::Missing { .. } => {
+                            return Err(DegaussError::unsupported(
+                                "favourite file",
+                                format!("cannot resolve {raw:?} in {} game folders", system.name),
+                            ));
+                        }
+                        crate::mgl::Component::Ambiguous { existing, .. } => {
+                            return Err(crate::mgl::ambiguous_error(original, &raw, &existing));
+                        }
                     };
                     // The raw attribute value is a borrowed slice of the input.
                     let bytes = a.value.as_ref();
@@ -425,16 +389,6 @@ pub fn is_amiga_key(path: &Path) -> bool {
         .any(|component| component.as_os_str() == ".degauss-amigavision")
 }
 
-/// The game an `.mgl` points at.
-///
-/// Absolute where MiSTer's script wrote it, and relative where something
-/// else did, so both are resolved rather than one being assumed.
-/// The inverse of the escaping the writer applies, so a name holding an
-/// ampersand or a quote matches the file it came from.
-pub fn mgl_target(path: &Path) -> Result<Option<PathBuf>> {
-    descriptor_reference(path, "favourite MGL").map(|reference| reference.target)
-}
-
 /// Bound the bytes actually consumed, rather than relying on metadata from an
 /// earlier instant. A growing file or symlink target cannot bypass this limit.
 pub(crate) fn read_mgl_text(path: &Path, what: &'static str) -> Result<String> {
@@ -458,35 +412,54 @@ pub(crate) fn read_mgl_text(path: &Path, what: &'static str) -> Result<String> {
     })
 }
 
-fn descriptor_reference(path: &Path, what: &'static str) -> Result<DescriptorReference> {
+/// Read a descriptor as written. The inverse of the escaping the writer
+/// applies, so a name holding an ampersand or a quote matches the file it
+/// came from. Every `<file>` is kept in document order: a game that needs
+/// a companion disc has the companion written ahead of it, so the last
+/// path is the game and the earlier ones are what it is fed with.
+pub(crate) fn descriptor_reference(path: &Path, what: &'static str) -> Result<DescriptorReference> {
     let text = read_mgl_text(path, what)?;
     let mut reader = Reader::from_str(&text);
-    let mut target = None;
+    let mut files = Vec::new();
     let mut active = None;
     let mut value = String::new();
     let mut rbf = None;
     let mut rbf_ambiguous = false;
     let mut setname = None;
     let mut setname_ambiguous = false;
-    // The LAST path, not the first. A game that needs a companion disc has
-    // the companion written ahead of it, so the first path names the disc
-    // and only the last one names the game the favourite is for.
+    let mut same_dir = false;
     loop {
         match reader.read_event() {
             Ok(Event::Eof) => break,
             Ok(Event::Start(event)) => {
                 if event.name().as_ref().eq_ignore_ascii_case("file") {
-                    target = file_target(path, what, &event)?.or(target);
+                    files.extend(file_target(path, what, &event)?);
                 } else if event.name().as_ref().eq_ignore_ascii_case("rbf") {
                     active = Some(DescriptorField::Rbf);
                     value.clear();
                 } else if event.name().as_ref().eq_ignore_ascii_case("setname") {
                     active = Some(DescriptorField::Setname);
                     value.clear();
+                    // Main reads the attribute by name regardless of case
+                    // and only the exact value "1" counts.
+                    for attribute in event.attributes() {
+                        let attribute = attribute.map_err(|error| {
+                            DegaussError::malformed(
+                                what,
+                                path,
+                                format!("bad setname attribute: {error}"),
+                            )
+                        })?;
+                        if attribute.key.as_ref().eq_ignore_ascii_case("same_dir")
+                            && attribute.value.as_ref() == "1"
+                        {
+                            same_dir = true;
+                        }
+                    }
                 }
             }
             Ok(Event::Empty(event)) if event.name().as_ref().eq_ignore_ascii_case("file") => {
-                target = file_target(path, what, &event)?.or(target);
+                files.extend(file_target(path, what, &event)?);
             }
             Ok(Event::Text(text)) if active.is_some() => {
                 value.push_str(&text.xml10_content());
@@ -543,18 +516,21 @@ fn descriptor_reference(path: &Path, what: &'static str) -> Result<DescriptorRef
             }
         }
     }
+    let setname = (!setname_ambiguous).then_some(setname).flatten();
     Ok(DescriptorReference {
-        target,
+        files,
         rbf: (!rbf_ambiguous).then_some(rbf).flatten(),
-        setname: (!setname_ambiguous).then_some(setname).flatten(),
+        same_dir: same_dir && setname.is_some(),
+        setname,
     })
 }
 
+/// The `path` attribute of one `<file>`, as written.
 fn file_target(
     path: &Path,
     what: &'static str,
     event: &quick_xml::events::BytesStart<'_>,
-) -> Result<Option<PathBuf>> {
+) -> Result<Option<String>> {
     let mut target = None;
     for attribute in event.attributes() {
         let attribute = attribute.map_err(|error| {
@@ -566,7 +542,7 @@ fn file_target(
                 .map_err(|error| {
                     DegaussError::malformed(what, path, format!("bad path attribute: {error}"))
                 })?;
-            target = Some(resolve_mgl_path(path, &raw));
+            target = Some(raw.into_owned());
         }
     }
     Ok(target)
@@ -610,28 +586,7 @@ fn resolve_numeric_entity(name: &str) -> Option<char> {
     char::from_u32(value)
 }
 
-fn resolve_mgl_path(mgl: &Path, raw: &str) -> PathBuf {
-    if raw.starts_with('/') {
-        return normalize_path(PathBuf::from(raw));
-    }
-    // Degauss launch MGLs live in /tmp and encode an absolute MiSTer media
-    // path as a run of parent components followed by `media/...`. Older code
-    // and existing tests also accept the same spelling from another folder.
-    // Recognise only that unambiguous MiSTer-root form: an ordinary path such
-    // as `../roms/Game.rom` must remain relative to the MGL itself.
-    let mut root_relative = raw;
-    let mut climbed = false;
-    while let Some(rest) = root_relative.strip_prefix("../") {
-        root_relative = rest;
-        climbed = true;
-    }
-    if climbed && (root_relative == "media" || root_relative.starts_with("media/")) {
-        return normalize_path(Path::new("/").join(root_relative));
-    }
-    normalize_path(mgl.parent().unwrap_or(Path::new(".")).join(raw))
-}
-
-fn resolve_link_target(link: &Path, target: PathBuf) -> PathBuf {
+pub(crate) fn resolve_link_target(link: &Path, target: PathBuf) -> PathBuf {
     if target.is_absolute() {
         normalize_path(target)
     } else {
@@ -639,7 +594,7 @@ fn resolve_link_target(link: &Path, target: PathBuf) -> PathBuf {
     }
 }
 
-fn normalize_path(path: PathBuf) -> PathBuf {
+pub(crate) fn normalize_path(path: PathBuf) -> PathBuf {
     use std::path::Component;
 
     let absolute = path.is_absolute();
@@ -791,16 +746,31 @@ mod tests {
         dir
     }
 
-    #[test]
-    fn bare_ra_favorites_use_shared_core_extension_and_root_priority() {
-        let root = temp("context-ra");
-        let primary = root.join("primary");
-        let secondary = root.join("secondary");
-        std::fs::create_dir_all(&primary).unwrap();
-        std::fs::create_dir_all(&secondary).unwrap();
-        for folder in [&primary, &secondary] {
-            std::fs::write(folder.join("Game.fds"), b"path fixture").unwrap();
-        }
+    /// The systems table with one core in it, and no folder found for it:
+    /// enough for a descriptor of that core to be a game descriptor rather
+    /// than a set of its own, which is what an absolute or root-relative
+    /// favourite of a table core is.
+    fn homes_knowing(rbf: &str) -> crate::mgl::Homes {
+        let def = crate::systems::parse_table(
+            &format!(
+                "[[systems]]\nname = \"Core\"\nid = \"Core\"\nfolders = [\"Core\"]\nrbf = \"{rbf}\"\nextensions = [\"crt\", \"rom\"]\n"
+            ),
+            Path::new("test"),
+        )
+        .unwrap()
+        .remove(0);
+        crate::mgl::Homes::new(
+            &[],
+            &[crate::systems::FoundSystem {
+                def,
+                paths: Vec::new(),
+                logo_dir: None,
+                menu_folder: None,
+            }],
+        )
+    }
+
+    fn ra_fixture_systems(folders: &[PathBuf]) -> Vec<crate::systems::FoundSystem> {
         let defs = crate::systems::parse_table(
             r#"
 [[systems]]
@@ -820,20 +790,64 @@ extensions = ["fds"]
             Path::new("test"),
         )
         .unwrap();
-        let systems: Vec<_> = defs
-            .into_iter()
+        defs.into_iter()
             .map(|def| crate::systems::FoundSystem {
                 def,
-                paths: vec![primary.clone(), secondary.clone()],
+                paths: folders.to_vec(),
                 logo_dir: None,
                 menu_folder: None,
             })
-            .collect();
+            .collect()
+    }
+
+    /// An RA launcher favourite keeps the core's own folders (`same_dir`),
+    /// and a bare name present in two of those folders is two different
+    /// files: the favourite is kept, keyed under itself so it can still be
+    /// removed, and says why it points at no game, rather than being
+    /// assigned the first folder's file. With one file it resolves.
+    #[test]
+    fn bare_ra_favorites_in_two_alias_folders_are_reported_not_assigned_to_the_first() {
+        let root = temp("context-ra");
+        let primary = root.join("primary");
+        let secondary = root.join("secondary");
+        std::fs::create_dir_all(&primary).unwrap();
+        std::fs::create_dir_all(&secondary).unwrap();
+        for folder in [&primary, &secondary] {
+            std::fs::write(folder.join("Game.fds"), b"path fixture").unwrap();
+        }
+        let systems = ra_fixture_systems(&[primary.clone(), secondary.clone()]);
+        let homes = crate::mgl::Homes::new(&[], &systems);
         let favorite = root.join("Game.mgl");
         std::fs::write(&favorite, "<mistergamedescription><rbf>_RA_Cores/Cores/NES</rbf><setname same_dir=\"1\">RA_NES</setname><file delay=\"1\" type=\"f\" index=\"1\" path=\"Game.fds\"/></mistergamedescription>").unwrap();
-        let reference = reference_of_with_systems(&favorite, &systems).unwrap();
+        let reference = reference_of(&favorite, &homes).unwrap();
+        assert_eq!(reference.owner_target, favorite);
+        assert_eq!(reference.cache_target, favorite);
+        let crate::mgl::Diagnostic::Ambiguous(diagnostic) = reference
+            .diagnostic
+            .expect("two files of that name is a diagnostic")
+        else {
+            panic!("two files found is ambiguity, not absence");
+        };
+        assert!(diagnostic.contains(&primary.join("Game.fds").display().to_string()));
+        assert!(diagnostic.contains(&secondary.join("Game.fds").display().to_string()));
+        let favorites = Favorites::read_with(&root, &homes);
+        assert!(
+            !favorites.holds(&primary.join("Game.fds")),
+            "neither file is silently the favourite"
+        );
+        assert!(!favorites.holds(&secondary.join("Game.fds")));
+        assert_eq!(favorites.file_for(&favorite), Some(favorite.as_path()));
+        let logged = std::fs::read_to_string(crate::LOG_PATH).unwrap();
+        assert!(
+            logged.contains(&format!("mgl          {}: ", favorite.display())),
+            "the read says which favourite cannot be placed"
+        );
+
+        std::fs::remove_file(secondary.join("Game.fds")).unwrap();
+        let reference = reference_of(&favorite, &homes).unwrap();
         assert_eq!(reference.owner_target, primary.join("Game.fds"));
-        let favorites = Favorites::read_with_systems(&root, &systems);
+        assert_eq!(reference.diagnostic, None);
+        let favorites = Favorites::read_with(&root, &homes);
         assert!(favorites.holds(&primary.join("Game.fds")));
         assert_eq!(
             favorites.file_for(&primary.join("Game.fds")),
@@ -851,11 +865,11 @@ extensions = ["fds"]
         file.set_len(MAX_MGL_BYTES + 1).unwrap();
         let link = root.join("Favorite.mgl");
         std::os::unix::fs::symlink(&descriptor, &link).unwrap();
-        let error = mgl_target(&link).unwrap_err().to_string();
+        let homes = crate::mgl::Homes::default();
+        let error = homes.resolve(&link).unwrap_err().to_string();
         assert!(error.contains("larger than"));
-        assert!(reference_of_with_systems(&link, &[]).is_none());
         assert!(crate::launch::amiga_marker(&descriptor).is_none());
-        assert!(reference_of(&descriptor).is_none());
+        assert!(reference_of(&descriptor, &homes).is_none());
         let system = crate::systems::parse_table(
             r#"
 [[systems]]
@@ -886,14 +900,14 @@ extensions = ["nes", "mgl"]
         .unwrap_err()
         .to_string();
         assert!(launch_error.contains("larger than"));
-        assert!(has_bare_paths(&link)
+        assert!(has_home_relative_paths(&link)
             .unwrap_err()
             .to_string()
             .contains("larger than"));
         // Replacing the target with an ordinary valid descriptor still works.
         std::fs::write(&descriptor, "<mistergamedescription><rbf>_Console/NES</rbf><file delay=\"1\" type=\"f\" index=\"1\" path=\"/media/fat/games/NES/Game.nes\"/></mistergamedescription>").unwrap();
         assert_eq!(
-            mgl_target(&link).unwrap(),
+            homes.resolve(&link).unwrap().game_target().unwrap(),
             Some(PathBuf::from("/media/fat/games/NES/Game.nes"))
         );
         std::fs::remove_dir_all(root).unwrap();
@@ -954,7 +968,11 @@ extensions = ["nes", "mgl"]
              </mistergamedescription>\n",
         )
         .expect("fixture written");
-        let found = mgl_target(&mgl).expect("valid MGL");
+        let found = crate::mgl::Homes::default()
+            .resolve(&mgl)
+            .expect("valid MGL")
+            .game_target()
+            .expect("root-relative paths need no home");
         let _ = std::fs::remove_dir_all(&dir);
         assert_eq!(
             found,
@@ -977,7 +995,11 @@ extensions = ["nes", "mgl"]
              </mistergamedescription>\n",
         )
         .expect("fixture written");
-        let found = mgl_target(&mgl).expect("valid MGL");
+        let found = crate::mgl::Homes::default()
+            .resolve(&mgl)
+            .expect("valid MGL")
+            .game_target()
+            .expect("root-relative paths need no home");
         let _ = std::fs::remove_dir_all(&dir);
         assert_eq!(
             found,
@@ -1016,7 +1038,7 @@ extensions = ["nes", "mgl"]
         )
         .unwrap();
 
-        let found = Favorites::read(&root);
+        let found = Favorites::read_with(&root, &homes_knowing("_Computer/C64"));
         assert_eq!(found.len(), 1);
         assert!(found.holds(Path::new("/media/fat/games/C64/Boulder Dash (J1).crt")));
         std::fs::remove_dir_all(&root).ok();
@@ -1035,37 +1057,50 @@ extensions = ["nes", "mgl"]
              </mistergamedescription>",
         )
         .unwrap();
-        let found = Favorites::read(&root);
+        let found = Favorites::read_with(&root, &homes_knowing("_Computer/C64"));
         assert!(found.holds(Path::new("/media/fat/games/C64/x.crt")));
         std::fs::remove_dir_all(&root).ok();
     }
 
+    /// Main joins `./x` and `../x` to the core's games folder, never to
+    /// the folder the descriptor sits in. A favourite written by hand that
+    /// way is therefore held under the game Main would load, and the
+    /// files beside it are left alone.
     #[test]
-    fn parent_relative_and_same_directory_mgl_targets_follow_mister_resolution() {
+    fn parent_relative_and_same_directory_mgl_targets_follow_the_core_home_dir() {
         let root = temp("ordinary-relative");
-        let folder = root.join("Favorites/Folder");
-        std::fs::create_dir_all(&folder).unwrap();
+        let folder = root.join("_@Favorites/Folder");
+        let nes = root.join("games/NES");
+        let fds = root.join("games/FDS");
+        for directory in [&folder, &nes, &fds, &root.join("_@Favorites/roms")] {
+            std::fs::create_dir_all(directory).unwrap();
+        }
+        std::fs::write(folder.join("Same.nes"), b"beside the descriptor").unwrap();
+        std::fs::write(
+            root.join("_@Favorites/roms/Parent.fds"),
+            b"beside the folder",
+        )
+        .unwrap();
         let parent_relative = folder.join("Parent.mgl");
         let same_directory = folder.join("Same.mgl");
         std::fs::write(
             &parent_relative,
-            "<mistergamedescription><file path=\"../roms/Parent.rom\"/></mistergamedescription>",
+            "<mistergamedescription><rbf>_Console/NES</rbf><file path=\"../FDS/Parent.fds\"/></mistergamedescription>",
         )
         .unwrap();
         std::fs::write(
             &same_directory,
-            "<mistergamedescription><file path=\"Same.rom\"/></mistergamedescription>",
+            "<mistergamedescription><rbf>_Console/NES</rbf><file path=\"./Same.nes\"/></mistergamedescription>",
         )
         .unwrap();
+        let systems = ra_fixture_systems(std::slice::from_ref(&nes));
+        let homes = crate::mgl::Homes::new(&[], &systems);
 
-        assert_eq!(
-            mgl_target(&parent_relative).unwrap(),
-            Some(root.join("Favorites/roms/Parent.rom"))
-        );
-        assert_eq!(
-            mgl_target(&same_directory).unwrap(),
-            Some(folder.join("Same.rom"))
-        );
+        let found = Favorites::read_with(&root, &homes);
+        assert!(found.holds(&fds.join("Parent.fds")));
+        assert!(found.holds(&nes.join("Same.nes")));
+        assert!(!found.holds(&folder.join("Same.nes")));
+        assert!(!found.holds(&root.join("_@Favorites/roms/Parent.fds")));
         std::fs::remove_dir_all(root).ok();
     }
 
@@ -1103,9 +1138,11 @@ extensions = ["nes", "mgl"]
         )
         .unwrap();
 
-        let reference = reference_of(&mgl).expect("valid Favorite reference");
+        let reference = reference_of(&mgl, &homes_knowing("_Console/Gameboy"))
+            .expect("valid Favorite reference");
 
         assert_eq!(reference.cache_target, game);
+        assert_eq!(reference.diagnostic, None);
         assert_eq!(reference.owner_target, reference.cache_target);
         assert_eq!(reference.rbf.as_deref(), Some("_Console/Gameboy"));
         assert_eq!(reference.setname.as_deref(), Some("GBC & Color"));
@@ -1238,7 +1275,8 @@ extensions = ["nes", "mgl"]
         let favorite = favorites.join("Game.mgl");
         std::os::unix::fs::symlink(Path::new("../originals/Game.mgl"), &favorite).unwrap();
 
-        let reference = reference_of(&favorite).expect("linked MGL reference");
+        let homes = homes_knowing("_Console/Test");
+        let reference = reference_of(&favorite, &homes).expect("linked MGL reference");
 
         assert_eq!(reference.cache_target, original);
         assert_eq!(reference.owner_target, game);

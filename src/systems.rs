@@ -583,19 +583,27 @@ pub fn existing_folders_checked(def: &SystemDef, roots: &[PathBuf]) -> Result<Ve
             }
             continue;
         }
-        // Preserve ordinary game-root discovery: absent or unavailable
-        // mounts are ignored, and the first existing alias wins.
-        for root in roots.iter().filter(|root| root.is_dir()) {
-            let candidate = root.join(folder);
-            if candidate.is_dir() {
-                if !found.contains(&candidate) {
-                    found.push(candidate);
-                }
-                break;
+        if let Some(candidate) = existing_folder(folder, roots) {
+            if !found.contains(&candidate) {
+                found.push(candidate);
             }
         }
     }
     Ok(found)
+}
+
+/// Where one folder name is, right now: under the FIRST root that has it,
+/// in the roots' order, which is the priority MiSTer's own loader applies
+/// to a core's games folder. Absent or unavailable mounts are ignored.
+///
+/// Also how an MGL's home directory is found for a name the systems table
+/// does not carry, so a descriptor and a system agree on where a folder is.
+pub fn existing_folder(name: &str, roots: &[PathBuf]) -> Option<PathBuf> {
+    roots
+        .iter()
+        .filter(|root| root.is_dir())
+        .map(|root| root.join(name))
+        .find(|candidate| candidate.is_dir())
 }
 
 #[cfg(test)]

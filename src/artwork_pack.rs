@@ -384,12 +384,13 @@ impl Provider {
     fn identity_for_launch(
         &self,
         launch: &Launch,
+        homes: &crate::mgl::Homes,
         cancelled: &AtomicBool,
     ) -> Result<Option<GameIdentity>> {
         let mut archives = self.archive_cache.lock().map_err(|_| {
             DegaussError::unsupported("archive lookup", "archive cache lock was poisoned")
         })?;
-        identity_for_launch_controlled(launch, cancelled, &mut archives)
+        identity_for_launch_controlled(launch, homes, cancelled, &mut archives)
     }
 
     pub fn load(system_id: &str, docs_root: &Path, language: Option<&str>) -> Self {
@@ -623,27 +624,40 @@ impl Provider {
 
     #[cfg(test)]
     pub fn presentation_for_launch(&self, launch: &Launch) -> Result<Option<PackPresentation>> {
-        self.presentation_for_launch_with_fingerprints(launch, &BTreeMap::new())
+        self.presentation_for_launch_with_fingerprints(
+            launch,
+            &BTreeMap::new(),
+            &crate::mgl::Homes::default(),
+        )
     }
 
+    /// `homes` places the paths inside an `.mgl` the way MiSTer Main does;
+    /// every walk below takes it for the same reason.
     pub fn presentation_for_launch_with_fingerprints(
         &self,
         launch: &Launch,
         fingerprints: &crate::cache::ContentFingerprints,
+        homes: &crate::mgl::Homes,
     ) -> Result<Option<PackPresentation>> {
-        self.presentation_for_launch_controlled(launch, fingerprints, &AtomicBool::new(false))
+        self.presentation_for_launch_controlled(
+            launch,
+            fingerprints,
+            homes,
+            &AtomicBool::new(false),
+        )
     }
 
     fn presentation_for_launch_controlled(
         &self,
         launch: &Launch,
         fingerprints: &crate::cache::ContentFingerprints,
+        homes: &crate::mgl::Homes,
         cancelled: &AtomicBool,
     ) -> Result<Option<PackPresentation>> {
         if !self.health.usable() {
             return Ok(None);
         }
-        let Some(mut identity) = self.identity_for_launch(launch, cancelled)? else {
+        let Some(mut identity) = self.identity_for_launch(launch, homes, cancelled)? else {
             return Ok(None);
         };
         let cheap = self.resolve(&identity);
@@ -680,6 +694,7 @@ impl Provider {
         &mut self,
         cache: &crate::cache::SystemCache,
         fingerprints: &crate::cache::ContentFingerprints,
+        homes: &crate::mgl::Homes,
         cancelled: &AtomicBool,
     ) -> Result<Option<usize>> {
         let mut prepared = HashMap::new();
@@ -696,8 +711,12 @@ impl Provider {
                 if !inspected.insert(key.clone()) {
                     continue;
                 }
-                let presentation =
-                    self.presentation_for_launch_controlled(launch, fingerprints, cancelled)?;
+                let presentation = self.presentation_for_launch_controlled(
+                    launch,
+                    fingerprints,
+                    homes,
+                    cancelled,
+                )?;
                 if cancelled.load(Ordering::Relaxed) {
                     return Ok(None);
                 }
@@ -739,6 +758,7 @@ impl Provider {
         &self,
         rows: &mut [Row],
         fingerprints: &crate::cache::ContentFingerprints,
+        homes: &crate::mgl::Homes,
     ) -> Result<usize> {
         if !self.health.usable() {
             return Ok(0);
@@ -749,7 +769,7 @@ impl Provider {
                 continue;
             };
             let presentation =
-                match self.presentation_for_launch_with_fingerprints(launch, fingerprints) {
+                match self.presentation_for_launch_with_fingerprints(launch, fingerprints, homes) {
                     Ok(Some(presentation)) => presentation,
                     Ok(None) => continue,
                     Err(error) => {
@@ -769,13 +789,14 @@ impl Provider {
     pub fn fingerprint_for_launch(
         &self,
         launch: &Launch,
+        homes: &crate::mgl::Homes,
         cancelled: &AtomicBool,
         on_bytes: &mut dyn FnMut(u64),
     ) -> Result<Option<(String, crate::cache::ContentFingerprint)>> {
         if !self.health.usable() || cancelled.load(Ordering::Relaxed) {
             return Ok(None);
         }
-        let Some(identity) = self.identity_for_launch(launch, cancelled)? else {
+        let Some(identity) = self.identity_for_launch(launch, homes, cancelled)? else {
             return Ok(None);
         };
         if self
@@ -818,6 +839,7 @@ impl Provider {
     pub fn fingerprints_for_cache(
         &self,
         cache: &crate::cache::SystemCache,
+        homes: &crate::mgl::Homes,
         cancelled: &AtomicBool,
         on_progress: &mut dyn FnMut(usize, u64),
     ) -> Result<Option<crate::cache::ContentFingerprints>> {
@@ -836,10 +858,11 @@ impl Provider {
                 if !inspected.insert(launch_cache_key(launch)) {
                     continue;
                 }
-                let fingerprint = self.fingerprint_for_launch(launch, cancelled, &mut |read| {
-                    bytes = bytes.saturating_add(read);
-                    on_progress(files, bytes);
-                })?;
+                let fingerprint =
+                    self.fingerprint_for_launch(launch, homes, cancelled, &mut |read| {
+                        bytes = bytes.saturating_add(read);
+                        on_progress(files, bytes);
+                    })?;
                 if cancelled.load(Ordering::Relaxed) {
                     return Ok(None);
                 }
@@ -861,6 +884,7 @@ impl Provider {
         cache: &crate::cache::SystemCache,
         fingerprints: &crate::cache::ContentFingerprints,
         complete: bool,
+        homes: &crate::mgl::Homes,
         cancelled: &AtomicBool,
     ) -> Result<Option<bool>> {
         if cancelled.load(Ordering::Relaxed) {
@@ -885,7 +909,7 @@ impl Provider {
                 if !inspected.insert(launch_cache_key(launch)) {
                     continue;
                 }
-                let identity = self.identity_for_launch(launch, cancelled)?;
+                let identity = self.identity_for_launch(launch, homes, cancelled)?;
                 if cancelled.load(Ordering::Relaxed) {
                     return Ok(None);
                 }
@@ -2272,6 +2296,7 @@ fn first_line(value: &str) -> String {
 
 fn identity_for_launch_controlled(
     launch: &Launch,
+    homes: &crate::mgl::Homes,
     cancelled: &AtomicBool,
     archives: &mut crate::zip::ArchiveCache,
 ) -> Result<Option<GameIdentity>> {
@@ -2288,32 +2313,36 @@ fn identity_for_launch_controlled(
             hash_path: None,
         })),
         Launch::File(path) => {
-            identity_for_path_redirected(path, cancelled, 0, &mut HashSet::new(), archives)
+            identity_for_path_redirected(path, homes, cancelled, 0, &mut HashSet::new(), archives)
         }
     }
 }
 
 #[cfg(test)]
 fn identity_for_path(path: &Path) -> Result<Option<GameIdentity>> {
-    identity_for_path_controlled(path, &AtomicBool::new(false))
+    identity_for_path_with(path, &crate::mgl::Homes::default())
 }
 
 #[cfg(test)]
-fn identity_for_path_controlled(
-    path: &Path,
-    cancelled: &AtomicBool,
-) -> Result<Option<GameIdentity>> {
+fn identity_for_path_with(path: &Path, homes: &crate::mgl::Homes) -> Result<Option<GameIdentity>> {
     identity_for_path_redirected(
         path,
-        cancelled,
+        homes,
+        &AtomicBool::new(false),
         0,
         &mut HashSet::new(),
         &mut crate::zip::ArchiveCache::default(),
     )
 }
 
+/// What a file is known as to the Pack. An `.mgl` is read through `homes`
+/// (see `crate::mgl`): a descriptor for a core outside the systems table
+/// is known by its own name and set, with every component checked and
+/// none hashed; a game descriptor is followed to its game, which may be
+/// another `.mgl` or an `.mra`, through a bounded chain of redirects.
 fn identity_for_path_redirected(
     path: &Path,
+    homes: &crate::mgl::Homes,
     cancelled: &AtomicBool,
     redirects: usize,
     visited_mgls: &mut HashSet<PathBuf>,
@@ -2387,14 +2416,27 @@ fn identity_for_path_redirected(
                 "redirect chain contains a cycle",
             ));
         }
-        let Some(target) = crate::favorites::mgl_target(path)? else {
-            return Ok(None);
-        };
+        let resolved = homes.resolve(path)?;
         if cancelled.load(Ordering::Relaxed) {
             return Ok(None);
         }
+        if resolved.class == crate::mgl::Class::CoreSet {
+            resolved.verify()?;
+            return Ok(Some(GameIdentity {
+                name: resolved.identity_name(),
+                setname: resolved.setname,
+                crc32: None,
+                size: None,
+                extension: Some(extension),
+                hash_path: None,
+            }));
+        }
+        let Some(target) = resolved.game_target()? else {
+            return Ok(None);
+        };
         return identity_for_path_redirected(
             &target,
+            homes,
             cancelled,
             redirects + 1,
             visited_mgls,
@@ -2825,7 +2867,11 @@ mod tests {
         let mut pack_rows = vec![first_game(&neutral_library)];
         let provider = Provider::load("SuperGrafx", &docs, Some("en"));
         provider
-            .apply_with_fingerprints(&mut pack_rows, &crate::cache::ContentFingerprints::new())
+            .apply_with_fingerprints(
+                &mut pack_rows,
+                &crate::cache::ContentFingerprints::new(),
+                &crate::mgl::Homes::default(),
+            )
             .unwrap();
         let pack_row = &pack_rows[0];
         assert_eq!(pack_row.name, "Pack Name");
@@ -2846,7 +2892,11 @@ mod tests {
         let provider = Provider::load("SuperGrafx", &docs, Some("en"));
         let mut rows = vec![first_game(&neutral_library)];
         provider
-            .apply_with_fingerprints(&mut rows, &crate::cache::ContentFingerprints::new())
+            .apply_with_fingerprints(
+                &mut rows,
+                &crate::cache::ContentFingerprints::new(),
+                &crate::mgl::Homes::default(),
+            )
             .unwrap();
         assert_eq!(rows[0].name, "Disk Name");
         assert_ne!(rows[0].name, "Gamelist Name");
@@ -2856,7 +2906,11 @@ mod tests {
         assert_eq!(provider.health, ProviderHealth::Degraded);
         let mut rows = vec![first_game(&neutral_library)];
         provider
-            .apply_with_fingerprints(&mut rows, &crate::cache::ContentFingerprints::new())
+            .apply_with_fingerprints(
+                &mut rows,
+                &crate::cache::ContentFingerprints::new(),
+                &crate::mgl::Homes::default(),
+            )
             .unwrap();
         assert_eq!(rows[0].cover, None);
         assert_ne!(rows[0].cover, gamelist_row.cover);
@@ -2869,7 +2923,11 @@ mod tests {
         .unwrap();
         let mut rows = vec![first_game(&malformed_neutral)];
         provider
-            .apply_with_fingerprints(&mut rows, &crate::cache::ContentFingerprints::new())
+            .apply_with_fingerprints(
+                &mut rows,
+                &crate::cache::ContentFingerprints::new(),
+                &crate::mgl::Homes::default(),
+            )
             .unwrap();
         assert_ne!(rows[0].name, "Gamelist Name");
         assert_eq!(rows[0].cover, None);
@@ -2884,7 +2942,11 @@ mod tests {
         let mut rows = vec![first_game(&malformed_neutral)];
         assert_eq!(
             invalid
-                .apply_with_fingerprints(&mut rows, &crate::cache::ContentFingerprints::new())
+                .apply_with_fingerprints(
+                    &mut rows,
+                    &crate::cache::ContentFingerprints::new(),
+                    &crate::mgl::Homes::default(),
+                )
                 .unwrap(),
             0
         );
@@ -3238,6 +3300,7 @@ mod tests {
                 .prepare_for_cache(
                     &cache,
                     &crate::cache::ContentFingerprints::new(),
+                    &crate::mgl::Homes::default(),
                     &AtomicBool::new(false)
                 )
                 .unwrap(),
@@ -3616,13 +3679,26 @@ mod tests {
                 assert_eq!(identity.setname.as_deref(), Some("embedded"));
             }
         }
+        // A favourite pointing at the MRA by a bare name: placed under
+        // its core's games folder, which here is the MRA's own folder.
         let mgl = dir.join("Favorite.mgl");
         std::fs::write(
             &mgl,
-            "<mistergamedescription><file path=\"Game.mra\"/></mistergamedescription>",
+            "<mistergamedescription><rbf>_Arcade/Test</rbf><file path=\"Game.mra\"/></mistergamedescription>",
         )
         .unwrap();
-        assert_eq!(identity_for_path(&mgl).unwrap().unwrap().name, "embedded");
+        let homes = crate::mgl::Homes::new(
+            &[],
+            &[table_system(
+                "Test",
+                "_Arcade/Test",
+                std::slice::from_ref(&dir),
+            )],
+        );
+        assert_eq!(
+            identity_for_path_with(&mgl, &homes).unwrap().unwrap().name,
+            "embedded"
+        );
         // The background preparation path must also complete, even when there
         // is no matching image and it considers a fingerprint for this MRA.
         let docs = dir.join("docs");
@@ -3630,7 +3706,12 @@ mod tests {
         let provider = Provider::load("Arcade", &docs, None);
         assert!(provider.health.usable(), "{:?}", provider.diagnostics);
         assert!(provider
-            .fingerprint_for_launch(&Launch::File(mra), &AtomicBool::new(false), &mut |_| {})
+            .fingerprint_for_launch(
+                &Launch::File(mra),
+                &crate::mgl::Homes::default(),
+                &AtomicBool::new(false),
+                &mut |_| {},
+            )
             .unwrap()
             .is_none());
         std::fs::remove_dir_all(dir).unwrap();
@@ -3765,7 +3846,12 @@ mod tests {
 
         let cancelled = AtomicBool::new(false);
         let fingerprint = provider
-            .fingerprint_for_launch(&launch, &cancelled, &mut |_| {})
+            .fingerprint_for_launch(
+                &launch,
+                &crate::mgl::Homes::default(),
+                &cancelled,
+                &mut |_| {},
+            )
             .unwrap()
             .expect("eligible loose ROM fingerprint");
         let fingerprints = crate::cache::ContentFingerprints::from([fingerprint]);
@@ -3791,13 +3877,23 @@ mod tests {
         };
         assert_eq!(
             provider
-                .cached_fingerprints_are_current(&cache, &fingerprints, true, &cancelled)
+                .cached_fingerprints_are_current(
+                    &cache,
+                    &fingerprints,
+                    true,
+                    &crate::mgl::Homes::default(),
+                    &cancelled,
+                )
                 .unwrap(),
             Some(true)
         );
         assert_eq!(
             provider
-                .presentation_for_launch_with_fingerprints(&launch, &fingerprints)
+                .presentation_for_launch_with_fingerprints(
+                    &launch,
+                    &fingerprints,
+                    &crate::mgl::Homes::default(),
+                )
                 .unwrap()
                 .and_then(|presentation| presentation.diagnostic)
                 .map(|diagnostic| diagnostic.method),
@@ -3807,7 +3903,13 @@ mod tests {
         std::fs::write(&rom, [bytes.as_slice(), b"changed"].concat()).unwrap();
         assert_eq!(
             provider
-                .cached_fingerprints_are_current(&cache, &fingerprints, true, &cancelled)
+                .cached_fingerprints_are_current(
+                    &cache,
+                    &fingerprints,
+                    true,
+                    &crate::mgl::Homes::default(),
+                    &cancelled,
+                )
                 .unwrap(),
             Some(false),
             "the worker must reject a persisted CRC after the source file changes"
@@ -3815,9 +3917,14 @@ mod tests {
 
         let cancelled = AtomicBool::new(false);
         let result = provider
-            .fingerprint_for_launch(&launch, &cancelled, &mut |_| {
-                cancelled.store(true, Ordering::Relaxed);
-            })
+            .fingerprint_for_launch(
+                &launch,
+                &crate::mgl::Homes::default(),
+                &cancelled,
+                &mut |_| {
+                    cancelled.store(true, Ordering::Relaxed);
+                },
+            )
             .unwrap();
         assert_eq!(result, None);
         std::fs::remove_dir_all(root.parent().unwrap()).ok();
@@ -3904,6 +4011,7 @@ mod tests {
             .prepare_for_cache(
                 &cache,
                 &crate::cache::ContentFingerprints::new(),
+                &crate::mgl::Homes::default(),
                 &AtomicBool::new(false),
             )
             .unwrap()
@@ -4325,6 +4433,218 @@ mod tests {
             Some("Satellaview")
         );
         std::fs::remove_dir_all(base).ok();
+    }
+
+    fn table_system(id: &str, rbf: &str, paths: &[PathBuf]) -> crate::systems::FoundSystem {
+        let def = crate::systems::parse_table(
+            &format!(
+                "[[systems]]\nname = \"{id}\"\nid = \"{id}\"\nfolders = [\"{id}\"]\nrbf = \"{rbf}\"\nextensions = [\"mra\", \"mgl\", \"bin\"]\n"
+            ),
+            Path::new("pack identity fixture"),
+        )
+        .unwrap()
+        .remove(0);
+        crate::systems::FoundSystem {
+            def,
+            paths: paths.to_vec(),
+            logo_dir: None,
+            menu_folder: None,
+        }
+    }
+
+    /// The public arcade layout: the descriptor under `_Arcade`, its bare
+    /// components under `games/<setname>`, and a decoy of the last
+    /// component's name beside the descriptor.
+    fn arcade_fixture(root: &Path) -> (PathBuf, PathBuf, crate::mgl::Homes) {
+        let arcade = root.join("_Arcade");
+        let home = root.join("games/Battletoads");
+        std::fs::create_dir_all(&arcade).unwrap();
+        std::fs::create_dir_all(&home).unwrap();
+        for name in ["btc0-p0.bin", "btc0-p1.bin", "btc0-s.bin"] {
+            std::fs::write(home.join(name), b"payload").unwrap();
+        }
+        std::fs::write(arcade.join("btc0-s.bin"), b"decoy").unwrap();
+        let mgl = arcade.join("Battletoads.mgl");
+        std::fs::write(
+            &mgl,
+            "<mistergamedescription>\n\t<rbf>_Arcade/cores/Battletoads</rbf>\n\t<setname>Battletoads</setname>\n\t\
+             <file delay=\"1\" type=\"f\" index=\"0\" path=\"btc0-p0.bin\"/>\n\t\
+             <file delay=\"1\" type=\"f\" index=\"1\" path=\"btc0-p1.bin\"/>\n\t\
+             <file delay=\"1\" type=\"f\" index=\"2\" path=\"btc0-s.bin\"/>\n\
+             </mistergamedescription>\n",
+        )
+        .unwrap();
+        let homes = crate::mgl::Homes::new(
+            &[
+                root.join("games").to_string_lossy().into_owned(),
+                root.to_string_lossy().into_owned(),
+            ],
+            &[table_system("Arcade", "", &[arcade])],
+        );
+        (mgl, home, homes)
+    }
+
+    fn mgl_row(mgl: &Path) -> Row {
+        Row {
+            name: mgl.file_stem().unwrap().to_string_lossy().into_owned(),
+            sort_key: "battletoads".into(),
+            kind: Kind::Play(Launch::File(mgl.to_path_buf())),
+            cover: None,
+            genre: None,
+            favorite: false,
+            below: None,
+            details: Details::default(),
+        }
+    }
+
+    fn one_row_cache(row: Row) -> crate::cache::SystemCache {
+        crate::cache::SystemCache {
+            format: 0,
+            folders: BTreeMap::from([(
+                "root".into(),
+                crate::cache::Folder {
+                    mtime: 0,
+                    rows: vec![row],
+                    games: 1,
+                },
+            )]),
+        }
+    }
+
+    /// A descriptor for a core outside the systems table is the set it
+    /// spells out: it is matched by its own name, its last component is
+    /// not its identity and is not hashed, and the decoy beside it is
+    /// never looked at. Before, the descriptor was identified as `btc0-s`
+    /// at `_Arcade/btc0-s.bin` and the whole system's preparation failed
+    /// on that path.
+    #[test]
+    fn a_multi_file_core_descriptor_is_matched_by_its_own_identity_without_probing_or_hashing() {
+        let root = temp("core-set-identity");
+        let (mgl, _home, homes) = arcade_fixture(&root);
+        let docs = root.join("docs");
+        ready_directory(&docs, "Arcade", "Battletoads", "Battletoads", "Pack Title");
+        // A decoy key of the last component's stem, which the old identity
+        // would have matched.
+        let art = docs.join("Arcade/Artwork");
+        std::fs::write(
+            art.join("manifest.tsv"),
+            "#key\tstyle\tss_system_id\nBattletoads\ttest-style\t1\nbtc0-s\ttest-style\t1\n",
+        )
+        .unwrap();
+        std::fs::write(art.join("btc0-s.jpg"), b"decoy jpeg").unwrap();
+        ready_tables(
+            &art,
+            "Battletoads\t\t\tBattletoads\nbtc0-s\t\t\tbtc0-s\n",
+            "Battletoads\tPack Title\t1990\tTest\tStudio\t1\nbtc0-s\tDecoy\t1990\tTest\tStudio\t1\n",
+        );
+        let identity = identity_for_path_with(&mgl, &homes).unwrap().unwrap();
+        assert_eq!(identity.name, "Battletoads");
+        assert_eq!(identity.setname.as_deref(), Some("Battletoads"));
+        assert_eq!(identity.hash_path, None, "no component is hashed for a set");
+        assert_eq!(identity.crc32, None);
+
+        let mut provider = Provider::load("Arcade", &docs, None);
+        assert_eq!(
+            provider.health,
+            ProviderHealth::Ready,
+            "{:?}",
+            provider.diagnostics
+        );
+        let cache = one_row_cache(mgl_row(&mgl));
+        let cancelled = AtomicBool::new(false);
+        let fingerprints = provider
+            .fingerprints_for_cache(&cache, &homes, &cancelled, &mut |_, _| {})
+            .unwrap()
+            .unwrap();
+        assert!(
+            fingerprints.is_empty(),
+            "nothing under the descriptor is read for a CRC: {fingerprints:?}"
+        );
+        assert_eq!(
+            provider
+                .prepare_for_cache(&cache, &fingerprints, &homes, &cancelled)
+                .unwrap(),
+            Some(1)
+        );
+        let presentation = provider
+            .presentation_for_launch_with_fingerprints(
+                &Launch::File(mgl.clone()),
+                &fingerprints,
+                &homes,
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(presentation.name.as_deref(), Some("Pack Title"));
+        assert_eq!(
+            presentation.cover.as_deref(),
+            Some(art.join("Battletoads.jpg").as_path())
+        );
+        let diagnostic = presentation.diagnostic.unwrap();
+        assert_eq!(diagnostic.key, "Battletoads");
+        assert_eq!(diagnostic.method, MatchMethod::ExactKey);
+
+        // Whatever sits beside the descriptor changes nothing.
+        std::fs::remove_file(root.join("_Arcade/btc0-s.bin")).unwrap();
+        std::fs::write(root.join("_Arcade/btc0-p0.bin"), b"another decoy").unwrap();
+        assert_eq!(
+            identity_for_path_with(&mgl, &homes).unwrap().unwrap(),
+            identity
+        );
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    /// The contract the lazy Pack preparation classifies entries by: a set
+    /// missing one payload fails at that payload's home path with a
+    /// not-found error, and a descriptor that cannot be parsed fails as
+    /// malformed at the descriptor. Neither names the folder beside the
+    /// descriptor. The whole-system consequence of an entry failure is
+    /// not this test's subject.
+    #[test]
+    fn a_missing_core_set_component_and_a_malformed_descriptor_fail_with_the_documented_errors() {
+        let root = temp("core-set-failures");
+        let (mgl, home, homes) = arcade_fixture(&root);
+        let docs = root.join("docs");
+        ready_directory(&docs, "Arcade", "Battletoads", "Battletoads", "Pack Title");
+        let provider = Provider::load("Arcade", &docs, None);
+        assert_eq!(provider.health, ProviderHealth::Ready);
+        let cancelled = AtomicBool::new(false);
+        let launch = Launch::File(mgl.clone());
+
+        std::fs::remove_file(home.join("btc0-s.bin")).unwrap();
+        let error = provider
+            .identity_for_launch(&launch, &homes, &cancelled)
+            .unwrap_err();
+        assert!(
+            matches!(&error, DegaussError::Io { what: "MGL component", path, source }
+                if path == &home.join("btc0-s.bin") && source.kind() == std::io::ErrorKind::NotFound),
+            "{error}"
+        );
+        assert!(!error.to_string().contains("_Arcade/btc0-s.bin"));
+        let fingerprint_error = provider
+            .fingerprint_for_launch(&launch, &homes, &cancelled, &mut |_| {})
+            .unwrap_err();
+        assert_eq!(fingerprint_error.to_string(), error.to_string());
+
+        std::fs::write(home.join("btc0-s.bin"), b"payload").unwrap();
+        assert!(provider
+            .identity_for_launch(&launch, &homes, &cancelled)
+            .unwrap()
+            .is_some());
+
+        let broken = root.join("_Arcade/Broken.mgl");
+        std::fs::write(
+            &broken,
+            "<mistergamedescription><rbf>_Arcade/cores/Battletoads</rbf><file path=\"broken></mistergamedescription>",
+        )
+        .unwrap();
+        let error = provider
+            .identity_for_launch(&Launch::File(broken.clone()), &homes, &cancelled)
+            .unwrap_err();
+        assert!(
+            matches!(&error, DegaussError::Malformed { what: "favourite MGL", path, .. } if path == &broken),
+            "{error}"
+        );
+        std::fs::remove_dir_all(root).ok();
     }
 
     #[test]

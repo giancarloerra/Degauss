@@ -532,6 +532,7 @@ pub(crate) fn owner_of_favorite(
 fn enrich_favorite_rows(
     rows: &mut [browse::Row],
     systems: &[FoundSystem],
+    homes: &crate::mgl::Homes,
     artwork_pack_roots: &std::collections::BTreeMap<String, String>,
     cache_dir: &Path,
     mut load_provider: impl FnMut(
@@ -547,7 +548,7 @@ fn enrich_favorite_rows(
         let browse::Kind::Play(browse::Launch::File(path)) = &row.kind else {
             continue;
         };
-        let Some(reference) = crate::favorites::reference_of_with_systems(path, systems) else {
+        let Some(reference) = crate::favorites::reference_of(path, homes) else {
             continue;
         };
         wanted
@@ -3847,10 +3848,18 @@ impl App {
                     "invalid favourite",
                 ));
             };
-            let reference = crate::favorites::reference_of_with_systems(path, &self.all_systems)
-                .ok_or_else(|| {
+            let reference =
+                crate::favorites::reference_of(path, &self.homes()).ok_or_else(|| {
                     DegaussError::unsupported("game information", "favourite target is unavailable")
                 })?;
+            // A favourite whose paths cannot be placed says why here, the
+            // one screen that shows text for a single favourite.
+            if let Some(diagnostic) = &reference.diagnostic {
+                return Err(DegaussError::unsupported(
+                    "game information",
+                    format!("favourite target is unavailable: {diagnostic}"),
+                ));
+            }
             let id = owner_of_favorite(&self.all_systems, &reference).ok_or_else(|| {
                 DegaussError::unsupported(
                     "game information",
@@ -4673,13 +4682,25 @@ impl App {
         Ok(())
     }
 
+    /// Where the paths inside an MGL point, for everything that reads one.
+    ///
+    /// Built when asked rather than kept: the systems and their folders
+    /// change with every rebuild and refresh, and building this is a copy
+    /// of the small table against the file reads it is about to place.
+    fn homes(&self) -> std::sync::Arc<crate::mgl::Homes> {
+        std::sync::Arc::new(crate::mgl::Homes::new(
+            &self.config.game_roots,
+            &self.all_systems,
+        ))
+    }
+
     /// Read MiSTer's favourites folder again.
     ///
     /// Cheap: a couple of hundred small files. Done on the way in and
     /// after anything is favourited, never on a timer.
     fn reread_favorites(&mut self) {
         let root = PathBuf::from(&self.config.menu_root).join(crate::favorites::FAVORITES_DIR);
-        self.favorites = crate::favorites::Favorites::read_with_systems(&root, &self.all_systems);
+        self.favorites = crate::favorites::Favorites::read_with(&root, &self.homes());
         crate::note(&format!(
             "favourites   {} in {}",
             self.favorites.len(),
@@ -5282,6 +5303,7 @@ impl App {
         else {
             return;
         };
+        let homes = self.homes();
         let mut requested: Vec<crate::provider_job::Request> = self
             .all_systems
             .iter()
@@ -5301,6 +5323,7 @@ impl App {
                 cache_dir: self.cache_dir.clone(),
                 validate_location_only: false,
                 cached_provider: self.artwork_provider_cache.get(&system.def.id).cloned(),
+                homes: homes.clone(),
             })
             .collect();
         if first {
@@ -5584,6 +5607,7 @@ impl App {
         // Clone only the small ownership/settings inputs so provider reuse can
         // continue through `self` while the pure enrichment path borrows them.
         let systems = self.all_systems.clone();
+        let homes = self.homes();
         let artwork_pack_roots = self.effective_artwork_pack_roots.clone();
         let cache_dir = self.cache_dir.clone();
         let mut missing_groups = HashSet::new();
@@ -5591,8 +5615,7 @@ impl App {
             let browse::Kind::Play(browse::Launch::File(path)) = &row.kind else {
                 continue;
             };
-            let Some(reference) = crate::favorites::reference_of_with_systems(path, &systems)
-            else {
+            let Some(reference) = crate::favorites::reference_of(path, &homes) else {
                 continue;
             };
             let Some(id) = owner_of_favorite(&systems, &reference) else {
@@ -5613,6 +5636,7 @@ impl App {
         enrich_favorite_rows(
             rows,
             &systems,
+            &homes,
             &artwork_pack_roots,
             &cache_dir,
             |id, _, _| self.artwork_provider_cache.get(id).cloned(),
@@ -5622,7 +5646,7 @@ impl App {
                 let browse::Kind::Play(browse::Launch::File(path)) = &row.kind else {
                     continue;
                 };
-                let unresolved = crate::favorites::reference_of_with_systems(path, &systems)
+                let unresolved = crate::favorites::reference_of(path, &homes)
                     .and_then(|reference| owner_of_favorite(&systems, &reference))
                     .is_some_and(|id| self.source_problem(&id).is_some());
                 if unresolved {
@@ -6018,9 +6042,16 @@ impl App {
         let mut config = self.opened_config.clone()?;
         if self.in_favorites() {
             if let browse::Launch::File(path) = &game {
-                if let Some(reference) =
-                    crate::favorites::reference_of_with_systems(path, &self.all_systems)
-                {
+                if let Some(reference) = crate::favorites::reference_of(path, &self.homes()) {
+                    // Two files of the favourite's name in two of its
+                    // system's folders: MiSTer would start one of them by
+                    // its own order, and which one is exactly what nobody
+                    // can tell from here. Said on screen instead.
+                    if let Some(crate::mgl::Diagnostic::Ambiguous(text)) = &reference.diagnostic {
+                        self.message = Some(text.clone());
+                        self.dirty = true;
+                        return None;
+                    }
                     if let Some(id) = owner_of_favorite(&self.all_systems, &reference) {
                         if let Some(owner) =
                             self.all_systems.iter().find(|system| system.def.id == id)
@@ -8413,7 +8444,7 @@ impl App {
     fn core_system_id(&self) -> Option<String> {
         let id = if self.in_favorites() && self.browsing == Browsing::Games {
             let path = self.selected_game()?;
-            let reference = crate::favorites::reference_of_with_systems(&path, &self.all_systems)?;
+            let reference = crate::favorites::reference_of(&path, &self.homes())?;
             owner_of_favorite(&self.all_systems, &reference)?
         } else {
             self.context_system_id()?.to_string()
@@ -9114,6 +9145,7 @@ impl App {
             return;
         }
 
+        let homes = self.homes();
         let requests = candidates
             .iter()
             .map(|root| crate::provider_job::Request {
@@ -9124,6 +9156,7 @@ impl App {
                 cache_dir: self.cache_dir.clone(),
                 validate_location_only: true,
                 cached_provider: None,
+                homes: homes.clone(),
             })
             .collect();
         match crate::provider_job::start(requests) {
@@ -9427,6 +9460,7 @@ impl App {
             synopsis_language: self.scraper_settings.language.clone(),
             cache_dir: self.cache_dir.clone(),
             require_usable_provider,
+            homes: self.homes(),
         };
         match crate::source_cache::start(request) {
             Ok(job) => {
@@ -15430,6 +15464,7 @@ mod tests {
             rbf: Some("_Console/Gameboy".to_string()),
             setname: setname.map(str::to_string),
             mgl: true,
+            diagnostic: None,
         };
 
         assert_eq!(
@@ -15576,17 +15611,20 @@ mod tests {
                 .prepare_for_cache(
                     cache,
                     &crate::cache::ContentFingerprints::new(),
+                    &crate::mgl::Homes::default(),
                     &std::sync::atomic::AtomicBool::new(false),
                 )
                 .unwrap()
                 .expect("test provider preparation completes");
             Some(provider)
         };
+        let homes = crate::mgl::Homes::new(&[], &systems);
 
         let mut rows = vec![new_favorite_row()];
         enrich_favorite_rows(
             &mut rows,
             &systems,
+            &homes,
             &Default::default(),
             &cache_dir,
             load_provider,
@@ -15601,7 +15639,14 @@ mod tests {
         )]
         .into();
         let mut rows = vec![new_favorite_row()];
-        enrich_favorite_rows(&mut rows, &systems, &pack_roots, &cache_dir, load_provider);
+        enrich_favorite_rows(
+            &mut rows,
+            &systems,
+            &homes,
+            &pack_roots,
+            &cache_dir,
+            load_provider,
+        );
         assert_eq!(rows[0].name, "Pack Name");
         assert_eq!(rows[0].cover.as_deref(), Some(pack_cover.as_path()));
         assert_eq!(rows[0].details.desc, "Pack Description");
@@ -15609,13 +15654,21 @@ mod tests {
 
         write_pack_name("Updated Pack Name");
         let mut rows = vec![new_favorite_row()];
-        enrich_favorite_rows(&mut rows, &systems, &pack_roots, &cache_dir, load_provider);
+        enrich_favorite_rows(
+            &mut rows,
+            &systems,
+            &homes,
+            &pack_roots,
+            &cache_dir,
+            load_provider,
+        );
         assert_eq!(rows[0].name, "Updated Pack Name");
 
         let mut rows = vec![new_favorite_row()];
         enrich_favorite_rows(
             &mut rows,
             &systems,
+            &homes,
             &Default::default(),
             &cache_dir,
             load_provider,
@@ -15625,10 +15678,327 @@ mod tests {
 
         std::fs::remove_file(&game).unwrap();
         let mut rows = vec![new_favorite_row()];
-        enrich_favorite_rows(&mut rows, &systems, &pack_roots, &cache_dir, load_provider);
+        enrich_favorite_rows(
+            &mut rows,
+            &systems,
+            &homes,
+            &pack_roots,
+            &cache_dir,
+            load_provider,
+        );
         assert_eq!(rows[0].name, "Favourite File");
         assert_eq!(rows[0].cover, None);
         assert_eq!(rows[0].details, browse::Details::default());
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    /// Every favourite form MiSTer's script, Degauss and a hand write is
+    /// one favourite: held under the game Main would load, found again for
+    /// removal, given its owner's artwork, and refused as a duplicate. A
+    /// form that cannot be placed is held under itself, says why, and does
+    /// not become another game.
+    #[cfg(unix)]
+    #[test]
+    fn every_supported_favourite_form_is_held_enriched_and_removable() {
+        let root = picker_temp("favourite-forms");
+        let nes = root.join("games/NES");
+        let famicom = root.join("games/Famicom");
+        let arcade = root.join("_Arcade");
+        let set = root.join("games/Battletoads");
+        let amiga = root.join("games/Amiga");
+        let favourites = root.join("_@Favorites");
+        let cache_dir = root.join("cache");
+        let docs = root.join("docs");
+        for directory in [&nes, &famicom, &arcade, &set, &amiga, &favourites] {
+            std::fs::create_dir_all(directory).unwrap();
+        }
+        for name in ["Stock.nes", "Bare.nes", "Twice.nes"] {
+            std::fs::write(nes.join(name), b"rom").unwrap();
+        }
+        std::fs::write(famicom.join("Twice.nes"), b"another rom").unwrap();
+        for name in ["btc0-p0.bin", "btc0-p1.bin", "btc0-s.bin"] {
+            std::fs::write(set.join(name), b"payload").unwrap();
+        }
+        std::fs::write(arcade.join("btc0-s.bin"), b"decoy beside the descriptor").unwrap();
+        let core_set = arcade.join("Battletoads.mgl");
+        std::fs::write(
+            &core_set,
+            "<mistergamedescription><rbf>_Arcade/cores/Battletoads</rbf><setname>Battletoads</setname>\
+             <file delay=\"1\" type=\"f\" index=\"0\" path=\"btc0-p0.bin\"/>\
+             <file delay=\"1\" type=\"f\" index=\"1\" path=\"btc0-p1.bin\"/>\
+             <file delay=\"1\" type=\"f\" index=\"2\" path=\"btc0-s.bin\"/></mistergamedescription>",
+        )
+        .unwrap();
+        let mra = arcade.join("Alien.mra");
+        std::fs::write(
+            &mra,
+            "<misterromdescription><setname>alien</setname></misterromdescription>",
+        )
+        .unwrap();
+        let art = docs.join("Arcade/Artwork");
+        std::fs::create_dir_all(&art).unwrap();
+        std::fs::write(
+            art.join("manifest.tsv"),
+            "#key\tstyle\tss_system_id\nBattletoads\tbox-2D\t75\n",
+        )
+        .unwrap();
+        std::fs::write(
+            art.join("index.tsv"),
+            "#name\tcrc\tsize\tkey\nBattletoads\t\t\tBattletoads\n",
+        )
+        .unwrap();
+        std::fs::write(
+            art.join("gameinfo.tsv"),
+            "#key\tname\tyear\tgenre\tdeveloper\tplayers\nBattletoads\tPack Title\t1994\tBeat 'em up\tStudio\t2\n",
+        )
+        .unwrap();
+        std::fs::write(art.join("Battletoads.jpg"), b"pack image").unwrap();
+
+        let nes_system = found_system_with_core(
+            "NES",
+            vec![nes.clone(), famicom.clone()],
+            &["nes", "mgl"],
+            "_Console/NES",
+            None,
+        );
+        let arcade_system =
+            found_system_with_core("Arcade", vec![arcade.clone()], &["mra", "mgl"], "", None);
+        let amiga_system = found_system_with_core(
+            "Amiga",
+            vec![amiga.clone()],
+            &["adf", "mgl"],
+            "_Computer/Minimig",
+            Some("Amiga"),
+        );
+        let systems = vec![
+            nes_system.clone(),
+            arcade_system.clone(),
+            amiga_system.clone(),
+        ];
+        let homes = crate::mgl::Homes::new(
+            &[root.join("games").to_string_lossy().into_owned()],
+            &systems,
+        );
+        crate::cache::save_system(
+            &cache_dir,
+            "NES",
+            &crate::cache::build_system(
+                &Library::open_with_names(&nes_system.to_config(), Default::default()).unwrap(),
+            ),
+        )
+        .unwrap();
+        crate::cache::install_transactional(
+            &cache_dir,
+            crate::cache::CacheKind::ArtworkPack,
+            &[crate::cache::StagedSystemCache {
+                id: "Arcade".to_string(),
+                cache: crate::cache::build_system(
+                    &Library::open_source_neutral(&arcade_system.to_config(), Default::default())
+                        .unwrap(),
+                ),
+                fingerprints: Default::default(),
+                fingerprints_complete: true,
+            }],
+        )
+        .unwrap();
+
+        // The forms. Stock: absolute, as MiSTer's script writes. Relative:
+        // root-relative, as Degauss writes. Bare: by hand, the file's own
+        // name. Two links, one to an MRA and one to the arcade descriptor.
+        // A title marker. And one bare name present in two of the
+        // system's folders.
+        let stock = favourites.join("Stock.mgl");
+        std::fs::write(
+            &stock,
+            format!(
+                "<mistergamedescription>\n\t<rbf>_Console/NES</rbf>\n\t\
+                 <file delay=\"1\" type=\"f\" index=\"1\" path=\"{}\"/>\n\
+                 </mistergamedescription>",
+                nes.join("Stock.nes").display()
+            ),
+        )
+        .unwrap();
+        let relative = favourites.join("Relative.mgl");
+        std::fs::write(
+            &relative,
+            "<mistergamedescription><rbf>_Console/NES</rbf><file delay=\"1\" type=\"f\" index=\"1\" path=\"../../../../../media/fat/games/NES/Relative.nes\"/></mistergamedescription>",
+        )
+        .unwrap();
+        let bare = favourites.join("Bare.mgl");
+        std::fs::write(
+            &bare,
+            "<mistergamedescription><rbf>_Console/NES</rbf><file delay=\"1\" type=\"f\" index=\"1\" path=\"Bare.nes\"/></mistergamedescription>",
+        )
+        .unwrap();
+        let linked_mra = favourites.join("Alien.mra");
+        std::os::unix::fs::symlink(&mra, &linked_mra).unwrap();
+        let linked_set = favourites.join("Battletoads.mgl");
+        std::os::unix::fs::symlink(&core_set, &linked_set).unwrap();
+        let marker = favourites.join("Zool.mgl");
+        std::fs::write(
+            &marker,
+            crate::launch::favorite_mgl_amiga(&amiga_system.to_config(), &amiga, "Zool").unwrap(),
+        )
+        .unwrap();
+        let ambiguous = favourites.join("Twice.mgl");
+        std::fs::write(
+            &ambiguous,
+            "<mistergamedescription><rbf>_Console/NES</rbf><file delay=\"1\" type=\"f\" index=\"1\" path=\"Twice.nes\"/></mistergamedescription>",
+        )
+        .unwrap();
+
+        let held = |favorites: &crate::favorites::Favorites, target: &Path, file: &Path| {
+            assert!(favorites.holds(target), "{} is held", target.display());
+            assert_eq!(favorites.file_for(target), Some(file));
+        };
+        let favorites = crate::favorites::Favorites::read_with(&favourites, &homes);
+        assert_eq!(favorites.len(), 7);
+        held(&favorites, &nes.join("Stock.nes"), &stock);
+        held(
+            &favorites,
+            Path::new("/media/fat/games/NES/Relative.nes"),
+            &relative,
+        );
+        held(&favorites, &nes.join("Bare.nes"), &bare);
+        held(&favorites, &mra, &linked_mra);
+        held(&favorites, &core_set, &linked_set);
+        held(
+            &favorites,
+            &crate::favorites::amiga_key(&amiga, "Zool"),
+            &marker,
+        );
+        assert!(!favorites.holds(&nes.join("Twice.nes")));
+        assert!(!favorites.holds(&famicom.join("Twice.nes")));
+        held(&favorites, &ambiguous, &ambiguous);
+        assert!(
+            !favorites.holds(&arcade.join("btc0-s.bin")),
+            "the decoy beside the descriptor is not what the link is for"
+        );
+        assert!(
+            !favorites.holds(&favourites.join("Bare.nes")),
+            "a bare name is not looked for beside the favourite"
+        );
+
+        // Ownership by the placed target, and the diagnostic for the one
+        // that could not be placed.
+        let owner = |file: &Path| {
+            let reference = crate::favorites::reference_of(file, &homes).unwrap();
+            (
+                owner_of_favorite(&systems, &reference),
+                reference.diagnostic,
+            )
+        };
+        assert_eq!(owner(&stock), (Some("NES".into()), None));
+        assert_eq!(owner(&bare), (Some("NES".into()), None));
+        assert_eq!(owner(&linked_mra), (Some("Arcade".into()), None));
+        assert_eq!(owner(&linked_set), (Some("Arcade".into()), None));
+        assert_eq!(owner(&marker), (Some("Amiga".into()), None));
+        let (twice_owner, twice_diagnostic) = owner(&ambiguous);
+        assert_eq!(
+            twice_owner, None,
+            "an unplaced favourite belongs to no game"
+        );
+        let twice_diagnostic = twice_diagnostic.expect("the ambiguity is said").to_string();
+        assert!(twice_diagnostic.contains(&nes.join("Twice.nes").display().to_string()));
+        assert!(twice_diagnostic.contains(&famicom.join("Twice.nes").display().to_string()));
+
+        // A second favourite for the same game under the same name is
+        // refused, whichever form the first one took.
+        for name in ["Stock", "Bare", "Battletoads"] {
+            let error = crate::favorites::add_game(&favourites, name, "<mistergamedescription/>")
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains("already has a favourite"), "{error}");
+        }
+
+        // Artwork and names come from the owner's own listing: the NES
+        // gamelist cache for the game favourites, the Arcade Pack for the
+        // descriptor, which is matched by its own name.
+        let row = |file: &Path| browse::Row {
+            name: "Favourite File".to_string(),
+            sort_key: "favourite file".to_string(),
+            kind: browse::Kind::Play(browse::Launch::File(file.to_path_buf())),
+            cover: None,
+            genre: None,
+            favorite: true,
+            below: None,
+            details: browse::Details::default(),
+        };
+        let mut rows = vec![
+            row(&stock),
+            row(&bare),
+            row(&linked_set),
+            row(&ambiguous),
+            row(&relative),
+        ];
+        let pack_roots = [("Arcade".to_string(), docs.to_string_lossy().into_owned())].into();
+        enrich_favorite_rows(
+            &mut rows,
+            &systems,
+            &homes,
+            &pack_roots,
+            &cache_dir,
+            |id, location, cache| {
+                let mut provider = crate::artwork_pack::Provider::load(id, location, None);
+                provider
+                    .prepare_for_cache(
+                        cache,
+                        &crate::cache::ContentFingerprints::new(),
+                        &homes,
+                        &std::sync::atomic::AtomicBool::new(false),
+                    )
+                    .unwrap()
+                    .expect("test provider preparation completes");
+                Some(provider)
+            },
+        );
+        assert_eq!(
+            rows[0].name, "Stock.nes",
+            "the game's own row name from the NES listing, extension and all"
+        );
+        assert_eq!(rows[1].name, "Bare.nes");
+        assert_eq!(rows[2].name, "Pack Title");
+        assert_eq!(
+            rows[2].cover.as_deref(),
+            Some(art.join("Battletoads.jpg").as_path())
+        );
+        assert_eq!(
+            rows[3].name, "Favourite File",
+            "an unplaced favourite is not given another game's artwork"
+        );
+        assert_eq!(
+            rows[4].name, "Favourite File",
+            "a favourite for a file this machine does not have is left as it is"
+        );
+
+        // Removal finds the file by the target, for every form.
+        for (target, file) in [
+            (nes.join("Stock.nes"), &stock),
+            (
+                PathBuf::from("/media/fat/games/NES/Relative.nes"),
+                &relative,
+            ),
+            (nes.join("Bare.nes"), &bare),
+            (mra.clone(), &linked_mra),
+            (core_set.clone(), &linked_set),
+            (crate::favorites::amiga_key(&amiga, "Zool"), &marker),
+            (ambiguous.clone(), &ambiguous),
+        ] {
+            let favorites = crate::favorites::Favorites::read_with(&favourites, &homes);
+            let found = favorites.file_for(&target).expect("held before removal");
+            assert_eq!(found, file.as_path());
+            crate::favorites::remove(found).unwrap();
+            let favorites = crate::favorites::Favorites::read_with(&favourites, &homes);
+            assert!(
+                !favorites.holds(&target),
+                "{} was removed",
+                target.display()
+            );
+        }
+        assert_eq!(
+            crate::favorites::Favorites::read_with(&favourites, &homes).len(),
+            0
+        );
         std::fs::remove_dir_all(root).ok();
     }
 

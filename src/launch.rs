@@ -27,6 +27,10 @@
 //!   production implementations prefix `../../../../..` to an absolute path,
 //!   which resolves identically from any core home directory. Degauss
 //!   matches the proven form.
+//! * Every other path, `./x` and `../x` included, is joined to the core's
+//!   home directory (`games/<setname>` or `games/<core>`), never to the
+//!   folder the MGL sits in. Degauss reads such paths the same way, in
+//!   `crate::mgl`, when it has to interpret an MGL rather than hand it over.
 
 use std::path::{Path, PathBuf};
 
@@ -444,6 +448,14 @@ pub fn favorite_mgl_with_preference(
     favorite_mgl_with_choice(system, game, menu_root, ra_first, None)
 }
 
+/// Plan a launch under the chosen core.
+///
+/// An existing `.mgl` is handed to MiSTer as it is, whatever it names: a
+/// custom or arcade descriptor is Main's to read. Only a favourite for one
+/// of this system's own cores is rewritten, and only when the chosen core
+/// differs or the favourite carries paths Main would join to the home
+/// directory: those are placed in the system's folders as Main would place
+/// them under `games/<core>`, so the temporary copy names the same file.
 pub fn plan_with_choice(
     system: &SystemConfig,
     game: &Path,
@@ -462,7 +474,7 @@ pub fn plan_with_choice(
         }
         let core = crate::core_choices::resolve(system, menu_root, selected, ra_first)?;
         if !crate::core_variants::needs_conversion(game, &core)?
-            && !crate::favorites::has_bare_paths(game)?
+            && !crate::favorites::has_home_relative_paths(game)?
         {
             return plan(system, game, mgl_path);
         }
@@ -844,6 +856,167 @@ mod tests {
         .expect("planned");
         assert!(plan.mgl.is_empty());
         assert!(plan.command.contains("Thing.mgl"));
+    }
+
+    /// A card with the NES core, its games folder, and an alias folder
+    /// the same system also owns, for favourites that need relocating.
+    fn nes_card(name: &str) -> (PathBuf, SystemConfig) {
+        let root =
+            std::env::temp_dir().join(format!("degauss-launch-{name}-{}", std::process::id()));
+        std::fs::remove_dir_all(&root).ok();
+        for folder in [
+            "_Console",
+            "games/NES",
+            "games/Famicom",
+            "games/FDS",
+            "_@Favorites",
+        ] {
+            std::fs::create_dir_all(root.join(folder)).unwrap();
+        }
+        std::fs::write(root.join("_Console/NES.rbf"), b"core fixture").unwrap();
+        let system = SystemConfig {
+            preserve_rbf_stem: false,
+            name: "NES".into(),
+            path: root.join("games/NES").to_string_lossy().into_owned(),
+            extra_paths: vec![root.join("games/Famicom").to_string_lossy().into_owned()],
+            extensions: vec!["nes".into(), "fds".into()],
+            rbf: "_Console/NES".into(),
+            launch: vec![rule(&["nes", "fds"], "f", 1, 1)],
+            skip_folders: Vec::new(),
+            setname: None,
+        };
+        (root, system)
+    }
+
+    /// An arcade descriptor names a core outside this system's own, so it
+    /// is not a favourite of this system's to rewrite: Main gets the file
+    /// itself and reads its bare components under `games/<setname>`.
+    /// Rewriting it would be inventing paths Main already knows.
+    #[test]
+    fn an_arcade_core_mgl_is_handed_to_main_unrewritten() {
+        let (root, system) = nes_card("arcade-direct");
+        let mgl = root.join("_@Favorites/Battletoads.mgl");
+        std::fs::write(
+            &mgl,
+            "<mistergamedescription>\n\t<rbf>_Arcade/cores/Battletoads</rbf>\n\t<setname>Battletoads</setname>\n\t\
+             <file delay=\"1\" type=\"f\" index=\"0\" path=\"btc0-p0.bin\"/>\n\t\
+             <file delay=\"1\" type=\"f\" index=\"1\" path=\"btc0-p1.bin\"/>\n\t\
+             <file delay=\"1\" type=\"f\" index=\"2\" path=\"btc0-s.bin\"/>\n\
+             </mistergamedescription>\n",
+        )
+        .unwrap();
+        let planned = plan_with_choice(
+            &system,
+            &mgl,
+            &root.join("temp.mgl"),
+            &root,
+            false,
+            Some("standard"),
+        )
+        .unwrap();
+        assert!(planned.mgl.is_empty(), "no MGL is written for it");
+        assert_eq!(planned.command, format!("load_core {}\n", mgl.display()));
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    /// A favourite of this system's core with `../x` paths is placed as
+    /// Main places it, in the system's own folders, never beside the
+    /// favourite: the temporary copy has to name the file Main would load.
+    #[test]
+    fn relocation_of_parent_relative_components_uses_the_home_dir() {
+        let (root, system) = nes_card("relocate-parent");
+        std::fs::write(root.join("games/NES/Game.nes"), b"rom").unwrap();
+        std::fs::create_dir_all(root.join("_@Favorites/NES")).unwrap();
+        std::fs::write(
+            root.join("_@Favorites/NES/Game.nes"),
+            b"decoy beside the folder",
+        )
+        .unwrap();
+        let mgl = root.join("_@Favorites/Folder/Game.mgl");
+        std::fs::create_dir_all(mgl.parent().unwrap()).unwrap();
+        std::fs::write(
+            &mgl,
+            "<mistergamedescription><rbf>_Console/NES</rbf><file delay=\"1\" type=\"f\" index=\"1\" path=\"../NES/Game.nes\"/></mistergamedescription>",
+        )
+        .unwrap();
+        let planned = plan_with_choice(
+            &system,
+            &mgl,
+            &root.join("temp.mgl"),
+            &root,
+            false,
+            Some("standard"),
+        )
+        .unwrap();
+        assert!(
+            planned.mgl.contains(&format!(
+                "path=\"{}\"",
+                root.join("games/NES/Game.nes").display()
+            )),
+            "{}",
+            planned.mgl
+        );
+        assert!(!planned.mgl.contains("_@Favorites/NES/Game.nes"));
+        assert_eq!(
+            std::fs::read_to_string(&mgl)
+                .unwrap()
+                .matches("path=")
+                .count(),
+            1
+        );
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    /// The same name in two of the system's folders is two files. Main
+    /// would take one by its own order; here the launch says so instead
+    /// of starting a game the user may not have meant.
+    #[test]
+    fn relocation_reports_an_ambiguous_component_instead_of_choosing() {
+        let (root, system) = nes_card("relocate-ambiguous");
+        std::fs::write(root.join("games/NES/Game.nes"), b"one").unwrap();
+        std::fs::write(root.join("games/Famicom/Game.nes"), b"another").unwrap();
+        let mgl = root.join("_@Favorites/Game.mgl");
+        std::fs::write(
+            &mgl,
+            "<mistergamedescription><rbf>_Console/NES</rbf><file delay=\"1\" type=\"f\" index=\"1\" path=\"Game.nes\"/></mistergamedescription>",
+        )
+        .unwrap();
+        let error = plan_with_choice(
+            &system,
+            &mgl,
+            &root.join("temp.mgl"),
+            &root,
+            false,
+            Some("standard"),
+        )
+        .unwrap_err();
+        assert!(
+            matches!(
+                &error,
+                DegaussError::Unsupported {
+                    what: "MGL component",
+                    ..
+                }
+            ),
+            "{error}"
+        );
+        let text = error.to_string();
+        assert!(text.contains(&root.join("games/NES/Game.nes").display().to_string()));
+        assert!(text.contains(&root.join("games/Famicom/Game.nes").display().to_string()));
+        std::fs::remove_file(root.join("games/Famicom/Game.nes")).unwrap();
+        let planned = plan_with_choice(
+            &system,
+            &mgl,
+            &root.join("temp.mgl"),
+            &root,
+            false,
+            Some("standard"),
+        )
+        .unwrap();
+        assert!(planned
+            .mgl
+            .contains(&root.join("games/NES/Game.nes").display().to_string()));
+        std::fs::remove_dir_all(root).ok();
     }
 
     #[test]

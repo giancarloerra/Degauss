@@ -2815,6 +2815,7 @@ fn run_fresh_auto_pack_index_flow(root: &Path, window: Rc<MinimalSoftwareWindow>
     enrich_favorite_rows(
         &mut favorite_rows,
         &app.all_systems,
+        &app.homes(),
         &app.effective_artwork_pack_roots,
         &app.cache_dir,
         |id, _, _| app.artwork_provider_cache.get(id).cloned(),
@@ -3560,6 +3561,188 @@ fn run_degraded_pack_acknowledgement_flow(root: &Path, window: Rc<MinimalSoftwar
     drop(app);
 }
 
+/// An arcade descriptor with its ROM set spelled out as bare files, kept
+/// under `_Arcade` while the files live under `games/<setname>`, as the
+/// public packs install it. The application has to match it to its Pack by
+/// its own name, hold a favourite for it, and give that favourite the same
+/// artwork, without ever looking beside the descriptor.
+fn run_arcade_core_descriptor_favourite_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
+    let root = root.join("arcade-core-descriptor");
+    let arcade = root.join("_Arcade");
+    let set = root.join("games/Battletoads");
+    let docs = root.join("docs");
+    let artwork = docs.join("Arcade/Artwork");
+    for directory in [&arcade, &set, &artwork] {
+        std::fs::create_dir_all(directory).unwrap();
+    }
+    for name in ["btc0-p0.bin", "btc0-p1.bin", "btc0-s.bin"] {
+        std::fs::write(set.join(name), b"payload").unwrap();
+    }
+    std::fs::write(arcade.join("btc0-s.bin"), b"decoy beside the descriptor").unwrap();
+    let descriptor = arcade.join("Battletoads.mgl");
+    std::fs::write(
+        &descriptor,
+        "<mistergamedescription>\n\t<rbf>_Arcade/cores/Battletoads</rbf>\n\t<setname>Battletoads</setname>\n\t\
+         <file delay=\"1\" type=\"f\" index=\"0\" path=\"btc0-p0.bin\"/>\n\t\
+         <file delay=\"1\" type=\"f\" index=\"1\" path=\"btc0-p1.bin\"/>\n\t\
+         <file delay=\"1\" type=\"f\" index=\"2\" path=\"btc0-s.bin\"/>\n\
+         </mistergamedescription>\n",
+    )
+    .unwrap();
+    std::fs::write(
+        artwork.join("manifest.tsv"),
+        "#key\tstyle\tss_system_id\nBattletoads\tbox-2D\t75\n",
+    )
+    .unwrap();
+    std::fs::write(
+        artwork.join("index.tsv"),
+        "#name\tcrc\tsize\tkey\nBattletoads\t\t\tBattletoads\n",
+    )
+    .unwrap();
+    std::fs::write(
+        artwork.join("gameinfo.tsv"),
+        "#key\tname\tyear\tgenre\tdeveloper\tplayers\nBattletoads\tPack Battletoads\t1994\tBeat 'em up\tStudio\t2\n",
+    )
+    .unwrap();
+    std::fs::write(artwork.join("Battletoads.jpg"), crate::covers::JPEG_16).unwrap();
+    let mut settings = Settings::default();
+    settings
+        .artwork_pack_roots
+        .insert("Arcade".into(), docs.to_string_lossy().into_owned());
+    let mut app =
+        unopened_fixture_app_with_systems(&root, window, settings, &["Arcade"], "_Arcade");
+    app.open_system_by_index(0);
+    assert_eq!(
+        app.open_system.as_deref(),
+        Some("Arcade"),
+        "{:?}",
+        app.message
+    );
+    assert!(app.message.is_none(), "{:?}", app.message);
+    let provider = app.artwork_provider.as_ref().expect("the Pack is selected");
+    assert_eq!(
+        provider.health,
+        crate::artwork_pack::ProviderHealth::Ready,
+        "{:?}",
+        provider.diagnostics
+    );
+    app.leave_splash();
+    assert_eq!(app.here.len(), 1, "{:?}", app.here);
+    let row = app.here[0].clone();
+    assert_eq!(row_target(&row).as_deref(), Some(descriptor.as_path()));
+    assert_eq!(
+        row.name, "Pack Battletoads",
+        "the descriptor is matched by its own name, not by a component"
+    );
+    assert_eq!(
+        row.cover.as_deref(),
+        Some(artwork.join("Battletoads.jpg").as_path())
+    );
+    let logged = std::fs::read_to_string(crate::LOG_PATH).unwrap();
+    assert!(
+        !logged.contains(&arcade.join("btc0-s.bin").display().to_string()),
+        "nothing is looked for beside the descriptor"
+    );
+    assert!(
+        !logged.contains("pack match   FAILED"),
+        "the set's preparation does not fail on a bare component"
+    );
+
+    // Favourited the way the stock script favourites a core file: a link.
+    let favorite_root = root.join("_@Favorites");
+    std::fs::create_dir_all(&favorite_root).unwrap();
+    let favorite =
+        crate::favorites::add_core(&favorite_root, "Battletoads.mgl", &descriptor).unwrap();
+    let mut favorites = app.all_systems[0].clone();
+    favorites.def.id = "Favorites".into();
+    favorites.def.name = "Favorites".into();
+    favorites.def.category = Some("Favorites".into());
+    favorites.paths = vec![favorite_root];
+    app.all_systems.push(favorites);
+    app.reread_favorites();
+    assert!(
+        app.favorites.holds(&descriptor),
+        "the link is held under the descriptor"
+    );
+    assert_eq!(
+        app.favorites.file_for(&descriptor),
+        Some(favorite.as_path())
+    );
+    app.open_system = Some("Favorites".into());
+    let mut shelf = vec![browse::Row {
+        name: "Battletoads".into(),
+        kind: browse::Kind::Play(browse::Launch::File(favorite.clone())),
+        cover: None,
+        ..row.clone()
+    }];
+    app.enrich_favorites(&mut shelf);
+    assert_eq!(
+        shelf[0].name, "Pack Battletoads",
+        "the favourite is given the descriptor's own Pack match"
+    );
+    assert_eq!(
+        shelf[0].cover.as_deref(),
+        Some(artwork.join("Battletoads.jpg").as_path())
+    );
+    app.here = shelf;
+    app.game_list = ListState::new(1, app.geometry.visible);
+    assert!(app.in_favorites());
+    let request = app.information_request(&app.here[0]).unwrap();
+    assert_eq!(request.launch, browse::Launch::File(descriptor.clone()));
+    assert!(
+        matches!(
+            request.source,
+            crate::information_job::Source::ArtworkPack(_)
+        ),
+        "the owner is Arcade, whose source is the Pack"
+    );
+
+    // A console favourite whose bare name is in two of its system's
+    // folders: pressing A must not start whichever MiSTer's folder order
+    // finds first, but say which two files were found.
+    let nes = root.join("games/NES");
+    let famicom = root.join("games/Famicom");
+    for folder in [&nes, &famicom] {
+        std::fs::create_dir_all(folder).unwrap();
+        std::fs::write(folder.join("Twice.nes"), b"a build").unwrap();
+    }
+    let mut console = app.all_systems[0].clone();
+    console.def.id = "NES".into();
+    console.def.name = "NES".into();
+    console.def.category = None;
+    console.def.rbf = "_Console/NES".into();
+    console.def.extensions = vec!["nes".into(), "mgl".into()];
+    console.paths = vec![nes.clone(), famicom.clone()];
+    app.all_systems.push(console);
+    let ambiguous = app.all_systems[1].paths[0].join("Twice.mgl");
+    std::fs::write(
+        &ambiguous,
+        "<mistergamedescription><rbf>_Console/NES</rbf><file delay=\"1\" type=\"f\" index=\"1\" path=\"Twice.nes\"/></mistergamedescription>",
+    )
+    .unwrap();
+    app.reread_favorites();
+    assert!(!app.favorites.holds(&nes.join("Twice.nes")));
+    assert!(!app.favorites.holds(&famicom.join("Twice.nes")));
+    app.here = vec![browse::Row {
+        name: "Twice".into(),
+        kind: browse::Kind::Play(browse::Launch::File(ambiguous.clone())),
+        cover: None,
+        ..row.clone()
+    }];
+    app.game_list = ListState::new(1, app.geometry.visible);
+    assert!(
+        app.confirm_launch().is_none(),
+        "an ambiguous favourite stays in the interface"
+    );
+    let message = app.message.clone().expect("the launch says why");
+    assert!(
+        message.contains(&nes.join("Twice.nes").display().to_string())
+            && message.contains(&famicom.join("Twice.nes").display().to_string()),
+        "{message}"
+    );
+    app.ui.hide().unwrap();
+}
+
 pub(super) fn run_ui_acceptance_flow(window: Rc<MinimalSoftwareWindow>) {
     let root = fixture_directory();
     std::fs::create_dir_all(root.join("games/NES")).unwrap();
@@ -3576,6 +3759,7 @@ pub(super) fn run_ui_acceptance_flow(window: Rc<MinimalSoftwareWindow>) {
     run_fresh_auto_pack_index_flow(&root, window.clone());
     run_auto_source_choice_flow(&root, window.clone());
     run_degraded_pack_acknowledgement_flow(&root, window.clone());
+    run_arcade_core_descriptor_favourite_flow(&root, window.clone());
     let mut app = fixture_app(&root, window.clone(), Settings::default());
     run_selected_controls_flow(&mut app);
     run_artwork_visibility_flow(&mut app);
