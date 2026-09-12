@@ -573,12 +573,7 @@ impl Library {
                 if let Some((catalogues, catalogue)) = &neogeo {
                     match catalogues.classify(catalogue, &path, &name, true) {
                         crate::neogeo::Recognition::Game(title) => {
-                            stats.games += 1;
-                            let row = self.row_for(&path, title, root, true);
-                            if row.cover.is_some() {
-                                stats.with_art += 1;
-                            }
-                            rows.push(row);
+                            self.push_set_row(&mut rows, &mut stats, &path, title, root);
                             continue;
                         }
                         crate::neogeo::Recognition::Hidden => continue,
@@ -617,12 +612,7 @@ impl Library {
                 if let Some((catalogues, catalogue)) = &neogeo {
                     match catalogues.classify(catalogue, &path, &name, false) {
                         crate::neogeo::Recognition::Game(title) => {
-                            stats.games += 1;
-                            let row = self.row_for(&path, title, root, true);
-                            if row.cover.is_some() {
-                                stats.with_art += 1;
-                            }
-                            rows.push(row);
+                            self.push_set_row(&mut rows, &mut stats, &path, title, root);
                             continue;
                         }
                         crate::neogeo::Recognition::Hidden => continue,
@@ -801,6 +791,24 @@ impl Library {
 
     fn game_row(&self, path: &Path, root: Option<usize>) -> Row {
         self.game_row_with_metadata(path, root, true)
+    }
+
+    /// A recognised Neo Geo ROM set, zipped or not, as the game row the
+    /// catalogue titles it, counted with the games.
+    fn push_set_row(
+        &self,
+        rows: &mut Vec<Row>,
+        stats: &mut ListStats,
+        path: &Path,
+        title: String,
+        root: Option<usize>,
+    ) {
+        stats.games += 1;
+        let row = self.row_for(path, title, root, true);
+        if row.cover.is_some() {
+            stats.with_art += 1;
+        }
+        rows.push(row);
     }
 
     fn game_row_with_metadata(&self, path: &Path, root: Option<usize>, legacy: bool) -> Row {
@@ -1008,6 +1016,14 @@ impl Library {
             let is_dir = entry_is_dir_checked(&item)?;
             // A folder left out of the listing leads nowhere whatever it holds.
             let excluded = is_dir && (self.is_art_directory(&path, root) || self.is_skipped(&name));
+            // What a file is, asked once: the set check and the content
+            // check below both want it.
+            let extension = if is_dir {
+                String::new()
+            } else {
+                extension_of(&path)
+            };
+            let accepted = !is_dir && self.config.accepts(&path);
             // A Neo Geo ROM set is a game whether zipped or not, so a folder
             // of nothing but sets is worth walking into; one the catalogue
             // hides would never be shown and is not.
@@ -1015,7 +1031,7 @@ impl Library {
                 let candidate = if is_dir {
                     !excluded
                 } else {
-                    extension_of(&path) == "zip" && !self.config.accepts(&path)
+                    extension == "zip" && !accepted
                 };
                 if candidate {
                     match catalogues.classify(catalogue, &path, &name, is_dir) {
@@ -1034,8 +1050,7 @@ impl Library {
             // A file only counts if it is one this system can open, an
             // archive that opens like a folder, or a listing naming titles
             // held inside a disk image.
-            let extension = extension_of(&path);
-            if extension == "zip" || (self.config.accepts(&path) && !is_not_a_game(&name)) {
+            if extension == "zip" || (accepted && !is_not_a_game(&name)) {
                 return Ok(false);
             }
             if extension == "txt" && amiga_install {
