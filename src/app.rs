@@ -3110,7 +3110,7 @@ impl App {
         } = loaded;
         let ThemeSet {
             themes,
-            problems: mut theme_problems,
+            problems: mut startup_problems,
         } = themes;
         let scraper_settings_path = crate::scraper::ScraperSettings::path_beside(&settings_path);
         let (scraper_settings, scraper_settings_problem) =
@@ -3140,7 +3140,7 @@ impl App {
                     // "Did not load" rather than "is missing": the file may
                     // be there and broken, in which case the folder's own
                     // problem line above this one says what is wrong.
-                    theme_problems.push(format!("Theme {name} did not load; using standard."));
+                    startup_problems.push(format!("Theme {name} did not load; using standard."));
                 }
                 found
             }
@@ -3170,7 +3170,7 @@ impl App {
         let details_style = match settings.details_style.as_deref() {
             None => DetailsStyle::default(),
             Some(text) => DetailsStyle::parse(text).unwrap_or_else(|| {
-                theme_problems.push(format!(
+                startup_problems.push(format!(
                     "Details Style {text} is not information or large-artwork; using Information."
                 ));
                 DetailsStyle::default()
@@ -3493,11 +3493,11 @@ impl App {
         // Details Style token that is neither name, is said out loud on the
         // first screen. Any press takes it down, and a first-start library
         // read replaces it with its own progress, so the log keeps a copy.
-        if !theme_problems.is_empty() {
-            for line in &theme_problems {
+        if !startup_problems.is_empty() {
+            for line in &startup_problems {
                 crate::note(&format!("startup      {line}"));
             }
-            app.message = Some(theme_problems.join("\n"));
+            app.message = Some(startup_problems.join("\n"));
             app.startup_problems = app.message.clone();
         }
         app.resolve_artwork_sources(None, SourceResolutionAction::Startup);
