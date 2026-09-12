@@ -3231,8 +3231,14 @@ fn run_details_style_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
     // the first screen says so, and the text stays in the setting for the
     // user to correct rather than being replaced by a choice never made.
     // The startup source check finishes before anyone has read the line,
-    // so its result must go under the report rather than replace it.
+    // so its result must go under the report rather than replace it. The
+    // log gets the same line, because a first-start library read takes
+    // the screen before it and would leave the substitution without a
+    // trace.
     {
+        let log_before = std::fs::metadata(crate::LOG_PATH)
+            .map(|meta| meta.len() as usize)
+            .unwrap_or(0);
         let mut app = unopened_fixture_app(
             root,
             window.clone(),
@@ -3246,6 +3252,19 @@ fn run_details_style_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
             app.settings.details_style.as_deref(),
             Some("large_artwork"),
             "startup must not rewrite the text it could not read"
+        );
+        // The log is the one path outside the fixture; a log that cannot
+        // be read fails the same assertion, with the reason in its place.
+        let logged = match std::fs::read(crate::LOG_PATH) {
+            Ok(log) => String::from_utf8_lossy(&log[log_before.min(log.len())..]).into_owned(),
+            Err(error) => format!(
+                "(the log at {} could not be read: {error})",
+                crate::LOG_PATH
+            ),
+        };
+        assert!(
+            logged.contains("Details Style large_artwork is not information or large-artwork"),
+            "the unreadable token is logged: {logged}"
         );
         app.finish_background_work_for_headless();
         assert!(
@@ -3264,6 +3283,44 @@ fn run_details_style_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
             app.message.is_none(),
             "a press takes the report down: {:?}",
             app.message
+        );
+        app.ui.hide().unwrap();
+    }
+
+    // Cancelling the startup check with B is its third way to finish and
+    // follows the same rule as the other two: the problem lines stay and
+    // the check's word goes under them, and the lines are given up so
+    // nothing later can put them back over another message.
+    {
+        let mut app = unopened_fixture_app(
+            root,
+            window.clone(),
+            Settings {
+                details_style: Some("large_artwork".into()),
+                ..Default::default()
+            },
+        );
+        assert!(
+            app.source_resolution.is_some() && app.build.is_none(),
+            "the startup check is pending and B can cancel it"
+        );
+        app.handle(Action::Quit);
+        app.finish_background_work_for_headless();
+        let message = app
+            .message
+            .clone()
+            .expect("the cancelled check leaves the problem lines up");
+        assert!(
+            message.starts_with("Details Style large_artwork"),
+            "{message}"
+        );
+        assert!(
+            message.ends_with("\nGame data source check cancelled"),
+            "{message}"
+        );
+        assert!(
+            app.startup_problems.is_none(),
+            "every completion of the startup check takes the lines"
         );
         app.ui.hide().unwrap();
     }

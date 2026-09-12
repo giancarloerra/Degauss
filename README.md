@@ -502,14 +502,22 @@ running under Degauss Main already have the Frontend menu and shortcut.
 
 The Details Style changes only the games level of Details: the Home,
 category and system screens and the other views keep their proportions, and
-switching it does not rebuild the library or the artwork cache. Pictures are
-decoded to `cover_size` in `degauss.toml` or half the longer screen edge,
-whichever is larger. With the default `cover_size` the Large Artwork box
-outgrows that decode on screens wider than about 580 pixels, so a picture is
-drawn a little enlarged there: up to about a tenth wider for a landscape
-picture, and up to about a quarter taller for a portrait one on a 4:3 or 5:4
-screen. A `cover_size` of at least two thirds of the screen width keeps every
-picture within its decode.
+switching it does not rebuild the library or the artwork cache. It is saved
+as `details_style` in `settings.toml`; a saved value that is neither
+`information` nor `large-artwork` draws Information and is left in the file
+for you to correct. That substitution is reported on the first screen,
+unless a library read starts at the same time and takes the screen first,
+and always in `/tmp/degauss.log`, which is the copy that survives such a
+read. Pictures are decoded to `cover_size` in `degauss.toml` or half the
+longer screen edge, whichever is larger. With the shipped `cover_size` of
+320 and the default 5% screen margins, the Large Artwork box outgrows that
+decode on screens wider than about 590 pixels for a landscape picture, and
+for a portrait picture from about 570 pixels on a 4:3 screen and about 540
+pixels on a 5:4 screen, so a picture is drawn a little enlarged there: up
+to about a tenth wider, and up to about a quarter taller in the portrait
+case. Smaller margins lower those widths. A `cover_size` of at least two
+thirds of the screen width keeps every picture within its decode at the
+default margins.
 
 **Options → Appearance → View** is the global default. Every browse place can instead
 keep its own custom view: the Categories screen, each category's Systems
@@ -575,7 +583,7 @@ require **A** and confirmation, never a sideways press.
 | Appearance | Theme | Left and right choose a palette. Press A to open the editor. Standard uses the colours in `degauss.toml`. See [Themes and colours](#themes-and-colours) |
 | Appearance | View | The global default for places without a custom view: Details, Tiled, Carousel, List, Multi List or Gallery |
 | Appearance | Reset All Custom Views | With A and confirmation, remove every place-specific view without changing the global View setting |
-| Appearance | Details Style | How Details shares the screen while browsing games. Information (default) keeps the list beside a picture of about 42% of the width, with the compact summary under it; Large Artwork gives the picture about 62% and the whole column height, with no lines under it. An unrecognised saved value draws Information and says so on the first screen, unless a library read starts at the same time |
+| Appearance | Details Style | How Details shares the screen while browsing games. Information (default) keeps the list beside a picture of about 42% of the width, with the compact summary under it; Large Artwork gives the picture about 62% and the whole column height, with no lines under it |
 | Appearance | Text | The typeface: Smooth, Pixel (a DOS font on whole pixels), and the bolder Smooth 2 and Pixel 2 |
 | Appearance | Artwork | Turn pictures off entirely |
 | Appearance | Artwork Scale Factor | Framebuffer keeps the original square-pixel fit and is the default. 4:3 and 16:9 correct game artwork for that physical display shape in Details, Tiled, Carousel and Gallery. Category logos, system logos and the screensaver are unchanged |

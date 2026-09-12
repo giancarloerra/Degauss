@@ -3491,8 +3491,12 @@ impl App {
         app.ui.set_about_licence(SharedString::from(LICENCE));
         // A theme file that did not load, a saved theme that is gone, or a
         // Details Style token that is neither name, is said out loud on the
-        // first screen. Any press takes it down.
+        // first screen. Any press takes it down, and a first-start library
+        // read replaces it with its own progress, so the log keeps a copy.
         if !theme_problems.is_empty() {
+            for line in &theme_problems {
+                crate::note(&format!("startup      {line}"));
+            }
             app.message = Some(theme_problems.join("\n"));
             app.startup_problems = app.message.clone();
         }
@@ -5062,7 +5066,7 @@ impl App {
                     self.build = None;
                     self.ui.set_index_active(false);
                 }
-                self.message = Some("Game data source check cancelled".into());
+                self.report_source_check(action, Some("Game data source check cancelled".into()));
                 self.dirty = true;
                 return;
             }
