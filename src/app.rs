@@ -16136,7 +16136,10 @@ mod tests {
     /// One game with a picture beside one without is still one game with
     /// a picture; several sharing a picture beside one without is no
     /// longer every entry agreeing, and the folder says nothing rather
-    /// than guess which game the bare one is.
+    /// than guess which game the bare one is. The answer must not depend
+    /// on where the bare game sorts, which the walk sees first, so the
+    /// cases with a bare game are given in both orders, checked against
+    /// the order the folder is written down in.
     #[test]
     fn shared_disc_images_show_but_different_games_fall_back() {
         let root = picker_temp("shared-and-conflicting");
@@ -16152,18 +16155,36 @@ mod tests {
                 ("Different/Second.chd", Some("second.png")),
                 ("Partial/With Art.chd", Some("partial.png")),
                 ("Partial/Without Art.chd", None),
+                ("Partial First/A Blank Disc.chd", None),
+                ("Partial First/With Art.chd", Some("partial-first.png")),
                 ("Bare/One.chd", None),
                 ("Bare/Two.chd", None),
                 ("Uneven/Game (Disc 1).chd", Some("uneven.png")),
                 ("Uneven/Game (Disc 2).chd", Some("uneven.png")),
                 ("Uneven/Game (Disc 3).chd", None),
-                ("Bare First/Without Art.chd", None),
+                ("Bare First/A Blank Disc.chd", None),
                 ("Bare First/Game (Disc 1).chd", Some("bare-first.png")),
                 ("Bare First/Game (Disc 2).chd", Some("bare-first.png")),
             ],
         );
         let derived =
             |folder: &str| derived_folder_cover(&cache, &Place::Dir(games.join(folder)), &[], None);
+        // The walk takes the rows as they are written down, sorted by
+        // name, so the bare game's place in the order is what the folder
+        // is named for, not the order the fixture lists it in.
+        let bare_positions = |folder: &str| -> Vec<bool> {
+            cache
+                .get(&Place::Dir(games.join(folder)))
+                .expect("folder is written down")
+                .rows
+                .iter()
+                .map(|row| row.cover.is_none())
+                .collect()
+        };
+        assert_eq!(bare_positions("Partial"), [false, true]);
+        assert_eq!(bare_positions("Partial First"), [true, false]);
+        assert_eq!(bare_positions("Uneven"), [false, false, true]);
+        assert_eq!(bare_positions("Bare First"), [true, false, false]);
         assert_eq!(
             derived("Multi").as_deref(),
             Some(games.join("media/multi.png").as_path()),
@@ -16174,6 +16195,11 @@ mod tests {
             derived("Partial").as_deref(),
             Some(games.join("media/partial.png").as_path()),
             "a disc without a picture does not contradict the one that has it"
+        );
+        assert_eq!(
+            derived("Partial First").as_deref(),
+            Some(games.join("media/partial-first.png").as_path()),
+            "the same pair with the bare disc listed first is the same answer"
         );
         assert_eq!(derived("Bare"), None, "no picture anywhere is no picture");
         assert_eq!(
