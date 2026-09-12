@@ -15,19 +15,21 @@
 //! undone by the next save.
 
 use std::collections::BTreeMap;
-use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
 use crate::error::{DegaussError, Result};
-use crate::settings::SaveOutcome;
+use crate::settings::{install_beside_settings, SaveLabels, SaveOutcome};
 
 pub const FILE: &str = "artwork-pack-warnings.toml";
 
 /// Beside the settings, which is beside the configuration.
 pub fn path_beside(settings_path: &Path) -> PathBuf {
-    settings_path.parent().unwrap_or(Path::new(".")).join(FILE)
+    settings_path
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .join(FILE)
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -44,26 +46,25 @@ pub struct Acknowledgements {
 
 impl Acknowledgements {
     /// Read it back. A missing file is the normal case, and one that cannot
-    /// be parsed is written to the log and read as empty with the reason
-    /// kept in `malformed`, so the warning is shown once more, saying why,
-    /// and the next acknowledgement replaces it. A file that is there but
+    /// be parsed, as text or as TOML, is read as empty with the reason kept
+    /// in `malformed`, so the warning is shown once more, saying why, and
+    /// the next acknowledgement replaces it. Nothing is logged here: the
+    /// file is read again before that save, and the caller that puts the
+    /// warning up writes the reason down once. A file that is there but
     /// cannot be read is an error: saving over it would throw away every
     /// acknowledgement it holds.
     pub fn load(path: &Path) -> Result<Self> {
-        match std::fs::read_to_string(path) {
-            Ok(text) => match toml::from_str(&text) {
-                Ok(parsed) => Ok(parsed),
-                Err(error) => {
-                    crate::note(&format!(
-                        "artwork pack warnings: {} is malformed: {error}",
-                        path.display()
-                    ));
-                    Ok(Self {
-                        malformed: Some(error.to_string()),
-                        ..Self::default()
-                    })
-                }
-            },
+        match std::fs::read(path) {
+            Ok(bytes) => {
+                let parsed = match String::from_utf8(bytes) {
+                    Ok(text) => toml::from_str::<Self>(&text).map_err(|error| error.to_string()),
+                    Err(error) => Err(error.to_string()),
+                };
+                Ok(parsed.unwrap_or_else(|malformed| Self {
+                    malformed: Some(malformed),
+                    ..Self::default()
+                }))
+            }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Self::default()),
             Err(error) => Err(DegaussError::io(
                 "reading artwork pack warnings",
@@ -89,13 +90,10 @@ impl Acknowledgements {
         self.degraded.insert(group.to_string(), digest.to_string());
     }
 
-    /// Written beside and moved into place: a file cut short must not be
-    /// read back as a shorter list of warnings already seen. The directory
-    /// is flushed afterwards like the settings are, so the move itself
-    /// survives a power cut; when that flush fails the file is in place and
-    /// the outcome says what could not be confirmed. A temporary file left
-    /// by a failed write or move is removed, and when that fails too the
-    /// error says so, as the settings writer does.
+    /// Written beside and moved into place by the settings writer's
+    /// install, so a file cut short is never read back as a shorter list of
+    /// warnings already seen, and the outcome says when the move could not
+    /// be confirmed durable.
     pub fn save(&self, path: &Path) -> Result<SaveOutcome> {
         let text = toml::to_string_pretty(self).map_err(|error| {
             DegaussError::malformed("artwork pack warnings", path, error.to_string())
@@ -104,66 +102,20 @@ impl Acknowledgements {
             "# Written by Degauss when an incomplete Artwork Pack warning is dismissed.\n\
              # Delete this file and restart Degauss to see those warnings again.\n\n{text}"
         );
-        let parent = path
-            .parent()
-            .filter(|parent| !parent.as_os_str().is_empty())
-            .unwrap_or_else(|| Path::new("."));
-        let temporary = parent.join(format!(".{FILE}.degauss-{}.tmp", std::process::id()));
-        let mut file = std::fs::File::create(&temporary).map_err(|error| {
-            DegaussError::io(
-                "creating temporary artwork pack warnings",
-                &temporary,
-                error,
-            )
-        })?;
-        let written: Result<()> = (|| {
-            file.write_all(body.as_bytes()).map_err(|error| {
-                DegaussError::io("writing temporary artwork pack warnings", &temporary, error)
-            })?;
-            file.sync_all().map_err(|error| {
-                DegaussError::io(
-                    "flushing temporary artwork pack warnings",
-                    &temporary,
-                    error,
-                )
-            })?;
-            Ok(())
-        })();
-        drop(file);
-        if let Err(error) = written {
-            return Err(cleanup_temporary(&temporary, error));
-        }
-        if let Err(error) = std::fs::rename(&temporary, path) {
-            let error = DegaussError::io("installing artwork pack warnings", path, error);
-            return Err(cleanup_temporary(&temporary, error));
-        }
-        match std::fs::File::open(parent).and_then(|directory| directory.sync_all()) {
-            Ok(()) => Ok(SaveOutcome::Durable),
-            Err(error) => Ok(SaveOutcome::InstalledWithWarning(DegaussError::io(
-                "flushing artwork pack warnings directory",
-                parent,
-                error,
-            ))),
-        }
+        install_beside_settings(&LABELS, path, &body)
     }
 }
 
-/// The failure that stopped the save, with the leftover temporary file
-/// removed; when even that fails the error says so, because a stray file
-/// beside the settings is worth knowing about.
-fn cleanup_temporary(path: &Path, error: DegaussError) -> DegaussError {
-    match std::fs::remove_file(path) {
-        Ok(()) => error,
-        Err(cleanup) if cleanup.kind() == std::io::ErrorKind::NotFound => error,
-        Err(cleanup) => DegaussError::unsupported(
-            "writing artwork pack warnings",
-            format!(
-                "{error}; removing the temporary file {} also failed: {cleanup}",
-                path.display()
-            ),
-        ),
-    }
-}
+const LABELS: SaveLabels = SaveLabels {
+    creating_temporary: "creating temporary artwork pack warnings",
+    writing_temporary: "writing temporary artwork pack warnings",
+    flushing_temporary: "flushing temporary artwork pack warnings",
+    writing: "writing artwork pack warnings",
+    no_file_name: "artwork pack warnings path has no file name",
+    could_not_reserve: "could not reserve a temporary artwork pack warnings file",
+    installing: "installing artwork pack warnings",
+    flushing_directory: "flushing artwork pack warnings directory",
+};
 
 #[cfg(test)]
 mod tests {
@@ -239,6 +191,32 @@ mod tests {
     }
 
     #[test]
+    fn a_file_that_is_not_text_is_malformed_not_unreadable() {
+        // Bytes that are not UTF-8 are a broken file like broken TOML is:
+        // read as an error, nothing would ever write over it and the
+        // warning would return at every start with no way to dismiss it.
+        let dir = temp("not-text");
+        let path = dir.join(FILE);
+        std::fs::write(&path, [0xff, 0xfe, b'd', b'e', b'g']).unwrap();
+        let mut read = Acknowledgements::load(&path)
+            .expect("a file that is not text costs one more warning, never an error");
+        assert!(!read.acknowledged("NES", "abc"));
+        assert!(
+            read.malformed().is_some(),
+            "the warning shown in its place must be able to say why the file was set aside"
+        );
+        read.acknowledge("NES", "abc");
+        read.save(&path).unwrap();
+        let replaced = Acknowledgements::load(&path).unwrap();
+        assert!(
+            replaced.acknowledged("NES", "abc"),
+            "the next dismissal must replace the broken file"
+        );
+        assert!(replaced.malformed().is_none());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
     fn a_file_that_cannot_be_read_is_an_error_not_an_empty_list() {
         let dir = temp("unreadable");
         let path = dir.join(FILE);
@@ -292,6 +270,29 @@ mod tests {
     }
 
     #[test]
+    fn a_leftover_temporary_file_is_stepped_around_not_written_over() {
+        let dir = temp("leftover");
+        let path = dir.join(FILE);
+        let leftover = dir.join(format!(".{FILE}.degauss-{}-0.tmp", std::process::id()));
+        std::fs::write(&leftover, b"left by an interrupted run").unwrap();
+        let mut seen = Acknowledgements::default();
+        seen.acknowledge("NES", "abc");
+        seen.save(&path).unwrap();
+        assert!(
+            Acknowledgements::load(&path)
+                .unwrap()
+                .acknowledged("NES", "abc"),
+            "a name already taken must not stop the save"
+        );
+        assert_eq!(
+            std::fs::read(&leftover).unwrap(),
+            b"left by an interrupted run",
+            "a file already at the temporary name is not this save's to truncate"
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
     fn a_save_whose_temporary_file_cannot_be_created_reports_its_error() {
         let dir = temp("blocked");
         let blocked = dir.join("not-a-directory");
@@ -339,33 +340,6 @@ mod tests {
             names,
             vec![FILE.to_string()],
             "the written temporary file must not be left beside the settings"
-        );
-        std::fs::remove_dir_all(&dir).unwrap();
-    }
-
-    #[test]
-    fn a_temporary_file_that_cannot_be_removed_is_part_of_the_reported_failure() {
-        let dir = temp("stuck");
-        let stuck = dir.join("stuck.tmp");
-        std::fs::create_dir(&stuck).unwrap();
-        let error = cleanup_temporary(
-            &stuck,
-            DegaussError::unsupported("writing artwork pack warnings", "the save failed"),
-        );
-        let text = error.to_string();
-        assert!(
-            text.contains("the save failed") && text.contains("also failed"),
-            "both failures must reach the screen, or a stray file goes unexplained: {text}"
-        );
-        assert!(text.contains(&stuck.display().to_string()));
-        let gone = cleanup_temporary(
-            &dir.join("never-written.tmp"),
-            DegaussError::unsupported("writing artwork pack warnings", "the save failed"),
-        );
-        assert_eq!(
-            gone.to_string(),
-            "writing artwork pack warnings unsupported: the save failed",
-            "a temporary file that was never written is nothing to report"
         );
         std::fs::remove_dir_all(&dir).unwrap();
     }

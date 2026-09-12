@@ -3220,6 +3220,19 @@ fn run_degraded_pack_acknowledgement_flow(root: &Path, window: Rc<MinimalSoftwar
             .as_deref()
             .is_some_and(|message| message.contains(text))
     };
+    // The overlay is small and names no file: the cause of a file that
+    // could not be read or written stays in the log. The cause is the one
+    // the read itself gives, whatever words it uses.
+    let names_the_file = |app: &App, cause: &str| {
+        message_contains(app, &warnings.display().to_string()) || message_contains(app, cause)
+    };
+    let malformed_cause = || {
+        Acknowledgements::load(&warnings)
+            .unwrap()
+            .malformed()
+            .expect("the file written as broken must read as malformed")
+            .to_string()
+    };
     let reopen = |app: &mut App| {
         app.handle(Action::Quit);
         assert!(
@@ -3234,6 +3247,35 @@ fn run_degraded_pack_acknowledgement_flow(root: &Path, window: Rc<MinimalSoftwar
             .unwrap()
             .acknowledged(group, digest)
     };
+    // The log is one file for every process on the host, appended to by
+    // whatever else runs; counted lines carry this fixture's path, so only
+    // this flow adds to them. Read as bytes: a stray byte from elsewhere is
+    // no reason to fail, and a log that cannot be read at all is named. A
+    // log nobody has started yet holds no lines.
+    let logged = |line: &str| {
+        let bytes = match std::fs::read(crate::LOG_PATH) {
+            Ok(bytes) => bytes,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+            Err(error) => panic!("{} could not be read: {error}", crate::LOG_PATH),
+        };
+        String::from_utf8_lossy(&bytes).matches(line).count()
+    };
+    // Writing the log is best effort and never stops the program, so a
+    // host where the file cannot be written would fail the counts below
+    // as if nothing had been logged. One probe line first: a missing probe
+    // is the environment, not the acknowledgement.
+    let probe = format!(
+        "degraded pack acknowledgement flow probe at {}",
+        docs.display()
+    );
+    let probed_before = logged(&probe);
+    crate::note(&probe);
+    assert_eq!(
+        logged(&probe),
+        probed_before + 1,
+        "{} must take what note() appends on this host; the log counts below depend on it",
+        crate::LOG_PATH
+    );
 
     // 6. A complete pack: no warning, and nothing written down.
     let app = start(window.clone());
@@ -3265,6 +3307,20 @@ fn run_degraded_pack_acknowledgement_flow(root: &Path, window: Rc<MinimalSoftwar
     assert!(
         !warnings.exists(),
         "a warning nobody dismissed must not be written down"
+    );
+    app.ui.hide().unwrap();
+    drop(app);
+
+    // A press that takes another message off the screen, put up over the
+    // warning meanwhile, has not seen the warning: nothing is written down.
+    let mut app = start(window.clone());
+    assert!(message_contains(&app, "is incomplete"), "{:?}", app.message);
+    app.message = Some("Put up over the warning before any press".into());
+    app.handle(Action::Accept);
+    assert!(app.message.is_none(), "{:?}", app.message);
+    assert!(
+        !warnings.exists(),
+        "dismissing another message is not seeing the warning under it"
     );
     app.ui.hide().unwrap();
     drop(app);
@@ -3316,12 +3372,25 @@ fn run_degraded_pack_acknowledgement_flow(root: &Path, window: Rc<MinimalSoftwar
         "one acknowledgement per source group: the old state is gone"
     );
     let no_index_file = std::fs::read_to_string(&warnings).unwrap();
+    let no_index_diagnostics = app.artwork_provider.as_ref().unwrap().diagnostics.clone();
+    assert_eq!(
+        no_index_diagnostics.len(),
+        2,
+        "a missing image and a missing table are two diagnostics: {no_index_diagnostics:?}"
+    );
     app.ui.hide().unwrap();
     drop(app);
 
     // 3. Back from a game: a new process, the same pack, no warning. The
     // log still gets the whole diagnostic, every part of it, acknowledged
-    // or not: the screen is quiet, the record is not.
+    // or not: the screen is quiet, the record is not. The warning just
+    // dismissed wrote the same line, so only one more line proves it.
+    let logged_line = format!(
+        "artwork pack Degraded at {}: {}",
+        docs.display(),
+        no_index_diagnostics.join("; ")
+    );
+    let logged_before = logged(&logged_line);
     let app = start(window.clone());
     assert!(
         app.message.is_none(),
@@ -3330,23 +3399,79 @@ fn run_degraded_pack_acknowledgement_flow(root: &Path, window: Rc<MinimalSoftwar
     );
     let provider = app.artwork_provider.as_ref().unwrap();
     assert_eq!(provider.health, ProviderHealth::Degraded);
+    assert_eq!(provider.diagnostics, no_index_diagnostics);
     assert_eq!(
-        provider.diagnostics.len(),
-        2,
-        "a missing image and a missing table are two diagnostics: {:?}",
-        provider.diagnostics
-    );
-    let logged = std::fs::read_to_string(crate::LOG_PATH).unwrap();
-    let expected = format!(
-        "artwork pack Degraded at {}: {}",
-        docs.display(),
-        provider.diagnostics.join("; ")
-    );
-    assert!(
-        logged.contains(&expected),
-        "an acknowledged warning must still be written to the log in full: {expected:?}"
+        logged(&logged_line),
+        logged_before + 1,
+        "an acknowledged warning must still be written to {} in full: {logged_line:?}",
+        crate::LOG_PATH
     );
     assert_eq!(std::fs::read_to_string(&warnings).unwrap(), no_index_file);
+    app.ui.hide().unwrap();
+    drop(app);
+
+    // 4. Pack content updated without a new diagnostic: a well-formed row
+    // added to gameinfo.tsv changes only the source fingerprint, and that
+    // alone brings the warning back in a new process. Meanwhile the file
+    // on the card breaks after the warning went up, so the warning could
+    // not say so: the press that writes over it says it instead, on screen
+    // and in the log.
+    std::fs::write(
+        artwork.join("gameinfo.tsv"),
+        "#key\tname\tyear\tgenre\tdeveloper\tplayers\nKnown\tPack First\t1990\tAction\tStudio\t1\nSecond\tPack Second\t1991\tPuzzle\tStudio\t2\nExtra\tPack Extra\t1992\tAction\tStudio\t1\n",
+    )
+    .unwrap();
+    let malformed_line = |cause: &str| {
+        format!(
+            "artwork pack warnings: {} is malformed: {cause}",
+            warnings.display()
+        )
+    };
+    let mut app = start(window.clone());
+    assert!(
+        message_contains(&app, "is incomplete"),
+        "changed content with an unchanged diagnostic is a warning not yet seen: {:?}",
+        app.message
+    );
+    assert!(
+        !message_contains(&app, "could not be read"),
+        "the file was whole when the warning went up: {:?}",
+        app.message
+    );
+    let provider = app.artwork_provider.as_ref().unwrap();
+    assert_eq!(
+        provider.diagnostics, no_index_diagnostics,
+        "the diagnostic is unchanged; only the content is"
+    );
+    let extra_digest = provider.health_digest();
+    assert_ne!(extra_digest, no_index_digest);
+    std::fs::write(&warnings, "degraded = \"not a table").unwrap();
+    let cause = malformed_cause();
+    let malformed_before = logged(&malformed_line(&cause));
+    app.handle(Action::Accept);
+    assert!(
+        message_contains(&app, "remembered")
+            && message_contains(&app, "could not be read and was replaced"),
+        "a file that broke between the warning and the press is said at the press: {:?}",
+        app.message
+    );
+    assert!(
+        !names_the_file(&app, &cause),
+        "the press says the file was replaced, not the parse error or the path: {:?}",
+        app.message
+    );
+    assert_eq!(
+        logged(&malformed_line(&cause)),
+        malformed_before + 1,
+        "the replacement of a file that broke meanwhile must reach {} with its cause",
+        crate::LOG_PATH
+    );
+    assert!(
+        acknowledged("NES", &extra_digest),
+        "the broken file is replaced by a readable one"
+    );
+    app.handle(Action::Accept);
+    assert!(app.message.is_none(), "{:?}", app.message);
     app.ui.hide().unwrap();
     drop(app);
 
@@ -3359,7 +3484,7 @@ fn run_degraded_pack_acknowledgement_flow(root: &Path, window: Rc<MinimalSoftwar
     let mut app = start(window.clone());
     assert!(message_contains(&app, "is incomplete"), "{:?}", app.message);
     let updated_digest = app.artwork_provider.as_ref().unwrap().health_digest();
-    assert_ne!(updated_digest, no_index_digest);
+    assert_ne!(updated_digest, extra_digest);
     let mut by_hand = Acknowledgements::default();
     by_hand.acknowledge("SNES", "kept");
     by_hand.save(&warnings).unwrap();
@@ -3370,7 +3495,7 @@ fn run_degraded_pack_acknowledgement_flow(root: &Path, window: Rc<MinimalSoftwar
         acknowledged("SNES", "kept"),
         "an entry written by hand while the program runs must survive the next save"
     );
-    assert!(!acknowledged("NES", &no_index_digest));
+    assert!(!acknowledged("NES", &extra_digest));
     app.ui.hide().unwrap();
     drop(app);
 
@@ -3378,17 +3503,30 @@ fn run_degraded_pack_acknowledgement_flow(root: &Path, window: Rc<MinimalSoftwar
     // else; that warning says the file was set aside, and why, because the
     // press that dismisses it writes over what was there.
     std::fs::write(&warnings, "degraded = \"not a table").unwrap();
+    let cause = malformed_cause();
+    let malformed_before = logged(&malformed_line(&cause));
     let mut app = start(window.clone());
     assert!(message_contains(&app, "is incomplete"), "{:?}", app.message);
     assert!(
         message_contains(&app, "could not be read and will be replaced"),
-        "a file set aside as malformed must be said on screen with its cause: {:?}",
+        "a file set aside as malformed must be said on screen: {:?}",
+        app.message
+    );
+    assert!(
+        !names_the_file(&app, &cause),
+        "the parse error and the path belong in the log, not on the overlay: {:?}",
         app.message
     );
     app.handle(Action::Accept);
     assert!(
         acknowledged("NES", &updated_digest),
         "the broken file is replaced by a readable one"
+    );
+    assert_eq!(
+        logged(&malformed_line(&cause)),
+        malformed_before + 1,
+        "one broken file is one line in {}, with its cause, not one per read of it",
+        crate::LOG_PATH
     );
     let acknowledged_file = std::fs::read_to_string(&warnings).unwrap();
     app.ui.hide().unwrap();
@@ -3399,11 +3537,19 @@ fn run_degraded_pack_acknowledgement_flow(root: &Path, window: Rc<MinimalSoftwar
     // nothing is written over it.
     std::fs::remove_file(&warnings).unwrap();
     std::fs::create_dir(&warnings).unwrap();
+    let cause = Acknowledgements::load(&warnings)
+        .expect_err("a directory in the file's place cannot be read")
+        .to_string();
     let mut app = start(window.clone());
     assert!(message_contains(&app, "is incomplete"), "{:?}", app.message);
     assert!(
         message_contains(&app, "cannot be remembered"),
-        "an unreadable file must be said on screen with its cause: {:?}",
+        "an unreadable file must be said on screen: {:?}",
+        app.message
+    );
+    assert!(
+        !names_the_file(&app, &cause),
+        "the read error and the path belong in the log, not on the overlay: {:?}",
         app.message
     );
     app.handle(Action::Accept);
@@ -3415,16 +3561,19 @@ fn run_degraded_pack_acknowledgement_flow(root: &Path, window: Rc<MinimalSoftwar
     app.ui.hide().unwrap();
     drop(app);
 
-    // A save that fails when the warning is dismissed is said on screen with
-    // its cause, and the warning comes back on the next start.
+    // A dismissal whose acknowledgement cannot be written down is said on
+    // screen with its cause, and the warning comes back on the next start.
+    // The file is read again before the save, so a file turned into a
+    // directory after the warning went up fails at that read.
     std::fs::remove_dir(&warnings).unwrap();
     let mut app = start(window.clone());
     assert!(message_contains(&app, "is incomplete"), "{:?}", app.message);
     std::fs::create_dir(&warnings).unwrap();
     app.handle(Action::Accept);
     assert!(
-        message_contains(&app, "not remembered"),
-        "a failed save must not be silent: {:?}",
+        message_contains(&app, "not remembered")
+            && message_contains(&app, "reading artwork pack warnings failed for"),
+        "a failed acknowledgement must say which step failed: {:?}",
         app.message
     );
     app.handle(Action::Accept);
