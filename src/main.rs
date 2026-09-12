@@ -1558,15 +1558,30 @@ fn effective_library_with_sources(
     })
 }
 
+/// What the report says about an Artwork Pack: its health, its root and
+/// every diagnostic. A dismissed warning never shortens this; the complete
+/// diagnostic is what the report is for.
+fn pack_report_lines(provider: &artwork_pack::Provider) -> Vec<String> {
+    let mut lines = vec![
+        format!("source       Artwork Pack ({})", provider.health.label()),
+        format!("pack root    {}", provider.docs_root.display()),
+    ];
+    lines.extend(
+        provider
+            .diagnostics
+            .iter()
+            .map(|diagnostic| format!("pack note    {diagnostic}")),
+    );
+    lines
+}
+
 fn print_report(system: &FoundSystem, effective: &EffectiveLibrary, audit: &browse::Audit) {
     let library = &effective.library;
     println!("system       {} ({})", system.name(), system.category());
     match effective.provider.as_ref() {
         Some(provider) => {
-            println!("source       Artwork Pack ({})", provider.health.label());
-            println!("pack root    {}", provider.docs_root.display());
-            for diagnostic in &provider.diagnostics {
-                println!("pack note    {diagnostic}");
+            for line in pack_report_lines(provider) {
+                println!("{line}");
             }
         }
         None => println!("source       Gamelist"),
@@ -2002,11 +2017,22 @@ category = "Favorites"
         seen.save(&pack_health::path_beside(&loaded.settings_path))
             .unwrap();
 
+        let report = pack_report_lines(provider);
+        assert_eq!(
+            report
+                .iter()
+                .filter(|line| line.starts_with("pack note    "))
+                .count(),
+            provider.diagnostics.len(),
+            "every diagnostic is a line of the report: {report:?}"
+        );
+
         let after = effective_library(&loaded, &loaded.systems[0]).unwrap();
         let acknowledged = after.provider.as_ref().unwrap();
         assert_eq!(acknowledged.health, artwork_pack::ProviderHealth::Degraded);
         assert_eq!(
-            acknowledged.diagnostics, provider.diagnostics,
+            pack_report_lines(acknowledged),
+            report,
             "a dismissed warning must not shorten what --report says about the pack"
         );
         std::fs::remove_dir_all(root).unwrap();
