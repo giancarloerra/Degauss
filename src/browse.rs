@@ -39,11 +39,13 @@ const NOT_GAMES: [&str; 4] = ["boot.rom", "boot.vhd", "blank.vhd", "boot0.rom"];
 /// symlink loop must not be able to walk the whole card forever.
 pub const MAX_DEPTH: usize = 12;
 
-/// Why an archive one of whose member paths goes past [`MAX_DEPTH`] is left
-/// out whole, said the same way by the index that skips it and the audit
-/// that reports it.
+/// Why a folder inside an archive that sits past [`MAX_DEPTH`] is left out
+/// with everything under it, said the same way by the index that skips it
+/// and the audit that reports it. The depth is counted from where the
+/// system starts, the folders holding the archive included, so a short
+/// member path in a deeply stored archive reaches it too.
 pub fn member_depth_reason() -> String {
-    format!("a member path exceeds the maximum folder depth of {MAX_DEPTH}")
+    format!("folder is past the maximum depth of {MAX_DEPTH} below the system start")
 }
 
 /// Somewhere that can be listed.
@@ -1243,7 +1245,6 @@ impl Library {
             .map(|root| (Place::Dir(root.path.clone()), 0))
             .collect();
         let mut seen: HashSet<(String, Option<String>)> = HashSet::new();
-        let mut too_deep: HashSet<PathBuf> = HashSet::new();
 
         while let Some((place, depth)) = stack.pop() {
             if audit.places_read >= AUDIT_LIMIT {
@@ -1251,16 +1252,15 @@ impl Library {
                 break;
             }
             if depth > MAX_DEPTH {
-                // The index leaves an archive out whole when a member path
-                // goes this deep; the audit has already counted what it
-                // reached of the archive, so it says why the rest is not
-                // there, once per archive.
-                if let Place::ArchiveDirectory { archive, .. } = &place {
-                    if too_deep.insert(archive.clone()) {
-                        audit
-                            .unreadable
-                            .push((archive.clone(), member_depth_reason()));
-                    }
+                // The index leaves a folder inside an archive out, with
+                // whatever is under it, when it sits this deep; the audit
+                // names the same folder with the same reason, so the report
+                // says why games a rebuild leaves out are not there.
+                if let Place::ArchiveDirectory { archive, prefix } = &place {
+                    audit.unreadable.push((
+                        PathBuf::from(format!("{}/{prefix}", archive.display())),
+                        member_depth_reason(),
+                    ));
                 }
                 continue;
             }
@@ -1790,13 +1790,13 @@ mod tests {
         std::fs::remove_dir_all(dir).unwrap();
     }
 
-    /// The index skips an archive whole when a member path goes past the
-    /// depth the walk allows; the audit cannot take back what it counted
-    /// before it got that deep, so it has to name the archive and the
-    /// reason, once, or the report would show games a rebuild leaves out
-    /// with nothing to explain it.
+    /// The index leaves a folder inside an archive out, with everything
+    /// under it, when it sits past the depth the walk allows; the audit
+    /// names the same folder with the same reason, or the report would
+    /// count games a rebuild leaves out with nothing to explain it. The
+    /// member beside those folders is counted, as the index publishes it.
     #[test]
-    fn an_archive_with_a_member_past_the_depth_limit_is_named_once_by_the_audit() {
+    fn a_folder_past_the_depth_limit_inside_an_archive_is_named_by_the_audit() {
         let dir = temp("audit-depth-limit");
         let archive = dir.join("deep.zip");
         let one = format!("{}One.d64", "a/".repeat(MAX_DEPTH + 1));
@@ -1808,10 +1808,26 @@ mod tests {
         .unwrap();
         let library = Library::open(&system(&dir)).unwrap();
         let audit = library.audit(false);
+        assert_eq!(audit.games, 1, "the shallow member is counted");
+        let mut unreadable = audit.unreadable;
+        unreadable.sort();
+        // The archive sits one level below the system, so the folder that
+        // would be one level past the limit is the one with MAX_DEPTH
+        // segments; the level above it is still walked.
+        let past_the_limit = |segment: &str| {
+            PathBuf::from(format!(
+                "{}/{}",
+                archive.display(),
+                vec![segment; MAX_DEPTH].join("/")
+            ))
+        };
         assert_eq!(
-            audit.unreadable,
-            vec![(archive, member_depth_reason())],
-            "two member paths past the limit, one line"
+            unreadable,
+            vec![
+                (past_the_limit("a"), member_depth_reason()),
+                (past_the_limit("b"), member_depth_reason()),
+            ],
+            "one line per folder past the limit"
         );
         std::fs::remove_dir_all(dir).unwrap();
     }

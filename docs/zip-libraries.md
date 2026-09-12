@@ -11,11 +11,11 @@ A central directory that does not hold together fails the whole archive: the arc
 - a member whose disk number is the ZIP64 sentinel (which Main refuses without resolving) or is not the archive's disk (Main also lets a record saying disk 1 into a disk-0 archive; Degauss is stricter there, which only ever leaves an archive out);
 - a member record whose sizes or local-header offset do not fit the archive;
 - a member with a masked local header (general-purpose bit 13, which Main refuses for the whole archive when it reads the directory);
-- an archive path holding an earlier `.zip` substring, which Main splits its native target at.
+- an archive path that is not UTF-8, holds a control character, or holds an earlier `.zip` substring, which Main splits its native target at.
 
 Every record is checked this way, including one that is about to be skipped on its own, because Main checks them all before it will open the archive.
 
-An archive one of whose member paths goes deeper than the folder depth the index walks (twelve levels below where the system starts, the folders holding the archive included) is also skipped whole, with `a member path exceeds the maximum folder depth of 12`: that is the walk's own limit rather than anything Main checks, and an archive the walk cannot finish is not listed in part. `--report` and `--audit` count the members they reach before that depth and name the archive with the same reason. A folder that deep remains the system's failure.
+A folder inside an archive that sits deeper than the folder depth the index walks (twelve levels below where the system starts, the folders holding the archive and the archive itself included, so a short member path in a deeply stored archive reaches it too) is skipped with everything under it, as `archive.zip/folder: skipped: folder is past the maximum depth of 12 below the system start`: that is the walk's own limit rather than anything Main checks. The archive's other members, and the folders above that one, stay. `--report` and `--audit` name the same folder with the same reason as an `unreadable` line, but only when a supported member sits under it: they walk the folders that hold supported games, while the index records every folder the archive holds, so a folder that deep holding nothing launchable is named by the index alone. A folder on the card that deep remains the system's failure.
 
 A problem confined to one member skips only that member, with its exact reason, and the other members stay. That is any of:
 

@@ -465,12 +465,12 @@ the library. Systems that already launch ZIP files as individual games keep that
 behaviour. ZIP64 is supported
 within the documented bounds. Metadata for a multi-game archive identifies each game
 by its full archive/member path; single-game archives retain legacy archive-level
-metadata. A damaged archive, or one with a member path deeper than the folder
-depth Degauss walks, is skipped whole; a member MiSTer cannot launch (an inner
-archive, an encrypted or unusually compressed entry, a legacy-encoded or
-ambiguous name) is skipped on its own while the other members stay, and each
-skip is reported. See [ZIP libraries](docs/zip-libraries.md) for details and
-launch limits.
+metadata. A damaged archive is skipped whole; a member MiSTer cannot launch (an
+inner archive, an encrypted or unusually compressed entry, a legacy-encoded or
+ambiguous name) is skipped on its own while the other members stay, as is a
+folder inside an archive that sits deeper than the folder depth Degauss walks,
+with everything under it, and each skip is reported. See
+[ZIP libraries](docs/zip-libraries.md) for details and launch limits.
 
 ### RetroAchievements and Unstable cores
 
