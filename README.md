@@ -250,7 +250,13 @@ scripts report their underlying error.
   from the system's selected Gamelist or Artwork Pack source.
 - **Favourites are MiSTer's favourites**, written into `_@Favorites` in
   MiSTer's own format. One made here works in the stock menu; one made
-  anywhere else appears here.
+  anywhere else appears here: the stock script's absolute paths, the
+  root-relative paths Degauss writes, and hand-written paths relative to
+  the core's games folder are all read the way MiSTer Main reads them. A
+  favourite any of whose files sits in two of its system's folders at once
+  is kept, reported in `/tmp/degauss.log` and Game Information, and
+  refused at launch with the same line, rather than pointed at one of them
+  by folder order.
 - **Awkward systems handled** without hassle: AmigaVision, DOS,
   Neo Geo, Arcade, X68000, and cores that are several machines.
 
@@ -422,7 +428,9 @@ without any setup, in the order MiSTer's own loader searches:
 then the card, each under its `games` folder. For each system folder the
 first place that has it wins, so a system kept on both the stick and the
 card browses from the stick, exactly as the stock menu would load it.
-Different folders of one system may resolve in different places.
+Different folders of one system may resolve in different places. The
+files an MGL names by a relative path are looked for in the same order,
+under the folder MiSTer Main would use for that core and set name.
 
 Two things to know. Storage is looked for when Degauss starts, so plug
 the stick in first (or restart after); and moving a system between
@@ -874,6 +882,23 @@ MRA entries are matched by their `<setname>`, including MGLs that point to an
 MRA. Large embedded hexadecimal ROM, patch and cheat payloads do not impose a
 whole-file size limit on that lookup. XML identity metadata remains bounded to
 1 MiB; this is separate from artwork image limits.
+
+An MGL is read the way MiSTer Main reads it. A `<file path>` written
+absolute is used as written. Any other path, `./` and `../` forms
+included, is looked for under the core's home directory, never beside the
+MGL: `games/<setname>` when the MGL carries a `<setname>` (without
+`same_dir="1"`), otherwise the core's own games folder, found in the same
+storage order as the system folders. An MGL for one of the systems in the
+table is identified by the game it names, its last `<file>`, as before. An
+MGL for a core outside the table, such as an arcade core with its ROM set
+spelled out as several files under `_Arcade`, is identified by its own name
+and `<setname>`: every file it names by a non-absolute path has to exist
+under that home directory, and none of them is hashed. A file present in two of a system's
+folders at once is reported in `/tmp/degauss.log` and left unmatched rather
+than picked by folder order. A `<setname>` that is not one folder name (a
+`/`, `.` or `..` step in it) is looked for nowhere, so a `<setname>` cannot
+lead that home directory lookup outside the game roots; a `<file path>`
+written absolute is used as written, wherever it points.
 
 Selecting an Artwork Pack never edits or removes the existing gamelist or its
 media. Choose **Gamelist** again to restore them immediately. While Artwork
@@ -1422,7 +1447,7 @@ to point somewhere else. `degauss.sh` passes them explicitly.
 | `--audit` | Every system, one line each: games found, artwork bound, folders and any selected Artwork Pack health problem. A Gamelist system with a `gamelist.xml` but no artwork bound, a usable Pack that resolves no pictures, or a system with no games is listed again underneath as a problem. A whole card checked without opening a hundred systems by hand. |
 | `--list-systems` | Which systems this card actually has, and where each one resolved. The answer to "why is my system missing". |
 | `--check-install` | The installation itself, including every saved Artwork Pack root: what is present, missing, broken or left half-migrated. The first thing to run when something looks wrong. |
-| `--report` | One system in detail, with `--system <id>`. It identifies Gamelist or Artwork Pack; for a Pack it also reports the selected root, health and the first game's local match method. |
+| `--report` | One system in detail, with `--system <id>`. It identifies Gamelist or Artwork Pack; for a Pack it also reports the selected root, health and the first game's local match method, and a match that fails on an MGL names the file the MGL asked for and the folder it was looked for in, or the set name no games folder was found for. |
 | `--dry-run-launch` | The MGL that *would* be written to start a game, printed instead of run. The answer to "why does this game not start". |
 
 ### Seeing it without the screen
