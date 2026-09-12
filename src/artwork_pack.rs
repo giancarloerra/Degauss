@@ -2280,9 +2280,12 @@ fn identity_for_launch_controlled(
 }
 
 /// The identity of a Neo Geo ROM set: the set name, which is the ZIP's
-/// stem or the folder's name, with nothing to hash or stat. [`None`] for
-/// anything that is not a whole ZIP or an extensionless path, so a `.neo`,
-/// an `.mgl` and a member inside an archive keep their ordinary identity.
+/// stem or the folder's whole name, with nothing to hash. A whole ZIP and
+/// an extensionless path are sets without a stat; a folder with a dot in
+/// its name, which a catalogue may well list, is told from a file by one
+/// stat, since the file would be read for its hash anyway. [`None`] for
+/// a `.neo`, an `.mgl` and a member inside an archive, which keep their
+/// ordinary identity.
 fn neogeo_set_identity(path: &Path) -> Option<GameIdentity> {
     if archive_member(path).is_some() {
         return None;
@@ -2295,6 +2298,8 @@ fn neogeo_set_identity(path: &Path) -> Option<GameIdentity> {
     let name = match extension.as_str() {
         "zip" => path.file_stem()?.to_str()?,
         "" => path.file_name()?.to_str()?,
+        "neo" | "mgl" => return None,
+        _ if path.is_dir() => path.file_name()?.to_str()?,
         _ => return None,
     };
     Some(GameIdentity {
@@ -4317,11 +4322,12 @@ mod tests {
         ready_directory(&docs, "NEOGEO", "mslug", "mslug", "Metal Slug");
         ready_tables(
             &docs.join("NEOGEO/Artwork"),
-            "mslug\t\t\tmslug\nkof98n\t\t\tkof98\nMetal Slug\t\t\tmslug\n",
+            "mslug\t\t\tmslug\nkof98n\t\t\tkof98\nMetal Slug\t\t\tmslug\nmslug.v2\t\t\tmslug\n",
             "mslug\tMetal Slug\t1996\tRun and gun\tNazca\t2\nkof98\tThe King of Fighters '98\t1998\tFighting\tSNK\t2\n",
         );
         let games = base.join("games/NEOGEO");
         std::fs::create_dir_all(games.join("kof98n")).unwrap();
+        std::fs::create_dir_all(games.join("mslug.v2")).unwrap();
         std::fs::write(games.join("MSLUG.zip"), b"not an archive").unwrap();
         std::fs::write(games.join("kof98n.zip"), b"not an archive").unwrap();
         for id in ["NeoGeo", "NeoGeoMVS"] {
@@ -4355,6 +4361,34 @@ mod tests {
             assert_eq!(
                 provider
                     .resolve(&identity)
+                    .and_then(|presentation| presentation.diagnostic)
+                    .map(|diagnostic| diagnostic.method),
+                Some(MatchMethod::IndexName),
+                "{id}"
+            );
+            // A set folder with a dot in its name is still the whole name:
+            // read as a file it would be `mslug` with `v2` for an
+            // extension, matched to the wrong key and then hashed, which
+            // a folder cannot be.
+            let dotted = provider
+                .identity_for_launch(
+                    &Launch::File(games.join("mslug.v2")),
+                    &AtomicBool::new(false),
+                )
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                (
+                    dotted.name.as_str(),
+                    dotted.extension.as_deref(),
+                    dotted.hash_path.as_deref()
+                ),
+                ("mslug.v2", None, None),
+                "{id}"
+            );
+            assert_eq!(
+                provider
+                    .resolve(&dotted)
                     .and_then(|presentation| presentation.diagnostic)
                     .map(|diagnostic| diagnostic.method),
                 Some(MatchMethod::IndexName),
