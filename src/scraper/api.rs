@@ -1135,19 +1135,54 @@ fn unrecognised_error(text: &str) -> Error {
 
 /// One bounded line of a server text for the log. The documented error
 /// texts are short sentences; a longer body is cut so a page cannot
-/// flood the log.
+/// flood the log, and the cut line is redacted so a page that echoes the
+/// request address cannot put the credentials from its query in the log.
 fn excerpt(text: &str) -> String {
     const LIMIT: usize = 120;
     let mut chars = text
         .split_whitespace()
         .flat_map(|word| std::iter::once(' ').chain(word.chars()))
         .skip(1);
-    let line: String = chars.by_ref().take(LIMIT).collect();
+    let line = redact_credentials(&chars.by_ref().take(LIMIT).collect::<String>());
     if chars.next().is_some() {
         format!("{line}...")
     } else {
         line
     }
+}
+
+/// Replace the value of every credential query parameter Degauss sends
+/// (`devid`, `devpassword`, `ssid`, `sspassword`) with "[redacted]". The
+/// value runs to the next `&`, whitespace or markup delimiter, or to the
+/// end of the line, so a value the cut left half in place is blanked too.
+fn redact_credentials(line: &str) -> String {
+    const KEYS: [&str; 4] = ["devid", "devpassword", "ssid", "sspassword"];
+    let lower = line.to_ascii_lowercase();
+    let mut redacted = String::with_capacity(line.len());
+    let mut index = 0;
+    while let Some(next) = line[index..].chars().next() {
+        let key = KEYS.iter().copied().find(|key| {
+            let at_boundary = index == 0 || !lower.as_bytes()[index - 1].is_ascii_alphanumeric();
+            at_boundary
+                && lower[index..].starts_with(key)
+                && lower[index + key.len()..].starts_with('=')
+        });
+        let Some(key) = key else {
+            redacted.push(next);
+            index += next.len_utf8();
+            continue;
+        };
+        let value_start = index + key.len() + 1;
+        let value_end = line[value_start..]
+            .find(|character: char| {
+                character == '&' || character.is_whitespace() || "\"'<>".contains(character)
+            })
+            .map_or(line.len(), |offset| value_start + offset);
+        redacted.push_str(&line[index..value_start]);
+        redacted.push_str("[redacted]");
+        index = value_end;
+    }
+    redacted
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1231,10 +1266,17 @@ fn parse(
     let mut saw_account = false;
     let mut game: Option<RawGame> = None;
     let mut capture: Option<Capture> = None;
+    // Every ScreenScraper answer is a `<Data>` document. A body with any
+    // other root (a maintenance, proxy or challenge page, whatever content
+    // type it was served with) is not an answer to the one request, so it
+    // is the service being unavailable; only a `<Data>` answer whose
+    // content is unusable is a malformed response for that request.
+    let mut saw_data_root = false;
 
     loop {
         match reader.read_event() {
             Ok(Event::Eof) => break,
+            Err(_) if !saw_data_root => return Err(not_an_answer("invalid XML")),
             Err(_) => {
                 return Err(Error::new(
                     ErrorKind::MalformedResponse,
@@ -1246,6 +1288,9 @@ fn parse(
             }
             Ok(Event::Start(element)) => {
                 let tag = element.name().as_ref().to_ascii_lowercase();
+                if !saw_data_root {
+                    saw_data_root = require_data_root(&tag)?;
+                }
                 let attributes = xml_attributes(&element)?;
                 let parent = stack.last().map(String::as_str);
                 let direct_game_rom = parent == Some("rom")
@@ -1341,6 +1386,10 @@ fn parse(
                 stack.push(element.name().as_ref().to_ascii_lowercase());
             }
             Ok(Event::Empty(element)) => {
+                if !saw_data_root {
+                    saw_data_root =
+                        require_data_root(&element.name().as_ref().to_ascii_lowercase())?;
+                }
                 xml_attributes(&element)?;
                 if element.name().as_ref().eq_ignore_ascii_case("jeux") {
                     parsed.saw_games_container = true;
@@ -1401,6 +1450,9 @@ fn parse(
             _ => {}
         }
     }
+    if !saw_data_root {
+        return Err(not_an_answer("no root element"));
+    }
     if !stack.is_empty() || game.is_some() || capture.is_some() {
         return Err(Error::new(
             ErrorKind::MalformedResponse,
@@ -1411,6 +1463,22 @@ fn parse(
         parsed.account = Some(account);
     }
     Ok(parsed)
+}
+
+/// True for ScreenScraper's `<Data>` root; any other root element is a
+/// page the service did not answer with.
+fn require_data_root(tag: &str) -> Result<bool> {
+    if tag == "data" {
+        return Ok(true);
+    }
+    Err(not_an_answer(&format!("root element <{}>", excerpt(tag))))
+}
+
+fn not_an_answer(what: &str) -> Error {
+    Error::new(
+        ErrorKind::Unavailable,
+        format!("ScreenScraper returned a page instead of an answer ({what})"),
+    )
 }
 
 fn xml_attributes(element: &BytesStart<'_>) -> Result<Vec<(String, String)>> {
@@ -2160,6 +2228,114 @@ mod tests {
         .account()
         .unwrap_err();
         assert_eq!(error.kind, ErrorKind::Unavailable);
+    }
+
+    #[test]
+    fn a_page_without_the_data_root_is_an_outage_whatever_its_content_type() {
+        // A maintenance, proxy or challenge page can arrive with no
+        // Content-Type header or with an XML one; its body starts with '<'
+        // like an answer, so the content type alone cannot tell it apart.
+        // Without the root check it would count as one game's unreadable
+        // match and a batch would spend one lookup per remaining game
+        // against a service that is not answering.
+        let hashes = Hashes {
+            size: 3,
+            crc32: "352441C2".into(),
+            md5: "900150983CD24FB0D6963F7D28E17F72".into(),
+            sha1: "A9993E364706816ABA3E25717850C26C9CD0D89D".into(),
+        };
+        for (content_type, body) in [
+            (None, "<html><body>Maintenance</body></html>"),
+            (
+                Some("application/xml"),
+                "<html><body>Maintenance</body></html>",
+            ),
+            (None, "<!DOCTYPE html><html><body><p>Maintenance</html>"),
+            (
+                Some("text/xml"),
+                "<?xml version='1.0'?><Response>busy</Response>",
+            ),
+            (None, "<!-- nothing -->"),
+            (None, "<<<"),
+        ] {
+            let response = HttpResponse {
+                status: 200,
+                content_type: content_type.map(str::to_string),
+                body: body.as_bytes().to_vec(),
+            };
+            let searched = client(response.clone()).by_name(3, "Game").unwrap_err();
+            assert_eq!(searched.kind, ErrorKind::Unavailable, "{body}");
+            assert!(
+                !searched.detail.contains("Maintenance"),
+                "{}",
+                searched.detail
+            );
+            assert_eq!(
+                client(response.clone())
+                    .by_hash(3, "Game.rom", &hashes)
+                    .unwrap_err()
+                    .kind,
+                ErrorKind::Unavailable,
+                "{body}"
+            );
+            assert_eq!(
+                client(response).account().unwrap_err().kind,
+                ErrorKind::Unavailable,
+                "{body}"
+            );
+        }
+        // A `<Data>` answer that is cut short or carries no game list is
+        // still that one request's unreadable answer.
+        for body in [
+            "<Data><jeux><jeu id='42'><noms>",
+            "<Data><message>no game list here</message></Data>",
+        ] {
+            assert_eq!(
+                client(HttpResponse {
+                    status: 200,
+                    content_type: None,
+                    body: body.as_bytes().to_vec(),
+                })
+                .by_name(3, "Game")
+                .unwrap_err()
+                .kind,
+                ErrorKind::MalformedResponse,
+                "{body}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_reflected_request_address_is_redacted_from_the_diagnosis() {
+        // `Client::auth` carries the developer and account credentials in
+        // the query string, and the excerpt of a rejection, of an
+        // unrecognised error text and of a plain page reaches the local
+        // log. A page that reflects the request address must not put those
+        // values there, including a value the cut leaves half in place.
+        let echo = "?devid=dm1&devpassword=ds1&ssid=um1&sspassword=us1&romnom=G.rom";
+        for text in [
+            format!("Erreur : Problème dans le nom du fichier rom {echo}"),
+            format!("Erreur : Problème dans la recherche {echo}"),
+            format!("Bad request {echo}"),
+        ] {
+            let detail = text_error(&text).detail;
+            for marker in ["=dm1", "=ds1", "=um1", "=us1"] {
+                assert!(!detail.contains(marker), "{detail}");
+            }
+            assert!(
+                detail.ends_with(
+                    "?devid=[redacted]&devpassword=[redacted]&ssid=[redacted]&sspassword=[redacted]&romnom=G.rom"
+                ),
+                "{detail}"
+            );
+        }
+        let straddling = format!("{} sspassword=user-secret-marker", "x".repeat(105));
+        let cut = excerpt(&straddling);
+        assert!(cut.ends_with(" sspassword=[redacted]..."), "{cut}");
+        assert_eq!(
+            redact_credentials("<a href='x.php?ssid=user-marker'>ssid=user-marker</a> myssid=kept"),
+            "<a href='x.php?ssid=[redacted]'>ssid=[redacted]</a> myssid=kept"
+        );
     }
 
     #[test]

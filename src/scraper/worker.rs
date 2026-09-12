@@ -96,9 +96,9 @@ pub struct Progress {
     /// a failed lookup, download or write. A game whose image failed or
     /// had none at ScreenScraper is listed even when its metadata was
     /// written; games not reached before a failure or cancellation are
-    /// not listed. The
-    /// report names them after an unattended batch. Carried only by the
-    /// terminal event; progress snapshots leave it empty.
+    /// not listed. The report names them after an unattended batch.
+    /// Carried only by the terminal event; progress snapshots leave it
+    /// empty.
     pub unresolved_games: Vec<UnresolvedGame>,
 }
 
@@ -2322,8 +2322,9 @@ fn safe_component(value: &str) -> String {
 /// Whether one game's failure stops the batch. A request ScreenScraper
 /// rejected, or a match response it served unreadable, concerns that game
 /// alone; transport, login, rate limit, quota and service outages (which
-/// include an answer that is not XML at all) concern every game still
-/// queued.
+/// include an answer that is not XML at all, or a page whose root element
+/// is not ScreenScraper's `<Data>`, whatever its content type) concern
+/// every game still queued.
 fn fatal_for_run(error: &Error) -> bool {
     !matches!(
         error.kind,
@@ -3311,11 +3312,22 @@ mod tests {
     /// Answers the lookup for `Rejected.rom` with a configured response
     /// and matches every other game. With `at_title_search` the hash lookup
     /// misses and the configured response answers the title search instead.
+    /// An empty `content_type` answers without a Content-Type header.
     struct RejectingMock {
         status: u16,
         content_type: &'static str,
         body: &'static str,
         at_title_search: bool,
+    }
+
+    impl RejectingMock {
+        fn configured(&self) -> HttpResponse {
+            HttpResponse {
+                status: self.status,
+                content_type: (!self.content_type.is_empty()).then(|| self.content_type.into()),
+                body: self.body.as_bytes().to_vec(),
+            }
+        }
     }
 
     impl Transport for RejectingMock {
@@ -3338,18 +3350,10 @@ mod tests {
                     "<Data><jeux/></Data>".to_string()
                 }
                 "jeuInfos.php" if parameter("romnom") == "Rejected.rom" => {
-                    return Ok(HttpResponse {
-                        status: self.status,
-                        content_type: Some(self.content_type.into()),
-                        body: self.body.as_bytes().to_vec(),
-                    });
+                    return Ok(self.configured());
                 }
                 "jeuRecherche.php" if parameter("recherche") == "Rejected" && self.at_title_search => {
-                    return Ok(HttpResponse {
-                        status: self.status,
-                        content_type: Some(self.content_type.into()),
-                        body: self.body.as_bytes().to_vec(),
-                    });
+                    return Ok(self.configured());
                 }
                 "jeuInfos.php" => {
                     let md5 = parameter("md5");
@@ -3618,16 +3622,29 @@ mod tests {
 
     #[test]
     fn a_page_instead_of_xml_still_stops_the_batch() {
-        // An HTML page, a plain notice, an empty body or an error text
-        // ScreenScraper has not documented is not a match response for one
-        // game but a sign that the service is not answering; walking the
-        // queue would spend one request per remaining game for nothing.
+        // An HTML page (whatever content type it is served with, or none),
+        // a plain notice, an empty body or an error text ScreenScraper has
+        // not documented is not a match response for one game but a sign
+        // that the service is not answering; walking the queue would spend
+        // one request per remaining game for nothing.
         for (name, content_type, body, at_title_search) in [
             (
                 "html-page",
                 "text/html",
                 "<html><body>Maintenance</body></html>",
                 false,
+            ),
+            (
+                "untyped-html-page",
+                "",
+                "<html><body>Maintenance</body></html>",
+                false,
+            ),
+            (
+                "xml-labelled-html-page",
+                "application/xml",
+                "<!DOCTYPE html><html><body><p>Maintenance</html>",
+                true,
             ),
             (
                 "notice",

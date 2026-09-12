@@ -966,20 +966,22 @@ artwork or metadata, set the corresponding Images or Metadata policy to
 Folder, system and all-systems scrapes never stop for a match choice. Missing
 and ambiguous ScreenScraper matches are counted, skipped without changes, and the remaining
 games continue. A request ScreenScraper rejects for one game (HTTP 400 or one
-of its documented texts about that game's rom name or hash fields) or a match
-response it serves unreadable is counted as failed for that game and the run
-continues; a file whose name leaves nothing to search for once its extension
-and dump tags are removed is counted as missing with the reason "no
-searchable title" and no title search is sent, although a hash lookup is
-still made for a file that can be hashed. A network failure, a rejected
-login, a rate limit, a service outage, a refused client, a request address
-reported as incomplete (Degauss sends the same fields for every game), an
-error text Degauss does not recognise or an answer that is neither XML nor an
-error text still stops the run. Unsupported systems are also skipped and
-counted.
-If two systems use the same folder but require different ScreenScraper
-platform IDs, the all-systems scrape skips that shared target; a per-system
-scrape remains available.
+of its documented texts about that game's rom name or hash fields) or a
+ScreenScraper XML answer it serves unreadable is counted as failed for that
+game and the run continues; a file whose name leaves nothing to search for
+once its extension and dump tags are removed is counted as missing with the
+reason "no searchable title" and no title search is sent, although a hash
+lookup is still made for a file that can be hashed. A network failure, a
+rejected login, a rate limit, a service outage, a refused client or an
+exhausted allowance stops the run whatever HTTP status or text it arrives
+with, as does a request address reported as incomplete (Degauss sends the
+same fields for every game), an error text Degauss does not recognise on a
+successful status (under HTTP 400 it counts as that game's rejection) or an
+answer that is neither a ScreenScraper XML answer nor an error text, such as
+a maintenance or intermediary page, whatever its content type. Unsupported
+systems are also skipped and counted. If two systems use the same folder but
+require different ScreenScraper platform IDs, the all-systems scrape skips
+that shared target; a per-system scrape remains available.
 
 Symlinked copies share a single scrape and gamelist update only when they point
 to the same physical file and the same existing gamelist entry; extra paths
