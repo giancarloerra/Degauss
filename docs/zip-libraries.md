@@ -11,7 +11,7 @@ A central directory that does not hold together fails the whole archive: the arc
 - a member whose disk number is the ZIP64 sentinel (which Main refuses without resolving) or is not the archive's disk (Main also lets a record saying disk 1 into a disk-0 archive; Degauss is stricter there, which only ever leaves an archive out);
 - a member record whose sizes or local-header offset do not fit the archive;
 - a member with a masked local header (general-purpose bit 13, which Main refuses for the whole archive when it reads the directory);
-- an archive path that is not UTF-8, holds a control character, or holds an earlier `.zip` substring, which Main splits its native target at.
+- the archive's own path on the card (not a member name) that is not UTF-8, holds a control character, or holds an earlier `.zip` substring, which Main splits its native target at.
 
 Every record is checked this way, including one that is about to be skipped on its own, because Main checks them all before it will open the archive.
 
@@ -19,7 +19,7 @@ A folder inside an archive that sits deeper than the folder depth the index walk
 
 A problem confined to one member skips only that member, with its exact reason, and the other members stay. That is any of:
 
-- an encrypted entry, or a compressed-patch entry;
+- an encrypted entry (except the stored case below, which fails the archive), or a compressed-patch entry;
 - another compression method, named by its number;
 - a nested archive member (Main refuses a second `.zip` in a target);
 - a traversal or empty path segment, a backslash or colon, a control character, or leading or trailing whitespace in the name;
@@ -75,6 +75,6 @@ python3 scripts/test-main-zip.py /path/to/Main_MiSTer/lib/miniz
 
 The script verifies the source hashes, compiles Degauss's parser and Main's production iterator, and generates a few small synthetic archives locally.
 
-It compares exact member names, sizes and CRCs through stored, deflated and ZIP64 reads, verifies that an encrypted or unusually compressed member is skipped and refused for launch while its supported sibling is still listed and Main's iterator rejects the archive, verifies that a masked local header and a ZIP64 sentinel member disk number are refused whole by both readers, and verifies the explicit comment limitation. Temporary fixtures and binaries are removed automatically. There are no network requests or card writes.
+It compares exact member names, sizes and CRCs through stored, deflated and ZIP64 reads, verifies that an encrypted or unusually compressed member is skipped and refused for launch while its supported sibling is still listed and accepted for launch and Main's iterator rejects the archive, verifies that a masked local header and a ZIP64 sentinel member disk number are refused whole by both readers, and verifies the explicit comment limitation. Temporary fixtures and binaries are removed automatically. There are no network requests or card writes.
 
 This test exercises host filesystem and reader behavior. It does not prove ARM32 execution, a core launch or achievement operation. Large-entry-count and sparse-file tests belong on the host; the card smoke test needs only a few games in a small isolated library.

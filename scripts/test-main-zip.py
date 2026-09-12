@@ -173,9 +173,14 @@ def main():
                                  f"exit {result.returncode}, output {result.stdout!r}")
             if run_reader(degauss_reader, archive, "Root.rom").returncode == 0:
                 raise SystemExit(f"Degauss offered the unsupported member of {name} for launch")
+            result = run_reader(degauss_reader, archive, "Nested/Game.rom")
+            if result.returncode or result.stdout != remaining:
+                raise SystemExit(f"Degauss refused the supported member of {name} for launch: "
+                                 f"exit {result.returncode}, output {result.stdout!r}")
             if run_reader(main_reader, archive).returncode == 0:
                 raise SystemExit(f"Main iterator incorrectly accepted {name}")
-            print(f"PASS {name}: unsupported member skipped and refused for launch, Main rejects")
+            print(f"PASS {name}: unsupported member skipped and refused for launch, "
+                  "supported member accepted, Main rejects")
         # A masked local header (general-purpose bit 13) is refused by Main
         # when it reads the central directory, before any member is looked
         # up, so the whole archive has to fail in Degauss as well.
