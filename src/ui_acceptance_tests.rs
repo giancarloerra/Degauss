@@ -3035,24 +3035,42 @@ fn run_fresh_auto_pack_index_flow(root: &Path, window: Rc<MinimalSoftwareWindow>
     // a missing prepared cache, which would hide the cause.
     let broken = games.join("Broken.zip");
     std::fs::write(&broken, b"not an archive").unwrap();
+    let warning = format!(
+        "NES: {}: skipped: zip archive is malformed: no valid end-of-directory record",
+        broken.display()
+    );
+    // The log is shared and kept across runs: only what it gains here
+    // counts, and the warning is the only line of its kind for this
+    // fixture's archive path.
+    let log_since = |from: usize| {
+        let log = std::fs::read_to_string(crate::LOG_PATH).unwrap_or_default();
+        log[from.min(log.len())..].to_string()
+    };
+    let recovery_line = format!("cache        recovery warning: {warning}");
+    let log_before = log_since(0).len();
     app.start_build(true);
     app.finish_background_work_for_headless();
     let problems = app.index_terminal.clone().unwrap();
     assert_eq!(problems.state, "Finished With Problems");
-    assert!(
-        problems.problem.contains(&format!(
-            "NES: {}: skipped: zip archive is malformed: no valid end-of-directory record",
-            broken.display()
-        )),
-        "{}",
-        problems.problem
-    );
+    assert!(problems.problem.contains(&warning), "{}", problems.problem);
     assert!(
         !problems
             .problem
             .contains("prepared system cache is missing"),
         "{}",
         problems.problem
+    );
+    // A full build logs the warning once, as the line the terminal shows;
+    // the recovery step must not log it a second time on the way there.
+    let log = log_since(log_before);
+    assert_eq!(
+        log.lines().filter(|line| *line == warning).count(),
+        1,
+        "{log}"
+    );
+    assert!(
+        !log.lines().any(|line| line == recovery_line),
+        "a full build logged the warning twice: {log}"
     );
     assert_complete(&app, 3);
     assert_operation_controls(&mut app, false, "A Details   B Back");
@@ -3062,6 +3080,7 @@ fn run_fresh_auto_pack_index_flow(root: &Path, window: Rc<MinimalSoftwareWindow>
     // source worker rather than the index terminal, and has to say the
     // same thing: the archive and its reason, not a pointer to the log.
     app.message = None;
+    let log_before = log_since(0).len();
     app.rebuild_open_system_resolved();
     app.finish_background_work_for_headless();
     let message = app.message.clone().unwrap_or_default();
@@ -3069,12 +3088,14 @@ fn run_fresh_auto_pack_index_flow(root: &Path, window: Rc<MinimalSoftwareWindow>
         message.starts_with("NES list rebuilt with problems:\n"),
         "{message}"
     );
-    assert!(
-        message.contains(&format!(
-            "NES: {}: skipped: zip archive is malformed: no valid end-of-directory record",
-            broken.display()
-        )),
-        "{message}"
+    assert!(message.contains(&warning), "{message}");
+    // Without a terminal to drain them, the recovery step is the one
+    // place this path logs the warning.
+    let log = log_since(log_before);
+    assert_eq!(
+        log.lines().filter(|line| *line == recovery_line).count(),
+        1,
+        "{log}"
     );
     assert_complete(&app, 3);
     capture_live_if_requested(&mut app, "source-auto-pack-rebuilt-with-problems");
