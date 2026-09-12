@@ -456,9 +456,9 @@ fn unicode_path<'a>(value: &'a [u8], raw: &[u8]) -> Option<&'a str> {
     std::str::from_utf8(&value[5..]).ok()
 }
 
-/// A member name for a diagnostic: quoted when it is UTF-8, otherwise the
-/// raw bytes escaped, exact either way.
-fn shown(raw: &[u8]) -> String {
+/// A member name quoted for an archive error: the text when it is UTF-8,
+/// otherwise the raw bytes escaped, exact either way.
+fn quoted(raw: &[u8]) -> String {
     match std::str::from_utf8(raw) {
         Ok(name) => format!("{name:?}"),
         Err(_) => format!("\"{}\"", raw.escape_ascii()),
@@ -627,7 +627,7 @@ fn contents_controlled(path: &Path, cancelled: &AtomicBool) -> Result<Option<Con
                 path,
                 format!(
                     "member {} has inconsistent size or local-header bounds",
-                    shown(raw)
+                    quoted(raw)
                 ),
             ));
         }
@@ -639,7 +639,7 @@ fn contents_controlled(path: &Path, cancelled: &AtomicBool) -> Result<Option<Con
                 path,
                 format!(
                     "member {} has a masked local header, which Main refuses for the whole archive",
-                    shown(raw)
+                    quoted(raw)
                 ),
             ));
         }
