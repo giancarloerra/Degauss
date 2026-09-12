@@ -392,7 +392,12 @@ impl Catalogues {
             }
             return catalogue.recognise(name);
         }
-        catalogue.recognise(&name[..name.len() - ".zip".len()])
+        match name.rsplit_once('.') {
+            Some((stem, extension)) if extension.eq_ignore_ascii_case("zip") => {
+                catalogue.recognise(stem)
+            }
+            _ => Recognition::Unrecognised,
+        }
     }
 
     /// Every catalogue file that could not be read, with the reason.
@@ -632,6 +637,21 @@ mod tests {
             Recognition::Hidden,
             "a ZIP has no romset.xml of its own to outrank the catalogue"
         );
+        assert_eq!(
+            catalogues.classify(&catalogue, &dir.join("own.ZIP"), "own.ZIP", false),
+            Recognition::Hidden,
+            "the extension is matched as the card spells it"
+        );
+        // Only a ZIP is looked up by its stem: any other file name is
+        // answered without indexing into it, so a short or dotless name
+        // cannot end the listing.
+        for other in ["own", "own.neo", "zip", "z", ""] {
+            assert_eq!(
+                catalogues.classify(&catalogue, &dir.join(other), other, false),
+                Recognition::Unrecognised,
+                "{other:?}"
+            );
+        }
         assert!(catalogues.problems().is_empty());
         std::fs::remove_dir_all(&dir).ok();
     }
