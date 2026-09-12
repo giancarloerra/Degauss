@@ -887,9 +887,10 @@ source of the system that owns its game.
 The source menu shows both the saved mode and its effective source. Under
 Automatic a `gamelist.xml` in any of the system's library roots always comes
 first and a pack is used only while there is none: the effective source is
-Gamelist until a pack has been prepared for that system, and a root gamelist
-that appears later takes the system back to Gamelist, noticed at the next
-entry into it and at the next start. Automatic checks only standard SD/USB
+Gamelist, which is the ordinary filesystem presentation when there is no
+gamelist either, until a pack has been prepared for that system, and a root
+gamelist that appears later takes the system back to Gamelist, noticed at
+the next entry into it and at the next start. Automatic checks only standard SD/USB
 locations; the explicit Pack picker continues to support network and custom
 locations.
 
