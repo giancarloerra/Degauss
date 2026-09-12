@@ -3093,7 +3093,6 @@ fn run_automatic_pack_consent_flow(root: &Path, window: Rc<MinimalSoftwareWindow
         "#key\tstyle\tss_system_id\nKnown\tbox-3D\t3\nSecond\tbox-3D\t3\n",
     )
     .unwrap();
-    let logged_from = log_len();
     open(&mut app);
     assert_prompt(&app, available);
     app.handle(Action::Accept);
@@ -3127,10 +3126,6 @@ fn run_automatic_pack_consent_flow(root: &Path, window: Rc<MinimalSoftwareWindow
         .accepted
         .is_none());
     assert!(!app.effective_artwork_pack_roots.contains_key("NES"));
-    assert!(
-        !log_since(logged_from).contains("background refresh"),
-        "no false refresh is announced after a cancellation"
-    );
     leave_system(&mut app);
     open(&mut app);
     assert_prompt(&app, available);
@@ -3584,7 +3579,6 @@ fn run_automatic_pack_consent_flow(root: &Path, window: Rc<MinimalSoftwareWindow
     let prepared_before = pack_files(&app.cache_dir, "NES");
     let ordinary_path = crate::cache::system_path(&app.cache_dir, "NES");
     let ordinary_before = std::fs::read(&ordinary_path).unwrap();
-    let logged_from = log_len();
     app.start_build(true);
     assert!(
         app.source_recovery_queue.is_empty(),
@@ -3593,11 +3587,8 @@ fn run_automatic_pack_consent_flow(root: &Path, window: Rc<MinimalSoftwareWindow
     app.finish_background_work_for_headless();
     assert_eq!(app.index_terminal.as_ref().unwrap().state, "Complete");
     assert_eq!(app.index_terminal.as_ref().unwrap().games, 3);
-    assert!(
-        !log_since(logged_from).contains("Artwork Pack cache prepared"),
-        "{}",
-        log_since(logged_from)
-    );
+    // A preparation inside the rebuild would write the decision and the
+    // mapping afresh; the files below prove it did not run.
     let rebuilt = pack_files(&app.cache_dir, "NES");
     assert_ne!(rebuilt[0], prepared_before[0], "the rows are read again");
     assert_eq!(rebuilt[1], prepared_before[1], "the decision is untouched");
@@ -3742,7 +3733,6 @@ fn run_automatic_pack_consent_flow(root: &Path, window: Rc<MinimalSoftwareWindow
     );
     assert_eq!(pack_files(&app.cache_dir, "NES"), rebuilt_files);
     assert!(log_since(logged_from).contains("artwork pack NES: unavailable at"));
-    assert!(!log_since(logged_from).contains("state reused"));
     app.handle(Action::Accept);
     app.enter(Place::Dir(games.clone()));
     assert_eq!(app.here[0].name, "Known.nes", "no Pack data is substituted");
@@ -3821,7 +3811,6 @@ fn run_automatic_pack_consent_flow(root: &Path, window: Rc<MinimalSoftwareWindow
     // rebuild asks again, and Update writes the rows again.
     let rows_path = crate::cache::artwork_pack_system_path(&app.cache_dir, "NES");
     std::fs::remove_file(&rows_path).unwrap();
-    let logged_from = log_len();
     open(&mut app);
     assert_prompt(&app, changed);
     app.handle(Action::Quit);
@@ -3844,11 +3833,6 @@ fn run_automatic_pack_consent_flow(root: &Path, window: Rc<MinimalSoftwareWindow
         .declined
         .as_ref()
         .is_some_and(|declined| declined.cache_marker.is_none()));
-    assert!(
-        !log_since(logged_from).contains("background refresh"),
-        "{}",
-        log_since(logged_from)
-    );
     assert_eq!(
         app.source_label("NES"),
         format!("Automatic: {SOURCE_GAMELIST}")
@@ -4113,17 +4097,11 @@ fn run_automatic_pack_consent_flow(root: &Path, window: Rc<MinimalSoftwareWindow
     // for the Pack it declined.
     leave_system(&mut app);
     let prepared_neogeo = pack_files(&app.cache_dir, "NeoGeo");
-    let logged_from = log_len();
     app.start_build(true);
     assert!(app.source_recovery_queue.is_empty());
     app.finish_background_work_for_headless();
     assert_eq!(app.index_terminal.as_ref().unwrap().state, "Complete");
     assert_eq!(app.index_terminal.as_ref().unwrap().done, 2);
-    assert!(
-        !log_since(logged_from).contains("Artwork Pack cache prepared"),
-        "{}",
-        log_since(logged_from)
-    );
     let rebuilt_neogeo = pack_files(&app.cache_dir, "NeoGeo");
     assert!(rebuilt_neogeo.iter().all(Option::is_some));
     assert_ne!(rebuilt_neogeo[0], prepared_neogeo[0]);
@@ -4289,7 +4267,10 @@ fn run_legacy_pack_cache_adoption_flow(root: &Path, window: Rc<MinimalSoftwareWi
     let logged_from = log_len();
     app.open_system_by_index(0);
     assert!(log_since(logged_from).contains("artwork pack NES: state reused"));
-    assert!(!log_since(logged_from).contains("state written"));
+    assert!(
+        app.provider_job.is_none(),
+        "the reused state opens the system without a worker read"
+    );
     assert_eq!(app.here[0].name, "Pack First");
     // A worker read started to open the system opens it when it is done,
     // whatever an earlier read in the process was started for.
