@@ -3219,6 +3219,12 @@ fn run_degraded_pack_acknowledgement_flow(root: &Path, window: Rc<MinimalSoftwar
             .as_deref()
             .is_some_and(|message| message.contains(text))
     };
+    // The overlay is small and names no file: the cause of a file that
+    // could not be read or written stays in the log.
+    let names_the_file = |app: &App| {
+        message_contains(app, &warnings.display().to_string())
+            || message_contains(app, "not a table")
+    };
     let reopen = |app: &mut App| {
         app.handle(Action::Quit);
         assert!(
@@ -3418,6 +3424,11 @@ fn run_degraded_pack_acknowledgement_flow(root: &Path, window: Rc<MinimalSoftwar
         "a file that broke between the warning and the press is said at the press: {:?}",
         app.message
     );
+    assert!(
+        !names_the_file(&app),
+        "the press says the file was replaced, not the parse error or the path: {:?}",
+        app.message
+    );
     assert_eq!(
         logged(&malformed_line),
         malformed_before + 1,
@@ -3466,7 +3477,12 @@ fn run_degraded_pack_acknowledgement_flow(root: &Path, window: Rc<MinimalSoftwar
     assert!(message_contains(&app, "is incomplete"), "{:?}", app.message);
     assert!(
         message_contains(&app, "could not be read and will be replaced"),
-        "a file set aside as malformed must be said on screen with its cause: {:?}",
+        "a file set aside as malformed must be said on screen: {:?}",
+        app.message
+    );
+    assert!(
+        !names_the_file(&app),
+        "the parse error and the path belong in the log, not on the overlay: {:?}",
         app.message
     );
     app.handle(Action::Accept);
@@ -3493,7 +3509,12 @@ fn run_degraded_pack_acknowledgement_flow(root: &Path, window: Rc<MinimalSoftwar
     assert!(message_contains(&app, "is incomplete"), "{:?}", app.message);
     assert!(
         message_contains(&app, "cannot be remembered"),
-        "an unreadable file must be said on screen with its cause: {:?}",
+        "an unreadable file must be said on screen: {:?}",
+        app.message
+    );
+    assert!(
+        !names_the_file(&app),
+        "the read error and the path belong in the log, not on the overlay: {:?}",
         app.message
     );
     app.handle(Action::Accept);
