@@ -993,13 +993,13 @@ impl Provider {
                         field(b"absent");
                         continue;
                     };
-                    field(fingerprint.directory_modified.to_string().as_bytes());
+                    field(&fingerprint.directory_modified.to_le_bytes());
                     for (name, size, modified, content_crc32) in &fingerprint.tables {
                         field(name.as_bytes());
-                        field(size.to_string().as_bytes());
-                        field(modified.to_string().as_bytes());
+                        field(&size.to_le_bytes());
+                        field(&modified.to_le_bytes());
                         match content_crc32 {
-                            Some(crc32) => field(crc32.to_string().as_bytes()),
+                            Some(crc32) => field(&crc32.to_le_bytes()),
                             None => field(b"no-crc32"),
                         }
                     }
