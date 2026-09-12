@@ -15860,7 +15860,10 @@ mod tests {
     /// the picture climbs through the folder in between, through the
     /// archive's own directory, and the archive row stays a row to enter.
     /// The game inside the archive's directory is named by its exact
-    /// archive path, the only way a nested member is named.
+    /// archive path, the only way a nested member is named. An archive of
+    /// several members is read by the same rule as a folder of several
+    /// files: one picture shared by every member is the game's, two
+    /// pictures are two games.
     #[test]
     fn a_nested_folder_and_a_one_game_zip_derive_the_same_way() {
         let root = picker_temp("nested-and-zip");
@@ -15878,6 +15881,18 @@ mod tests {
             crate::zip::tests_archive(&["Folder/Game.nes"], false),
         )
         .unwrap();
+        let shared = games.join("Shared.zip");
+        std::fs::write(
+            &shared,
+            crate::zip::tests_archive(&["Game (Disc 1).nes", "Game (Disc 2).nes"], false),
+        )
+        .unwrap();
+        let different = games.join("Different.zip");
+        std::fs::write(
+            &different,
+            crate::zip::tests_archive(&["First.nes", "Second.nes"], false),
+        )
+        .unwrap();
         let config = found_system_with_extensions("NES", vec![games.clone()], &["nes"]).to_config();
         let cache = gamelist_cache(
             &games,
@@ -15886,6 +15901,10 @@ mod tests {
                 ("Outer/Inner/Game.nes", Some("game.png")),
                 ("Sole.zip", Some("sole.png")),
                 ("Nested.zip/Folder/Game.nes", Some("nested.png")),
+                ("Shared.zip/Game (Disc 1).nes", Some("shared.png")),
+                ("Shared.zip/Game (Disc 2).nes", Some("shared.png")),
+                ("Different.zip/First.nes", Some("first.png")),
+                ("Different.zip/Second.nes", Some("second.png")),
             ],
         );
         let start = Place::Dir(games.clone());
@@ -15896,8 +15915,10 @@ mod tests {
                 .map(|row| row.kind.clone())
                 .collect::<Vec<_>>(),
             [
+                browse::Kind::Enter(Place::Archive(different.clone())),
                 browse::Kind::Enter(Place::Archive(nested.clone())),
                 browse::Kind::Enter(Place::Dir(games.join("Outer"))),
+                browse::Kind::Enter(Place::Archive(shared.clone())),
                 browse::Kind::Enter(Place::Archive(archive.clone())),
             ]
         );
@@ -15934,13 +15955,35 @@ mod tests {
             Some(games.join("media/nested.png").as_path()),
             "and so does the archive above it"
         );
+        assert_eq!(
+            cache
+                .get(&Place::Archive(shared.clone()))
+                .unwrap()
+                .rows
+                .len(),
+            2,
+            "the archive of two discs lists both"
+        );
+        assert_eq!(
+            derived_folder_cover(&cache, &Place::Archive(shared), &[], None).as_deref(),
+            Some(games.join("media/shared.png").as_path()),
+            "an archive whose members share one picture shows it"
+        );
+        assert_eq!(
+            derived_folder_cover(&cache, &Place::Archive(different), &[], None),
+            None,
+            "an archive of two games with their own pictures shows neither"
+        );
         std::fs::remove_dir_all(root).ok();
     }
 
     /// The picture on a folder comes from the source the system is set
     /// to, and from nowhere else: with the Pack selected a gamelist picture
     /// on the card is not the Pack's answer, and a Pack that is not ready
-    /// has no answer at all rather than a borrowed one.
+    /// has no answer at all rather than a borrowed one. The Pack's
+    /// pictures are read by the same rule as the gamelist's: several
+    /// discs the Pack maps to one key share its picture, and discs mapped
+    /// to two keys are two games.
     #[test]
     fn artwork_pack_folders_use_only_prepared_pack_covers() {
         let root = picker_temp("pack-folder");
@@ -15959,9 +16002,12 @@ mod tests {
             "#key\tstyle\tss_system_id\nDisk Name\tbox-2D\t105\nOther Disk\tbox-2D\t105\n",
         )
         .unwrap();
+        // The index names each disc of the two-disc game after the one
+        // key, so the Pack answers one picture for both.
         std::fs::write(
             art.join("index.tsv"),
-            "#name\tcrc\tsize\tkey\nDisk Name\t\t\tDisk Name\nOther Disk\t\t\tOther Disk\n",
+            "#name\tcrc\tsize\tkey\nDisk Name\t\t\tDisk Name\nOther Disk\t\t\tOther Disk\n\
+             Disk Name (Disc 1)\t\t\tDisk Name\nDisk Name (Disc 2)\t\t\tDisk Name\n",
         )
         .unwrap();
         let config =
@@ -15969,9 +16015,17 @@ mod tests {
         let gamelist_cache = gamelist_cache(
             &games,
             &config,
-            &[("Disk Name/Disk Name.sgx", Some("gamelist.jpg"))],
+            &[
+                ("Disk Name/Disk Name.sgx", Some("gamelist.jpg")),
+                ("Multi/Disk Name (Disc 1).sgx", Some("multi.jpg")),
+                ("Multi/Disk Name (Disc 2).sgx", Some("multi.jpg")),
+                ("Mixed/Disk Name (Disc 1).sgx", Some("mixed-first.jpg")),
+                ("Mixed/Other Disk.sgx", Some("mixed-second.jpg")),
+            ],
         );
         let folder = Place::Dir(games.join("Disk Name"));
+        let multi = Place::Dir(games.join("Multi"));
+        let mixed = Place::Dir(games.join("Mixed"));
         let gamelist_cover = games.join("media/gamelist.jpg");
         assert_eq!(
             derived_folder_cover(&gamelist_cache, &folder, &[], None).as_deref(),
@@ -16018,8 +16072,23 @@ mod tests {
             None,
             "not even from a row that carries the gamelist picture"
         );
-        assert_eq!(prepared(&mut provider), 1);
+        assert_eq!(prepared(&mut provider), 5, "every disc is matched");
         assert_eq!(through(&provider).as_deref(), Some(pack_cover.as_path()));
+        assert_eq!(
+            derived_folder_cover(&pack_cache, &multi, &[], Some(&provider)).as_deref(),
+            Some(pack_cover.as_path()),
+            "two discs the Pack maps to one key share its picture"
+        );
+        assert_eq!(
+            derived_folder_cover(&gamelist_cache, &multi, &[], Some(&provider)).as_deref(),
+            Some(pack_cover.as_path()),
+            "the Pack's picture, not the one the gamelist rows carry"
+        );
+        assert_eq!(
+            derived_folder_cover(&pack_cache, &mixed, &[], Some(&provider)),
+            None,
+            "discs the Pack maps to two keys are two games"
+        );
 
         let mut unmapped = crate::artwork_pack::Provider::load("NoSuchSystem", &docs, Some("en"));
         assert!(!unmapped.health.usable());
@@ -16036,7 +16105,11 @@ mod tests {
             provider.health.usable(),
             "one picture missing leaves the Pack usable"
         );
-        prepared(&mut provider);
+        assert_eq!(
+            prepared(&mut provider),
+            1,
+            "only the disc under the other key is still matched"
+        );
         assert!(provider.covers_prepared());
         assert!(gamelist_cover.is_file());
         assert_eq!(
@@ -16048,6 +16121,11 @@ mod tests {
             over_gamelist_rows(&provider),
             None,
             "not even from a row that carries the gamelist picture"
+        );
+        assert_eq!(
+            derived_folder_cover(&gamelist_cache, &multi, &[], Some(&provider)),
+            None,
+            "nor for two discs whose gamelist rows share a picture"
         );
         std::fs::remove_dir_all(root).ok();
     }
