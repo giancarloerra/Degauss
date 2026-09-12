@@ -3643,9 +3643,25 @@ fn run_arcade_core_descriptor_favourite_flow(root: &Path, window: Rc<MinimalSoft
         !logged.contains(&arcade.join("btc0-s.bin").display().to_string()),
         "nothing is looked for beside the descriptor"
     );
-    assert!(
-        !logged.contains("pack match   FAILED"),
-        "the set's preparation does not fail on a bare component"
+    // The worker's own preparation of the descriptor, as a result rather
+    // than a log line: the interface holds only the prepared rows, the
+    // catalogue that matched them lives in the worker.
+    let presentation = crate::artwork_pack::Provider::load("Arcade", &docs, None)
+        .presentation_for_launch_with_fingerprints(
+            &browse::Launch::File(descriptor.clone()),
+            &crate::cache::ContentFingerprints::new(),
+            &app.homes(),
+        )
+        .expect("the set's preparation does not fail on a bare component")
+        .expect("the descriptor is matched");
+    assert_eq!(presentation.name.as_deref(), Some("Pack Battletoads"));
+    let matched = presentation
+        .diagnostic
+        .expect("a Pack match records how it was made");
+    assert_eq!(
+        (matched.key.as_str(), matched.method),
+        ("Battletoads", crate::artwork_pack::MatchMethod::ExactKey),
+        "the set is matched under the descriptor's own key, not a component's"
     );
 
     // Favourited the way the stock script favourites a core file: a link.
