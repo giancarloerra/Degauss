@@ -251,6 +251,19 @@ fn read_bounded(path: &Path, what: &'static str) -> Result<Vec<u8>> {
     Ok(bytes)
 }
 
+/// Whether a catalogue file is there to read. Absent is the normal case
+/// and answers `false`, as does a folder of that name; a path whose
+/// metadata cannot be read at all (a symlink loop, a permission, a mount
+/// that stopped answering) is an error, because "there is no catalogue"
+/// would be the wrong thing to tell the owner.
+fn catalogue_file(path: &Path, what: &'static str) -> Result<bool> {
+    match std::fs::metadata(path) {
+        Ok(metadata) => Ok(metadata.is_file()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(DegaussError::io(what, path, error)),
+    }
+}
+
 /// The title a folder's own `romset.xml` gives it, if the folder has one.
 ///
 /// Main reads this before it looks at the catalogue: a folder carrying the
@@ -261,7 +274,7 @@ fn read_bounded(path: &Path, what: &'static str) -> Result<Vec<u8>> {
 /// malformed file is an error for the caller to report.
 pub fn romset_title(dir: &Path) -> Result<Option<String>> {
     let path = dir.join("romset.xml");
-    if !path.is_file() {
+    if !catalogue_file(&path, "romset.xml")? {
         return Ok(None);
     }
     let mut title = String::new();
@@ -315,13 +328,16 @@ impl Catalogues {
     }
 
     /// The catalogue at `path`, or [`None`] when there is no file there.
-    /// A file that cannot be read is reported and answers as empty, so
-    /// every `.neo` and `.mgl` beside it is still listed.
+    /// A file that cannot be read, or whose presence cannot even be
+    /// established, is reported and answers as empty, so every `.neo` and
+    /// `.mgl` beside it is still listed.
     fn read(&self, path: &Path) -> Option<Arc<Catalogue>> {
-        if !path.is_file() {
-            return None;
-        }
-        Some(Arc::new(match Catalogue::read(path) {
+        let parsed = match catalogue_file(path, "romsets.xml") {
+            Ok(false) => return None,
+            Ok(true) => Catalogue::read(path),
+            Err(error) => Err(error),
+        };
+        Some(Arc::new(match parsed {
             Ok(catalogue) => catalogue,
             Err(error) => {
                 self.record_problem(path, error.to_string());
@@ -663,6 +679,42 @@ mod tests {
             "got: {}",
             problems[0].1
         );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_catalogue_whose_presence_cannot_be_established_is_reported_not_absent() {
+        // A stat that fails for any reason but "not there" (a symlink
+        // loop here; a permission or a stalled mount on a card) must not
+        // pass for a folder with no catalogue: the sets would silently
+        // become archives and folders with nothing to say why.
+        let dir = temp("unreadable");
+        std::os::unix::fs::symlink("romsets.xml", dir.join("romsets.xml")).unwrap();
+        let catalogues = Catalogues::open([dir.as_path()]);
+        assert_eq!(
+            catalogues.for_dir(&dir).recognise("anything"),
+            Recognition::Unrecognised
+        );
+        let problems = catalogues.problems();
+        assert_eq!(problems.len(), 1, "got: {problems:?}");
+        assert_eq!(problems[0].0, dir.join("romsets.xml"));
+        assert!(
+            problems[0].1.contains("romsets.xml"),
+            "got: {}",
+            problems[0].1
+        );
+        // A folder's own romset.xml is held to the same standard.
+        std::fs::create_dir_all(dir.join("set")).unwrap();
+        std::os::unix::fs::symlink("romset.xml", dir.join("set/romset.xml")).unwrap();
+        assert!(romset_title(&dir.join("set")).is_err());
+        // A folder named like the file is no catalogue and no error.
+        std::fs::create_dir_all(dir.join("plain/romsets.xml")).unwrap();
+        assert_eq!(
+            catalogues.for_dir(&dir.join("plain")).recognise("anything"),
+            Recognition::Unrecognised
+        );
+        assert_eq!(catalogues.problems().len(), 1);
         std::fs::remove_dir_all(&dir).ok();
     }
 
