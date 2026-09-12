@@ -862,7 +862,10 @@ fn log_start() {
     let _ = std::fs::write(LOG_PATH, b"");
 }
 
-/// Add one line to it. Failing to log is never a reason to stop.
+/// Add one line to it. Failing to log is never a reason to stop. The line
+/// and its newline go in one write: `writeln!` on a file writes its pieces
+/// separately, and the index worker and the interface both log, so two
+/// lines written at the same moment would otherwise cut into each other.
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 pub fn note(line: &str) {
     use std::io::Write;
@@ -871,7 +874,7 @@ pub fn note(line: &str) {
         .append(true)
         .open(LOG_PATH)
     {
-        let _ = writeln!(file, "{line}");
+        let _ = file.write_all(format!("{line}\n").as_bytes());
     }
 }
 
@@ -2387,5 +2390,41 @@ category = "Favorites"
         );
         drop(app);
         std::fs::remove_dir_all(scratch).expect("private visual runtime folder is removed");
+    }
+
+    /// The index worker writes a skipped archive's lines while the
+    /// interface writes its own, and the log is where the complete
+    /// diagnostic lives: a line cut by another written at the same moment
+    /// is a diagnostic lost. Only the lines this test writes are judged, by
+    /// their own marker, because the log is shared with every other test
+    /// and kept across runs.
+    #[test]
+    fn lines_logged_at_the_same_moment_stay_whole() {
+        let marker = format!("note-race    {}-{}", std::process::id(), line!());
+        let suffix = ": member name: reason";
+        let writer = |tag: &'static str| {
+            let marker = marker.clone();
+            std::thread::spawn(move || {
+                for i in 0..300 {
+                    note(&format!("{marker} {tag}{i}{suffix}"));
+                }
+            })
+        };
+        let (a, b) = (writer("a"), writer("b"));
+        a.join().unwrap();
+        b.join().unwrap();
+        let log = std::fs::read_to_string(LOG_PATH).unwrap();
+        let whole = log
+            .lines()
+            .filter(|line| line.starts_with(&marker) && line.ends_with(suffix))
+            .count();
+        let cut: Vec<_> = log
+            .lines()
+            .filter(|line| {
+                line.contains(&marker) && !(line.starts_with(&marker) && line.ends_with(suffix))
+            })
+            .collect();
+        assert!(cut.is_empty(), "lines cut into each other: {cut:?}");
+        assert_eq!(whole, 600, "every line is in the log once");
     }
 }
