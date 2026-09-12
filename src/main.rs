@@ -475,7 +475,7 @@ fn diagnostic_launch_plan(
         // As the interactive launch refuses it: MiSTer would start one of
         // the files found, and this run cannot say which.
         if let Some(mgl::Diagnostic::Ambiguous(text)) = &reference.diagnostic {
-            return Err(DegaussError::unsupported("MGL component", text.clone()));
+            return Err(DegaussError::unsupported("favourite launch", text.clone()));
         }
         if zip::split_member_path(&reference.owner_target).is_some() {
             zip::validate_member_for_launch(&reference.owner_target)?;
@@ -2028,7 +2028,7 @@ category = "Favorites"
             matches!(
                 &error,
                 DegaussError::Unsupported {
-                    what: "MGL component",
+                    what: "favourite launch",
                     ..
                 }
             ),
@@ -2037,6 +2037,11 @@ category = "Favorites"
         let text = error.to_string();
         assert!(text.contains(&root.join("games/NES/Game.nes").display().to_string()));
         assert!(text.contains(&other.join("Game.nes").display().to_string()));
+        assert_eq!(
+            text.matches("MGL component unsupported").count(),
+            1,
+            "the reason is said once: {text}"
+        );
 
         std::fs::remove_file(other.join("Game.nes")).unwrap();
         let plan = diagnostic_launch_plan(
