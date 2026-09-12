@@ -452,8 +452,9 @@ ordinary way, without its pack, and what was prepared for it is left as it
 was; the next entry into it asks whether to update the pack data for the
 list just read, and **Keep Current** goes on browsing on the previous
 mapping. A system that declined its pack, or was never asked, is read the
-ordinary way and not asked by the rebuild. Automatic Artwork Pack
-preparation is described [below](#using-mister-game-artwork-databases).
+ordinary way and Rebuild All does not ask it; **Rebuild This System List**
+inside that system is what asks again. Automatic Artwork Pack preparation is
+described [below](#using-mister-game-artwork-databases).
 Adding games to one system does not need the whole card read again:
 **X Actions → Library → Rebuild This System List** inside that system reads just its folders.
 Running it from a subfolder still rebuilds the complete containing system, not only that subfolder.
