@@ -890,19 +890,22 @@ system, the pack location, a signature of the pack's tables, the language the
 descriptions were prepared for, the version of the matching rules and the
 list the mapping was prepared from. Entering the system again, after a game or
 a restart, checks that signature against the pack with a handful of file
-stats and a checksum of the manifest, whose size grows with the number of
-images in the pack, then opens at once: no table is parsed, no row is walked
-and no ROM is checked again. The stats cover the tables that were there at
-preparation and the fixed names, `index.tsv`, `gameinfo.tsv`, `manifest.tsv`
-and the synopsis tables of the preferred language and of English; a synopsis
-in another language added later is picked up by **Rebuild This System
-List**. Images are read from the pack on demand as before, so an image
-replaced at its path shows its new picture without any rebuild: a file
-renamed or copied into place is noticed at the next entry, a file overwritten
-in place at the next start. Favourites and the screensaver use the same
-written-down mapping; a system that has not been prepared contributes its
-ordinary data to them. A state file beside the cache that cannot be read is
-reported when the system is entered, and nothing is asked or written over it.
+stats, then opens at once: no table is parsed, no row is walked and no ROM
+is checked again. The manifest, whose size grows with the number of images
+in the pack, is read and checksummed again only when the Artwork directory
+or the manifest's own size or time changed. The stats cover the tables that
+were there at preparation and the fixed names, `index.tsv`, `gameinfo.tsv`,
+`manifest.tsv` and the synopsis tables of the preferred language and of
+English; a synopsis in another language added later is picked up by
+**Rebuild This System List**. Images are read from the pack on demand as
+before, so an image replaced at its path shows its new picture without any
+rebuild: a file renamed into place, added or removed is noticed at the next
+entry; a file overwritten in place, or copied over its existing name, at the
+next start or after **Rebuild This System List**. Favourites and the
+screensaver use the same written-down mapping; a system that has not been
+prepared contributes its ordinary data to them. A state file beside the
+cache that cannot be read is reported when the system is entered, and
+nothing is asked or written over it.
 
 When the check finds that a table, the pack location, the language or the
 system's own list has changed since the preparation, Degauss asks before doing

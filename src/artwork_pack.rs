@@ -1527,9 +1527,14 @@ fn load_stable_directory(
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct Fingerprint {
     directory_modified: u128,
-    /// The manifest content identity closes the FAT/exFAT same-size,
-    /// same-timestamp replacement case used by an artwork-style switch.
-    /// Supplemental tables retain the cheaper metadata identity.
+    /// The manifest carries a content identity, taken when it is read
+    /// whole and again whenever its stats or the directory's move: an
+    /// artwork-style switch that replaces images moves the directory,
+    /// and its manifest is then hashed even at the same size and
+    /// timestamp. One that rewrites every file in place at the same size
+    /// and timestamp is not seen by the entry check; Rebuild This System
+    /// List reads the directory. Supplemental tables keep the cheaper
+    /// metadata identity.
     tables: Vec<(String, u64, u128, Option<u32>)>,
 }
 
@@ -1577,11 +1582,12 @@ impl SourceFingerprint {
 
     /// The bounded check made when a prepared system is entered: the docs
     /// root, each mapped Artwork directory, the tables written down and the
-    /// fixed table names are stat'd; the manifest is hashed again.
-    /// Nothing is listed, so a directory of thousands of images costs a
-    /// handful of stats. The signature returned is the source as it is
-    /// now, seen through the same names, for writing down when the rows
-    /// are kept.
+    /// fixed table names are stat'd; the manifest is hashed again only
+    /// when the directory or the manifest's own stats moved. Nothing is
+    /// listed and, unchanged, nothing is read, so a directory of thousands
+    /// of images costs a handful of stats. The signature returned is the
+    /// source as it is now, seen through the same names, for writing down
+    /// when the rows are kept.
     fn status(
         &self,
         mapping: Mapping,
@@ -1725,9 +1731,10 @@ fn fixed_table_names(language: Option<&str>) -> Vec<String> {
 }
 
 /// One Artwork directory seen through known names only: the tables written
-/// down last time plus the fixed names, each stat'd, the manifest hashed.
-/// `None` when the directory is not there; an error when it or a table
-/// cannot be looked at.
+/// down last time plus the fixed names, each stat'd, the manifest hashed
+/// when its stats or the directory's moved, or when nothing was written
+/// down. `None` when the directory is not there; an error when it or a
+/// table cannot be looked at.
 fn refreshed_fingerprint(
     artwork: &Path,
     recorded: Option<&Fingerprint>,
@@ -1770,15 +1777,34 @@ fn refreshed_fingerprint(
                 return Err(DegaussError::io("reading Artwork Pack table", &path, error));
             }
         };
-        // A manifest past the table limit is recorded without a content
+        // The manifest is hashed when something moved: the directory (an
+        // entry replaced, added or removed) or the manifest's own size or
+        // mtime. Neither moved: the checksum written down last time is
+        // the file's, and the file is not read again at every entry, on
+        // the interface thread, for a Pack of thousands of images. A
+        // manifest past the table limit is recorded without a content
         // identity, which reads as changed against one recorded with it;
         // one that cannot be read is an error, not a change.
-        let content_crc32 =
-            if name.eq_ignore_ascii_case("manifest.tsv") && metadata.len() <= MAX_TSV_BYTES {
-                file_crc32_controlled(&path, &AtomicBool::new(false))?
-            } else {
-                None
-            };
+        let content_crc32 = if name.eq_ignore_ascii_case("manifest.tsv") {
+            let unmoved = recorded
+                .filter(|recorded| recorded.directory_modified == modified_nanos(&directory))
+                .and_then(|recorded| {
+                    recorded.tables.iter().find(|(known, size, modified, _)| {
+                        known.eq_ignore_ascii_case(&name)
+                            && *size == metadata.len()
+                            && *modified == modified_nanos(&metadata)
+                    })
+                });
+            match unmoved {
+                Some((_, _, _, content_crc32)) => *content_crc32,
+                None if metadata.len() <= MAX_TSV_BYTES => {
+                    file_crc32_controlled(&path, &AtomicBool::new(false))?
+                }
+                None => None,
+            }
+        } else {
+            None
+        };
         tables.push((
             name,
             metadata.len(),
@@ -5193,7 +5219,27 @@ mod tests {
             "an unchanged source is returned as recorded"
         );
 
+        // Unchanged, the manifest is stat'd and not read: the check runs
+        // on the interface thread at every entry, and the manifest grows
+        // with the Pack. A manifest that cannot be read is an error when
+        // it is read, so a Current answer with it unreadable proves the
+        // read did not happen.
+        let manifest = art.join("manifest.tsv");
+        let manifest_mode = std::fs::metadata(&manifest).unwrap().permissions().mode();
+        std::fs::set_permissions(&manifest, std::fs::Permissions::from_mode(0o000)).unwrap();
+        assert_eq!(
+            snapshot_status("SuperGrafx", &signature, &root, None).0,
+            SnapshotStatus::Current,
+            "the manifest is not read when nothing moved"
+        );
         std::fs::write(art.join("Another.jpg"), b"jpeg").unwrap();
+        assert_eq!(
+            snapshot_status("SuperGrafx", &signature, &root, None).0,
+            SnapshotStatus::Unavailable,
+            "the directory moved, so the manifest is read, and it cannot be"
+        );
+        std::fs::set_permissions(&manifest, std::fs::Permissions::from_mode(manifest_mode))
+            .unwrap();
         let (status, refreshed) = snapshot_status("SuperGrafx", &signature, &root, None);
         assert_eq!(
             status,
