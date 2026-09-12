@@ -938,6 +938,55 @@ mod tests {
         std::fs::remove_dir_all(root).ok();
     }
 
+    /// The systems table is the user's to edit, and a set name configured
+    /// there is what Degauss itself writes into every MGL it generates for
+    /// that system. A descriptor carrying such a set name, path steps and
+    /// all, is that system's own: it answers with the folders the system
+    /// was found in, which lie under the game roots, and a file outside
+    /// them is never the answer.
+    #[test]
+    fn a_configured_setname_with_path_steps_answers_with_the_systems_own_folders() {
+        let root = temp("setname-steps-configured");
+        let escape = root.join("games/Escape");
+        let outside = root.join("outside");
+        std::fs::create_dir_all(&escape).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(escape.join("Game.fds"), b"disk in the system folder").unwrap();
+        std::fs::write(outside.join("Game.fds"), b"disk outside the roots").unwrap();
+        let homes = Homes::new(
+            &[root.join("games").to_string_lossy().into_owned()],
+            &[system(
+                "Escape",
+                "_Arcade/cores/Escape",
+                Some("../outside"),
+                std::slice::from_ref(&escape),
+            )],
+        );
+        let mgl = root.join("Escape.mgl");
+        std::fs::write(
+            &mgl,
+            "<mistergamedescription><rbf>_Arcade/cores/Escape</rbf><setname>../outside</setname><file delay=\"1\" type=\"f\" index=\"1\" path=\"Game.fds\"/></mistergamedescription>",
+        )
+        .unwrap();
+        let resolved = homes.resolve(&mgl).unwrap();
+        assert_eq!(
+            resolved.class,
+            Class::Game,
+            "the core is a recognised system"
+        );
+        assert_eq!(
+            resolved.components,
+            vec![Component::Home(escape.join("Game.fds"))],
+            "the system's own folder answers, not the folder the set name spells"
+        );
+        assert_eq!(
+            resolved.game_target().unwrap(),
+            Some(escape.join("Game.fds"))
+        );
+        assert_eq!(resolved.diagnostic(), None);
+        std::fs::remove_dir_all(root).ok();
+    }
+
     /// Main prints "No rbf found!" for such a descriptor; here the
     /// component cannot be placed and the descriptor is the thing at fault.
     #[test]

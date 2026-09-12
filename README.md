@@ -896,8 +896,9 @@ and `<setname>`: every file it names by a non-absolute path has to exist
 under that home directory, and none of them is hashed. A file present in two of a system's
 folders at once is reported in `/tmp/degauss.log` and left unmatched rather
 than picked by folder order. A `<setname>` that is not one folder name (a
-`/`, `.` or `..` step in it) is looked for nowhere, so no MGL can point
-the lookup outside the game roots.
+`/`, `.` or `..` step in it) is looked for nowhere, so a `<setname>` cannot
+lead that home directory lookup outside the game roots; a `<file path>`
+written absolute is used as written, wherever it points.
 
 Selecting an Artwork Pack never edits or removes the existing gamelist or its
 media. Choose **Gamelist** again to restore them immediately. While Artwork
