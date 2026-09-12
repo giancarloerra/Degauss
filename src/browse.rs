@@ -1292,7 +1292,7 @@ impl Library {
                                 place.path().display(),
                                 skipped.shown()
                             )),
-                            skipped.reason,
+                            skipped.explained(),
                         ));
                     }
                     project(&mut rows);
@@ -1882,7 +1882,7 @@ mod tests {
                 ),
                 (
                     under("Twin.d64"),
-                    "duplicate or case-ambiguous member paths under \"twin.d64\""
+                    "duplicate or case-ambiguous member path; conflict group \"twin.d64\""
                 ),
                 (
                     under("inner.zip"),
@@ -1890,7 +1890,7 @@ mod tests {
                 ),
                 (
                     under("twin.d64"),
-                    "duplicate or case-ambiguous member paths under \"twin.d64\""
+                    "duplicate or case-ambiguous member path; conflict group \"twin.d64\""
                 ),
             ]
         );

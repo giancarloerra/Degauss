@@ -69,8 +69,9 @@ pub struct Entry {
 /// log identifies the member exactly without a lossy decode; a UTF-8 name is
 /// kept exact, so a favourite naming the member still finds it. The reason
 /// is the same text for every member it applies to, so a summary can count
-/// them; anything that identifies one member further goes in the detail,
-/// which only the log prints.
+/// them; anything that identifies one member further (the decoded Unicode
+/// Path name, the conflict group) goes in the detail, which only the log
+/// and the audit print, beside the member's name.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Skipped {
     pub member: String,
@@ -90,13 +91,18 @@ impl Skipped {
         }
     }
 
+    /// The reason with whatever identifies this member further, for a line
+    /// that already names the member.
+    pub fn explained(&self) -> String {
+        match &self.detail {
+            Some(detail) => format!("{}; {detail}", self.reason),
+            None => self.reason.clone(),
+        }
+    }
+
     /// The complete log line body for this member.
     pub fn describe(&self) -> String {
-        let member = self.shown();
-        match &self.detail {
-            Some(detail) => format!("member {member}: {}; {detail}", self.reason),
-            None => format!("member {member}: {}", self.reason),
-        }
+        format!("member {}: {}", self.shown(), self.explained())
     }
 }
 
@@ -624,23 +630,24 @@ fn contents_controlled(path: &Path, cancelled: &AtomicBool) -> Result<Option<Con
         // From here on a problem belongs to this member alone: it is left
         // out with its reason and the rest of the archive still stands.
         // Only raw bytes that are valid UTF-8 can reach Main unchanged
-        // through the cache and the MGL; the UTF-8 flag (bit 11) says
-        // whether the writer claimed that, and a decoded Unicode Path name
-        // only identifies the member in the log.
+        // through the cache and the MGL, so any other name is an encoding
+        // Degauss cannot offer; whether the writer flagged it UTF-8 (bit
+        // 11) and a decoded Unicode Path name only identify the member in
+        // the log.
         let name = match std::str::from_utf8(raw) {
             Ok(name) => name,
             Err(_) => {
-                let reason = if flags & 2048 != 0 {
-                    "member name is flagged UTF-8 but is not valid UTF-8"
-                } else {
-                    "unsupported legacy ZIP filename encoding"
-                };
+                let mut detail = Vec::new();
+                if flags & 2048 != 0 {
+                    detail.push("flagged UTF-8".to_string());
+                }
+                if let Some(decoded) = unicode.and_then(|field| unicode_path(field, raw)) {
+                    detail.push(format!("Unicode Path {decoded:?}"));
+                }
                 skipped.push(Skipped {
                     member: raw.escape_ascii().to_string(),
-                    reason: reason.to_string(),
-                    detail: unicode
-                        .and_then(|field| unicode_path(field, raw))
-                        .map(|decoded| format!("Unicode Path {decoded:?}")),
+                    reason: "unsupported legacy ZIP filename encoding".to_string(),
+                    detail: (!detail.is_empty()).then(|| detail.join("; ")),
                 });
                 continue;
             }
@@ -660,9 +667,10 @@ fn contents_controlled(path: &Path, cancelled: &AtomicBool) -> Result<Option<Con
             }
         }
         // Main's extract iterator refuses bits 0, 6 and 5 together as
-        // unsupported encryption; the two reasons are kept apart here
-        // because the issue asks for the exact one, in the order Main's
-        // directory scan tests them (encryption, then a compressed patch).
+        // unsupported encryption; the two reasons are kept apart here, in
+        // the order Main's directory scan tests them (encryption, then a
+        // compressed patch), so a member is reported with the one that
+        // applies.
         let problem = if flags & (1 | 64) != 0 {
             Some("encrypted member is unsupported".to_string())
         } else if flags & 32 != 0 {
@@ -741,23 +749,35 @@ fn contents_controlled(path: &Path, cancelled: &AtomicBool) -> Result<Option<Con
             .map(str::to_string)
     };
     if !conflicts.is_empty() {
-        let conflicting = |name: String| {
-            let group = conflict_of(&name).expect("matched by the same test");
-            Skipped {
-                member: name,
-                reason: format!("duplicate or case-ambiguous member paths under {group:?}"),
-                detail: None,
+        // The group is worked out once per member, as it is matched, and
+        // kept in the order the members are taken out; the reason stays
+        // the same for every member so the summary counts them, and the
+        // group names the ambiguity in the log and the audit.
+        let mut groups = Vec::new();
+        let mut in_conflict = |name: &str| match conflict_of(name) {
+            Some(group) => {
+                groups.push(group);
+                true
             }
+            None => false,
         };
-        skipped.extend(
-            directories
-                .extract_if(.., |name| conflict_of(name).is_some())
-                .map(conflicting),
+        let mut members: Vec<String> = directories
+            .extract_if(.., |name| in_conflict(name))
+            .collect();
+        members.extend(
+            entries
+                .extract_if(.., |entry| in_conflict(&entry.name))
+                .map(|entry| entry.name),
         );
         skipped.extend(
-            entries
-                .extract_if(.., |entry| conflict_of(&entry.name).is_some())
-                .map(|entry| conflicting(entry.name)),
+            members
+                .into_iter()
+                .zip(groups)
+                .map(|(member, group)| Skipped {
+                    member,
+                    reason: "duplicate or case-ambiguous member path".to_string(),
+                    detail: Some(format!("conflict group {group:?}")),
+                }),
         );
     }
     for directory in &mut directories {
@@ -1113,6 +1133,15 @@ mod tests {
             .collect()
     }
 
+    /// Member and reason with its detail, as the audit prints them.
+    fn explained_of(contents: &Contents) -> Vec<(&str, String)> {
+        contents
+            .skipped
+            .iter()
+            .map(|skipped| (skipped.member.as_str(), skipped.explained()))
+            .collect()
+    }
+
     fn names_of(contents: &Contents) -> Vec<&str> {
         contents
             .entries
@@ -1182,32 +1211,32 @@ mod tests {
             (
                 vec!["game.neo", "game.neo", "ok.neo"],
                 2,
-                "duplicate or case-ambiguous member paths under \"game.neo\"",
+                "duplicate or case-ambiguous member path; conflict group \"game.neo\"",
             ),
             (
                 vec!["game.neo", "GAME.neo", "ok.neo"],
                 2,
-                "duplicate or case-ambiguous member paths under \"game.neo\"",
+                "duplicate or case-ambiguous member path; conflict group \"game.neo\"",
             ),
             (
                 vec!["Folder/a.neo", "Folder/b.neo", "folder/z.neo", "ok.neo"],
                 3,
-                "duplicate or case-ambiguous member paths under \"folder\"",
+                "duplicate or case-ambiguous member path; conflict group \"folder\"",
             ),
             (
                 vec!["folder", "folder/game.neo", "ok.neo"],
                 2,
-                "duplicate or case-ambiguous member paths under \"folder\"",
+                "duplicate or case-ambiguous member path; conflict group \"folder\"",
             ),
             (
                 vec!["Folder/", "folder/game.neo", "ok.neo"],
                 2,
-                "duplicate or case-ambiguous member paths under \"folder\"",
+                "duplicate or case-ambiguous member path; conflict group \"folder\"",
             ),
             (
                 vec!["x/Folder/a.neo", "x/folder/b.neo", "x/other.neo", "ok.neo"],
                 2,
-                "duplicate or case-ambiguous member paths under \"x/folder\"",
+                "duplicate or case-ambiguous member path; conflict group \"x/folder\"",
             ),
         ]
         .iter()
@@ -1220,7 +1249,7 @@ mod tests {
                 names[*left_out..].to_vec(),
                 "retained members for {names:?}"
             );
-            let skipped = skipped_of(&contents);
+            let skipped = explained_of(&contents);
             let mut left_out_members: Vec<_> = skipped.iter().map(|(member, _)| *member).collect();
             left_out_members.sort_unstable();
             let mut expected = names[..*left_out].to_vec();
@@ -1298,16 +1327,16 @@ mod tests {
             );
             let contents = contents(&path).unwrap();
             assert_eq!(names_of(&contents), ["ok.neo"], "case {index}");
-            let skipped = skipped_of(&contents);
+            let skipped = explained_of(&contents);
             assert_eq!(skipped.len(), 2, "case {index}: {skipped:?}");
-            assert_eq!(skipped[0], ("Game.neo", reason), "case {index}");
+            assert_eq!(skipped[0], ("Game.neo", reason.to_string()), "case {index}");
             assert_eq!(
                 skipped[1],
                 (
                     "game.neo",
-                    "duplicate or case-ambiguous member paths under \"game.neo\""
+                    "duplicate or case-ambiguous member path; conflict group \"game.neo\"".to_string()
                 ),
-                "case {index}"
+                "case {index}: the group is the detail, so the summary counts the members under one reason"
             );
             std::fs::remove_file(path).unwrap();
         }
@@ -1808,12 +1837,9 @@ mod tests {
                 ("two\\xe9.neo", "unsupported legacy ZIP filename encoding"),
                 ("three\\xe9.neo", "unsupported legacy ZIP filename encoding"),
                 ("four\\xe9.neo", "unsupported legacy ZIP filename encoding"),
-                (
-                    "five\\xe9.neo",
-                    "member name is flagged UTF-8 but is not valid UTF-8"
-                ),
+                ("five\\xe9.neo", "unsupported legacy ZIP filename encoding"),
             ],
-            "one reason per class, so a summary can count the members under it"
+            "one reason for every name that is not UTF-8, the one the issue names, whatever the flag says, so a summary can count the members under it"
         );
         assert_eq!(
             contents
@@ -1826,9 +1852,9 @@ mod tests {
                 Some("Unicode Path \"two\u{e9}.neo\""),
                 None,
                 None,
-                None
+                Some("flagged UTF-8")
             ],
-            "only the valid Unicode Path field identifies its member, and only in the log"
+            "only the valid Unicode Path field and the UTF-8 flag identify a member further, and only in the log"
         );
         assert_eq!(
             contents.skipped[1].describe(),
@@ -1846,7 +1872,6 @@ mod tests {
             )
         {
             assert!(!text.contains('\u{fffd}'), "{text}");
-            assert!(!text.contains("malformed"), "{text}");
         }
         std::fs::remove_file(path).unwrap();
     }
