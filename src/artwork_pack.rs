@@ -389,7 +389,8 @@ impl Provider {
         // never hashes one either, and a ZIP set holds raw components
         // whose CRCs the index does not carry. Reading it would cost a
         // pass over every set on the card for nothing.
-        if source_group(&self.system_id) == Some("NeoGeo") {
+        let neogeo = source_group(&self.system_id) == Some("NeoGeo");
+        if neogeo {
             if let Launch::File(path) = launch {
                 if let Some(identity) = neogeo_set_identity(path) {
                     return Ok(Some(identity));
@@ -399,7 +400,20 @@ impl Provider {
         let mut archives = self.archive_cache.lock().map_err(|_| {
             DegaussError::unsupported("archive lookup", "archive cache lock was poisoned")
         })?;
-        identity_for_launch_controlled(launch, cancelled, &mut archives)
+        let identity = identity_for_launch_controlled(launch, cancelled, &mut archives)?;
+        // An .mgl that points at a set is the set: the generic identity
+        // would name the ZIP as the file to hash, which is the read the
+        // set exemption exists to avoid.
+        if neogeo {
+            if let Some(set) = identity
+                .as_ref()
+                .and_then(|identity| identity.hash_path.as_deref())
+                .and_then(neogeo_set_identity)
+            {
+                return Ok(Some(set));
+            }
+        }
+        Ok(identity)
     }
 
     pub fn load(system_id: &str, docs_root: &Path, language: Option<&str>) -> Self {
@@ -4376,8 +4390,35 @@ mod tests {
                 );
             }
         }
-        // A .neo keeps its ordinary identity, hashing included.
+        // An .mgl pointing at a set is the set, through the same
+        // exemption: followed to the ZIP, it would otherwise carry the ZIP
+        // as the file to hash, and with no cover to stop the pass early
+        // the bytes would be read end to end for a CRC.
+        std::fs::write(
+            games.join("Fighters Shortcut.mgl"),
+            format!(
+                "<mistergamedescription><rbf>_Console/NeoGeo</rbf><file delay=\"1\" type=\"f\" index=\"1\" path=\"{}\"/></mistergamedescription>",
+                games.join("kof98n.zip").display()
+            ),
+        )
+        .unwrap();
         let provider = Provider::load("NeoGeo", &docs, None);
+        let shortcut = Launch::File(games.join("Fighters Shortcut.mgl"));
+        let identity = provider
+            .identity_for_launch(&shortcut, &AtomicBool::new(false))
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            (identity.name.as_str(), identity.hash_path.as_deref()),
+            ("kof98n", None)
+        );
+        assert_eq!(
+            provider
+                .fingerprint_for_launch(&shortcut, &AtomicBool::new(false), &mut |_| {})
+                .unwrap(),
+            None
+        );
+        // A .neo keeps its ordinary identity, hashing included.
         let neo = provider
             .identity_for_launch(
                 &Launch::File(games.join("Blazing Star.neo")),
