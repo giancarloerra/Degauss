@@ -605,6 +605,26 @@ fn check_install(config_path: &Path) -> Result<()> {
                 println!("game source  {group}: explicit Gamelist");
             }
         }
+        // What was decided for Automatic systems, one line per state file,
+        // read as the frontend reads them: without opening a Pack.
+        match pack_source_states(&cache::dir_for(&settings_path)) {
+            Ok(states) => {
+                for (id, state) in states {
+                    if let Some(accepted) = &state.accepted {
+                        println!(
+                            "artwork pack {id}: Automatic accepted at {}, {} games without Pack data",
+                            accepted.docs_root, accepted.skipped_entries
+                        );
+                    } else if let Some(declined) = &state.declined {
+                        println!("artwork pack {id}: declined at {}", declined.docs_root);
+                    }
+                }
+            }
+            Err(error) => {
+                println!("artwork pack CACHE NOT LISTED");
+                problems.push(error.to_string());
+            }
+        }
     }
 
     // State cannot fail by design: a broken file reads as a fresh one.
@@ -1046,6 +1066,102 @@ fn import_favorites(loaded: &Loaded, list: &Path) -> Result<()> {
 /// command that reads a favourite or matches a Pack.
 fn homes_of(loaded: &Loaded) -> mgl::Homes {
     mgl::Homes::new(&loaded.config.game_roots, &loaded.systems)
+}
+
+/// Every `<id>.source.bin` under the cache, by system id, in name order.
+/// No Pack folder yet is the ordinary case and lists nothing; a folder
+/// that cannot be listed is an error. A file that cannot be read or
+/// decoded is left out here and named in the log, as the frontend does.
+fn pack_source_states(cache_dir: &Path) -> Result<Vec<(String, cache::PackSourceState)>> {
+    let store = cache_dir.join("artwork-pack");
+    let entries = match std::fs::read_dir(&store) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => {
+            return Err(DegaussError::io(
+                "listing the Artwork Pack cache",
+                &store,
+                error,
+            ))
+        }
+    };
+    let mut ids = Vec::new();
+    for entry in entries {
+        let entry = entry
+            .map_err(|error| DegaussError::io("listing the Artwork Pack cache", &store, error))?;
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if let Some(id) = name.strip_suffix(".source.bin") {
+            ids.push(id.to_string());
+        }
+    }
+    ids.sort();
+    Ok(ids
+        .into_iter()
+        .filter_map(|id| cache::load_pack_source_state(cache_dir, &id).map(|state| (id, state)))
+        .collect())
+}
+
+/// What an Automatic system's Pack decision stands at, for `--report`:
+/// prepared and current, prepared and changed, declined, or a candidate
+/// nobody has been asked about. Nothing here reads a Pack table.
+fn automatic_source_notes(loaded: &Loaded, system: &FoundSystem) -> Vec<String> {
+    let id = &system.def.id;
+    if artwork_source::mode(&loaded.settings, id) != artwork_source::Mode::Automatic
+        || !artwork_pack::supports(id)
+    {
+        return Vec::new();
+    }
+    let cache_dir = cache::dir_for(&loaded.settings_path);
+    let state = cache::load_pack_source_state(&cache_dir, id).unwrap_or_default();
+    if let Some(accepted) = &state.accepted {
+        let root = Path::new(&accepted.docs_root);
+        let status = match &accepted.signature {
+            Some(signature) => match artwork_pack::snapshot_status(id, signature, root).0 {
+                artwork_pack::SnapshotStatus::Current => "current",
+                artwork_pack::SnapshotStatus::ImagesOnly => "images changed",
+                artwork_pack::SnapshotStatus::Changed => "changed",
+                artwork_pack::SnapshotStatus::Unavailable => "unavailable",
+            },
+            None => "changed",
+        };
+        let kept = if state.declined.is_some() {
+            ", a later change kept"
+        } else {
+            ""
+        };
+        return vec![format!(
+            "Automatic: Artwork Pack prepared at {}, state {status}{kept}, {} games left without Pack data at preparation",
+            accepted.docs_root, accepted.skipped_entries
+        )];
+    }
+    if let Some(declined) = &state.declined {
+        let root = Path::new(&declined.docs_root);
+        let current = declined.signature.as_ref().is_some_and(|signature| {
+            artwork_pack::snapshot_status(id, signature, root).0
+                == artwork_pack::SnapshotStatus::Current
+        });
+        return vec![if current {
+            format!(
+                "Automatic: Artwork Pack at {} declined for the current signature",
+                declined.docs_root
+            )
+        } else {
+            format!(
+                "Automatic: Artwork Pack at {} declined for an earlier signature; asks on the next entry",
+                declined.docs_root
+            )
+        }];
+    }
+    match artwork_source::candidate_root(id, &artwork_source::production_bases()) {
+        Ok(Some(root)) => vec![format!(
+            "Automatic: Artwork Pack candidate at {}, not prepared (asks on first entry)",
+            root.display()
+        )],
+        Ok(None) => Vec::new(),
+        Err(error) => vec![format!(
+            "Automatic: candidate location not checked: {error}"
+        )],
+    }
 }
 
 /// Beside the settings, which is beside the configuration.
@@ -1500,6 +1616,7 @@ fn effective_library(loaded: &Loaded, system: &FoundSystem) -> Result<EffectiveL
     let resolved = artwork_source::resolve(
         &members,
         &loaded.settings,
+        &cache::dir_for(&loaded.settings_path),
         &std::sync::atomic::AtomicBool::new(false),
     )?
     .ok_or_else(|| DegaussError::unsupported("game data source", "source resolution cancelled"))?;
@@ -1522,11 +1639,11 @@ fn effective_library_with_sources(
             provider: None,
             fingerprints: cache::ContentFingerprints::new(),
             homes: homes_of(loaded),
-            notes: Vec::new(),
+            notes: automatic_source_notes(loaded, system),
         });
     };
 
-    let (language, notes) = match scraper::ScraperSettings::load(
+    let (language, mut notes) = match scraper::ScraperSettings::load(
         &scraper::ScraperSettings::path_beside(&loaded.settings_path),
     ) {
         Ok(settings) => (settings.language, Vec::new()),
@@ -1542,6 +1659,9 @@ fn effective_library_with_sources(
     let homes = homes_of(loaded);
     let cancelled = std::sync::atomic::AtomicBool::new(false);
     let cached = cache::load_artwork_pack_data(&cache::dir_for(&loaded.settings_path), id);
+    // A descriptor that cannot be read is reported with the source, the
+    // way the interface reports it, and the rest of the system is read.
+    let mut skipped = artwork_pack::SkippedEntries::new();
     let cached_is_current = match cached.as_ref() {
         Some(data) => provider
             .cached_fingerprints_are_current(
@@ -1550,6 +1670,7 @@ fn effective_library_with_sources(
                 data.fingerprints_complete,
                 &homes,
                 &cancelled,
+                &mut skipped,
             )?
             .unwrap_or(false),
         None => false,
@@ -1562,11 +1683,19 @@ fn effective_library_with_sources(
             None => cache::build_system_checked(&library)?,
         };
         provider
-            .fingerprints_for_cache(&source_cache, &homes, &cancelled, &mut |_, _| {})?
+            .fingerprints_for_cache(
+                &source_cache,
+                &homes,
+                &cancelled,
+                &mut |_, _| {},
+                &mut skipped,
+            )?
             .unwrap_or_default()
     } else {
         cache::ContentFingerprints::new()
     };
+    notes.extend(artwork_pack::skipped_summary(system.name(), &skipped));
+    notes.extend(automatic_source_notes(loaded, system));
     Ok(EffectiveLibrary {
         library,
         provider: Some(provider),
@@ -1683,6 +1812,7 @@ fn audit_everything(loaded: &Loaded) -> Result<()> {
     let resolved = artwork_source::resolve(
         &loaded.systems,
         &loaded.settings,
+        &cache::dir_for(&loaded.settings_path),
         &std::sync::atomic::AtomicBool::new(false),
     )?
     .ok_or_else(|| DegaussError::unsupported("game data source", "source resolution cancelled"))?;
@@ -1931,6 +2061,150 @@ category = "Favorites"
             .provider
             .is_none());
         assert!(effective_source_members(&loaded.systems, "Favorites").is_empty());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    /// An arcade folder with one healthy and one malformed descriptor,
+    /// and a Pack that knows the healthy one, on the diagnostic fixture's
+    /// first system.
+    fn arcade_diagnostic_fixture(name: &str) -> (PathBuf, Loaded, PathBuf) {
+        let (root, mut loaded) = diagnostic_fixture(name);
+        let arcade = root.join("_Arcade");
+        let docs = root.join("docs");
+        let art = docs.join("Arcade/Artwork");
+        std::fs::create_dir_all(&arcade).unwrap();
+        std::fs::create_dir_all(&art).unwrap();
+        std::fs::write(
+            art.join("manifest.tsv"),
+            "#key\tstyle\tss_system_id\nhealthy\tbox-2D\t75\n",
+        )
+        .unwrap();
+        std::fs::write(
+            art.join("index.tsv"),
+            "#name\tcrc\tsize\tkey\nhealthy\t\t\thealthy\n",
+        )
+        .unwrap();
+        std::fs::write(
+            art.join("gameinfo.tsv"),
+            "#key\tname\tyear\tgenre\tdeveloper\tplayers\nhealthy\tPack Healthy\t1990\tShooter\tStudio\t2\n",
+        )
+        .unwrap();
+        std::fs::write(art.join("healthy.jpg"), b"jpeg").unwrap();
+        std::fs::write(
+            arcade.join("Healthy.mra"),
+            "<misterromdescription><setname>healthy</setname></misterromdescription>",
+        )
+        .unwrap();
+        std::fs::write(
+            arcade.join("Broken.mra"),
+            "<misterromdescription><rom></wrong>",
+        )
+        .unwrap();
+        loaded.systems.truncate(1);
+        loaded.systems[0].def.id = "Arcade".into();
+        loaded.systems[0].def.name = "Arcade".into();
+        loaded.systems[0].def.extensions = vec!["mra".into(), "mgl".into()];
+        loaded.systems[0].paths = vec![arcade];
+        (root, loaded, docs)
+    }
+
+    /// A descriptor the Pack preparation cannot read is reported with the
+    /// source, not as the system's failure: the report still audits every
+    /// game, the broken one without Pack data.
+    #[test]
+    fn cli_report_notes_a_broken_descriptor_and_audits_every_game() {
+        let (root, mut loaded, docs) = arcade_diagnostic_fixture("broken-descriptor");
+        loaded
+            .settings
+            .artwork_pack_roots
+            .insert("Arcade".into(), docs.to_string_lossy().into_owned());
+        let effective = effective_library(&loaded, &loaded.systems[0]).unwrap();
+        assert!(effective.provider.is_some());
+        assert_eq!(
+            effective.notes,
+            ["Arcade: 1 game left without Pack data: malformed descriptor"]
+        );
+        let audit = effective.audit(false);
+        assert_eq!(audit.games, 2, "the broken descriptor is still a game");
+        assert_eq!(audit.with_art, 1);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    /// `--check-install` lists what was decided for Automatic systems from
+    /// the state files alone, and `--report` says what state the decision
+    /// stands at now, without a Pack table being read for either.
+    #[test]
+    fn cli_lists_automatic_decisions_from_their_state_files() {
+        let (root, loaded, docs) = arcade_diagnostic_fixture("automatic-state");
+        let cache_dir = cache::dir_for(&loaded.settings_path);
+        assert!(pack_source_states(&cache_dir).unwrap().is_empty());
+        assert!(automatic_source_notes(&loaded, &loaded.systems[0]).is_empty());
+
+        let provider = artwork_pack::Provider::load("Arcade", &docs, None);
+        let signature = artwork_pack::known_tables_signature("Arcade", &docs).unwrap();
+        cache::save_pack_state(
+            &cache_dir,
+            "Arcade",
+            &cache::PackSourceState {
+                accepted: Some(cache::AcceptedSource {
+                    docs_root: docs.to_string_lossy().into_owned(),
+                    language: None,
+                    signature: Some(signature.clone()),
+                    cache_marker: 1,
+                    health: provider.health,
+                    diagnostics: provider.diagnostics.clone(),
+                    skipped_entries: 1,
+                }),
+                declined: None,
+            },
+            &Vec::new(),
+        )
+        .unwrap();
+        cache::save_pack_source_state(
+            &cache_dir,
+            "NES",
+            &cache::PackSourceState {
+                accepted: None,
+                declined: Some(cache::DeclinedSource {
+                    docs_root: docs.to_string_lossy().into_owned(),
+                    language: None,
+                    signature: Some(signature),
+                    cache_marker: None,
+                }),
+            },
+        )
+        .unwrap();
+        let listed = pack_source_states(&cache_dir).unwrap();
+        assert_eq!(
+            listed
+                .iter()
+                .map(|(id, state)| (id.as_str(), state.accepted.is_some()))
+                .collect::<Vec<_>>(),
+            [("Arcade", true), ("NES", false)]
+        );
+        assert_eq!(
+            automatic_source_notes(&loaded, &loaded.systems[0]),
+            [format!(
+                "Automatic: Artwork Pack prepared at {}, state current, 1 games left without Pack data at preparation",
+                docs.display()
+            )]
+        );
+        std::fs::write(
+            docs.join("Arcade/Artwork/gameinfo.tsv"),
+            "#key\tname\tyear\tgenre\tdeveloper\tplayers\nhealthy\tRenamed\t1990\tShooter\tStudio\t2\n",
+        )
+        .unwrap();
+        assert!(automatic_source_notes(&loaded, &loaded.systems[0])[0].contains("state changed"));
+        let mut nes = loaded.systems[0].clone();
+        nes.def.id = "NES".into();
+        assert!(
+            automatic_source_notes(&loaded, &nes)[0].contains("declined"),
+            "{:?}",
+            automatic_source_notes(&loaded, &nes)
+        );
+        std::fs::remove_dir_all(cache_dir.join("artwork-pack")).unwrap();
+        std::fs::write(cache_dir.join("artwork-pack"), b"not a directory").unwrap();
+        assert!(pack_source_states(&cache_dir).is_err());
         std::fs::remove_dir_all(root).unwrap();
     }
 

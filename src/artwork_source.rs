@@ -7,7 +7,7 @@ use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::sync::Arc;
 use std::thread::JoinHandle;
 
-use crate::artwork_pack::{self, Provider};
+use crate::artwork_pack;
 use crate::error::{DegaussError, Result};
 use crate::settings::Settings;
 use crate::systems::FoundSystem;
@@ -34,130 +34,125 @@ pub fn mode(settings: &Settings, system_id: &str) -> Mode {
 
 #[derive(Debug, Default)]
 pub struct Resolution {
+    /// The Pack root in use, keyed by system: an explicit choice is spelled
+    /// out for every member of its group, an Automatic acceptance stands
+    /// for the one system that made it.
     pub roots: BTreeMap<String, String>,
+    /// Keyed by source group, as the interface reports them.
     pub errors: BTreeMap<String, String>,
 }
 
 type Outcome = Result<Option<Resolution>>;
 
-pub fn resolve(systems: &[FoundSystem], settings: &Settings, cancelled: &AtomicBool) -> Outcome {
-    let bases: Vec<_> = std::iter::once(PathBuf::from("/media/fat"))
+/// Where an Automatic Pack is looked for when a system is entered: SD, then
+/// USB0 through USB7, in that order.
+pub fn production_bases() -> Vec<PathBuf> {
+    std::iter::once(PathBuf::from("/media/fat"))
         .chain((0..=7).map(|index| PathBuf::from(format!("/media/usb{index}"))))
-        .collect();
-    resolve_with_bases(systems, settings, cancelled, &bases)
+        .collect()
 }
 
-/// Bases are mount roots, in priority order. Production uses SD then USB0..7.
-/// Only exact mapped Artwork directories are probed, never whole-card scans.
-fn resolve_with_bases(
+/// The roots in use at startup, from what was saved and what was decided
+/// before: explicit choices from the settings, Automatic acceptances from
+/// each system's state file. Nothing is probed for a Pack and no Pack is
+/// read here: an Automatic system that was never entered has no state and
+/// costs nothing, and one that was accepted keeps its root unless a
+/// `gamelist.xml` has appeared under its group's folders since.
+pub fn resolve(
     systems: &[FoundSystem],
     settings: &Settings,
+    cache_dir: &Path,
     cancelled: &AtomicBool,
-    bases: &[PathBuf],
 ) -> Outcome {
     let mut resolved = Resolution::default();
-    let mut groups: BTreeMap<&str, Vec<&FoundSystem>> = BTreeMap::new();
+    let mut accepted: BTreeMap<&str, Vec<(&FoundSystem, String)>> = BTreeMap::new();
     for system in systems {
         if cancelled.load(Ordering::Relaxed) {
             return Ok(None);
         }
-        if let Some(group) = artwork_pack::source_group(&system.def.id) {
-            if let Some(root) = settings.artwork_pack_roots.get(group) {
-                resolved.roots.insert(group.to_string(), root.clone());
-            } else if mode(settings, &system.def.id) == Mode::Automatic {
-                groups.entry(group).or_default().push(system);
+        let Some(group) = artwork_pack::source_group(&system.def.id) else {
+            continue;
+        };
+        if let Some(root) = settings.artwork_pack_roots.get(group) {
+            resolved.roots.insert(system.def.id.clone(), root.clone());
+        } else if mode(settings, &system.def.id) == Mode::Automatic {
+            let Some(state) = crate::cache::load_pack_source_state(cache_dir, &system.def.id)
+            else {
+                continue;
+            };
+            if let Some(root) = state.accepted.map(|accepted| accepted.docs_root) {
+                accepted.entry(group).or_default().push((system, root));
             }
         }
     }
-    // Identical catalogue mappings (such as two-player variants) share one
-    // validation result even when their saved source choices are independent.
-    let mut validated = BTreeMap::<(Vec<&str>, PathBuf), std::result::Result<bool, String>>::new();
+    // A root gamelist keeps the whole group on Gamelist, accepted or not:
+    // the members of a group share their folders on the card.
     let mut probes = BTreeMap::new();
-    for (group, members) in groups {
-        let outcome = (|| -> Result<Option<String>> {
-            let mut gamelist = false;
+    for (group, members) in accepted {
+        let gamelist = (|| -> Result<Option<bool>> {
             let mut checked = BTreeSet::new();
-            for system in &members {
+            for system in systems {
+                if artwork_pack::source_group(&system.def.id) != Some(group) {
+                    continue;
+                }
                 for root in &system.paths {
                     if cancelled.load(Ordering::Relaxed) {
                         return Ok(None);
                     }
-                    if checked.insert(root) {
-                        gamelist |= exists_checked(&root.join("gamelist.xml"), &mut probes)?;
+                    if checked.insert(root)
+                        && exists_checked(&root.join("gamelist.xml"), &mut probes)?
+                    {
+                        return Ok(Some(true));
                     }
                 }
             }
-            if gamelist {
-                return Ok(None);
-            }
-            let id = &members[0].def.id;
-            let folders = artwork_pack::expected_folders(id);
-            for base in bases {
-                if cancelled.load(Ordering::Relaxed) {
-                    return Ok(None);
-                }
-                let docs = base.join("docs");
-                let key = (folders.to_vec(), docs.clone());
-                let usable = if let Some(result) = validated.get(&key) {
-                    result.clone().map_err(|detail| {
-                        DegaussError::malformed("automatic Artwork Pack source", &docs, detail)
-                    })?
-                } else {
-                    let mut present = false;
-                    for folder in folders {
-                        if cancelled.load(Ordering::Relaxed) {
-                            return Ok(None);
-                        }
-                        present |= exists_checked(&docs.join(folder).join("Artwork"), &mut probes)?;
-                    }
-                    if present {
-                        let Some(provider) = Provider::load_controlled(id, &docs, None, cancelled)
-                        else {
-                            return Ok(None);
-                        };
-                        if !provider.health.usable() {
-                            let detail = format!(
-                                "{}: {}",
-                                provider.health.label(),
-                                provider.diagnostics.join("; ")
-                            );
-                            validated.insert(key, Err(detail.clone()));
-                            return Err(DegaussError::malformed(
-                                "automatic Artwork Pack source",
-                                &docs,
-                                detail,
-                            ));
-                        }
-                    }
-                    validated.insert(key, Ok(present));
-                    present
-                };
-                if usable {
-                    let root = docs.to_str().ok_or_else(|| {
-                        DegaussError::unsupported(
-                            "automatic Artwork Pack source",
-                            "docs path is not UTF-8",
-                        )
-                    })?;
-                    return Ok(Some(root.to_string()));
-                }
-            }
-            Ok(None)
+            Ok(Some(false))
         })();
-        if cancelled.load(Ordering::Relaxed) {
-            return Ok(None);
-        }
-        match outcome {
-            Ok(Some(root)) => {
-                resolved.roots.insert(group.to_string(), root);
+        match gamelist {
+            Ok(Some(true)) => {}
+            Ok(Some(false)) => {
+                for (system, root) in members {
+                    resolved.roots.insert(system.def.id.clone(), root);
+                }
             }
-            Ok(None) => {}
+            Ok(None) => return Ok(None),
             Err(error) => {
                 resolved.errors.insert(group.to_string(), error.to_string());
             }
         }
     }
     Ok((!cancelled.load(Ordering::Relaxed)).then_some(resolved))
+}
+
+/// Whether any of the system's own folders holds a `gamelist.xml`. A
+/// dangling link or an unreadable folder is an error, never a missing
+/// gamelist: it must not let a Pack in by default.
+pub fn gamelist_present(system: &FoundSystem) -> Result<bool> {
+    let mut probes = BTreeMap::new();
+    for root in &system.paths {
+        if exists_checked(&root.join("gamelist.xml"), &mut probes)? {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+/// The installed Pack a system would use under Automatic, if one is
+/// there: the first base, in priority order, whose `docs` holds a mapped
+/// Artwork directory of the system. Only those exact directories are
+/// stat'd; nothing under a base is listed and nothing in the Pack is read.
+pub fn candidate_root(system_id: &str, bases: &[PathBuf]) -> Result<Option<PathBuf>> {
+    let folders = artwork_pack::expected_folders(system_id);
+    let mut probes = BTreeMap::new();
+    for base in bases {
+        let docs = base.join("docs");
+        for folder in folders {
+            if exists_checked(&docs.join(folder).join("Artwork"), &mut probes)? {
+                return Ok(Some(docs));
+            }
+        }
+    }
+    Ok(None)
 }
 
 fn exists_checked(path: &Path, probes: &mut BTreeMap<PathBuf, bool>) -> Result<bool> {
@@ -199,7 +194,11 @@ pub struct Job {
 }
 
 impl Job {
-    pub fn start(systems: Vec<FoundSystem>, settings: Settings) -> Result<Self> {
+    pub fn start(
+        systems: Vec<FoundSystem>,
+        settings: Settings,
+        cache_dir: PathBuf,
+    ) -> Result<Self> {
         let (sender, result) = mpsc::sync_channel(1);
         let cancelled = Arc::new(AtomicBool::new(false));
         let worker_cancelled = Arc::clone(&cancelled);
@@ -207,7 +206,7 @@ impl Job {
             .name("degauss-art-source".to_string())
             .spawn(move || {
                 let resolved = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    resolve(&systems, &settings, &worker_cancelled)
+                    resolve(&systems, &settings, &cache_dir, &worker_cancelled)
                 }))
                 .unwrap_or_else(|_| {
                     Err(DegaussError::unsupported(
@@ -258,24 +257,6 @@ impl Drop for Job {
         if let Some(handle) = self.handle.take() {
             let _ = handle.join();
         }
-    }
-}
-
-#[cfg(test)]
-pub(crate) fn resolved_job_at_bases(
-    systems: &[FoundSystem],
-    settings: &Settings,
-    bases: &[PathBuf],
-) -> Job {
-    let cancelled = Arc::new(AtomicBool::new(false));
-    let (sender, result) = mpsc::sync_channel(1);
-    sender
-        .send(resolve_with_bases(systems, settings, &cancelled, bases))
-        .unwrap();
-    Job {
-        result: Some(result),
-        cancelled,
-        handle: None,
     }
 }
 
@@ -331,15 +312,39 @@ mod tests {
             base
         }
 
-        fn resolve(
-            &self,
-            systems: &[FoundSystem],
-            settings: &Settings,
-            bases: &[PathBuf],
-        ) -> Resolution {
-            resolve_with_bases(systems, settings, &AtomicBool::new(false), bases)
-                .unwrap()
-                .unwrap()
+        fn cache_dir(&self) -> PathBuf {
+            self.0.join("cache")
+        }
+
+        fn accept(&self, id: &str, root: &Path) {
+            crate::cache::save_pack_source_state(
+                &self.cache_dir(),
+                id,
+                &crate::cache::PackSourceState {
+                    accepted: Some(crate::cache::AcceptedSource {
+                        docs_root: root.to_string_lossy().into_owned(),
+                        language: None,
+                        signature: None,
+                        cache_marker: 0,
+                        health: artwork_pack::ProviderHealth::Ready,
+                        diagnostics: Vec::new(),
+                        skipped_entries: 0,
+                    }),
+                    declined: None,
+                },
+            )
+            .unwrap();
+        }
+
+        fn resolve(&self, systems: &[FoundSystem], settings: &Settings) -> Resolution {
+            super::resolve(
+                systems,
+                settings,
+                &self.cache_dir(),
+                &AtomicBool::new(false),
+            )
+            .unwrap()
+            .unwrap()
         }
     }
 
@@ -349,185 +354,239 @@ mod tests {
         }
     }
 
+    /// Startup reads decisions, not Packs: an installed Pack nobody has
+    /// accepted is not found, not opened and not held against any system,
+    /// however many are installed. The Pack directory is made unreadable
+    /// to prove nothing under it is even stat'd.
+    #[cfg(unix)]
     #[test]
-    fn any_root_gamelist_presence_keeps_the_entire_group_on_gamelist() {
-        let fixture = Fixture::new();
-        let systems = [
-            fixture.system("NeoGeo", &["first", "extra"]),
-            fixture.system("NeoGeoMVS", &["mvs"]),
-        ];
-        let base = fixture.pack("sd", "NEOGEO");
-        for location in [
-            systems[0].paths[0].clone(),
-            systems[0].paths[1].clone(),
-            systems[1].paths[0].clone(),
-        ] {
-            for content in ["", "<broken", "<gameList/>"] {
-                std::fs::write(location.join("gamelist.xml"), content).unwrap();
-                let resolved =
-                    fixture.resolve(&systems, &Settings::default(), std::slice::from_ref(&base));
-                assert!(resolved.roots.is_empty());
-                assert!(resolved.errors.is_empty());
-                std::fs::remove_file(location.join("gamelist.xml")).unwrap();
-            }
-        }
-        assert_eq!(
-            fixture
-                .resolve(&systems, &Settings::default(), std::slice::from_ref(&base))
-                .roots["NeoGeo"],
-            base.join("docs").to_str().unwrap()
-        );
-    }
-
-    #[test]
-    fn explicit_choices_do_not_probe_and_pack_wins_legacy_contradiction() {
-        let fixture = Fixture::new();
-        let system = fixture.system("SuperGrafx", &["games"]);
-        let mut settings = Settings::default();
-        settings.gamelist_sources.insert("SuperGrafx".into());
-        let broken_base = fixture.0.join("not-directory");
-        std::fs::write(&broken_base, b"file").unwrap();
-        assert_eq!(mode(&settings, "SuperGrafx"), Mode::Gamelist);
-        assert!(fixture
-            .resolve(
-                std::slice::from_ref(&system),
-                &settings,
-                std::slice::from_ref(&broken_base)
-            )
-            .errors
-            .is_empty());
-        settings
-            .artwork_pack_roots
-            .insert("SuperGrafx".into(), "/chosen/docs".into());
-        settings
-            .artwork_pack_roots
-            .insert("NES".into(), "/unrelated/docs".into());
-        assert_eq!(mode(&settings, "SuperGrafx"), Mode::ArtworkPack);
-        let resolved = fixture.resolve(&[system], &settings, &[broken_base]);
-        assert_eq!(resolved.roots.len(), 1);
-        assert_eq!(resolved.roots["SuperGrafx"], "/chosen/docs");
-        assert!(resolved.errors.is_empty());
-    }
-
-    #[test]
-    fn priority_missing_pack_and_unsupported_systems() {
-        let fixture = Fixture::new();
-        let systems = [
-            fixture.system("SuperGrafx", &["games"]),
-            fixture.system("Unknown", &["other"]),
-        ];
-        let sd = fixture.pack("sd", "SuperGrafx");
-        let usb = fixture.pack("usb", "SuperGrafx");
-        let resolved = fixture.resolve(&systems, &Settings::default(), &[sd.clone(), usb.clone()]);
-        assert_eq!(
-            resolved.roots["SuperGrafx"],
-            sd.join("docs").to_str().unwrap()
-        );
-        assert_eq!(resolved.roots.len(), 1);
-        let resolved = fixture.resolve(
-            &systems,
-            &Settings::default(),
-            &[fixture.0.join("missing"), usb.clone()],
-        );
-        assert_eq!(
-            resolved.roots["SuperGrafx"],
-            usb.join("docs").to_str().unwrap()
-        );
-        let resolved = fixture.resolve(&systems, &Settings::default(), &[fixture.0.join("absent")]);
-        assert!(resolved.roots.is_empty());
-        assert!(resolved.errors.is_empty());
-    }
-
-    #[test]
-    fn broken_candidate_reports_group_error_without_hiding_healthy_group() {
+    fn startup_reads_only_recorded_decisions_and_never_probes_a_pack() {
+        use std::os::unix::fs::PermissionsExt;
         let fixture = Fixture::new();
         let systems = [
             fixture.system("SuperGrafx", &["games"]),
             fixture.system("NES", &["nes"]),
         ];
-        let bad = fixture.0.join("sd");
-        std::fs::create_dir_all(bad.join("docs/SuperGrafx/Artwork")).unwrap();
-        let usb = fixture.pack("usb", "SuperGrafx");
+        let sd = fixture.pack("sd", "SuperGrafx");
         fixture.pack("sd", "NES");
-        let resolved = fixture.resolve(&systems, &Settings::default(), &[bad.clone(), usb]);
-        assert!(!resolved.roots.contains_key("SuperGrafx"));
-        assert!(resolved.errors["SuperGrafx"].contains("Invalid"));
-        assert_eq!(resolved.roots["NES"], bad.join("docs").to_str().unwrap());
-    }
-
-    #[test]
-    fn metadata_failure_is_not_a_missing_gamelist_or_pack() {
-        let fixture = Fixture::new();
-        let mut system = fixture.system("SuperGrafx", &["games"]);
-        let file = fixture.0.join("file");
-        std::fs::write(&file, b"file").unwrap();
-        system.paths.push(file.clone());
-        let resolved = fixture.resolve(std::slice::from_ref(&system), &Settings::default(), &[]);
-        assert!(resolved.errors["SuperGrafx"].contains("probing artwork source"));
-        system.paths.pop();
-        let resolved = fixture.resolve(&[system], &Settings::default(), &[file]);
-        assert!(resolved.errors["SuperGrafx"].contains("probing artwork source"));
-    }
-
-    #[test]
-    fn cancellation_discards_the_entire_partial_resolution() {
-        let fixture = Fixture::new();
-        let systems = [fixture.system("SuperGrafx", &["games"])];
+        let docs = sd.join("docs");
+        std::fs::set_permissions(&docs, std::fs::Permissions::from_mode(0o000)).unwrap();
+        let resolved = fixture.resolve(&systems, &Settings::default());
         assert!(
-            resolve_with_bases(&systems, &Settings::default(), &AtomicBool::new(true), &[])
-                .unwrap()
-                .is_none()
+            resolved.roots.is_empty() && resolved.errors.is_empty(),
+            "an installed Pack without a decision is nothing to the startup: {resolved:?}"
+        );
+
+        fixture.accept("NES", &docs);
+        let resolved = fixture.resolve(&systems, &Settings::default());
+        std::fs::set_permissions(&docs, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert_eq!(
+            resolved.roots.get("NES").map(String::as_str),
+            Some(docs.to_str().unwrap()),
+            "an accepted root is known from its state file alone"
         );
         assert!(
-            resolve_with_bases(&[], &Settings::default(), &AtomicBool::new(true), &[])
-                .unwrap()
-                .is_none()
+            !resolved.roots.contains_key("SuperGrafx"),
+            "the system that was never entered gets no root from its neighbour's Pack"
+        );
+        assert!(resolved.errors.is_empty());
+    }
+
+    /// A gamelist that appears after acceptance wins, as it does before:
+    /// the accepted root is not used while the group's folders hold one,
+    /// and a broken gamelist link is an error rather than a missing file.
+    #[cfg(unix)]
+    #[test]
+    fn a_root_gamelist_keeps_an_accepted_group_on_gamelist() {
+        let fixture = Fixture::new();
+        let systems = [
+            fixture.system("NeoGeo", &["first", "extra"]),
+            fixture.system("NeoGeoMVS", &["mvs"]),
+        ];
+        let docs = fixture.pack("sd", "NEOGEO").join("docs");
+        fixture.accept("NeoGeo", &docs);
+        assert_eq!(
+            fixture
+                .resolve(&systems, &Settings::default())
+                .roots
+                .keys()
+                .collect::<Vec<_>>(),
+            ["NeoGeo"],
+            "the other member of the group has made no decision of its own"
+        );
+        for location in [
+            systems[0].paths[0].clone(),
+            systems[0].paths[1].clone(),
+            systems[1].paths[0].clone(),
+        ] {
+            std::fs::write(location.join("gamelist.xml"), "<gameList/>").unwrap();
+            let resolved = fixture.resolve(&systems, &Settings::default());
+            assert!(resolved.roots.is_empty(), "{resolved:?}");
+            assert!(resolved.errors.is_empty());
+            std::fs::remove_file(location.join("gamelist.xml")).unwrap();
+        }
+        let xml = systems[1].paths[0].join("gamelist.xml");
+        std::os::unix::fs::symlink(fixture.0.join("missing.xml"), &xml).unwrap();
+        let resolved = fixture.resolve(&systems, &Settings::default());
+        assert!(resolved.roots.is_empty());
+        assert!(resolved.errors["NeoGeo"].contains("gamelist.xml"));
+    }
+
+    /// An explicit choice is spelled out for every member of its group and
+    /// probes nothing; a Pack choice beats a stale Gamelist entry.
+    #[test]
+    fn explicit_choices_do_not_probe_and_pack_wins_legacy_contradiction() {
+        let fixture = Fixture::new();
+        let systems = [
+            fixture.system("GBA", &["gba"]),
+            fixture.system("GBA2P", &["gba2p"]),
+        ];
+        let mut settings = Settings::default();
+        settings.gamelist_sources.insert("GBA".into());
+        assert_eq!(mode(&settings, "GBA"), Mode::Gamelist);
+        let resolved = fixture.resolve(&systems, &settings);
+        assert!(resolved.roots.is_empty());
+        assert!(resolved.errors.is_empty());
+        settings
+            .artwork_pack_roots
+            .insert("GBA".into(), "/chosen/docs".into());
+        settings
+            .artwork_pack_roots
+            .insert("NES".into(), "/unrelated/docs".into());
+        assert_eq!(mode(&settings, "GBA"), Mode::ArtworkPack);
+        let resolved = fixture.resolve(&systems, &settings);
+        assert_eq!(resolved.roots["GBA"], "/chosen/docs");
+        assert!(
+            !resolved.roots.contains_key("GBA2P"),
+            "a shared catalogue is not a shared choice"
+        );
+        assert_eq!(resolved.roots.len(), 1);
+        assert!(resolved.errors.is_empty());
+    }
+
+    /// The Neo Geo pair shares one saved choice: both members get it.
+    #[test]
+    fn a_shared_group_choice_is_spelled_out_for_every_member() {
+        let fixture = Fixture::new();
+        let systems = [
+            fixture.system("NeoGeo", &["neo"]),
+            fixture.system("NeoGeoMVS", &["mvs"]),
+        ];
+        let mut settings = Settings::default();
+        settings
+            .artwork_pack_roots
+            .insert("NeoGeo".into(), "/chosen/docs".into());
+        let resolved = fixture.resolve(&systems, &settings);
+        assert_eq!(resolved.roots["NeoGeo"], "/chosen/docs");
+        assert_eq!(resolved.roots["NeoGeoMVS"], "/chosen/docs");
+    }
+
+    /// The candidate a system is asked about: SD before USB, only the
+    /// mapped Artwork directories looked at, a missing base passed over.
+    #[test]
+    fn candidate_root_follows_the_base_priority_and_looks_only_at_mapped_folders() {
+        let fixture = Fixture::new();
+        let sd = fixture.pack("sd", "SuperGrafx");
+        let usb = fixture.pack("usb", "SuperGrafx");
+        assert_eq!(
+            candidate_root("SuperGrafx", &[sd.clone(), usb.clone()]).unwrap(),
+            Some(sd.join("docs"))
+        );
+        assert_eq!(
+            candidate_root("SuperGrafx", &[fixture.0.join("missing"), usb.clone()]).unwrap(),
+            Some(usb.join("docs"))
+        );
+        assert_eq!(
+            candidate_root("SuperGrafx", &[fixture.0.join("absent")]).unwrap(),
+            None
+        );
+        assert_eq!(
+            candidate_root("NES", &[sd.clone(), usb]).unwrap(),
+            None,
+            "another system's Pack is not this system's candidate"
+        );
+        assert_eq!(candidate_root("Unknown", &[sd]).unwrap(), None);
+    }
+
+    /// A candidate is found by its directory, not by reading it: a Pack
+    /// whose manifest is broken is still the candidate, so the question is
+    /// asked and the preparation is what fails, visibly.
+    #[test]
+    fn candidate_root_does_not_read_the_pack() {
+        let fixture = Fixture::new();
+        let base = fixture.0.join("sd");
+        std::fs::create_dir_all(base.join("docs/SuperGrafx/Artwork")).unwrap();
+        std::fs::write(
+            base.join("docs/SuperGrafx/Artwork/manifest.tsv"),
+            "not-a-valid-manifest\n",
+        )
+        .unwrap();
+        assert_eq!(
+            candidate_root("SuperGrafx", std::slice::from_ref(&base)).unwrap(),
+            Some(base.join("docs"))
         );
     }
 
+    /// A dangling link where the Pack or the gamelist should be is an
+    /// error: installed source material whose target is gone must not let
+    /// another source in.
     #[cfg(unix)]
     #[test]
     fn dangling_gamelist_and_artwork_links_are_errors_not_missing_sources() {
         let fixture = Fixture::new();
         let system = fixture.system("SuperGrafx", &["games"]);
-        let base = fixture.pack("sd", "SuperGrafx");
         let xml = system.paths[0].join("gamelist.xml");
         std::os::unix::fs::symlink(fixture.0.join("missing.xml"), &xml).unwrap();
-        let resolved = fixture.resolve(
-            std::slice::from_ref(&system),
-            &Settings::default(),
-            std::slice::from_ref(&base),
-        );
-        assert!(resolved.roots.is_empty());
-        assert!(resolved.errors["SuperGrafx"].contains("gamelist.xml"));
+        let error = gamelist_present(&system).unwrap_err();
+        assert!(error.to_string().contains("gamelist.xml"), "{error}");
         std::fs::remove_file(&xml).unwrap();
+        assert!(!gamelist_present(&system).unwrap());
+        std::fs::write(&xml, "<gameList/>").unwrap();
+        assert!(gamelist_present(&system).unwrap());
 
         let broken_base = fixture.0.join("broken");
         let folder = broken_base.join("docs/SuperGrafx");
         std::fs::create_dir_all(&folder).unwrap();
         std::os::unix::fs::symlink(fixture.0.join("missing-artwork"), folder.join("Artwork"))
             .unwrap();
-        let resolved = fixture.resolve(&[system], &Settings::default(), &[broken_base, base]);
-        assert!(resolved.roots.is_empty());
-        assert!(resolved.errors["SuperGrafx"].contains("Artwork"));
+        let valid = fixture.pack("valid", "SuperGrafx");
+        let error = candidate_root("SuperGrafx", &[broken_base, valid]).unwrap_err();
+        assert!(error.to_string().contains("Artwork"), "{error}");
     }
 
     #[test]
-    fn shared_catalogues_preserve_independent_source_choices() {
+    fn metadata_failure_is_not_a_missing_gamelist() {
         let fixture = Fixture::new();
-        let systems = [
-            fixture.system("GBA", &["gba"]),
-            fixture.system("GBA2P", &["gba2p"]),
-        ];
-        let base = fixture.pack("sd", "GBA");
-        let mut settings = Settings::default();
-        let resolved = fixture.resolve(&systems, &settings, std::slice::from_ref(&base));
-        assert_eq!(resolved.roots["GBA"], resolved.roots["GBA2P"]);
-        settings.gamelist_sources.insert("GBA2P".into());
-        let resolved = fixture.resolve(&systems, &settings, &[base]);
-        assert!(resolved.roots.contains_key("GBA"));
-        assert!(!resolved.roots.contains_key("GBA2P"));
-        assert!(resolved.errors.is_empty());
+        let mut system = fixture.system("SuperGrafx", &["games"]);
+        let file = fixture.0.join("file");
+        std::fs::write(&file, b"file").unwrap();
+        system.paths.push(file.clone());
+        let error = gamelist_present(&system).unwrap_err();
+        assert!(error.to_string().contains("probing artwork source"));
+        let error = candidate_root("SuperGrafx", &[file]).unwrap_err();
+        assert!(error.to_string().contains("probing artwork source"));
+    }
+
+    #[test]
+    fn cancellation_discards_the_entire_partial_resolution() {
+        let fixture = Fixture::new();
+        let systems = [fixture.system("SuperGrafx", &["games"])];
+        assert!(super::resolve(
+            &systems,
+            &Settings::default(),
+            &fixture.cache_dir(),
+            &AtomicBool::new(true)
+        )
+        .unwrap()
+        .is_none());
+        assert!(super::resolve(
+            &[],
+            &Settings::default(),
+            &fixture.cache_dir(),
+            &AtomicBool::new(true)
+        )
+        .unwrap()
+        .is_none());
     }
 
     #[cfg(unix)]
@@ -544,20 +603,14 @@ mod tests {
             let link = base.join(link_suffix);
             std::fs::create_dir_all(link.parent().unwrap()).unwrap();
             std::os::unix::fs::symlink(fixture.0.join("missing-directory"), &link).unwrap();
-            let resolved = fixture.resolve(
-                std::slice::from_ref(&system),
-                &Settings::default(),
-                &[base, valid_base.clone()],
-            );
-            assert!(resolved.roots.is_empty());
-            assert!(resolved.errors["SuperGrafx"].contains(link.to_str().unwrap()));
+            let error = candidate_root("SuperGrafx", &[base, valid_base.clone()]).unwrap_err();
+            assert!(error.to_string().contains(link.to_str().unwrap()));
         }
         let library_link = fixture.0.join("broken-library");
         std::os::unix::fs::symlink(fixture.0.join("missing-library"), &library_link).unwrap();
         system.paths = vec![library_link.clone()];
-        let resolved = fixture.resolve(&[system], &Settings::default(), &[valid_base]);
-        assert!(resolved.roots.is_empty());
-        assert!(resolved.errors["SuperGrafx"].contains(library_link.to_str().unwrap()));
+        let error = gamelist_present(&system).unwrap_err();
+        assert!(error.to_string().contains(library_link.to_str().unwrap()));
 
         let mut probes = BTreeMap::new();
         let absent = fixture.0.join("ordinary-missing/docs/SuperGrafx/Artwork");
@@ -574,7 +627,8 @@ mod tests {
 
     #[test]
     fn worker_returns_one_result_and_joins() {
-        let mut job = Job::start(Vec::new(), Settings::default()).unwrap();
+        let fixture = Fixture::new();
+        let mut job = Job::start(Vec::new(), Settings::default(), fixture.cache_dir()).unwrap();
         job.handle.take().unwrap().join().unwrap();
         let resolved = job.try_recv().unwrap().unwrap().unwrap();
         assert!(resolved.roots.is_empty());
