@@ -2535,7 +2535,13 @@ fn capture_ui_if_requested(root: &Path, window: Rc<MinimalSoftwareWindow>) {
             240,
         );
         app.open_options_page(OptionsPage::Appearance);
-        app.select(3);
+        app.select(
+            OptionsPage::Appearance
+                .ids()
+                .iter()
+                .position(|id| *id == OptionId::Font)
+                .unwrap(),
+        );
         capture_frame(
             &mut app,
             &directory,
