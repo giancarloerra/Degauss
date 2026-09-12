@@ -459,8 +459,9 @@ the library. Systems that already launch ZIP files as individual games keep that
 behaviour. ZIP64 is supported
 within the documented bounds. Metadata for a multi-game archive identifies each game
 by its full archive/member path; single-game archives retain legacy archive-level
-metadata. An archive holding one game shows that game's artwork on its row before
-it is opened. See [ZIP libraries](docs/zip-libraries.md) for details and launch limits.
+metadata. An archive holding one game with artwork shows that artwork on its row
+before it is opened. See [ZIP libraries](docs/zip-libraries.md) for details and
+launch limits.
 
 ### RetroAchievements and Unstable cores
 
