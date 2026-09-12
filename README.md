@@ -254,10 +254,10 @@ scripts report their underlying error.
   anywhere else appears here: the stock script's absolute paths, the
   root-relative paths Degauss writes, and hand-written paths relative to
   the core's games folder are all read the way MiSTer Main reads them. A
-  favourite whose file sits in two of its system's folders at once is
-  kept, reported in `/tmp/degauss.log` and Game Information, and refused
-  at launch with the same line, rather than pointed at one of them by
-  folder order.
+  favourite any of whose files sits in two of its system's folders at once
+  is kept, reported in `/tmp/degauss.log` and Game Information, and
+  refused at launch with the same line, rather than pointed at one of them
+  by folder order.
 - **Awkward systems handled** without hassle: AmigaVision, DOS,
   Neo Geo, Arcade, X68000, and cores that are several machines.
 
@@ -995,10 +995,12 @@ storage order as the system folders. An MGL for one of the systems in the
 table is identified by the game it names, its last `<file>`, as before. An
 MGL for a core outside the table, such as an arcade core with its ROM set
 spelled out as several files under `_Arcade`, is identified by its own name
-and `<setname>`: every file it names has to exist under that home
-directory, and none of them is hashed. A file present in two of a system's
+and `<setname>`: every file it names by a non-absolute path has to exist
+under that home directory, and none of them is hashed. A file present in two of a system's
 folders at once is reported in `/tmp/degauss.log` and left unmatched rather
-than picked by folder order.
+than picked by folder order. A `<setname>` that is not one folder name (a
+`/`, `.` or `..` step in it) is looked for nowhere, so no MGL can point
+the lookup outside the game roots.
 
 Selecting an Artwork Pack never edits or removes the existing gamelist or its
 media. Choose **Gamelist** again to restore them immediately. While Artwork
@@ -1548,7 +1550,7 @@ to point somewhere else. `degauss.sh` passes them explicitly.
 | `--audit` | Every system, one line each: games found, artwork bound, folders and any selected Artwork Pack health problem. A Gamelist system with a `gamelist.xml` but no artwork bound, a usable Pack that resolves no pictures, or a system with no games is listed again underneath as a problem. A whole card checked without opening a hundred systems by hand. |
 | `--list-systems` | Which systems this card actually has, and where each one resolved. The answer to "why is my system missing". |
 | `--check-install` | The installation itself, including every saved Artwork Pack root and every pack state file written beside a system cache, read under the source the settings choose for that system now: an Automatic acceptance or decline, an explicit Artwork Pack choice's preparation (with the games left without pack data), or a state kept behind a later Gamelist choice. What is present, missing, broken or left half-migrated. The first thing to run when something looks wrong. |
-| `--report` | One system in detail, with `--system <id>`. It identifies Gamelist or Artwork Pack; for a Pack it also reports the selected root, health and the first game's local match method, a match that fails on an MGL names the file the MGL asked for and the folder it was looked for in, and a descriptor left out of the mapping is counted under its reason. Under Automatic it also says what the pack decision stands at: prepared and current, changed, unavailable, declined, or a candidate not yet asked about. |
+| `--report` | One system in detail, with `--system <id>`. It identifies Gamelist or Artwork Pack; for a Pack it also reports the selected root, health and the first game's local match method, a match that fails on an MGL names the file the MGL asked for and the folder it was looked for in, or the set name no games folder was found for, and a descriptor left out of the mapping is counted under its reason. Under Automatic it also says what the pack decision stands at: prepared and current, changed, unavailable, declined, or a candidate not yet asked about. |
 | `--dry-run-launch` | The MGL that *would* be written to start a game, printed instead of run. The answer to "why does this game not start". |
 
 ### Seeing it without the screen

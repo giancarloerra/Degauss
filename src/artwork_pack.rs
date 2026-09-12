@@ -5592,7 +5592,7 @@ mod tests {
         assert_eq!(
             entry_failure(&DegaussError::unsupported(
                 "MGL component",
-                "Twice.nes exists in both a, b",
+                "Twice.nes exists in each of a, b",
             )),
             Some("ambiguous descriptor")
         );
