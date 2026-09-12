@@ -445,12 +445,15 @@ not opened until its system is entered and you say so. Ordinary folder
 libraries then reuse their saved lists:
 **Options → Library → Rebuild All System Lists** is how you tell Degauss the
 card has changed (for example after adding new games). New images and metadata
-are read on the fly. A system whose Artwork Pack was prepared, whether you
-chose the pack or said yes to it, is prepared again as part of that rebuild,
-without a question, and any pack change you had chosen to keep is superseded
-by the current pack; a system that declined its pack, or was never asked, is
-read the ordinary way. Automatic Artwork Pack preparation is described
-[below](#using-mister-game-artwork-databases).
+are read on the fly. A system whose Artwork Pack you chose yourself is
+prepared again as part of that rebuild, without a question: the choice is
+the consent. A system that said yes to its pack under Automatic is read the
+ordinary way, without its pack, and what was prepared for it is left as it
+was; the next entry into it asks whether to update the pack data for the
+list just read, and **Keep Current** goes on browsing on the previous
+mapping. A system that declined its pack, or was never asked, is read the
+ordinary way and not asked by the rebuild. Automatic Artwork Pack
+preparation is described [below](#using-mister-game-artwork-databases).
 Adding games to one system does not need the whole card read again:
 **X Actions → Library → Rebuild This System List** inside that system reads just its folders.
 Running it from a subfolder still rebuilds the complete containing system, not only that subfolder.
@@ -882,7 +885,8 @@ source of the system that owns its game.
 The source menu shows both the saved mode and its effective source. Under
 Automatic the effective source is Gamelist until a pack has been prepared
 for that system; a root gamelist that appears later keeps the system on
-Gamelist at the next start. Automatic checks only standard SD/USB locations;
+Gamelist at the next entry into it, and at the next start. Automatic checks
+only standard SD/USB locations;
 the explicit Pack picker continues to support network and custom locations.
 
 What a preparation remembers is written beside the system's cache: the
@@ -922,9 +926,15 @@ A Update   B Keep Current
 **Update** prepares that one system again and replaces the previous result
 only once the new one is complete. **Keep Current** keeps browsing on the
 previous mapping and is remembered for that change, so it is not asked about
-again until the pack changes once more. An image added or removed is not a
-change to the mapping: the mapping stands, and the pack's completeness is
-looked at again at the next preparation. **Rebuild This System List** is the
+again until the pack changes once more. When the system's own list changed,
+after **Rebuild All System Lists**, the previous mapping is applied to the
+new list: games it knows keep their pack data, games added since have none
+until the pack is prepared again. When the prepared list itself is gone,
+there is no previous result to keep, and **Keep Current** opens the system
+with its ordinary data. The system's prepared data is never written again
+without one of these answers. An image added or removed is not a change to
+the mapping: the mapping stands, and the pack's completeness is looked at
+again at the next preparation. **Rebuild This System List** is the
 deliberate way to prepare the current pack whatever was kept, and on a system
 whose pack was declined it asks the question again first. A cancelled or
 failed preparation writes nothing: without a previous result the system
@@ -932,7 +942,8 @@ opens with its ordinary data, with one the previous result stays in use, and
 the next entry asks again. If the storage holding a prepared pack is missing,
 the system says so at every entry while it is missing, and opens on its
 ordinary rows only behind that message; the prepared result is kept for when
-the storage is back. Two systems that share one database, such as Neo Geo and
+the storage is back, and the favourites and the screensaver use it again as
+soon as it is. Two systems that share one database, such as Neo Geo and
 Neo Geo MVS, are each asked about and prepared on their own.
 
 Explicit choices need no question: **Artwork Pack** is the consent, and the
@@ -942,11 +953,10 @@ keep working: each is tied to its pack the first time its system is entered,
 by one worker read with the usual overlay, and reused from then on. Nothing
 is reprocessed at startup and nothing needs a reset. A cache that no longer
 matches the pack installed now is kept and asked about instead, with the
-question saying so (`A Update   B Not Now`, and that Not Now opens the
-system without pack data): there is no current result to keep browsing on,
-so **Not Now** keeps the file but opens the system with its ordinary data;
-**Rebuild This System List**, and **Update** when it asks, is the way to use
-the pack again.
+same **Artwork Pack Changed** question: there is no current result to keep
+browsing on, so **Keep Current** keeps the file but opens the system with
+its ordinary data; **Rebuild This System List**, and **Update** when it
+asks, is the way to use the pack again.
 
 The two effective sources are deliberately exclusive:
 

@@ -203,13 +203,18 @@ fn run(
             });
             continue;
         }
-        let cached = crate::cache::load_artwork_pack_data(&request.cache_dir, &request.system_id);
+        // Read with its marker: the state written below records the
+        // rows the mapping was prepared from.
+        let cached =
+            crate::cache::load_artwork_pack_data_marked(&request.cache_dir, &request.system_id)
+                .ok()
+                .flatten();
         let mut skipped = crate::artwork_pack::SkippedEntries::new();
         let (fingerprints, cache_needs_recovery) = match cached.as_ref() {
             Some(_) if !provider.health.usable() => {
                 (crate::cache::ContentFingerprints::new(), false)
             }
-            Some(cached) => match provider.cached_fingerprints_are_current(
+            Some((cached, _)) => match provider.cached_fingerprints_are_current(
                 &cached.cache,
                 &cached.fingerprints,
                 cached.fingerprints_complete,
@@ -232,7 +237,7 @@ fn run(
         };
         let mut warnings = Vec::new();
         if !cache_needs_recovery && provider.health.usable() {
-            let Some(cached) = cached.as_ref() else {
+            let Some((cached, marker)) = cached.as_ref() else {
                 let _ = events.send(Event::Failed {
                     error: DegaussError::unsupported(
                         "Artwork Pack",
@@ -270,18 +275,28 @@ fn run(
                         docs_root: request.docs_root.to_string_lossy().into_owned(),
                         language: provider.synopsis_language().map(str::to_string),
                         signature: provider.snapshot().cloned(),
-                        cache_marker: cached.marker,
+                        cache_marker: *marker,
                         health: provider.health,
                         diagnostics: provider.diagnostics.clone(),
                         skipped_entries: u32::try_from(skipped.len()).unwrap_or(u32::MAX),
                     }),
                     declined: None,
                 };
+                let Some(map) = provider.prepared_map() else {
+                    let _ = events.send(Event::Failed {
+                        error: DegaussError::unsupported(
+                            "Artwork Pack",
+                            "provider validation finished without a prepared map",
+                        ),
+                        progress,
+                    });
+                    return;
+                };
                 if let Err(error) = crate::cache::save_pack_state(
                     &request.cache_dir,
                     &request.system_id,
                     &state,
-                    &provider.prepared_pairs(),
+                    map,
                 ) {
                     let _ = events.send(Event::Failed { error, progress });
                     return;
@@ -783,17 +798,21 @@ mod tests {
         assert_eq!(accepted.skipped_entries, 1);
         assert_eq!(
             accepted.cache_marker,
-            crate::cache::load_artwork_pack_data(&cache_dir, "Arcade")
+            crate::cache::load_artwork_pack_data_marked(&cache_dir, "Arcade")
                 .unwrap()
-                .marker
+                .unwrap()
+                .1
         );
         assert_eq!(accepted.health, crate::artwork_pack::ProviderHealth::Ready);
         let prepared = crate::cache::load_pack_prepared_map(&cache_dir, "Arcade")
             .unwrap()
             .unwrap();
         assert_eq!(prepared.len(), 1);
-        assert_eq!(prepared[0].1.name.as_deref(), Some("Pack Healthy"));
-        assert_eq!(snapshot.provider.prepared_pairs().len(), 1);
+        assert_eq!(
+            prepared.values().next().unwrap().name.as_deref(),
+            Some("Pack Healthy")
+        );
+        assert_eq!(snapshot.provider.prepared_map().unwrap().len(), 1);
 
         let store = cache_dir.join("artwork-pack");
         for file in ["Arcade.source.bin", "Arcade.prepared.bin"] {

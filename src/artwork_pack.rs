@@ -746,18 +746,10 @@ impl Provider {
         Ok(Some(matched))
     }
 
-    /// The prepared map as rows, for writing down. Empty when nothing has
-    /// been prepared.
-    pub fn prepared_pairs(&self) -> Vec<(Launch, PackPresentation)> {
-        self.prepared
-            .as_ref()
-            .map(|prepared| {
-                prepared
-                    .iter()
-                    .map(|(launch, presentation)| (launch.clone(), presentation.clone()))
-                    .collect()
-            })
-            .unwrap_or_default()
+    /// The prepared map, for writing down as it is held. Nothing when
+    /// nothing has been prepared.
+    pub fn prepared_map(&self) -> Option<&HashMap<Launch, PackPresentation>> {
+        self.prepared.as_deref()
     }
 
     /// The source signature the catalogue was read against, if it was read
@@ -783,7 +775,7 @@ impl Provider {
         health: ProviderHealth,
         diagnostics: Vec<String>,
         snapshot: Option<SourceFingerprint>,
-        prepared: Vec<(Launch, PackPresentation)>,
+        prepared: HashMap<Launch, PackPresentation>,
     ) -> Self {
         Self {
             system_id: system_id.to_string(),
@@ -793,7 +785,7 @@ impl Provider {
             directories: Arc::new(Vec::new()),
             snapshot,
             synopsis_language: normalized_language(language),
-            prepared: Some(Arc::new(prepared.into_iter().collect())),
+            prepared: Some(Arc::new(prepared)),
             archive_cache: Arc::new(std::sync::Mutex::new(crate::zip::ArchiveCache::default())),
         }
     }
@@ -5456,8 +5448,13 @@ mod tests {
             }),
             declined: None,
         };
-        crate::cache::save_pack_state(&store, "SuperGrafx", &state, &provider.prepared_pairs())
-            .unwrap();
+        crate::cache::save_pack_state(
+            &store,
+            "SuperGrafx",
+            &state,
+            provider.prepared_map().unwrap(),
+        )
+        .unwrap();
         let read = crate::cache::load_pack_source_state(&store, "SuperGrafx")
             .unwrap()
             .unwrap();

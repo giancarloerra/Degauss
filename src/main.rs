@@ -2219,7 +2219,7 @@ category = "Favorites"
                 }),
                 declined: None,
             },
-            &Vec::new(),
+            &cache::PackPreparedMap::new(),
         )
         .unwrap();
         cache::save_pack_source_state(

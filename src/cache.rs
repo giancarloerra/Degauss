@@ -101,10 +101,6 @@ pub struct ArtworkPackData {
     pub cache: SystemCache,
     pub fingerprints: ContentFingerprints,
     pub fingerprints_complete: bool,
-    /// CRC32 of the file's bytes as read: the revision a prepared mapping
-    /// was made against. A replaced file, whoever wrote it, is a different
-    /// marker, and a mapping prepared against the old one says so.
-    pub marker: u32,
 }
 
 #[derive(Debug, Clone)]
@@ -212,6 +208,22 @@ pub fn load_artwork_pack_data(dir: &Path, id: &str) -> Option<ArtworkPackData> {
 /// kept, a file that cannot be read at that moment is not a missing one.
 /// A file that does not decode is no cache, as it is for every cache.
 pub fn load_artwork_pack_data_checked(dir: &Path, id: &str) -> Result<Option<ArtworkPackData>> {
+    Ok(read_artwork_pack_cache(dir, id)?.map(|(_, data)| data))
+}
+
+/// The same, with the cache's marker: CRC32 of the file's bytes as read,
+/// the revision a prepared mapping was made against. A replaced file,
+/// whoever wrote it, is a different marker, and a mapping prepared
+/// against the old one says so. Hashed only here, for the readers that
+/// compare or write the marker down; every other reader decodes alone.
+pub fn load_artwork_pack_data_marked(
+    dir: &Path,
+    id: &str,
+) -> Result<Option<(ArtworkPackData, u32)>> {
+    Ok(read_artwork_pack_cache(dir, id)?.map(|(bytes, data)| (data, crc32fast::hash(&bytes))))
+}
+
+fn read_artwork_pack_cache(dir: &Path, id: &str) -> Result<Option<(Vec<u8>, ArtworkPackData)>> {
     let path = artwork_pack_system_path(dir, id);
     let bytes = match std::fs::read(&path) {
         Ok(bytes) => bytes,
@@ -227,16 +239,15 @@ pub fn load_artwork_pack_data_checked(dir: &Path, id: &str) -> Result<Option<Art
     let Ok(cache) = postcard::from_bytes::<ArtworkPackCache>(&bytes) else {
         return Ok(None);
     };
-    Ok(
-        (cache.format == ARTWORK_PACK_FORMAT && cache.cache.format == FORMAT).then_some(
-            ArtworkPackData {
-                cache: cache.cache,
-                fingerprints: cache.fingerprints,
-                fingerprints_complete: cache.fingerprints_complete,
-                marker: crc32fast::hash(&bytes),
-            },
-        ),
-    )
+    if cache.format != ARTWORK_PACK_FORMAT || cache.cache.format != FORMAT {
+        return Ok(None);
+    }
+    let data = ArtworkPackData {
+        cache: cache.cache,
+        fingerprints: cache.fingerprints,
+        fingerprints_complete: cache.fingerprints_complete,
+    };
+    Ok(Some((bytes, data)))
 }
 
 fn write(path: &Path, bytes: &[u8]) -> Result<()> {
@@ -845,9 +856,13 @@ pub fn install_transactional(
     prepared.install().map(|(_, warnings)| warnings)
 }
 
-/// Commit a complete system scan and its summary together.
+/// Commit a complete system scan and its summary together. Written as
+/// the ordinary system file, or as the Pack cache's rows without a
+/// preparation: no fingerprints, and not complete, for a system whose
+/// Pack is prepared only when its user says so.
 pub fn save_system_with_index(
     dir: &Path,
+    kind: CacheKind,
     id: &str,
     cache: &SystemCache,
     index: &Index,
@@ -858,16 +873,11 @@ pub fn save_system_with_index(
         fingerprints: ContentFingerprints::new(),
         fingerprints_complete: false,
     };
-    stage_transactional(
-        dir,
-        CacheKind::Gamelist,
-        vec![staged],
-        &AtomicBool::new(false),
-    )?
-    .ok_or_else(|| DegaussError::unsupported("cache transaction", "cancelled"))?
-    .with_index(dir, index)?
-    .install()
-    .map(|(_, warnings)| warnings)
+    stage_transactional(dir, kind, vec![staged], &AtomicBool::new(false))?
+        .ok_or_else(|| DegaussError::unsupported("cache transaction", "cancelled"))?
+        .with_index(dir, index)?
+        .install()
+        .map(|(_, warnings)| warnings)
 }
 
 /// Bumped when the shape of a state file changes. The source state's
@@ -926,7 +936,8 @@ struct PackSourceFile {
 
 /// The prepared presentation of every matched row, keyed by how the row is
 /// started, exactly as the worker's map is held in memory.
-pub type PackPreparedMap = Vec<(crate::browse::Launch, crate::artwork_pack::PackPresentation)>;
+pub type PackPreparedMap =
+    std::collections::HashMap<crate::browse::Launch, crate::artwork_pack::PackPresentation>;
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 struct PackPreparedFile {
@@ -955,8 +966,8 @@ pub fn encode_pack_source(state: &PackSourceState) -> Result<Vec<u8>> {
     .map_err(|error| DegaussError::unsupported("artwork pack state", error.to_string()))
 }
 
-/// The same shape as [`PackPreparedFile`], borrowed: the rows handed in
-/// are encoded as they are, not copied into an owned file first.
+/// The same shape as [`PackPreparedFile`], borrowed: the map handed in
+/// is encoded as it is, not copied into an owned file first.
 #[derive(Serialize)]
 struct PackPreparedFileRef<'a> {
     format: u32,
@@ -1639,7 +1650,7 @@ mod tests {
                 folders: 2,
             },
         );
-        save_system_with_index(&store, "Test", &initial, &index).unwrap();
+        save_system_with_index(&store, CacheKind::Gamelist, "Test", &initial, &index).unwrap();
         std::fs::write(system_path(&store, "Untouched"), b"other-cache-bytes").unwrap();
         let independent = artwork_pack_system_path(&store, "Test");
         std::fs::create_dir_all(independent.parent().unwrap()).unwrap();
@@ -1656,9 +1667,11 @@ mod tests {
         index
             .systems
             .insert("Test".into(), rebuilt.summary(&library.start()));
-        assert!(save_system_with_index(&store, "Test", &rebuilt, &index)
-            .unwrap()
-            .is_empty());
+        assert!(
+            save_system_with_index(&store, CacheKind::Gamelist, "Test", &rebuilt, &index)
+                .unwrap()
+                .is_empty()
+        );
         let reloaded = load_system(&store, "Test").unwrap();
         assert_eq!(reloaded.summary(&library.start()).games, 2);
         assert_eq!(load_index(&store).unwrap().systems["Test"].games, 2);
@@ -1685,7 +1698,7 @@ mod tests {
         index
             .systems
             .insert("Test".into(), old.summary(&library.start()));
-        save_system_with_index(&store, "Test", &old, &index).unwrap();
+        save_system_with_index(&store, CacheKind::Gamelist, "Test", &old, &index).unwrap();
         let old_cache_bytes = std::fs::read(system_path(&store, "Test")).unwrap();
         let old_index_bytes = std::fs::read(index_path(&store)).unwrap();
         std::fs::write(&archive, b"broken archive").unwrap();
@@ -1706,7 +1719,8 @@ mod tests {
         let store = temp("index-install-rollback");
         let old = staged("Test");
         let old_index = Index::new();
-        save_system_with_index(&store, "Test", &old.cache, &old_index).unwrap();
+        save_system_with_index(&store, CacheKind::Gamelist, "Test", &old.cache, &old_index)
+            .unwrap();
         let old_cache_bytes = std::fs::read(system_path(&store, "Test")).unwrap();
         let old_index_bytes = std::fs::read(index_path(&store)).unwrap();
         let mut next = Index::new();
@@ -1760,7 +1774,7 @@ mod tests {
         let store = temp("cancel-staged-pair");
         let cache = staged("Test");
         let index = Index::new();
-        save_system_with_index(&store, "Test", &cache.cache, &index).unwrap();
+        save_system_with_index(&store, CacheKind::Gamelist, "Test", &cache.cache, &index).unwrap();
         let old_cache_bytes = std::fs::read(system_path(&store, "Test")).unwrap();
         let old_index_bytes = std::fs::read(index_path(&store)).unwrap();
         let prepared = stage_transactional(
@@ -1869,7 +1883,7 @@ mod tests {
                 &store,
                 "Test",
                 &encode_pack_source(&accepted_state(marker)).unwrap(),
-                &encode_pack_prepared(&Vec::new()).unwrap(),
+                &encode_pack_prepared(&PackPreparedMap::new()).unwrap(),
             )
             .unwrap();
         assert_eq!(prepared.files.len(), 3);
@@ -1896,7 +1910,7 @@ mod tests {
             &store,
             "Test",
             &encode_pack_source(&accepted_state(marker)).unwrap(),
-            &encode_pack_prepared(&Vec::new()).unwrap(),
+            &encode_pack_prepared(&PackPreparedMap::new()).unwrap(),
         )
         .unwrap();
         let blocked = prepared.files[2].backup_path.clone();
@@ -1927,15 +1941,17 @@ mod tests {
                 &store,
                 "Test",
                 &encode_pack_source(&accepted_state(marker)).unwrap(),
-                &encode_pack_prepared(&Vec::new()).unwrap(),
+                &encode_pack_prepared(&PackPreparedMap::new()).unwrap(),
             )
             .unwrap()
             .install()
             .unwrap();
         assert!(warnings.is_empty());
-        let installed = load_artwork_pack_data(&store, "Test").unwrap();
+        let (_, installed) = load_artwork_pack_data_marked(&store, "Test")
+            .unwrap()
+            .unwrap();
         assert_eq!(
-            installed.marker, marker,
+            installed, marker,
             "the marker written down is the marker the rows read back with"
         );
         assert_eq!(crc32fast::hash(&std::fs::read(&rows_path).unwrap()), marker);
@@ -1943,10 +1959,10 @@ mod tests {
             load_pack_source_state(&store, "Test").unwrap().unwrap(),
             accepted_state(marker)
         );
-        assert_eq!(
-            load_pack_prepared_map(&store, "Test").unwrap().unwrap(),
-            Vec::new()
-        );
+        assert!(load_pack_prepared_map(&store, "Test")
+            .unwrap()
+            .unwrap()
+            .is_empty());
         assert_eq!(
             std::fs::read_dir(rows_path.parent().unwrap())
                 .unwrap()
@@ -1969,7 +1985,7 @@ mod tests {
         let store = temp("pack-state-loading");
         assert!(load_pack_source_state(&store, "Test").unwrap().is_none());
         assert!(load_pack_prepared_map(&store, "Test").unwrap().is_none());
-        save_pack_state(&store, "Test", &accepted_state(9), &Vec::new()).unwrap();
+        save_pack_state(&store, "Test", &accepted_state(9), &PackPreparedMap::new()).unwrap();
         assert_eq!(
             load_pack_source_state(&store, "Test").unwrap().unwrap(),
             accepted_state(9)

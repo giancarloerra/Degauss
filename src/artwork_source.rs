@@ -83,7 +83,7 @@ pub fn resolve(
                 Ok(Some(state)) => state,
                 Ok(None) => continue,
                 Err(error) => {
-                    resolved.errors.insert(group.to_string(), error.to_string());
+                    record_error(&mut resolved.errors, group, &error);
                     continue;
                 }
             };
@@ -123,12 +123,23 @@ pub fn resolve(
                 }
             }
             Ok(None) => return Ok(None),
-            Err(error) => {
-                resolved.errors.insert(group.to_string(), error.to_string());
-            }
+            Err(error) => record_error(&mut resolved.errors, group, &error),
         }
     }
     Ok((!cancelled.load(Ordering::Relaxed)).then_some(resolved))
+}
+
+/// A group's errors, one under the other: a member's unreadable state
+/// and the group's gamelist probe can both fail, and the second is not
+/// allowed to write over the first.
+fn record_error(errors: &mut BTreeMap<String, String>, group: &str, error: &DegaussError) {
+    errors
+        .entry(group.to_string())
+        .and_modify(|recorded| {
+            recorded.push('\n');
+            recorded.push_str(&error.to_string());
+        })
+        .or_insert_with(|| error.to_string());
 }
 
 /// Whether any of the system's own folders holds a `gamelist.xml`. A
@@ -458,6 +469,23 @@ mod tests {
             resolved.errors["NeoGeo"].contains("reading the Artwork Pack state"),
             "{resolved:?}"
         );
+        // The other member accepted and its gamelist probe failing as
+        // well: both causes reach the group's report, neither writes over
+        // the other.
+        #[cfg(unix)]
+        {
+            let systems = [systems[0].clone(), fixture.system("NeoGeoMVS", &["second"])];
+            fixture.accept("NeoGeoMVS", &docs);
+            let xml = systems[1].paths[0].join("gamelist.xml");
+            std::os::unix::fs::symlink(fixture.0.join("missing.xml"), &xml).unwrap();
+            let resolved = fixture.resolve(&systems, &Settings::default());
+            assert!(resolved.roots.is_empty());
+            let error = &resolved.errors["NeoGeo"];
+            assert!(
+                error.contains("reading the Artwork Pack state") && error.contains("gamelist.xml"),
+                "{resolved:?}"
+            );
+        }
     }
 
     /// An explicit choice is spelled out for every member of its group and

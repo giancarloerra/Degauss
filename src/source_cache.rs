@@ -391,11 +391,17 @@ fn stage_pack_state(
             }),
             declined: None,
         };
+        let map = provider.prepared_map().ok_or_else(|| {
+            DegaussError::unsupported(
+                "Artwork Pack",
+                format!("{}: nothing was prepared to write down", provider.system_id),
+            )
+        })?;
         prepared = prepared.with_pack_state(
             cache_dir,
             &provider.system_id,
             &crate::cache::encode_pack_source(&state)?,
-            &crate::cache::encode_pack_prepared(&provider.prepared_pairs())?,
+            &crate::cache::encode_pack_prepared(map)?,
         )?;
     }
     Ok(prepared)
@@ -938,9 +944,10 @@ mod tests {
             assert_eq!(accepted.cache_marker, markers[position]);
             assert_eq!(
                 accepted.cache_marker,
-                crate::cache::load_artwork_pack_data(&cache_dir, id)
+                crate::cache::load_artwork_pack_data_marked(&cache_dir, id)
                     .unwrap()
-                    .marker
+                    .unwrap()
+                    .1
             );
             assert_eq!(accepted.health, crate::artwork_pack::ProviderHealth::Ready);
             assert_eq!(accepted.skipped_entries, 0);
@@ -954,7 +961,7 @@ mod tests {
                 "{id}: the one matched row is written down"
             );
             assert_eq!(
-                prepared[0].1.name.as_deref(),
+                prepared.values().next().unwrap().name.as_deref(),
                 Some("Pack Known"),
                 "{id}: with the presentation the worker prepared"
             );
@@ -963,7 +970,8 @@ mod tests {
                     .iter()
                     .find(|provider| provider.system_id == id)
                     .unwrap()
-                    .prepared_pairs()
+                    .prepared_map()
+                    .unwrap()
                     .len(),
                 1
             );
