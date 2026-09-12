@@ -4761,7 +4761,8 @@ impl App {
             // Said out loud rather than quietly keeping the stale listing.
             Err(e) => return Some(format!("{name}: {e}")),
         };
-        let cache = match crate::cache::build_system_checked(&library) {
+        let mut warnings = Vec::new();
+        let cache = match crate::cache::build_system_checked(&library, &mut warnings) {
             Ok(cache) => cache,
             Err(error) => return Some(format!("{name}: {error}")),
         };
@@ -4769,11 +4770,17 @@ impl App {
         next_index
             .systems
             .insert(id.to_string(), cache.summary(&browse::start_for(&config)));
-        let warnings =
-            match crate::cache::save_system_with_index(&self.cache_dir, id, &cache, &next_index) {
-                Ok(warnings) => warnings,
-                Err(error) => return Some(format!("{name}: {error}")),
-            };
+        match crate::cache::save_system_with_index(&self.cache_dir, id, &cache, &next_index) {
+            Ok(installed) => warnings.extend(installed),
+            Err(error) => return Some(format!("{name}: {error}")),
+        }
+        // An archive or member the scan left out, and anything publication
+        // had to say, is said out loud with the rest of the message and
+        // logged, named by the system the way a full build names them.
+        for warning in &mut warnings {
+            *warning = format!("{name}: {warning}");
+            crate::note(warning);
+        }
         self.index = Some(next_index);
         self.apply_index();
         let error = (!warnings.is_empty()).then(|| warnings.join("\n"));
@@ -6721,7 +6728,8 @@ impl App {
                         self.system_cache = Some(cache);
                         self.library = None;
                     }
-                    if let Some(system) = current.and_then(|at| self.all_systems.get(at)) {
+                    let system = current.and_then(|at| self.all_systems.get(at));
+                    if let Some(system) = system {
                         crate::note(&format!(
                             "index {}: {:.3}s, {} games",
                             system.def.id,
@@ -6729,8 +6737,12 @@ impl App {
                             summary.map_or(0, |value| value.games)
                         ));
                     }
+                    // Named the way a failure is, so the report says which
+                    // system's archive was left out.
+                    let name =
+                        system.map_or("System".to_string(), |system| system.name().to_string());
                     for warning in warnings {
-                        self.build_warning(warning);
+                        self.build_warning(format!("{name}: {warning}"));
                     }
                 }
                 crate::index_job::Event::Cancelled { index } => {
@@ -9416,6 +9428,7 @@ impl App {
                     prepared,
                     providers,
                     progress,
+                    warnings,
                 } => {
                     if self.source_cancelling && self.build.is_some() {
                         self.source_job = None;
@@ -9430,11 +9443,10 @@ impl App {
                     self.source_cancelling = false;
                     match self.source_operation.take() {
                         Some(SourceOperation::Switch) => {
-                            self.finish_source_switch(target, prepared, providers)
+                            self.finish_source_switch(target, prepared, providers, warnings)
                         }
-                        Some(SourceOperation::Recover(purpose)) => {
-                            self.finish_source_recovery(target, prepared, providers, purpose)
-                        }
+                        Some(SourceOperation::Recover(purpose)) => self
+                            .finish_source_recovery(target, prepared, providers, warnings, purpose),
                         None => {
                             crate::note("game source  worker completed without an operation");
                             self.screen = Screen::Browse;
@@ -9757,6 +9769,7 @@ impl App {
         target: crate::source_cache::Target,
         prepared: crate::cache::PreparedCacheGroup,
         providers: Vec<crate::artwork_pack::Provider>,
+        scan_warnings: Vec<String>,
         purpose: SourceRecoveryPurpose,
     ) {
         let crate::source_cache::Target::ArtworkPack { .. } = target else {
@@ -9794,8 +9807,16 @@ impl App {
                 return;
             }
         };
-        for warning in install_warnings {
-            crate::note(&format!("cache        recovery warning: {warning}"));
+        // What the scan left out comes first: it is the cause, and a later
+        // storage warning must not push it out of the message. A full
+        // build still in progress logs each warning once it drains them
+        // below; every other case, the group a finished build left for
+        // this step included, has nothing to drain them and logs them here.
+        let drained_by_build = purpose == SourceRecoveryPurpose::FullBuild && self.build.is_some();
+        for warning in scan_warnings.into_iter().chain(install_warnings) {
+            if !drained_by_build {
+                crate::note(&format!("cache        recovery warning: {warning}"));
+            }
             self.source_recovery_warnings.push(warning);
         }
 
@@ -9856,10 +9877,10 @@ impl App {
             SourceRecoveryPurpose::OpenSystem => {
                 self.open_system_now();
                 if !self.source_recovery_warnings.is_empty() {
-                    self.message = Some(
-                        "Artwork Pack cache refreshed with a storage warning.\nSee degauss.log for details."
-                            .to_string(),
-                    );
+                    self.message = Some(format!(
+                        "Artwork Pack cache refreshed with problems:\n{}",
+                        self.source_recovery_warnings.join("\n")
+                    ));
                 } else if self.message.is_none() {
                     self.message = Some("Artwork Pack cache refreshed.".to_string());
                 }
@@ -9875,11 +9896,14 @@ impl App {
                             .map(|system| system.name().to_string())
                     })
                     .unwrap_or_else(|| "System".to_string());
+                // The archive and reason are on screen, as they are for a
+                // full rebuild and for a system that is not Pack-prepared.
                 self.message = Some(if self.source_recovery_warnings.is_empty() {
                     format!("{name} list rebuilt.")
                 } else {
                     format!(
-                        "{name} list rebuilt with a storage warning.\nSee degauss.log for details."
+                        "{name} list rebuilt with problems:\n{}",
+                        self.source_recovery_warnings.join("\n")
                     )
                 });
             }
@@ -9942,6 +9966,7 @@ impl App {
         target: crate::source_cache::Target,
         prepared: crate::cache::PreparedCacheGroup,
         providers: Vec<crate::artwork_pack::Provider>,
+        mut warnings: Vec<String>,
     ) {
         let Some(system_id) = self.source_system_id.clone() else {
             return;
@@ -9949,8 +9974,11 @@ impl App {
         let Some(group) = crate::artwork_pack::source_group(&system_id) else {
             return;
         };
-        let (caches, mut warnings) = match prepared.install() {
-            Ok(installed) => installed,
+        let caches = match prepared.install() {
+            Ok((caches, installed)) => {
+                warnings.extend(installed);
+                caches
+            }
             Err(error) => {
                 crate::note(&format!("game source  cache install failed: {error}"));
                 self.open_game_data_source();
@@ -10039,8 +10067,13 @@ impl App {
         for warning in &warnings {
             crate::note(&format!("game source  installed with warning: {warning}"));
         }
+        // The archive and reason are on screen, as they are when a Pack
+        // system is rebuilt or prepared on opening.
         self.message = Some(match warnings.is_empty() {
-            false => format!("Now using {label}.\nSaved with a storage warning; see degauss.log."),
+            false => format!(
+                "Now using {label}.\nFinished with problems:\n{}",
+                warnings.join("\n")
+            ),
             true => format!("Now using {label}."),
         });
         self.dirty = true;
@@ -11330,7 +11363,7 @@ impl App {
                 crate::index_job::Event::Ready {
                     index,
                     cache,
-                    warnings,
+                    mut warnings,
                     folders,
                     games,
                     ..
@@ -11338,10 +11371,12 @@ impl App {
                     self.index = Some(index);
                     self.scraper_refresh_folders = folders;
                     self.scraper_refresh_games = games;
+                    let mut name = None;
                     if let Some(id) = &self.scraper_refresh_id {
                         if let Some(system) =
                             self.all_systems.iter().find(|system| system.def.id == *id)
                         {
+                            name = Some(system.name().to_string());
                             for path in &system.paths {
                                 self.covers.invalidate_under(path);
                                 self.gallery_covers.invalidate_under(path);
@@ -11362,7 +11397,20 @@ impl App {
                     {
                         self.relist_here();
                     }
-                    (!warnings.is_empty()).then(|| warnings.join("\n"))
+                    // An archive or member the refresh left out, and
+                    // anything publication had to say, is the scrape's
+                    // last problem, named by the system the way a rebuild
+                    // names it. The list was replaced, so it is not a
+                    // failed refresh.
+                    if !warnings.is_empty() {
+                        let name = name.unwrap_or_else(|| "System".to_string());
+                        for warning in &mut warnings {
+                            *warning = format!("{name}: {warning}");
+                            crate::note(warning);
+                        }
+                        self.scraper_progress.last_problem = Some(warnings.join("\n"));
+                    }
+                    None
                 }
                 crate::index_job::Event::Failed { error, index } => {
                     self.index = Some(index);

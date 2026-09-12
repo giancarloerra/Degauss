@@ -2,7 +2,38 @@
 
 A system that does not list `zip` among its launchable extensions opens each ZIP as a virtual folder. Root and nested games retain the native `archive.zip/folder/game.ext` target; neither browsing nor launch preparation extracts or modifies the archive. Directories can be explicit ZIP records or implied by member paths. A system already configured to launch `zip` keeps the whole archive as one game.
 
-The reader supports single-disk classic ZIP and ZIP64 with stored or deflated entries. Encryption, compressed-patch entries, other compression methods, nested archives, duplicate names and ASCII-case-ambiguous paths are rejected explicitly. Names must be exact UTF-8 and cannot contain traversal components, ambiguous separators or control characters. The complete native target must fit 1,023 bytes and the member filename must fit 260 bytes, matching the relevant Main buffers. An earlier `.zip` substring in the outer path is unsupported because Main splits its native ZIP target at the first such substring.
+The reader supports single-disk classic ZIP and ZIP64 with stored or deflated entries. Problems are handled at two levels.
+
+A central directory that does not hold together fails the whole archive: the archive is skipped with its path and reason and nothing from it is listed. That is any of:
+
+- a truncated, unreadable or inconsistent directory, or an invalid signature, count, size or offset;
+- invalid ZIP64 metadata, or a multi-disk archive;
+- a member whose disk number is the ZIP64 sentinel (which Main refuses without resolving) or is not the archive's disk (Main also lets a record saying disk 1 into a disk-0 archive; Degauss is stricter there, which only ever leaves an archive out);
+- a member record whose sizes or local-header offset do not fit the archive;
+- a member with a masked local header (general-purpose bit 13, which Main refuses for the whole archive when it reads the directory);
+- the archive's own path on the card (not a member name) that is not UTF-8, holds a control character, or holds an earlier `.zip` substring, which Main splits its native target at.
+
+Every record is checked this way, including one that is about to be skipped on its own, because Main checks them all before it will open the archive.
+
+A folder inside an archive that sits deeper than the folder depth the index walks (twelve levels below where the system starts, the folders holding the archive and the archive itself included, so a short member path in a deeply stored archive reaches it too) is skipped with everything under it, as `archive.zip/folder: skipped: folder is past the maximum depth of 12 below the system start`: that is the walk's own limit rather than anything Main checks. The archive's other members, and the folders above that one, stay. `--report` and `--audit` name the same folder with the same reason as an `unreadable` line, but only when a supported member sits under it: they walk the folders that hold supported games, while the index records every folder the archive holds, so a folder that deep holding nothing launchable is named by the index alone. A folder on the card that deep remains the system's failure.
+
+A problem confined to one member skips only that member, with its exact reason, and the other members stay. That is any of:
+
+- an encrypted entry (except a stored one whose DOS time is zero, which fails the archive, as described below), or a compressed-patch entry;
+- another compression method, named by its number;
+- a nested archive member (Main refuses a second `.zip` in a target);
+- a traversal or empty path segment, a backslash or colon, a control character, or leading or trailing whitespace in the name;
+- a member filename over 260 bytes or a native target over 1,023 bytes, matching the relevant Main buffers.
+
+An encrypted stored member carries its encryption header in its compressed size; Main's stored-size check reads the method and the DOS time as one word and only fails such a member when its time is zero, so Degauss fails the archive in exactly that case and otherwise skips the member.
+
+Duplicate or ASCII-case-ambiguous paths, including a file whose name is also a directory, skip the whole conflicting group rather than choosing one of them, as `duplicate or case-ambiguous member path`, with the group's lowercase key after the reason in the log line and the `--report` and `--audit` lines; a member already skipped for its own reason still counts as part of a group, because Main's lookup can land on its record.
+
+Member names are used exactly as their raw central-directory bytes. Main locates a member by comparing the requested bytes with those raw bytes, ASCII case-insensitively, without decoding them and without reading the UTF-8 flag or the Info-ZIP Unicode Path extra field ([Degauss-Main lib/miniz/miniz.c, `mz_zip_reader_locate_file_v2`](https://github.com/giancarloerra/Degauss-Main/blob/0651979d53f570c29f8772e124ae603297830954/lib/miniz/miniz.c#L4312-L4373)). A raw name that is valid UTF-8 is therefore the only representation that travels unchanged through the cache, the generated MGL and Main, and it is accepted whether or not the archive sets the UTF-8 flag. The flag does not change which names are accepted: a legacy-encoded name whose bytes happen to be valid UTF-8 is listed as that UTF-8 text, which is the exact name Main resolves, and a name that is not UTF-8 is skipped whether or not it is flagged.
+
+A name that is not valid UTF-8 is skipped as `unsupported legacy ZIP filename encoding`; when the archive flags it UTF-8 all the same, `flagged UTF-8` follows the reason in the log line and the `--report` and `--audit` lines, so a wrong flag can be told from a legacy encoding without a second reason to count.
+
+The Unicode Path extra field (APPNOTE 4.6.9) is validated (version 1 and a matching CRC-32 of the raw name; otherwise it is ignored, as APPNOTE requires) and its decoded name is written after the reason in the log line and in the `--report` and `--audit` lines so the member can be identified; the reason itself stays the same for every such member so the summary can count them. It is never used as the launch name, because it would not resolve through Main. No name is ever decoded lossily.
 
 Archives are bounded to 100,000 central-directory entries and 16 MiB of central-directory data. Both limits apply before allocation, regardless of overall archive size. The archive can exceed 4 GiB when these limits are met. Entry sizes and archive offsets are parsed with checked 64-bit arithmetic. These bounds constrain both frontend memory use and the central directory Main reads when opening a member.
 
@@ -18,9 +49,15 @@ Use complete relative metadata paths for individual games:
 
 An archive containing more than one game supported by the system uses only exact member metadata paths. A single supported game retains existing archive/title metadata matching. Scraping a single member preserves Keep/Fill policies but writes a separate exact member entry when an update is needed; it never overwrites the archive-level metadata row. Artwork remains an external file alongside the library.
 
-Replacing an archive is reflected by **Rebuild this system list** or a full rebuild. A successful scan replaces the current contents. An unreadable or malformed archive reports its path and reason; a failed rebuild preserves the previous valid cache and summary. Existing cache, Favorites and state formats remain readable.
+Replacing an archive is reflected by **Rebuild this system list** or a full rebuild. A successful scan replaces the current contents. A malformed archive or an unsupported member is skipped with a warning and the healthy remainder of the system is published in the same transaction; the rebuild finishes as **Finished With Problems**, and the summary names the system, the archive and the reason: one line per skipped archive, one line per folder skipped for its depth, and for skipped members one line per archive and reason with a count of the members it covers. For a system prepared from an Artwork Pack, **Rebuild this system list**, the preparation on opening and a change of its game data source show the same archive and reason lines in their completion message. The scraper's **Refreshing Lists** step rebuilds each affected system the same way: a skipped archive or member is shown as the dashboard's last problem, named by the system, and is not counted as a failed system, because the system's list was replaced.
 
-Launch confirmation reopens and validates the outer archive and selected member. It reports a missing, renamed or unsupported member before handing control to Main. Reading the central directory does not establish the integrity of compressed payloads: decompression and payload checks remain Main's responsibility.
+A system holding only rejected content completes with zero games and that warning. An unreadable system folder, a cancellation or a failure to publish remains a failed transaction that preserves the previous valid cache and summary. Existing cache, Favorites and state formats remain readable.
+
+Every skipped member is written to `/tmp/degauss.log` as `zip <archive>: member <name>: <reason>` (a name that is not UTF-8 is written with each non-ASCII byte as `\xNN`, and a name holding a control character is escaped there) by the index and by the audit, once per archive each time one of them reads it: a rebuild, `--report` and `--audit` leave the lines. No other read of an archive writes them: a listing straight from the card of a system that is not indexed, the Details view of a member, the Artwork Pack passes over a system, the check before a launch and the resolution of a favourite naming a member all read archives without logging, because each would repeat the block on every read (the launch check reports the chosen member's reason in its own message). A skipped archive is written as `zip <archive>: skipped: <error>` at the moment the index or the audit skips it (the audit writes the same line, naming the archive, when one of its folders can no longer be listed because the archive changed or went after its root listing), and a folder skipped for its depth as `zip <archive>/<folder>: skipped: <reason>`.
+
+Launch confirmation reopens and validates the outer archive and selected member. It reports a missing or renamed member before handing control to Main, and for a member the archive holds but the reader skipped (a favourite or gamelist entry can still name one) it reports the skip reason instead. Reading the central directory does not establish the integrity of compressed payloads: decompression and payload checks remain Main's responsibility.
+
+`--report` and `--audit` list skipped members, skipped archives and folders skipped for their depth as `unreadable` lines with their reason: `--report` prints the first five, `--audit` the first three per system, and the log holds all of them, written by the audit walk itself. When `--report` has to prepare a system's Artwork Pack cache first, the scan's warnings are printed as `source note` lines.
 
 ## Main archive-comment limitation
 
@@ -36,6 +73,8 @@ With the pinned Main `lib/miniz` source already available locally:
 python3 scripts/test-main-zip.py /path/to/Main_MiSTer/lib/miniz
 ```
 
-The script verifies the source hashes, compiles Degauss's parser and Main's production iterator, and generates a few small synthetic archives locally. It compares exact member names, sizes and CRCs through stored, deflated and ZIP64 reads, verifies rejected unsupported archives, and verifies the explicit comment limitation. Temporary fixtures and binaries are removed automatically. There are no network requests or card writes.
+The script verifies the source hashes, compiles Degauss's parser and Main's production iterator, and generates a few small synthetic archives locally.
+
+It compares exact member names, sizes and CRCs through stored, deflated and ZIP64 reads, verifies that an encrypted member or one using an unsupported compression method is skipped and refused for launch while its supported sibling is still listed and accepted for launch, and that Main's extract iterator refuses that member (the archive itself opens in Main; the harness walks every member and exits with an error on the one it cannot extract), verifies that a masked local header and a ZIP64 sentinel member disk number are refused whole by both readers, and verifies the explicit comment limitation. Temporary fixtures and binaries are removed automatically. There are no network requests or card writes.
 
 This test exercises host filesystem and reader behavior. It does not prove ARM32 execution, a core launch or achievement operation. Large-entry-count and sparse-file tests belong on the host; the card smoke test needs only a few games in a small isolated library.

@@ -39,6 +39,15 @@ const NOT_GAMES: [&str; 4] = ["boot.rom", "boot.vhd", "blank.vhd", "boot0.rom"];
 /// symlink loop must not be able to walk the whole card forever.
 pub const MAX_DEPTH: usize = 12;
 
+/// Why a folder inside an archive that sits past [`MAX_DEPTH`] is left out
+/// with everything under it, said the same way by the index that skips it
+/// and the audit that reports it. The depth is counted from where the
+/// system starts, the folders holding the archive included, so a short
+/// member path in a deeply stored archive reaches it too.
+pub fn member_depth_reason() -> String {
+    format!("folder is past the maximum depth of {MAX_DEPTH} below the system start")
+}
+
 /// Somewhere that can be listed.
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq, Eq)]
 pub enum Place {
@@ -470,14 +479,44 @@ impl Library {
     /// The rows of a place, folders first and then games, each in the order
     /// a person reads them.
     pub fn list(&self, place: &Place, show_empty: bool) -> Result<(Vec<Row>, ListStats)> {
-        let (mut rows, stats) = match place {
-            Place::Roots => self.list_roots(show_empty)?,
-            Place::Dir(dir) => self.list_dir(dir, show_empty)?,
-            Place::Archive(archive) => self.list_archive(archive, "", show_empty)?,
-            Place::ArchiveDirectory { archive, prefix } => {
-                self.list_archive(archive, prefix, show_empty)?
+        self.list_at(place, show_empty, false)
+            .map(|(rows, stats, _)| (rows, stats))
+    }
+
+    /// As [`Library::list`], also returning the members an archive holds
+    /// that were left out, so an index or an audit can say so. Only the
+    /// archive itself reports them: its internal folders would repeat them.
+    pub fn list_reporting(
+        &self,
+        place: &Place,
+        show_empty: bool,
+    ) -> Result<(Vec<Row>, ListStats, Vec<crate::zip::Skipped>)> {
+        self.list_at(place, show_empty, true)
+    }
+
+    fn list_at(
+        &self,
+        place: &Place,
+        show_empty: bool,
+        report: bool,
+    ) -> Result<(Vec<Row>, ListStats, Vec<crate::zip::Skipped>)> {
+        let (mut rows, stats, skipped) = match place {
+            Place::Roots => {
+                let (rows, stats) = self.list_roots(show_empty)?;
+                (rows, stats, Vec::new())
             }
-            Place::Listing { install, file } => self.list_listing(install, file)?,
+            Place::Dir(dir) => {
+                let (rows, stats) = self.list_dir(dir, show_empty)?;
+                (rows, stats, Vec::new())
+            }
+            Place::Archive(archive) => self.list_archive(archive, "", show_empty, report)?,
+            Place::ArchiveDirectory { archive, prefix } => {
+                self.list_archive(archive, prefix, show_empty, report)?
+            }
+            Place::Listing { install, file } => {
+                let (rows, stats) = self.list_listing(install, file)?;
+                (rows, stats, Vec::new())
+            }
         };
         // Folders first, exactly as the stock menu orders them, then by
         // name without regard to case: "Zaxxon" must not sort before "apple".
@@ -486,7 +525,7 @@ impl Library {
                 .cmp(&a.is_folder())
                 .then_with(|| a.sort_key.cmp(&b.sort_key))
         });
-        Ok((rows, stats))
+        Ok((rows, stats, skipped))
     }
 
     /// The system's folders, one row each, named as they are on the card.
@@ -617,14 +656,37 @@ impl Library {
 
     /// The launchable files inside an archive. Only names are read; nothing
     /// is unpacked, because unpacking is the loader's job at launch time.
+    /// Members the reader left out are not rows; the archive itself hands
+    /// them back, when asked to `report`, for the index or audit that reads
+    /// it to summarise, and writes them to the log at the same time, once
+    /// per archive and in one write however many there are. A listing that
+    /// only wants rows neither copies nor logs them: the Details view, the
+    /// Artwork Pack passes and a start resolving favourites read archives
+    /// too, and must not repeat the block on every read.
     fn list_archive(
         &self,
         archive: &Path,
         prefix: &str,
         show_empty: bool,
-    ) -> Result<(Vec<Row>, ListStats)> {
+        report: bool,
+    ) -> Result<(Vec<Row>, ListStats, Vec<crate::zip::Skipped>)> {
         let contents = self.archive_cache.borrow_mut().read(archive)?;
         let entries = &contents.entries;
+        let skipped = if report && prefix.is_empty() {
+            if !contents.skipped.is_empty() {
+                let lines: Vec<String> = contents
+                    .skipped
+                    .iter()
+                    .map(|skipped| {
+                        format!("zip          {}: {}", archive.display(), skipped.describe())
+                    })
+                    .collect();
+                crate::note(&lines.join("\n"));
+            }
+            contents.skipped.clone()
+        } else {
+            Vec::new()
+        };
         let supported: Vec<_> = entries
             .iter()
             .filter(|entry| self.config.accepts(Path::new(&entry.name)))
@@ -705,7 +767,7 @@ impl Library {
             }
             rows.push(row);
         }
-        Ok((rows, stats))
+        Ok((rows, stats, skipped))
     }
 
     /// The titles named by an AmigaVision listing.
@@ -1165,7 +1227,8 @@ pub struct Audit {
     pub places_read: usize,
     pub deepest: usize,
     /// Places that could not be read, which is the interesting failure: a
-    /// missing folder is normal, a folder that errors is not.
+    /// missing folder is normal, a folder that errors is not. Archive
+    /// members left out by the reader are listed here with their reason.
     pub unreadable: Vec<(PathBuf, String)>,
     /// Set when the walk stopped early, so a total is never reported as
     /// complete when it is not.
@@ -1201,6 +1264,24 @@ impl Library {
                 break;
             }
             if depth > MAX_DEPTH {
+                // The index leaves a folder inside an archive out, with
+                // whatever is under it, when it sits this deep; the audit
+                // names the same folder with the same reason, so the report
+                // says why games a rebuild leaves out are not there, and
+                // logs it as the index does, so the log holds every line
+                // the report has room for only the first few of.
+                if let Place::ArchiveDirectory { archive, prefix } = &place {
+                    let line = format!(
+                        "{}/{prefix}: skipped: {}",
+                        archive.display(),
+                        member_depth_reason()
+                    );
+                    crate::note(&format!("zip          {line}"));
+                    audit.unreadable.push((
+                        PathBuf::from(format!("{}/{prefix}", archive.display())),
+                        member_depth_reason(),
+                    ));
+                }
                 continue;
             }
             // The same folder reached twice is counted once. Organised
@@ -1215,8 +1296,25 @@ impl Library {
             audit.places_read += 1;
             audit.deepest = audit.deepest.max(depth);
 
-            match self.list(&place, show_empty) {
-                Ok((mut rows, _)) => {
+            match self.list_reporting(&place, show_empty) {
+                Ok((mut rows, _, skipped)) => {
+                    // A member left out of an archive is a place that could
+                    // not be read, for the same reason a folder that errors
+                    // is: it is what the audit exists to surface. The listing
+                    // logged every one; the printed report has the first few.
+                    // Written as text rather than joined: a member name
+                    // starting with a slash (one of the reasons to be here)
+                    // would replace the archive path instead of following it.
+                    for skipped in skipped {
+                        audit.unreadable.push((
+                            PathBuf::from(format!(
+                                "{}/{}",
+                                place.path().display(),
+                                skipped.shown()
+                            )),
+                            skipped.explained(),
+                        ));
+                    }
                     project(&mut rows);
                     // Projection can replace a game's display name and sort
                     // key. CLI report, audit and dry-run must therefore walk
@@ -1245,9 +1343,23 @@ impl Library {
                         }
                     }
                 }
-                Err(e) => audit
-                    .unreadable
-                    .push((place.path().to_path_buf(), e.to_string())),
+                Err(e) => {
+                    // An archive that cannot be read is logged with its
+                    // complete error, as the index logs one it skips. One
+                    // of its folders fails the same way when the archive
+                    // changed or went between its root listing and the
+                    // folder's turn, and is logged as the archive too: the
+                    // entry names the archive, and the index would leave
+                    // the archive out whole for it.
+                    if let Place::Archive(archive) | Place::ArchiveDirectory { archive, .. } =
+                        &place
+                    {
+                        crate::note(&format!("zip          {}: skipped: {e}", archive.display()));
+                    }
+                    audit
+                        .unreadable
+                        .push((place.path().to_path_buf(), e.to_string()));
+                }
             }
         }
         audit
@@ -1712,6 +1824,248 @@ mod tests {
         std::fs::remove_dir_all(dir).unwrap();
     }
 
+    /// The index leaves a folder inside an archive out, with everything
+    /// under it, when it sits past the depth the walk allows; the audit
+    /// names the same folder with the same reason, or the report would
+    /// count games a rebuild leaves out with nothing to explain it. The
+    /// member beside those folders is counted, as the index publishes it.
+    #[test]
+    fn a_folder_past_the_depth_limit_inside_an_archive_is_named_by_the_audit() {
+        let dir = temp("audit-depth-limit");
+        let archive = dir.join("deep.zip");
+        let one = format!("{}One.d64", "a/".repeat(MAX_DEPTH + 1));
+        let two = format!("{}Two.d64", "b/".repeat(MAX_DEPTH + 1));
+        std::fs::write(
+            &archive,
+            crate::zip::tests_archive(&[one.as_str(), two.as_str(), "Shallow.d64"], false),
+        )
+        .unwrap();
+        let library = Library::open(&system(&dir)).unwrap();
+        let audit = library.audit(false);
+        assert_eq!(audit.games, 1, "the shallow member is counted");
+        let mut unreadable = audit.unreadable;
+        unreadable.sort();
+        // The archive sits one level below the system, so the folder that
+        // would be one level past the limit is the one with MAX_DEPTH
+        // segments; the level above it is still walked.
+        let past_the_limit = |segment: &str| {
+            PathBuf::from(format!(
+                "{}/{}",
+                archive.display(),
+                [segment; MAX_DEPTH].join("/")
+            ))
+        };
+        assert_eq!(
+            unreadable,
+            vec![
+                (past_the_limit("a"), member_depth_reason()),
+                (past_the_limit("b"), member_depth_reason()),
+            ],
+            "one line per folder past the limit"
+        );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// `--report` prints the first few `unreadable` lines and `--audit`
+    /// fewer, so the log is where the rest live: the audit has to write a
+    /// skipped member, a skipped archive and a folder past the depth limit
+    /// there, as the index does. A listing that only wants rows writes
+    /// nothing, because the Details view, the Artwork Pack passes and a
+    /// start resolving favourites read archives too and would repeat the
+    /// block on every read. Only what the log gains here counts, searched
+    /// by this fixture's own paths, because the log is shared by every
+    /// test that writes one and kept across runs.
+    #[test]
+    fn the_audit_logs_every_skip_and_a_plain_listing_logs_none() {
+        let dir = temp("audit-log-lines");
+        let held = dir.join("held.zip");
+        let deep = format!("{}Deep.d64", "a/".repeat(MAX_DEPTH + 1));
+        std::fs::write(
+            &held,
+            crate::zip::tests_archive(&["Keep.d64", "inner.zip", deep.as_str()], false),
+        )
+        .unwrap();
+        let broken = dir.join("broken.zip");
+        std::fs::write(&broken, b"broken archive").unwrap();
+        let log_since = |from: usize| {
+            let log = std::fs::read_to_string(crate::LOG_PATH).unwrap_or_default();
+            log[from.min(log.len())..].to_string()
+        };
+        let held_line = format!("zip          {}", held.display());
+        let broken_line = format!("zip          {}", broken.display());
+        let mentions = |log: &str, prefix: &str| {
+            log.lines()
+                .filter(|line| line.starts_with(prefix))
+                .map(str::to_string)
+                .collect::<Vec<_>>()
+        };
+        let library = Library::open(&system(&dir)).unwrap();
+        let before = log_since(0).len();
+        let (rows, _) = library.list(&Place::Archive(held.clone()), false).unwrap();
+        assert_eq!(names_of(&rows), vec!["a", "Keep.d64"]);
+        assert!(
+            library
+                .list(&Place::Archive(broken.clone()), false)
+                .is_err(),
+            "the broken archive is an error to list"
+        );
+        let log = log_since(before);
+        assert!(
+            mentions(&log, &held_line).is_empty() && mentions(&log, &broken_line).is_empty(),
+            "a plain listing wrote to the log: {log:?}"
+        );
+        let before = log_since(0).len();
+        let audit = library.audit(false);
+        assert_eq!(audit.games, 1, "Keep.d64 alone");
+        assert_eq!(audit.unreadable.len(), 3, "{:?}", audit.unreadable);
+        let log = log_since(before);
+        let folder = format!("{}/{}", held.display(), ["a"; MAX_DEPTH].join("/"));
+        assert_eq!(
+            mentions(&log, &held_line),
+            vec![
+                format!(
+                    "{held_line}: member inner.zip: nested archive member is unsupported by MiSTer Main"
+                ),
+                format!("zip          {folder}: skipped: {}", member_depth_reason()),
+            ],
+            "the member and the folder past the limit"
+        );
+        let skipped = format!("{broken_line}: skipped: ");
+        let error = mentions(&log, &broken_line);
+        let [error] = error.as_slice() else {
+            panic!("one line for the broken archive, not {error:?}");
+        };
+        let error = error
+            .strip_prefix(&skipped)
+            .unwrap_or_else(|| panic!("the archive line starts {skipped:?}, not {error:?}"));
+        assert!(
+            error.contains(&broken.display().to_string()) && error.contains("malformed"),
+            "the archive line carries the complete error: {error:?}"
+        );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// An archive can change or go between its root listing and the turn
+    /// of one of its folders, and the folder then fails to list. The audit
+    /// names the archive with that error, and the log has to hold the same
+    /// line as it does for an archive that fails at its root: the report
+    /// prints only the first few lines, and the index would leave the
+    /// archive out whole for the same error.
+    #[test]
+    fn a_folder_of_an_archive_that_changed_under_the_audit_is_logged_as_the_archive() {
+        let dir = temp("audit-log-changed-archive");
+        let archive = dir.join("changed.zip");
+        std::fs::write(
+            &archive,
+            crate::zip::tests_archive(&["sub/Game.d64"], false),
+        )
+        .unwrap();
+        let log_since = |from: usize| {
+            let log = std::fs::read_to_string(crate::LOG_PATH).unwrap_or_default();
+            log[from.min(log.len())..].to_string()
+        };
+        let library = Library::open(&system(&dir)).unwrap();
+        let before = log_since(0).len();
+        let audit = library.audit_projected(false, &mut |rows| {
+            // The archive's root listing is the last read before its
+            // folder is opened: the archive loses the folder here.
+            if rows
+                .iter()
+                .any(|row| matches!(&row.kind, Kind::Enter(Place::ArchiveDirectory { .. })))
+            {
+                std::fs::write(&archive, crate::zip::tests_archive(&["Renamed.d64"], false))
+                    .unwrap();
+            }
+        });
+        assert_eq!(audit.games, 0, "the folder was never listed");
+        let [(path, error)] = audit.unreadable.as_slice() else {
+            panic!(
+                "the archive alone is unreadable, not {:?}",
+                audit.unreadable
+            );
+        };
+        assert_eq!(path, &archive, "the entry names the archive");
+        assert!(
+            error.contains("virtual directory \"sub\" is missing or was renamed"),
+            "the folder's error: {error:?}"
+        );
+        let line = format!("zip          {}: skipped: {error}", archive.display());
+        assert_eq!(
+            log_since(before)
+                .lines()
+                .filter(|logged| logged.starts_with(&format!("zip          {}", archive.display())))
+                .collect::<Vec<_>>(),
+            vec![line.as_str()],
+            "one archive line carrying the folder's error"
+        );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// A member Main cannot use is not a row, so it can never be chosen,
+    /// while the audit still names it: the report is how a card owner finds
+    /// out why a game inside an archive is not listed.
+    #[test]
+    fn skipped_archive_members_are_audited_and_never_listed() {
+        let dir = temp("audit-skipped-members");
+        let archive = dir.join("library.zip");
+        std::fs::write(
+            &archive,
+            crate::zip::tests_archive(
+                &[
+                    "Keep.d64",
+                    "inner.zip",
+                    "Twin.d64",
+                    "twin.d64",
+                    "/rooted.d64",
+                ],
+                false,
+            ),
+        )
+        .unwrap();
+        let library = Library::open(&system(&dir)).unwrap();
+        let (rows, stats) = library
+            .list(&Place::Archive(archive.clone()), false)
+            .unwrap();
+        assert_eq!(names_of(&rows), vec!["Keep.d64"]);
+        assert_eq!(stats.games, 1);
+        let audit = library.audit(false);
+        assert_eq!(audit.games, 1);
+        // Compared as the text the report prints, which is what a card
+        // owner reads.
+        let mut unreadable: Vec<_> = audit
+            .unreadable
+            .iter()
+            .map(|(path, reason)| (path.display().to_string(), reason.as_str()))
+            .collect();
+        unreadable.sort();
+        let under = |member: &str| format!("{}/{member}", archive.display());
+        assert_eq!(
+            unreadable,
+            vec![
+                // Named under the archive even though the name starts with
+                // a slash: a line naming only "/rooted.d64" would send the
+                // reader to the card's root.
+                (
+                    under("/rooted.d64"),
+                    "name holds a traversal or empty path segment"
+                ),
+                (
+                    under("Twin.d64"),
+                    "duplicate or case-ambiguous member path; conflict group \"twin.d64\""
+                ),
+                (
+                    under("inner.zip"),
+                    "nested archive member is unsupported by MiSTer Main"
+                ),
+                (
+                    under("twin.d64"),
+                    "duplicate or case-ambiguous member path; conflict group \"twin.d64\""
+                ),
+            ]
+        );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
     #[test]
     fn an_archive_the_core_takes_whole_stays_one_game() {
         let dir = temp("whole-zip");
@@ -2138,6 +2492,7 @@ mod tests {
         let cache = crate::cache::build_system_controlled(
             &library,
             &std::sync::atomic::AtomicBool::new(false),
+            &mut Vec::new(),
             &mut |_, _| {},
         )
         .unwrap()

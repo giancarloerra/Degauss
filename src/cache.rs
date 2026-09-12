@@ -254,14 +254,19 @@ pub fn save_system(dir: &Path, id: &str, cache: &SystemCache) -> Result<()> {
 /// playable things under each folder is worked out on the way back up, so
 /// the answer to "is there anything in here" costs a lookup rather than a
 /// walk.
-pub fn build_system_checked(library: &Library) -> Result<SystemCache> {
-    build_system_controlled(library, &AtomicBool::new(false), &mut |_, _| {})?
+///
+/// An archive that cannot be read, or a member of one that Main cannot use,
+/// is left out and written to `warnings` with its reason: the rest of the
+/// system is still written down. A folder that cannot be read is still an
+/// error, because nothing says how much of the system sat under it.
+pub fn build_system_checked(library: &Library, warnings: &mut Vec<String>) -> Result<SystemCache> {
+    build_system_controlled(library, &AtomicBool::new(false), warnings, &mut |_, _| {})?
         .ok_or_else(|| DegaussError::unsupported("cache build", "cancelled"))
 }
 
 #[cfg(test)]
 pub fn build_system(library: &Library) -> SystemCache {
-    build_system_checked(library).expect("fixture cache must build")
+    build_system_checked(library, &mut Vec::new()).expect("fixture cache must build")
 }
 
 /// Build with cooperative cancellation and progress between filesystem
@@ -269,18 +274,25 @@ pub fn build_system(library: &Library) -> SystemCache {
 pub fn build_system_controlled(
     library: &Library,
     cancelled: &AtomicBool,
+    warnings: &mut Vec<String>,
     progress: &mut impl FnMut(usize, usize),
 ) -> Result<Option<SystemCache>> {
-    build_system_observed(library, cancelled, &mut |_, folders, games, starting| {
-        if !starting {
-            progress(folders, games);
-        }
-    })
+    build_system_observed(
+        library,
+        cancelled,
+        warnings,
+        &mut |_, folders, games, starting| {
+            if !starting {
+                progress(folders, games);
+            }
+        },
+    )
 }
 
 pub fn build_system_observed(
     library: &Library,
     cancelled: &AtomicBool,
+    warnings: &mut Vec<String>,
     progress: &mut impl FnMut(&Place, usize, usize, bool),
 ) -> Result<Option<SystemCache>> {
     let mut cache = SystemCache {
@@ -297,11 +309,31 @@ pub fn build_system_observed(
         &mut cache,
         &mut seen,
         cancelled,
+        warnings,
         &mut folders,
         &mut games,
         progress,
     )?;
     Ok(completed.map(|_| cache))
+}
+
+/// The reason an archive is skipped whole, when the error is the archive
+/// reader's own: its directory could not be read or does not hold together.
+/// The archive is named once by the caller; its own error would name it
+/// again, and the summary has to fit a screen.
+fn archive_skip_reason(error: &DegaussError, place: &Place) -> Option<String> {
+    let Place::Archive(archive) = place else {
+        return None;
+    };
+    match error {
+        DegaussError::Malformed { what, path, detail } if path == archive => {
+            Some(format!("{what} is malformed: {detail}"))
+        }
+        DegaussError::Io { what, path, source } if path == archive => {
+            Some(format!("{what} failed: {source}"))
+        }
+        _ => None,
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -312,6 +344,7 @@ fn walk_controlled(
     cache: &mut SystemCache,
     seen: &mut Vec<String>,
     cancelled: &AtomicBool,
+    warnings: &mut Vec<String>,
     folders_done: &mut usize,
     games_done: &mut usize,
     progress: &mut impl FnMut(&Place, usize, usize, bool),
@@ -337,10 +370,28 @@ fn walk_controlled(
     if cancelled.load(Ordering::Relaxed) {
         return Ok(None);
     }
-    let (mut rows, _) = library.list(place, true)?;
+    let (mut rows, _, skipped) = library.list_reporting(place, true)?;
+    if !skipped.is_empty() {
+        // The listing wrote every member to the log with its reason when it
+        // read the archive. The summary on screen gets one line per reason,
+        // with a count, so it stays readable for an archive with hundreds
+        // of them.
+        let mut reasons = BTreeMap::new();
+        for skipped in skipped {
+            *reasons.entry(skipped.reason).or_insert(0usize) += 1;
+        }
+        for (reason, count) in reasons {
+            warnings.push(format!(
+                "{}: {count} member{} skipped: {reason}",
+                place.path().display(),
+                if count == 1 { "" } else { "s" }
+            ));
+        }
+    }
 
     let mut games = 0;
-    for row in &mut rows {
+    let mut dropped = Vec::new();
+    for (index, row) in rows.iter_mut().enumerate() {
         if cancelled.load(Ordering::Relaxed) {
             return Ok(None);
         }
@@ -350,24 +401,87 @@ fn walk_controlled(
                 *games_done += 1;
             }
             Kind::Enter(inner) => {
-                let Some(below) = walk_controlled(
+                if let Place::ArchiveDirectory { archive, prefix } = inner {
+                    if depth + 1 > MAX_DEPTH {
+                        // A folder inside an archive that would sit past
+                        // the depth the walk goes is that folder's
+                        // condition, not the archive's and not the
+                        // system's: its row goes and nothing under it is
+                        // written down, the warning names the archive and
+                        // the folder, and the archive's other members stay.
+                        // A folder on the card that deep is the system's
+                        // failure it has always been.
+                        let line = format!(
+                            "{}/{prefix}: skipped: {}",
+                            archive.display(),
+                            crate::browse::member_depth_reason()
+                        );
+                        crate::note(&format!("zip          {line}"));
+                        warnings.push(line);
+                        dropped.push(index);
+                        continue;
+                    }
+                }
+                let before = (seen.len(), *folders_done, *games_done, warnings.len());
+                let below = match walk_controlled(
                     library,
                     &inner.clone(),
                     depth + 1,
                     cache,
                     seen,
                     cancelled,
+                    warnings,
                     folders_done,
                     games_done,
                     progress,
-                )?
-                else {
-                    return Ok(None);
+                ) {
+                    Ok(Some(below)) => below,
+                    Ok(None) => return Ok(None),
+                    Err(error) => {
+                        // An archive whose directory does not hold together
+                        // is left out whole: every folder its subtree already
+                        // wrote is taken back (its keys were pushed to `seen`
+                        // before being written), the progress counts it
+                        // raised and the member lines its listing added to
+                        // the summary go back with it, its row goes, and the
+                        // rest of the system carries on. Nothing of it is
+                        // ever published half done. Any other failure under
+                        // it is the system's as before.
+                        let Some(reason) = archive_skip_reason(&error, inner) else {
+                            return Err(error);
+                        };
+                        // The log gets the whole error here, whatever later
+                        // becomes of the summary this scan is building.
+                        crate::note(&format!(
+                            "zip          {}: skipped: {error}",
+                            inner.path().display()
+                        ));
+                        for key in seen.drain(before.0..) {
+                            cache.folders.remove(&key);
+                        }
+                        *folders_done = before.1;
+                        *games_done = before.2;
+                        warnings.truncate(before.3);
+                        warnings.push(format!("{}: skipped: {reason}", inner.path().display()));
+                        dropped.push(index);
+                        continue;
+                    }
                 };
                 row.below = Some(below);
                 games += below;
             }
         }
+    }
+    if !dropped.is_empty() {
+        // `dropped` was filled in row order, so one cursor over it meets
+        // each dropped row as `retain` reaches it.
+        let mut next = dropped.iter().copied().peekable();
+        let mut index = 0;
+        rows.retain(|_| {
+            let drop = next.next_if_eq(&index).is_some();
+            index += 1;
+            !drop
+        });
     }
     cache.folders.insert(
         key,
@@ -1244,12 +1358,13 @@ mod tests {
         let library = Library::open_source_neutral(&system(&games), Default::default()).unwrap();
         let cancelled = AtomicBool::new(false);
 
-        let built = build_system_controlled(&library, &cancelled, &mut |folders, _| {
-            if folders >= 1 {
-                cancelled.store(true, Ordering::Relaxed);
-            }
-        })
-        .unwrap();
+        let built =
+            build_system_controlled(&library, &cancelled, &mut Vec::new(), &mut |folders, _| {
+                if folders >= 1 {
+                    cancelled.store(true, Ordering::Relaxed);
+                }
+            })
+            .unwrap();
 
         assert!(built.is_none());
         std::fs::remove_dir_all(games).ok();
@@ -1262,11 +1377,12 @@ mod tests {
         std::fs::create_dir_all(&child).unwrap();
         std::fs::write(child.join("Game.d64"), b"rom").unwrap();
         let library = Library::open_source_neutral(&system(&games), Default::default()).unwrap();
-        let original = build_system_checked(&library).unwrap();
+        let original = build_system_checked(&library, &mut Vec::new()).unwrap();
         let mut events = Vec::new();
         let observed = build_system_observed(
             &library,
             &AtomicBool::new(false),
+            &mut Vec::new(),
             &mut |place, folders, found, starting| {
                 events.push((place.clone(), folders, found, starting));
             },
@@ -1298,10 +1414,15 @@ mod tests {
         std::fs::remove_dir(&games).unwrap();
         std::fs::write(&games, b"not a directory").unwrap();
         let cancelled = AtomicBool::new(false);
-        let result = build_system_observed(&library, &cancelled, &mut |_, _, _, starting| {
-            assert!(starting);
-            cancelled.store(true, Ordering::Relaxed);
-        });
+        let result = build_system_observed(
+            &library,
+            &cancelled,
+            &mut Vec::new(),
+            &mut |_, _, _, starting| {
+                assert!(starting);
+                cancelled.store(true, Ordering::Relaxed);
+            },
+        );
         assert!(
             result.unwrap().is_none(),
             "cancellation must run before the failing read_dir call"
@@ -1331,6 +1452,7 @@ mod tests {
             &mut cache,
             &mut seen,
             &cancelled,
+            &mut Vec::new(),
             &mut folders,
             &mut games_done,
             &mut |_, _, _, _| {},
@@ -1354,7 +1476,7 @@ mod tests {
         )
         .unwrap();
         let library = Library::open(&system(&games)).unwrap();
-        let initial = build_system_checked(&library).unwrap();
+        let initial = build_system_checked(&library, &mut Vec::new()).unwrap();
         let mut index = Index::new();
         index
             .systems
@@ -1379,7 +1501,10 @@ mod tests {
             crate::zip::tests_archive(&["One.d64"], false),
         )
         .unwrap();
-        let rebuilt = build_system_checked(&Library::open(&system(&games)).unwrap()).unwrap();
+        let mut warnings = Vec::new();
+        let rebuilt =
+            build_system_checked(&Library::open(&system(&games)).unwrap(), &mut warnings).unwrap();
+        assert!(warnings.is_empty(), "{warnings:?}");
         index
             .systems
             .insert("Test".into(), rebuilt.summary(&library.start()));
@@ -1399,15 +1524,21 @@ mod tests {
         std::fs::remove_dir_all(store).unwrap();
     }
 
+    /// An archive that stops holding together is left out with a warning
+    /// and the system is written down without it, but not before: the
+    /// previous complete cache and index stay until the new scan is
+    /// published as one transaction, and a system whose only content was
+    /// that archive completes with nothing, warned about, rather than
+    /// looking like a healthy empty system.
     #[test]
-    fn malformed_nested_archive_cannot_replace_a_previous_cache_or_index() {
+    fn malformed_nested_archive_is_skipped_with_a_warning_until_published() {
         let games = temp("failed-rebuild-games");
         let store = temp("failed-rebuild-store");
         std::fs::create_dir_all(games.join("Nested")).unwrap();
         let archive = games.join("Nested/Set.zip");
         std::fs::write(&archive, crate::zip::tests_archive(&["Game.d64"], false)).unwrap();
         let library = Library::open(&system(&games)).unwrap();
-        let old = build_system_checked(&library).unwrap();
+        let old = build_system_checked(&library, &mut Vec::new()).unwrap();
         let mut index = Index::new();
         index
             .systems
@@ -1416,16 +1547,478 @@ mod tests {
         let old_cache_bytes = std::fs::read(system_path(&store, "Test")).unwrap();
         let old_index_bytes = std::fs::read(index_path(&store)).unwrap();
         std::fs::write(&archive, b"broken archive").unwrap();
-        let error = build_system_checked(&Library::open(&system(&games)).unwrap()).unwrap_err();
-        assert!(error.to_string().contains("Set.zip"));
+        let mut warnings = Vec::new();
+        let rebuilt =
+            build_system_checked(&Library::open(&system(&games)).unwrap(), &mut warnings).unwrap();
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert!(
+            warnings[0].starts_with(&format!("{}: skipped: ", archive.display())),
+            "{warnings:?}"
+        );
+        assert!(warnings[0].contains("end-of-directory"), "{warnings:?}");
+        assert_eq!(rebuilt.summary(&library.start()).games, 0);
+        assert!(
+            !rebuilt
+                .folders
+                .contains_key(&Place::Archive(archive.clone()).key()),
+            "a rejected archive must not be written down as a folder"
+        );
+        let nested = rebuilt
+            .get(&Place::Dir(games.join("Nested")))
+            .expect("the folder holding the archive is still written down");
+        assert!(nested.rows.is_empty(), "{:?}", nested.rows);
+        assert_eq!(nested.games, 0);
         assert_eq!(
             std::fs::read(system_path(&store, "Test")).unwrap(),
-            old_cache_bytes
+            old_cache_bytes,
+            "scanning publishes nothing by itself"
         );
         assert_eq!(std::fs::read(index_path(&store)).unwrap(), old_index_bytes);
         assert_eq!(load_index(&store).unwrap().systems["Test"].games, 1);
+        index
+            .systems
+            .insert("Test".into(), rebuilt.summary(&library.start()));
+        save_system_with_index(&store, "Test", &rebuilt, &index).unwrap();
+        assert_eq!(load_index(&store).unwrap().systems["Test"].games, 0);
+        assert_eq!(
+            load_system(&store, "Test")
+                .unwrap()
+                .summary(&library.start())
+                .games,
+            0
+        );
         std::fs::remove_dir_all(games).unwrap();
         std::fs::remove_dir_all(store).unwrap();
+    }
+
+    /// A structurally corrupt archive costs the system only that archive,
+    /// whichever way its directory fails to hold together: the healthy file
+    /// beside it and the healthy archive beside it are written down, nothing
+    /// of the rejected one is (not a folder key, not a row, not a count),
+    /// and one warning names it. The mutations are the ones the reader's
+    /// own tests refuse; this is where refusing them has to reach the
+    /// system as a skipped archive rather than a failed build.
+    #[test]
+    fn a_corrupt_archive_is_skipped_and_its_siblings_are_written_down() {
+        let healthy = crate::zip::tests_archive(&["One.d64", "Two.d64"], false);
+        let classic = crate::zip::tests_archive(&["Game.d64", "Plain.d64"], false);
+        let zip64 = crate::zip::tests_archive(&["Game.d64"], true);
+        let central = |bytes: &[u8]| {
+            bytes
+                .windows(4)
+                .position(|b| b == [0x50, 0x4b, 0x01, 0x02])
+                .unwrap()
+        };
+        let end64 = zip64
+            .windows(4)
+            .position(|b| b == [0x50, 0x4b, 6, 6])
+            .unwrap();
+        let eocd = classic.len() - 22;
+        // Tag, the archive to start from, the bytes to change (none means
+        // truncate it by half) and the reason the warning has to carry.
+        type Mutation<'a> = (&'a str, &'a [u8], &'a [(usize, u8)], &'a str);
+        let mutations: [Mutation; 9] = [
+            (
+                "truncated",
+                &healthy,
+                &[],
+                "no valid end-of-directory record",
+            ),
+            (
+                "garbage",
+                b"broken archive",
+                &[],
+                "no valid end-of-directory record",
+            ),
+            (
+                "signature",
+                &classic,
+                &[(central(&classic), 0)],
+                "invalid central-directory signature",
+            ),
+            (
+                "count",
+                &classic,
+                &[(eocd + 8, 9), (eocd + 10, 9)],
+                "central-directory size, count or offset is inconsistent",
+            ),
+            (
+                "offset",
+                &classic,
+                &[(eocd + 16, 1)],
+                "central-directory size, count or offset is inconsistent",
+            ),
+            (
+                "zip64-record",
+                &zip64,
+                &[(end64 + 4, 43)],
+                "invalid ZIP64 end record",
+            ),
+            (
+                "multi-disk",
+                &classic,
+                &[(eocd + 4, 1)],
+                "multi-disk archive",
+            ),
+            (
+                "masked-header",
+                &classic,
+                &[(central(&classic) + 9, 32)],
+                "masked local header",
+            ),
+            (
+                "sentinel-disk",
+                &classic,
+                &[
+                    (central(&classic) + 34, 0xff),
+                    (central(&classic) + 35, 0xff),
+                ],
+                "member starts on another disk",
+            ),
+        ];
+        for (tag, original, changes, reason) in mutations {
+            let games = temp(&format!("corrupt-archive-{tag}"));
+            std::fs::write(games.join("Healthy.d64"), b"rom").unwrap();
+            std::fs::write(games.join("Good.zip"), &healthy).unwrap();
+            let broken = games.join("Broken.zip");
+            let mut bytes = original.to_vec();
+            if changes.is_empty() {
+                bytes.truncate(bytes.len() / 2);
+            }
+            for (offset, value) in changes {
+                bytes[*offset] = *value;
+            }
+            std::fs::write(&broken, &bytes).unwrap();
+            let library = Library::open(&system(&games)).unwrap();
+            let mut warnings = Vec::new();
+            let cache = build_system_checked(&library, &mut warnings)
+                .unwrap_or_else(|error| panic!("{tag}: the system failed: {error}"));
+            assert_eq!(cache.summary(&library.start()).games, 3, "{tag}");
+            let top = cache.get(&library.start()).unwrap();
+            assert_eq!(
+                top.rows
+                    .iter()
+                    .map(|row| row.name.as_str())
+                    .collect::<Vec<_>>(),
+                ["Good", "Healthy"],
+                "{tag}: the rejected archive has no row"
+            );
+            assert_eq!(top.rows[0].below, Some(2), "{tag}");
+            assert!(
+                !cache
+                    .folders
+                    .contains_key(&Place::Archive(broken.clone()).key()),
+                "{tag}"
+            );
+            assert!(
+                cache
+                    .folders
+                    .contains_key(&Place::Archive(games.join("Good.zip")).key()),
+                "{tag}"
+            );
+            assert_eq!(warnings.len(), 1, "{tag}: {warnings:?}");
+            assert!(
+                warnings[0].starts_with(&format!("{}: skipped: ", broken.display()))
+                    && warnings[0].contains(reason),
+                "{tag}: {warnings:?}"
+            );
+            std::fs::remove_dir_all(games).unwrap();
+        }
+    }
+
+    /// Several rejected archives in one folder each lose exactly their own
+    /// row. The rows are taken out by position once the folder is walked,
+    /// so a folder holding rejected archives before, between and after
+    /// the ones it keeps is where a position out of step would drop a
+    /// healthy archive or publish a rejected one.
+    #[test]
+    fn several_rejected_archives_in_one_folder_each_lose_only_their_own_row() {
+        let games = temp("several-rejected-archives");
+        let healthy = crate::zip::tests_archive(&["One.d64"], false);
+        let broken = ["A-Broken.zip", "M-Broken.zip", "Z-Broken.zip"];
+        for name in broken {
+            std::fs::write(games.join(name), b"broken archive").unwrap();
+        }
+        for name in ["B-Good.zip", "N-Good.zip"] {
+            std::fs::write(games.join(name), &healthy).unwrap();
+        }
+        std::fs::write(games.join("Plain.d64"), b"rom").unwrap();
+        let library = Library::open(&system(&games)).unwrap();
+        let mut warnings = Vec::new();
+        let cache = build_system_checked(&library, &mut warnings).unwrap();
+        assert_eq!(cache.summary(&library.start()).games, 3);
+        let top = cache.get(&library.start()).unwrap();
+        assert_eq!(
+            top.rows
+                .iter()
+                .map(|row| (row.name.as_str(), row.below))
+                .collect::<Vec<_>>(),
+            [("B-Good", Some(1)), ("N-Good", Some(1)), ("Plain", None)]
+        );
+        assert_eq!(warnings.len(), 3, "{warnings:?}");
+        for name in broken {
+            let prefix = format!("{}: skipped: ", games.join(name).display());
+            assert!(
+                warnings.iter().any(|warning| warning.starts_with(&prefix)),
+                "{name}: {warnings:?}"
+            );
+            assert!(!cache
+                .folders
+                .contains_key(&Place::Archive(games.join(name)).key()));
+        }
+        std::fs::remove_dir_all(games).unwrap();
+    }
+
+    /// The summary on screen is one line per archive and reason; the log
+    /// is where the complete diagnostic lives for the run, so a skipped
+    /// member has to be there with its name and reason, and a skipped
+    /// archive with its error. Only what the log gains during the build
+    /// counts, searched by this fixture's own paths, because the log is
+    /// shared by every test that writes one and kept across runs. The
+    /// launch check of a retained member reads the archive again and must
+    /// not repeat the member block: a start resolves every favourite in an
+    /// archive through that read.
+    #[test]
+    fn every_skip_is_in_the_log_with_the_member_or_the_archive_and_its_reason() {
+        let games = temp("skips-in-the-log");
+        let broken = games.join("Broken.zip");
+        std::fs::write(&broken, b"broken archive").unwrap();
+        let held = games.join("Held.zip");
+        std::fs::write(
+            &held,
+            crate::zip::tests_archive(&["Game.d64", "inner.zip"], false),
+        )
+        .unwrap();
+        // The log may not exist yet on a fresh machine; `note` creates it.
+        let log_since = |from: usize| {
+            let log = std::fs::read_to_string(crate::LOG_PATH).unwrap_or_default();
+            log[from.min(log.len())..].to_string()
+        };
+        let before = log_since(0).len();
+        let library = Library::open(&system(&games)).unwrap();
+        let mut warnings = Vec::new();
+        let cache = build_system_checked(&library, &mut warnings).unwrap();
+        assert_eq!(cache.summary(&library.start()).games, 1);
+        assert_eq!(warnings.len(), 2, "{warnings:?}");
+        let log = log_since(before);
+        let member = format!(
+            "zip          {}: member inner.zip: nested archive member is unsupported by MiSTer Main",
+            held.display()
+        );
+        assert!(
+            log.lines().any(|line| line == member),
+            "no line {member:?} in the log"
+        );
+        let skipped = format!("zip          {}: skipped: ", broken.display());
+        let error = log
+            .lines()
+            .find_map(|line| line.strip_prefix(&skipped))
+            .unwrap_or_else(|| panic!("no line starting {skipped:?} in the log"));
+        assert!(
+            error.contains(&broken.display().to_string()) && error.contains("malformed"),
+            "the archive line carries the complete error: {error:?}"
+        );
+        let before = log_since(0).len();
+        crate::zip::validate_member(&held.join("Game.d64")).unwrap();
+        let held_line = format!("zip          {}: ", held.display());
+        assert!(
+            !log_since(before)
+                .lines()
+                .any(|line| line.starts_with(&held_line)),
+            "the launch check wrote the archive's members again"
+        );
+        std::fs::remove_dir_all(games).unwrap();
+    }
+
+    /// An archive that fails after part of it was walked (here, one taken
+    /// away between two of its folders) is taken back whole, and the
+    /// progress figures go back with it: the dashboard must not end on more
+    /// games than the cache it announces holds. The member line its
+    /// listing put in the summary goes back too: an archive nothing is
+    /// published from is reported once, as skipped, not also as holding a
+    /// skipped member.
+    #[test]
+    fn a_skipped_archive_takes_its_progress_counts_back_with_it() {
+        let games = temp("skipped-archive-progress");
+        std::fs::write(games.join("Plain.d64"), b"rom").unwrap();
+        let archive = games.join("Gone.zip");
+        let plain = |name: &'static [u8]| crate::zip::TestEntry {
+            name,
+            flags: 0,
+            method: 0,
+            extra: &[],
+        };
+        std::fs::write(
+            &archive,
+            crate::zip::tests_archive_entries(
+                &[
+                    plain(b"a/one.d64"),
+                    plain(b"b/two.d64"),
+                    crate::zip::TestEntry {
+                        name: b"locked.d64",
+                        flags: 1,
+                        method: 0,
+                        extra: &[],
+                    },
+                ],
+                false,
+            ),
+        )
+        .unwrap();
+        let library = Library::open(&system(&games)).unwrap();
+        let mut warnings = Vec::new();
+        let mut last = None;
+        let cache = build_system_observed(
+            &library,
+            &AtomicBool::new(false),
+            &mut warnings,
+            &mut |place, folders, found, starting| {
+                if starting
+                    && matches!(place, Place::ArchiveDirectory { prefix, .. } if prefix == "b")
+                {
+                    assert_eq!(found, 1, "a/one.d64 was counted before b was entered");
+                    std::fs::remove_file(&archive).unwrap();
+                }
+                last = Some((folders, found));
+            },
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(cache.summary(&library.start()).games, 1);
+        assert_eq!(last, Some((cache.folders.len(), 1)));
+        assert_eq!(
+            warnings.len(),
+            1,
+            "the line for locked.d64 must go back with the archive: {warnings:?}"
+        );
+        assert!(
+            warnings[0].starts_with(&format!("{}: skipped: ", archive.display())),
+            "{warnings:?}"
+        );
+        std::fs::remove_dir_all(games).unwrap();
+    }
+
+    /// Main splits its target at the first `.zip`, so an archive inside an
+    /// archive can never be launched: that member is left out, the
+    /// supported member beside it is written down and counted, and the
+    /// warning says which archive and why.
+    #[test]
+    fn an_inner_archive_member_is_skipped_and_the_outer_members_are_kept() {
+        let games = temp("inner-archive-member");
+        let outer = games.join("Outer.zip");
+        std::fs::write(
+            &outer,
+            crate::zip::tests_archive(&["Game.d64", "inner.zip", "Other.d64"], false),
+        )
+        .unwrap();
+        let library = Library::open(&system(&games)).unwrap();
+        let mut warnings = Vec::new();
+        let cache = build_system_checked(&library, &mut warnings).unwrap();
+        assert_eq!(cache.summary(&library.start()).games, 2);
+        let inside = cache.get(&Place::Archive(outer.clone())).unwrap();
+        assert_eq!(
+            inside
+                .rows
+                .iter()
+                .map(|row| row.name.as_str())
+                .collect::<Vec<_>>(),
+            ["Game", "Other"]
+        );
+        assert!(inside.rows.iter().all(|row| !row.is_folder()));
+        assert_eq!(cache.get(&library.start()).unwrap().rows[0].below, Some(2));
+        assert_eq!(
+            warnings,
+            [format!(
+                "{}: 1 member skipped: nested archive member is unsupported by MiSTer Main",
+                outer.display()
+            )]
+        );
+        std::fs::remove_dir_all(games).unwrap();
+    }
+
+    /// A folder inside an archive that sits past the depth the walk goes
+    /// is left out with everything under it, with a warning naming the
+    /// archive and the folder, and the archive's other members are still
+    /// published beside the games outside it: a condition confined to some
+    /// members must not take the archive, let alone the system, down with
+    /// it. A folder on the card that deep stays the system's failure it has
+    /// always been.
+    #[test]
+    fn a_folder_past_the_depth_limit_inside_an_archive_is_skipped_with_what_is_under_it() {
+        let games = temp("archive-depth-overflow");
+        let deep = format!("{}game.d64", "d/".repeat(MAX_DEPTH + 1));
+        let archive = games.join("Deep.zip");
+        std::fs::write(
+            &archive,
+            crate::zip::tests_archive(&[deep.as_str(), "shallow.d64"], false),
+        )
+        .unwrap();
+        std::fs::write(games.join("Beside.d64"), b"x").unwrap();
+        let library = Library::open(&system(&games)).unwrap();
+        let mut warnings = Vec::new();
+        let cache = build_system_checked(&library, &mut warnings).unwrap();
+        assert_eq!(cache.summary(&library.start()).games, 2);
+        let root = cache.get(&library.start()).unwrap();
+        assert_eq!(
+            root.rows
+                .iter()
+                .map(|row| (row.name.as_str(), row.below))
+                .collect::<Vec<_>>(),
+            [("Deep", Some(1)), ("Beside", None)],
+            "the archive is published with its shallow member"
+        );
+        let inside = cache.get(&Place::Archive(archive.clone())).unwrap();
+        assert_eq!(
+            inside
+                .rows
+                .iter()
+                .map(|row| row.name.as_str())
+                .collect::<Vec<_>>(),
+            ["d", "shallow"]
+        );
+        // The archive sits one level below the system, so the folder that
+        // would be one level past the limit is the one with MAX_DEPTH
+        // segments: the level above it is written down, empty, and nothing
+        // from there on is.
+        let prefix = |segments: usize| vec!["d"; segments].join("/");
+        let folder = |segments: usize| {
+            cache.get(&Place::ArchiveDirectory {
+                archive: archive.clone(),
+                prefix: prefix(segments),
+            })
+        };
+        let last = folder(MAX_DEPTH - 1).expect("the folder above the limit");
+        assert!(last.rows.is_empty(), "{:?}", last.rows);
+        assert_eq!(last.games, 0);
+        assert!(folder(MAX_DEPTH).is_none());
+        assert!(folder(MAX_DEPTH + 1).is_none());
+        assert_eq!(
+            warnings,
+            [format!(
+                "{}/{}: skipped: {}",
+                archive.display(),
+                prefix(MAX_DEPTH),
+                crate::browse::member_depth_reason()
+            )]
+        );
+
+        let folders = temp("folder-depth-overflow");
+        let mut deep = folders.clone();
+        for _ in 0..=MAX_DEPTH {
+            deep.push("d");
+        }
+        std::fs::create_dir_all(&deep).unwrap();
+        std::fs::write(deep.join("game.d64"), b"x").unwrap();
+        let library = Library::open(&system(&folders)).unwrap();
+        let mut warnings = Vec::new();
+        let error = build_system_checked(&library, &mut warnings).unwrap_err();
+        assert!(
+            error.to_string().contains("maximum folder depth"),
+            "{error}"
+        );
+        assert!(warnings.is_empty(), "{warnings:?}");
+        std::fs::remove_dir_all(games).unwrap();
+        std::fs::remove_dir_all(folders).unwrap();
     }
 
     #[test]
@@ -1516,7 +2109,7 @@ mod tests {
         std::fs::write(games.join("Game.d64"), b"rom").unwrap();
         let library = Library::open(&system(&games)).unwrap();
         let cancelled = AtomicBool::new(false);
-        let cache = build_system_controlled(&library, &cancelled, &mut |_, _| {
+        let cache = build_system_controlled(&library, &cancelled, &mut Vec::new(), &mut |_, _| {
             cancelled.store(true, Ordering::Relaxed)
         })
         .unwrap();
@@ -1539,6 +2132,7 @@ mod tests {
             &mut cache,
             &mut Vec::new(),
             &AtomicBool::new(false),
+            &mut Vec::new(),
             &mut 0,
             &mut 0,
             &mut |_, _, _, _| {},

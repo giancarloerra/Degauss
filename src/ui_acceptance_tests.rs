@@ -1019,6 +1019,65 @@ fn run_scraper_cache_refresh_flow(root: &Path, window: Rc<MinimalSoftwareWindow>
     begin(&mut app);
     finish(&mut app);
     assert_eq!(app.scraper_progress.system_errors, 0, "refresh is reusable");
+
+    // A member the refresh leaves out is the scrape's last problem, named
+    // by the system, the archive and the reason the way a rebuild names
+    // it, and written to the log. The list was replaced, so it is not a
+    // failed refresh: the dashboard would otherwise count a system whose
+    // list is there as a failed one and call the refresh failed.
+    let outer = games.join("Outer.zip");
+    std::fs::write(
+        &outer,
+        crate::zip::tests_archive(&["Inner Game.nes", "inner.zip"], false),
+    )
+    .unwrap();
+    let before_outer = cache_snapshot(&app.cache_dir);
+    let log_since = |from: usize| {
+        let log = std::fs::read_to_string(crate::LOG_PATH).unwrap_or_default();
+        log[from.min(log.len())..].to_string()
+    };
+    let log_before = log_since(0).len();
+    begin(&mut app);
+    finish(&mut app);
+    assert_eq!(app.scraper_terminal, Some(ScraperTerminal::Finished));
+    assert_eq!(
+        app.scraper_progress.system_errors, 0,
+        "a skipped member is not a failed refresh"
+    );
+    let problem = format!(
+        "NES: {}: 1 member skipped: nested archive member is unsupported by MiSTer Main",
+        outer.display()
+    );
+    assert_eq!(
+        app.scraper_progress.last_problem.as_deref(),
+        Some(problem.as_str())
+    );
+    assert!(
+        log_since(log_before).lines().any(|line| line == problem),
+        "no line {problem:?} in the log"
+    );
+    assert_eq!(app.index.as_ref().unwrap().systems["NES"].games, 3);
+    assert_ne!(
+        cache_snapshot(&app.cache_dir),
+        before_outer,
+        "the list holding the retained member replaced the previous one"
+    );
+    let published = crate::cache::load_system(&app.cache_dir, "NES").unwrap();
+    assert_eq!(
+        published.folders[&Place::Archive(outer.clone()).key()]
+            .rows
+            .iter()
+            .map(|row| row.name.as_str())
+            .collect::<Vec<_>>(),
+        ["Inner Game.nes"],
+        "the inner archive is not a row"
+    );
+    std::fs::remove_file(&outer).unwrap();
+    begin(&mut app);
+    finish(&mut app);
+    assert_eq!(app.scraper_progress.system_errors, 0);
+    assert_eq!(app.scraper_progress.last_problem, None);
+    assert_eq!(app.index.as_ref().unwrap().systems["NES"].games, 2);
     let stable_cache = cache_snapshot(&app.cache_dir);
     let stable_index = app.index.as_ref().unwrap().systems.clone();
     std::fs::rename(&games, root.join("games/NES-moved")).unwrap();
@@ -2110,8 +2169,8 @@ fn run_indexing_ui_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
         games: 123_456,
         elapsed: 219,
         determinate: true,
-        problem: "Fixture Archive.zip could not be read: incomplete central directory. Healthy folders remain available.".into(),
-        report: "Indexing finished with problems. Fixture Archive.zip: incomplete central directory. Healthy folders remain available.".into(),
+        problem: "Fixture System: /media/fat/games/Fixture/Fixture Archive.zip: skipped: zip archive is malformed: truncated central-directory header\nFixture System: /media/fat/games/Fixture/Fixture Set.zip: 2 members skipped: nested archive member is unsupported by MiSTer Main".into(),
+        report: "Indexing finished\n115 / 115 systems processed in 219.0s\n23456 folders   123456 games read\n\nFixture System: /media/fat/games/Fixture/Fixture Archive.zip: skipped: zip archive is malformed: truncated central-directory header\nFixture System: /media/fat/games/Fixture/Fixture Set.zip: 2 members skipped: nested archive member is unsupported by MiSTer Main".into(),
         ..Default::default()
     });
     capture_live_if_requested(&mut app, "index-large-problems-layout-fixture");
@@ -2122,6 +2181,82 @@ fn run_indexing_ui_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
     assert!(app.index_terminal.is_some());
     app.handle(Action::Quit);
     assert!(app.index_terminal.is_none());
+
+    // A corrupt archive and an inner archive member cost only themselves:
+    // the healthy games publish, the report says which system, archive and
+    // reason, and neither can be reached as a row.
+    let outer = root.join("games/NES/Outer.zip");
+    std::fs::write(
+        &outer,
+        crate::zip::tests_archive(&["Inner Game.nes", "inner.zip"], false),
+    )
+    .unwrap();
+    let broken = root.join("games/NES/Broken.zip");
+    std::fs::write(&broken, b"not an archive").unwrap();
+    app.rebuild_all_systems();
+    paint_index_frame(&mut app);
+    finish_discovery(&mut app);
+    app.finish_background_work_for_headless();
+    let problems = app.index_terminal.clone().unwrap();
+    assert_eq!(problems.state, "Finished With Problems");
+    assert!(
+        problems.problem.contains(&format!(
+            "NES: {}: skipped: zip archive is malformed: no valid end-of-directory record",
+            broken.display()
+        )),
+        "{}",
+        problems.problem
+    );
+    assert!(
+        problems.problem.contains(&format!(
+            "NES: {}: 1 member skipped: nested archive member is unsupported by MiSTer Main",
+            outer.display()
+        )),
+        "{}",
+        problems.problem
+    );
+    assert_eq!(app.index.as_ref().unwrap().systems["NES"].games, 3);
+    assert_eq!(app.index.as_ref().unwrap().systems["Added"].games, 1);
+    let published = crate::cache::load_system(&app.cache_dir, "NES").unwrap();
+    assert_eq!(
+        published.summary(&Place::Dir(root.join("games/NES"))).games,
+        3
+    );
+    assert!(!published
+        .folders
+        .contains_key(&Place::Archive(broken.clone()).key()));
+    capture_live_if_requested(&mut app, "index-all-finished-with-problems");
+    app.handle(Action::Accept);
+    assert!(app.message.as_ref().is_some_and(|report| {
+        report.contains("Broken.zip")
+            && report.contains("Outer.zip")
+            && report.contains("nested archive member is unsupported by MiSTer Main")
+    }));
+    capture_live_if_requested(&mut app, "index-all-finished-with-problems-details");
+    app.handle(Action::Quit);
+    app.handle(Action::Quit);
+    assert!(app.index_terminal.is_none());
+    assert_eq!(app.open_system, original_open);
+    assert_eq!(
+        app.here
+            .iter()
+            .map(|row| row.name.as_str())
+            .collect::<Vec<_>>(),
+        ["Outer", "First Game.nes", "Second Game.nes"],
+        "the rejected archive is not a row"
+    );
+    app.enter(Place::Archive(outer.clone()));
+    assert_eq!(
+        app.here
+            .iter()
+            .map(|row| row.name.as_str())
+            .collect::<Vec<_>>(),
+        ["Inner Game.nes"],
+        "the inner archive is not a row"
+    );
+    assert!(app.leave());
+    std::fs::remove_file(&outer).unwrap();
+    std::fs::remove_file(&broken).unwrap();
 
     std::fs::remove_file(root.join("_Console/Added.rbf")).unwrap();
     std::fs::rename(root.join("games/NES"), root.join("games/NES-removed")).unwrap();
@@ -2895,6 +3030,106 @@ fn run_fresh_auto_pack_index_flow(root: &Path, window: Rc<MinimalSoftwareWindow>
     app.rebuild_open_system_resolved();
     app.finish_background_work_for_headless();
     assert_complete(&app, 3);
+    // A corrupt archive in a Pack system is reported as the ZIP problem it
+    // is, with the healthy games still prepared; it must never come back as
+    // a missing prepared cache, which would hide the cause.
+    let broken = games.join("Broken.zip");
+    std::fs::write(&broken, b"not an archive").unwrap();
+    let warning = format!(
+        "NES: {}: skipped: zip archive is malformed: no valid end-of-directory record",
+        broken.display()
+    );
+    // The log is shared and kept across runs: only what it gains here
+    // counts, and the warning is the only line of its kind for this
+    // fixture's archive path.
+    let log_since = |from: usize| {
+        let log = std::fs::read_to_string(crate::LOG_PATH).unwrap_or_default();
+        log[from.min(log.len())..].to_string()
+    };
+    let recovery_line = format!("cache        recovery warning: {warning}");
+    let log_before = log_since(0).len();
+    app.start_build(true);
+    app.finish_background_work_for_headless();
+    let problems = app.index_terminal.clone().unwrap();
+    assert_eq!(problems.state, "Finished With Problems");
+    assert!(problems.problem.contains(&warning), "{}", problems.problem);
+    assert!(
+        !problems
+            .problem
+            .contains("prepared system cache is missing"),
+        "{}",
+        problems.problem
+    );
+    // A full build logs the warning once, as the line the terminal shows;
+    // the recovery step must not log it a second time on the way there.
+    let log = log_since(log_before);
+    assert_eq!(
+        log.lines().filter(|line| *line == warning).count(),
+        1,
+        "{log}"
+    );
+    assert!(
+        !log.lines().any(|line| line == recovery_line),
+        "a full build logged the warning twice: {log}"
+    );
+    assert_complete(&app, 3);
+    assert_operation_controls(&mut app, false, "A Details   B Back");
+    capture_live_if_requested(&mut app, "source-auto-pack-finished-with-problems");
+    app.handle(Action::Quit);
+    // Rebuild This System List on a Pack-prepared system runs through the
+    // source worker rather than the index terminal, and has to say the
+    // same thing: the archive and its reason, not a pointer to the log.
+    app.message = None;
+    let log_before = log_since(0).len();
+    app.rebuild_open_system_resolved();
+    app.finish_background_work_for_headless();
+    let message = app.message.clone().unwrap_or_default();
+    assert!(
+        message.starts_with("NES list rebuilt with problems:\n"),
+        "{message}"
+    );
+    assert!(message.contains(&warning), "{message}");
+    // Without a terminal to drain them, the recovery step is the one
+    // place this path logs the warning.
+    let log = log_since(log_before);
+    assert_eq!(
+        log.lines().filter(|line| *line == recovery_line).count(),
+        1,
+        "{log}"
+    );
+    assert_complete(&app, 3);
+    capture_live_if_requested(&mut app, "source-auto-pack-rebuilt-with-problems");
+    // A Pack group whose game data source is unresolved is left out of a
+    // full build and prepared by the recovery step after the build's
+    // terminal has gone. With no terminal to drain them, that step is the
+    // one place its warnings can reach the log, and it must write them once.
+    let group = crate::artwork_pack::source_group("NES").unwrap();
+    app.artwork_source_errors
+        .insert(group.to_string(), "source check pending".into());
+    app.message = None;
+    let log_before = log_since(0).len();
+    app.start_build(true);
+    app.finish_background_work_for_headless();
+    let message = app.message.clone().unwrap_or_default();
+    assert!(
+        message.starts_with("Library rebuild finished with problems:\n"),
+        "{message}"
+    );
+    assert!(message.contains(&warning), "{message}");
+    let log = log_since(log_before);
+    assert_eq!(
+        log.lines().filter(|line| *line == recovery_line).count(),
+        1,
+        "the recovery step after a finished build must log the warning once: {log}"
+    );
+    assert!(
+        !log.lines().any(|line| line == warning),
+        "no build terminal drained the warning, so it has no bare line: {log}"
+    );
+    assert_complete(&app, 3);
+    app.artwork_source_errors.remove(group);
+    app.message = None;
+    std::fs::remove_file(&broken).unwrap();
     app.message = None;
     let before_failure = cache_snapshot(&app.cache_dir);
     let held = root.join("held-games");
@@ -3127,6 +3362,66 @@ fn run_auto_source_choice_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
     assert_eq!(cache_snapshot(&app.cache_dir), restarted_cache);
     assert!(app.source_job.is_none());
     assert!(app.provider_job.is_none());
+
+    // Changing the game data source scans the system again, and an archive
+    // that scan leaves out has to be named in the completion message with
+    // its reason, as every other completion is: a pointer to the log would
+    // leave the person at the screen without the cause.
+    let docs = root.join("docs");
+    let artwork = docs.join("NES/Artwork");
+    std::fs::create_dir_all(&artwork).unwrap();
+    std::fs::write(
+        artwork.join("manifest.tsv"),
+        "#key\tstyle\tss_system_id\nFirst Game\tbox-2D\t3\n",
+    )
+    .unwrap();
+    std::fs::write(
+        artwork.join("index.tsv"),
+        "#name\tcrc\tsize\tkey\nFirst Game\t\t\tFirst Game\n",
+    )
+    .unwrap();
+    std::fs::write(
+        artwork.join("gameinfo.tsv"),
+        "#key\tname\tyear\tgenre\tdeveloper\tplayers\n",
+    )
+    .unwrap();
+    std::fs::write(artwork.join("First Game.jpg"), crate::covers::JPEG_16).unwrap();
+    let broken = games.join("Broken.zip");
+    std::fs::write(&broken, b"not an archive").unwrap();
+    app.open_game_data_source();
+    app.source_switch_automatic = false;
+    app.begin_source_switch(crate::source_cache::Target::ArtworkPack {
+        docs_root: docs.clone(),
+    });
+    assert!(app.source_job.is_some(), "a new source must be prepared");
+    app.finish_background_work_for_headless();
+    let message = app.message.clone().unwrap_or_default();
+    assert!(
+        message.starts_with("Now using Artwork Pack.\nFinished with problems:\n"),
+        "{message}"
+    );
+    assert!(
+        message.contains(&format!(
+            "NES: {}: skipped: zip archive is malformed: no valid end-of-directory record",
+            broken.display()
+        )),
+        "{message}"
+    );
+    capture_live_if_requested(&mut app, "source-switch-finished-with-problems");
+    assert_eq!(
+        crate::artwork_source::mode(&app.settings, "NES"),
+        Mode::ArtworkPack
+    );
+    assert_eq!(
+        crate::cache::load_artwork_pack_data(&app.cache_dir, "NES")
+            .unwrap()
+            .cache
+            .summary(&Place::Dir(games.clone()))
+            .games,
+        2,
+        "the healthy games are prepared beside the skipped archive"
+    );
+    std::fs::remove_file(&broken).unwrap();
     app.ui.hide().unwrap();
 }
 

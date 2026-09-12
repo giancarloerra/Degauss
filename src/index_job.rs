@@ -314,9 +314,11 @@ fn run(
     }
     let library = Library::open_with_names(&request.config, std::mem::take(&mut request.names))?;
     let mut last_progress = Instant::now() - PROGRESS_INTERVAL;
+    let mut warnings = Vec::new();
     let Some(cache) = crate::cache::build_system_observed(
         &library,
         cancelled,
+        &mut warnings,
         &mut |place, folders, games, _| {
             if last_progress.elapsed() >= PROGRESS_INTERVAL {
                 let folder = match place {
@@ -359,8 +361,8 @@ fn run(
             "index publication panicked; inspect the cache before retrying",
         ))
     });
-    let warnings = match publication {
-        Ok(warnings) => warnings,
+    match publication {
+        Ok(published) => warnings.extend(published),
         Err(error) => {
             if let Some(previous) = previous {
                 request.index.systems.insert(request.id.clone(), previous);
@@ -369,7 +371,7 @@ fn run(
             }
             return Err(error);
         }
-    };
+    }
     Ok(Some(Ready {
         summary: Some(summary),
         folders: cache.folders.len(),
@@ -491,8 +493,55 @@ mod tests {
         std::fs::remove_dir_all(root).unwrap();
     }
 
+    /// One corrupt archive must not cost the system its healthy games: the
+    /// scan completes, the warning names the archive, and what is published
+    /// is the healthy subset with the same count the worker reports.
     #[test]
-    fn corrupt_zip_keeps_released_whole_system_failure_semantics() {
+    fn corrupt_zip_is_skipped_and_the_healthy_subset_is_published() {
+        let (root, mut request) = fixture();
+        let (sender, _) = mpsc::sync_channel(EVENT_CAPACITY);
+        assert!(run(&mut request, &sender, &AtomicBool::new(false))
+            .unwrap()
+            .is_some());
+        let broken = root.join("games/Broken.zip");
+        std::fs::write(&broken, b"broken").unwrap();
+        let ready = run(&mut request, &sender, &AtomicBool::new(false))
+            .unwrap()
+            .expect("not cancelled");
+        assert_eq!(ready.games, 1);
+        assert_eq!(ready.summary.unwrap().games, 1);
+        assert_eq!(ready.warnings.len(), 1, "{:?}", ready.warnings);
+        assert!(
+            ready.warnings[0].starts_with(&format!("{}: skipped: ", broken.display())),
+            "{:?}",
+            ready.warnings
+        );
+        assert_eq!(request.index.systems["Test"].games, 1);
+        let published = crate::cache::load_system(&request.cache_dir, "Test").unwrap();
+        assert_eq!(
+            published
+                .summary(&crate::browse::start_for(&request.config))
+                .games,
+            1
+        );
+        assert!(!published
+            .folders
+            .contains_key(&crate::browse::Place::Archive(broken).key()));
+        assert_eq!(
+            crate::cache::load_index(&request.cache_dir)
+                .unwrap()
+                .systems["Test"]
+                .games,
+            1
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    /// A system whose root cannot be read is a failed transaction, not an
+    /// empty success: the previous cache and index bytes stay exactly as
+    /// they were, and the index still carries the previous count.
+    #[test]
+    fn root_read_failure_keeps_the_previous_cache_and_index() {
         let (root, mut request) = fixture();
         let (sender, _) = mpsc::sync_channel(EVENT_CAPACITY);
         assert!(run(&mut request, &sender, &AtomicBool::new(false))
@@ -501,8 +550,14 @@ mod tests {
         let cache_path = crate::cache::system_path(&request.cache_dir, "Test");
         let before = std::fs::read(&cache_path).unwrap();
         let index_before = std::fs::read(crate::cache::index_path(&request.cache_dir)).unwrap();
-        std::fs::write(root.join("games/Broken.zip"), b"broken").unwrap();
-        assert!(run(&mut request, &sender, &AtomicBool::new(false)).is_err());
+        std::fs::remove_dir_all(root.join("games")).unwrap();
+        std::fs::write(root.join("games"), b"not a directory").unwrap();
+        let error = match run(&mut request, &sender, &AtomicBool::new(false)) {
+            Err(error) => error,
+            Ok(_) => panic!("an unreadable system root must fail the transaction"),
+        };
+        assert!(error.to_string().contains("reading folder"), "{error}");
+        assert_eq!(request.index.systems["Test"].games, 1);
         assert_eq!(std::fs::read(cache_path).unwrap(), before);
         assert_eq!(
             std::fs::read(crate::cache::index_path(&request.cache_dir)).unwrap(),
