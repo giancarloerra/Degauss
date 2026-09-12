@@ -485,8 +485,13 @@ running under Degauss Main already have the Frontend menu and shortcut.
 ## Views
 
 - **List**: plain text in one column.
-- **Details**: the list beside a large picture, with a compact year/players
-  and publisher summary. Game Information opens the complete metadata.
+- **Details**: the list beside a large picture. **Options → Appearance →
+  Details Style** chooses how the two share the screen while browsing games:
+  **Information**, the default, keeps the list wider with a compact
+  year/players and publisher summary under the picture; **Large Artwork**
+  gives the picture most of the width and the whole height of its column,
+  with no lines under it. Game Information in Actions opens the complete
+  metadata in either style.
 - **Tiled**: a grid of pictures with their titles underneath.
 - **Carousel**: one large cover with its neighbours either side.
 - **Multi list**: two text columns in reading order, showing twice as many entries
@@ -494,6 +499,22 @@ running under Degauss Main already have the Frontend menu and shortcut.
 - **Gallery**: a denser image grid with no permanent captions. The selected
   image has an outline and its title appears above the bottom bar for half a
   second. Entries without artwork remain visible as named text cells.
+
+The Details Style changes only the games level of Details: the Home,
+category and system screens and the other views keep their proportions, and
+switching it does not rebuild the library or the artwork cache. It is saved
+as `details_style` in `settings.toml`; a saved value that is neither
+`information` nor `large-artwork` draws Information and is left in the file
+for you to correct. That substitution is reported on the first screen,
+unless a library read starts at the same time and takes the screen first,
+and always in `/tmp/degauss.log`, which is the copy that survives such a
+read. Pictures are decoded to `cover_size` in `degauss.toml` or half the
+longer screen edge, whichever is larger. With the shipped `cover_size` of
+320 and the default screen margins, the Large Artwork box outgrows that
+decode on landscape screens wider than about 600 pixels (a little sooner
+for a portrait picture on a 4:3 or 5:4 screen), so a picture is drawn
+slightly enlarged there; on a landscape screen, a `cover_size` of at least
+two thirds of the screen width keeps every picture within its decode.
 
 **Options → Appearance → View** is the global default. Every browse place can instead
 keep its own custom view: the Categories screen, each category's Systems
@@ -516,8 +537,9 @@ inspect long values and the full description; left/right moves by a page.
 **B** or **X** returns to Actions / Game, and backing out restores the same game
 without launching it or changing the view. Information comes from the system's
 selected Gamelist or Artwork Pack source, including for favourites. Missing
-fields remain empty. Details keeps the compact summary; Information is where
-all available fields and the complete description can be read.
+fields remain empty. Details in its Information style keeps the compact
+summary and Large Artwork drops it; Game Information is where all available
+fields and the complete description can be read.
 
 Complete descriptions are read only when Game Information opens, with a visible
 loading or error state. Existing compact caches remain valid; no library rebuild
@@ -558,6 +580,7 @@ require **A** and confirmation, never a sideways press.
 | Appearance | Theme | Left and right choose a palette. Press A to open the editor. Standard uses the colours in `degauss.toml`. See [Themes and colours](#themes-and-colours) |
 | Appearance | View | The global default for places without a custom view: Details, Tiled, Carousel, List, Multi List or Gallery |
 | Appearance | Reset All Custom Views | With A and confirmation, remove every place-specific view without changing the global View setting |
+| Appearance | Details Style | How Details shares the screen while browsing games. Information (default) keeps the list beside a picture of about 42% of the width, with the compact summary under it; Large Artwork gives the picture about 62% and the whole column height, with no lines under it |
 | Appearance | Text | The typeface: Smooth, Pixel (a DOS font on whole pixels), and the bolder Smooth 2 and Pixel 2 |
 | Appearance | Artwork | Turn pictures off entirely |
 | Appearance | Artwork Scale Factor | Framebuffer keeps the original square-pixel fit and is the default. 4:3 and 16:9 correct game artwork for that physical display shape in Details, Tiled, Carousel and Gallery. Category logos, system logos and the screensaver are unchanged |
@@ -666,9 +689,10 @@ is running appears after the next start. `Green Mono`, `Modern` and `Neon` remai
 available without files because they are built into Degauss. The chosen theme
 is remembered by name in `settings.toml`. If that name resolves to neither a
 built-in theme nor a valid card-theme file, Degauss uses the standard palette
-and a message says so. A same-name card file takes precedence over a built-in;
-if that file is broken, Degauss reports it instead of concealing it with the
-built-in theme.
+and a message says so on the first screen (unless a library read starts at
+the same time and takes the screen first) and in `/tmp/degauss.log`. A
+same-name card file takes precedence over a built-in; if that file is broken,
+Degauss reports it instead of concealing it with the built-in theme.
 
 #### Editing a theme on-device
 
@@ -1426,8 +1450,10 @@ framebuffer, which works while the frontend is running. `--screen`,
 shows. `--layout` accepts `details`, `tiled`, `list`, `carousel`,
 `multi-list` and `gallery`. An explicit `--layout` is temporary and takes
 precedence over saved global and custom views; without it, render, bench and
-selftest use Details. This headless facility is useful for inspection and
-diagnostics; it is separate from capturing the live MiSTer framebuffer.
+selftest use Details. A Details frame follows the Details Style saved in
+`settings.toml`; there is no separate flag for it. This headless facility is
+useful for inspection and diagnostics; it is separate from capturing the live
+MiSTer framebuffer.
 
 `--screen options` shows the Options categories. Add
 `--options-page navigation|appearance|library|display|developer` to render

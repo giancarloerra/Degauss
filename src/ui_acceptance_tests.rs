@@ -2535,7 +2535,13 @@ fn capture_ui_if_requested(root: &Path, window: Rc<MinimalSoftwareWindow>) {
             240,
         );
         app.open_options_page(OptionsPage::Appearance);
-        app.select(3);
+        app.select(
+            OptionsPage::Appearance
+                .ids()
+                .iter()
+                .position(|id| *id == OptionId::Font)
+                .unwrap(),
+        );
         capture_frame(
             &mut app,
             &directory,
@@ -3130,6 +3136,511 @@ fn run_auto_source_choice_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
     app.ui.hide().unwrap();
 }
 
+/// The picture's half of the safe width in Details, before the browse-games
+/// split is applied to it.
+fn details_half_width(app: &App) -> f32 {
+    Geometry::compute(
+        Layout::Details,
+        app.plain_screen(),
+        app.chrome_here(),
+        app.bar_here(),
+        app.width,
+        app.height,
+        &app.config,
+    )
+    .art_width
+}
+
+fn assert_details_split(app: &App, style: DetailsStyle, over_game: bool, context: &str) {
+    assert_eq!(app.details_style, style, "{context}");
+    assert_eq!(app.layout, Layout::Details, "{context}");
+    // The picture's share of the safe width while browsing games, 42% for
+    // Information and 62% for Large Artwork, measured from the safe width
+    // itself rather than from the Details half, so a drift in either the
+    // base split or the factor fails here. The half is rounded to a pixel
+    // before the factor, hence the tolerance.
+    let share = match style {
+        DetailsStyle::Information => 0.42,
+        DetailsStyle::LargeArtwork => 0.62,
+    };
+    let inset = (app.width as f32 * app.config.app.overscan_x as f32 / 100.0).round();
+    let safe = (app.width as f32 - inset * 2.0).max(64.0);
+    let expected = safe * share;
+    assert!(
+        (app.ui.get_art_width() - expected).abs() <= 1.0,
+        "{context}: {style:?} must give the picture {expected} of the width, not {}",
+        app.ui.get_art_width()
+    );
+    let panel = app.ui.get_detail_height();
+    match style {
+        DetailsStyle::Information if over_game => assert!(
+            panel > 0.0,
+            "{context}: Information keeps the compact lines under the picture"
+        ),
+        DetailsStyle::Information => {
+            assert_eq!(panel, 0.0, "{context}: a folder has no compact lines")
+        }
+        DetailsStyle::LargeArtwork => assert_eq!(
+            panel, 0.0,
+            "{context}: Large Artwork gives the whole column height to the picture"
+        ),
+    }
+}
+
+fn leave_options_to_browse(app: &mut App) {
+    app.handle(Action::Quit);
+    assert_eq!(app.screen, Screen::OptionsRoot, "leaving the page saves");
+    app.handle(Action::Quit);
+    app.handle(Action::Quit);
+    assert_eq!(app.screen, Screen::Browse);
+}
+
+fn run_details_style_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
+    let artwork = Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/logos/NES.png");
+    assert!(artwork.is_file());
+
+    // An older settings file has no key: it must draw exactly the layout
+    // it was drawn with, and starting must not write a choice the user
+    // never made. The legacy "preview" name still means Details.
+    let games_place = {
+        let app = fixture_app(root, window.clone(), Settings::default());
+        let place = app.current_view_place().unwrap();
+        app.ui.hide().unwrap();
+        place
+    };
+    for layout in [None, Some("preview")] {
+        let mut app = fixture_app(
+            root,
+            window.clone(),
+            Settings {
+                layout: layout.map(str::to_string),
+                ..Default::default()
+            },
+        );
+        app.refresh();
+        assert_details_split(&app, DetailsStyle::Information, true, "no saved key");
+        assert!(
+            app.settings.details_style.is_none(),
+            "startup must not rewrite a choice"
+        );
+        assert_eq!(app.option_value(OptionId::DetailsStyle), "Information");
+        app.ui.hide().unwrap();
+    }
+
+    // A token that is neither name is not quietly drawn as Information:
+    // the first screen says so, and the text stays in the setting for the
+    // user to correct rather than being replaced by a choice never made.
+    // The startup source check finishes before anyone has read the line,
+    // so its result must go under the report rather than replace it. The
+    // log gets the same line, because a first-start library read takes
+    // the screen before it and would leave the substitution without a
+    // trace.
+    {
+        let log_before = std::fs::metadata(crate::LOG_PATH)
+            .map(|meta| meta.len() as usize)
+            .unwrap_or(0);
+        let mut app = unopened_fixture_app(
+            root,
+            window.clone(),
+            Settings {
+                details_style: Some("large_artwork".into()),
+                ..Default::default()
+            },
+        );
+        assert_eq!(app.details_style, DetailsStyle::Information);
+        assert_eq!(
+            app.settings.details_style.as_deref(),
+            Some("large_artwork"),
+            "startup must not rewrite the text it could not read"
+        );
+        // The log is the one path outside the fixture; a log that cannot
+        // be read fails the same assertion, with the reason in its place.
+        let logged = match std::fs::read(crate::LOG_PATH) {
+            Ok(log) => String::from_utf8_lossy(&log[log_before.min(log.len())..]).into_owned(),
+            Err(error) => format!(
+                "(the log at {} could not be read: {error})",
+                crate::LOG_PATH
+            ),
+        };
+        assert!(
+            logged.contains("Details Style large_artwork is not information or large-artwork"),
+            "the unreadable token is logged: {logged}"
+        );
+        app.finish_background_work_for_headless();
+        assert!(
+            app.source_resolution.is_none(),
+            "the startup source check must have finished"
+        );
+        let message = app
+            .message
+            .clone()
+            .expect("an unreadable Details Style is still reported once the startup check is in");
+        assert!(message.contains("large_artwork"), "{message}");
+        assert!(message.contains("using Information"), "{message}");
+        app.leave_splash();
+        app.handle(Action::Accept);
+        assert!(
+            app.message.is_none(),
+            "a press takes the report down: {:?}",
+            app.message
+        );
+        app.ui.hide().unwrap();
+    }
+
+    // Cancelling the startup check with B is its third way to finish and
+    // follows the same rule as the other two: the problem lines stay and
+    // the check's word goes under them, and the lines are given up so
+    // nothing later can put them back over another message.
+    {
+        let mut app = unopened_fixture_app(
+            root,
+            window.clone(),
+            Settings {
+                details_style: Some("large_artwork".into()),
+                ..Default::default()
+            },
+        );
+        assert!(
+            app.source_resolution.is_some() && app.build.is_none(),
+            "the startup check is pending and B can cancel it"
+        );
+        app.handle(Action::Quit);
+        app.finish_background_work_for_headless();
+        let message = app
+            .message
+            .clone()
+            .expect("the cancelled check leaves the problem lines up");
+        assert!(
+            message.starts_with("Details Style large_artwork"),
+            "{message}"
+        );
+        assert!(
+            message.ends_with("\nGame data source check cancelled"),
+            "{message}"
+        );
+        assert!(
+            app.startup_problems.is_none(),
+            "every completion of the startup check takes the lines"
+        );
+        app.ui.hide().unwrap();
+    }
+
+    // A first start reads the card, and a press while the startup check is
+    // pending opens the build report in place of the problem lines. A
+    // check that then fails must say only its own word: the report it did
+    // not write, ending in "No problems reported", must not stand above
+    // the failure.
+    {
+        let first = root.join("details-style-first-start");
+        std::fs::create_dir_all(first.join("games/NES")).unwrap();
+        std::fs::write(first.join("games/NES/First Game.nes"), b"fixture").unwrap();
+        let mut app = unopened_fixture_app(
+            &first,
+            window.clone(),
+            Settings {
+                details_style: Some("large_artwork".into()),
+                ..Default::default()
+            },
+        );
+        assert!(app.build.is_some(), "a first start reads the card");
+        assert!(
+            app.source_resolution.is_some(),
+            "the startup check is still pending"
+        );
+        assert!(
+            app.message
+                .as_deref()
+                .is_some_and(|message| message.contains("large_artwork")),
+            "{:?}",
+            app.message
+        );
+        app.leave_splash();
+        app.handle(Action::Accept);
+        assert!(app.index_details, "a press opens the build report");
+        let report = app.message.clone().expect("the build report is on screen");
+        assert!(report.contains("No problems reported"), "{report}");
+        app.report_source_check(
+            SourceResolutionAction::Startup,
+            Some("Game data source check failed".into()),
+        );
+        assert_eq!(
+            app.message.as_deref(),
+            Some("Game data source check failed"),
+            "a failed check replaces the report it did not write"
+        );
+        app.ui.hide().unwrap();
+    }
+
+    // Both styles persist: the choice is written when the page is left and
+    // survives a fresh App from the reloaded file, in both directions.
+    let mut app = fixture_app(root, window.clone(), Settings::default());
+    let cache_before = cache_snapshot(&app.cache_dir);
+    for (style, saved) in [
+        (DetailsStyle::LargeArtwork, "large-artwork"),
+        (DetailsStyle::Information, "information"),
+    ] {
+        select_option(&mut app, OptionsPage::Appearance, OptionId::DetailsStyle);
+        // On the Options screen load_art wants no picture and only clears
+        // the request, so a handler that asked for one again would leave
+        // the flag raised.
+        app.load_art();
+        assert!(!app.art_pending);
+        app.handle(Action::Faster);
+        assert_eq!(app.details_style, style);
+        assert_eq!(app.option_value(OptionId::DetailsStyle), style.shown());
+        assert!(
+            !app.art_pending,
+            "a style change must not ask for the picture again"
+        );
+        assert!(
+            app.build.is_none(),
+            "a style change must not rebuild the library"
+        );
+        leave_options_to_browse(&mut app);
+        app.refresh();
+        assert_details_split(&app, style, true, "after leaving Options");
+        assert_eq!(app.settings.details_style.as_deref(), Some(saved));
+        let reloaded = Settings::load(&app.settings_path).unwrap();
+        assert_eq!(reloaded.details_style.as_deref(), Some(saved));
+        assert_eq!(
+            cache_snapshot(&app.cache_dir),
+            cache_before,
+            "a display option must not touch the index or the artwork cache"
+        );
+        app.ui.hide().unwrap();
+        drop(app);
+        app = fixture_app(root, window.clone(), reloaded);
+        app.refresh();
+        assert_details_split(&app, style, true, "the saved style survives restart");
+        assert_eq!(app.settings.details_style.as_deref(), Some(saved));
+    }
+    // Left steps back through the same two values, so neither is a dead end.
+    select_option(&mut app, OptionsPage::Appearance, OptionId::DetailsStyle);
+    app.handle(Action::Slower);
+    assert_eq!(app.details_style, DetailsStyle::LargeArtwork);
+    app.handle(Action::Slower);
+    assert_eq!(app.details_style, DetailsStyle::Information);
+    leave_options_to_browse(&mut app);
+
+    // A folder, a game with a picture, a game without one and a title far
+    // longer than the list column: every one has to remain usable in both
+    // styles. The long title is left to the row to elide or scroll; the
+    // list must hand it over whole.
+    let long_title: String = "Fixture Game With A Very Long Name "
+        .chars()
+        .cycle()
+        .take(120)
+        .collect();
+    let game = |name: &str, cover: Option<PathBuf>| {
+        let mut row = information_row();
+        row.name = name.to_string();
+        row.sort_key = row.name.to_ascii_uppercase();
+        row.kind = browse::Kind::Play(browse::Launch::File(root.join("games/NES/First Game.nes")));
+        row.cover = cover;
+        row
+    };
+    let rows = vec![
+        browse::Row {
+            name: "Fixture Folder".into(),
+            sort_key: "FIXTURE FOLDER".into(),
+            kind: browse::Kind::Enter(Place::Dir(root.join("games/NES"))),
+            cover: None,
+            genre: None,
+            favorite: false,
+            below: Some(2),
+            details: browse::Details::default(),
+        },
+        game("Fixture Game With Picture", Some(artwork.clone())),
+        game("Fixture Game Without Picture", None),
+        game(&long_title, Some(artwork.clone())),
+    ];
+    app.here = rows.clone();
+    app.all_here = rows;
+    app.game_list = ListState::new(app.here.len(), app.geometry.visible);
+    for style in DetailsStyle::ALL {
+        app.details_style = style;
+        app.apply_geometry();
+        for (index, has_art, over_game) in [
+            (0, false, false),
+            (1, true, true),
+            (2, false, true),
+            (3, true, true),
+        ] {
+            app.game_list.select(index);
+            app.load_art();
+            app.refresh();
+            let context = format!("{style:?} over row {index}");
+            assert_details_split(&app, style, over_game, &context);
+            assert_eq!(app.ui.get_has_art(), has_art, "{context}");
+            if !has_art {
+                assert_eq!(
+                    app.ui.get_art_caption().as_str(),
+                    app.here[index].name,
+                    "{context}: the name stands in for a missing picture"
+                );
+            }
+            // A folder's title is bracketed; a game's is the name itself.
+            let title = app
+                .rows
+                .row_data(app.ui.get_selected() as usize)
+                .unwrap()
+                .title;
+            assert!(
+                title.contains(app.here[index].name.as_str()),
+                "{context}: the selected row must carry its whole title, not {title:?}"
+            );
+            app.open_context();
+            assert_eq!(app.screen, Screen::Context);
+            assert_eq!(
+                app.context_actions
+                    .iter()
+                    .any(|entry| entry == GAME_INFORMATION),
+                over_game,
+                "{context}: Game Information stays in Actions in both styles"
+            );
+            app.handle(Action::Quit);
+            assert_eq!(app.screen, Screen::Browse);
+        }
+        // With artwork off the column shows the name instead of the
+        // picture; the split and the compact lines are the style's own.
+        app.game_list.select(1);
+        app.show_art = false;
+        app.load_art();
+        app.refresh();
+        assert!(!app.ui.get_has_art());
+        assert_details_split(&app, style, true, "artwork off");
+        app.show_art = true;
+        app.load_art();
+        app.refresh();
+        assert!(app.ui.get_has_art());
+    }
+
+    // The display correction belongs to the picture, not to the style:
+    // 4:3 artwork on a 4:3 tube needs the same horizontal stretch whether
+    // its column is the narrow one or the wide one.
+    app.game_list.select(1);
+    app.artwork_scale = ArtworkScale::FourThree;
+    let corrected = artwork_horizontal(ArtworkScale::FourThree, app.width, app.height, true);
+    assert!(
+        (corrected - 1.0).abs() > 0.01,
+        "the fixture screen must need correction for this to prove anything"
+    );
+    for style in DetailsStyle::ALL {
+        app.details_style = style;
+        app.apply_geometry();
+        app.load_art();
+        app.refresh();
+        assert!(app.ui.get_has_art());
+        assert_eq!(
+            app.ui.get_art_scale_x(),
+            corrected,
+            "{style:?} must keep the artwork aspect correction"
+        );
+    }
+    app.artwork_scale = ArtworkScale::Framebuffer;
+    app.load_art();
+    assert_eq!(app.ui.get_art_scale_x(), 1.0);
+
+    // The tube first, then the higher resolutions: every one of them
+    // draws through the same split and hands the picture the whole column
+    // in Large Artwork.
+    for style in DetailsStyle::ALL {
+        app.details_style = style;
+        app.game_list.select(1);
+        for (width, height) in [(352, 240), (640, 480), (1280, 720)] {
+            app.width = width;
+            app.height = height;
+            app.window.set_size(slint::PhysicalSize::new(width, height));
+            app.apply_geometry();
+            if let Some(directory) = std::env::var_os("DEGAUSS_UI_CAPTURE_DIR") {
+                let name = format!("details-{}", style.setting());
+                capture_frame(&mut app, &PathBuf::from(directory), &name, width, height);
+            }
+            app.load_art();
+            app.refresh();
+            assert_details_split(&app, style, true, &format!("{width}x{height}"));
+        }
+    }
+    app.width = 352;
+    app.height = 240;
+    app.window.set_size(slint::PhysicalSize::new(352, 240));
+    app.apply_geometry();
+
+    // Only the games level of Details changes shape. The category and
+    // system screens keep the half split their logos are placed in, and
+    // every other view keeps the whole width for its rows.
+    for style in DetailsStyle::ALL {
+        app.details_style = style;
+        for browsing in [Browsing::Categories, Browsing::Systems] {
+            app.browsing = browsing;
+            app.apply_geometry();
+            assert!(
+                (app.ui.get_art_width() - details_half_width(&app)).abs() < 0.01,
+                "{style:?} must leave {browsing:?} at half the width"
+            );
+            assert_eq!(app.ui.get_detail_height(), 0.0);
+        }
+        app.browsing = Browsing::Games;
+        for layout in Layout::ALL {
+            if layout == Layout::Details {
+                continue;
+            }
+            app.layout = layout;
+            app.apply_geometry();
+            assert_eq!(
+                app.ui.get_art_width(),
+                0.0,
+                "{style:?} must leave {layout:?} without a picture column"
+            );
+            assert_eq!(app.ui.get_detail_height(), 0.0);
+        }
+        app.layout = Layout::Details;
+        app.apply_geometry();
+    }
+    app.ui.hide().unwrap();
+    drop(app);
+
+    // A custom view naming Details, and the legacy "preview" spelling,
+    // resolve to Details under either style: this is a style of one view,
+    // not a seventh view.
+    for (style, saved) in [
+        (DetailsStyle::Information, "information"),
+        (DetailsStyle::LargeArtwork, "large-artwork"),
+    ] {
+        let mut custom_views = CustomViews::default();
+        games_place.set(&mut custom_views, "details".into());
+        let mut app = fixture_app(
+            root,
+            window.clone(),
+            Settings {
+                layout: Some("tiled".into()),
+                custom_views,
+                details_style: Some(saved.into()),
+                ..Default::default()
+            },
+        );
+        app.refresh();
+        assert_eq!(app.global_layout, Layout::Tiled);
+        assert_details_split(&app, style, true, "custom Details view");
+        app.ui.hide().unwrap();
+        drop(app);
+
+        let mut app = fixture_app(
+            root,
+            window.clone(),
+            Settings {
+                layout: Some("preview".into()),
+                details_style: Some(saved.into()),
+                ..Default::default()
+            },
+        );
+        app.refresh();
+        assert_eq!(app.global_layout, Layout::Details);
+        assert_details_split(&app, style, true, "legacy preview view");
+        app.ui.hide().unwrap();
+    }
+}
+
 pub(super) fn run_ui_acceptance_flow(window: Rc<MinimalSoftwareWindow>) {
     let root = fixture_directory();
     std::fs::create_dir_all(root.join("games/NES")).unwrap();
@@ -3141,6 +3652,7 @@ pub(super) fn run_ui_acceptance_flow(window: Rc<MinimalSoftwareWindow>) {
     let gamelist_xml = format!("<gameList><game><path>First Game.nes</path><desc><![CDATA[{complete_description}]]></desc></game><game><path>Second Game.nes</path><desc><![CDATA[{complete_description}]]></desc></game></gameList>");
     std::fs::write(&gamelist_path, &gamelist_xml).unwrap();
     run_browse_bar_settings_flow(&root, window.clone());
+    run_details_style_flow(&root, window.clone());
     run_scripts_flow(&root, window.clone());
     run_artwork_matte_flow(&root, window.clone());
     run_fresh_auto_pack_index_flow(&root, window.clone());

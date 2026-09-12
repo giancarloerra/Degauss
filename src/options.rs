@@ -21,6 +21,9 @@ pub enum OptionId {
     Layout,
     /// Remove every place-specific view after confirmation.
     ResetCustomViews,
+    /// How Details shares its width between the list and the picture, and
+    /// whether the compact lines sit under the picture.
+    DetailsStyle,
     /// Which typeface the interface is set in.
     Font,
     /// Which named palette from the themes folder is on, if any.
@@ -83,6 +86,7 @@ pub const OPTIONS: &[OptionId] = &[
     OptionId::Theme,
     OptionId::Layout,
     OptionId::ResetCustomViews,
+    OptionId::DetailsStyle,
     OptionId::Font,
     OptionId::ShowArt,
     OptionId::ArtworkScale,
@@ -195,6 +199,7 @@ impl OptionsPage {
                 OptionId::Theme,
                 OptionId::Layout,
                 OptionId::ResetCustomViews,
+                OptionId::DetailsStyle,
                 OptionId::Font,
                 OptionId::ShowArt,
                 OptionId::ArtworkScale,
@@ -234,6 +239,7 @@ impl OptionId {
             OptionId::ArtLimit => "Skip Artwork Faster Than",
             OptionId::Layout => "View",
             OptionId::ResetCustomViews => "Reset All Custom Views",
+            OptionId::DetailsStyle => "Details Style",
             OptionId::Font => "Text",
             OptionId::Theme => "Theme",
             OptionId::ShowArt => "Artwork",
@@ -282,6 +288,9 @@ impl OptionId {
             }
             OptionId::ResetCustomViews => {
                 "Remove all custom views after confirmation. Every place will use the global view."
+            }
+            OptionId::DetailsStyle => {
+                "Information keeps the summary under the picture. Large Artwork uses the whole column."
             }
             OptionId::Font => {
                 "Choose Smooth or Pixel text. Smooth 2 and Pixel 2 use bolder lettering."

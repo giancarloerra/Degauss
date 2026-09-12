@@ -260,6 +260,7 @@ fn option_operation(option: OptionId, input: OptionInput) -> OptionOperation {
         | OptionId::Font
         | OptionId::ShowArt
         | OptionId::ArtworkScale
+        | OptionId::DetailsStyle
         | OptionId::ShowHidden
         | OptionId::ShowEmpty
         | OptionId::ShowOther
@@ -809,6 +810,63 @@ impl ArtworkScale {
             "framebuffer dimensions are non-zero"
         );
         (width as f32 / height as f32) / display_aspect
+    }
+}
+
+/// How Details divides its width between the list and the picture, and
+/// whether the compact lines sit under the picture. The stored names are
+/// part of the settings format.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum DetailsStyle {
+    /// Preserve the original layout: the list beside a picture with the
+    /// compact summary, publisher and information hint under it.
+    #[default]
+    Information,
+    /// A wider picture taking the whole height of its column, with no
+    /// lines under it.
+    LargeArtwork,
+}
+
+impl DetailsStyle {
+    const ALL: [DetailsStyle; 2] = [DetailsStyle::Information, DetailsStyle::LargeArtwork];
+
+    fn setting(self) -> &'static str {
+        match self {
+            DetailsStyle::Information => "information",
+            DetailsStyle::LargeArtwork => "large-artwork",
+        }
+    }
+
+    fn shown(self) -> &'static str {
+        match self {
+            DetailsStyle::Information => "Information",
+            DetailsStyle::LargeArtwork => "Large Artwork",
+        }
+    }
+
+    fn parse(text: &str) -> Option<Self> {
+        match text {
+            "information" => Some(DetailsStyle::Information),
+            "large-artwork" => Some(DetailsStyle::LargeArtwork),
+            _ => None,
+        }
+    }
+
+    fn index(self) -> usize {
+        DetailsStyle::ALL
+            .iter()
+            .position(|&style| style == self)
+            .expect("every details style is listed")
+    }
+
+    /// What the picture's half of the safe width becomes while browsing
+    /// games: 42% for Information, which leaves the list room for a long
+    /// title, and 62% for Large Artwork.
+    fn art_factor(self) -> f32 {
+        match self {
+            DetailsStyle::Information => 0.84,
+            DetailsStyle::LargeArtwork => 1.24,
+        }
     }
 }
 
@@ -2822,6 +2880,7 @@ pub struct App {
     speed: usize,
     show_art: bool,
     artwork_scale: ArtworkScale,
+    details_style: DetailsStyle,
     show_stats: bool,
     show_hidden: bool,
     /// Every system found, before hiding is applied. `systems` is the
@@ -2996,6 +3055,10 @@ pub struct App {
     /// Seed for picking a game at random.
     seed: u64,
     message: Option<String>,
+    /// The theme and Details Style problem lines the first screen carries,
+    /// kept apart so the startup source check can tell them from whatever
+    /// has been put on screen since.
+    startup_problems: Option<String>,
     dirty: bool,
 }
 
@@ -3047,7 +3110,7 @@ impl App {
         } = loaded;
         let ThemeSet {
             themes,
-            problems: mut theme_problems,
+            problems: mut startup_problems,
         } = themes;
         let scraper_settings_path = crate::scraper::ScraperSettings::path_beside(&settings_path);
         let (scraper_settings, scraper_settings_problem) =
@@ -3077,7 +3140,7 @@ impl App {
                     // "Did not load" rather than "is missing": the file may
                     // be there and broken, in which case the folder's own
                     // problem line above this one says what is wrong.
-                    theme_problems.push(format!("Theme {name} did not load; using standard."));
+                    startup_problems.push(format!("Theme {name} did not load; using standard."));
                 }
                 found
             }
@@ -3100,6 +3163,19 @@ impl App {
             .as_deref()
             .and_then(ArtworkScale::parse)
             .unwrap_or_default();
+        // Absent means the layout older installations draw. A token that
+        // is present but not one of the two names is said out loud rather
+        // than quietly drawn as Information, and stays in settings.toml
+        // untouched, like a theme name the folder does not answer to.
+        let details_style = match settings.details_style.as_deref() {
+            None => DetailsStyle::default(),
+            Some(text) => DetailsStyle::parse(text).unwrap_or_else(|| {
+                startup_problems.push(format!(
+                    "Details Style {text} is not information or large-artwork; using Information."
+                ));
+                DetailsStyle::default()
+            }),
+        };
         // Margins are saved when changed and read back here. Without this the
         // Options screen would show the saved figure while the screen kept
         // the one from the config file, and the two would disagree.
@@ -3188,6 +3264,7 @@ impl App {
                 .min(SPEED_STEPS.len() - 1),
             show_art: settings.show_art.unwrap_or(true),
             artwork_scale,
+            details_style,
             show_stats: settings.show_stats.unwrap_or(config.app.show_stats),
             show_hidden: settings.show_hidden.unwrap_or(false),
             all_systems: Vec::new(),
@@ -3379,6 +3456,7 @@ impl App {
             message_after_build: None,
             skipped_systems: false,
             message: None,
+            startup_problems: None,
             dirty: true,
         };
         app.all_systems = std::mem::take(&mut app.systems);
@@ -3411,10 +3489,16 @@ impl App {
             }));
         app.ui.set_about_copyright(SharedString::from(COPYRIGHT));
         app.ui.set_about_licence(SharedString::from(LICENCE));
-        // A theme file that did not load, or a saved theme that is gone, is
-        // said out loud on the first screen. Any press takes it down.
-        if !theme_problems.is_empty() {
-            app.message = Some(theme_problems.join("\n"));
+        // A theme file that did not load, a saved theme that is gone, or a
+        // Details Style token that is neither name, is said out loud on the
+        // first screen. Any press takes it down, and a first-start library
+        // read replaces it with its own progress, so the log keeps a copy.
+        if !startup_problems.is_empty() {
+            for line in &startup_problems {
+                crate::note(&format!("startup      {line}"));
+            }
+            app.message = Some(startup_problems.join("\n"));
+            app.startup_problems = app.message.clone();
         }
         app.resolve_artwork_sources(None, SourceResolutionAction::Startup);
         app.apply_geometry();
@@ -3490,8 +3574,9 @@ impl App {
             && self.browsing == Browsing::Games
             && self.layout == Layout::Details
         {
-            // The approved compact preview leaves more room for game titles.
-            geometry.art_width *= 0.84;
+            // The approved compact preview leaves more room for game titles;
+            // Large Artwork gives that room to the picture instead.
+            geometry.art_width *= self.details_style.art_factor();
         }
         let help_height = if matches!(
             self.screen,
@@ -4922,10 +5007,30 @@ impl App {
                     self.build = None;
                     self.ui.set_index_active(false);
                 }
-                self.message = Some(error.to_string());
+                self.report_source_check(action, Some(error.to_string()));
             }
         }
         self.dirty = true;
+    }
+
+    /// What the screen says once a source check is in. Startup keeps the
+    /// lines the first screen carries, a theme or Details Style problem
+    /// waiting for a press, and puts the check's word under them; once
+    /// something else is on screen, the build report opened with a press
+    /// or nothing at all, the check's word stands alone. Every other check
+    /// replaces its own "Checking..." line.
+    fn report_source_check(&mut self, action: SourceResolutionAction, text: Option<String>) {
+        let lines = match action {
+            SourceResolutionAction::Startup => self
+                .startup_problems
+                .take()
+                .filter(|lines| self.message.as_deref() == Some(lines.as_str())),
+            _ => None,
+        };
+        self.message = match (lines, text) {
+            (Some(lines), Some(text)) => Some(format!("{lines}\n{text}")),
+            (lines, text) => lines.or(text),
+        };
     }
 
     fn poll_artwork_sources(&mut self) {
@@ -4961,7 +5066,7 @@ impl App {
                     self.build = None;
                     self.ui.set_index_active(false);
                 }
-                self.message = Some("Game data source check cancelled".into());
+                self.report_source_check(action, Some("Game data source check cancelled".into()));
                 self.dirty = true;
                 return;
             }
@@ -4979,7 +5084,7 @@ impl App {
                     self.build = None;
                     self.ui.set_index_active(false);
                 }
-                self.message = Some(error.to_string());
+                self.report_source_check(action, Some(error.to_string()));
                 self.dirty = true;
                 return;
             }
@@ -5034,7 +5139,7 @@ impl App {
                 self.artwork_source_errors.insert(group, error.clone());
             }
         }
-        self.message = (!resolution.errors.is_empty()).then(|| {
+        let errors = (!resolution.errors.is_empty()).then(|| {
             resolution
                 .errors
                 .values()
@@ -5042,6 +5147,7 @@ impl App {
                 .collect::<Vec<_>>()
                 .join("\n")
         });
+        self.report_source_check(action, errors);
         match action {
             SourceResolutionAction::Startup => {
                 let missing_pack_cache = self.all_systems.iter().any(|system| {
@@ -7603,6 +7709,11 @@ impl App {
                 self.settings.artwork_scale = Some(self.artwork_scale.setting().to_string());
                 self.touch_selection();
             }
+            OptionId::DetailsStyle => {
+                let at = step(self.details_style.index(), delta, DetailsStyle::ALL.len());
+                self.details_style = DetailsStyle::ALL[at];
+                self.settings.details_style = Some(self.details_style.setting().to_string());
+            }
             OptionId::ShowStats => {
                 self.show_stats = !self.show_stats;
                 self.settings.show_stats = Some(self.show_stats);
@@ -7762,6 +7873,7 @@ impl App {
             },
             OptionId::ShowArt => on_off(self.show_art),
             OptionId::ArtworkScale => self.artwork_scale.shown().to_string(),
+            OptionId::DetailsStyle => self.details_style.shown().to_string(),
             OptionId::ShowStats => on_off(self.show_stats),
             OptionId::Present => capitalised(self.present_label),
             OptionId::ShowHidden => on_off(self.show_hidden),
@@ -12798,7 +12910,11 @@ impl App {
                 .is_some_and(|row| !row.is_folder());
         // Not the carousel: it is a row of pictures, and six lines of text
         // under them leaves the picture too small to be the point of it.
-        let wants = self.layout == Layout::Details && over_game;
+        // Not Large Artwork either: its rows go to the picture, and Game
+        // Information in Actions still carries every line.
+        let wants = self.layout == Layout::Details
+            && over_game
+            && self.details_style == DetailsStyle::Information;
         self.ui.set_detail_line(line);
         self.ui.set_detail_height(if wants { panel } else { 0.0 });
     }
@@ -15816,6 +15932,27 @@ mod tests {
             ArtworkScale::Framebuffer,
             "an absent setting must retain the original geometry"
         );
+    }
+
+    #[test]
+    fn every_details_style_is_reachable_and_round_trips() {
+        // The option cycles only through ALL and persists the setting token.
+        // Missing either side would make a style unreachable or forget it
+        // at the next start.
+        for (at, style) in DetailsStyle::ALL.iter().copied().enumerate() {
+            assert_eq!(style.index(), at);
+            assert_eq!(DetailsStyle::parse(style.setting()), Some(style));
+        }
+        assert_eq!(DetailsStyle::parse("nonsense"), None);
+        assert_eq!(
+            DetailsStyle::default(),
+            DetailsStyle::Information,
+            "an absent setting must draw the layout older installations have"
+        );
+        // Half the safe width times these factors is the 42% and 62% the
+        // two styles give the picture; the list keeps the rest.
+        assert!((0.5 * DetailsStyle::Information.art_factor() - 0.42).abs() < 0.0001);
+        assert!((0.5 * DetailsStyle::LargeArtwork.art_factor() - 0.62).abs() < 0.0001);
     }
 
     #[test]

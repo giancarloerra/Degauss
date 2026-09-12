@@ -148,6 +148,11 @@ pub struct Settings {
     /// framebuffer-pixel behaviour.
     #[serde(default)]
     pub artwork_scale: Option<String>,
+    /// How Details balances the list, the picture and the compact lines:
+    /// "information" or "large-artwork". Absent means information, the
+    /// layout Degauss always drew.
+    #[serde(default)]
+    pub details_style: Option<String>,
     pub present: Option<String>,
     /// Systems the user has hidden, by id. Hiding is per-system and
     /// reversible; nothing is ever removed from the table.
@@ -321,6 +326,10 @@ mod tests {
         assert_eq!(settings.theme_font_override, None);
         assert_eq!(settings.layout.as_deref(), Some("details"));
         assert!(settings.artwork_scale.is_none());
+        assert!(
+            settings.details_style.is_none(),
+            "an older settings file must keep the Information layout it was drawn with"
+        );
         assert_eq!(settings.overscan_x, Some(5));
         assert_eq!(settings.hidden, ["PDP1", "VC4000"]);
         assert_eq!(settings.folder_views.len(), 2);
@@ -351,6 +360,7 @@ mod tests {
         assert_eq!(settings.folder_views.len(), 2);
         assert!(settings.custom_views.is_empty());
         assert!(settings.artwork_scale.is_none());
+        assert!(settings.details_style.is_none());
         assert_eq!(settings.hold_x_favorite, None);
         assert_eq!(settings.hold_y_random, None);
         assert!(
@@ -383,6 +393,7 @@ mod tests {
             art_limit: Some(0),
             layout: Some("covers".into()),
             artwork_scale: Some("4:3".into()),
+            details_style: Some("large-artwork".into()),
             left_right: Some("letter".into()),
             font: Some("pixel".into()),
             theme_font_override: Some(true),
