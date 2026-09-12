@@ -1818,7 +1818,7 @@ mod tests {
             PathBuf::from(format!(
                 "{}/{}",
                 archive.display(),
-                vec![segment; MAX_DEPTH].join("/")
+                [segment; MAX_DEPTH].join("/")
             ))
         };
         assert_eq!(

@@ -1611,7 +1611,10 @@ mod tests {
             .position(|b| b == [0x50, 0x4b, 6, 6])
             .unwrap();
         let eocd = classic.len() - 22;
-        let mutations: [(&str, &[u8], &[(usize, u8)], &str); 9] = [
+        // Tag, the archive to start from, the bytes to change (none means
+        // truncate it by half) and the reason the warning has to carry.
+        type Mutation<'a> = (&'a str, &'a [u8], &'a [(usize, u8)], &'a str);
+        let mutations: [Mutation; 9] = [
             (
                 "truncated",
                 &healthy,
