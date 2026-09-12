@@ -270,12 +270,15 @@ pub fn reference_of_with_systems(
             let configured_core = Path::new(&system.def.rbf)
                 .file_name()
                 .and_then(|s| s.to_str());
+            let config = system.to_config();
             (configured_core.is_some_and(|s| crate::core_variants::same_core_identity(s, core))
-                || crate::core_choices::is_unstable_reference(&system.to_config(), rbf))
-                && system.to_config().accepts(Path::new(&raw))
+                || crate::core_choices::is_unstable_reference(&config, rbf))
+                && (config.accepts(Path::new(&raw))
+                    || (crate::neogeo::is_romset_system(&config)
+                        && crate::neogeo::set_like_name(Path::new(&raw), &system.paths)))
                 && (rbf.starts_with("_RA_Cores/Cores/")
                     && set.is_some_and(|s| s.eq_ignore_ascii_case(core))
-                    || match (system.to_config().setname.as_deref(), set) {
+                    || match (config.setname.as_deref(), set) {
                         (Some(expected), Some(actual)) => expected.eq_ignore_ascii_case(actual),
                         (None, None) => true,
                         (None, Some(actual)) => actual.eq_ignore_ascii_case(core),
@@ -286,11 +289,13 @@ pub fn reference_of_with_systems(
     let [owner] = owners.as_slice() else {
         return Some(reference);
     };
+    // An unzipped Neo Geo ROM set is a folder Main starts as one game.
+    let romset = crate::neogeo::is_romset_system(&owner.to_config());
     let candidates: Vec<_> = owner
         .paths
         .iter()
         .map(|root| normalize_path(root.join(&raw)))
-        .filter(|p| p.is_file() || crate::zip::validate_member(p).is_ok())
+        .filter(|p| p.is_file() || (romset && p.is_dir()) || crate::zip::validate_member(p).is_ok())
         .collect();
     if let Some(target) = candidates.first() {
         if reference.cache_target == reference.owner_target {
@@ -345,6 +350,8 @@ pub fn relocate_mgl(
         .ok()
         .map(|target| resolve_link_target(original, target));
     let original = linked.as_deref().unwrap_or(original);
+    // An unzipped Neo Geo ROM set is a folder Main starts as one game.
+    let romset = crate::neogeo::is_romset_system(system);
     let mut reader = Reader::from_str(text);
     let mut patches = Vec::new();
     loop {
@@ -373,7 +380,11 @@ pub fn relocate_mgl(
                         std::iter::once(&system.path)
                             .chain(system.extra_paths.iter())
                             .map(|root| Path::new(root).join(raw.as_ref()))
-                            .find(|p| p.is_file() || crate::zip::validate_member(p).is_ok())
+                            .find(|p| {
+                                p.is_file()
+                                    || (romset && p.is_dir())
+                                    || crate::zip::validate_member(p).is_ok()
+                            })
                             .ok_or_else(|| {
                                 DegaussError::unsupported(
                                     "favourite file",
@@ -839,6 +850,99 @@ extensions = ["fds"]
             favorites.file_for(&primary.join("Game.fds")),
             Some(favorite.as_path())
         );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn a_bare_path_naming_a_neo_geo_set_resolves_to_the_set_zip_or_folder() {
+        // Main prefixes the core's home folder to a bare MGL path and
+        // hands the result to its ROM-set loader, so a hand-written
+        // favourite naming `mslug` or `mslug.zip` starts the set. Neither
+        // is a file the system's extensions accept, and a set folder is
+        // not a file at all, so both were left unresolved and unlaunchable
+        // here while the stock menu started them.
+        let root = temp("bare-neogeo-set");
+        let games = root.join("NEOGEO");
+        std::fs::create_dir_all(games.join("kof98")).unwrap();
+        std::fs::write(games.join("kof98/prom"), b"p").unwrap();
+        std::fs::create_dir_all(games.join("kof98.v2")).unwrap();
+        std::fs::write(games.join("kof98.v2/prom"), b"p").unwrap();
+        std::fs::write(games.join("mslug.zip"), b"not an archive").unwrap();
+        std::fs::write(games.join("bonus.bin"), b"b").unwrap();
+        std::fs::create_dir_all(games.join("Fighting")).unwrap();
+        let defs = crate::systems::parse_table(
+            r#"
+[[systems]]
+name = "Neo Geo"
+id = "NeoGeo"
+folders = ["NEOGEO"]
+rbf = "_Console/NeoGeo"
+extensions = ["neo", "mgl"]
+[[systems]]
+name = "NES"
+id = "NES"
+folders = ["NES"]
+rbf = "_Console/NES"
+extensions = ["nes"]
+"#,
+            Path::new("test"),
+        )
+        .unwrap();
+        let systems: Vec<_> = defs
+            .into_iter()
+            .map(|def| crate::systems::FoundSystem {
+                def,
+                paths: vec![games.clone()],
+                logo_dir: None,
+                menu_folder: None,
+            })
+            .collect();
+        let neogeo = systems[0].to_config();
+        // A set folder with a dot in its name is the one case where the
+        // card is looked at to claim a bare name.
+        for (set, core) in [
+            ("kof98", "_Console/NeoGeo"),
+            ("kof98.v2", "_Console/NeoGeo"),
+            ("mslug.zip", "_Console/NeoGeo"),
+        ] {
+            let favorite = root.join(format!("{set}.mgl"));
+            let text = format!(
+                "<mistergamedescription><rbf>{core}</rbf><file delay=\"1\" type=\"f\" index=\"1\" path=\"{set}\"/></mistergamedescription>"
+            );
+            std::fs::write(&favorite, &text).unwrap();
+            let reference = reference_of_with_systems(&favorite, &systems).unwrap();
+            assert_eq!(reference.owner_target, games.join(set), "{set}");
+            let relocated = relocate_mgl(&text, &favorite, &neogeo).unwrap();
+            assert!(
+                relocated.contains(&format!("path=\"{}\"", games.join(set).display())),
+                "{set}: {relocated}"
+            );
+        }
+        // A file with an extension the system does not accept is not
+        // claimed, folder or not: with the Neo Geo CD row sharing the
+        // core, its bare disc favourites would otherwise gain a second
+        // owner and resolve to nothing.
+        let text = "<mistergamedescription><rbf>_Console/NeoGeo</rbf><file delay=\"1\" type=\"f\" index=\"1\" path=\"bonus.bin\"/></mistergamedescription>";
+        let favorite = root.join("bonus.mgl");
+        std::fs::write(&favorite, text).unwrap();
+        let reference = reference_of_with_systems(&favorite, &systems).unwrap();
+        assert_eq!(reference.owner_target, root.join("bonus.bin"));
+        // A folder is a set only in a ROM-set system: elsewhere a bare
+        // name that is a folder stays unresolved, as before.
+        let nes = systems[1].to_config();
+        let text = "<mistergamedescription><rbf>_Console/NES</rbf><file delay=\"1\" type=\"f\" index=\"1\" path=\"Fighting\"/></mistergamedescription>";
+        let favorite = root.join("Fighting.mgl");
+        std::fs::write(&favorite, text).unwrap();
+        let reference = reference_of_with_systems(&favorite, &systems).unwrap();
+        assert_eq!(
+            reference.owner_target,
+            root.join("Fighting"),
+            "left beside the MGL, not moved into the game folder"
+        );
+        assert!(relocate_mgl(text, &favorite, &nes)
+            .unwrap_err()
+            .to_string()
+            .contains("cannot resolve"));
         std::fs::remove_dir_all(root).unwrap();
     }
 

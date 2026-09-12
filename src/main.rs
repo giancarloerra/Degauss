@@ -29,6 +29,7 @@ mod input;
 mod launch;
 mod list_state;
 mod metrics;
+mod neogeo;
 mod options;
 mod provider_job;
 mod render;
@@ -1587,8 +1588,11 @@ fn print_report(system: &FoundSystem, effective: &EffectiveLibrary, audit: &brow
         );
     }
     println!(
-        "metadata     gamelist {} ms, artwork index {} ms over {} files",
-        library.cost.gamelist_ms, library.cost.art_ms, library.cost.art_files
+        "metadata     gamelist {} ms, catalogue {} ms, artwork index {} ms over {} files",
+        library.cost.gamelist_ms,
+        library.cost.catalogue_ms,
+        library.cost.art_ms,
+        library.cost.art_files
     );
     println!(
         "contents     {} games, {} folders, {} places read, deepest {}",

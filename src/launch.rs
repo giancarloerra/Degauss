@@ -365,16 +365,7 @@ pub fn favorite_mgl(system: &SystemConfig, game: &Path) -> Result<Option<String>
             return Ok(None);
         }
     }
-    let rule = system.rule_for(game).ok_or_else(|| {
-        DegaussError::unsupported(
-            "launch rule",
-            format!(
-                "no [[systems.launch]] rule covers {:?} in system {}",
-                game.extension().and_then(|e| e.to_str()).unwrap_or(""),
-                system.name
-            ),
-        )
-    })?;
+    let rule = rule_for(system, game)?;
     let absolute = game.to_str().ok_or_else(|| {
         DegaussError::unsupported(
             "game path",
@@ -392,6 +383,27 @@ pub fn favorite_mgl(system: &SystemConfig, game: &Path) -> Result<Option<String>
     }
     items.push(MglItem::new(rule, absolute)?);
     build_mgl_with(&system.rbf, system.setname.as_deref(), &items, "").map(Some)
+}
+
+/// The rule that starts this file: the one the system declares for its
+/// extension, or, in a Neo Geo ROM-set system, the `.neo` rule for any
+/// file no rule covers, since Main hands whatever fills the Neo Geo file
+/// slot to its ROM-set loader. In every other system a file without a
+/// rule is refused rather than guessed at.
+fn rule_for<'a>(system: &'a SystemConfig, game: &Path) -> Result<&'a LaunchRule> {
+    system
+        .rule_for(game)
+        .or_else(|| crate::neogeo::romset_rule(system))
+        .ok_or_else(|| {
+            DegaussError::unsupported(
+                "launch rule",
+                format!(
+                    "no [[systems.launch]] rule covers {:?} in system {}",
+                    game.extension().and_then(|e| e.to_str()).unwrap_or(""),
+                    system.name
+                ),
+            )
+        })
 }
 
 /// Whether starting this file relies on the system's own core.
@@ -531,16 +543,7 @@ pub fn plan(system: &SystemConfig, game: &Path, mgl_path: &Path) -> Result<Launc
         }
     }
 
-    let rule = system.rule_for(game).ok_or_else(|| {
-        DegaussError::unsupported(
-            "launch rule",
-            format!(
-                "no [[systems.launch]] rule covers {:?} in system {}",
-                game.extension().and_then(|e| e.to_str()).unwrap_or(""),
-                system.name
-            ),
-        )
-    })?;
+    let rule = rule_for(system, game)?;
 
     let absolute = game.to_str().ok_or_else(|| {
         DegaussError::unsupported(
@@ -1222,6 +1225,128 @@ mod tests {
         assert!(plan.mgl.contains("<setname>Amiga</setname>"));
         assert!(!plan.mgl.contains("<file "), "there is no file to mount");
 
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    fn neogeo() -> SystemConfig {
+        SystemConfig {
+            preserve_rbf_stem: false,
+            name: "Neo Geo".into(),
+            path: "/media/fat/games/NEOGEO".into(),
+            extensions: vec!["neo".into(), "mgl".into()],
+            rbf: "_Console/NeoGeo".into(),
+            launch: vec![rule(&["neo", "mgl"], "f", 1, 1)],
+            skip_folders: Vec::new(),
+            setname: None,
+            extra_paths: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn a_neo_geo_set_launches_through_the_neo_slot_with_its_complete_path() {
+        // Main routes any <file> for the Neo Geo core into its ROM-set
+        // loader, which takes a .neo, a set ZIP or a set folder by path.
+        // So a set is started exactly as a .neo is, with the whole ZIP or
+        // folder named: nothing is unpacked, and Main validates the
+        // components itself once it has the path.
+        for set in ["mslug.zip", "kof98"] {
+            let game = Path::new("/media/fat/games/NEOGEO").join(set);
+            let plan = plan(&neogeo(), &game, Path::new("/tmp/degauss.mgl")).expect("planned");
+            assert_eq!(
+                plan.mgl,
+                format!(
+                    "<mistergamedescription>\n\
+                     \t<rbf>_Console/NeoGeo</rbf>\n\
+                     \t<file delay=\"1\" type=\"f\" index=\"1\" path=\"../../../../../media/fat/games/NEOGEO/{set}\"/>\n\
+                     </mistergamedescription>\n"
+                )
+            );
+            assert_eq!(plan.command, "load_core /tmp/degauss.mgl\n");
+        }
+        // The same ZIP in a system whose core is not the Neo Geo one is
+        // still refused rather than guessed at.
+        let err = plan(
+            &c64(),
+            Path::new("/media/fat/games/C64/mslug.zip"),
+            Path::new("/tmp/degauss.mgl"),
+        )
+        .expect_err("must refuse");
+        assert!(
+            err.to_string().contains("no [[systems.launch]] rule"),
+            "got: {err}"
+        );
+        // The name is not looked at, exactly as Main routes whatever fills
+        // the Neo Geo file slot to its ROM-set loader: a set folder with a
+        // dot in its name is a set, and so is anything else no rule covers.
+        let system = neogeo();
+        for set in ["mslug", "v1.2", "notes.txt"] {
+            let rule = rule_for(&system, &Path::new("/media/fat/games/NEOGEO").join(set))
+                .unwrap_or_else(|error| panic!("{set}: {error}"));
+            assert_eq!((rule.index, rule.kind.as_str()), (1, "f"), "{set}");
+        }
+        // A rule the system declares is never displaced by the borrowed
+        // one: a user's table may route another extension to a second
+        // slot, and that file must still go where the table says.
+        let mut two_slots = neogeo();
+        two_slots.launch.push(rule(&["bin"], "f", 2, 1));
+        let declared = rule_for(&two_slots, Path::new("/media/fat/games/NEOGEO/x.bin")).unwrap();
+        assert_eq!(declared.index, 2);
+        assert_eq!(
+            rule_for(&two_slots, Path::new("/media/fat/games/NEOGEO/mslug.zip"))
+                .unwrap()
+                .index,
+            1
+        );
+    }
+
+    #[test]
+    fn a_set_favourite_is_an_ordinary_mgl_with_the_absolute_set_path() {
+        // What MiSTer's own favourites script would write for a set: an
+        // MGL naming the core and the complete path. Read back, it points
+        // at the set, so the heart shows on the right row after a restart
+        // and choosing the favourite starts the set.
+        let dir = std::env::temp_dir().join(format!("degauss-neogeo-fav-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("games/NEOGEO/kof98")).unwrap();
+        std::fs::create_dir_all(dir.join("_Console")).unwrap();
+        std::fs::write(dir.join("_Console/NeoGeo_20250101.rbf"), b"core").unwrap();
+        std::fs::write(dir.join("games/NEOGEO/mslug.zip"), b"zip").unwrap();
+        let mut system = neogeo();
+        system.path = dir.join("games/NEOGEO").to_string_lossy().into_owned();
+
+        for set in ["mslug.zip", "kof98"] {
+            let game = dir.join("games/NEOGEO").join(set);
+            let mgl = favorite_mgl(&system, &game)
+                .expect("built")
+                .expect("a set is described, not linked");
+            assert_eq!(
+                mgl,
+                format!(
+                    "<mistergamedescription>\n\
+                     \t<rbf>_Console/NeoGeo</rbf>\n\
+                     \t<file delay=\"1\" type=\"f\" index=\"1\" path=\"{}\"/>\n\
+                     </mistergamedescription>\n",
+                    game.display()
+                )
+            );
+            let favourite = dir.join(format!("{set}.mgl"));
+            std::fs::write(&favourite, &mgl).unwrap();
+            assert_eq!(crate::favorites::target_of(&favourite), Some(game.clone()));
+            let favorites = crate::favorites::Favorites::read(&dir);
+            assert!(favorites.holds(&game), "{set} is held after a fresh read");
+            // Chosen from the shelf, the favourite is passed through as
+            // the ordinary MGL it is.
+            let plan = plan_with_preference(
+                &system,
+                &favourite,
+                Path::new("/tmp/degauss.mgl"),
+                &dir,
+                false,
+            )
+            .expect("planned");
+            assert!(plan.mgl.is_empty());
+            assert_eq!(plan.command, format!("load_core {}\n", favourite.display()));
+            std::fs::remove_file(&favourite).unwrap();
+        }
         std::fs::remove_dir_all(&dir).ok();
     }
 }
