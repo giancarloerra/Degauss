@@ -892,8 +892,8 @@ storage order as the system folders. An MGL for one of the systems in the
 table is identified by the game it names, its last `<file>`, as before. An
 MGL for a core outside the table, such as an arcade core with its ROM set
 spelled out as several files under `_Arcade`, is identified by its own name
-and `<setname>`: every file it names has to exist under that home
-directory, and none of them is hashed. A file present in two of a system's
+and `<setname>`: every file it names by a non-absolute path has to exist
+under that home directory, and none of them is hashed. A file present in two of a system's
 folders at once is reported in `/tmp/degauss.log` and left unmatched rather
 than picked by folder order. A `<setname>` that is not one folder name (a
 `/`, `.` or `..` step in it) is looked for nowhere, so no MGL can point
@@ -1446,7 +1446,7 @@ to point somewhere else. `degauss.sh` passes them explicitly.
 | `--audit` | Every system, one line each: games found, artwork bound, folders and any selected Artwork Pack health problem. A Gamelist system with a `gamelist.xml` but no artwork bound, a usable Pack that resolves no pictures, or a system with no games is listed again underneath as a problem. A whole card checked without opening a hundred systems by hand. |
 | `--list-systems` | Which systems this card actually has, and where each one resolved. The answer to "why is my system missing". |
 | `--check-install` | The installation itself, including every saved Artwork Pack root: what is present, missing, broken or left half-migrated. The first thing to run when something looks wrong. |
-| `--report` | One system in detail, with `--system <id>`. It identifies Gamelist or Artwork Pack; for a Pack it also reports the selected root, health and the first game's local match method, and a match that fails on an MGL names the file the MGL asked for and the folder it was looked for in. |
+| `--report` | One system in detail, with `--system <id>`. It identifies Gamelist or Artwork Pack; for a Pack it also reports the selected root, health and the first game's local match method, and a match that fails on an MGL names the file the MGL asked for and the folder it was looked for in, or the set name no games folder was found for. |
 | `--dry-run-launch` | The MGL that *would* be written to start a game, printed instead of run. The answer to "why does this game not start". |
 
 ### Seeing it without the screen

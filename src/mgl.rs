@@ -408,7 +408,7 @@ impl Resolved {
                     std::io::Error::new(
                         std::io::ErrorKind::NotFound,
                         format!(
-                            "no games folder for {}",
+                            "{raw} has no games folder to be under: none for {}",
                             self.home_name.as_deref().unwrap_or("the descriptor's core")
                         ),
                     ),
@@ -925,6 +925,10 @@ mod tests {
                 "{setname}: {error}"
             );
             assert!(error.to_string().contains(setname), "{setname}: {error}");
+            assert!(
+                error.to_string().contains("Game.fds"),
+                "{setname}: the report names the file the descriptor asked for: {error}"
+            );
         }
         assert_eq!(
             folder_name("Rock & Roll"),
