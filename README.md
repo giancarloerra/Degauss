@@ -904,9 +904,11 @@ were there at preparation and the fixed names, `index.tsv`, `gameinfo.tsv`,
 English; a synopsis in another language added later is picked up by
 **Rebuild This System List**. Images are read from the pack on demand as
 before, so an image replaced at its path shows its new picture without any
-rebuild: a file renamed into place, added or removed is noticed at the next
-entry; a file overwritten in place, or copied over its existing name, at the
-next start or after **Rebuild This System List**. Favourites and the
+rebuild: a file renamed into place, added or removed shows, or stops
+showing, at the next entry; a file overwritten in place, or copied over its
+existing name, at the next start or after **Rebuild This System List**. The
+mapping itself is not touched by any of these; only the pack's completeness
+warning waits for the next preparation. Favourites and the
 screensaver use the same written-down mapping; a system that has not been
 prepared contributes its ordinary data to them. A state file beside the
 cache that cannot be read is reported when the system is entered, and
@@ -934,8 +936,9 @@ until the pack is prepared again. When the prepared list itself is gone,
 there is no previous result to keep, and **Keep Current** opens the system
 with its ordinary data. The system's prepared data is never written again
 without one of these answers. An image added or removed is not a change to
-the mapping: the mapping stands, and the pack's completeness is looked at
-again at the next preparation. **Rebuild This System List** is the
+the mapping and asks nothing: the picture shows, or stops showing, at the
+next entry, and the pack's completeness is looked at again at the next
+preparation. **Rebuild This System List** is the
 deliberate way to prepare the current pack whatever was kept, and on a system
 whose pack was declined it asks the question again first. A cancelled or
 failed preparation writes nothing: without a previous result the system
