@@ -1420,6 +1420,7 @@ fn scraper_search_error(error: &crate::scraper::Error) -> &'static str {
         ErrorKind::DailyQuota => "Daily request allowance exhausted",
         ErrorKind::FailedQuota => "Failed-search allowance exhausted",
         ErrorKind::NotFound => "No Matches",
+        ErrorKind::InvalidRequest => "Request Rejected",
         ErrorKind::MalformedResponse => "ScreenScraper response was unreadable",
         ErrorKind::Transport => "Network connection failed",
         ErrorKind::Timeout => "ScreenScraper timed out",
@@ -11155,6 +11156,27 @@ impl App {
         ]
     }
 
+    /// The fixed report rows, then a header and one row per game the run
+    /// could not resolve. The list arrives with the terminal event, so a
+    /// running job shows the fixed rows only.
+    fn scraper_progress_row_count(&self) -> usize {
+        let unresolved = self.scraper_progress.unresolved_games.len();
+        SCRAPER_PROGRESS_ROWS + if unresolved == 0 { 0 } else { 1 + unresolved }
+    }
+
+    /// One report row past the fixed rows. Built per visible row rather than
+    /// for the whole list, which can hold every game of a library scrape.
+    fn scraper_unresolved_row(&self, index: usize) -> (String, String) {
+        let unresolved = &self.scraper_progress.unresolved_games;
+        match index.checked_sub(SCRAPER_PROGRESS_ROWS + 1) {
+            None => ("Unresolved games".to_string(), unresolved.len().to_string()),
+            Some(at) => {
+                let crate::scraper::UnresolvedGame { label, reason } = &unresolved[at];
+                (label.clone(), reason.clone())
+            }
+        }
+    }
+
     fn poll_scraper(&mut self) {
         self.poll_scraper_cache_refresh();
         loop {
@@ -11204,6 +11226,12 @@ impl App {
         self.scraper_cancelling = false;
         self.scraper_pending_terminal = Some(terminal);
         self.scraper_progress.phase = crate::scraper::Phase::Finishing;
+        // The report grows by the unresolved rows; a Details view scrolled
+        // during the run keeps its place.
+        let selected = self.scraper_progress_list.selected();
+        self.scraper_progress_list =
+            ListState::new(self.scraper_progress_row_count(), self.geometry.visible);
+        self.scraper_progress_list.select(selected);
         self.scraper_refresh_queue = self
             .scraper_progress
             .updated_systems
@@ -11389,6 +11417,9 @@ impl App {
             return;
         }
         self.scraper_terminal = None;
+        // The report is unreachable once the run is closed; a full-library
+        // list would otherwise stay in memory until the next scrape.
+        self.scraper_progress.unresolved_games = Vec::new();
         self.screen = self.scraper_return;
         self.resolve_view();
         self.apply_geometry();
@@ -12678,8 +12709,12 @@ impl App {
             Screen::ScraperProgress => {
                 let progress = self.scraper_progress_rows();
                 for index in range {
-                    let (title, value) = &progress[index];
-                    rows.push(plain_row(title, value));
+                    if let Some((title, value)) = progress.get(index) {
+                        rows.push(plain_row(title, value));
+                    } else {
+                        let (title, value) = self.scraper_unresolved_row(index);
+                        rows.push(plain_row(&title, &value));
+                    }
                 }
             }
             Screen::ScraperMatches => {
@@ -16512,6 +16547,7 @@ mod tests {
             (ErrorKind::DailyQuota, "Daily request allowance exhausted"),
             (ErrorKind::FailedQuota, "Failed-search allowance exhausted"),
             (ErrorKind::NotFound, "No Matches"),
+            (ErrorKind::InvalidRequest, "Request Rejected"),
             (
                 ErrorKind::MalformedResponse,
                 "ScreenScraper response was unreadable",
@@ -16544,6 +16580,12 @@ mod tests {
             (ErrorKind::DailyQuota, "Daily request allowance exhausted"),
             (ErrorKind::FailedQuota, "Failed-search allowance exhausted"),
             (ErrorKind::NotFound, "No matching game was found"),
+            // The same kind answers a lookup, a media transfer and the
+            // account check, so the text names none of them.
+            (
+                ErrorKind::InvalidRequest,
+                "ScreenScraper rejected this request",
+            ),
             (
                 ErrorKind::MalformedResponse,
                 "ScreenScraper response was unreadable",

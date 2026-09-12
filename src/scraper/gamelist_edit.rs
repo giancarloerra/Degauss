@@ -43,6 +43,23 @@ pub enum Eligibility {
     Alias { representative: usize },
 }
 
+/// How Fill missing decides that an entry's stored metadata is complete.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FillCompleteness {
+    /// One explicitly chosen game: any empty field is worth a lookup.
+    EveryField,
+    /// Folder, system and all-systems batches: any non-empty field, local
+    /// or inherited from the parent entry, completes the entry, so optional
+    /// fields ScreenScraper never supplies do not send the same game back
+    /// on every run.
+    AnyField,
+}
+
+impl FillCompleteness {
+    #[cfg(test)]
+    pub const ALL: [Self; 2] = [Self::EveryField, Self::AnyField];
+}
+
 impl Needs {
     pub fn any(self) -> bool {
         self.image || self.metadata
@@ -174,6 +191,7 @@ pub fn needs_many(
     relative_game_paths: &[String],
     image_policy: ImagePolicy,
     metadata_policy: MetadataPolicy,
+    completeness: FillCompleteness,
 ) -> Result<Vec<Result<Needs>>> {
     let fallback: Vec<bool> = relative_game_paths
         .iter()
@@ -186,6 +204,7 @@ pub fn needs_many(
         &fallback,
         image_policy,
         metadata_policy,
+        completeness,
     )
 }
 
@@ -197,6 +216,7 @@ pub fn needs_many_with_fallback(
     metadata_fallback: &[bool],
     image_policy: ImagePolicy,
     metadata_policy: MetadataPolicy,
+    completeness: FillCompleteness,
 ) -> Result<Vec<Result<Needs>>> {
     Ok(needs_many_controlled(
         gamelist_path,
@@ -205,6 +225,7 @@ pub fn needs_many_with_fallback(
         metadata_fallback,
         image_policy,
         metadata_policy,
+        completeness,
         &mut |_| Ok(()),
     )?
     .into_iter()
@@ -219,6 +240,7 @@ pub fn needs_many_with_fallback(
     .collect::<Vec<_>>())
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn needs_many_controlled(
     gamelist_path: &Path,
     folder: &Path,
@@ -226,6 +248,7 @@ pub fn needs_many_controlled(
     metadata_fallback: &[bool],
     image_policy: ImagePolicy,
     metadata_policy: MetadataPolicy,
+    completeness: FillCompleteness,
     progress: &mut impl FnMut(usize) -> Result<()>,
 ) -> Result<Vec<Result<Eligibility>>> {
     progress(0)?;
@@ -327,7 +350,13 @@ pub fn needs_many_controlled(
                     MetadataPolicy::Off => false,
                     MetadataPolicy::ReplaceExisting => true,
                     MetadataPolicy::FillMissing => {
-                        let mut missing = false;
+                        // Every field absent: a lookup is needed under both
+                        // rules. Every field present: none is. In between,
+                        // the rule decides.
+                        let mut needed = match completeness {
+                            FillCompleteness::EveryField => false,
+                            FillCompleteness::AnyField => true,
+                        };
                         for name in FIELDS {
                             let own = game
                                 .fields
@@ -342,12 +371,19 @@ pub fn needs_many_controlled(
                                         .filter(|field| !field.value.trim().is_empty())
                                 }),
                             };
-                            if effective.is_none() {
-                                missing = true;
-                                break;
+                            match completeness {
+                                FillCompleteness::EveryField if effective.is_none() => {
+                                    needed = true;
+                                    break;
+                                }
+                                FillCompleteness::AnyField if effective.is_some() => {
+                                    needed = false;
+                                    break;
+                                }
+                                _ => {}
                             }
                         }
-                        missing
+                        needed
                     }
                 };
                 Ok(Eligibility::Needs(Needs { image, metadata }))
@@ -364,12 +400,32 @@ pub fn needs(
     image_policy: ImagePolicy,
     metadata_policy: MetadataPolicy,
 ) -> Result<Needs> {
+    needs_with_completeness(
+        gamelist_path,
+        folder,
+        relative_game_path,
+        image_policy,
+        metadata_policy,
+        FillCompleteness::EveryField,
+    )
+}
+
+#[cfg(test)]
+fn needs_with_completeness(
+    gamelist_path: &Path,
+    folder: &Path,
+    relative_game_path: &str,
+    image_policy: ImagePolicy,
+    metadata_policy: MetadataPolicy,
+    completeness: FillCompleteness,
+) -> Result<Needs> {
     needs_many(
         gamelist_path,
         folder,
         &[relative_game_path.to_string()],
         image_policy,
         metadata_policy,
+        completeness,
     )?
     .pop()
     .unwrap_or_else(|| Err(Error::local("the gamelist inspection returned no result")))
@@ -1716,6 +1772,7 @@ mod tests {
                 &[true],
                 super::ImagePolicy::MissingOnly,
                 super::MetadataPolicy::FillMissing,
+                super::FillCompleteness::EveryField,
                 &mut |_| Ok(()),
             )
             .unwrap();
@@ -2323,6 +2380,107 @@ mod tests {
     }
 
     #[test]
+    fn a_batch_treats_any_stored_field_as_complete_while_one_game_fills_every_field() {
+        let folder = temp("batch-completeness");
+        let path = folder.join("gamelist.xml");
+        std::fs::write(folder.join("art.png"), b"image").unwrap();
+        std::fs::write(
+            &path,
+            "<gameList><game><path>./Game.rom</path><name>Name</name><image>./art.png</image></game></gameList>",
+        )
+        .unwrap();
+        // Seven optional fields are blank. A folder, system or all-systems
+        // run must not send this game back to ScreenScraper every time.
+        assert_eq!(
+            needs_with_completeness(
+                &path,
+                &folder,
+                "./Game.rom",
+                ImagePolicy::MissingOnly,
+                MetadataPolicy::FillMissing,
+                FillCompleteness::AnyField,
+            )
+            .unwrap(),
+            Needs::default()
+        );
+        // Choosing the one game is permission to complete it field by field.
+        assert_eq!(
+            needs(
+                &path,
+                &folder,
+                "./Game.rom",
+                ImagePolicy::MissingOnly,
+                MetadataPolicy::FillMissing,
+            )
+            .unwrap(),
+            Needs {
+                image: false,
+                metadata: true
+            }
+        );
+        let _ = std::fs::remove_dir_all(folder);
+    }
+
+    #[test]
+    fn batch_image_and_metadata_needs_are_independent() {
+        let folder = temp("batch-independent-needs");
+        let path = folder.join("gamelist.xml");
+        std::fs::write(folder.join("art.png"), b"image").unwrap();
+        let batch = |xml: &str| {
+            std::fs::write(&path, xml).unwrap();
+            needs_with_completeness(
+                &path,
+                &folder,
+                "./Game.rom",
+                ImagePolicy::MissingOnly,
+                MetadataPolicy::FillMissing,
+                FillCompleteness::AnyField,
+            )
+            .unwrap()
+        };
+        assert_eq!(
+            batch(
+                "<gameList><game><path>./Game.rom</path><image>./art.png</image></game></gameList>"
+            ),
+            Needs {
+                image: false,
+                metadata: true
+            },
+            "an image with no metadata at all needs only metadata"
+        );
+        assert_eq!(
+            batch("<gameList><game><path>./Game.rom</path><name>Name</name><desc>Description</desc></game></gameList>"),
+            Needs {
+                image: true,
+                metadata: false
+            },
+            "metadata without an image needs only the image"
+        );
+        assert_eq!(
+            batch("<gameList><game><path>./Game.rom</path><name>Name</name><image>./gone.png</image></game></gameList>"),
+            Needs {
+                image: true,
+                metadata: false
+            },
+            "a dangling image reference is a missing image"
+        );
+        assert_eq!(
+            batch("<gameList><game><path>./Game.rom</path><name>  </name><image>./art.png</image></game></gameList>"),
+            Needs {
+                image: false,
+                metadata: true
+            },
+            "a whitespace-only field is not stored metadata"
+        );
+        assert_eq!(
+            batch("<gameList><game id=\"p\"><genre>Action</genre></game><game parentid=\"p\"><path>./Game.rom</path><image>./art.png</image></game></gameList>"),
+            Needs::default(),
+            "a field inherited from the parent entry counts as stored"
+        );
+        let _ = std::fs::remove_dir_all(folder);
+    }
+
+    #[test]
     fn external_parent_metadata_and_root_relative_art_skip_only_the_matching_zip_member() {
         let folder = temp("complete-inherited-zip");
         let path = folder.join("gamelist.xml");
@@ -2337,6 +2495,7 @@ mod tests {
             &[false, false],
             ImagePolicy::MissingOnly,
             MetadataPolicy::FillMissing,
+            FillCompleteness::EveryField,
         )
         .unwrap();
         let mut results = results.into_iter();
@@ -2363,7 +2522,8 @@ mod tests {
                 &paths[..1],
                 &[false],
                 ImagePolicy::MissingOnly,
-                MetadataPolicy::FillMissing
+                MetadataPolicy::FillMissing,
+                FillCompleteness::EveryField,
             )
             .unwrap()
             .remove(0)
@@ -2392,29 +2552,45 @@ mod tests {
         )
         .unwrap();
 
-        for image_policy in ImagePolicy::ALL {
-            for metadata_policy in MetadataPolicy::ALL {
-                let complete =
-                    needs(&path, &folder, "./Game.rom", image_policy, metadata_policy).unwrap();
-                assert_eq!(
-                    complete,
-                    Needs {
-                        image: image_policy == ImagePolicy::ReplaceExisting,
-                        metadata: metadata_policy == MetadataPolicy::ReplaceExisting,
-                    },
-                    "complete entry with {image_policy:?} and {metadata_policy:?}"
-                );
+        for completeness in FillCompleteness::ALL {
+            for image_policy in ImagePolicy::ALL {
+                for metadata_policy in MetadataPolicy::ALL {
+                    let complete = needs_with_completeness(
+                        &path,
+                        &folder,
+                        "./Game.rom",
+                        image_policy,
+                        metadata_policy,
+                        completeness,
+                    )
+                    .unwrap();
+                    assert_eq!(
+                        complete,
+                        Needs {
+                            image: image_policy == ImagePolicy::ReplaceExisting,
+                            metadata: metadata_policy == MetadataPolicy::ReplaceExisting,
+                        },
+                        "complete entry with {image_policy:?}, {metadata_policy:?} and {completeness:?}"
+                    );
 
-                let absent =
-                    needs(&path, &folder, "./Other.rom", image_policy, metadata_policy).unwrap();
-                assert_eq!(
-                    absent,
-                    Needs {
-                        image: image_policy != ImagePolicy::Off,
-                        metadata: metadata_policy != MetadataPolicy::Off,
-                    },
-                    "absent entry with {image_policy:?} and {metadata_policy:?}"
-                );
+                    let absent = needs_with_completeness(
+                        &path,
+                        &folder,
+                        "./Other.rom",
+                        image_policy,
+                        metadata_policy,
+                        completeness,
+                    )
+                    .unwrap();
+                    assert_eq!(
+                        absent,
+                        Needs {
+                            image: image_policy != ImagePolicy::Off,
+                            metadata: metadata_policy != MetadataPolicy::Off,
+                        },
+                        "absent entry with {image_policy:?}, {metadata_policy:?} and {completeness:?}"
+                    );
+                }
             }
         }
         let _ = std::fs::remove_dir_all(folder);

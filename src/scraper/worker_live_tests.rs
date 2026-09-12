@@ -232,7 +232,7 @@ fn real_service_policy_and_scope_matrix_is_non_destructive() {
     assert!(fresh_xml.contains("<name>"));
     let downloaded = only_downloaded_image(&fresh);
 
-    let partial = suite.case(&config, "partial-folder");
+    let partial = suite.case(&config, "partial-game");
     std::fs::copy(&downloaded, partial.join("existing.png"))
         .expect("copy a real downloaded image into the partial fixture");
     write_gamelist(
@@ -240,14 +240,16 @@ fn real_service_policy_and_scope_matrix_is_non_destructive() {
         "<game id=\"legacy-id\"><path>./fixture.EXT</path><name>KEEP PARTIAL NAME</name><desc></desc><image>./existing.png</image><thumbnail>./legacy-thumb.png</thumbnail><video>./legacy-video.mp4</video><marquee>./legacy-marquee.png</marquee><rating>0.8</rating><favorite>true</favorite><comments>keep comments</comments><private-field>keep</private-field></game>",
         &config.extension,
     );
+    // One chosen game fills its empty fields one by one; a folder run
+    // would treat the stored name as complete and skip this entry.
     let partial_progress = run_case(
         &config,
         &partial,
-        ScopeKind::Folder,
+        ScopeKind::Game,
         ImagePolicy::Off,
         MetadataPolicy::FillMissing,
     );
-    assert_success(&partial_progress, "partial folder");
+    assert_success(&partial_progress, "partial game");
     let partial_xml = read_gamelist(&partial);
     assert!(partial_xml.contains("<name>KEEP PARTIAL NAME</name>"));
     assert!(partial_xml.contains("<private-field>keep</private-field>"));
@@ -265,6 +267,38 @@ fn real_service_policy_and_scope_matrix_is_non_destructive() {
         std::fs::read(&downloaded).unwrap()
     );
     assert_eq!(backup_count(&partial), 1);
+
+    // The same partially filled entry is complete for a folder run: an
+    // image plus one stored field makes no request and changes nothing.
+    let skipped = suite.case(&config, "partial-folder");
+    std::fs::copy(&downloaded, skipped.join("existing.png"))
+        .expect("copy a real downloaded image into the skipped fixture");
+    write_gamelist(
+        &skipped,
+        "<game><path>./fixture.EXT</path><name>KEEP PARTIAL NAME</name><image>./existing.png</image></game>",
+        &config.extension,
+    );
+    let skipped_xml = read_gamelist(&skipped);
+    let skipped_progress = run_case(
+        &config,
+        &skipped,
+        ScopeKind::Folder,
+        ImagePolicy::MissingOnly,
+        MetadataPolicy::FillMissing,
+    );
+    assert_eq!(
+        skipped_progress.failed, 0,
+        "partial folder recorded a failed target"
+    );
+    assert_eq!(skipped_progress.completed, 1);
+    assert_eq!(skipped_progress.unchanged, 1);
+    assert_eq!(skipped_progress.updated, 0);
+    assert_eq!(
+        skipped_progress.requests_started, 0,
+        "partial folder must not contact ScreenScraper"
+    );
+    assert_eq!(read_gamelist(&skipped), skipped_xml);
+    assert_eq!(backup_count(&skipped), 0);
 
     let complete = suite.case(&config, "complete-game");
     std::fs::copy(&downloaded, complete.join("existing.png"))
