@@ -14,6 +14,7 @@ use std::sync::Arc;
 
 use quick_xml::events::Event;
 use quick_xml::Reader;
+use serde::{Deserialize, Serialize};
 use sha1::{Digest, Sha1};
 
 use crate::browse::{Details, Kind, Launch, Row};
@@ -43,7 +44,7 @@ pub struct GameIdentity {
     hash_path: Option<PathBuf>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum MatchMethod {
     ExactKey,
     IndexName,
@@ -64,7 +65,7 @@ impl MatchMethod {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ResolutionDiagnostic {
     pub pack_folder: String,
     pub key: String,
@@ -72,7 +73,7 @@ pub struct ResolutionDiagnostic {
     pub synopsis_language: Option<String>,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PackPresentation {
     pub name: Option<String>,
     pub cover: Option<PathBuf>,
@@ -81,7 +82,7 @@ pub struct PackPresentation {
     pub diagnostic: Option<ResolutionDiagnostic>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ProviderHealth {
     Ready,
     Degraded,
@@ -268,7 +269,7 @@ pub struct Provider {
     /// Effective Pack presentation keyed by stable launch identity. It is
     /// prepared by a background worker so browse projection performs no game
     /// descriptor, archive, ROM, or Pack filesystem I/O.
-    prepared: Option<Arc<HashMap<String, PackPresentation>>>,
+    prepared: Option<Arc<HashMap<Launch, PackPresentation>>>,
     archive_cache: Arc<std::sync::Mutex<crate::zip::ArchiveCache>>,
 }
 
@@ -309,7 +310,7 @@ impl Provider {
                 "Artwork Pack matching is not prepared; reopen the system",
             )
         })?;
-        let Some(presentation) = prepared.get(&launch_cache_key(launch)) else {
+        let Some(presentation) = prepared.get(launch) else {
             return Ok(None);
         };
         let Some(diagnostic) = presentation.diagnostic.as_ref() else {
@@ -689,13 +690,20 @@ impl Provider {
 
     /// Resolve every playable row while running on a background worker. The
     /// resulting in-memory map deliberately contains no source-neutral rows
-    /// and is never serialized into Degauss caches.
+    /// and is never serialized into the source-neutral caches; it is written
+    /// down beside them, as the prepared state, by the same worker.
+    ///
+    /// A row whose descriptor cannot be read is written into `skipped` and
+    /// left out of the map, so it keeps its ordinary name and no Pack data;
+    /// a row already in `skipped` from the fingerprint walk is not opened
+    /// again. Only an error that is not about the row stops the walk.
     pub fn prepare_for_cache(
         &mut self,
         cache: &crate::cache::SystemCache,
         fingerprints: &crate::cache::ContentFingerprints,
         homes: &crate::mgl::Homes,
         cancelled: &AtomicBool,
+        skipped: &mut SkippedEntries,
     ) -> Result<Option<usize>> {
         let mut prepared = HashMap::new();
         let mut inspected = HashSet::new();
@@ -707,27 +715,86 @@ impl Provider {
                 let Kind::Play(launch) = &row.kind else {
                     continue;
                 };
-                let key = launch_cache_key(launch);
-                if !inspected.insert(key.clone()) {
+                if !inspected.insert(launch) {
                     continue;
                 }
-                let presentation = self.presentation_for_launch_controlled(
+                if skipped.contains_key(launch) {
+                    continue;
+                }
+                let presentation = match self.presentation_for_launch_controlled(
                     launch,
                     fingerprints,
                     homes,
                     cancelled,
-                )?;
+                ) {
+                    Ok(presentation) => presentation,
+                    Err(error) => {
+                        skip_entry(skipped, launch, error)?;
+                        continue;
+                    }
+                };
                 if cancelled.load(Ordering::Relaxed) {
                     return Ok(None);
                 }
                 if let Some(presentation) = presentation {
-                    prepared.insert(key, presentation);
+                    prepared.insert(launch.clone(), presentation);
                 }
             }
         }
         let matched = prepared.len();
         self.prepared = Some(Arc::new(prepared));
         Ok(Some(matched))
+    }
+
+    /// The prepared map, for writing down as it is held. Nothing when
+    /// nothing has been prepared.
+    pub fn prepared_map(&self) -> Option<&HashMap<Launch, PackPresentation>> {
+        self.prepared.as_deref()
+    }
+
+    /// The source signature the catalogue was read against, if it was read
+    /// whole.
+    pub(crate) fn snapshot(&self) -> Option<&SourceFingerprint> {
+        self.snapshot.as_ref()
+    }
+
+    pub fn synopsis_language(&self) -> Option<&str> {
+        self.synopsis_language.as_deref()
+    }
+
+    /// A provider as the interface holds one after a worker prepared it,
+    /// rebuilt from what was written down: no catalogue, the health and
+    /// diagnostics of the preparation, the signature of the source it was
+    /// prepared against and the prepared rows. Enough to open the system,
+    /// draw its rows, answer Game Information and remember its warning,
+    /// without reading a table.
+    pub(crate) fn from_prepared_state(
+        system_id: &str,
+        docs_root: &Path,
+        language: Option<&str>,
+        health: ProviderHealth,
+        diagnostics: Vec<String>,
+        snapshot: Option<SourceFingerprint>,
+        prepared: HashMap<Launch, PackPresentation>,
+    ) -> Self {
+        Self {
+            system_id: system_id.to_string(),
+            docs_root: docs_root.to_path_buf(),
+            health,
+            diagnostics,
+            directories: Arc::new(Vec::new()),
+            snapshot,
+            synopsis_language: normalized_language(language),
+            prepared: Some(Arc::new(prepared)),
+            archive_cache: Arc::new(std::sync::Mutex::new(crate::zip::ArchiveCache::default())),
+        }
+    }
+
+    /// Take a source change that leaves the prepared rows valid as the new
+    /// baseline: replaced images, or tables the user chose to keep browsing
+    /// on. The full description reads the tables at the refreshed state.
+    pub(crate) fn refresh_snapshot(&mut self, snapshot: SourceFingerprint) {
+        self.snapshot = Some(snapshot);
     }
 
     /// Apply a snapshot already prepared by a worker. Absence means the
@@ -745,7 +812,7 @@ impl Provider {
             let Kind::Play(launch) = &row.kind else {
                 continue;
             };
-            let Some(presentation) = prepared.get(&launch_cache_key(launch)) else {
+            let Some(presentation) = prepared.get(launch) else {
                 continue;
             };
             apply_presentation(row, presentation.clone());
@@ -836,12 +903,16 @@ impl Provider {
         )))
     }
 
+    /// A row whose descriptor cannot be read is written into `skipped` and
+    /// left without a fingerprint; the walk goes on. Only an error that is
+    /// not about the row stops it.
     pub fn fingerprints_for_cache(
         &self,
         cache: &crate::cache::SystemCache,
         homes: &crate::mgl::Homes,
         cancelled: &AtomicBool,
         on_progress: &mut dyn FnMut(usize, u64),
+        skipped: &mut SkippedEntries,
     ) -> Result<Option<crate::cache::ContentFingerprints>> {
         let mut fingerprints = crate::cache::ContentFingerprints::new();
         let mut inspected = HashSet::new();
@@ -855,14 +926,20 @@ impl Provider {
                 let Kind::Play(launch) = &row.kind else {
                     continue;
                 };
-                if !inspected.insert(launch_cache_key(launch)) {
+                if !inspected.insert(launch) {
                     continue;
                 }
                 let fingerprint =
-                    self.fingerprint_for_launch(launch, homes, cancelled, &mut |read| {
+                    match self.fingerprint_for_launch(launch, homes, cancelled, &mut |read| {
                         bytes = bytes.saturating_add(read);
                         on_progress(files, bytes);
-                    })?;
+                    }) {
+                        Ok(fingerprint) => fingerprint,
+                        Err(error) => {
+                            skip_entry(skipped, launch, error)?;
+                            continue;
+                        }
+                    };
                 if cancelled.load(Ordering::Relaxed) {
                     return Ok(None);
                 }
@@ -879,6 +956,10 @@ impl Provider {
     /// Validate persisted loose-file CRCs for this exact provider policy.
     /// This may stat and parse game files and therefore belongs on the
     /// provider worker, never in browse projection.
+    ///
+    /// A row whose descriptor cannot be read is written into `skipped` and
+    /// passed over: it contributed nothing to the mapping being validated,
+    /// as it will contribute nothing to the next one.
     pub fn cached_fingerprints_are_current(
         &self,
         cache: &crate::cache::SystemCache,
@@ -886,6 +967,7 @@ impl Provider {
         complete: bool,
         homes: &crate::mgl::Homes,
         cancelled: &AtomicBool,
+        skipped: &mut SkippedEntries,
     ) -> Result<Option<bool>> {
         if cancelled.load(Ordering::Relaxed) {
             return Ok(None);
@@ -906,10 +988,16 @@ impl Provider {
                 let Kind::Play(launch) = &row.kind else {
                     continue;
                 };
-                if !inspected.insert(launch_cache_key(launch)) {
+                if !inspected.insert(launch) {
                     continue;
                 }
-                let identity = self.identity_for_launch(launch, homes, cancelled)?;
+                let identity = match self.identity_for_launch(launch, homes, cancelled) {
+                    Ok(identity) => identity,
+                    Err(error) => {
+                        skip_entry(skipped, launch, error)?;
+                        continue;
+                    }
+                };
                 if cancelled.load(Ordering::Relaxed) {
                     return Ok(None);
                 }
@@ -937,11 +1025,16 @@ impl Provider {
                         return Ok(Some(false));
                     }
                     Err(error) => {
-                        return Err(DegaussError::io(
-                            "validating cached Artwork Pack identity",
-                            path,
-                            error,
-                        ));
+                        skip_entry(
+                            skipped,
+                            launch,
+                            DegaussError::io(
+                                "validating cached Artwork Pack identity",
+                                path,
+                                error,
+                            ),
+                        )?;
+                        continue;
                     }
                 };
                 if !metadata.is_file()
@@ -1048,13 +1141,113 @@ fn apply_presentation(row: &mut Row, presentation: PackPresentation) {
     row.details = presentation.details;
 }
 
-fn launch_cache_key(launch: &Launch) -> String {
-    match launch {
-        Launch::File(path) => format!("file:{}", path.display()),
-        Launch::AmigaVision { install, title } => {
-            format!("amigavision:{}\0{title}", install.display())
+/// One playable row the preparation could not identify, and why. The path
+/// is the row's own file; the category is fixed text so a summary can count
+/// it; the detail is the complete error, which only the log prints.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SkippedEntry {
+    pub path: PathBuf,
+    pub category: &'static str,
+    pub detail: String,
+}
+
+/// Keyed by the row's launch, so a row that fails in the fingerprint walk
+/// and again in the matching walk is written down once.
+pub type SkippedEntries = HashMap<Launch, SkippedEntry>;
+
+/// What kind of row failure an error is, for the summary on screen, or
+/// nothing when the error is not about the row at all. Structural on
+/// purpose: every error the per-row identity step can return concerns that
+/// row's own descriptor, target, archive or file, except the poisoned
+/// archive lock, which is the process's, and an I/O error whose code says
+/// the process or the storage failed rather than the path: those would
+/// fail every row that follows, and a preparation that skipped them all
+/// would replace a complete result with an empty one. No error text is
+/// matched.
+pub fn entry_failure(error: &DegaussError) -> Option<&'static str> {
+    Some(match error {
+        DegaussError::Io { source, .. } if source.kind() == std::io::ErrorKind::NotFound => {
+            "missing file"
         }
+        DegaussError::Io { source, .. } if !path_local(source) => return None,
+        DegaussError::Io { .. } => "inaccessible file",
+        DegaussError::Malformed { what, .. } if *what == "Artwork Pack identity MGL" => {
+            "invalid redirect chain"
+        }
+        DegaussError::Malformed { .. } => "malformed descriptor",
+        DegaussError::Unsupported { what, .. } if *what == "archive lookup" => return None,
+        DegaussError::Unsupported { what, .. } if *what == "MGL component" => {
+            "ambiguous descriptor"
+        }
+        DegaussError::Unsupported { .. } => "unsupported file",
+    })
+}
+
+/// Whether an I/O error is about the path it was raised for. The process
+/// out of descriptors or memory, or the storage answering with a device
+/// error, is not: the next row would fail the same way.
+fn path_local(error: &std::io::Error) -> bool {
+    !matches!(
+        error.raw_os_error(),
+        Some(libc::EMFILE | libc::ENFILE | libc::ENOMEM | libc::EIO | libc::ENODEV | libc::ENXIO)
+    )
+}
+
+/// Write down a row the walk could not identify and let the walk go on,
+/// or hand the error back when it is not about the row. Logged here, at
+/// the moment it happens, with the path the screen does not show, and
+/// once: a row the validation walk wrote down is opened again by the
+/// fingerprint walk of the same preparation, which finds it as broken.
+fn skip_entry(skipped: &mut SkippedEntries, launch: &Launch, error: DegaussError) -> Result<()> {
+    let Some(category) = entry_failure(&error) else {
+        return Err(error);
+    };
+    let std::collections::hash_map::Entry::Vacant(entry) = skipped.entry(launch.clone()) else {
+        return Ok(());
+    };
+    let path = match launch {
+        Launch::File(path) => path.clone(),
+        Launch::AmigaVision { install, .. } => install.clone(),
+    };
+    crate::note(&format!(
+        "pack entry   {}: skipped: {category}: {error}",
+        shown_path(&path)
+    ));
+    entry.insert(SkippedEntry {
+        path,
+        category,
+        detail: error.to_string(),
+    });
+    Ok(())
+}
+
+/// A path for the log: as it is, unless it holds a control character, in
+/// which case it is escaped so the line cannot be cut by the name it names.
+fn shown_path(path: &Path) -> String {
+    let text = path.display().to_string();
+    if text.chars().any(char::is_control) {
+        text.escape_debug().to_string()
+    } else {
+        text
     }
+}
+
+/// The count lines for a summary on screen: one per category, with no
+/// path, prefixed by the system's name the way every other warning is.
+pub fn skipped_summary(system_name: &str, skipped: &SkippedEntries) -> Vec<String> {
+    let mut counts: BTreeMap<&'static str, usize> = BTreeMap::new();
+    for entry in skipped.values() {
+        *counts.entry(entry.category).or_default() += 1;
+    }
+    counts
+        .into_iter()
+        .map(|(category, count)| {
+            format!(
+                "{system_name}: {count} game{} left without Pack data: {category}",
+                if count == 1 { "" } else { "s" }
+            )
+        })
+        .collect()
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -1251,11 +1444,12 @@ pub fn expected_folders(system_id: &str) -> &'static [&'static str] {
         .unwrap_or(&[])
 }
 
+/// The Pack root in use for one system, from the map of effective roots,
+/// which is keyed by system: a member of a shared group is asked about,
+/// and prepared, on its own.
 pub fn selected_root<'a>(roots: &'a BTreeMap<String, String>, system_id: &str) -> Option<&'a Path> {
-    roots
-        .get(source_group(system_id)?)
-        .map(String::as_str)
-        .map(Path::new)
+    source_group(system_id)?;
+    roots.get(system_id).map(String::as_str).map(Path::new)
 }
 
 /// Find bounded structural candidates. The UI validates each candidate with a
@@ -1284,15 +1478,26 @@ pub fn discover_candidate_roots(system_id: &str, game_roots: &[String]) -> Vec<P
         } else {
             base.join("docs")
         };
-        if !expected_folders(system_id)
+        let present: Vec<PathBuf> = expected_folders(system_id)
             .iter()
-            .any(|folder| docs.join(folder).join("Artwork").is_dir())
-        {
+            .map(|folder| docs.join(folder).join("Artwork"))
+            .filter(|artwork| artwork.is_dir())
+            .collect();
+        if present.is_empty() {
             continue;
         }
         let canonical = std::fs::canonicalize(&docs).unwrap_or(docs);
         let allowed_base = std::fs::canonicalize(&base).unwrap_or(base);
-        if !canonical.starts_with(&allowed_base) {
+        // The Pack read from a root covers every mapped folder under it, so
+        // a mapped Artwork directory linked out of the base takes the base
+        // out with it, as a `docs` linked out does.
+        if !canonical.starts_with(&allowed_base)
+            || present.iter().any(|artwork| {
+                !std::fs::canonicalize(artwork)
+                    .unwrap_or_else(|_| artwork.clone())
+                    .starts_with(&allowed_base)
+            })
+        {
             continue;
         }
         if seen.insert(canonical.clone()) {
@@ -1350,17 +1555,42 @@ fn load_stable_directory(
     unreachable!()
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct Fingerprint {
     directory_modified: u128,
-    /// The manifest content identity closes the FAT/exFAT same-size,
-    /// same-timestamp replacement case used by an artwork-style switch.
-    /// Supplemental tables retain the cheaper metadata identity.
+    /// The manifest carries a content identity, taken when it is read
+    /// whole and again whenever its stats or the directory's move: an
+    /// artwork-style switch that replaces images moves the directory,
+    /// and its manifest is then hashed even at the same size and
+    /// timestamp. One that rewrites every file in place at the same size
+    /// and timestamp is not seen by the entry check; Rebuild This System
+    /// List reads the directory. Supplemental tables keep the cheaper
+    /// metadata identity.
     tables: Vec<(String, u64, u128, Option<u32>)>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct SourceFingerprint(Vec<(String, Option<Fingerprint>)>);
+/// The identity of a Pack source at one moment: per mapped folder, its
+/// Artwork directory's mtime and its tables, or nothing when the folder is
+/// not there. Written down with the prepared state so the next entry can
+/// tell an unchanged Pack from a changed one by stats alone.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct SourceFingerprint(Vec<(String, Option<Fingerprint>)>);
+
+/// What the bounded entry check found, against the signature written down.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SnapshotStatus {
+    /// Nothing moved: the prepared rows stand.
+    Current,
+    /// Only the Artwork directory's own mtime moved: an image was replaced,
+    /// added or removed. The mapping stands; decoded pictures do not.
+    ImagesOnly,
+    /// A table, a folder or the layout changed: the prepared rows may no
+    /// longer say what the Pack says.
+    Changed,
+    /// The docs root or the primary Artwork directory is not there, or
+    /// cannot be looked at.
+    Unavailable,
+}
 
 impl SourceFingerprint {
     /// Recheck an immutable snapshot without enumerating the image directory.
@@ -1380,6 +1610,244 @@ impl SourceFingerprint {
                 },
             )
     }
+
+    /// The bounded check made when a prepared system is entered: the docs
+    /// root, each mapped Artwork directory, the tables written down and the
+    /// fixed table names are stat'd; the manifest is hashed again only
+    /// when the directory or the manifest's own stats moved. Nothing is
+    /// listed and, unchanged, nothing is read, so a directory of thousands
+    /// of images costs a handful of stats. The signature returned is the
+    /// source as it is now, seen through the same names, for writing down
+    /// when the rows are kept.
+    fn status(
+        &self,
+        mapping: Mapping,
+        docs_root: &Path,
+        language: Option<&str>,
+    ) -> (SnapshotStatus, SourceFingerprint) {
+        match std::fs::metadata(docs_root) {
+            Ok(metadata) if metadata.is_dir() => {}
+            Ok(_) => return (SnapshotStatus::Unavailable, self.clone()),
+            Err(error) => {
+                if error.kind() != std::io::ErrorKind::NotFound {
+                    crate::note(&format!(
+                        "artwork pack {}: could not be checked: {error}",
+                        docs_root.display()
+                    ));
+                }
+                return (SnapshotStatus::Unavailable, self.clone());
+            }
+        }
+        let same_layout = self.0.len() == mapping.folders.len()
+            && self
+                .0
+                .iter()
+                .zip(mapping.folders)
+                .all(|((recorded, _), current)| recorded == current);
+        if !same_layout {
+            return match known_tables_fingerprint(mapping, docs_root, language) {
+                Ok(refreshed) => (SnapshotStatus::Changed, refreshed),
+                Err(error) => {
+                    crate::note(&format!("artwork pack {}: {error}", docs_root.display()));
+                    (SnapshotStatus::Unavailable, self.clone())
+                }
+            };
+        }
+        let mut status = SnapshotStatus::Current;
+        let mut refreshed = Vec::with_capacity(self.0.len());
+        for (index, ((folder, recorded), current_folder)) in
+            self.0.iter().zip(mapping.folders).enumerate()
+        {
+            let artwork = docs_root.join(current_folder).join("Artwork");
+            let now = match refreshed_fingerprint(&artwork, recorded.as_ref(), language) {
+                Ok(now) => now,
+                Err(error) => {
+                    crate::note(&format!("artwork pack {}: {error}", artwork.display()));
+                    return (SnapshotStatus::Unavailable, self.clone());
+                }
+            };
+            match (recorded, &now) {
+                (None, None) => {}
+                (None, Some(_)) => status = SnapshotStatus::Changed,
+                (Some(_), None) if index == 0 => {
+                    return (SnapshotStatus::Unavailable, self.clone());
+                }
+                (Some(_), None) => status = SnapshotStatus::Changed,
+                (Some(recorded), Some(now)) => {
+                    if recorded.tables != now.tables {
+                        status = SnapshotStatus::Changed;
+                    } else if recorded.directory_modified != now.directory_modified
+                        && status == SnapshotStatus::Current
+                    {
+                        status = SnapshotStatus::ImagesOnly;
+                    }
+                }
+            }
+            refreshed.push((folder.clone(), now));
+        }
+        (status, SourceFingerprint(refreshed))
+    }
+}
+
+/// The entry check for one system: see [`SourceFingerprint::status`]. A
+/// system without a Pack mapping has no signature to check against. The
+/// language is the one whose synopsis table is looked for by name.
+pub(crate) fn snapshot_status(
+    system_id: &str,
+    signature: &SourceFingerprint,
+    docs_root: &Path,
+    language: Option<&str>,
+) -> (SnapshotStatus, SourceFingerprint) {
+    match mapping(system_id) {
+        Some(mapping) => signature.status(mapping, docs_root, language),
+        None => (SnapshotStatus::Changed, signature.clone()),
+    }
+}
+
+/// The signature of a Pack nobody has read yet: the fixed table names and
+/// each mapped Artwork directory's mtime, without listing it. What a
+/// declined offer is remembered by, so the same unchanged Pack is not
+/// offered again while a changed one is.
+fn known_tables_fingerprint(
+    mapping: Mapping,
+    docs_root: &Path,
+    language: Option<&str>,
+) -> Result<SourceFingerprint> {
+    let mut directories = Vec::with_capacity(mapping.folders.len());
+    for folder in mapping.folders {
+        let artwork = docs_root.join(folder).join("Artwork");
+        directories.push((
+            (*folder).to_string(),
+            refreshed_fingerprint(&artwork, None, language)?,
+        ));
+    }
+    Ok(SourceFingerprint(directories))
+}
+
+/// The same for a system id, for callers outside this module.
+pub(crate) fn known_tables_signature(
+    system_id: &str,
+    docs_root: &Path,
+    language: Option<&str>,
+) -> Result<SourceFingerprint> {
+    let mapping = mapping(system_id).ok_or_else(|| {
+        DegaussError::unsupported(
+            "Artwork Pack",
+            format!("{system_id} has no Artwork Pack mapping"),
+        )
+    })?;
+    known_tables_fingerprint(mapping, docs_root, language)
+}
+
+/// The fixed table names, stat'd whether or not they were there last
+/// time: the three every Pack has, and the synopsis tables the
+/// preparation reads first, the preferred language's and English's. A
+/// synopsis in another language added later is not seen by name; Rebuild
+/// This System List reads the directory.
+fn fixed_table_names(language: Option<&str>) -> Vec<String> {
+    let mut names: Vec<String> = ["index.tsv", "gameinfo.tsv", "manifest.tsv"]
+        .into_iter()
+        .map(str::to_string)
+        .collect();
+    for language in normalized_language(language)
+        .into_iter()
+        .chain(std::iter::once("en".to_string()))
+    {
+        let name = format!("synopsis_{language}.tsv");
+        if !names.iter().any(|known| known.eq_ignore_ascii_case(&name)) {
+            names.push(name);
+        }
+    }
+    names
+}
+
+/// One Artwork directory seen through known names only: the tables written
+/// down last time plus the fixed names, each stat'd, the manifest hashed
+/// when its stats or the directory's moved, or when nothing was written
+/// down. `None` when the directory is not there; an error when it or a
+/// table cannot be looked at.
+fn refreshed_fingerprint(
+    artwork: &Path,
+    recorded: Option<&Fingerprint>,
+    language: Option<&str>,
+) -> Result<Option<Fingerprint>> {
+    let directory = match std::fs::metadata(artwork) {
+        Ok(metadata) if metadata.is_dir() => metadata,
+        Ok(_) => return Ok(None),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(DegaussError::io(
+                "reading Artwork Pack directory",
+                artwork,
+                error,
+            ))
+        }
+    };
+    let mut names: Vec<String> = recorded
+        .map(|recorded| {
+            recorded
+                .tables
+                .iter()
+                .map(|(name, _, _, _)| name.clone())
+                .collect()
+        })
+        .unwrap_or_default();
+    for fixed in fixed_table_names(language) {
+        if !names.iter().any(|name| name.eq_ignore_ascii_case(&fixed)) {
+            names.push(fixed);
+        }
+    }
+    let mut tables = Vec::with_capacity(names.len());
+    for name in names {
+        let path = artwork.join(&name);
+        let metadata = match std::fs::metadata(&path) {
+            Ok(metadata) if metadata.is_file() => metadata,
+            Ok(_) => continue,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => {
+                return Err(DegaussError::io("reading Artwork Pack table", &path, error));
+            }
+        };
+        // The manifest is hashed when something moved: the directory (an
+        // entry replaced, added or removed) or the manifest's own size or
+        // mtime. Neither moved: the checksum written down last time is
+        // the file's, and the file is not read again at every entry, on
+        // the interface thread, for a Pack of thousands of images. A
+        // manifest past the table limit is recorded without a content
+        // identity, which reads as changed against one recorded with it;
+        // one that cannot be read is an error, not a change.
+        let content_crc32 = if name.eq_ignore_ascii_case("manifest.tsv") {
+            let unmoved = recorded
+                .filter(|recorded| recorded.directory_modified == modified_nanos(&directory))
+                .and_then(|recorded| {
+                    recorded.tables.iter().find(|(known, size, modified, _)| {
+                        known.eq_ignore_ascii_case(&name)
+                            && *size == metadata.len()
+                            && *modified == modified_nanos(&metadata)
+                    })
+                });
+            match unmoved {
+                Some((_, _, _, content_crc32)) => *content_crc32,
+                None if metadata.len() <= MAX_TSV_BYTES => {
+                    file_crc32_controlled(&path, &AtomicBool::new(false))?
+                }
+                None => None,
+            }
+        } else {
+            None
+        };
+        tables.push((
+            name,
+            metadata.len(),
+            modified_nanos(&metadata),
+            content_crc32,
+        ));
+    }
+    tables.sort();
+    Ok(Some(Fingerprint {
+        directory_modified: modified_nanos(&directory),
+        tables,
+    }))
 }
 
 impl Fingerprint {
@@ -1531,7 +1999,9 @@ fn recognized_table_file(name: &str) -> bool {
     ) || (lower.starts_with("synopsis_") && lower.ends_with(".tsv"))
 }
 
-fn normalized_language(language: Option<&str>) -> Option<String> {
+/// The synopsis language as the tables are read for it: trimmed, lower
+/// case, and nothing when nothing was set.
+pub(crate) fn normalized_language(language: Option<&str>) -> Option<String> {
     language
         .map(str::trim)
         .filter(|language| !language.is_empty())
@@ -2651,6 +3121,17 @@ fn xml_text_from_reader<R: BufRead>(
         }
         match reader.read_event_into(&mut buffer) {
             Err(_) if cancelled.load(Ordering::Relaxed) => return Ok(None),
+            // A file that cannot be read is not a malformed one: the
+            // operating system's refusal is kept as such. The metadata
+            // bound above is raised as an `Other` error and stays a
+            // malformed document.
+            Err(quick_xml::Error::Io(error)) if error.kind() != std::io::ErrorKind::Other => {
+                return Err(DegaussError::io(
+                    "reading game descriptor",
+                    path,
+                    std::io::Error::new(error.kind(), error.to_string()),
+                ));
+            }
             Err(error) => {
                 return Err(DegaussError::malformed(
                     "game descriptor",
@@ -3172,6 +3653,31 @@ mod tests {
         std::fs::remove_dir_all(root).ok();
     }
 
+    /// The Pack read from a listed root covers every mapped folder under
+    /// it, so an in-mount `docs` whose mapped Artwork directory links out
+    /// of the mount is passed over like a linked `docs`: the list must not
+    /// offer a root that reads another location's Pack.
+    #[cfg(unix)]
+    #[test]
+    fn discovery_rejects_a_mapped_artwork_symlink_outside_its_mount() {
+        use std::os::unix::fs::symlink;
+
+        let root = temp("discover-artwork-symlink-escape");
+        let mount = root.join("mount");
+        let outside = root.join("outside/docs/SuperGrafx/Artwork");
+        let games = mount.join("games");
+        std::fs::create_dir_all(&games).unwrap();
+        std::fs::create_dir_all(mount.join("docs/SuperGrafx")).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        symlink(&outside, mount.join("docs/SuperGrafx/Artwork")).unwrap();
+
+        assert!(
+            discover_candidate_roots("SuperGrafx", &[games.to_string_lossy().into_owned()])
+                .is_empty()
+        );
+        std::fs::remove_dir_all(root).ok();
+    }
+
     #[test]
     fn archive_identity_uses_central_directory_crc_and_size() {
         let archive = temp("zip").join("games.zip");
@@ -3326,7 +3832,8 @@ mod tests {
                     &cache,
                     &crate::cache::ContentFingerprints::new(),
                     &crate::mgl::Homes::default(),
-                    &AtomicBool::new(false)
+                    &AtomicBool::new(false),
+                    &mut SkippedEntries::new(),
                 )
                 .unwrap(),
             Some(1)
@@ -3908,6 +4415,7 @@ mod tests {
                     true,
                     &crate::mgl::Homes::default(),
                     &cancelled,
+                    &mut SkippedEntries::new(),
                 )
                 .unwrap(),
             Some(true)
@@ -3934,6 +4442,7 @@ mod tests {
                     true,
                     &crate::mgl::Homes::default(),
                     &cancelled,
+                    &mut SkippedEntries::new(),
                 )
                 .unwrap(),
             Some(false),
@@ -4038,6 +4547,7 @@ mod tests {
                 &crate::cache::ContentFingerprints::new(),
                 &crate::mgl::Homes::default(),
                 &AtomicBool::new(false),
+                &mut SkippedEntries::new(),
             )
             .unwrap()
             .expect("provider preparation completes");
@@ -4578,7 +5088,13 @@ mod tests {
         let cache = one_row_cache(mgl_row(&mgl));
         let cancelled = AtomicBool::new(false);
         let fingerprints = provider
-            .fingerprints_for_cache(&cache, &homes, &cancelled, &mut |_, _| {})
+            .fingerprints_for_cache(
+                &cache,
+                &homes,
+                &cancelled,
+                &mut |_, _| {},
+                &mut SkippedEntries::new(),
+            )
             .unwrap()
             .unwrap();
         assert!(
@@ -4587,7 +5103,13 @@ mod tests {
         );
         assert_eq!(
             provider
-                .prepare_for_cache(&cache, &fingerprints, &homes, &cancelled)
+                .prepare_for_cache(
+                    &cache,
+                    &fingerprints,
+                    &homes,
+                    &cancelled,
+                    &mut SkippedEntries::new()
+                )
                 .unwrap(),
             Some(1)
         );
@@ -4738,5 +5260,937 @@ mod tests {
             .to_string()
             .contains("redirect chain exceeds 8 files"));
         std::fs::remove_dir_all(dir).ok();
+    }
+
+    /// A prepared system's entry check, by stats alone: an image added is
+    /// only an image, a table edited is a change, a table that appears
+    /// under one of the fixed names is a change even though it was never
+    /// recorded, a folder that comes or goes is a change, and a Pack that
+    /// is not there is unavailable. The Artwork directory is made
+    /// unlistable to prove none of it lists the images: on the device
+    /// that directory holds thousands of them.
+    #[cfg(unix)]
+    #[test]
+    fn snapshot_status_tells_current_images_only_changed_and_unavailable_apart_without_listing_images(
+    ) {
+        use std::os::unix::fs::PermissionsExt;
+        let (root, art) = pack("snapshot-status");
+        ready_tables(&art, "", "");
+        let provider = Provider::load("SuperGrafx", &root, Some("en"));
+        let signature = provider
+            .snapshot()
+            .cloned()
+            .expect("a whole read has a signature");
+
+        let original_mode = std::fs::metadata(&art).unwrap().permissions().mode();
+        std::fs::set_permissions(&art, std::fs::Permissions::from_mode(0o111)).unwrap();
+        let (status, refreshed) = snapshot_status("SuperGrafx", &signature, &root, None);
+        std::fs::set_permissions(&art, std::fs::Permissions::from_mode(original_mode)).unwrap();
+        assert_eq!(status, SnapshotStatus::Current);
+        assert_eq!(
+            refreshed, signature,
+            "an unchanged source is returned as recorded"
+        );
+
+        // Unchanged, the manifest is stat'd and not read: the check runs
+        // on the interface thread at every entry, and the manifest grows
+        // with the Pack. A manifest that cannot be read is an error when
+        // it is read, so a Current answer with it unreadable proves the
+        // read did not happen.
+        let manifest = art.join("manifest.tsv");
+        let manifest_mode = std::fs::metadata(&manifest).unwrap().permissions().mode();
+        std::fs::set_permissions(&manifest, std::fs::Permissions::from_mode(0o000)).unwrap();
+        assert_eq!(
+            snapshot_status("SuperGrafx", &signature, &root, None).0,
+            SnapshotStatus::Current,
+            "the manifest is not read when nothing moved"
+        );
+        std::fs::write(art.join("Another.jpg"), b"jpeg").unwrap();
+        assert_eq!(
+            snapshot_status("SuperGrafx", &signature, &root, None).0,
+            SnapshotStatus::Unavailable,
+            "the directory moved, so the manifest is read, and it cannot be"
+        );
+        std::fs::set_permissions(&manifest, std::fs::Permissions::from_mode(manifest_mode))
+            .unwrap();
+        let (status, refreshed) = snapshot_status("SuperGrafx", &signature, &root, None);
+        assert_eq!(
+            status,
+            SnapshotStatus::ImagesOnly,
+            "a new image moves the directory and nothing else"
+        );
+        assert_ne!(refreshed, signature);
+        assert_eq!(
+            snapshot_status("SuperGrafx", &refreshed, &root, None).0,
+            SnapshotStatus::Current,
+            "the refreshed signature is the new baseline"
+        );
+
+        std::fs::write(
+            art.join("gameinfo.tsv"),
+            "#key\tname\tyear\tgenre\tdeveloper\tplayers\nChosen Game (USA)\tRenamed\t1991\tAction\tStudio\t1\n",
+        )
+        .unwrap();
+        assert_eq!(
+            snapshot_status("SuperGrafx", &refreshed, &root, None).0,
+            SnapshotStatus::Changed,
+            "an edited table changes what the rows would say"
+        );
+
+        std::fs::rename(&root, root.with_extension("away")).unwrap();
+        assert_eq!(
+            snapshot_status("SuperGrafx", &refreshed, &root, None).0,
+            SnapshotStatus::Unavailable,
+            "a docs root that is gone is not an unchanged Pack"
+        );
+        std::fs::rename(root.with_extension("away"), &root).unwrap();
+        std::fs::remove_dir_all(root.parent().unwrap()).ok();
+
+        // A pack read without an index: the index that appears later is
+        // seen through its fixed name, never having been recorded.
+        let (root, art) = pack("snapshot-added-table");
+        let provider = Provider::load("SuperGrafx", &root, None);
+        let signature = provider.snapshot().cloned().unwrap();
+        assert!(!signature.0[0]
+            .1
+            .as_ref()
+            .unwrap()
+            .tables
+            .iter()
+            .any(|(name, _, _, _)| name == "index.tsv"));
+        std::fs::write(art.join("index.tsv"), "#name\tcrc\tsize\tkey\n").unwrap();
+        assert_eq!(
+            snapshot_status("SuperGrafx", &signature, &root, None).0,
+            SnapshotStatus::Changed
+        );
+        std::fs::remove_dir_all(root.parent().unwrap()).ok();
+
+        // Two mapped folders: the second coming or going is a change, the
+        // first going is the Pack being unavailable.
+        let docs = temp("snapshot-folders").join("docs");
+        ready_directory(&docs, "SNES", "Game", "Game", "Title");
+        let provider = Provider::load("SNES", &docs, None);
+        let signature = provider.snapshot().cloned().unwrap();
+        assert_eq!(signature.0.len(), 2);
+        assert!(signature.0[1].1.is_none(), "Satellaview is not installed");
+        assert_eq!(
+            snapshot_status("SNES", &signature, &docs, None).0,
+            SnapshotStatus::Current
+        );
+        ready_directory(&docs, "Satellaview", "Other", "Other", "Other Title");
+        assert_eq!(
+            snapshot_status("SNES", &signature, &docs, None).0,
+            SnapshotStatus::Changed,
+            "a mapped folder that appeared changes the catalogue"
+        );
+        let provider = Provider::load("SNES", &docs, None);
+        let both = provider.snapshot().cloned().unwrap();
+        std::fs::remove_dir_all(docs.join("Satellaview")).unwrap();
+        assert_eq!(
+            snapshot_status("SNES", &both, &docs, None).0,
+            SnapshotStatus::Changed,
+            "a secondary folder that is gone is a change, not an outage"
+        );
+        std::fs::remove_dir_all(docs.join("SNES")).unwrap();
+        assert_eq!(
+            snapshot_status("SNES", &both, &docs, None).0,
+            SnapshotStatus::Unavailable,
+            "the primary folder gone is the Pack gone"
+        );
+        std::fs::remove_dir_all(docs.parent().unwrap()).ok();
+    }
+
+    /// The signature a declined Pack is remembered by is taken without
+    /// reading the Pack: the fixed table names and the directory, stat'd,
+    /// and the manifest hashed. It still tells an edited manifest from
+    /// the one that was declined, so a changed Pack is offered again.
+    #[cfg(unix)]
+    #[test]
+    fn known_tables_signature_never_lists_the_directory_and_notices_a_manifest_edit() {
+        use std::os::unix::fs::PermissionsExt;
+        let (root, art) = pack("known-tables");
+        ready_tables(&art, "", "");
+        let original_mode = std::fs::metadata(&art).unwrap().permissions().mode();
+        std::fs::set_permissions(&art, std::fs::Permissions::from_mode(0o111)).unwrap();
+        let signature = known_tables_signature("SuperGrafx", &root, None);
+        std::fs::set_permissions(&art, std::fs::Permissions::from_mode(original_mode)).unwrap();
+        let signature = signature.expect("known names are stat'd through an unlistable directory");
+        let recorded = signature.0[0].1.as_ref().unwrap();
+        assert_eq!(recorded.tables.len(), 3, "{:?}", recorded.tables);
+        assert!(recorded
+            .tables
+            .iter()
+            .any(|(name, _, _, crc)| name == "manifest.tsv" && crc.is_some()));
+        assert_eq!(
+            snapshot_status("SuperGrafx", &signature, &root, None).0,
+            SnapshotStatus::Current
+        );
+
+        std::fs::write(
+            art.join("manifest.tsv"),
+            "#key\tstyle\tss_system_id\nChosen Game (USA)\tbox-3D\t105\n",
+        )
+        .unwrap();
+        assert_eq!(
+            snapshot_status("SuperGrafx", &signature, &root, None).0,
+            SnapshotStatus::Changed,
+            "the Pack the user declined is not the Pack that is there now"
+        );
+        assert!(
+            known_tables_signature("Unknown", &root, None).is_err(),
+            "a system without a mapping has no Pack to sign"
+        );
+
+        // The synopsis tables the preparation reads first are seen by
+        // name too: one appearing for the preferred language, or for
+        // English, is a change to what the rows would say.
+        let signature = known_tables_signature("SuperGrafx", &root, Some("It")).unwrap();
+        assert_eq!(
+            snapshot_status("SuperGrafx", &signature, &root, Some("it")).0,
+            SnapshotStatus::Current
+        );
+        std::fs::write(art.join("synopsis_it.tsv"), "#key\tsynopsis\n").unwrap();
+        assert_eq!(
+            snapshot_status("SuperGrafx", &signature, &root, Some("it")).0,
+            SnapshotStatus::Changed,
+            "a synopsis in the preferred language added later is a changed Pack"
+        );
+        let signature = known_tables_signature("SuperGrafx", &root, Some("it")).unwrap();
+        std::fs::write(art.join("synopsis_en.tsv"), "#key\tsynopsis\n").unwrap();
+        assert_eq!(
+            snapshot_status("SuperGrafx", &signature, &root, Some("it")).0,
+            SnapshotStatus::Changed,
+            "the English fallback is looked for as well"
+        );
+        std::fs::remove_dir_all(root.parent().unwrap()).ok();
+    }
+
+    /// What a worker prepared can be written down and read back as the
+    /// provider the interface holds: the same rows are drawn, the source
+    /// check works on the restored signature, and the health identity
+    /// the acknowledged warnings are keyed by does not move.
+    #[test]
+    fn prepared_state_round_trips_and_keeps_the_health_digest() {
+        let (root, art) = pack("prepared-state");
+        ready_tables(
+            &art,
+            "Known\t\t\tChosen Game (USA)\n",
+            "Chosen Game (USA)\tPack Title\t1990\tTest\tStudio\t1\n",
+        );
+        // Incomplete on purpose: the digest of a degraded pack is what the
+        // acknowledgement file remembers.
+        std::fs::write(
+            art.join("manifest.tsv"),
+            "#key\tstyle\tss_system_id\nChosen Game (USA)\tbox-2D\t105\nMissing\tbox-2D\t105\n",
+        )
+        .unwrap();
+        let games = temp("prepared-state-games");
+        let rom = games.join("Known.pce");
+        std::fs::write(&rom, b"rom").unwrap();
+        let mut row = mgl_row(&rom);
+        row.name = "Known".into();
+        let cache = one_row_cache(row);
+        let mut provider = Provider::load("SuperGrafx", &root, Some("EN"));
+        assert_eq!(provider.health, ProviderHealth::Degraded);
+        let homes = crate::mgl::Homes::default();
+        let cancelled = AtomicBool::new(false);
+        let fingerprints = provider
+            .fingerprints_for_cache(
+                &cache,
+                &homes,
+                &cancelled,
+                &mut |_, _| {},
+                &mut SkippedEntries::new(),
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            provider
+                .prepare_for_cache(
+                    &cache,
+                    &fingerprints,
+                    &homes,
+                    &cancelled,
+                    &mut SkippedEntries::new()
+                )
+                .unwrap(),
+            Some(1)
+        );
+        let store = temp("prepared-state-store");
+        let state = crate::cache::PackSourceState {
+            accepted: Some(crate::cache::AcceptedSource {
+                docs_root: root.to_string_lossy().into_owned(),
+                language: provider.synopsis_language().map(str::to_string),
+                signature: provider.snapshot().cloned(),
+                cache_marker: 7,
+                health: provider.health,
+                diagnostics: provider.diagnostics.clone(),
+                skipped_entries: 0,
+            }),
+            declined: None,
+        };
+        crate::cache::save_pack_state(
+            &store,
+            "SuperGrafx",
+            &state,
+            provider.prepared_map().unwrap(),
+        )
+        .unwrap();
+        let read = crate::cache::load_pack_source_state(&store, "SuperGrafx")
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            read, state,
+            "the u128 fields of the signature survive the file"
+        );
+        let accepted = read.accepted.unwrap();
+        let restored = Provider::from_prepared_state(
+            "SuperGrafx",
+            &root,
+            accepted.language.as_deref(),
+            accepted.health,
+            accepted.diagnostics,
+            accepted.signature,
+            crate::cache::load_pack_prepared_map(&store, "SuperGrafx")
+                .unwrap()
+                .unwrap(),
+        );
+        assert_eq!(
+            restored.health_digest(),
+            provider.health_digest(),
+            "the acknowledgement key must not move between a worker's provider and the restored one"
+        );
+        assert!(restored.still_current(&root, Some("en")));
+        assert!(
+            !restored.catalogue_available(),
+            "nothing restored is a parsed table"
+        );
+        let mut from_worker = cache.folders["root"].rows.clone();
+        let mut from_state = from_worker.clone();
+        assert_eq!(provider.apply_prepared(&mut from_worker), 1);
+        assert_eq!(restored.apply_prepared(&mut from_state), 1);
+        assert_eq!(from_worker, from_state);
+        assert_eq!(from_state[0].name, "Pack Title");
+        std::fs::remove_dir_all(root.parent().unwrap()).ok();
+        std::fs::remove_dir_all(games).ok();
+        std::fs::remove_dir_all(store).ok();
+    }
+
+    /// The category a row failure is reported under follows the shape of
+    /// the error, never its text, so a later change of wording cannot turn
+    /// a whole-system fault into a skipped row: only the poisoned archive
+    /// lock, which is the process's, stays a failure.
+    #[test]
+    fn entry_failure_categories_follow_the_error_shape_not_its_text() {
+        let not_found = |what| {
+            DegaussError::io(
+                what,
+                "/gone",
+                std::io::Error::new(std::io::ErrorKind::NotFound, "gone"),
+            )
+        };
+        let denied = |what| {
+            DegaussError::io(
+                what,
+                "/sealed",
+                std::io::Error::new(std::io::ErrorKind::PermissionDenied, "sealed"),
+            )
+        };
+        assert_eq!(
+            entry_failure(&not_found("opening game descriptor")),
+            Some("missing file")
+        );
+        assert_eq!(
+            entry_failure(&not_found("MGL component")),
+            Some("missing file"),
+            "a set whose payload is not under its home"
+        );
+        assert_eq!(
+            entry_failure(&not_found("favourite MGL")),
+            Some("missing file")
+        );
+        assert_eq!(
+            entry_failure(&denied("opening game descriptor")),
+            Some("inaccessible file")
+        );
+        assert_eq!(
+            entry_failure(&DegaussError::io(
+                "favourite MGL",
+                "/bad",
+                std::io::Error::new(std::io::ErrorKind::InvalidData, "not UTF-8"),
+            )),
+            Some("inaccessible file")
+        );
+        for code in [
+            libc::EMFILE,
+            libc::ENFILE,
+            libc::ENOMEM,
+            libc::EIO,
+            libc::ENODEV,
+            libc::ENXIO,
+        ] {
+            assert_eq!(
+                entry_failure(&DegaussError::io(
+                    "opening game descriptor",
+                    "/any",
+                    std::io::Error::from_raw_os_error(code),
+                )),
+                None,
+                "code {code} is the process's or the storage's, not the row's"
+            );
+        }
+        assert_eq!(
+            entry_failure(&DegaussError::io(
+                "opening game descriptor",
+                "/sealed",
+                std::io::Error::from_raw_os_error(libc::EACCES),
+            )),
+            Some("inaccessible file"),
+            "a permission is the path's"
+        );
+        assert_eq!(
+            entry_failure(&DegaussError::io(
+                "opening game descriptor",
+                "/file/child",
+                std::io::Error::from_raw_os_error(libc::ENOTDIR),
+            )),
+            Some("inaccessible file"),
+            "a component that is not a directory is the path's"
+        );
+        assert_eq!(
+            entry_failure(&DegaussError::malformed(
+                "Artwork Pack identity MGL",
+                "/loop.mgl",
+                "redirect chain contains a cycle",
+            )),
+            Some("invalid redirect chain")
+        );
+        assert_eq!(
+            entry_failure(&DegaussError::malformed("game descriptor", "/x.mra", "bad")),
+            Some("malformed descriptor")
+        );
+        assert_eq!(
+            entry_failure(&DegaussError::malformed("favourite MGL", "/x.mgl", "bad")),
+            Some("malformed descriptor")
+        );
+        assert_eq!(
+            entry_failure(&DegaussError::malformed(
+                "MGL descriptor",
+                "/x.mgl",
+                "component bare.rom is not absolute and the descriptor names no core",
+            )),
+            Some("malformed descriptor")
+        );
+        assert_eq!(
+            entry_failure(&DegaussError::unsupported(
+                "MGL component",
+                "Twice.nes exists in each of a, b",
+            )),
+            Some("ambiguous descriptor")
+        );
+        assert_eq!(
+            entry_failure(&DegaussError::unsupported("favourite MGL", "too large")),
+            Some("unsupported file")
+        );
+        assert_eq!(
+            entry_failure(&DegaussError::unsupported(
+                "Artwork Pack identity",
+                "not UTF-8"
+            )),
+            Some("unsupported file")
+        );
+        assert_eq!(
+            entry_failure(&DegaussError::unsupported(
+                "Artwork Pack fingerprint",
+                "changed while its CRC was calculated",
+            )),
+            Some("unsupported file")
+        );
+        assert_eq!(
+            entry_failure(&DegaussError::unsupported(
+                "archive lookup",
+                "archive cache lock was poisoned",
+            )),
+            None,
+            "a poisoned lock is the process's fault, not a row's"
+        );
+    }
+
+    /// One arcade folder holding a healthy descriptor and one of every
+    /// broken kind: the healthy one is prepared, each broken one is
+    /// written down under its kind with its own path, and none of them
+    /// costs the folder its Pack. Before, the first broken file failed
+    /// the whole system's preparation.
+    #[cfg(unix)]
+    #[test]
+    fn a_broken_descriptor_is_skipped_and_its_healthy_neighbours_are_prepared() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = temp("skipped-entries");
+        let arcade = root.join("_Arcade");
+        std::fs::create_dir_all(&arcade).unwrap();
+        let docs = root.join("docs");
+        ready_directory(&docs, "Arcade", "healthy", "healthy", "Healthy Title");
+        let healthy = arcade.join("Healthy.mra");
+        std::fs::write(
+            &healthy,
+            "<misterromdescription><setname>healthy</setname></misterromdescription>",
+        )
+        .unwrap();
+        let missing = arcade.join("Missing.mra");
+        let dangling = arcade.join("Dangling.mra");
+        std::os::unix::fs::symlink(root.join("gone.mra"), &dangling).unwrap();
+        let locked = arcade.join("Locked.mra");
+        std::fs::create_dir(&locked).unwrap();
+        let sealed = arcade.join("Sealed.mra");
+        std::fs::write(
+            &sealed,
+            "<misterromdescription><setname>sealed</setname></misterromdescription>",
+        )
+        .unwrap();
+        std::fs::set_permissions(&sealed, std::fs::Permissions::from_mode(0o000)).unwrap();
+        let broken = arcade.join("Broken.mra");
+        std::fs::write(&broken, "<misterromdescription><rom></wrong>").unwrap();
+        let cycle = arcade.join("Cycle.mgl");
+        std::fs::write(
+            &cycle,
+            format!(
+                "<mistergamedescription><file path=\"{}\"/></mistergamedescription>",
+                cycle.display()
+            ),
+        )
+        .unwrap();
+        let chain: Vec<PathBuf> = (0..=MAX_MGL_REDIRECTS)
+            .map(|index| arcade.join(format!("Chain-{index}.mgl")))
+            .collect();
+        for (index, mgl) in chain.iter().enumerate() {
+            let target = chain.get(index + 1).unwrap_or(&healthy);
+            std::fs::write(
+                mgl,
+                format!(
+                    "<mistergamedescription><file path=\"{}\"/></mistergamedescription>",
+                    target.display()
+                ),
+            )
+            .unwrap();
+        }
+        let gone = arcade.join("Gone.mgl");
+        std::fs::write(
+            &gone,
+            format!(
+                "<mistergamedescription><file path=\"{}\"/></mistergamedescription>",
+                root.join("nowhere.rom").display()
+            ),
+        )
+        .unwrap();
+        let bare = arcade.join("Bare.mgl");
+        std::fs::write(
+            &bare,
+            "<mistergamedescription><file path=\"bare.rom\"/></mistergamedescription>",
+        )
+        .unwrap();
+        // A console descriptor whose bare name sits in two of its
+        // system's folders: MiSTer would load one of them by its own
+        // order, and which one is not for the Pack to guess.
+        let nes = root.join("games/NES");
+        let famicom = root.join("games/Famicom");
+        for folder in [&nes, &famicom] {
+            std::fs::create_dir_all(folder).unwrap();
+            std::fs::write(folder.join("Twice.nes"), b"a build").unwrap();
+        }
+        let twice = arcade.join("Twice.mgl");
+        std::fs::write(
+            &twice,
+            "<mistergamedescription><rbf>_Console/NES</rbf><file delay=\"1\" type=\"f\" index=\"1\" path=\"Twice.nes\"/></mistergamedescription>",
+        )
+        .unwrap();
+        let homes = crate::mgl::Homes::new(
+            &[root.join("games").to_string_lossy().into_owned()],
+            &[
+                table_system("Arcade", "", std::slice::from_ref(&arcade)),
+                table_system("NES", "_Console/NES", &[nes.clone(), famicom.clone()]),
+            ],
+        );
+        let rows: Vec<Row> = [
+            &healthy, &missing, &dangling, &locked, &sealed, &broken, &cycle, &chain[0], &gone,
+            &bare, &twice,
+        ]
+        .into_iter()
+        .map(|path| mgl_row(path))
+        .collect();
+        let cache = crate::cache::SystemCache {
+            format: 0,
+            folders: BTreeMap::from([(
+                "root".into(),
+                crate::cache::Folder {
+                    mtime: 0,
+                    games: rows.len(),
+                    rows,
+                },
+            )]),
+        };
+        let mut provider = Provider::load("Arcade", &docs, None);
+        assert_eq!(provider.health, ProviderHealth::Ready);
+        let cancelled = AtomicBool::new(false);
+        let mut skipped = SkippedEntries::new();
+        let fingerprints = provider
+            .fingerprints_for_cache(&cache, &homes, &cancelled, &mut |_, _| {}, &mut skipped)
+            .unwrap()
+            .expect("the fingerprint walk finishes past every broken row");
+        assert!(fingerprints.is_empty());
+        assert_eq!(
+            provider
+                .prepare_for_cache(&cache, &fingerprints, &homes, &cancelled, &mut skipped)
+                .unwrap(),
+            Some(1),
+            "the healthy descriptor is prepared; the rest are left as they are"
+        );
+        assert_eq!(
+            provider.apply_prepared(&mut cache.folders["root"].rows.clone()),
+            1
+        );
+        let category = |path: &Path| {
+            skipped
+                .get(&Launch::File(path.to_path_buf()))
+                .map(|entry| entry.category)
+        };
+        assert_eq!(category(&healthy), None);
+        assert_eq!(category(&missing), Some("missing file"));
+        assert_eq!(category(&dangling), Some("missing file"));
+        assert_eq!(category(&locked), Some("inaccessible file"));
+        let running_as_root = std::fs::read(&sealed).is_ok();
+        if running_as_root {
+            assert_eq!(
+                category(&sealed),
+                None,
+                "a file mode does not seal a file from root; the directory case above covers inaccessible"
+            );
+        } else {
+            assert_eq!(category(&sealed), Some("inaccessible file"));
+        }
+        assert_eq!(category(&broken), Some("malformed descriptor"));
+        assert_eq!(category(&cycle), Some("invalid redirect chain"));
+        assert_eq!(category(&chain[0]), Some("invalid redirect chain"));
+        assert_eq!(
+            category(&gone),
+            Some("missing file"),
+            "a descriptor whose game is gone is skipped at the game's path"
+        );
+        assert_eq!(category(&bare), Some("malformed descriptor"));
+        assert_eq!(category(&twice), Some("ambiguous descriptor"));
+        let twice_detail = &skipped[&Launch::File(twice.clone())].detail;
+        assert!(
+            twice_detail.contains(&nes.join("Twice.nes").display().to_string())
+                && twice_detail.contains(&famicom.join("Twice.nes").display().to_string()),
+            "{twice_detail}"
+        );
+        assert_eq!(skipped[&Launch::File(gone.clone())].path, gone);
+        let summary = skipped_summary("Arcade", &skipped);
+        assert!(
+            summary
+                .iter()
+                .any(|line| line == "Arcade: 3 games left without Pack data: missing file"),
+            "{summary:?}"
+        );
+        assert!(summary
+            .iter()
+            .any(|line| line == "Arcade: 2 games left without Pack data: invalid redirect chain"));
+        assert!(summary
+            .iter()
+            .any(|line| line == "Arcade: 1 game left without Pack data: ambiguous descriptor"));
+        assert!(
+            summary.iter().all(|line| !line.contains('/')),
+            "no path reaches the screen: {summary:?}"
+        );
+        std::fs::set_permissions(&sealed, std::fs::Permissions::from_mode(0o644)).unwrap();
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    /// A row that fails in the fingerprint walk is written down once and
+    /// not opened again by the matching walk: the same preparation found
+    /// it unreadable moments ago. The file is repaired between the walks
+    /// to prove the second one did not look. The validation walk that
+    /// `--report` runs first does open the row again in the fingerprint
+    /// walk, and the log names it once, not once per walk.
+    #[test]
+    fn fingerprints_and_matching_record_a_broken_row_once() {
+        let root = temp("skipped-once");
+        let arcade = root.join("_Arcade");
+        std::fs::create_dir_all(&arcade).unwrap();
+        let docs = root.join("docs");
+        ready_directory(&docs, "Arcade", "fixed", "fixed", "Fixed Title");
+        let repaired = arcade.join("Fixed.mra");
+        std::fs::write(&repaired, "<misterromdescription><rom></wrong>").unwrap();
+        let cache = one_row_cache(mgl_row(&repaired));
+        let mut provider = Provider::load("Arcade", &docs, None);
+        let homes = crate::mgl::Homes::default();
+        let cancelled = AtomicBool::new(false);
+        // The log is shared by every process on the host; only what is
+        // appended from here on is read, and the line counted carries
+        // this fixture's path. A probe line first: a host whose log
+        // cannot be written fails on the probe, not on the count.
+        let log_from = std::fs::metadata(crate::LOG_PATH)
+            .map(|metadata| metadata.len() as usize)
+            .unwrap_or(0);
+        let probe = format!("skipped-once probe at {}", root.display());
+        crate::note(&probe);
+        let log_since = || {
+            let logged = std::fs::read(crate::LOG_PATH).unwrap_or_default();
+            String::from_utf8_lossy(&logged[log_from.min(logged.len())..]).into_owned()
+        };
+        assert_eq!(
+            log_since().matches(&probe).count(),
+            1,
+            "{} must take what note() appends on this host",
+            crate::LOG_PATH
+        );
+        let mut skipped = SkippedEntries::new();
+        assert_eq!(
+            provider
+                .cached_fingerprints_are_current(
+                    &cache,
+                    &crate::cache::ContentFingerprints::new(),
+                    true,
+                    &homes,
+                    &cancelled,
+                    &mut skipped,
+                )
+                .unwrap(),
+            Some(true),
+            "the validation walk passes over the broken row"
+        );
+        assert_eq!(skipped.len(), 1);
+        let fingerprints = provider
+            .fingerprints_for_cache(&cache, &homes, &cancelled, &mut |_, _| {}, &mut skipped)
+            .unwrap()
+            .unwrap();
+        assert_eq!(skipped.len(), 1);
+        let skip_line = format!(
+            "pack entry   {}: skipped: malformed descriptor",
+            repaired.display()
+        );
+        assert_eq!(
+            log_since().matches(&skip_line).count(),
+            1,
+            "the row is named once in the log, not once per walk:\n{}",
+            log_since()
+        );
+        std::fs::write(
+            &repaired,
+            "<misterromdescription><setname>fixed</setname></misterromdescription>",
+        )
+        .unwrap();
+        assert_eq!(
+            provider
+                .prepare_for_cache(&cache, &fingerprints, &homes, &cancelled, &mut skipped)
+                .unwrap(),
+            Some(0),
+            "a row already written down is not read again by the same preparation"
+        );
+        assert_eq!(skipped.len(), 1);
+
+        // The next preparation starts from nothing and finds it repaired.
+        let mut skipped = SkippedEntries::new();
+        assert_eq!(
+            provider
+                .prepare_for_cache(&cache, &fingerprints, &homes, &cancelled, &mut skipped)
+                .unwrap(),
+            Some(1)
+        );
+        assert!(skipped.is_empty());
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    /// A poisoned archive lock is a fault of the process, not of any row:
+    /// it must stop the preparation, not turn into a hundred skipped rows.
+    #[test]
+    fn a_poisoned_archive_lock_is_still_a_failure() {
+        let root = temp("poisoned-lock");
+        let arcade = root.join("_Arcade");
+        std::fs::create_dir_all(&arcade).unwrap();
+        let docs = root.join("docs");
+        ready_directory(&docs, "Arcade", "healthy", "healthy", "Healthy Title");
+        let healthy = arcade.join("Healthy.mra");
+        std::fs::write(
+            &healthy,
+            "<misterromdescription><setname>healthy</setname></misterromdescription>",
+        )
+        .unwrap();
+        let mut provider = Provider::load("Arcade", &docs, None);
+        let lock = Arc::clone(&provider.archive_cache);
+        let _ = std::thread::spawn(move || {
+            let _held = lock.lock().unwrap();
+            panic!("poison the archive lock");
+        })
+        .join();
+        let mut skipped = SkippedEntries::new();
+        let error = provider
+            .prepare_for_cache(
+                &one_row_cache(mgl_row(&healthy)),
+                &crate::cache::ContentFingerprints::new(),
+                &crate::mgl::Homes::default(),
+                &AtomicBool::new(false),
+                &mut skipped,
+            )
+            .unwrap_err();
+        assert!(error.to_string().contains("poisoned"), "{error}");
+        assert!(skipped.is_empty());
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    /// The process out of file descriptors, or the storage answering with
+    /// a device error, fails every row that follows, so the walk must stop
+    /// with the error, as it does for the poisoned lock: written down as a
+    /// skipped row, the preparation would go on to replace a complete
+    /// result with one that matched nothing. A permission is the row's.
+    #[test]
+    fn a_process_or_storage_wide_error_stops_the_walk_instead_of_skipping_the_row() {
+        let launch = Launch::File(PathBuf::from("/library/Game.mra"));
+        let mut skipped = SkippedEntries::new();
+        for code in [libc::EMFILE, libc::EIO] {
+            let error = skip_entry(
+                &mut skipped,
+                &launch,
+                DegaussError::io(
+                    "opening game descriptor",
+                    "/library/Game.mra",
+                    std::io::Error::from_raw_os_error(code),
+                ),
+            )
+            .unwrap_err();
+            assert!(error.to_string().contains("Game.mra"), "{error}");
+            assert!(skipped.is_empty(), "code {code} must not be a skipped row");
+        }
+        skip_entry(
+            &mut skipped,
+            &launch,
+            DegaussError::io(
+                "opening game descriptor",
+                "/library/Game.mra",
+                std::io::Error::from_raw_os_error(libc::EACCES),
+            ),
+        )
+        .unwrap();
+        assert_eq!(
+            skipped.get(&launch).map(|entry| entry.category),
+            Some("inaccessible file")
+        );
+    }
+
+    /// Validating a persisted mapping passes over a row whose descriptor
+    /// broke since: it contributed nothing to the mapping and contributes
+    /// nothing now, and the healthy rows' fingerprints still stand.
+    #[test]
+    fn cached_fingerprint_validation_skips_a_broken_row_instead_of_failing() {
+        let root = temp("validation-skips");
+        let arcade = root.join("_Arcade");
+        std::fs::create_dir_all(&arcade).unwrap();
+        let docs = root.join("docs");
+        ready_directory(&docs, "Arcade", "healthy", "healthy", "Healthy Title");
+        let healthy = arcade.join("Healthy.mra");
+        std::fs::write(
+            &healthy,
+            "<misterromdescription><setname>healthy</setname></misterromdescription>",
+        )
+        .unwrap();
+        let broken = arcade.join("Broken.mra");
+        std::fs::write(&broken, "<misterromdescription><rom></wrong>").unwrap();
+        let mut cache = one_row_cache(mgl_row(&healthy));
+        cache
+            .folders
+            .get_mut("root")
+            .unwrap()
+            .rows
+            .push(mgl_row(&broken));
+        let provider = Provider::load("Arcade", &docs, None);
+        let mut skipped = SkippedEntries::new();
+        assert_eq!(
+            provider
+                .cached_fingerprints_are_current(
+                    &cache,
+                    &crate::cache::ContentFingerprints::new(),
+                    true,
+                    &crate::mgl::Homes::default(),
+                    &AtomicBool::new(false),
+                    &mut skipped,
+                )
+                .unwrap(),
+            Some(true)
+        );
+        assert_eq!(
+            skipped[&Launch::File(broken)].category,
+            "malformed descriptor"
+        );
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    /// The public arcade layout prepared through the shared resolver: the
+    /// set's bare components live under its core's home, so nothing is
+    /// skipped and the set is matched; with one component actually gone
+    /// only that entry is skipped, at the home path and not beside the
+    /// descriptor, and once it is back the entry is matched again.
+    #[test]
+    fn a_home_dir_set_is_matched_and_only_a_removed_component_is_skipped() {
+        let root = temp("home-dir-set");
+        let (mgl, home, homes) = arcade_fixture(&root);
+        let docs = root.join("docs");
+        ready_directory(&docs, "Arcade", "Battletoads", "Battletoads", "Pack Title");
+        let healthy = root.join("_Arcade/Healthy.mra");
+        std::fs::write(
+            &healthy,
+            "<misterromdescription><setname>healthy</setname></misterromdescription>",
+        )
+        .unwrap();
+        let mut cache = one_row_cache(mgl_row(&mgl));
+        cache
+            .folders
+            .get_mut("root")
+            .unwrap()
+            .rows
+            .push(mgl_row(&healthy));
+        let cancelled = AtomicBool::new(false);
+        let prepare = |provider: &mut Provider, skipped: &mut SkippedEntries| {
+            let fingerprints = provider
+                .fingerprints_for_cache(&cache, &homes, &cancelled, &mut |_, _| {}, skipped)
+                .unwrap()
+                .unwrap();
+            provider
+                .prepare_for_cache(&cache, &fingerprints, &homes, &cancelled, skipped)
+                .unwrap()
+                .unwrap()
+        };
+        let mut provider = Provider::load("Arcade", &docs, None);
+        let mut skipped = SkippedEntries::new();
+        assert_eq!(prepare(&mut provider, &mut skipped), 1);
+        assert!(
+            skipped.is_empty(),
+            "a component under the home is not a missing one: {skipped:?}"
+        );
+
+        std::fs::remove_file(home.join("btc0-p1.bin")).unwrap();
+        let mut provider = Provider::load("Arcade", &docs, None);
+        let mut skipped = SkippedEntries::new();
+        assert_eq!(prepare(&mut provider, &mut skipped), 0);
+        let entry = &skipped[&Launch::File(mgl.clone())];
+        assert_eq!(entry.category, "missing file");
+        assert!(
+            entry
+                .detail
+                .contains(&home.join("btc0-p1.bin").display().to_string()),
+            "{}",
+            entry.detail
+        );
+        assert!(
+            !entry.detail.contains("_Arcade/btc0"),
+            "the folder beside the descriptor is never named: {}",
+            entry.detail
+        );
+        assert_eq!(skipped.len(), 1, "the healthy neighbour is not touched");
+
+        std::fs::write(home.join("btc0-p1.bin"), b"payload").unwrap();
+        let mut provider = Provider::load("Arcade", &docs, None);
+        let mut skipped = SkippedEntries::new();
+        assert_eq!(prepare(&mut provider, &mut skipped), 1);
+        assert!(skipped.is_empty());
+        std::fs::remove_dir_all(root).ok();
     }
 }

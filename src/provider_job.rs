@@ -28,6 +28,10 @@ pub struct Request {
     pub cached_provider: Option<crate::artwork_pack::Provider>,
     /// Where the paths inside an `.mgl` point, for the Pack match.
     pub homes: Arc<crate::mgl::Homes>,
+    /// Write the prepared state beside the cache once the cache validates:
+    /// the one-time adoption of a system prepared before the state existed.
+    /// Off for location discovery, which prepares nothing.
+    pub write_state: bool,
 }
 
 #[derive(Debug)]
@@ -39,6 +43,9 @@ pub struct Snapshot {
     /// No cache, incomplete coverage, or a changed ROM requires the existing
     /// transactional source-cache worker before this system can open.
     pub cache_needs_recovery: bool,
+    /// Rows the preparation left without Pack data, one count line per
+    /// reason, prefixed with the system's name.
+    pub warnings: Vec<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -192,20 +199,36 @@ fn run(
                 provider,
                 source_changed,
                 cache_needs_recovery: false,
+                warnings: Vec::new(),
             });
             continue;
         }
-        let cached = crate::cache::load_artwork_pack_data(&request.cache_dir, &request.system_id);
+        // Read with its marker: the state written below records the
+        // rows the mapping was prepared from. A cache that is there and
+        // cannot be read is not a missing one: taken as missing, it would
+        // be recovered over, so it is a failure instead.
+        let cached = match crate::cache::load_artwork_pack_data_marked(
+            &request.cache_dir,
+            &request.system_id,
+        ) {
+            Ok(cached) => cached,
+            Err(error) => {
+                let _ = events.send(Event::Failed { error, progress });
+                return;
+            }
+        };
+        let mut skipped = crate::artwork_pack::SkippedEntries::new();
         let (fingerprints, cache_needs_recovery) = match cached.as_ref() {
             Some(_) if !provider.health.usable() => {
                 (crate::cache::ContentFingerprints::new(), false)
             }
-            Some(cached) => match provider.cached_fingerprints_are_current(
+            Some((cached, _)) => match provider.cached_fingerprints_are_current(
                 &cached.cache,
                 &cached.fingerprints,
                 cached.fingerprints_complete,
                 &request.homes,
                 cancelled,
+                &mut skipped,
             ) {
                 Ok(Some(true)) => (cached.fingerprints.clone(), false),
                 Ok(Some(false)) => (crate::cache::ContentFingerprints::new(), true),
@@ -220,8 +243,9 @@ fn run(
             },
             None => (crate::cache::ContentFingerprints::new(), true),
         };
+        let mut warnings = Vec::new();
         if !cache_needs_recovery && provider.health.usable() {
-            let Some(cache) = cached.as_ref().map(|cached| &cached.cache) else {
+            let Some((cached, marker)) = cached.as_ref() else {
                 let _ = events.send(Event::Failed {
                     error: DegaussError::unsupported(
                         "Artwork Pack",
@@ -231,7 +255,13 @@ fn run(
                 });
                 return;
             };
-            match provider.prepare_for_cache(cache, &fingerprints, &request.homes, cancelled) {
+            match provider.prepare_for_cache(
+                &cached.cache,
+                &fingerprints,
+                &request.homes,
+                cancelled,
+                &mut skipped,
+            ) {
                 Ok(Some(_)) => {}
                 Ok(None) => {
                     let _ = events.send(Event::Cancelled(progress));
@@ -242,12 +272,55 @@ fn run(
                     return;
                 }
             }
+            warnings = crate::artwork_pack::skipped_summary(&progress.current, &skipped);
+            if request.write_state {
+                // The cache validated against the live files and the rows
+                // are prepared: from here the system opens on this state
+                // alone. A state that cannot be written is a failure the
+                // user sees, not a silent return to validating every time.
+                let state = crate::cache::PackSourceState {
+                    accepted: Some(crate::cache::AcceptedSource {
+                        docs_root: request.docs_root.to_string_lossy().into_owned(),
+                        language: provider.synopsis_language().map(str::to_string),
+                        signature: provider.snapshot().cloned(),
+                        cache_marker: *marker,
+                        health: provider.health,
+                        diagnostics: provider.diagnostics.clone(),
+                        skipped_entries: u32::try_from(skipped.len()).unwrap_or(u32::MAX),
+                    }),
+                    declined: None,
+                };
+                let Some(map) = provider.prepared_map() else {
+                    let _ = events.send(Event::Failed {
+                        error: DegaussError::unsupported(
+                            "Artwork Pack",
+                            "provider validation finished without a prepared map",
+                        ),
+                        progress,
+                    });
+                    return;
+                };
+                if let Err(error) = crate::cache::save_pack_state(
+                    &request.cache_dir,
+                    &request.system_id,
+                    &state,
+                    map,
+                ) {
+                    let _ = events.send(Event::Failed { error, progress });
+                    return;
+                }
+                crate::note(&format!(
+                    "artwork pack {}: state written",
+                    request.system_id
+                ));
+            }
         }
         provider.discard_catalogue();
         snapshots.push(Snapshot {
             provider,
             source_changed,
             cache_needs_recovery,
+            warnings,
         });
     }
     if cancelled.load(Ordering::Relaxed) {
@@ -351,6 +424,7 @@ mod tests {
                 validate_location_only: false,
                 cached_provider: None,
                 homes: Arc::new(crate::mgl::Homes::default()),
+                write_state: false,
             },
             Request {
                 system_id: "NES".to_string(),
@@ -361,6 +435,7 @@ mod tests {
                 validate_location_only: false,
                 cached_provider: None,
                 homes: Arc::new(crate::mgl::Homes::default()),
+                write_state: false,
             },
         ])
         .unwrap();
@@ -414,6 +489,7 @@ mod tests {
             validate_location_only: true,
             cached_provider: None,
             homes: Arc::new(crate::mgl::Homes::default()),
+            write_state: false,
         };
         let mut job = start(vec![request(ready_docs.clone()), request(invalid_docs)]).unwrap();
         let Event::Loaded { snapshots, .. } = terminal(&mut job) else {
@@ -458,6 +534,7 @@ mod tests {
             validate_location_only: false,
             cached_provider: None,
             homes: Arc::new(crate::mgl::Homes::default()),
+            write_state: false,
         }])
         .unwrap();
         let Event::Loaded { mut snapshots, .. } = terminal(&mut job) else {
@@ -488,6 +565,7 @@ mod tests {
                 validate_location_only: false,
                 cached_provider: None,
                 homes: Arc::new(crate::mgl::Homes::default()),
+                write_state: false,
             }],
             &sender,
             &cancelled,
@@ -564,6 +642,7 @@ mod tests {
             validate_location_only: false,
             cached_provider,
             homes: Arc::new(crate::mgl::Homes::default()),
+            write_state: false,
         };
         let mut job = start(vec![request(None)]).unwrap();
         let Event::Loaded { mut snapshots, .. } = terminal(&mut job) else {
@@ -611,6 +690,205 @@ mod tests {
             changed.provider.apply_prepared(&mut rows),
             0,
             "a stale CRC must never cross the worker/UI boundary"
+        );
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    /// A complete cache from before the state existed, with a Pack whose
+    /// rows are matched by name and a broken descriptor beside them.
+    fn legacy_arcade(tag: &str) -> (PathBuf, PathBuf, PathBuf) {
+        let root = temp(tag);
+        let docs = root.join("docs");
+        let art = docs.join("Arcade/Artwork");
+        let games = root.join("_Arcade");
+        std::fs::create_dir_all(&art).unwrap();
+        std::fs::create_dir_all(&games).unwrap();
+        std::fs::write(
+            art.join("manifest.tsv"),
+            "#key\tstyle\tss_system_id\nhealthy\tbox-2D\t75\n",
+        )
+        .unwrap();
+        std::fs::write(
+            art.join("index.tsv"),
+            "#name\tcrc\tsize\tkey\nhealthy\t\t\thealthy\n",
+        )
+        .unwrap();
+        std::fs::write(
+            art.join("gameinfo.tsv"),
+            "#key\tname\tyear\tgenre\tdeveloper\tplayers\nhealthy\tPack Healthy\t1990\tShooter\tStudio\t2\n",
+        )
+        .unwrap();
+        std::fs::write(art.join("healthy.jpg"), b"jpeg").unwrap();
+        let healthy = games.join("Healthy.mra");
+        std::fs::write(
+            &healthy,
+            "<misterromdescription><setname>healthy</setname></misterromdescription>",
+        )
+        .unwrap();
+        let broken = games.join("Broken.mra");
+        std::fs::write(&broken, "<misterromdescription><rom></wrong>").unwrap();
+        let row = |path: &Path| Row {
+            name: path.file_stem().unwrap().to_string_lossy().into_owned(),
+            sort_key: String::new(),
+            kind: Kind::Play(Launch::File(path.to_path_buf())),
+            cover: None,
+            genre: None,
+            favorite: false,
+            below: None,
+            details: Details::default(),
+        };
+        let cache_dir = root.join("cache");
+        crate::cache::install_transactional(
+            &cache_dir,
+            crate::cache::CacheKind::ArtworkPack,
+            &[crate::cache::StagedSystemCache {
+                id: "Arcade".to_string(),
+                cache: crate::cache::SystemCache {
+                    format: 1,
+                    folders: BTreeMap::from([(
+                        "root".to_string(),
+                        crate::cache::Folder {
+                            mtime: 0,
+                            rows: vec![row(&healthy), row(&broken)],
+                            games: 2,
+                        },
+                    )]),
+                },
+                fingerprints: crate::cache::ContentFingerprints::new(),
+                fingerprints_complete: true,
+            }],
+        )
+        .unwrap();
+        (root, docs, cache_dir)
+    }
+
+    /// A cache that is there and cannot be read must not pass for a
+    /// missing one: taken as missing, the worker would report the rows
+    /// as needing recovery and the previous complete result would be
+    /// rebuilt over instead of kept.
+    #[test]
+    fn an_unreadable_source_cache_is_a_failure_not_a_recovery() {
+        let (root, docs, cache_dir) = legacy_arcade("unreadable-cache");
+        let cache = crate::cache::artwork_pack_system_path(&cache_dir, "Arcade");
+        std::fs::remove_file(&cache).unwrap();
+        std::fs::create_dir(&cache).unwrap();
+        let mut job = start(vec![adoption(&docs, &cache_dir, true)]).unwrap();
+        let Event::Failed { error, progress } = terminal(&mut job) else {
+            panic!("a cache that cannot be read must be a visible failure");
+        };
+        assert!(
+            error.to_string().contains("reading the Artwork Pack cache"),
+            "{error}"
+        );
+        assert_eq!(progress.current, "Arcade");
+        assert!(
+            crate::cache::load_pack_source_state(&cache_dir, "Arcade")
+                .unwrap()
+                .is_none(),
+            "nothing is decided on a cache that could not be read"
+        );
+        assert!(cache.is_dir(), "the unreadable cache is left as it is");
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    fn adoption(docs: &Path, cache_dir: &Path, write_state: bool) -> Request {
+        Request {
+            system_id: "Arcade".to_string(),
+            system_name: "Arcade".to_string(),
+            docs_root: docs.to_path_buf(),
+            synopsis_language: Some("EN".to_string()),
+            cache_dir: cache_dir.to_path_buf(),
+            validate_location_only: false,
+            cached_provider: None,
+            homes: Arc::new(crate::mgl::Homes::default()),
+            write_state,
+        }
+    }
+
+    /// The one-time adoption of a cache from before the state existed:
+    /// once the cache validates against the live files and the rows are
+    /// prepared, the state is written beside it, with the broken
+    /// descriptor counted and reported and the healthy one matched. A
+    /// state that cannot be written is a failure the user sees; a
+    /// location check writes nothing.
+    #[cfg(unix)]
+    #[test]
+    fn adoption_writes_the_state_after_validation_and_reports_a_broken_descriptor() {
+        use std::os::unix::fs::PermissionsExt;
+        let (root, docs, cache_dir) = legacy_arcade("adoption");
+        let mut job = start(vec![adoption(&docs, &cache_dir, true)]).unwrap();
+        let Event::Loaded { mut snapshots, .. } = terminal(&mut job) else {
+            panic!("the adoption did not return its snapshot");
+        };
+        let snapshot = snapshots.remove(0);
+        assert!(!snapshot.cache_needs_recovery);
+        assert_eq!(
+            snapshot.warnings,
+            ["Arcade: 1 game left without Pack data: malformed descriptor"]
+        );
+        let state = crate::cache::load_pack_source_state(&cache_dir, "Arcade")
+            .unwrap()
+            .expect("the validated adoption is written down");
+        let accepted = state.accepted.unwrap();
+        assert_eq!(accepted.docs_root, docs.to_str().unwrap());
+        assert_eq!(accepted.language.as_deref(), Some("en"));
+        assert_eq!(accepted.skipped_entries, 1);
+        assert_eq!(
+            accepted.cache_marker,
+            crate::cache::load_artwork_pack_data_marked(&cache_dir, "Arcade")
+                .unwrap()
+                .unwrap()
+                .1
+        );
+        assert_eq!(accepted.health, crate::artwork_pack::ProviderHealth::Ready);
+        let prepared = crate::cache::load_pack_prepared_map(&cache_dir, "Arcade")
+            .unwrap()
+            .unwrap();
+        assert_eq!(prepared.len(), 1);
+        assert_eq!(
+            prepared.values().next().unwrap().name.as_deref(),
+            Some("Pack Healthy")
+        );
+        assert_eq!(snapshot.provider.prepared_map().unwrap().len(), 1);
+
+        let store = cache_dir.join("artwork-pack");
+        for file in ["Arcade.source.bin", "Arcade.prepared.bin"] {
+            std::fs::remove_file(store.join(file)).unwrap();
+        }
+        let mode = std::fs::metadata(&store).unwrap().permissions().mode();
+        std::fs::set_permissions(&store, std::fs::Permissions::from_mode(0o555)).unwrap();
+        let can_write = std::fs::write(store.join("probe"), b"").is_ok();
+        let mut job = start(vec![adoption(&docs, &cache_dir, true)]).unwrap();
+        let event = terminal(&mut job);
+        std::fs::set_permissions(&store, std::fs::Permissions::from_mode(mode)).unwrap();
+        if can_write {
+            // Root writes through the mode; the failure cannot be produced.
+            std::fs::remove_file(store.join("probe")).unwrap();
+            assert!(matches!(event, Event::Loaded { .. }));
+        } else {
+            let Event::Failed { error, .. } = event else {
+                panic!("a state that cannot be written must be a visible failure");
+            };
+            assert!(error.to_string().contains("writing the cache"), "{error}");
+            assert!(
+                crate::cache::load_pack_source_state(&cache_dir, "Arcade")
+                    .unwrap()
+                    .is_none(),
+                "no decision is written without its rows"
+            );
+        }
+
+        let mut job = start(vec![Request {
+            validate_location_only: true,
+            ..adoption(&docs, &cache_dir, false)
+        }])
+        .unwrap();
+        assert!(matches!(terminal(&mut job), Event::Loaded { .. }));
+        assert!(
+            crate::cache::load_pack_source_state(&cache_dir, "Arcade")
+                .unwrap()
+                .is_none(),
+            "a location check decides nothing"
         );
         std::fs::remove_dir_all(root).ok();
     }

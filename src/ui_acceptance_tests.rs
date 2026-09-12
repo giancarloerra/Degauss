@@ -2650,6 +2650,7 @@ fn run_favorite_information_flow(root: &Path, window: Rc<MinimalSoftwareWindow>)
     app.effective_artwork_pack_roots = crate::artwork_source::resolve(
         &app.all_systems,
         &app.settings,
+        &app.cache_dir,
         &std::sync::atomic::AtomicBool::new(false),
     )
     .unwrap()
@@ -2667,26 +2668,55 @@ fn run_favorite_information_flow(root: &Path, window: Rc<MinimalSoftwareWindow>)
     app.ui.hide().unwrap();
 }
 
-fn run_fresh_auto_pack_index_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
-    let assert_operation_controls = |app: &mut App, details: bool, controls: &str| {
-        app.refresh();
-        assert!(
-            !app.show_bar,
-            "operation controls must not change the browse-bar preference"
-        );
-        assert!(!app.ui.get_show_bar());
-        assert!(app.geometry.bar > 0.0);
-        assert!(app.ui.get_bar_height() >= app.ui.get_bar_glyph());
-        assert_eq!(app.ui.get_operation_details(), details);
-        assert_eq!(app.ui.get_operation_controls(), controls);
-        if details {
-            assert!(!app.ui.get_overlay().is_empty());
-            assert_eq!(app.ui.get_operation_kind(), 1);
-        } else {
-            assert!(app.ui.get_operation_footer_visible());
+/// The three files a prepared Pack system leaves beside the cache: its
+/// rows, its decision and its prepared presentation, each as bytes when
+/// it is there.
+fn pack_files(cache_dir: &Path, id: &str) -> [Option<Vec<u8>>; 3] {
+    [
+        crate::cache::artwork_pack_system_path(cache_dir, id),
+        crate::cache::artwork_pack_source_path(cache_dir, id),
+        crate::cache::artwork_pack_prepared_path(cache_dir, id),
+    ]
+    .map(|path| std::fs::read(path).ok())
+}
+
+/// What the log has said since `from`.
+fn log_since(from: u64) -> String {
+    let logged = std::fs::read(crate::LOG_PATH).unwrap_or_default();
+    String::from_utf8_lossy(&logged[(from as usize).min(logged.len())..]).into_owned()
+}
+
+fn log_len() -> u64 {
+    std::fs::metadata(crate::LOG_PATH)
+        .map(|metadata| metadata.len())
+        .unwrap_or(0)
+}
+
+/// Leave the open system, folder by folder, with nothing on screen in
+/// the way of the presses.
+fn leave_system(app: &mut App) {
+    app.message = None;
+    app.pending = None;
+    for _ in 0..4 {
+        if app.open_system.is_none() {
+            return;
         }
-    };
-    let root = root.join("automatic-pack-indexing");
+        app.handle(Action::Quit);
+    }
+    assert!(
+        app.open_system.is_none(),
+        "B on the top folder leaves the system"
+    );
+}
+
+/// An Automatic system with an installed Pack is prepared when its user
+/// says so, for that system alone, and from then on opens on what was
+/// written down: no worker, no table, no row walk. Every other outcome
+/// of the question, and every way the Pack or the answer can change, is
+/// walked through the interface here, on the fixture the eager index
+/// used to prepare unasked.
+fn run_automatic_pack_consent_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
+    let root = root.join("automatic-pack-consent");
     let games = root.join("games/NES");
     let extra = root.join("games/NES-extra");
     let docs = root.join("docs");
@@ -2696,109 +2726,106 @@ fn run_fresh_auto_pack_index_flow(root: &Path, window: Rc<MinimalSoftwareWindow>
     }
     std::fs::write(games.join("Known.nes"), b"first rom").unwrap();
     std::fs::write(extra.join("Second.nes"), b"second rom").unwrap();
-    std::fs::write(
-        artwork.join("manifest.tsv"),
-        "#key\tstyle\tss_system_id\nKnown\tbox-2D\t3\nSecond\tbox-2D\t3\n",
-    )
-    .unwrap();
+    let write_manifest = |keys: &[&str]| {
+        let rows: String = keys
+            .iter()
+            .map(|key| format!("{key}\tbox-2D\t3\n"))
+            .collect();
+        std::fs::write(
+            artwork.join("manifest.tsv"),
+            format!("#key\tstyle\tss_system_id\n{rows}"),
+        )
+        .unwrap();
+    };
+    write_manifest(&["Known", "Second"]);
     std::fs::write(
         artwork.join("index.tsv"),
         "#name\tcrc\tsize\tkey\nKnown\t\t\tKnown\nSecond\t\t\tSecond\n",
     )
     .unwrap();
-    std::fs::write(artwork.join("gameinfo.tsv"), "#key\tname\tyear\tgenre\tdeveloper\tplayers\nKnown\tPack First\t1990\tAction\tStudio\t1\nSecond\tPack Second\t1991\tPuzzle\tStudio\t2\n").unwrap();
+    let write_gameinfo = |first: &str| {
+        std::fs::write(
+            artwork.join("gameinfo.tsv"),
+            format!("#key\tname\tyear\tgenre\tdeveloper\tplayers\nKnown\t{first}\t1990\tAction\tStudio\t1\nSecond\tPack Second\t1991\tPuzzle\tStudio\t2\n"),
+        )
+        .unwrap();
+    };
+    write_gameinfo("Pack First");
     for key in ["Known", "Second"] {
         std::fs::write(artwork.join(format!("{key}.jpg")), crate::covers::JPEG_16).unwrap();
     }
     let prepare = |app: &mut App| {
         app.all_systems[0].paths = vec![games.clone(), extra.clone()];
         app.systems = app.all_systems.clone();
-        app.source_resolution = Some(crate::artwork_source::resolved_job_at_bases(
-            &app.all_systems,
-            &app.settings,
-            std::slice::from_ref(&root),
-        ));
+        app.pack_candidate_bases = vec![root.clone()];
     };
-    let assert_complete = |app: &App, games: usize| {
-        assert!(app.build.is_none());
-        assert!(app.source_job.is_none());
-        assert!(app.source_recovery_queue.is_empty());
-        assert_eq!(app.index.as_ref().unwrap().systems["NES"].games, games);
-        assert_eq!(
-            crate::cache::load_index(&app.cache_dir).unwrap().systems["NES"].games,
-            games
-        );
-        assert_eq!(
-            app.total_games, games,
-            "About and total counts must include prepared Pack caches"
-        );
-        assert!(app.ui.get_about_line().contains(&format!("{games} games")));
-        assert!(!app.empty_systems.as_ref().unwrap().contains("NES"));
-        assert_eq!(
-            crate::artwork_source::mode(&app.settings, "NES"),
-            crate::artwork_source::Mode::Automatic
-        );
-        assert!(app.settings.artwork_pack_roots.is_empty());
-        let data = crate::cache::load_artwork_pack_data(&app.cache_dir, "NES").unwrap();
-        assert!(data.fingerprints_complete);
-        assert_eq!(data.cache.summary(&Place::Roots).games, games);
+    let available = "Artwork Pack Available\n\nAn installed Artwork Pack was found for NES. Prepare its artwork and metadata now?\n\nA Prepare   B Not Now";
+    let changed = "Artwork Pack Changed\n\nThe installed Artwork Pack data for NES has changed. Update its prepared artwork and metadata now?\n\nA Update   B Keep Current";
+    let assert_prompt = |app: &App, text: &str| {
+        assert_eq!(app.message.as_deref(), Some(text));
         assert!(
-            !crate::cache::system_path(&app.cache_dir, "NES").exists(),
-            "Pack indexing must not publish a Gamelist cache"
+            matches!(
+                (&app.pending, text.starts_with("Artwork Pack Available")),
+                (Some(Pending::PrepareArtworkPack(_)), true)
+                    | (Some(Pending::UpdateArtworkPack(_)), false)
+            ),
+            "{:?}",
+            app.pending
         );
+        assert!(app.source_job.is_none() && app.provider_job.is_none());
+    };
+    let assert_no_pack_work = |app: &App| {
+        assert!(
+            !app.cache_dir.join("artwork-pack").exists(),
+            "no Pack file is written before the user says so"
+        );
+        assert!(app.artwork_provider_cache.is_empty());
+        assert!(app.provider_job.is_none() && app.provider_requests.is_empty());
+        assert!(app.source_job.is_none() && app.source_recovery_queue.is_empty());
+    };
+    let assert_pack_rows = |app: &App| {
+        assert_eq!(app.here[0].name, "Pack First", "{:?}", app.here);
+        assert_eq!(app.here[0].cover, Some(artwork.join("Known.jpg")));
+        assert_eq!(app.here[0].genre.as_deref(), Some("Action"));
+    };
+    let assert_ordinary_rows = |app: &App| {
+        assert_eq!(app.here[0].name, "Known.nes", "{:?}", app.here);
+        assert_eq!(app.here[0].cover, None);
+    };
+    let open = |app: &mut App| {
+        app.open_system_by_index(0);
+        if app.open_system.is_some() {
+            app.enter(Place::Dir(games.clone()));
+        }
     };
     let browse_bar_off = Settings {
         show_bar: Some(false),
         ..Default::default()
     };
+
+    // 1, 2. The card is read into the index; the installed Pack is not.
     let mut app = unopened_fixture_app(&root, window.clone(), browse_bar_off.clone());
     prepare(&mut app);
     app.leave_splash();
-    app.build_one_system();
-    assert_eq!(app.source_label("NES"), "Automatic: Artwork Pack");
-    assert!(
-        app.open_system.is_none(),
-        "cold index is tested before first browse"
-    );
-    assert!(app.build.as_ref().unwrap().awaiting_frame);
-    paint_index_frame(&mut app);
-    app.build_one_system();
-    assert!(app.source_job.is_some());
-    assert_eq!(app.build.as_ref().unwrap().done, 0);
-    assert!(
-        app.index_terminal.is_none(),
-        "Pack preparation must not follow a completed Index All"
-    );
-    assert!(
-        !crate::cache::index_path(&app.cache_dir).exists(),
-        "an empty index must not be published ahead of the Pack cache"
-    );
-    app.handle(Action::Accept);
-    assert!(app.index_details);
-    assert_operation_controls(&mut app, true, "Up/Down Scroll   B Overview");
-    capture_live_if_requested(&mut app, "source-auto-pack-cold-index-details");
-    app.handle(Action::Quit);
-    assert!(!app.index_details);
-    assert!(!app.build.as_ref().unwrap().cancelling);
-    assert_operation_controls(&mut app, false, "A Details   B Cancel");
-    capture_live_if_requested(&mut app, "source-auto-pack-cold-index-overview");
     app.finish_background_work_for_headless();
-    assert_complete(&app, 2);
-    assert!(app.open_system.is_none());
-    app.refill_saver();
+    assert!(app.build.is_none());
+    assert_eq!(app.index.as_ref().unwrap().systems["NES"].games, 2);
+    assert!(crate::cache::system_path(&app.cache_dir, "NES").exists());
+    assert_eq!(app.total_games, 2);
+    assert!(app.ui.get_about_line().contains("2 games"));
     assert_eq!(
-        app.saver_pool.len(),
-        2,
-        "Pack artwork must be available without first browsing the system"
+        app.source_label("NES"),
+        format!("Automatic: {SOURCE_GAMELIST}"),
+        "an installed Pack nobody accepted is not the source"
     );
-    assert_eq!(
+    assert_no_pack_work(&app);
+    // A never-entered system is looked into by the screensaver and by
+    // the favourites shelf with its ordinary data, not its Pack's.
+    app.refill_saver();
+    assert!(
+        app.saver_pool.is_empty(),
+        "the ordinary index holds no pictures for this system: {:?}",
         app.saver_pool
-            .iter()
-            .map(|picture| picture.path.clone())
-            .collect::<HashSet<_>>(),
-        [artwork.join("Known.jpg"), artwork.join("Second.jpg")]
-            .into_iter()
-            .collect()
     );
     let favorite = root.join("Known.mgl");
     std::fs::write(
@@ -2808,10 +2835,11 @@ fn run_fresh_auto_pack_index_flow(root: &Path, window: Rc<MinimalSoftwareWindow>
             .unwrap(),
     )
     .unwrap();
-    let mut favorite_rows = [browse::Row {
-        kind: browse::Kind::Play(browse::Launch::File(favorite)),
+    let favorite_row = || browse::Row {
+        kind: browse::Kind::Play(browse::Launch::File(favorite.clone())),
         ..information_row()
-    }];
+    };
+    let mut favorite_rows = [favorite_row()];
     enrich_favorite_rows(
         &mut favorite_rows,
         &app.all_systems,
@@ -2820,80 +2848,816 @@ fn run_fresh_auto_pack_index_flow(root: &Path, window: Rc<MinimalSoftwareWindow>
         &app.cache_dir,
         |id, _, _| app.artwork_provider_cache.get(id).cloned(),
     );
-    assert_eq!(favorite_rows[0].name, "Pack First");
-    assert_eq!(favorite_rows[0].cover, Some(artwork.join("Known.jpg")));
-    let initial = cache_snapshot(&app.cache_dir);
-    app.start_build(false);
-    assert!(
-        app.source_recovery_queue.is_empty(),
-        "unchanged complete Pack caches are reused"
-    );
-    app.finish_background_work_for_headless();
-    assert_complete(&app, 2);
-    assert_eq!(cache_snapshot(&app.cache_dir), initial);
+    assert_eq!(favorite_rows[0].name, "Known.nes");
+    assert_eq!(favorite_rows[0].cover, None);
+    assert_no_pack_work(&app);
 
-    app.start_build(true);
-    app.build_one_system();
-    paint_index_frame(&mut app);
-    app.build_one_system();
-    assert!(app.source_job.is_some());
+    // 3. A gamelist under the system's own folder decides first.
+    std::fs::write(games.join("gamelist.xml"), "<gameList/>").unwrap();
+    open(&mut app);
+    assert!(app.pending.is_none(), "{:?}", app.message);
+    assert_eq!(app.open_system.as_deref(), Some("NES"), "{:?}", app.message);
+    assert!(app.artwork_provider.is_none());
+    assert_ordinary_rows(&app);
+    assert_no_pack_work(&app);
+    leave_system(&mut app);
+    std::fs::remove_file(games.join("gamelist.xml")).unwrap();
+
+    // 4. No Pack where one would be looked for: opened as it is.
+    app.pack_candidate_bases = vec![root.join("nowhere")];
+    open(&mut app);
+    assert!(app.pending.is_none());
+    assert_eq!(app.open_system.as_deref(), Some("NES"));
+    assert_ordinary_rows(&app);
+    assert_no_pack_work(&app);
+    leave_system(&mut app);
+    app.pack_candidate_bases = vec![root.clone()];
+
+    // 5. The Pack is there: asked before any of it is read.
+    let logged_from = log_len();
+    open(&mut app);
+    assert_prompt(&app, available);
+    assert!(app.open_system.is_none());
+    assert_no_pack_work(&app);
+    assert!(log_since(logged_from).contains("artwork pack NES: prompt shown: available"));
+    app.refresh();
+    assert_eq!(app.ui.get_overlay().as_str(), available);
+    assert!(!app.ui.get_overlay_dismissible());
+    capture_live_if_requested(&mut app, "source-auto-pack-available");
+    // A press that is not an answer takes the question down and decides
+    // nothing: it is asked again.
+    app.handle(Action::Up);
+    assert!(app.pending.is_none() && app.message.is_none());
+    assert!(app.open_system.is_none());
+    assert_no_pack_work(&app);
+    // Nothing in the Pack is read before the answer, the manifest
+    // included: with it unreadable the question is still asked, and only
+    // the No then finds it cannot be remembered, says so, and opens the
+    // system without the Pack all the same.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let manifest = artwork.join("manifest.tsv");
+        let mode = std::fs::metadata(&manifest).unwrap().permissions().mode();
+        std::fs::set_permissions(&manifest, std::fs::Permissions::from_mode(0o000)).unwrap();
+        open(&mut app);
+        assert_prompt(&app, available);
+        app.handle(Action::Quit);
+        std::fs::set_permissions(&manifest, std::fs::Permissions::from_mode(mode)).unwrap();
+        assert_eq!(app.open_system.as_deref(), Some("NES"), "{:?}", app.message);
+        let message = app
+            .message
+            .clone()
+            .expect("a No that cannot be remembered is said");
+        assert!(
+            message.starts_with("Artwork Pack decision for NES was not saved"),
+            "{message}"
+        );
+        assert!(
+            crate::cache::load_pack_source_state(&app.cache_dir, "NES")
+                .unwrap()
+                .is_none(),
+            "nothing is written down for a No without a signature"
+        );
+        leave_system(&mut app);
+    }
+    open(&mut app);
+    assert_prompt(&app, available);
+
+    // 6. Not Now: opened without the Pack, and remembered for this Pack.
     app.handle(Action::Quit);
-    assert!(app.build.as_ref().unwrap().cancelling);
-    assert!(app.source_cancelling);
-    app.finish_background_work_for_headless();
-    assert_eq!(app.index_terminal.as_ref().unwrap().state, "Cancelled");
-    assert_operation_controls(&mut app, false, "A Details   B Back");
+    assert!(app.pending.is_none() && app.message.is_none());
+    assert_eq!(app.open_system.as_deref(), Some("NES"));
+    app.enter(Place::Dir(games.clone()));
+    assert_ordinary_rows(&app);
+    let [rows, decision, prepared] = pack_files(&app.cache_dir, "NES");
+    assert!(rows.is_none() && prepared.is_none());
+    assert!(decision.is_some(), "Not Now is written down");
+    let state = crate::cache::load_pack_source_state(&app.cache_dir, "NES")
+        .unwrap()
+        .unwrap();
+    assert!(state.accepted.is_none());
     assert_eq!(
-        cache_snapshot(&app.cache_dir),
-        initial,
-        "cancellation before publication preserves the complete index and Pack cache"
+        state
+            .declined
+            .as_ref()
+            .map(|declined| declined.docs_root.as_str()),
+        Some(docs.to_str().unwrap())
     );
-    capture_live_if_requested(&mut app, "source-auto-pack-cancelled");
-    app.handle(Action::Quit);
-    app.start_build(true);
-    app.finish_background_work_for_headless();
-    assert_complete(&app, 2);
-    assert_eq!(app.index_terminal.as_ref().unwrap().games, 2);
-    assert_eq!(app.index_terminal.as_ref().unwrap().done, 1);
-    assert_operation_controls(&mut app, false, "A Details   B Back");
-    capture_live_if_requested(&mut app, "source-auto-pack-rebuilt");
-    app.handle(Action::Quit);
-
-    let pack_cache = crate::cache::artwork_pack_system_path(&app.cache_dir, "NES");
-    std::fs::remove_file(&pack_cache).unwrap();
+    assert!(log_since(logged_from).contains("artwork pack NES: declined recorded"));
+    assert_eq!(
+        app.source_label("NES"),
+        format!("Automatic: {SOURCE_GAMELIST}")
+    );
+    for _ in 0..2 {
+        leave_system(&mut app);
+        open(&mut app);
+        assert!(
+            app.pending.is_none(),
+            "the same Pack is not asked about again"
+        );
+        assert_eq!(app.open_system.as_deref(), Some("NES"));
+        assert_ordinary_rows(&app);
+    }
+    assert!(app.artwork_provider_cache.is_empty());
     app.ui.hide().unwrap();
     drop(app);
-    let mut app = unopened_fixture_app(&root, window, browse_bar_off);
-    assert!(
-        app.build.is_none(),
-        "the existing global index is loaded at startup"
-    );
+    let mut app = unopened_fixture_app(&root, window.clone(), browse_bar_off.clone());
     prepare(&mut app);
     app.leave_splash();
     app.finish_background_work_for_headless();
-    assert_complete(&app, 2);
+    assert!(app.build.is_none(), "the index is read, not rebuilt");
+    open(&mut app);
+    assert!(app.pending.is_none(), "Not Now survives a restart");
+    assert_eq!(app.open_system.as_deref(), Some("NES"));
+    assert_ordinary_rows(&app);
+    leave_system(&mut app);
+    // A decision file that is there but cannot be read is said, not read
+    // as no decision: nothing is asked, nothing is prepared and nothing
+    // is written over it.
+    let decision = crate::cache::artwork_pack_source_path(&app.cache_dir, "NES");
+    let decision_bytes = std::fs::read(&decision).unwrap();
+    std::fs::remove_file(&decision).unwrap();
+    std::fs::create_dir(&decision).unwrap();
+    open(&mut app);
+    assert!(app.pending.is_none());
+    assert!(app.open_system.is_none());
     assert!(
-        app.open_system.is_none(),
-        "missing source cache recovery must not require browsing"
+        app.message
+            .as_deref()
+            .is_some_and(|m| m.starts_with("NES: game data source could not be resolved")),
+        "{:?}",
+        app.message
     );
+    assert!(app.provider_job.is_none() && app.source_job.is_none());
+    std::fs::remove_dir(&decision).unwrap();
+    std::fs::write(&decision, decision_bytes).unwrap();
+    app.message = None;
 
-    let provider = app.artwork_provider_cache.get("NES").unwrap().clone();
-    app.open_system_now_with_provider(Some(provider));
+    // 7. A changed Pack is another Pack: asked about again.
+    write_manifest(&["Known", "Second", "Third"]);
+    open(&mut app);
+    assert_prompt(&app, available);
+    app.handle(Action::Quit);
+    assert_eq!(app.open_system.as_deref(), Some("NES"));
+    leave_system(&mut app);
+    open(&mut app);
+    assert!(app.pending.is_none());
+
+    // 21. Rebuild This System List is the deliberate retry: a declined
+    // Pack is asked about again; Not Now rebuilds the ordinary list.
+    // The No given before is set aside for the question only: a press
+    // that is not an answer leaves it standing, on disk and at the next
+    // entry.
+    app.rebuild_open_system();
+    assert_prompt(&app, available);
+    app.handle(Action::Up);
+    assert!(app.pending.is_none() && app.build.is_none());
+    assert!(
+        crate::cache::load_pack_source_state(&app.cache_dir, "NES")
+            .unwrap()
+            .unwrap()
+            .declined
+            .is_some(),
+        "a question nobody answered erases nothing"
+    );
+    leave_system(&mut app);
+    open(&mut app);
+    assert!(app.pending.is_none(), "the No given before still stands");
+    write_manifest(&["Known", "Second"]);
+    // A No the rebuild cannot write down is said with the rebuild's
+    // result, not lost under its progress.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let store = app.cache_dir.join("artwork-pack");
+        let mode = std::fs::metadata(&store).unwrap().permissions().mode();
+        std::fs::set_permissions(&store, std::fs::Permissions::from_mode(0o555)).unwrap();
+        app.rebuild_open_system();
+        assert_prompt(&app, available);
+        app.handle(Action::Quit);
+        assert!(app.build.as_ref().is_some_and(|build| build.single));
+        app.finish_background_work_for_headless();
+        std::fs::set_permissions(&store, std::fs::Permissions::from_mode(mode)).unwrap();
+        let overview = app.index_terminal.as_ref().expect("the rebuild finished");
+        assert_eq!(
+            overview.state, "Finished With Problems",
+            "{:?}",
+            overview.problem
+        );
+        assert!(
+            overview
+                .problem
+                .contains("Artwork Pack decision for NES was not saved"),
+            "{}",
+            overview.problem
+        );
+        app.handle(Action::Quit);
+        prepare(&mut app);
+    }
+    app.rebuild_open_system();
+    assert_prompt(&app, available);
+    app.handle(Action::Quit);
+    assert!(app.build.as_ref().is_some_and(|build| build.single));
+    app.finish_background_work_for_headless();
+    assert!(app.build.is_none());
+    assert_eq!(
+        app.index_terminal
+            .as_ref()
+            .map(|overview| overview.state.as_str()),
+        Some("Complete"),
+        "{:?}",
+        app.message
+    );
+    assert_eq!(
+        app.index_terminal
+            .as_ref()
+            .map(|overview| overview.subject.as_str()),
+        Some("NES")
+    );
+    app.handle(Action::Quit);
+    assert!(pack_files(&app.cache_dir, "NES")[0].is_none());
+    leave_system(&mut app);
+    open(&mut app);
+    assert!(app.pending.is_none(), "the No given at the rebuild stands");
+    leave_system(&mut app);
+    // The ordinary rebuild found the system's folders again under the
+    // root, which holds one of the two the fixture gives it.
+    prepare(&mut app);
+
+    // 16. Prepare that is cancelled: nothing is written, the ordinary
+    // system opens, and the next entry asks again. The Pack is changed
+    // first so that the No given above is not the answer any more.
+    std::fs::write(
+        artwork.join("manifest.tsv"),
+        "#key\tstyle\tss_system_id\nKnown\tbox-3D\t3\nSecond\tbox-3D\t3\n",
+    )
+    .unwrap();
+    open(&mut app);
+    assert_prompt(&app, available);
+    app.handle(Action::Accept);
+    assert!(app.source_job.is_some(), "{:?}", app.message);
+    assert_eq!(app.screen, Screen::SourceProgress);
+    app.refresh();
+    assert_eq!(app.ui.get_heading(), "Preparing Artwork Pack");
+    assert_eq!(app.ui.get_status(), "B Cancel");
+    capture_live_if_requested(&mut app, "source-auto-pack-preparing");
+    app.handle(Action::Quit);
+    assert!(app.source_cancelling);
+    app.refresh();
+    assert_eq!(app.ui.get_status(), "Stopping safely");
+    app.finish_background_work_for_headless();
+    assert!(app.source_job.is_none());
+    assert_eq!(
+        app.message.as_deref(),
+        Some("Artwork Pack preparation for NES cancelled."),
+    );
     assert_eq!(app.open_system.as_deref(), Some("NES"));
     app.enter(Place::Dir(games.clone()));
-    assert_eq!(app.here[0].name, "Pack First");
-    assert_eq!(app.here[0].cover, Some(artwork.join("Known.jpg")));
-    app.start_build(true);
-    app.finish_background_work_for_headless();
-    assert_complete(&app, 2);
+    assert_ordinary_rows(&app);
+    let [rows, _, prepared] = pack_files(&app.cache_dir, "NES");
     assert!(
-        app.artwork_provider.is_some(),
-        "Index All must reattach the prepared provider to the open Pack system"
+        rows.is_none() && prepared.is_none(),
+        "a cancelled preparation writes nothing down"
     );
-    assert_eq!(app.here[0].name, "Pack First");
-    assert_eq!(app.here[0].cover, Some(artwork.join("Known.jpg")));
-    assert_eq!(app.here[0].genre.as_deref(), Some("Action"));
+    assert!(crate::cache::load_pack_source_state(&app.cache_dir, "NES")
+        .unwrap()
+        .unwrap()
+        .accepted
+        .is_none());
+    assert!(!app.effective_artwork_pack_roots.contains_key("NES"));
+    leave_system(&mut app);
+    open(&mut app);
+    assert_prompt(&app, available);
+    app.handle(Action::Up);
+
+    // 16. Prepare that fails: the same, with the reason.
+    let good_manifest = std::fs::read(artwork.join("manifest.tsv")).unwrap();
+    std::fs::write(artwork.join("manifest.tsv"), "not-a-valid-manifest\n").unwrap();
+    open(&mut app);
+    assert_prompt(&app, available);
+    app.handle(Action::Accept);
+    app.finish_background_work_for_headless();
+    assert!(app.source_job.is_none());
+    let message = app.message.clone().expect("a failed preparation says so");
+    assert_eq!(
+        message,
+        "NES Artwork Pack was not prepared.\nArtwork Pack invalid: repair it and try again.",
+        "the category the worker found is on screen, without its detail"
+    );
+    assert!(!message.contains("previous complete cache"));
+    assert!(!message.contains('/'), "no path on screen: {message}");
+    assert_eq!(app.open_system.as_deref(), Some("NES"));
+    app.enter(Place::Dir(games.clone()));
+    assert_ordinary_rows(&app);
+    let [rows, _, prepared] = pack_files(&app.cache_dir, "NES");
+    assert!(rows.is_none() && prepared.is_none());
+    assert!(crate::cache::load_pack_source_state(&app.cache_dir, "NES")
+        .unwrap()
+        .unwrap()
+        .accepted
+        .is_none());
+    assert!(!app.effective_artwork_pack_roots.contains_key("NES"));
+    assert!(
+        app.source_recovery_suppressed.is_empty(),
+        "a later retry is not suppressed"
+    );
+    std::fs::write(artwork.join("manifest.tsv"), &good_manifest).unwrap();
+    app.message = None;
+    app.rebuild_open_system();
+    assert_prompt(&app, available);
+    app.handle(Action::Up);
+    leave_system(&mut app);
+
+    // 8. Prepare: one system, then the system opens on its Pack.
+    let other_cache = crate::cache::system_path(&app.cache_dir, "Other");
+    std::fs::write(&other_cache, b"another system's list").unwrap();
+    open(&mut app);
+    assert_prompt(&app, available);
+    app.handle(Action::Accept);
+    assert!(app.source_job.is_some());
+    assert!(
+        !app.effective_artwork_pack_roots.contains_key("NES"),
+        "the root is not taken into use before the result is installed"
+    );
+    app.finish_background_work_for_headless();
+    assert!(app.source_job.is_none());
+    assert_eq!(app.source_progress.systems, 1, "one system, not the group");
+    assert_eq!(app.message.as_deref(), Some("Artwork Pack prepared."));
+    assert_eq!(app.open_system.as_deref(), Some("NES"));
+    app.enter(Place::Dir(games.clone()));
+    assert_pack_rows(&app);
+    assert_eq!(
+        app.source_label("NES"),
+        format!("Automatic: {SOURCE_ARTWORK_PACK}")
+    );
+    let [rows, decision, prepared] = pack_files(&app.cache_dir, "NES");
+    assert!(rows.is_some() && decision.is_some() && prepared.is_some());
+    let state = crate::cache::load_pack_source_state(&app.cache_dir, "NES")
+        .unwrap()
+        .unwrap();
+    let accepted = state.accepted.expect("Prepare is written down");
+    assert!(state.declined.is_none());
+    assert_eq!(accepted.docs_root, docs.to_str().unwrap());
+    assert_eq!(accepted.skipped_entries, 0);
+    assert_eq!(
+        accepted.cache_marker,
+        crc32fast::hash(rows.as_ref().unwrap()),
+        "the marker is the rows the mapping was prepared from"
+    );
+    assert_eq!(
+        std::fs::read(&other_cache).unwrap(),
+        b"another system's list",
+        "another system's list is not touched"
+    );
+    assert_eq!(app.index.as_ref().unwrap().systems["NES"].games, 2);
+    assert_eq!(app.total_games, 2);
+    let prepared_files = pack_files(&app.cache_dir, "NES");
+
+    // 9. Left and entered again: no worker, no progress, the same rows.
+    for _ in 0..3 {
+        leave_system(&mut app);
+        let logged_from = log_len();
+        open(&mut app);
+        assert!(app.pending.is_none());
+        assert_ne!(app.screen, Screen::SourceProgress);
+        assert!(app.provider_job.is_none() && app.provider_pending_open.is_none());
+        assert!(app.source_job.is_none());
+        assert_pack_rows(&app);
+        assert!(
+            log_since(logged_from).contains("artwork pack NES: state reused"),
+            "{}",
+            log_since(logged_from)
+        );
+    }
+    assert_eq!(pack_files(&app.cache_dir, "NES"), prepared_files);
+
+    // The favourite and the screensaver now find the Pack through what
+    // was written down, without a worker.
+    let mut favorite_rows = [favorite_row()];
+    let (systems, homes, roots, cache_dir) = (
+        app.all_systems.clone(),
+        app.homes(),
+        app.effective_artwork_pack_roots.clone(),
+        app.cache_dir.clone(),
+    );
+    app.artwork_provider_cache.clear();
+    enrich_favorite_rows(
+        &mut favorite_rows,
+        &systems,
+        &homes,
+        &roots,
+        &cache_dir,
+        |id, root, _| app.provider_from_state(id, root).unwrap(),
+    );
+    assert_eq!(favorite_rows[0].name, "Pack First");
+    assert_eq!(favorite_rows[0].cover, Some(artwork.join("Known.jpg")));
+    app.saver_candidates = None;
+    app.saver_pool.clear();
+    app.refill_saver();
+    assert_eq!(
+        app.saver_pool
+            .iter()
+            .map(|picture| picture.path.clone())
+            .collect::<HashSet<_>>(),
+        [artwork.join("Known.jpg"), artwork.join("Second.jpg")]
+            .into_iter()
+            .collect()
+    );
+    assert!(app.provider_job.is_none());
+
+    // 10. A new process, the Artwork directory unlistable and a ROM gone:
+    // opened on the state alone, with its Pack data.
+    app.ui.hide().unwrap();
+    drop(app);
+    let mut app = unopened_fixture_app(&root, window.clone(), browse_bar_off.clone());
+    prepare(&mut app);
+    app.leave_splash();
+    app.finish_background_work_for_headless();
+    assert!(app.build.is_none());
+    assert_eq!(
+        app.effective_artwork_pack_roots
+            .get("NES")
+            .map(String::as_str),
+        Some(docs.to_str().unwrap()),
+        "the accepted root is known at startup from its state file"
+    );
+    assert!(app.artwork_provider_cache.is_empty(), "known, not read");
+    assert!(app.provider_job.is_none() && app.provider_requests.is_empty());
+    std::fs::remove_file(extra.join("Second.nes")).unwrap();
+    #[cfg(unix)]
+    let original_mode = {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(&artwork).unwrap().permissions().mode();
+        std::fs::set_permissions(&artwork, std::fs::Permissions::from_mode(0o111)).unwrap();
+        mode
+    };
+    let logged_from = log_len();
+    open(&mut app);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&artwork, std::fs::Permissions::from_mode(original_mode)).unwrap();
+    }
+    assert!(app.pending.is_none(), "{:?}", app.message);
+    assert!(app.provider_job.is_none() && app.source_job.is_none());
+    assert_pack_rows(&app);
+    assert_eq!(app.here.len(), 1);
+    assert!(log_since(logged_from).contains("artwork pack NES: state reused"));
+    assert_eq!(pack_files(&app.cache_dir, "NES"), prepared_files);
+    std::fs::write(extra.join("Second.nes"), b"second rom").unwrap();
+
+    // 13, 14. A table edited: asked once; Keep Current keeps the rows and
+    // is remembered, in this process and the next.
+    leave_system(&mut app);
+    write_gameinfo("Pack First Revised");
+    let logged_from = log_len();
+    open(&mut app);
+    assert_prompt(&app, changed);
+    assert!(log_since(logged_from).contains("artwork pack NES: prompt shown: changed"));
+    assert_eq!(pack_files(&app.cache_dir, "NES"), prepared_files);
+    app.refresh();
+    capture_live_if_requested(&mut app, "source-auto-pack-changed");
     app.handle(Action::Quit);
+    assert!(app.pending.is_none() && app.message.is_none());
+    assert_eq!(app.open_system.as_deref(), Some("NES"));
+    app.enter(Place::Dir(games.clone()));
+    assert_pack_rows(&app);
+    let state = crate::cache::load_pack_source_state(&app.cache_dir, "NES")
+        .unwrap()
+        .unwrap();
+    assert!(
+        state.accepted.is_some(),
+        "Keep Current keeps the acceptance"
+    );
+    assert!(state.declined.is_some(), "and remembers the change");
+    assert_eq!(pack_files(&app.cache_dir, "NES")[0], prepared_files[0]);
+    assert_eq!(pack_files(&app.cache_dir, "NES")[2], prepared_files[2]);
+    let request = app.information_request(&app.here[0]).unwrap();
+    assert!(matches!(
+        request.source,
+        crate::information_job::Source::ArtworkPack(_)
+    ));
+    leave_system(&mut app);
+    open(&mut app);
+    assert!(
+        app.pending.is_none(),
+        "the kept change is not asked about again"
+    );
+    assert_pack_rows(&app);
+    let kept_files = pack_files(&app.cache_dir, "NES");
+    app.ui.hide().unwrap();
+    drop(app);
+    let mut app = unopened_fixture_app(&root, window.clone(), browse_bar_off.clone());
+    prepare(&mut app);
+    app.leave_splash();
+    app.finish_background_work_for_headless();
+    open(&mut app);
+    assert!(app.pending.is_none(), "Keep Current survives a restart");
+    assert_pack_rows(&app);
+
+    // 13, 14. The language changed: asked; Keep Current keeps the rows
+    // prepared for the previous language in use under the new one, with
+    // no worker and no row walk, now, at the next entry and after a
+    // restart. The acceptance still records the language they were
+    // prepared for.
+    leave_system(&mut app);
+    app.scraper_settings.language = Some("it".into());
+    open(&mut app);
+    assert_prompt(&app, changed);
+    // While the question stands, nothing is kept about the new language:
+    // the rows prepared for the previous one are handed to the favourites
+    // shelf without being held in memory, and the shelf draws with them
+    // all the same, once per owning system rather than once per row.
+    {
+        let mut favorites = app.all_systems[0].clone();
+        favorites.def.id = "Favorites".into();
+        favorites.def.name = "Favorites".into();
+        favorites.def.category = Some("Favorites".into());
+        favorites.paths = Vec::new();
+        app.all_systems.push(favorites);
+        let (was_open, was_pending, was_message) = (
+            app.open_system.replace("Favorites".into()),
+            app.pending.take(),
+            app.message.take(),
+        );
+        app.artwork_provider_cache.clear();
+        let mut shelf = [favorite_row(), favorite_row()];
+        app.enrich_favorites(&mut shelf);
+        assert!(
+            !app.artwork_provider_cache.contains_key("NES"),
+            "rows prepared for another language are not held while the question stands"
+        );
+        for row in &shelf {
+            assert_eq!(
+                row.name, "Pack First",
+                "the favourite draws with the rows the shelf was handed"
+            );
+            assert_eq!(row.cover, Some(artwork.join("Known.jpg")));
+        }
+        assert!(app.provider_job.is_none() && app.provider_requests.is_empty());
+        app.all_systems.pop();
+        app.open_system = was_open;
+        app.pending = was_pending;
+        app.message = was_message;
+    }
+    app.handle(Action::Quit);
+    assert!(app.pending.is_none(), "{:?}", app.message);
+    assert_eq!(app.open_system.as_deref(), Some("NES"), "{:?}", app.message);
+    assert!(
+        app.provider_job.is_none()
+            && app.provider_pending_open.is_none()
+            && app.source_job.is_none(),
+        "a kept change of language reads nothing: {:?}",
+        app.message
+    );
+    app.enter(Place::Dir(games.clone()));
+    assert_pack_rows(&app);
+    let state = crate::cache::load_pack_source_state(&app.cache_dir, "NES")
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        state.accepted.as_ref().unwrap().language,
+        None,
+        "the rows stay recorded as prepared for the previous language"
+    );
+    assert_eq!(
+        state.declined.as_ref().unwrap().language.as_deref(),
+        Some("it")
+    );
+    assert_eq!(pack_files(&app.cache_dir, "NES")[0], kept_files[0]);
+    assert_eq!(pack_files(&app.cache_dir, "NES")[2], kept_files[2]);
+    let kept_files = pack_files(&app.cache_dir, "NES");
+    for _ in 0..2 {
+        leave_system(&mut app);
+        let logged_from = log_len();
+        open(&mut app);
+        assert!(app.pending.is_none(), "{:?}", app.message);
+        assert!(app.provider_job.is_none() && app.provider_pending_open.is_none());
+        assert_pack_rows(&app);
+        assert!(
+            log_since(logged_from).contains("artwork pack NES: state reused"),
+            "{}",
+            log_since(logged_from)
+        );
+    }
+    assert_eq!(pack_files(&app.cache_dir, "NES"), kept_files);
+    app.ui.hide().unwrap();
+    drop(app);
+    let mut app = unopened_fixture_app(&root, window.clone(), browse_bar_off.clone());
+    prepare(&mut app);
+    app.scraper_settings.language = Some("it".into());
+    app.leave_splash();
+    app.finish_background_work_for_headless();
+    let logged_from = log_len();
+    open(&mut app);
+    assert!(
+        app.pending.is_none(),
+        "the kept change of language survives a restart: {:?}",
+        app.message
+    );
+    assert!(app.provider_job.is_none() && app.provider_pending_open.is_none());
+    assert_pack_rows(&app);
+    assert!(log_since(logged_from).contains("artwork pack NES: state reused"));
+    assert_eq!(pack_files(&app.cache_dir, "NES"), kept_files);
+
+    // 13. A table changed under the kept language: asked; 15. Update
+    // replaces the result after success, for this system alone, and
+    // records the language in use.
+    leave_system(&mut app);
+    write_gameinfo("Pack First");
+    open(&mut app);
+    assert_prompt(&app, changed);
+    app.handle(Action::Accept);
+    assert!(app.source_job.is_some());
+    app.finish_background_work_for_headless();
+    assert_eq!(app.source_progress.systems, 1);
+    assert_eq!(app.message.as_deref(), Some("Artwork Pack prepared."));
+    assert_eq!(app.open_system.as_deref(), Some("NES"));
+    app.enter(Place::Dir(games.clone()));
+    assert_pack_rows(&app);
+    let state = crate::cache::load_pack_source_state(&app.cache_dir, "NES")
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        state.accepted.as_ref().unwrap().language.as_deref(),
+        Some("it")
+    );
+    assert!(state.declined.is_none());
+    assert_ne!(pack_files(&app.cache_dir, "NES")[1], kept_files[1]);
+    leave_system(&mut app);
+    open(&mut app);
+    assert!(app.pending.is_none());
+
+    // 13. The rows the mapping was prepared from replaced: asked. 15.
+    // Update: the mapping follows the new rows.
+    leave_system(&mut app);
+    std::fs::write(games.join("Third.nes"), b"third rom").unwrap();
+    let library =
+        Library::open_source_neutral(&app.all_systems[0].to_config(), Default::default()).unwrap();
+    crate::cache::install_transactional(
+        &app.cache_dir,
+        crate::cache::CacheKind::ArtworkPack,
+        &[crate::cache::StagedSystemCache {
+            id: "NES".into(),
+            cache: crate::cache::build_system(&library),
+            fingerprints: Default::default(),
+            fingerprints_complete: true,
+        }],
+    )
+    .unwrap();
+    let before_update = pack_files(&app.cache_dir, "NES");
+    open(&mut app);
+    assert_prompt(&app, changed);
+
+    // 17. An Update that is cancelled, then one that fails: the previous
+    // result is untouched, byte for byte, and still in use.
+    app.handle(Action::Accept);
+    assert!(app.source_job.is_some());
+    app.handle(Action::Quit);
+    assert!(app.source_cancelling);
+    app.finish_background_work_for_headless();
+    assert_eq!(
+        app.message.as_deref(),
+        Some("Artwork Pack preparation for NES cancelled. The previous complete cache remains in use.")
+    );
+    assert_eq!(pack_files(&app.cache_dir, "NES"), before_update);
+    assert_eq!(app.open_system.as_deref(), Some("NES"));
+    app.enter(Place::Dir(games.clone()));
+    assert_pack_rows(&app);
+    leave_system(&mut app);
+    std::fs::write(artwork.join("manifest.tsv"), "not-a-valid-manifest\n").unwrap();
+    open(&mut app);
+    assert_prompt(&app, changed);
+    app.handle(Action::Accept);
+    app.finish_background_work_for_headless();
+    let message = app.message.clone().unwrap();
+    assert!(
+        message.starts_with("NES Artwork Pack was not prepared.")
+            && message.ends_with("The previous complete cache remains in use."),
+        "{message}"
+    );
+    assert_eq!(pack_files(&app.cache_dir, "NES"), before_update);
+    assert_eq!(app.open_system.as_deref(), Some("NES"));
+    app.enter(Place::Dir(games.clone()));
+    assert_pack_rows(&app);
+    std::fs::write(artwork.join("manifest.tsv"), &good_manifest).unwrap();
+    leave_system(&mut app);
+    open(&mut app);
+    assert_prompt(&app, changed);
+    app.handle(Action::Accept);
+    app.finish_background_work_for_headless();
+    assert_eq!(app.message.as_deref(), Some("Artwork Pack prepared."));
+    app.enter(Place::Dir(games.clone()));
+    assert_pack_rows(&app);
+    assert_eq!(app.here.len(), 2, "{:?}", app.here);
+    assert_ne!(pack_files(&app.cache_dir, "NES")[0], before_update[0]);
+    assert_eq!(app.index.as_ref().unwrap().systems["NES"].games, 3);
+
+    // 21. Rebuild This System List on the accepted system: the deliberate
+    // preparation, one system, no question.
+    app.rebuild_open_system();
+    assert!(app.source_job.is_some(), "{:?}", app.message);
+    assert!(app.pending.is_none());
+    app.finish_background_work_for_headless();
+    assert_eq!(app.source_progress.systems, 1);
+    assert_eq!(app.message.as_deref(), Some("NES list rebuilt."));
+    assert_pack_rows(&app);
+    assert_eq!(
+        std::fs::read(&other_cache).unwrap(),
+        b"another system's list"
+    );
+
+    // Rebuild All reads the accepted system the ordinary way, into its
+    // Pack cache and without its Pack: nothing is prepared unasked, and
+    // what was written down about the Pack is left as it was. The rows
+    // being other rows than the mapping was prepared from, the next
+    // entry asks; Keep Current keeps browsing on the previous mapping
+    // over them, and is remembered; Rebuild This System List then
+    // prepares the current Pack whatever was kept.
+    app.message = None;
+    let prepared_before = pack_files(&app.cache_dir, "NES");
+    let ordinary_path = crate::cache::system_path(&app.cache_dir, "NES");
+    let ordinary_before = std::fs::read(&ordinary_path).unwrap();
+    app.start_build(true);
+    assert!(
+        app.source_recovery_queue.is_empty(),
+        "an Automatic acceptance is not prepared inside the rebuild"
+    );
+    app.finish_background_work_for_headless();
+    assert_eq!(app.index_terminal.as_ref().unwrap().state, "Complete");
+    assert_eq!(app.index_terminal.as_ref().unwrap().games, 3);
+    // A preparation inside the rebuild would write the decision and the
+    // mapping afresh; the files below prove it did not run.
+    let rebuilt = pack_files(&app.cache_dir, "NES");
+    assert_ne!(rebuilt[0], prepared_before[0], "the rows are read again");
+    assert_eq!(rebuilt[1], prepared_before[1], "the decision is untouched");
+    assert_eq!(rebuilt[2], prepared_before[2], "the mapping is untouched");
+    assert!(
+        !crate::cache::load_artwork_pack_data(&app.cache_dir, "NES")
+            .unwrap()
+            .fingerprints_complete,
+        "rows read without the Pack are not a preparation"
+    );
+    assert_eq!(
+        std::fs::read(&ordinary_path).unwrap(),
+        ordinary_before,
+        "the rows belong to the Pack cache, not the ordinary file"
+    );
+    app.handle(Action::Quit);
+    leave_system(&mut app);
+    open(&mut app);
+    assert_prompt(&app, changed);
+    app.handle(Action::Quit);
+    assert!(app.pending.is_none(), "{:?}", app.message);
+    assert!(
+        app.source_job.is_none() && app.provider_job.is_none(),
+        "Keep Current prepares nothing: {:?}",
+        app.message
+    );
+    assert_eq!(app.open_system.as_deref(), Some("NES"), "{:?}", app.message);
+    app.enter(Place::Dir(games.clone()));
+    assert_pack_rows(&app);
+    let state = crate::cache::load_pack_source_state(&app.cache_dir, "NES")
+        .unwrap()
+        .unwrap();
+    assert!(state.accepted.is_some());
+    assert_eq!(
+        state
+            .declined
+            .as_ref()
+            .and_then(|declined| declined.cache_marker),
+        Some(crc32fast::hash(rebuilt[0].as_ref().unwrap())),
+        "the kept change is the rows the rebuild wrote"
+    );
+    assert_eq!(pack_files(&app.cache_dir, "NES")[0], rebuilt[0]);
+    assert_eq!(pack_files(&app.cache_dir, "NES")[2], rebuilt[2]);
+    leave_system(&mut app);
+    let logged_from = log_len();
+    open(&mut app);
+    assert!(
+        app.pending.is_none(),
+        "the kept rows are not asked about again"
+    );
+    assert!(app.source_job.is_none() && app.provider_job.is_none());
+    assert_pack_rows(&app);
+    assert!(log_since(logged_from).contains("artwork pack NES: state reused"));
+    app.rebuild_open_system();
+    assert!(app.source_job.is_some(), "{:?}", app.message);
+    assert!(app.pending.is_none());
+    app.finish_background_work_for_headless();
+    assert_eq!(app.message.as_deref(), Some("NES list rebuilt."));
+    assert_pack_rows(&app);
+    let state = crate::cache::load_pack_source_state(&app.cache_dir, "NES")
+        .unwrap()
+        .unwrap();
+    assert!(state.accepted.is_some() && state.declined.is_none());
+    assert!(
+        crate::cache::load_artwork_pack_data(&app.cache_dir, "NES")
+            .unwrap()
+            .fingerprints_complete
+    );
+    app.message = None;
     let art_deadline = Instant::now() + Duration::from_secs(3);
     while app.art_pending {
         assert!(
@@ -2917,11 +3681,186 @@ fn run_fresh_auto_pack_index_flow(root: &Path, window: Rc<MinimalSoftwareWindow>
     assert!(!app.ui.get_show_bar());
     assert!(!app.ui.get_bottom_bar_visible());
     capture_live_if_requested(&mut app, "source-auto-pack-open-rebuilt");
-    std::fs::write(games.join("Third.nes"), b"third rom").unwrap();
-    app.rebuild_open_system_resolved();
+    let rebuilt_files = pack_files(&app.cache_dir, "NES");
+    assert!(rebuilt_files.iter().all(Option::is_some));
+
+    // 12. An image replaced at its path: read on demand, no rebuild. The
+    // picture decoded from the old file is dropped so the new one is read.
+    leave_system(&mut app);
+    assert!(app.covers.knows(&artwork.join("Known.jpg")));
+    let replacement = artwork.join("Known.replacement");
+    std::fs::write(&replacement, crate::covers::JPEG_16).unwrap();
+    std::fs::rename(&replacement, artwork.join("Known.jpg")).unwrap();
+    let logged_from = log_len();
+    open(&mut app);
+    assert!(app.pending.is_none(), "{:?}", app.message);
+    assert_pack_rows(&app);
+    assert!(log_since(logged_from).contains("artwork pack NES: images changed"));
+    assert!(
+        !app.covers.knows(&artwork.join("Known.jpg")),
+        "the decoded picture of the replaced file is dropped"
+    );
+    assert_ne!(
+        pack_files(&app.cache_dir, "NES")[1],
+        rebuilt_files[1],
+        "the refreshed signature is written down"
+    );
+    assert_eq!(pack_files(&app.cache_dir, "NES")[0], rebuilt_files[0]);
+    assert_eq!(pack_files(&app.cache_dir, "NES")[2], rebuilt_files[2]);
+    let logged_from = log_len();
+    leave_system(&mut app);
+    open(&mut app);
+    assert!(log_since(logged_from).contains("artwork pack NES: state reused"));
+    let rebuilt_files = pack_files(&app.cache_dir, "NES");
+
+    // 18. The Pack's storage gone: said, nothing changed, nothing read as
+    // unchanged; back again, the state is used as before.
+    leave_system(&mut app);
+    std::fs::rename(&docs, root.join("docs-away")).unwrap();
+    let logged_from = log_len();
+    app.open_system_by_index(0);
+    assert!(app.pending.is_none());
+    assert!(
+        app.message
+            .as_deref()
+            .is_some_and(|m| m.contains("is unavailable")),
+        "{:?}",
+        app.message
+    );
+    assert_eq!(
+        app.artwork_provider.as_ref().map(|p| p.health),
+        Some(crate::artwork_pack::ProviderHealth::Unavailable)
+    );
+    assert_eq!(pack_files(&app.cache_dir, "NES"), rebuilt_files);
+    assert!(log_since(logged_from).contains("artwork pack NES: unavailable at"));
+    app.handle(Action::Accept);
+    app.enter(Place::Dir(games.clone()));
+    assert_eq!(app.here[0].name, "Known.nes", "no Pack data is substituted");
+    assert_eq!(app.here[0].cover, None);
+    // Said again at every entry while the storage is missing: opening
+    // the system without its Pack data needs the press each time.
+    leave_system(&mut app);
+    app.open_system_by_index(0);
+    assert!(
+        app.message
+            .as_deref()
+            .is_some_and(|m| m.contains("is unavailable")),
+        "{:?}",
+        app.message
+    );
+    app.handle(Action::Accept);
+    leave_system(&mut app);
+    std::fs::rename(root.join("docs-away"), &docs).unwrap();
+    let logged_from = log_len();
+    open(&mut app);
+    assert!(
+        app.pending.is_none() && app.message.is_none(),
+        "{:?}",
+        app.message
+    );
+    assert_pack_rows(&app);
+    assert!(log_since(logged_from).contains("artwork pack NES: state reused"));
+    assert_eq!(pack_files(&app.cache_dir, "NES"), rebuilt_files);
+    // The favourites and the screensaver find the prepared mapping again
+    // too, not the stand-in held while the storage was gone.
+    let mut favorite_rows = [favorite_row()];
+    let (systems, homes, roots, cache_dir) = (
+        app.all_systems.clone(),
+        app.homes(),
+        app.effective_artwork_pack_roots.clone(),
+        app.cache_dir.clone(),
+    );
+    leave_system(&mut app);
+    std::fs::rename(&docs, root.join("docs-away")).unwrap();
+    app.open_system_by_index(0);
+    assert_eq!(
+        app.artwork_provider_cache.get("NES").map(|p| p.health),
+        Some(crate::artwork_pack::ProviderHealth::Unavailable)
+    );
+    app.handle(Action::Accept);
+    leave_system(&mut app);
+    std::fs::rename(root.join("docs-away"), &docs).unwrap();
+    enrich_favorite_rows(
+        &mut favorite_rows,
+        &systems,
+        &homes,
+        &roots,
+        &cache_dir,
+        |id, root, _| app.provider_from_state(id, root).unwrap(),
+    );
+    assert_eq!(
+        favorite_rows[0].name, "Pack First",
+        "the stand-in for the missing storage is not kept once it is back"
+    );
+    assert_eq!(favorite_rows[0].cover, Some(artwork.join("Known.jpg")));
+    app.saver_candidates = None;
+    app.saver_pool.clear();
+    app.refill_saver();
+    assert!(
+        app.saver_pool
+            .iter()
+            .any(|picture| picture.path == artwork.join("Known.jpg")),
+        "{:?}",
+        app.saver_pool
+    );
+    assert!(app.provider_job.is_none());
+
+    // 13, 14. The rows the mapping was prepared from gone: asked, never
+    // written again unasked. Keep Current opens the ordinary system,
+    // there being no previous result to keep, and is remembered; the
+    // rebuild asks again, and Update writes the rows again.
+    let rows_path = crate::cache::artwork_pack_system_path(&app.cache_dir, "NES");
+    std::fs::remove_file(&rows_path).unwrap();
+    open(&mut app);
+    assert_prompt(&app, changed);
+    app.handle(Action::Quit);
+    assert!(app.pending.is_none(), "{:?}", app.message);
+    assert!(
+        app.source_job.is_none() && app.provider_job.is_none(),
+        "nothing is prepared unasked: {:?}",
+        app.message
+    );
+    assert_eq!(app.open_system.as_deref(), Some("NES"), "{:?}", app.message);
+    assert!(app.artwork_provider.is_none());
+    app.enter(Place::Dir(games.clone()));
+    assert_ordinary_rows(&app);
+    assert!(!rows_path.exists(), "a No writes no rows");
+    let state = crate::cache::load_pack_source_state(&app.cache_dir, "NES")
+        .unwrap()
+        .unwrap();
+    assert!(state.accepted.is_some());
+    assert!(state
+        .declined
+        .as_ref()
+        .is_some_and(|declined| declined.cache_marker.is_none()));
+    assert_eq!(
+        app.source_label("NES"),
+        format!("Automatic: {SOURCE_GAMELIST}")
+    );
+    leave_system(&mut app);
+    open(&mut app);
+    assert!(
+        app.pending.is_none(),
+        "the No stands for the rows being gone"
+    );
+    assert!(app.source_job.is_none() && app.provider_job.is_none());
+    assert_ordinary_rows(&app);
+    app.rebuild_open_system();
+    assert_prompt(&app, changed);
+    app.handle(Action::Accept);
+    assert!(app.source_job.is_some(), "{:?}", app.message);
     app.finish_background_work_for_headless();
-    assert_complete(&app, 3);
+    assert_eq!(app.message.as_deref(), Some("Artwork Pack prepared."));
+    assert_pack_rows(&app);
+    assert!(rows_path.exists());
+    let state = crate::cache::load_pack_source_state(&app.cache_dir, "NES")
+        .unwrap()
+        .unwrap();
+    assert!(state.accepted.is_some() && state.declined.is_none());
     app.message = None;
+
+    // An ordinary rebuild that fails leaves the prepared result alone.
+    leave_system(&mut app);
     let before_failure = cache_snapshot(&app.cache_dir);
     let held = root.join("held-games");
     std::fs::rename(&games, &held).unwrap();
@@ -2932,46 +3871,1090 @@ fn run_fresh_auto_pack_index_flow(root: &Path, window: Rc<MinimalSoftwareWindow>
         app.index_terminal.as_ref().unwrap().state,
         "Finished With Problems"
     );
-    assert!(app
-        .index_terminal
-        .as_ref()
-        .unwrap()
-        .problem
-        .contains("Not a directory"));
     assert_eq!(cache_snapshot(&app.cache_dir), before_failure);
-    assert_eq!(app.total_games, 3);
-    assert_operation_controls(&mut app, false, "A Details   B Back");
-    capture_live_if_requested(&mut app, "source-auto-pack-index-failed");
+    app.handle(Action::Quit);
     std::fs::remove_file(&games).unwrap();
     std::fs::rename(&held, &games).unwrap();
-    let complete = crate::cache::load_artwork_pack_data(&app.cache_dir, "NES").unwrap();
-    crate::cache::stage_transactional(
-        &app.cache_dir,
-        crate::cache::CacheKind::ArtworkPack,
-        vec![crate::cache::StagedSystemCache {
-            id: "NeoGeo".into(),
-            cache: complete.cache,
-            fingerprints: complete.fingerprints,
-            fingerprints_complete: true,
-        }],
-        &std::sync::atomic::AtomicBool::new(false),
+
+    // 20. Gamelist chosen: no check and no question, even where a check
+    // would fail.
+    app.source_system_id = Some("NES".into());
+    app.begin_source_switch(crate::source_cache::Target::Gamelist);
+    app.finish_background_work_for_headless();
+    assert_eq!(
+        crate::artwork_source::mode(&app.settings, "NES"),
+        crate::artwork_source::Mode::Gamelist
+    );
+    assert!(!app.effective_artwork_pack_roots.contains_key("NES"));
+    std::fs::rename(&docs, root.join("docs-away")).unwrap();
+    std::fs::write(&docs, b"not a directory").unwrap();
+    app.message = None;
+    open(&mut app);
+    assert!(
+        app.pending.is_none() && app.message.is_none(),
+        "{:?}",
+        app.message
+    );
+    assert_ordinary_rows(&app);
+    std::fs::remove_file(&docs).unwrap();
+    std::fs::rename(root.join("docs-away"), &docs).unwrap();
+    leave_system(&mut app);
+
+    // Automatic chosen again: the acceptance written down comes back
+    // without preparing anything. Chosen from inside the system while
+    // the Pack's storage is gone, the system is shown on its ordinary
+    // rows behind the unavailable message, as an entry shows it.
+    open(&mut app);
+    assert_ordinary_rows(&app);
+    std::fs::rename(&docs, root.join("docs-away")).unwrap();
+    app.open_game_data_source();
+    app.menu_list.select(0);
+    app.handle(Action::Accept);
+    assert!(app.source_job.is_none() && app.provider_job.is_none());
+    assert_eq!(
+        crate::artwork_source::mode(&app.settings, "NES"),
+        crate::artwork_source::Mode::Automatic
+    );
+    assert!(app.effective_artwork_pack_roots.contains_key("NES"));
+    assert!(
+        app.message
+            .as_deref()
+            .is_some_and(|m| m.contains("is unavailable")),
+        "{:?}",
+        app.message
+    );
+    assert_eq!(
+        app.artwork_provider.as_ref().map(|p| p.health),
+        Some(crate::artwork_pack::ProviderHealth::Unavailable)
+    );
+    assert_eq!(app.here[0].name, "Known.nes", "no Pack data is substituted");
+    std::fs::rename(root.join("docs-away"), &docs).unwrap();
+    app.screen = Screen::Browse;
+    leave_system(&mut app);
+    app.open_game_data_source();
+    assert_eq!(
+        app.menu[0],
+        format!("Automatic (Current: {SOURCE_ARTWORK_PACK})")
+    );
+    app.screen = Screen::Browse;
+    open(&mut app);
+    assert!(app.pending.is_none(), "{:?}", app.message);
+    assert_pack_rows(&app);
+
+    // 19. Artwork Pack chosen explicitly is the consent: prepared as the
+    // switch, no question, and written down like any preparation.
+    leave_system(&mut app);
+    std::fs::remove_dir_all(app.cache_dir.join("artwork-pack")).unwrap();
+    app.effective_artwork_pack_roots.clear();
+    app.artwork_provider_cache.clear();
+    // A switch whose settings cannot be saved after its result was
+    // installed says what stands: the prepared data, used under the
+    // Automatic that remains in force.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(&root).unwrap().permissions().mode();
+        std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o555)).unwrap();
+        app.source_system_id = Some("NES".into());
+        app.begin_source_switch(crate::source_cache::Target::ArtworkPack {
+            docs_root: docs.clone(),
+        });
+        assert!(app.source_job.is_some());
+        app.finish_background_work_for_headless();
+        std::fs::set_permissions(&root, std::fs::Permissions::from_mode(mode)).unwrap();
+        let message = app.message.clone().expect("a failed save is said");
+        assert!(
+            message.starts_with("Game data source was not changed.")
+                && message.ends_with(
+                    "The prepared Artwork Pack data was saved and is used under Automatic."
+                ),
+            "{message}"
+        );
+        assert_eq!(
+            crate::artwork_source::mode(&app.settings, "NES"),
+            crate::artwork_source::Mode::Automatic
+        );
+        assert!(pack_files(&app.cache_dir, "NES")
+            .iter()
+            .all(Option::is_some));
+        app.screen = Screen::Browse;
+        app.message = None;
+        open(&mut app);
+        assert!(app.pending.is_none(), "{:?}", app.message);
+        assert_pack_rows(&app);
+        leave_system(&mut app);
+        std::fs::remove_dir_all(app.cache_dir.join("artwork-pack")).unwrap();
+        app.effective_artwork_pack_roots.clear();
+        app.artwork_provider_cache.clear();
+    }
+    app.source_system_id = Some("NES".into());
+    app.begin_source_switch(crate::source_cache::Target::ArtworkPack {
+        docs_root: docs.clone(),
+    });
+    assert!(app.source_job.is_some());
+    assert!(app.pending.is_none());
+    app.finish_background_work_for_headless();
+    assert_eq!(
+        app.message.as_deref(),
+        Some(&*format!("Now using {SOURCE_ARTWORK_PACK}."))
+    );
+    assert!(pack_files(&app.cache_dir, "NES")
+        .iter()
+        .all(Option::is_some));
+    app.message = None;
+    open(&mut app);
+    assert!(app.pending.is_none());
+    assert_pack_rows(&app);
+    app.ui.hide().unwrap();
+    drop(app);
+
+    // 11. Two systems on one catalogue: each is asked about on its own,
+    // and only the one that said yes is prepared.
+    let shared = root.join("shared-group");
+    let shared_games = shared.join("games/NEOGEO");
+    let shared_docs = shared.join("docs");
+    let shared_artwork = shared_docs.join("NEOGEO/Artwork");
+    for directory in [&shared_games, &shared_artwork] {
+        std::fs::create_dir_all(directory).unwrap();
+    }
+    std::fs::write(shared_games.join("One.neo"), b"first rom").unwrap();
+    std::fs::write(
+        shared_artwork.join("manifest.tsv"),
+        "#key\tstyle\tss_system_id\nOne\tbox-2D\t142\n",
+    )
+    .unwrap();
+    std::fs::write(
+        shared_artwork.join("index.tsv"),
+        "#name\tcrc\tsize\tkey\nOne\t\t\tOne\n",
+    )
+    .unwrap();
+    std::fs::write(
+        shared_artwork.join("gameinfo.tsv"),
+        "#key\tname\tyear\tgenre\tdeveloper\tplayers\nOne\tPack One\t1990\tAction\tStudio\t1\n",
+    )
+    .unwrap();
+    std::fs::write(shared_artwork.join("One.jpg"), crate::covers::JPEG_16).unwrap();
+    let mut app = unopened_fixture_app_with_systems(
+        &shared,
+        window.clone(),
+        Settings::default(),
+        &["NeoGeoMVS", "NeoGeo"],
+        "games/NEOGEO",
+    );
+    app.pack_candidate_bases = vec![shared.clone()];
+    app.leave_splash();
+    app.finish_background_work_for_headless();
+    assert!(!app.cache_dir.join("artwork-pack").exists());
+    app.open_system_by_index(1);
+    assert_eq!(
+        app.message.as_deref(),
+        Some("Artwork Pack Available\n\nAn installed Artwork Pack was found for Neo Geo. Prepare its artwork and metadata now?\n\nA Prepare   B Not Now")
+    );
+    app.handle(Action::Accept);
+    app.finish_background_work_for_headless();
+    assert_eq!(app.source_progress.systems, 1);
+    assert_eq!(
+        app.open_system.as_deref(),
+        Some("NeoGeo"),
+        "{:?}",
+        app.message
+    );
+    app.enter(Place::Dir(shared_games.clone()));
+    assert_eq!(app.here[0].name, "Pack One");
+    assert!(pack_files(&app.cache_dir, "NeoGeo")
+        .iter()
+        .all(Option::is_some));
+    assert!(
+        pack_files(&app.cache_dir, "NeoGeoMVS")
+            .iter()
+            .all(Option::is_none),
+        "the other member is not prepared on this one's yes"
+    );
+    assert!(app.effective_artwork_pack_roots.contains_key("NeoGeo"));
+    assert!(!app.effective_artwork_pack_roots.contains_key("NeoGeoMVS"));
+    assert_eq!(
+        app.source_label("NeoGeoMVS"),
+        format!("Automatic: {SOURCE_GAMELIST}")
+    );
+    leave_system(&mut app);
+    app.open_system_by_index(0);
+    assert!(
+        app.message
+            .as_deref()
+            .is_some_and(|m| m.starts_with("Artwork Pack Available") && m.contains("Neo Geo MVS")),
+        "{:?}",
+        app.message
+    );
+    assert!(matches!(app.pending, Some(Pending::PrepareArtworkPack(_))));
+    app.handle(Action::Quit);
+    assert_eq!(app.open_system.as_deref(), Some("NeoGeoMVS"));
+    app.enter(Place::Dir(shared_games.clone()));
+    assert_eq!(app.here[0].name, "One.neo");
+    // Rebuild All reads both members the ordinary way: the accepted one
+    // into its Pack cache without its Pack, the state and mapping left
+    // alone, the other one into its ordinary file. The accepted member's
+    // next entry asks about its rows; the other one is not asked again
+    // for the Pack it declined.
+    leave_system(&mut app);
+    let prepared_neogeo = pack_files(&app.cache_dir, "NeoGeo");
+    app.start_build(true);
+    assert!(app.source_recovery_queue.is_empty());
+    app.finish_background_work_for_headless();
+    assert_eq!(app.index_terminal.as_ref().unwrap().state, "Complete");
+    assert_eq!(app.index_terminal.as_ref().unwrap().done, 2);
+    let rebuilt_neogeo = pack_files(&app.cache_dir, "NeoGeo");
+    assert!(rebuilt_neogeo.iter().all(Option::is_some));
+    assert_ne!(rebuilt_neogeo[0], prepared_neogeo[0]);
+    assert_eq!(rebuilt_neogeo[1], prepared_neogeo[1]);
+    assert_eq!(rebuilt_neogeo[2], prepared_neogeo[2]);
+    assert!(pack_files(&app.cache_dir, "NeoGeoMVS")[1].is_some());
+    assert!(pack_files(&app.cache_dir, "NeoGeoMVS")[0].is_none());
+    assert!(crate::cache::system_path(&app.cache_dir, "NeoGeoMVS").exists());
+    app.handle(Action::Quit);
+    app.open_system_by_index(1);
+    assert!(
+        app.message
+            .as_deref()
+            .is_some_and(|m| m.starts_with("Artwork Pack Changed") && m.contains("Neo Geo")),
+        "{:?}",
+        app.message
+    );
+    assert!(matches!(app.pending, Some(Pending::UpdateArtworkPack(_))));
+    app.handle(Action::Up);
+    app.open_system_by_index(0);
+    assert!(app.pending.is_none(), "{:?}", app.message);
+    assert_eq!(app.open_system.as_deref(), Some("NeoGeoMVS"));
+    app.ui.hide().unwrap();
+}
+
+/// The table's entry for one system, found over one games folder under
+/// the root, as `unopened_fixture_app` builds it.
+fn fixture_system(root: &Path, id: &str, games: &str) -> FoundSystem {
+    let def = crate::systems::parse_table(
+        include_str!("../assets/systems.toml"),
+        Path::new("systems.toml"),
     )
     .unwrap()
-    .unwrap()
-    .install()
+    .into_iter()
+    .find(|system| system.id == id)
     .unwrap();
-    let mut first = app.all_systems[0].clone();
-    first.def.id = "NeoGeo".into();
-    let mut second = first.clone();
-    second.def.id = "NeoGeoMVS".into();
-    app.all_systems = vec![first, second];
-    app.effective_artwork_pack_roots.clear();
-    app.effective_artwork_pack_roots
-        .insert("NeoGeo".into(), docs.to_string_lossy().into_owned());
-    app.start_build(false);
-    assert_eq!(app.source_recovery_queue.iter().map(String::as_str).collect::<Vec<_>>(), ["NeoGeo"],
-        "a missing later member must queue its shared source group even when the first member is complete");
-    app.build = None;
+    FoundSystem {
+        def,
+        paths: vec![root.join(games)],
+        logo_dir: None,
+        menu_folder: None,
+    }
+}
+
+/// A Pack cache as the previous release wrote it: complete rows and no
+/// state beside them. Installed with the index so the start reads the
+/// card as an upgraded installation does.
+fn install_legacy_pack_cache(cache_dir: &Path, system: &FoundSystem) -> Vec<u8> {
+    let library = Library::open_source_neutral(&system.to_config(), Default::default()).unwrap();
+    let cache = crate::cache::build_system(&library);
+    let mut index = crate::cache::Index::new();
+    index
+        .systems
+        .insert(system.def.id.clone(), cache.summary(&library.start()));
+    crate::cache::save_index(cache_dir, &index).unwrap();
+    crate::cache::install_transactional(
+        cache_dir,
+        crate::cache::CacheKind::ArtworkPack,
+        &[crate::cache::StagedSystemCache {
+            id: system.def.id.clone(),
+            cache,
+            fingerprints: Default::default(),
+            fingerprints_complete: true,
+        }],
+    )
+    .unwrap();
+    std::fs::read(crate::cache::artwork_pack_system_path(
+        cache_dir,
+        &system.def.id,
+    ))
+    .unwrap()
+}
+
+/// An installation upgraded from the release that kept no state beside
+/// its Pack caches: nothing is done to them at startup, each is adopted
+/// by the one system entry that first needs it, and a cache that cannot
+/// be tied to the Pack that is installed now is kept and asked about.
+fn run_legacy_pack_cache_adoption_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
+    let write_pack = |docs: &Path| {
+        let artwork = docs.join("NES/Artwork");
+        std::fs::create_dir_all(&artwork).unwrap();
+        std::fs::write(
+            artwork.join("manifest.tsv"),
+            "#key\tstyle\tss_system_id\nKnown\tbox-2D\t3\n",
+        )
+        .unwrap();
+        std::fs::write(
+            artwork.join("index.tsv"),
+            "#name\tcrc\tsize\tkey\nKnown\t\t\tKnown\n",
+        )
+        .unwrap();
+        std::fs::write(
+            artwork.join("gameinfo.tsv"),
+            "#key\tname\tyear\tgenre\tdeveloper\tplayers\nKnown\tPack First\t1990\tAction\tStudio\t1\n",
+        )
+        .unwrap();
+        std::fs::write(artwork.join("Known.jpg"), crate::covers::JPEG_16).unwrap();
+        artwork
+    };
+
+    // 23. An explicit choice from before: the cache validates against
+    // the live files once, on the worker, and the state is written; from
+    // then on the entry reads the state alone. No question: the choice
+    // was the consent.
+    let root = root.join("legacy-explicit");
+    let games = root.join("games/NES");
+    std::fs::create_dir_all(&games).unwrap();
+    std::fs::write(games.join("Known.nes"), b"first rom").unwrap();
+    let docs = root.join("docs");
+    let artwork = write_pack(&docs);
+    let settings_path = root.join("settings.toml");
+    let mut settings = Settings::default();
+    settings
+        .artwork_pack_roots
+        .insert("NES".into(), docs.to_string_lossy().into_owned());
+    settings.save(&settings_path).unwrap();
+    let legacy_bytes = install_legacy_pack_cache(
+        &crate::cache::dir_for(&settings_path),
+        &fixture_system(&root, "NES", "games/NES"),
+    );
+    let mut app = unopened_fixture_app(
+        &root,
+        window.clone(),
+        Settings::load(&settings_path).unwrap(),
+    );
+    app.leave_splash();
+    app.finish_background_work_for_headless();
+    assert!(app.build.is_none());
+    assert!(
+        pack_files(&app.cache_dir, "NES")[1].is_none(),
+        "startup writes no state for a cache it has not been asked to open"
+    );
+    assert!(app.provider_job.is_none() && app.provider_requests.is_empty());
+    let logged_from = log_len();
+    app.open_system_by_index(0);
+    assert_eq!(app.open_system.as_deref(), Some("NES"), "{:?}", app.message);
+    assert!(
+        app.pending.is_none(),
+        "an explicit choice is not asked again"
+    );
+    assert!(app.message.is_none(), "{:?}", app.message);
+    assert_eq!(app.here[0].name, "Pack First");
+    assert_eq!(app.here[0].cover, Some(artwork.join("Known.jpg")));
+    assert!(log_since(logged_from).contains("artwork pack NES: state written"));
+    let [rows, decision, prepared] = pack_files(&app.cache_dir, "NES");
+    assert_eq!(
+        rows,
+        Some(legacy_bytes),
+        "the cache is adopted, not rewritten"
+    );
+    assert!(decision.is_some() && prepared.is_some());
+    let state = crate::cache::load_pack_source_state(&app.cache_dir, "NES")
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        state
+            .accepted
+            .as_ref()
+            .map(|accepted| accepted.docs_root.as_str()),
+        Some(docs.to_str().unwrap())
+    );
+    leave_system(&mut app);
+    let logged_from = log_len();
+    app.open_system_by_index(0);
+    assert!(log_since(logged_from).contains("artwork pack NES: state reused"));
+    assert!(
+        app.provider_job.is_none(),
+        "the reused state opens the system without a worker read"
+    );
+    assert_eq!(app.here[0].name, "Pack First");
+    // A worker read started to open the system opens it when it is done,
+    // whatever an earlier read in the process was started for.
+    leave_system(&mut app);
+    app.artwork_provider_cache.clear();
+    app.provider_pending_then = OfferFollowUp::RebuildSystem;
+    app.wait_for_artwork_provider("NES", OfferFollowUp::OpenSystem);
+    assert!(app.provider_job.is_some());
+    app.finish_background_work_for_headless();
+    assert_eq!(app.open_system.as_deref(), Some("NES"), "{:?}", app.message);
+    assert!(
+        app.source_job.is_none() && app.build.is_none(),
+        "no rebuild was asked for"
+    );
+    app.ui.hide().unwrap();
+    drop(app);
+
+    // 24. Automatic from before, with a cache that still matches its
+    // installed Pack: adopted on the first entry, without a question.
+    let root = root.with_file_name("legacy-automatic");
+    let games = root.join("games/NES");
+    std::fs::create_dir_all(&games).unwrap();
+    std::fs::write(games.join("Known.nes"), b"first rom").unwrap();
+    let docs = root.join("docs");
+    let artwork = write_pack(&docs);
+    let legacy_bytes = install_legacy_pack_cache(
+        &root.join("cache"),
+        &fixture_system(&root, "NES", "games/NES"),
+    );
+    let mut app = unopened_fixture_app(&root, window.clone(), Settings::default());
+    app.pack_candidate_bases = vec![root.clone()];
+    app.leave_splash();
+    app.finish_background_work_for_headless();
+    assert!(app.build.is_none());
+    assert!(pack_files(&app.cache_dir, "NES")[1].is_none());
+    assert!(!app.effective_artwork_pack_roots.contains_key("NES"));
+    // A read that ends without the state written, here because the
+    // store cannot be written, gives the root back: the system is not
+    // held as Pack-selected on a Pack nothing validated, and the next
+    // entry reads it again.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let store = app.cache_dir.join("artwork-pack");
+        let mode = std::fs::metadata(&store).unwrap().permissions().mode();
+        std::fs::set_permissions(&store, std::fs::Permissions::from_mode(0o555)).unwrap();
+        app.open_system_by_index(0);
+        std::fs::set_permissions(&store, std::fs::Permissions::from_mode(mode)).unwrap();
+        assert!(app.open_system.is_none(), "{:?}", app.message);
+        assert!(
+            app.message
+                .as_deref()
+                .is_some_and(|m| m.starts_with("Artwork Pack read failed; system not opened.")),
+            "{:?}",
+            app.message
+        );
+        assert!(
+            !app.effective_artwork_pack_roots.contains_key("NES"),
+            "the root taken for the adoption is given back"
+        );
+        assert_eq!(
+            app.source_label("NES"),
+            format!("Automatic: {SOURCE_GAMELIST}")
+        );
+        assert!(pack_files(&app.cache_dir, "NES")[1].is_none());
+        app.message = None;
+    }
+    let logged_from = log_len();
+    app.open_system_by_index(0);
+    assert_eq!(app.open_system.as_deref(), Some("NES"), "{:?}", app.message);
+    assert!(app.pending.is_none(), "{:?}", app.message);
+    assert_eq!(app.here[0].name, "Pack First");
+    assert_eq!(app.here[0].cover, Some(artwork.join("Known.jpg")));
+    assert!(log_since(logged_from).contains("artwork pack NES: adopting legacy cache"));
+    assert!(log_since(logged_from).contains("artwork pack NES: state written"));
+    assert_eq!(pack_files(&app.cache_dir, "NES")[0], Some(legacy_bytes));
+    assert_eq!(
+        app.source_label("NES"),
+        format!("Automatic: {SOURCE_ARTWORK_PACK}")
+    );
+    leave_system(&mut app);
+    let logged_from = log_len();
+    app.open_system_by_index(0);
+    assert!(log_since(logged_from).contains("artwork pack NES: state reused"));
+    assert_eq!(app.here[0].name, "Pack First");
+    app.ui.hide().unwrap();
+    drop(app);
+
+    // 24. Automatic from before, with a cache that no longer tells the
+    // truth about its games: kept as it is and asked about. There is no
+    // current result to keep, so Keep Current opens the ordinary system
+    // and is remembered; Rebuild This System List is the way to prepare
+    // it, and it asks once more first.
+    let root = root.with_file_name("legacy-automatic-changed");
+    let games = root.join("games/NES");
+    std::fs::create_dir_all(&games).unwrap();
+    std::fs::write(games.join("Known.nes"), b"first rom").unwrap();
+    std::fs::write(games.join("Extra.nes"), b"a game the pack does not know").unwrap();
+    let docs = root.join("docs");
+    let artwork = write_pack(&docs);
+    let legacy_bytes = install_legacy_pack_cache(
+        &root.join("cache"),
+        &fixture_system(&root, "NES", "games/NES"),
+    );
+    let mut app = unopened_fixture_app(&root, window.clone(), Settings::default());
+    app.pack_candidate_bases = vec![root.clone()];
+    app.leave_splash();
+    app.finish_background_work_for_headless();
+    assert!(app.build.is_none());
+    let logged_from = log_len();
+    app.open_system_by_index(0);
+    assert!(
+        matches!(app.pending, Some(Pending::UpdateArtworkPack(_))),
+        "{:?}",
+        app.message
+    );
+    assert_eq!(
+        app.message.as_deref(),
+        Some("Artwork Pack Changed\n\nThe installed Artwork Pack data for NES has changed. Update its prepared artwork and metadata now?\n\nA Update   B Keep Current"),
+        "the same question a changed Pack raises"
+    );
+    assert!(log_since(logged_from).contains("artwork pack NES: prompt shown: changed"));
+    assert_eq!(
+        pack_files(&app.cache_dir, "NES")[0].as_deref(),
+        Some(legacy_bytes.as_slice()),
+        "the old cache is preserved while the question is up"
+    );
+    assert!(pack_files(&app.cache_dir, "NES")[1].is_none());
+    app.handle(Action::Quit);
+    assert_eq!(app.open_system.as_deref(), Some("NES"), "{:?}", app.message);
+    assert!(
+        app.artwork_provider.is_none(),
+        "Keep Current on a cache that cannot be tied to the Pack opens without it"
+    );
+    assert_eq!(app.here.len(), 2, "{:?}", app.here);
+    assert_eq!(app.here[0].name, "Extra.nes");
+    assert_eq!(app.here[1].name, "Known.nes");
+    assert!(app.here.iter().all(|row| row.cover.is_none()));
+    let state = crate::cache::load_pack_source_state(&app.cache_dir, "NES")
+        .unwrap()
+        .unwrap();
+    assert!(state.accepted.is_none());
+    assert!(state.declined.is_some());
+    assert_eq!(
+        pack_files(&app.cache_dir, "NES")[0],
+        Some(legacy_bytes.clone())
+    );
+    leave_system(&mut app);
+    app.open_system_by_index(0);
+    assert!(
+        app.pending.is_none(),
+        "the kept cache is not asked about again"
+    );
+    assert!(app.provider_job.is_none());
+    assert_eq!(app.here.len(), 2);
+    // An Update that fails leaves the system as it was, on its ordinary
+    // rows, and says so without claiming a previous result is in use:
+    // none was.
+    let manifest = artwork.join("manifest.tsv");
+    let good_manifest = std::fs::read(&manifest).unwrap();
+    std::fs::write(&manifest, "not-a-valid-manifest\n").unwrap();
+    app.rebuild_open_system();
+    app.finish_background_work_for_headless();
+    assert!(
+        matches!(app.pending, Some(Pending::UpdateArtworkPack(_))),
+        "{:?}",
+        app.message
+    );
+    app.handle(Action::Accept);
+    app.finish_background_work_for_headless();
+    let message = app.message.clone().expect("a failed Update is said");
+    assert!(
+        message.starts_with("NES Artwork Pack was not prepared."),
+        "{message}"
+    );
+    assert!(
+        !message.contains("previous complete cache"),
+        "no Pack result was in use: {message}"
+    );
+    assert_eq!(app.open_system.as_deref(), Some("NES"));
+    assert!(app.artwork_provider.is_none());
+    assert_eq!(
+        pack_files(&app.cache_dir, "NES")[0],
+        Some(legacy_bytes.clone())
+    );
+    std::fs::write(&manifest, &good_manifest).unwrap();
+    app.message = None;
+    app.rebuild_open_system();
+    app.finish_background_work_for_headless();
+    assert!(
+        matches!(app.pending, Some(Pending::UpdateArtworkPack(_))),
+        "the rebuild is the retry and asks once more: {:?}",
+        app.message
+    );
+    app.handle(Action::Accept);
+    app.finish_background_work_for_headless();
+    assert_eq!(app.message.as_deref(), Some("Artwork Pack prepared."));
+    assert!(app.artwork_provider.is_some());
+    assert!(pack_files(&app.cache_dir, "NES")
+        .iter()
+        .all(Option::is_some));
+    assert_ne!(pack_files(&app.cache_dir, "NES")[0], Some(legacy_bytes));
+    let known = app
+        .here
+        .iter()
+        .find(|row| row.cover.is_some())
+        .expect("the known game is enriched");
+    assert_eq!(known.name, "Pack First");
+    assert_eq!(known.cover, Some(artwork.join("Known.jpg")));
+    assert!(app
+        .here
+        .iter()
+        .any(|row| row.name == "Extra.nes" && row.cover.is_none()));
+    let state = crate::cache::load_pack_source_state(&app.cache_dir, "NES")
+        .unwrap()
+        .unwrap();
+    assert!(state.accepted.is_some() && state.declined.is_none());
+    app.ui.hide().unwrap();
+    drop(app);
+
+    // 24. Two systems on one catalogue: one prepared under this release,
+    // one carrying a cache from before. Adopting the second reads
+    // nothing for the first and writes nothing over its state, so the
+    // Pack change made in between is still asked about when the first
+    // is entered. Read on a fresh start, as an upgrade is: no provider
+    // is in memory.
+    let root = root.with_file_name("legacy-shared-group");
+    let games = root.join("games/NEOGEO");
+    let artwork = root.join("docs/NEOGEO/Artwork");
+    for directory in [&games, &artwork] {
+        std::fs::create_dir_all(directory).unwrap();
+    }
+    std::fs::write(games.join("One.neo"), b"first rom").unwrap();
+    std::fs::write(
+        artwork.join("manifest.tsv"),
+        "#key\tstyle\tss_system_id\nOne\tbox-2D\t142\n",
+    )
+    .unwrap();
+    std::fs::write(
+        artwork.join("index.tsv"),
+        "#name\tcrc\tsize\tkey\nOne\t\t\tOne\n",
+    )
+    .unwrap();
+    let gameinfo = artwork.join("gameinfo.tsv");
+    std::fs::write(
+        &gameinfo,
+        "#key\tname\tyear\tgenre\tdeveloper\tplayers\nOne\tPack One\t1990\tAction\tStudio\t1\n",
+    )
+    .unwrap();
+    std::fs::write(artwork.join("One.jpg"), crate::covers::JPEG_16).unwrap();
+    let mut app = unopened_fixture_app_with_systems(
+        &root,
+        window.clone(),
+        Settings::default(),
+        &["NeoGeoMVS", "NeoGeo"],
+        "games/NEOGEO",
+    );
+    app.pack_candidate_bases = vec![root.clone()];
+    app.leave_splash();
+    app.finish_background_work_for_headless();
+    app.open_system_by_index(0);
+    assert!(matches!(app.pending, Some(Pending::PrepareArtworkPack(_))));
+    app.handle(Action::Accept);
+    app.finish_background_work_for_headless();
+    assert_eq!(
+        app.open_system.as_deref(),
+        Some("NeoGeoMVS"),
+        "{:?}",
+        app.message
+    );
+    let prepared_mvs = pack_files(&app.cache_dir, "NeoGeoMVS");
+    assert!(prepared_mvs.iter().all(Option::is_some));
+    let cache_dir = app.cache_dir.clone();
+    app.ui.hide().unwrap();
+    drop(app);
+    // The other member's cache from before, complete and without state,
+    // and a Pack table edited after the first member was prepared.
+    let neogeo = fixture_system(&root, "NeoGeo", "games/NEOGEO");
+    let library = Library::open_source_neutral(&neogeo.to_config(), Default::default()).unwrap();
+    crate::cache::install_transactional(
+        &cache_dir,
+        crate::cache::CacheKind::ArtworkPack,
+        &[crate::cache::StagedSystemCache {
+            id: "NeoGeo".into(),
+            cache: crate::cache::build_system(&library),
+            fingerprints: Default::default(),
+            fingerprints_complete: true,
+        }],
+    )
+    .unwrap();
+    std::fs::write(
+        &gameinfo,
+        "#key\tname\tyear\tgenre\tdeveloper\tplayers\nOne\tPack One Renamed\t1990\tAction\tStudio\t1\n",
+    )
+    .unwrap();
+    let mut app = unopened_fixture_app_with_systems(
+        &root,
+        window.clone(),
+        Settings::default(),
+        &["NeoGeoMVS", "NeoGeo"],
+        "games/NEOGEO",
+    );
+    app.pack_candidate_bases = vec![root.clone()];
+    app.leave_splash();
+    app.finish_background_work_for_headless();
+    assert!(app.build.is_none());
+    assert!(app.artwork_provider_cache.is_empty());
+    let logged_from = log_len();
+    app.open_system_by_index(1);
+    assert_eq!(
+        app.open_system.as_deref(),
+        Some("NeoGeo"),
+        "{:?}",
+        app.message
+    );
+    assert!(app.pending.is_none(), "{:?}", app.message);
+    let logged = log_since(logged_from);
+    assert!(logged.contains("artwork pack NeoGeo: adopting legacy cache"));
+    assert!(logged.contains("artwork pack NeoGeo: state written"));
+    assert!(
+        !logged.contains("artwork pack NeoGeoMVS"),
+        "the prepared member is not read on the other one's adoption: {logged}"
+    );
+    assert_eq!(
+        pack_files(&app.cache_dir, "NeoGeoMVS"),
+        prepared_mvs,
+        "the prepared member's files are not written over"
+    );
+    app.enter(Place::Dir(games.clone()));
+    assert_eq!(app.here[0].name, "Pack One Renamed");
+    leave_system(&mut app);
+    app.open_system_by_index(0);
+    assert!(
+        matches!(app.pending, Some(Pending::UpdateArtworkPack(_))),
+        "the prepared member's own entry sees the change: {:?}",
+        app.message
+    );
+    assert!(app
+        .message
+        .as_deref()
+        .is_some_and(|message| message.starts_with("Artwork Pack Changed")));
+    app.ui.hide().unwrap();
+}
+
+/// An arcade folder with one of every broken descriptor beside the
+/// healthy ones and a set whose bare components live under the core's
+/// home: the Pack is prepared for every healthy entry, each broken one
+/// stays listed as it is, the report on screen counts them without a
+/// path, and the fast path is silent about them. A repaired descriptor
+/// is matched by Rebuild This System List; a Pack root that is gone or
+/// a cache folder that cannot be written fails the rebuild whole and
+/// leaves every file as it was. The ROM repository beside the
+/// descriptors is never traversed.
+#[cfg(unix)]
+fn run_arcade_descriptor_failures_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
+    use std::os::unix::fs::PermissionsExt;
+    let root = root.join("arcade-descriptors");
+    let arcade = root.join("_Arcade");
+    let home = root.join("games/Battletoads");
+    let mame = root.join("games/mame");
+    let docs = root.join("docs");
+    let artwork = docs.join("Arcade/Artwork");
+    for directory in [&arcade, &home, &mame, &artwork] {
+        std::fs::create_dir_all(directory).unwrap();
+    }
+    std::fs::write(
+        mame.join("healthy.zip"),
+        crate::zip::tests_archive(&["healthy.rom"], false),
+    )
+    .unwrap();
+    std::fs::set_permissions(&mame, std::fs::Permissions::from_mode(0o000)).unwrap();
+    for name in ["btc0-p0.bin", "btc0-p1.bin", "btc0-s.bin"] {
+        std::fs::write(home.join(name), b"payload").unwrap();
+    }
+    std::fs::write(arcade.join("btc0-s.bin"), b"decoy beside the descriptor").unwrap();
+    let set = arcade.join("Battletoads.mgl");
+    std::fs::write(
+        &set,
+        "<mistergamedescription>\n\t<rbf>_Arcade/cores/Battletoads</rbf>\n\t<setname>Battletoads</setname>\n\t\
+         <file delay=\"1\" type=\"f\" index=\"0\" path=\"btc0-p0.bin\"/>\n\t\
+         <file delay=\"1\" type=\"f\" index=\"1\" path=\"btc0-p1.bin\"/>\n\t\
+         <file delay=\"1\" type=\"f\" index=\"2\" path=\"btc0-s.bin\"/>\n\
+         </mistergamedescription>\n",
+    )
+    .unwrap();
+    let healthy = arcade.join("Healthy.mra");
+    let healthy_xml = "<misterromdescription><setname>healthy</setname></misterromdescription>";
+    std::fs::write(&healthy, healthy_xml).unwrap();
+    // A descriptor whose game is not there: the descriptor reads, the
+    // game it names does not.
+    let gone = arcade.join("Gone.mgl");
+    std::fs::write(
+        &gone,
+        format!(
+            "<mistergamedescription><file path=\"{}\"/></mistergamedescription>",
+            root.join("nowhere.rom").display()
+        ),
+    )
+    .unwrap();
+    let dangling = arcade.join("Dangling.mra");
+    std::os::unix::fs::symlink(root.join("gone.mra"), &dangling).unwrap();
+    let sealed = arcade.join("Sealed.mra");
+    std::fs::write(&sealed, healthy_xml).unwrap();
+    std::fs::set_permissions(&sealed, std::fs::Permissions::from_mode(0o000)).unwrap();
+    let sealed_readable = std::fs::read(&sealed).is_ok();
+    let broken = arcade.join("Broken.mra");
+    std::fs::write(&broken, "<misterromdescription><rom></wrong>").unwrap();
+    let cycle = arcade.join("Cycle.mgl");
+    std::fs::write(
+        &cycle,
+        format!(
+            "<mistergamedescription><file path=\"{}\"/></mistergamedescription>",
+            cycle.display()
+        ),
+    )
+    .unwrap();
+    let chain: Vec<PathBuf> = (0..=8)
+        .map(|index| arcade.join(format!("Chain-{index}.mgl")))
+        .collect();
+    for (index, mgl) in chain.iter().enumerate() {
+        let target = chain.get(index + 1).unwrap_or(&healthy);
+        std::fs::write(
+            mgl,
+            format!(
+                "<mistergamedescription><file path=\"{}\"/></mistergamedescription>",
+                target.display()
+            ),
+        )
+        .unwrap();
+    }
+    std::fs::write(
+        artwork.join("manifest.tsv"),
+        "#key\tstyle\tss_system_id\nhealthy\tbox-2D\t75\nBattletoads\tbox-2D\t75\n",
+    )
+    .unwrap();
+    std::fs::write(
+        artwork.join("index.tsv"),
+        "#name\tcrc\tsize\tkey\nhealthy\t\t\thealthy\nBattletoads\t\t\tBattletoads\n",
+    )
+    .unwrap();
+    std::fs::write(
+        artwork.join("gameinfo.tsv"),
+        "#key\tname\tyear\tgenre\tdeveloper\tplayers\nhealthy\tPack Healthy\t1990\tShooter\tStudio\t2\nBattletoads\tPack Battletoads\t1994\tBeat 'em up\tStudio\t2\n",
+    )
+    .unwrap();
+    for key in ["healthy", "Battletoads"] {
+        std::fs::write(artwork.join(format!("{key}.jpg")), crate::covers::JPEG_16).unwrap();
+    }
+
+    let mut app = unopened_fixture_app_with_systems(
+        &root,
+        window,
+        Settings::default(),
+        &["Arcade"],
+        "_Arcade",
+    );
+    app.pack_candidate_bases = vec![root.clone()];
+    app.leave_splash();
+    app.finish_background_work_for_headless();
+    assert!(app.build.is_none(), "{:?}", app.message);
+    let listed = app.index.as_ref().unwrap().systems["Arcade"].games;
+    assert_eq!(
+        listed, 16,
+        "every descriptor is a game to the ordinary index"
+    );
+
+    let name_of = |app: &App, path: &Path| -> browse::Row {
+        app.here
+            .iter()
+            .find(|row| row_target(row).as_deref() == Some(path))
+            .unwrap_or_else(|| panic!("{} is listed: {:?}", path.display(), app.here))
+            .clone()
+    };
+    let assert_enriched = |app: &App, path: &Path, name: &str, key: &str| {
+        let row = name_of(app, path);
+        assert_eq!(row.name, name, "{row:?}");
+        assert_eq!(row.cover, Some(artwork.join(format!("{key}.jpg"))));
+    };
+    let assert_plain = |app: &App, path: &Path| {
+        let row = name_of(app, path);
+        assert_eq!(
+            row.name,
+            path.file_stem().unwrap().to_string_lossy(),
+            "a skipped row keeps its own name: {row:?}"
+        );
+        assert_eq!(row.cover, None);
+    };
+
+    // 26. Prepared with problems: the healthy entries enriched, the broken
+    // ones counted on screen without a path, every row still listed.
+    let logged_from = log_len();
+    app.open_system_by_index(0);
+    assert!(matches!(app.pending, Some(Pending::PrepareArtworkPack(_))));
+    app.handle(Action::Accept);
+    app.finish_background_work_for_headless();
+    assert!(app.source_job.is_none());
+    assert_eq!(
+        app.open_system.as_deref(),
+        Some("Arcade"),
+        "{:?}",
+        app.message
+    );
+    let message = app.message.clone().expect("the report");
+    assert!(
+        message.starts_with("Artwork Pack prepared with problems:\n"),
+        "{message}"
+    );
+    capture_live_if_requested(&mut app, "source-auto-pack-prepared-with-problems");
+    assert!(
+        !message.contains('/'),
+        "no path reaches the screen: {message}"
+    );
+    assert!(message.contains("Arcade: 2 games left without Pack data: missing file"));
+    assert!(message.contains("Arcade: 1 game left without Pack data: malformed descriptor"));
+    assert!(message.contains("Arcade: 2 games left without Pack data: invalid redirect chain"));
+    assert_eq!(
+        message.contains("inaccessible file"),
+        !sealed_readable,
+        "a sealed file is inaccessible to anyone but root: {message}"
+    );
+    let logged = log_since(logged_from);
+    for (path, category) in [
+        (&gone, "missing file"),
+        (&dangling, "missing file"),
+        (&broken, "malformed descriptor"),
+        (&cycle, "invalid redirect chain"),
+        (&chain[0], "invalid redirect chain"),
+    ] {
+        assert!(
+            logged.contains(&format!(
+                "pack entry   {}: skipped: {category}:",
+                path.display()
+            )),
+            "{}: {logged}",
+            path.display()
+        );
+    }
+    assert!(
+        !logged.contains("_Arcade/btc0-s.bin"),
+        "nothing is looked for beside the set descriptor: {logged}"
+    );
+    assert_eq!(app.here.len(), listed, "every row is still listed");
+    assert_enriched(&app, &healthy, "Pack Healthy", "healthy");
+    assert_enriched(&app, &set, "Pack Battletoads", "Battletoads");
+    assert_enriched(&app, &chain[1], "Pack Healthy", "healthy");
+    for path in [&gone, &dangling, &broken, &cycle, &chain[0]] {
+        assert_plain(&app, path);
+    }
+    let files = pack_files(&app.cache_dir, "Arcade");
+    assert!(files.iter().all(Option::is_some));
+    let state = crate::cache::load_pack_source_state(&app.cache_dir, "Arcade")
+        .unwrap()
+        .unwrap();
+    let expected_skipped = if sealed_readable { 5 } else { 6 };
+    assert_eq!(
+        state.accepted.as_ref().unwrap().skipped_entries,
+        expected_skipped
+    );
+    assert_eq!(
+        state.accepted.as_ref().unwrap().health,
+        crate::artwork_pack::ProviderHealth::Ready,
+        "a broken descriptor is not a degraded Pack"
+    );
+
+    // The fast path says nothing about them again.
+    leave_system(&mut app);
+    let logged_from = log_len();
+    app.open_system_by_index(0);
+    assert!(
+        app.message.is_none() && app.pending.is_none(),
+        "{:?}",
+        app.message
+    );
+    assert!(app.source_job.is_none() && app.provider_job.is_none());
+    assert!(log_since(logged_from).contains("artwork pack Arcade: state reused"));
+    assert!(!log_since(logged_from).contains(&format!("pack entry   {}", arcade.display())));
+    assert_plain(&app, &broken);
+    assert_enriched(&app, &healthy, "Pack Healthy", "healthy");
+
+    // Repaired and rebuilt: matched like any other.
+    std::fs::write(root.join("nowhere.rom"), b"rom").unwrap();
+    std::fs::write(
+        artwork.join("index.tsv"),
+        "#name\tcrc\tsize\tkey\nhealthy\t\t\thealthy\nBattletoads\t\t\tBattletoads\nnowhere\t\t\thealthy\n",
+    )
+    .unwrap();
+    std::fs::remove_file(&dangling).unwrap();
+    std::fs::write(&dangling, healthy_xml).unwrap();
+    std::fs::set_permissions(&sealed, std::fs::Permissions::from_mode(0o644)).unwrap();
+    std::fs::write(&broken, healthy_xml).unwrap();
+    std::fs::write(
+        &cycle,
+        format!(
+            "<mistergamedescription><file path=\"{}\"/></mistergamedescription>",
+            healthy.display()
+        ),
+    )
+    .unwrap();
+    std::fs::write(
+        &chain[0],
+        format!(
+            "<mistergamedescription><file path=\"{}\"/></mistergamedescription>",
+            healthy.display()
+        ),
+    )
+    .unwrap();
+    app.rebuild_open_system();
+    assert!(app.source_job.is_some(), "{:?}", app.message);
+    app.finish_background_work_for_headless();
+    assert_eq!(app.message.as_deref(), Some("Arcade list rebuilt."));
+    for path in [&gone, &dangling, &sealed, &broken, &cycle, &chain[0]] {
+        assert_enriched(&app, path, "Pack Healthy", "healthy");
+    }
+    let state = crate::cache::load_pack_source_state(&app.cache_dir, "Arcade")
+        .unwrap()
+        .unwrap();
+    assert_eq!(state.accepted.as_ref().unwrap().skipped_entries, 0);
+
+    // 27. One component of the set actually gone from its home: only that
+    // entry is left without Pack data, at the home path; back, matched.
+    std::fs::remove_file(home.join("btc0-p1.bin")).unwrap();
+    app.message = None;
+    let logged_from = log_len();
+    app.rebuild_open_system();
+    app.finish_background_work_for_headless();
+    assert_eq!(
+        app.message.as_deref(),
+        Some("Arcade list rebuilt with problems:\nArcade: 1 game left without Pack data: missing file")
+    );
+    let logged = log_since(logged_from);
+    assert!(
+        logged.contains(&format!(
+            "pack entry   {}: skipped: missing file:",
+            set.display()
+        )) && logged.contains(&home.join("btc0-p1.bin").display().to_string()),
+        "{logged}"
+    );
+    assert!(!logged.contains("_Arcade/btc0"), "{logged}");
+    assert_plain(&app, &set);
+    assert_enriched(&app, &healthy, "Pack Healthy", "healthy");
+    std::fs::write(home.join("btc0-p1.bin"), b"payload").unwrap();
+    app.message = None;
+    app.rebuild_open_system();
+    app.finish_background_work_for_headless();
+    assert_eq!(app.message.as_deref(), Some("Arcade list rebuilt."));
+    assert_enriched(&app, &set, "Pack Battletoads", "Battletoads");
+    let complete = pack_files(&app.cache_dir, "Arcade");
+
+    // The Pack root gone is the whole system's failure: nothing replaced.
+    std::fs::rename(&docs, root.join("docs-away")).unwrap();
+    app.message = None;
+    app.rebuild_open_system();
+    app.finish_background_work_for_headless();
+    assert_eq!(
+        app.message.as_deref(),
+        Some("Arcade list was not rebuilt.\nArtwork Pack unavailable: reconnect its storage and try again.\nThe previous complete cache remains in use.")
+    );
+    assert_eq!(pack_files(&app.cache_dir, "Arcade"), complete);
+    assert_enriched(&app, &healthy, "Pack Healthy", "healthy");
+    std::fs::rename(root.join("docs-away"), &docs).unwrap();
+
+    // A cache folder that cannot be written is the same: nothing replaced.
+    let store = app.cache_dir.join("artwork-pack");
+    std::fs::rename(&store, app.cache_dir.join("artwork-pack.held")).unwrap();
+    std::fs::write(&store, b"not a directory").unwrap();
+    app.message = None;
+    app.rebuild_open_system();
+    app.finish_background_work_for_headless();
+    let message = app.message.clone().unwrap();
+    assert!(
+        message
+            .starts_with("Arcade list was not rebuilt.\nCheck the selected storage and try again."),
+        "{message}"
+    );
+    assert!(!store.is_dir());
+    std::fs::remove_file(&store).unwrap();
+    std::fs::rename(app.cache_dir.join("artwork-pack.held"), &store).unwrap();
+    assert_eq!(pack_files(&app.cache_dir, "Arcade"), complete);
+    app.message = None;
+    app.rebuild_open_system();
+    app.finish_background_work_for_headless();
+    assert_eq!(app.message.as_deref(), Some("Arcade list rebuilt."));
+    assert_enriched(&app, &set, "Pack Battletoads", "Battletoads");
+    std::fs::set_permissions(&mame, std::fs::Permissions::from_mode(0o755)).unwrap();
     app.ui.hide().unwrap();
 }
 
@@ -3019,7 +5002,6 @@ fn run_auto_source_choice_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
     }
     app.menu_list.select(0);
 
-    app.source_switch_automatic = false;
     app.begin_source_switch(crate::source_cache::Target::Gamelist);
     assert_eq!(
         crate::artwork_source::mode(&app.settings, "NES"),
@@ -3067,33 +5049,18 @@ fn run_auto_source_choice_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
     }
     app.menu_list.select(0);
     app.handle(Action::Accept);
-    app.handle(Action::Quit);
-    app.finish_background_work_for_headless();
+    // Choosing Automatic is a saved choice and nothing else: no worker,
+    // no Pack looked for, no cache touched. Whether a Pack is used is
+    // decided when the system is entered.
     assert!(
-        app.source_problem("NES").is_none(),
-        "cancelled uncommitted Automatic selection must keep Gamelist usable"
+        app.source_resolution.is_none() && app.source_job.is_none() && app.provider_job.is_none(),
+        "Automatic starts no work of its own"
     );
+    assert_eq!(app.screen, Screen::GameDataSource);
     assert_eq!(
-        crate::artwork_source::mode(&app.settings, "NES"),
-        Mode::Gamelist
+        app.menu[0],
+        format!("Automatic (Current: {SOURCE_GAMELIST})")
     );
-    assert!(Settings::load(&app.settings_path)
-        .unwrap()
-        .gamelist_sources
-        .contains("NES"));
-    assert_eq!(cache_snapshot(&app.cache_dir), restarted_cache);
-    app.open_game_data_source();
-    app.menu_list.select(0);
-    app.handle(Action::Accept);
-    assert!(
-        app.source_resolution.is_some(),
-        "Automatic must resolve on its worker"
-    );
-    assert!(
-        app.settings.gamelist_sources.contains("NES"),
-        "the saved choice remains until resolution and save succeed"
-    );
-    app.finish_background_work_for_headless();
     assert_eq!(
         crate::artwork_source::mode(&app.settings, "NES"),
         Mode::Automatic
@@ -3119,7 +5086,8 @@ fn run_auto_source_choice_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
     let blocked_parent = root.join("blocked-settings-parent");
     std::fs::write(&blocked_parent, b"not a directory").unwrap();
     app.settings_path = blocked_parent.join("settings.toml");
-    app.resolve_artwork_sources(Some("NES"), SourceResolutionAction::Automatic);
+    app.source_system_id = Some("NES".into());
+    app.choose_automatic_source();
     app.finish_background_work_for_headless();
     assert_eq!(
         app.settings, before_failure,
@@ -3141,7 +5109,7 @@ fn run_auto_source_choice_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
         "source failures are isolated by group"
     );
     let rows_before_error: Vec<_> = app.here.iter().map(row_key).collect();
-    app.open_system_now_with_provider(None);
+    app.open_system_now();
     assert!(app
         .message
         .as_deref()
@@ -3203,9 +5171,25 @@ fn run_degraded_pack_acknowledgement_flow(root: &Path, window: Rc<MinimalSoftwar
         .insert("NES".into(), docs.to_string_lossy().into_owned());
     settings.save(&settings_path).unwrap();
     // Every start reads the card afresh, as a return from a game does.
+    // A Pack whose tables changed since it was prepared is asked about
+    // on entry; an update is the answer every step of this flow wants.
+    let answer_update = |app: &mut App| {
+        assert!(
+            matches!(app.pending, Some(Pending::UpdateArtworkPack(_))),
+            "the changed Pack is asked about: {:?}",
+            app.message
+        );
+        app.handle(Action::Accept);
+        app.finish_background_work_for_headless();
+    };
     let start = |window: Rc<MinimalSoftwareWindow>| {
         let mut app = unopened_fixture_app(&root, window, Settings::load(&settings_path).unwrap());
         app.open_system_by_index(0);
+        // The wordmark takes the first press; the question needs the next.
+        app.leave_splash();
+        if matches!(app.pending, Some(Pending::UpdateArtworkPack(_))) {
+            answer_update(&mut app);
+        }
         assert!(
             app.source_resolution.is_none() && app.source_job.is_none(),
             "a headless open must also finish the resolution that a cache recovery restarts"
@@ -3293,11 +5277,26 @@ fn run_degraded_pack_acknowledgement_flow(root: &Path, window: Rc<MinimalSoftwar
     app.ui.hide().unwrap();
     drop(app);
 
-    // 1. The first look at an incomplete pack warns. Putting the warning up
-    // is not seeing it: a headless render opens a system the same way and
-    // nobody dismisses what it draws, so nothing is written down yet.
+    // 1. The first look at an incomplete pack warns. An image gone is
+    // not a change to the tables: the entry stands on what it prepared,
+    // and the Pack is read again when its list is rebuilt. Putting the
+    // warning up is not seeing it: a headless render opens a system the
+    // same way and nobody dismisses what it draws, so nothing is written
+    // down yet.
     std::fs::remove_file(artwork.join("Second.jpg")).unwrap();
-    let app = start(window.clone());
+    let mut app = start(window.clone());
+    assert_eq!(
+        app.artwork_provider.as_ref().unwrap().health,
+        ProviderHealth::Ready,
+        "an image removed is read on demand, not as a new pack state"
+    );
+    assert!(app.message.is_none(), "{:?}", app.message);
+    app.rebuild_open_system();
+    app.finish_background_work_for_headless();
+    assert_eq!(app.message.as_deref(), Some("NES list rebuilt."));
+    app.handle(Action::Accept);
+    assert!(app.message.is_none());
+    reopen(&mut app);
     assert_eq!(
         app.artwork_provider.as_ref().unwrap().health,
         ProviderHealth::Degraded
@@ -3348,9 +5347,19 @@ fn run_degraded_pack_acknowledgement_flow(root: &Path, window: Rc<MinimalSoftwar
 
     // 4. A new diagnostic on the same pack, noticed on re-entry, is a new
     // warning even while the process that saw the old one is still running.
+    // A table gone is a change: asked about, and updated.
     std::fs::remove_file(artwork.join("index.tsv")).unwrap();
-    reopen(&mut app);
+    app.handle(Action::Quit);
+    assert!(app.open_system.is_none());
+    app.open_system_by_index(0);
+    answer_update(&mut app);
+    assert_eq!(app.open_system.as_deref(), Some("NES"), "{:?}", app.message);
     assert!(message_contains(&app, "is incomplete"), "{:?}", app.message);
+    assert!(
+        message_contains(&app, "Artwork Pack prepared."),
+        "the warning stays up with the report under it: {:?}",
+        app.message
+    );
     let no_index_digest = app.artwork_provider.as_ref().unwrap().health_digest();
     assert_ne!(no_index_digest, first_digest);
     assert!(app
@@ -3592,16 +5601,30 @@ fn run_degraded_pack_acknowledgement_flow(root: &Path, window: Rc<MinimalSoftwar
     app.ui.hide().unwrap();
     drop(app);
 
-    // 5. Invalid and unavailable packs need acting on: shown at every start,
-    // and never written down.
+    // 5. A pack that turned invalid is a change that cannot be prepared:
+    // said at every start with the previous complete result kept in use,
+    // and never written down. An unavailable pack is said at every start
+    // as well.
     write_manifest(&["../escape"]);
+    let complete = cache_snapshot(&crate::cache::dir_for(&settings_path).join("artwork-pack"));
     for _ in 0..2 {
         let mut app = start(window.clone());
         assert_eq!(
             app.artwork_provider.as_ref().unwrap().health,
-            ProviderHealth::Invalid
+            ProviderHealth::Degraded,
+            "the previous complete result stays in use"
         );
-        assert!(message_contains(&app, "is invalid"), "{:?}", app.message);
+        let message = app.message.clone().expect("the failure is said");
+        assert!(
+            message.starts_with("NES Artwork Pack was not prepared.")
+                && message.ends_with("The previous complete cache remains in use."),
+            "{message}"
+        );
+        assert_eq!(
+            cache_snapshot(&app.cache_dir.join("artwork-pack")),
+            complete,
+            "a failed update replaces nothing"
+        );
         app.handle(Action::Accept);
         app.ui.hide().unwrap();
     }
@@ -3921,7 +5944,10 @@ pub(super) fn run_ui_acceptance_flow(window: Rc<MinimalSoftwareWindow>) {
     run_browse_bar_settings_flow(&root, window.clone());
     run_scripts_flow(&root, window.clone());
     run_artwork_matte_flow(&root, window.clone());
-    run_fresh_auto_pack_index_flow(&root, window.clone());
+    run_automatic_pack_consent_flow(&root, window.clone());
+    run_legacy_pack_cache_adoption_flow(&root, window.clone());
+    #[cfg(unix)]
+    run_arcade_descriptor_failures_flow(&root, window.clone());
     run_auto_source_choice_flow(&root, window.clone());
     run_degraded_pack_acknowledgement_flow(&root, window.clone());
     run_arcade_core_descriptor_favourite_flow(&root, window.clone());
@@ -4325,6 +6351,7 @@ pub(super) fn run_ui_acceptance_flow(window: Rc<MinimalSoftwareWindow>) {
     app.effective_artwork_pack_roots = crate::artwork_source::resolve(
         &app.all_systems,
         &app.settings,
+        &app.cache_dir,
         &std::sync::atomic::AtomicBool::new(false),
     )
     .unwrap()

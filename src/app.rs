@@ -192,6 +192,39 @@ enum Pending {
     CancelScrape,
     ClearCategoryImage(ImageTarget),
     UseScraperMatch(Box<crate::scraper::Match>),
+    /// An installed Pack found for a system nobody has decided about: A
+    /// prepares it for that system alone, B remembers Not Now for this
+    /// Pack state.
+    PrepareArtworkPack(Box<PackOffer>),
+    /// A prepared Pack whose data changed: A prepares it again, B keeps
+    /// the rows already prepared and remembers the change.
+    UpdateArtworkPack(Box<PackOffer>),
+}
+
+/// What an Artwork Pack question is about: the system, the root and the
+/// state of the source as it was found, so a No is remembered for exactly
+/// that state and a Yes prepares exactly that root.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PackOffer {
+    system_id: String,
+    docs_root: PathBuf,
+    language: Option<String>,
+    /// The Pack as it stands, for remembering a No by. Nothing for a Pack
+    /// nobody has read yet: it is taken when the No is given, so nothing
+    /// in the Pack is read before the answer.
+    signature: Option<crate::artwork_pack::SourceFingerprint>,
+    /// The marker of the prepared cache the question was raised over, when
+    /// there is one to keep.
+    cache_marker: Option<u32>,
+    /// What a No goes on to do: open the system as it is, or rebuild its
+    /// ordinary list, which is what asked.
+    then: OfferFollowUp,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OfferFollowUp {
+    OpenSystem,
+    RebuildSystem,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1114,6 +1147,30 @@ fn artwork_directory_children(
     Ok(children)
 }
 
+/// The docs root a manually chosen directory stands for: `Ok(None)` when it
+/// holds no mapped Artwork directory for the system, `Err(path)` when one of
+/// the mapped Artwork directories it holds resolves outside the available
+/// MiSTer storage. The Pack read from a root covers every mapped folder under
+/// it, so a link out of the storage is refused here as the picker never lists
+/// such a directory, and as `candidate_root` refuses one out of its base.
+fn chosen_pack_root(
+    system_id: &str,
+    chosen: &Path,
+    game_roots: &[String],
+) -> std::result::Result<Option<PathBuf>, PathBuf> {
+    let Some(root) = crate::artwork_pack::normalize_docs_root(system_id, chosen) else {
+        return Ok(None);
+    };
+    match crate::artwork_pack::expected_folders(system_id)
+        .iter()
+        .map(|folder| root.join(folder).join("Artwork"))
+        .find(|artwork| artwork.is_dir() && !directory_allowed_for(artwork, game_roots))
+    {
+        Some(artwork) => Err(artwork),
+        None => Ok(Some(root)),
+    }
+}
+
 fn pack_folders_at(system_id: &str, docs_root: &Path) -> String {
     let present: Vec<&str> = crate::artwork_pack::expected_folders(system_id)
         .iter()
@@ -1185,10 +1242,63 @@ fn artwork_pack_error_action(error: &crate::error::DegaussError) -> &'static str
             "Repair the game descriptor; see degauss.log."
         }
         crate::error::DegaussError::Malformed { .. } => "Repair the Artwork Pack and try again.",
+        // A preparation that failed on the Pack's health carries the
+        // health label first: the category is what the screen has room
+        // for, the detail behind it is in the log.
+        crate::error::DegaussError::Unsupported { what, detail } if *what == "Artwork Pack" => {
+            if detail.starts_with(crate::artwork_pack::ProviderHealth::Unavailable.label()) {
+                "Artwork Pack unavailable: reconnect its storage and try again."
+            } else if detail.starts_with(crate::artwork_pack::ProviderHealth::Invalid.label()) {
+                "Artwork Pack invalid: repair it and try again."
+            } else {
+                "Check degauss.log for details, then try again."
+            }
+        }
         crate::error::DegaussError::Unsupported { .. } => {
             "Check degauss.log for details, then try again."
         }
     }
+}
+
+/// What a finished recovery says: the headline, the path-free lines of
+/// what the scan left out, and one sentence for a storage warning whose
+/// detail, with its paths, is in the log. Nothing else reaches the
+/// screen: it is 352 pixels wide.
+fn recovery_report(headline: &str, scan_warnings: &[String], storage_warning: bool) -> String {
+    let mut report = if scan_warnings.is_empty() {
+        format!("{headline}.")
+    } else {
+        format!("{headline} with problems:\n{}", scan_warnings.join("\n"))
+    };
+    if storage_warning {
+        report.push_str("\nSaved with a storage warning; see degauss.log.");
+    }
+    report
+}
+
+/// The provider an accepted Pack whose storage is gone is shown with:
+/// the prepared one, marked unavailable with the reason, so the entry
+/// says so and nothing is drawn from it. Not kept: once the storage is
+/// back the prepared one is read again.
+fn unavailable_stand_in(
+    id: &str,
+    root: &Path,
+    provider: crate::artwork_pack::Provider,
+    problem: Option<String>,
+) -> crate::artwork_pack::Provider {
+    crate::note(&format!(
+        "artwork pack {id}: unavailable at {}",
+        root.display()
+    ));
+    let mut shown = provider;
+    shown.health = crate::artwork_pack::ProviderHealth::Unavailable;
+    shown.diagnostics = vec![problem.unwrap_or_else(|| {
+        format!(
+            "the selected installation at {} is missing or cannot be read",
+            root.display()
+        )
+    })];
+    shown
 }
 
 fn source_change_failure_message(error: &crate::error::DegaussError) -> String {
@@ -1196,6 +1306,21 @@ fn source_change_failure_message(error: &crate::error::DegaussError) -> String {
         "Game data source was not changed.\n{}",
         artwork_pack_error_action(error)
     )
+}
+
+/// A switch whose settings could not be saved after its result was
+/// installed. The Pack's rows and state stand as prepared by then: under
+/// Automatic the group's members open on them as an acceptance, so the
+/// message says so rather than claiming nothing changed.
+fn source_settings_failure_message(
+    error: &crate::error::DegaussError,
+    target: &crate::source_cache::Target,
+) -> String {
+    let mut message = source_change_failure_message(error);
+    if matches!(target, crate::source_cache::Target::ArtworkPack { .. }) {
+        message.push_str("\nThe prepared Artwork Pack data was saved and is used under Automatic.");
+    }
+    message
 }
 
 fn source_progress_rows(
@@ -1255,16 +1380,13 @@ fn persist_source_choice(
     Ok((changed, label, warning))
 }
 
-fn persist_source_mode(
+/// Automatic chosen for the group: both explicit choices are removed,
+/// and what each member decided stands in its own state file.
+fn persist_automatic_source(
     current: &Settings,
     path: &Path,
     group: &str,
-    target: &crate::source_cache::Target,
-    automatic: bool,
 ) -> Result<(Settings, &'static str, Option<String>)> {
-    if !automatic {
-        return persist_source_choice(current, path, group, target);
-    }
     let mut changed = current.clone();
     changed.artwork_pack_roots.remove(group);
     changed.gamelist_sources.remove(group);
@@ -1986,6 +2108,10 @@ enum SourceRecoveryPurpose {
     RefreshSystem,
     /// A forced or incomplete-cache pass queued by Rebuild All Systems Lists.
     FullBuild,
+    /// The user answered Prepare or Update to an Artwork Pack question: one
+    /// system, prepared against the root it was asked about, accepted for
+    /// that system only once the complete result is installed.
+    Consented,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2003,8 +2129,20 @@ enum SourceResolutionAction {
     Startup,
     OpenSystem,
     Rebuild(Instant),
-    RefreshSystem,
-    Automatic,
+}
+
+/// What the entry check into a system settled on.
+enum Entry {
+    /// Open it: with this Pack root, the provider to draw it with and the
+    /// rows the check read on the way, or with none of them.
+    Proceed(
+        Option<PathBuf>,
+        Option<crate::artwork_pack::Provider>,
+        Option<crate::cache::ArtworkPackData>,
+    ),
+    /// Something else is on screen first: a question, a worker's
+    /// progress, or what went wrong.
+    Waiting,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2791,7 +2929,12 @@ pub struct App {
     /// Source groups whose CRC coverage must follow a global rebuild. Each is
     /// handled by the same cancellable worker as an explicit source change.
     source_recovery_queue: VecDeque<String>,
+    /// What the scan left out, one path-free line per reason: shown on
+    /// screen when the recovery finishes.
     source_recovery_warnings: Vec<String>,
+    /// What installing the result warned about, with its paths: in the
+    /// log, and on screen only as one sentence pointing there.
+    source_recovery_storage_warnings: Vec<String>,
     /// A recovery cancelled or failed in this run must not immediately start
     /// again every time the same system is entered.
     source_recovery_suppressed: HashSet<String>,
@@ -2806,6 +2949,9 @@ pub struct App {
     /// A Pack system entry waiting for its provider snapshot. The source-neutral
     /// cache remains untouched while this read runs.
     provider_pending_open: Option<String>,
+    /// What the waiting entry was for: opening the system, or rebuilding
+    /// its list, which is what asked for the read.
+    provider_pending_then: OfferFollowUp,
     provider_cancelling: bool,
 
     screen: Screen,
@@ -2908,20 +3054,21 @@ pub struct App {
     /// a cheap source fingerprint check and reuses the parsed TSV snapshot
     /// only while its root, language and Pack files are unchanged.
     artwork_provider_cache: HashMap<String, crate::artwork_pack::Provider>,
+    /// The Pack root in use, keyed by system id: an explicit choice is
+    /// spelled out for every member of its group, an Automatic acceptance
+    /// belongs to the one system that made it.
     effective_artwork_pack_roots: std::collections::BTreeMap<String, String>,
     artwork_source_errors: std::collections::BTreeMap<String, String>,
+    /// Where an Automatic Pack is looked for when a system is entered.
+    /// Production is SD then USB; tests point it at a fixture.
+    pack_candidate_bases: Vec<PathBuf>,
     source_resolution: Option<crate::artwork_source::Job>,
     source_resolution_cancelled: bool,
     source_resolution_groups: HashSet<String>,
     source_resolution_action: SourceResolutionAction,
-    source_switch_automatic: bool,
     /// Systems whose persisted Pack cache no longer provides complete current
     /// identities for the provider that was just read.
     provider_recovery_needed: HashSet<String>,
-    /// A provider/cache pair checked since the last system-entry request.
-    /// Consuming this token lets a startup prewarm open immediately; a later
-    /// re-entry schedules another worker-side filesystem check.
-    provider_validated: HashSet<String>,
     /// Provider-health notices already shown for the current source snapshot.
     /// A changed provider invalidates its group's entries so a new problem is
     /// still reported, while ordinary re-entry does not repeat the same modal.
@@ -3198,7 +3345,16 @@ impl App {
         );
 
         let system_count = systems.len();
-        let effective_artwork_pack_roots = settings.artwork_pack_roots.clone();
+        // Explicit choices are saved per source group; every member of the
+        // group uses that root.
+        let effective_artwork_pack_roots = systems
+            .iter()
+            .filter_map(|system| {
+                let group = crate::artwork_pack::source_group(&system.def.id)?;
+                let root = settings.artwork_pack_roots.get(group)?;
+                Some((system.def.id.clone(), root.clone()))
+            })
+            .collect();
         let mut app = App {
             speed: settings
                 .speed_step
@@ -3241,13 +3397,12 @@ impl App {
             artwork_provider_cache: HashMap::new(),
             effective_artwork_pack_roots,
             artwork_source_errors: std::collections::BTreeMap::new(),
+            pack_candidate_bases: crate::artwork_source::production_bases(),
             source_resolution: None,
             source_resolution_cancelled: false,
             source_resolution_groups: HashSet::new(),
             source_resolution_action: SourceResolutionAction::Startup,
-            source_switch_automatic: false,
             provider_recovery_needed: HashSet::new(),
-            provider_validated: HashSet::new(),
             pack_health_shown: HashSet::new(),
             pack_health_pending: None,
             build: None,
@@ -3334,6 +3489,7 @@ impl App {
             source_operation: None,
             source_recovery_queue: VecDeque::new(),
             source_recovery_warnings: Vec::new(),
+            source_recovery_storage_warnings: Vec::new(),
             source_recovery_suppressed: HashSet::new(),
             source_cancelling: false,
             provider_job: None,
@@ -3341,6 +3497,7 @@ impl App {
             provider_requests: Vec::new(),
             provider_loading: HashSet::new(),
             provider_pending_open: None,
+            provider_pending_then: OfferFollowUp::OpenSystem,
             provider_cancelling: false,
             screen: Screen::Splash,
             browsing: Browsing::Categories,
@@ -3435,7 +3592,7 @@ impl App {
         if !theme_problems.is_empty() {
             app.message = Some(theme_problems.join("\n"));
         }
-        app.resolve_artwork_sources(None, SourceResolutionAction::Startup);
+        app.resolve_artwork_sources(SourceResolutionAction::Startup);
         app.apply_geometry();
         app
     }
@@ -4231,14 +4388,23 @@ impl App {
                 crate::artwork_pack::selected_root(&self.effective_artwork_pack_roots, &id)
                     .map(Path::to_path_buf);
             let pack_selected = pack_root.is_some();
-            let provider = pack_root
+            let provider = match pack_root
                 .as_deref()
-                .and_then(|root| self.cached_artwork_provider(&id, root, false));
-            if pack_selected && provider.is_none() {
-                if let Some(group) = crate::artwork_pack::source_group(&id) {
-                    self.queue_provider_group(group, false);
-                    self.start_provider_job_if_ready();
+                .map(|root| self.provider_from_state(&id, root))
+            {
+                None | Some(Ok(None)) => None,
+                Some(Ok(Some(provider))) => Some(provider),
+                // Not read as undecided: no worker for it, and the
+                // system is left out of the pool as one not ready is.
+                Some(Err(error)) => {
+                    crate::note(&format!("screensaver  {name}: {error}"));
+                    self.saver_candidates().swap_remove(at);
+                    continue;
                 }
+            };
+            if pack_selected && provider.is_none() {
+                self.queue_provider_read(&id, false);
+                self.start_provider_job_if_ready();
                 break;
             }
             let pack_data = pack_root
@@ -4420,24 +4586,489 @@ impl App {
     }
 
     fn open_system_now(&mut self) {
-        let group = self
-            .systems
-            .get(self.system_list.selected())
-            .and_then(|system| crate::artwork_pack::source_group(&system.def.id));
-        if let Some(group) = group {
-            self.resolve_artwork_sources(Some(group), SourceResolutionAction::OpenSystem);
-        } else if self.source_resolution.is_some() {
+        if self.source_resolution.is_some() {
             self.source_resolution_action = SourceResolutionAction::OpenSystem;
-        } else {
-            self.open_system_now_with_provider(None);
+            return;
+        }
+        let Some(system) = self.systems.get(self.system_list.selected()) else {
+            return;
+        };
+        let id = system.def.id.clone();
+        match self.entry_check(&id, OfferFollowUp::OpenSystem) {
+            Entry::Proceed(pack_root, provider, rows) => {
+                self.open_with_root(&id, pack_root, provider, rows)
+            }
+            Entry::Waiting => {}
         }
     }
 
-    fn open_system_now_with_provider(
+    /// What entering a system found out about its Artwork Pack, by stats
+    /// alone: which root to open it with and the provider to draw it with,
+    /// or that something else has to happen first: a question is on
+    /// screen, a worker is reading, or a problem was said.
+    ///
+    /// Bounded on purpose. A Gamelist system, or one without Pack support,
+    /// costs nothing. An Automatic system costs a stat of its folders for
+    /// a gamelist and, with none, a stat of its documented candidate
+    /// locations and one small state file. A prepared system costs the
+    /// check of [`crate::artwork_pack::snapshot_status`]. No table is
+    /// parsed, no row walked and no ROM stat'd on this path: that is what
+    /// the state written at preparation is for.
+    ///
+    /// Asked by Rebuild This System List, a No given before is set aside:
+    /// the rebuild is the retry, and the question is put again. Nothing
+    /// is written for that: the file changes only when an answer is given.
+    fn entry_check(&mut self, id: &str, then: OfferFollowUp) -> Entry {
+        let mode = crate::artwork_source::mode(&self.settings, id);
+        if !crate::artwork_pack::supports(id) || mode == crate::artwork_source::Mode::Gamelist {
+            self.effective_artwork_pack_roots.remove(id);
+            return Entry::Proceed(None, None, None);
+        }
+        let Some(system) = self.all_systems.iter().find(|system| system.def.id == id) else {
+            return Entry::Proceed(None, None, None);
+        };
+        let name = system.name().to_string();
+        if mode == crate::artwork_source::Mode::ArtworkPack {
+            let Some(root) = self.effective_artwork_pack_roots.get(id).map(PathBuf::from) else {
+                return Entry::Proceed(None, None, None);
+            };
+            let state = match crate::cache::load_pack_source_state(&self.cache_dir, id) {
+                Ok(state) => state.unwrap_or_default(),
+                Err(error) => return self.source_unresolved(&name, &error),
+            };
+            return self.pack_state(id, &name, &root, state, then);
+        }
+        // Automatic: a gamelist under the system's own folders decides
+        // before anything about a Pack is looked at.
+        match crate::artwork_source::gamelist_present(system) {
+            Ok(true) => {
+                self.effective_artwork_pack_roots.remove(id);
+                return Entry::Proceed(None, None, None);
+            }
+            Ok(false) => {}
+            Err(error) => return self.source_unresolved(&name, &error),
+        }
+        let state = match crate::cache::load_pack_source_state(&self.cache_dir, id) {
+            Ok(state) => state.unwrap_or_default(),
+            Err(error) => return self.source_unresolved(&name, &error),
+        };
+        if let Some(accepted) = state.accepted.as_ref() {
+            let root = PathBuf::from(&accepted.docs_root);
+            self.effective_artwork_pack_roots
+                .insert(id.to_string(), accepted.docs_root.clone());
+            return self.pack_state(id, &name, &root, state, then);
+        }
+        let candidate = match crate::artwork_source::candidate_root(id, &self.pack_candidate_bases)
+        {
+            Ok(candidate) => candidate,
+            Err(error) => return self.source_unresolved(&name, &error),
+        };
+        let Some(root) = candidate else {
+            if crate::cache::artwork_pack_system_path(&self.cache_dir, id).exists() {
+                crate::note(&format!(
+                    "artwork pack {id}: cache kept, no candidate installed"
+                ));
+            }
+            self.effective_artwork_pack_roots.remove(id);
+            return Entry::Proceed(None, None, None);
+        };
+        // A No given for this Pack as it is stands, whether it was Not Now
+        // for a Pack never prepared or Keep Current for a cache from before
+        // the state existed: the same unchanged Pack is not asked about
+        // again, and is stat'd, not read, to tell it is the same.
+        let language =
+            crate::artwork_pack::normalized_language(self.scraper_settings.language.as_deref());
+        let declined_stands = then != OfferFollowUp::RebuildSystem
+            && state.declined.as_ref().is_some_and(|declined| {
+                Path::new(&declined.docs_root) == root
+                    && declined.language == language
+                    && declined.signature.as_ref().is_some_and(|recorded| {
+                        crate::artwork_pack::snapshot_status(
+                            id,
+                            recorded,
+                            &root,
+                            language.as_deref(),
+                        )
+                        .0 == crate::artwork_pack::SnapshotStatus::Current
+                    })
+            });
+        if declined_stands {
+            self.effective_artwork_pack_roots.remove(id);
+            return Entry::Proceed(None, None, None);
+        }
+        // The rows are read only now, for the one flag that says whether a
+        // cache from before the state existed is complete: a No that
+        // stands, above, costs no read of them.
+        let legacy_complete =
+            match crate::cache::load_artwork_pack_data_checked(&self.cache_dir, id) {
+                Ok(cached) => cached.is_some_and(|data| data.fingerprints_complete),
+                Err(error) => return self.source_unresolved(&name, &error),
+            };
+        if legacy_complete {
+            // A cache prepared before the state existed: read the Pack once
+            // more, on the worker and with its overlay, to associate the
+            // two and write the state; from then on the system opens on
+            // the state alone.
+            crate::note(&format!("artwork pack {id}: adopting legacy cache"));
+            self.effective_artwork_pack_roots
+                .insert(id.to_string(), root.to_string_lossy().into_owned());
+            if let Some(provider) = self.cached_artwork_provider(id, &root) {
+                // Read earlier in this process and found not to validate:
+                // the same question, without reading the Pack again.
+                if provider.health.usable() && self.provider_recovery_needed.contains(id) {
+                    self.offer_legacy_update(id, &name, root, then);
+                    return Entry::Waiting;
+                }
+                return Entry::Proceed(Some(root), Some(provider), None);
+            }
+            self.wait_for_artwork_provider(id, then);
+            return Entry::Waiting;
+        }
+        crate::note(&format!("artwork pack {id}: prompt shown: available"));
+        self.message = Some(format!(
+            "Artwork Pack Available\n\nAn installed Artwork Pack was found for {name}. Prepare its artwork and metadata now?\n\nA Prepare   B Not Now"
+        ));
+        self.pending = Some(Pending::PrepareArtworkPack(Box::new(PackOffer {
+            system_id: id.to_string(),
+            docs_root: root,
+            language,
+            signature: None,
+            cache_marker: None,
+            then,
+        })));
+        self.dirty = true;
+        Entry::Waiting
+    }
+
+    /// What an entry says when the system's source cannot be told: the
+    /// error under the system's name, and nothing opened, asked or
+    /// written.
+    fn source_unresolved(&mut self, name: &str, error: &crate::error::DegaussError) -> Entry {
+        self.message = Some(format!(
+            "{name}: game data source could not be resolved\n{error}"
+        ));
+        self.dirty = true;
+        Entry::Waiting
+    }
+
+    /// A system with a Pack root, explicit or accepted: whether what was
+    /// prepared still stands, by the state written beside its cache, read
+    /// once by the caller.
+    fn pack_state(
         &mut self,
+        id: &str,
+        name: &str,
+        root: &Path,
+        state: crate::cache::PackSourceState,
+        then: OfferFollowUp,
+    ) -> Entry {
+        use crate::artwork_pack::SnapshotStatus;
+        let language =
+            crate::artwork_pack::normalized_language(self.scraper_settings.language.as_deref());
+        let Some(accepted) = state
+            .accepted
+            .as_ref()
+            .filter(|accepted| Path::new(&accepted.docs_root) == root)
+        else {
+            // Nothing written down for this root: a system prepared before
+            // the state existed, or one whose Pack was never usable. The
+            // worker reads the Pack once and, if the cache validates,
+            // writes the state.
+            return match self.cached_artwork_provider(id, root) {
+                Some(provider) => Entry::Proceed(Some(root.to_path_buf()), Some(provider), None),
+                None => {
+                    self.wait_for_artwork_provider(id, then);
+                    Entry::Waiting
+                }
+            };
+        };
+        // The acknowledged state is the baseline: a change the user chose
+        // to keep browsing on is not asked about again, except by the
+        // rebuild, which prepares whatever was kept.
+        let kept = (then != OfferFollowUp::RebuildSystem)
+            .then(|| {
+                state.declined.as_ref().filter(|declined| {
+                    Path::new(&declined.docs_root) == root && declined.signature.is_some()
+                })
+            })
+            .flatten();
+        let provider = match self.prepared_provider(id, root, accepted, kept) {
+            Ok(Some(provider)) => provider,
+            Ok(None) => {
+                return match self.cached_artwork_provider(id, root) {
+                    Some(provider) => {
+                        Entry::Proceed(Some(root.to_path_buf()), Some(provider), None)
+                    }
+                    None => {
+                        self.wait_for_artwork_provider(id, then);
+                        Entry::Waiting
+                    }
+                };
+            }
+            Err(error) => return self.source_unresolved(name, &error),
+        };
+        // The rows the mapping was prepared from, with their marker. Rows
+        // that are gone are a change to what was prepared, like rows
+        // written over: asked about below, never rebuilt unasked. An
+        // explicit choice with no rows recovers them on the way in, as
+        // it did before the state existed.
+        let pack_data = match crate::cache::load_artwork_pack_data_marked(&self.cache_dir, id) {
+            Ok(Some(pack_data)) => Some(pack_data),
+            Ok(None)
+                if crate::artwork_source::mode(&self.settings, id)
+                    != crate::artwork_source::Mode::Automatic =>
+            {
+                return Entry::Proceed(Some(root.to_path_buf()), Some(provider), None);
+            }
+            Ok(None) => None,
+            // Not gone, not readable: not rebuilt over.
+            Err(error) => return self.source_unresolved(name, &error),
+        };
+        let (baseline, baseline_marker, baseline_language) = match kept {
+            Some(declined) => (
+                declined.signature.as_ref(),
+                declined.cache_marker,
+                declined.language.clone(),
+            ),
+            None => (
+                accepted.signature.as_ref(),
+                Some(accepted.cache_marker),
+                accepted.language.clone(),
+            ),
+        };
+        // A source that could not be fingerprinted when it was prepared has
+        // nothing to compare against: it counts as changed, seen through
+        // the fixed table names, unless it cannot be read at all.
+        let (status, refreshed, problem) = match baseline {
+            Some(signature) => {
+                let (status, refreshed) =
+                    crate::artwork_pack::snapshot_status(id, signature, root, language.as_deref());
+                (status, Some(refreshed), None)
+            }
+            None => {
+                match crate::artwork_pack::known_tables_signature(id, root, language.as_deref()) {
+                    Ok(signature) => (SnapshotStatus::Changed, Some(signature), None),
+                    Err(error) => {
+                        crate::note(&format!("artwork pack {id}: {error}"));
+                        (SnapshotStatus::Unavailable, None, Some(error.to_string()))
+                    }
+                }
+            }
+        };
+        let marker = pack_data.as_ref().map(|(_, marker)| *marker);
+        let unchanged = baseline_marker == marker && baseline_language == language;
+        let unavailable = status == SnapshotStatus::Unavailable || refreshed.is_none();
+        let Some((pack_data, marker)) = pack_data else {
+            // No rows to open on. Storage that is gone is said first, as
+            // it is with rows. A No given for the rows being gone stands
+            // while the Pack is as it was: the ordinary system, as the No
+            // said. Otherwise the question: a preparation the user asks
+            // for writes the rows again, and a No opens the ordinary
+            // system, there being no previous result to keep.
+            if unavailable {
+                return Entry::Proceed(
+                    Some(root.to_path_buf()),
+                    Some(unavailable_stand_in(id, root, provider, problem)),
+                    None,
+                );
+            }
+            if kept.is_some() && unchanged && status == SnapshotStatus::Current {
+                crate::note(&format!("artwork pack {id}: rows gone, kept without them"));
+                self.effective_artwork_pack_roots.remove(id);
+                return Entry::Proceed(None, None, None);
+            }
+            let refreshed = refreshed.expect("an available Pack was fingerprinted");
+            return self
+                .ask_pack_changed(id, name, root, provider, language, refreshed, None, then);
+        };
+        match (status, refreshed) {
+            (SnapshotStatus::Unavailable, _) | (_, None) => Entry::Proceed(
+                Some(root.to_path_buf()),
+                Some(unavailable_stand_in(id, root, provider, problem)),
+                Some(pack_data),
+            ),
+            (SnapshotStatus::Current, _) if unchanged => {
+                crate::note(&format!("artwork pack {id}: state reused"));
+                Entry::Proceed(Some(root.to_path_buf()), Some(provider), Some(pack_data))
+            }
+            (SnapshotStatus::ImagesOnly, Some(refreshed)) if unchanged => {
+                crate::note(&format!(
+                    "artwork pack {id}: images changed, decoded artwork dropped"
+                ));
+                if let Some(group) = crate::artwork_pack::source_group(id) {
+                    self.invalidate_decoded_pack_group(group);
+                }
+                let mut provider = provider;
+                provider.refresh_snapshot(refreshed.clone());
+                self.artwork_provider_cache
+                    .insert(id.to_string(), provider.clone());
+                let mut state = state.clone();
+                match (state.declined.as_mut(), kept.is_some()) {
+                    (Some(declined), true) => declined.signature = Some(refreshed),
+                    _ => {
+                        if let Some(accepted) = state.accepted.as_mut() {
+                            accepted.signature = Some(refreshed);
+                        }
+                    }
+                }
+                if let Err(error) =
+                    crate::cache::save_pack_source_state(&self.cache_dir, id, &state)
+                {
+                    crate::note(&format!("artwork pack {id}: state not rewritten: {error}"));
+                    self.message = Some(format!(
+                        "Artwork Pack state for {name} was not saved, so its images are checked again on the next entry: {error}"
+                    ));
+                }
+                Entry::Proceed(Some(root.to_path_buf()), Some(provider), Some(pack_data))
+            }
+            (_, Some(refreshed)) => {
+                // A kept change whose Pack has gone back to what was
+                // prepared is no change at all.
+                if kept.is_some() {
+                    let back = accepted.signature.as_ref().is_some_and(|signature| {
+                        crate::artwork_pack::snapshot_status(
+                            id,
+                            signature,
+                            root,
+                            language.as_deref(),
+                        )
+                        .0 == SnapshotStatus::Current
+                    }) && accepted.cache_marker == marker
+                        && accepted.language == language;
+                    if back {
+                        let mut state = state.clone();
+                        state.declined = None;
+                        if let Err(error) =
+                            crate::cache::save_pack_source_state(&self.cache_dir, id, &state)
+                        {
+                            crate::note(&format!(
+                                "artwork pack {id}: state not rewritten: {error}"
+                            ));
+                            self.message = Some(format!(
+                                "Artwork Pack state for {name} was not saved, so its kept change is checked again on the next entry: {error}"
+                            ));
+                        }
+                        crate::note(&format!("artwork pack {id}: state reused"));
+                        return Entry::Proceed(
+                            Some(root.to_path_buf()),
+                            Some(provider),
+                            Some(pack_data),
+                        );
+                    }
+                }
+                self.ask_pack_changed(
+                    id,
+                    name,
+                    root,
+                    provider,
+                    language,
+                    refreshed,
+                    Some(marker),
+                    then,
+                )
+            }
+        }
+    }
+
+    /// The Artwork Pack Changed question, over the rows it was raised on
+    /// when there are rows to keep. The provider is held for the answer:
+    /// Keep Current goes on drawing with it.
+    #[allow(clippy::too_many_arguments)]
+    fn ask_pack_changed(
+        &mut self,
+        id: &str,
+        name: &str,
+        root: &Path,
+        provider: crate::artwork_pack::Provider,
+        language: Option<String>,
+        refreshed: crate::artwork_pack::SourceFingerprint,
+        cache_marker: Option<u32>,
+        then: OfferFollowUp,
+    ) -> Entry {
+        crate::note(&format!("artwork pack {id}: prompt shown: changed"));
+        self.artwork_provider_cache.insert(id.to_string(), provider);
+        self.message = Some(format!(
+            "Artwork Pack Changed\n\nThe installed Artwork Pack data for {name} has changed. Update its prepared artwork and metadata now?\n\nA Update   B Keep Current"
+        ));
+        self.pending = Some(Pending::UpdateArtworkPack(Box::new(PackOffer {
+            system_id: id.to_string(),
+            docs_root: root.to_path_buf(),
+            language,
+            signature: Some(refreshed),
+            cache_marker,
+            then,
+        })));
+        self.dirty = true;
+        Entry::Waiting
+    }
+
+    /// The provider for a prepared system: the one held in memory for this
+    /// root, else the one written down beside its cache, rebuilt without
+    /// a table read and kept for the next entry. Nothing when the prepared
+    /// rows were not written down; an error when they cannot be read.
+    ///
+    /// The rows are used under the language they were prepared for, or
+    /// under the one in use now when a change of language was kept: that
+    /// is the configuration the provider answers to, so a kept change is
+    /// not read again at every entry, and the favourites and the
+    /// screensaver find it as it is.
+    fn prepared_provider(
+        &mut self,
+        id: &str,
+        root: &Path,
+        accepted: &crate::cache::AcceptedSource,
+        kept: Option<&crate::cache::DeclinedSource>,
+    ) -> Result<Option<crate::artwork_pack::Provider>> {
+        let current =
+            crate::artwork_pack::normalized_language(self.scraper_settings.language.as_deref());
+        let language = if kept.is_some_and(|kept| kept.language == current) {
+            current.clone()
+        } else {
+            accepted.language.clone()
+        };
+        if let Some(provider) = self.artwork_provider_cache.get(id) {
+            // The one held for a Pack that was unreachable on an earlier
+            // entry stands in for the prepared one only while it is
+            // unreachable: once it is back, the prepared one is read again.
+            if provider.configuration_matches(root, language.as_deref())
+                && provider.health == accepted.health
+            {
+                return Ok(Some(provider.clone()));
+            }
+        }
+        let Some(prepared) = crate::cache::load_pack_prepared_map(&self.cache_dir, id)? else {
+            return Ok(None);
+        };
+        let provider = crate::artwork_pack::Provider::from_prepared_state(
+            id,
+            root,
+            language.as_deref(),
+            accepted.health,
+            accepted.diagnostics.clone(),
+            accepted.signature.clone(),
+            prepared,
+        );
+        if language != current {
+            // Prepared for another language and nothing kept about that:
+            // the rows may stand, and the state check asks; the provider
+            // is still the one to draw them with until then.
+            return Ok(Some(provider));
+        }
+        self.artwork_provider_cache
+            .insert(id.to_string(), provider.clone());
+        Ok(Some(provider))
+    }
+
+    /// Open a system with the root and provider the entry check settled
+    /// on, and the rows it read on the way, so they are not read twice.
+    fn open_with_root(
+        &mut self,
+        id: &str,
+        pack_root: Option<PathBuf>,
         supplied_provider: Option<crate::artwork_pack::Provider>,
+        rows: Option<crate::cache::ArtworkPackData>,
     ) {
-        let Some(system) = self.systems.get(self.system_list.selected()) else {
+        let Some(system) = self.all_systems.iter().find(|system| system.def.id == id) else {
             return;
         };
         let id = system.def.id.clone();
@@ -4451,44 +5082,63 @@ impl App {
             return;
         }
 
-        // What was written down, if anything. Where a system starts is
-        // decided by how it was declared and costs nothing to work out, so
-        // a system already written down is opened without being read: a large
+        // What was written down, if anything: where a system starts is
+        // decided by how it was declared and costs nothing to work out, so a
+        // system already written down is opened without being read: a large
         // system's gamelist runs to tens of megabytes and seconds of parsing.
-        let pack_root = crate::artwork_pack::selected_root(&self.effective_artwork_pack_roots, &id)
-            .map(Path::to_path_buf);
-        let pack_data = pack_root
-            .as_ref()
-            .and_then(|_| crate::cache::load_artwork_pack_data(&self.cache_dir, &id));
+        let pack_data = pack_root.as_ref().and_then(|_| {
+            rows.or_else(|| crate::cache::load_artwork_pack_data(&self.cache_dir, &id))
+        });
         if let Some(root) = pack_root.as_deref() {
-            let supplied_provider = supplied_provider.filter(|provider| {
-                provider.system_id == id
-                    && provider
-                        .configuration_matches(root, self.scraper_settings.language.as_deref())
-            });
-            let provider =
-                supplied_provider.or_else(|| self.cached_artwork_provider(&id, root, true));
+            // The provider the entry check settled on is taken as it is:
+            // it answers to this root, under the language the check
+            // decided the rows are used with, kept change included.
+            let supplied_provider = supplied_provider
+                .filter(|provider| provider.system_id == id && provider.docs_root == root);
+            let provider = supplied_provider.or_else(|| self.cached_artwork_provider(&id, root));
             let Some(provider) = provider else {
-                self.wait_for_artwork_provider(&id);
+                self.wait_for_artwork_provider(&id, OfferFollowUp::OpenSystem);
                 return;
             };
             self.artwork_provider_cache
                 .insert(id.clone(), provider.clone());
             self.artwork_provider = Some(provider);
-            let needs_recovery = self.provider_recovery_needed.contains(&id)
-                || pack_data.is_none()
-                || (self
-                    .artwork_provider
-                    .as_ref()
-                    .is_some_and(|provider| provider.health.usable())
-                    && !pack_data
+            // An explicit choice is the consent: rows that are missing or
+            // were never prepared are recovered on the way in. An
+            // Automatic acceptance is prepared only when asked: the entry
+            // check asked about its rows already, and rows it has none
+            // of are the ordinary system's, behind the Pack's health when
+            // that needs saying.
+            let automatic = crate::artwork_source::mode(&self.settings, &id)
+                == crate::artwork_source::Mode::Automatic;
+            let needs_recovery = !automatic
+                && (self.provider_recovery_needed.contains(&id)
+                    || pack_data.is_none()
+                    || (self
+                        .artwork_provider
                         .as_ref()
-                        .is_some_and(|data| data.fingerprints_complete));
+                        .is_some_and(|provider| provider.health.usable())
+                        && !pack_data
+                            .as_ref()
+                            .is_some_and(|data| data.fingerprints_complete)));
             if needs_recovery && self.begin_source_recovery(&id, SourceRecoveryPurpose::OpenSystem)
             {
                 return;
             }
-            self.system_cache = pack_data.map(|data| data.cache);
+            match pack_data {
+                Some(data) => self.system_cache = Some(data.cache),
+                None if automatic => {
+                    self.system_cache = crate::cache::load_system(&self.cache_dir, &id);
+                    if self
+                        .artwork_provider
+                        .as_ref()
+                        .is_some_and(|provider| provider.health.usable())
+                    {
+                        self.artwork_provider = None;
+                    }
+                }
+                None => self.system_cache = None,
+            }
         } else {
             self.system_cache = crate::cache::load_system(&self.cache_dir, &id);
             self.artwork_provider = None;
@@ -4507,10 +5157,17 @@ impl App {
             return;
         }
 
-        if pack_root.is_some() {
+        if pack_root.is_some()
+            && crate::artwork_source::mode(&self.settings, &id)
+                != crate::artwork_source::Mode::Automatic
+        {
             self.library = None;
+            // Said without promising a retry the entry does not always
+            // make: after a failed recovery the entry does not start
+            // another. The full rebuild prepares every explicit choice,
+            // and can be reached without the system open.
             self.message = Some(format!(
-                "Artwork Pack cache for {name} is unavailable. Reopen the system to retry its background refresh."
+                "Artwork Pack cache for {name} is unavailable, so the system was not opened. Rebuild All System Lists prepares it again."
             ));
             self.dirty = true;
             return;
@@ -4808,11 +5465,16 @@ impl App {
         next_index
             .systems
             .insert(id.to_string(), cache.summary(&browse::start_for(&config)));
-        let warnings =
-            match crate::cache::save_system_with_index(&self.cache_dir, id, &cache, &next_index) {
-                Ok(warnings) => warnings,
-                Err(error) => return Some(format!("{name}: {error}")),
-            };
+        let warnings = match crate::cache::save_system_with_index(
+            &self.cache_dir,
+            crate::cache::CacheKind::Gamelist,
+            id,
+            &cache,
+            &next_index,
+        ) {
+            Ok(warnings) => warnings,
+            Err(error) => return Some(format!("{name}: {error}")),
+        };
         self.index = Some(next_index);
         self.apply_index();
         let error = (!warnings.is_empty()).then(|| warnings.join("\n"));
@@ -4905,62 +5567,39 @@ impl App {
         }
     }
 
-    fn resolve_artwork_sources(&mut self, group: Option<&str>, action: SourceResolutionAction) {
+    /// Work out every system's Pack root from what was saved and decided,
+    /// on the worker, at startup and before a full rebuild: the settings
+    /// and the small state files, and a stat for a gamelist under the
+    /// groups with an accepted root. No Pack is looked for or read here;
+    /// that happens when a system is entered, and only for that system.
+    fn resolve_artwork_sources(&mut self, action: SourceResolutionAction) {
         if self.source_resolution.is_some() {
-            if matches!(action, SourceResolutionAction::OpenSystem) {
-                self.source_resolution_action = action;
-            }
             return;
         }
-        let systems: Vec<_> = self
-            .all_systems
-            .iter()
-            .filter(|system| {
-                group.is_none_or(|group| {
-                    crate::artwork_pack::source_group(&system.def.id) == Some(group)
-                })
-            })
-            .cloned()
-            .collect();
+        let systems: Vec<_> = self.all_systems.clone();
         self.source_resolution_groups = systems
             .iter()
             .filter_map(|system| {
                 crate::artwork_pack::source_group(&system.def.id).map(str::to_string)
             })
             .collect();
-        let mut settings = self.settings.clone();
-        if matches!(action, SourceResolutionAction::Automatic) {
-            for group in &self.source_resolution_groups {
-                settings.artwork_pack_roots.remove(group);
-                settings.gamelist_sources.remove(group);
-            }
-        }
-        match crate::artwork_source::Job::start(systems, settings) {
+        match crate::artwork_source::Job::start(
+            systems,
+            self.settings.clone(),
+            self.cache_dir.clone(),
+        ) {
             Ok(job) => {
                 self.source_resolution = Some(job);
                 self.source_resolution_cancelled = false;
                 self.source_resolution_action = action;
-                if !matches!(
-                    action,
-                    SourceResolutionAction::Startup | SourceResolutionAction::Rebuild(_)
-                ) {
-                    self.message = Some("Checking game data source...\n\nB Cancel".into());
-                }
             }
             Err(error) => {
-                if !matches!(action, SourceResolutionAction::Automatic) {
-                    for group in &self.source_resolution_groups {
-                        self.artwork_source_errors
-                            .insert(group.clone(), error.to_string());
-                    }
+                for group in &self.source_resolution_groups {
+                    self.artwork_source_errors
+                        .insert(group.clone(), error.to_string());
                 }
-                if matches!(
-                    action,
-                    SourceResolutionAction::Startup | SourceResolutionAction::Rebuild(_)
-                ) {
-                    self.build = None;
-                    self.ui.set_index_active(false);
-                }
+                self.build = None;
+                self.ui.set_index_active(false);
                 self.message = Some(error.to_string());
             }
         }
@@ -4985,94 +5624,32 @@ impl App {
         let resolution = match result {
             Ok(Some(resolution)) => resolution,
             Ok(None) => {
-                if !matches!(action, SourceResolutionAction::Automatic) {
-                    for group in &self.source_resolution_groups {
-                        self.artwork_source_errors.insert(
-                            group.clone(),
-                            "Game data source check cancelled; reopen the system to retry".into(),
-                        );
-                    }
+                for group in &self.source_resolution_groups {
+                    self.artwork_source_errors.insert(
+                        group.clone(),
+                        "Game data source check cancelled; reopen the system to retry".into(),
+                    );
                 }
-                if matches!(
-                    action,
-                    SourceResolutionAction::Startup | SourceResolutionAction::Rebuild(_)
-                ) {
-                    self.build = None;
-                    self.ui.set_index_active(false);
-                }
+                self.build = None;
+                self.ui.set_index_active(false);
                 self.message = Some("Game data source check cancelled".into());
                 self.dirty = true;
                 return;
             }
             Err(error) => {
-                if !matches!(action, SourceResolutionAction::Automatic) {
-                    for group in &self.source_resolution_groups {
-                        self.artwork_source_errors
-                            .insert(group.clone(), error.to_string());
-                    }
+                for group in &self.source_resolution_groups {
+                    self.artwork_source_errors
+                        .insert(group.clone(), error.to_string());
                 }
-                if matches!(
-                    action,
-                    SourceResolutionAction::Startup | SourceResolutionAction::Rebuild(_)
-                ) {
-                    self.build = None;
-                    self.ui.set_index_active(false);
-                }
+                self.build = None;
+                self.ui.set_index_active(false);
                 self.message = Some(error.to_string());
                 self.dirty = true;
                 return;
             }
         };
-        if matches!(action, SourceResolutionAction::Automatic) {
-            if !resolution.errors.is_empty() {
-                self.message = Some(
-                    resolution
-                        .errors
-                        .values()
-                        .cloned()
-                        .collect::<Vec<_>>()
-                        .join("\n"),
-                );
-                self.dirty = true;
-                return;
-            }
-            let Some(group) = self
-                .source_system_id
-                .as_deref()
-                .and_then(crate::artwork_pack::source_group)
-            else {
-                return;
-            };
-            let target = match resolution.roots.get(group) {
-                Some(root) => crate::source_cache::Target::ArtworkPack {
-                    docs_root: root.into(),
-                },
-                None => crate::source_cache::Target::Gamelist,
-            };
-            self.source_switch_automatic = true;
-            self.begin_source_switch(target);
-            return;
-        }
         let groups = std::mem::take(&mut self.source_resolution_groups);
-        for group in groups {
-            let before = self.effective_artwork_pack_roots.get(&group).cloned();
-            let next = resolution.roots.get(&group).cloned();
-            if before != next {
-                self.invalidate_artwork_provider_group(&group);
-                self.saver_candidates = None;
-                self.saver_pool.clear();
-                self.saver_queue.clear();
-            }
-            self.effective_artwork_pack_roots.remove(&group);
-            self.artwork_source_errors.remove(&group);
-            if let Some(root) = next {
-                self.effective_artwork_pack_roots
-                    .insert(group.clone(), root);
-            }
-            if let Some(error) = resolution.errors.get(&group) {
-                self.artwork_source_errors.insert(group, error.clone());
-            }
-        }
+        self.apply_resolution(&groups, &resolution);
         self.message = (!resolution.errors.is_empty()).then(|| {
             resolution
                 .errors
@@ -5083,20 +5660,12 @@ impl App {
         });
         match action {
             SourceResolutionAction::Startup => {
-                let missing_pack_cache = self.all_systems.iter().any(|system| {
-                    self.pack_selected(&system.def.id)
-                        && !crate::cache::load_artwork_pack_data(&self.cache_dir, &system.def.id)
-                            .is_some_and(|data| data.fingerprints_complete)
-                });
-                if self.build.is_some() || missing_pack_cache {
+                if self.build.is_some() {
                     self.build = None;
                     self.start_build(false);
                 }
-                self.queue_all_selected_providers();
-                self.start_provider_job_if_ready();
             }
-            SourceResolutionAction::OpenSystem => self.open_system_now_with_provider(None),
-            SourceResolutionAction::RefreshSystem => self.rebuild_open_system_resolved(),
+            SourceResolutionAction::OpenSystem => self.open_system_now(),
             SourceResolutionAction::Rebuild(started) => {
                 self.build = None;
                 self.start_build(true);
@@ -5104,9 +5673,64 @@ impl App {
                     build.started = started;
                 }
             }
-            SourceResolutionAction::Automatic => unreachable!(),
         }
         self.dirty = true;
+    }
+
+    /// Take a resolution's roots and errors for the groups it covered. A
+    /// member whose root moved drops its parsed provider and the pictures
+    /// decoded from the old root.
+    fn apply_resolution(
+        &mut self,
+        groups: &HashSet<String>,
+        resolution: &crate::artwork_source::Resolution,
+    ) {
+        let mut changed_groups = HashSet::new();
+        for system in &self.all_systems {
+            let id = &system.def.id;
+            let Some(group) = crate::artwork_pack::source_group(id) else {
+                continue;
+            };
+            if !groups.contains(group) {
+                continue;
+            }
+            let before = self.effective_artwork_pack_roots.get(id);
+            let next = resolution.roots.get(id);
+            if before != next {
+                changed_groups.insert(group.to_string());
+            }
+        }
+        for group in changed_groups {
+            self.invalidate_artwork_provider_group(&group);
+            self.saver_candidates = None;
+            self.saver_pool.clear();
+            self.saver_queue.clear();
+        }
+        for system in &self.all_systems {
+            let id = &system.def.id;
+            let Some(group) = crate::artwork_pack::source_group(id) else {
+                continue;
+            };
+            if !groups.contains(group) {
+                continue;
+            }
+            match resolution.roots.get(id) {
+                Some(root) => {
+                    self.effective_artwork_pack_roots
+                        .insert(id.clone(), root.clone());
+                }
+                None => {
+                    self.effective_artwork_pack_roots.remove(id);
+                }
+            }
+        }
+        for group in groups {
+            self.artwork_source_errors.remove(group);
+            if let Some(error) = resolution.errors.get(group) {
+                self.artwork_source_errors
+                    .insert(group.clone(), error.clone());
+            }
+        }
     }
 
     fn load_selected_system_cache(&self, system_id: &str) -> Option<crate::cache::SystemCache> {
@@ -5117,27 +5741,62 @@ impl App {
         }
     }
 
+    /// The provider held in memory for this system, root and language,
+    /// as a worker left it. A provider for another root or language is
+    /// dropped with its group's decoded pictures.
     fn cached_artwork_provider(
         &mut self,
         system_id: &str,
         docs_root: &Path,
-        recheck_source: bool,
     ) -> Option<crate::artwork_pack::Provider> {
         let provider = self.artwork_provider_cache.get(system_id).cloned();
         if provider.as_ref().is_some_and(|provider| {
             provider.configuration_matches(docs_root, self.scraper_settings.language.as_deref())
         }) {
-            if !recheck_source || self.provider_validated.remove(system_id) {
-                return provider;
-            }
-            // Keep the parsed snapshot available to the worker. Its cheap
-            // source recheck and every persisted-ROM stat happen there.
-            return None;
+            return provider;
         }
         if let Some(group) = crate::artwork_pack::source_group(system_id) {
             self.invalidate_artwork_provider_group(group);
         }
         None
+    }
+
+    /// The provider for a system that is not being entered: a favourite's
+    /// owner, or a system the screensaver looks into. The one in memory,
+    /// else the prepared state written beside its cache, taken as it is:
+    /// nothing is checked against the source, nothing is asked, and a
+    /// picture that has gone simply fails to load. A state that cannot
+    /// be read is an error: the caller leaves the system alone rather
+    /// than reading its Pack as if nothing had been decided.
+    fn provider_from_state(
+        &mut self,
+        system_id: &str,
+        docs_root: &Path,
+    ) -> Result<Option<crate::artwork_pack::Provider>> {
+        // The one held for a Pack whose storage was gone at an entry
+        // stands in only while it is gone: it is not taken from here, so
+        // the state is read again and the prepared one found once the
+        // storage is back.
+        if let Some(provider) = self
+            .cached_artwork_provider(system_id, docs_root)
+            .filter(|provider| provider.health.usable())
+        {
+            return Ok(Some(provider));
+        }
+        let Some(state) = crate::cache::load_pack_source_state(&self.cache_dir, system_id)? else {
+            return Ok(None);
+        };
+        let Some(accepted) = state
+            .accepted
+            .as_ref()
+            .filter(|accepted| Path::new(&accepted.docs_root) == docs_root)
+        else {
+            return Ok(None);
+        };
+        let kept = state.declined.as_ref().filter(|declined| {
+            Path::new(&declined.docs_root) == docs_root && declined.signature.is_some()
+        });
+        self.prepared_provider(system_id, docs_root, accepted, kept)
     }
 
     fn invalidate_artwork_provider_group(&mut self, group: &str) {
@@ -5150,8 +5809,6 @@ impl App {
         self.artwork_provider_cache
             .retain(|system_id, _| crate::artwork_pack::source_group(system_id) != Some(group));
         self.provider_recovery_needed
-            .retain(|system_id| crate::artwork_pack::source_group(system_id) != Some(group));
-        self.provider_validated
             .retain(|system_id| crate::artwork_pack::source_group(system_id) != Some(group));
         self.provider_requests
             .retain(|request| crate::artwork_pack::source_group(&request.system_id) != Some(group));
@@ -5174,7 +5831,7 @@ impl App {
 
     fn invalidate_decoded_pack_group(&mut self, group: &str) {
         let mut docs_roots = HashSet::new();
-        if let Some(root) = self.effective_artwork_pack_roots.get(group) {
+        for root in self.roots_of_group(group) {
             docs_roots.insert(PathBuf::from(root));
         }
         for provider in self.artwork_provider_cache.values() {
@@ -5259,7 +5916,6 @@ impl App {
                 } else {
                     self.provider_recovery_needed.remove(&system_id);
                 }
-                self.provider_validated.insert(system_id.clone());
                 self.artwork_provider_cache.insert(system_id, provider);
             }
         }
@@ -5277,70 +5933,81 @@ impl App {
             }
             let system_id = provider.system_id.clone();
             self.provider_recovery_needed.remove(&system_id);
-            self.provider_validated.insert(system_id.clone());
             self.artwork_provider_cache.insert(system_id, provider);
         }
     }
 
-    fn queue_all_selected_providers(&mut self) {
-        let mut groups = HashSet::new();
+    /// The roots in use by the members of a source group, without repeats.
+    fn roots_of_group(&self, group: &str) -> Vec<String> {
+        let mut roots = Vec::new();
         for system in &self.all_systems {
-            let Some(group) = crate::artwork_pack::source_group(&system.def.id) else {
+            if crate::artwork_pack::source_group(&system.def.id) != Some(group) {
                 continue;
-            };
-            if self.effective_artwork_pack_roots.contains_key(group) {
-                groups.insert(group.to_string());
+            }
+            if let Some(root) = self.effective_artwork_pack_roots.get(&system.def.id) {
+                if !roots.contains(root) {
+                    roots.push(root.clone());
+                }
             }
         }
-        let mut groups: Vec<String> = groups.into_iter().collect();
-        groups.sort();
-        for group in groups {
-            self.queue_provider_group(&group, false);
+        roots
+    }
+
+    /// Give every member of a group one root: an explicit choice is shared.
+    fn set_group_root(&mut self, group: &str, root: &str) {
+        for system in &self.all_systems {
+            if crate::artwork_pack::source_group(&system.def.id) == Some(group) {
+                self.effective_artwork_pack_roots
+                    .insert(system.def.id.clone(), root.to_string());
+            }
         }
     }
 
-    fn queue_provider_group(&mut self, group: &str, first: bool) {
-        let Some(root) = self
-            .effective_artwork_pack_roots
-            .get(group)
-            .map(PathBuf::from)
+    fn clear_group_roots(&mut self, group: &str) {
+        self.effective_artwork_pack_roots
+            .retain(|id, _| crate::artwork_pack::source_group(id) != Some(group));
+    }
+
+    /// Queue a provider read for one system that has a root and no
+    /// provider in memory: the one-time adoption of a system whose
+    /// prepared state was never written. The read is for that system
+    /// alone: a member of the same group that was prepared, and has its
+    /// state written, is not read or written over on this one's account.
+    /// Its own entry checks its own state.
+    fn queue_provider_read(&mut self, system_id: &str, first: bool) {
+        if self.provider_loading.contains(system_id)
+            || self
+                .provider_requests
+                .iter()
+                .any(|request| request.system_id == system_id)
+        {
+            return;
+        }
+        let Some(system) = self
+            .all_systems
+            .iter()
+            .find(|system| system.def.id == system_id)
         else {
             return;
         };
-        let homes = self.homes();
-        let mut requested: Vec<crate::provider_job::Request> = self
-            .all_systems
-            .iter()
-            .filter(|system| crate::artwork_pack::source_group(&system.def.id) == Some(group))
-            .filter(|system| {
-                !self.provider_loading.contains(&system.def.id)
-                    && !self
-                        .provider_requests
-                        .iter()
-                        .any(|request| request.system_id == system.def.id)
-            })
-            .map(|system| crate::provider_job::Request {
-                system_id: system.def.id.clone(),
-                system_name: system.name().to_string(),
-                docs_root: root.clone(),
-                synopsis_language: self.scraper_settings.language.clone(),
-                cache_dir: self.cache_dir.clone(),
-                validate_location_only: false,
-                cached_provider: self.artwork_provider_cache.get(&system.def.id).cloned(),
-                homes: homes.clone(),
-            })
-            .collect();
+        let Some(root) = self.effective_artwork_pack_roots.get(system_id) else {
+            return;
+        };
+        let request = crate::provider_job::Request {
+            system_id: system.def.id.clone(),
+            system_name: system.name().to_string(),
+            docs_root: PathBuf::from(root),
+            synopsis_language: self.scraper_settings.language.clone(),
+            cache_dir: self.cache_dir.clone(),
+            validate_location_only: false,
+            cached_provider: self.artwork_provider_cache.get(system_id).cloned(),
+            homes: self.homes(),
+            write_state: true,
+        };
         if first {
-            let queued = std::mem::take(&mut self.provider_requests);
-            let (mut same_group, other_groups): (Vec<_>, Vec<_>) =
-                queued.into_iter().partition(|request| {
-                    crate::artwork_pack::source_group(&request.system_id) == Some(group)
-                });
-            same_group.append(&mut requested);
-            same_group.extend(other_groups);
-            self.provider_requests = same_group;
+            self.provider_requests.insert(0, request);
         } else {
-            self.provider_requests.extend(requested);
+            self.provider_requests.push(request);
         }
     }
 
@@ -5367,7 +6034,8 @@ impl App {
             Err(error) => {
                 self.invalidate_provider_ids(&ids);
                 crate::note(&format!("artwork pack provider: {error}"));
-                if self.provider_pending_open.take().is_some() {
+                if let Some(id) = self.provider_pending_open.take() {
+                    self.drop_unadopted_root(&id);
                     self.screen = Screen::Browse;
                     self.message = Some(format!(
                         "Artwork Pack read failed; system not opened.\n{}",
@@ -5380,24 +6048,41 @@ impl App {
         }
     }
 
-    fn wait_for_artwork_provider(&mut self, system_id: &str) {
-        let Some(group) = crate::artwork_pack::source_group(system_id) else {
+    /// Read the system's Pack on the worker, then go on with `then`: open
+    /// the system, or rebuild its list, whichever asked for the read.
+    fn wait_for_artwork_provider(&mut self, system_id: &str, then: OfferFollowUp) {
+        if crate::artwork_pack::source_group(system_id).is_none() {
             return;
-        };
+        }
         self.provider_pending_open = Some(system_id.to_string());
-        self.queue_provider_group(group, true);
+        self.provider_pending_then = then;
+        self.queue_provider_read(system_id, true);
         self.source_progress = crate::source_cache::Progress {
             current: "Artwork Pack database".to_string(),
             system: 0,
-            systems: self
-                .all_systems
-                .iter()
-                .filter(|system| crate::artwork_pack::source_group(&system.def.id) == Some(group))
-                .count(),
+            systems: 1,
             ..Default::default()
         };
         self.show_source_progress();
         self.start_provider_job_if_ready();
+    }
+
+    /// A worker read that did not end in a state written: the root taken
+    /// into use for an Automatic system's legacy adoption is given back,
+    /// so the system is not held as Pack-selected on a Pack nothing
+    /// validated. An explicit choice keeps its root: it is the choice.
+    fn drop_unadopted_root(&mut self, id: &str) {
+        if crate::artwork_source::mode(&self.settings, id) != crate::artwork_source::Mode::Automatic
+        {
+            return;
+        }
+        let accepted = matches!(
+            crate::cache::load_pack_source_state(&self.cache_dir, id),
+            Ok(Some(state)) if state.accepted.is_some()
+        );
+        if !accepted {
+            self.effective_artwork_pack_roots.remove(id);
+        }
     }
 
     fn artwork_pack_scraper_exclusions(&self) -> HashSet<String> {
@@ -5427,9 +6112,17 @@ impl App {
             .unwrap_or(provider.system_id.as_str())
             .to_string();
         let digest = provider.health_digest();
+        // An unavailable or invalid Pack needs acting on before the system
+        // is used without its data: said at every entry while it stands.
+        // An incomplete one is usable and said once per digest.
+        let acted_on = matches!(
+            provider.health,
+            crate::artwork_pack::ProviderHealth::Unavailable
+                | crate::artwork_pack::ProviderHealth::Invalid
+        );
         // The group prefix is what invalidating the group prunes on.
         let shown_key = format!("{group}\0{digest}");
-        if !self.pack_health_shown.insert(shown_key) {
+        if !acted_on && !self.pack_health_shown.insert(shown_key) {
             return;
         }
         let system = provider.system_id.clone();
@@ -5550,6 +6243,24 @@ impl App {
         }
     }
 
+    /// Put a second text under what is on screen, after a blank line,
+    /// rather than over it. An incomplete-pack warning that is up stays
+    /// up, and the record of it follows the text, so the press that takes
+    /// the combined text down still counts as having seen the warning.
+    fn add_to_message(&mut self, text: String) {
+        let combined = match self.message.take() {
+            Some(message) => format!("{message}\n\n{text}"),
+            None => text,
+        };
+        if let Some(pending) = self.pack_health_pending.as_mut() {
+            if combined.starts_with(&pending.message) {
+                pending.message = combined.clone();
+            }
+        }
+        self.message = Some(combined);
+        self.dirty = true;
+    }
+
     fn has_custom_view(&self) -> bool {
         self.current_view_place()
             .and_then(|place| place.get(&self.settings.custom_views))
@@ -5643,7 +6354,13 @@ impl App {
         let homes = self.homes();
         let artwork_pack_roots = self.effective_artwork_pack_roots.clone();
         let cache_dir = self.cache_dir.clone();
-        let mut missing_groups = HashSet::new();
+        // Each owning system is resolved once, and the provider it gives
+        // is the one the rows are drawn with: one prepared for another
+        // language is handed back without being held, so it is kept here
+        // rather than looked for again in memory.
+        let mut providers: HashMap<String, crate::artwork_pack::Provider> = HashMap::new();
+        let mut missing = Vec::new();
+        let mut seen = HashSet::new();
         for row in rows.iter() {
             let browse::Kind::Play(browse::Launch::File(path)) = &row.kind else {
                 continue;
@@ -5654,16 +6371,27 @@ impl App {
             let Some(id) = owner_of_favorite(&systems, &reference) else {
                 continue;
             };
-            if crate::artwork_pack::selected_root(&artwork_pack_roots, &id).is_some()
-                && !self.artwork_provider_cache.contains_key(&id)
-            {
-                if let Some(group) = crate::artwork_pack::source_group(&id) {
-                    missing_groups.insert(group.to_string());
+            if !seen.insert(id.clone()) {
+                continue;
+            }
+            let Some(root) =
+                crate::artwork_pack::selected_root(&artwork_pack_roots, &id).map(Path::to_path_buf)
+            else {
+                continue;
+            };
+            match self.provider_from_state(&id, &root) {
+                Ok(Some(provider)) => {
+                    providers.insert(id, provider);
                 }
+                Ok(None) => missing.push(id),
+                // Not read as undecided: no worker, and the favourite is
+                // shown as its game is without the Pack. The next entry
+                // into the system says what is wrong.
+                Err(error) => crate::note(&format!("favourites   {id}: {error}")),
             }
         }
-        for group in missing_groups {
-            self.queue_provider_group(&group, false);
+        for id in missing {
+            self.queue_provider_read(&id, false);
         }
         self.start_provider_job_if_ready();
         enrich_favorite_rows(
@@ -5672,7 +6400,7 @@ impl App {
             &homes,
             &artwork_pack_roots,
             &cache_dir,
-            |id, _, _| self.artwork_provider_cache.get(id).cloned(),
+            |id, _, _| providers.get(id).cloned(),
         );
         if !self.artwork_source_errors.is_empty() {
             for row in rows.iter_mut() {
@@ -6364,13 +7092,22 @@ impl App {
         let total = self.all_systems.len();
         self.source_recovery_queue.clear();
         self.source_recovery_warnings.clear();
+        self.source_recovery_storage_warnings.clear();
+        // Only an explicit Artwork Pack choice is prepared inside the
+        // build: the choice is the consent. An Automatic acceptance has
+        // its rows read like any other system's and is asked about the
+        // change when it is next entered.
         let mut queued = HashSet::new();
         for system in &self.all_systems {
             let id = &system.def.id;
             let Some(group) = crate::artwork_pack::source_group(id) else {
                 continue;
             };
-            if !self.pack_selected(id) || queued.contains(group) {
+            if crate::artwork_source::mode(&self.settings, id)
+                != crate::artwork_source::Mode::ArtworkPack
+                || !self.pack_selected(id)
+                || queued.contains(group)
+            {
                 continue;
             }
             let complete = crate::cache::load_artwork_pack_data(&self.cache_dir, id)
@@ -6772,7 +7509,7 @@ impl App {
                 self.apply_discovered_systems(found);
                 let started = preparation.started;
                 self.build = Some(preparation);
-                self.resolve_artwork_sources(None, SourceResolutionAction::Rebuild(started));
+                self.resolve_artwork_sources(SourceResolutionAction::Rebuild(started));
                 return;
             }
         }
@@ -6930,7 +7667,16 @@ impl App {
             }
             let system = &self.all_systems[current];
             let id = system.def.id.clone();
-            if let Some(group) = crate::artwork_pack::source_group(&id) {
+            // An explicitly chosen Pack's members are prepared together
+            // when the first of them is reached; a member with no Pack
+            // root of its own is read the ordinary way, and the group
+            // waits for one that has. An Automatic acceptance is never
+            // in the queue: its rows are read the ordinary way, into its
+            // Pack cache, and the next entry asks about the change.
+            let pack_selected =
+                crate::artwork_pack::selected_root(&self.effective_artwork_pack_roots, &id)
+                    .is_some();
+            if let Some(group) = crate::artwork_pack::source_group(&id).filter(|_| pack_selected) {
                 if let Some(at) = self
                     .source_recovery_queue
                     .iter()
@@ -6951,11 +7697,9 @@ impl App {
                 names: self.names.clone(),
                 cache_dir: self.cache_dir.clone(),
                 forced: build.forced,
-                artwork_pack: crate::artwork_pack::selected_root(
-                    &self.effective_artwork_pack_roots,
-                    &id,
-                )
-                .is_some(),
+                artwork_pack: pack_selected,
+                automatic_pack: crate::artwork_source::mode(&self.settings, &id)
+                    == crate::artwork_source::Mode::Automatic,
                 retain_cache: self.open_system.as_deref() == Some(id.as_str()),
                 id,
                 index: std::mem::take(&mut build.index),
@@ -9190,6 +9934,7 @@ impl App {
                 validate_location_only: true,
                 cached_provider: None,
                 homes: homes.clone(),
+                write_state: false,
             })
             .collect();
         match crate::provider_job::start(requests) {
@@ -9271,10 +10016,22 @@ impl App {
             history.push(canonical.clone());
         }
 
-        let valid_root = self
-            .source_system_id
-            .as_deref()
-            .and_then(|system_id| crate::artwork_pack::normalize_docs_root(system_id, &canonical));
+        let mut outside_storage = None;
+        let valid_root = self.source_system_id.as_deref().and_then(|system_id| {
+            chosen_pack_root(system_id, &canonical, &self.config.game_roots).unwrap_or_else(
+                |artwork| {
+                    crate::note(&format!(
+                        "artwork pack directory {}: {} resolves outside the available storage, not offered",
+                        canonical.display(),
+                        artwork.display()
+                    ));
+                    outside_storage = Some(
+                        "This Artwork Pack points outside the available MiSTer storage.".to_string(),
+                    );
+                    None
+                },
+            )
+        });
         let children =
             match artwork_directory_children(&canonical, &self.config.game_roots, &history) {
                 Ok(children) => children,
@@ -9308,7 +10065,7 @@ impl App {
         }
         self.menu_list = ListState::new(self.menu.len(), self.geometry.visible);
         self.screen = Screen::ArtworkPackDirectory;
-        self.message = None;
+        self.message = outside_storage;
         self.apply_geometry();
         self.dirty = true;
         true
@@ -9343,12 +10100,28 @@ impl App {
                 let Some(current) = self.source_directory.as_deref() else {
                     return;
                 };
-                let Some(root) = crate::artwork_pack::normalize_docs_root(system_id, current)
-                else {
-                    self.message =
-                        Some("This directory does not contain a valid Artwork Pack.".to_string());
-                    self.dirty = true;
-                    return;
+                let root = match chosen_pack_root(system_id, current, &self.config.game_roots) {
+                    Ok(Some(root)) => root,
+                    Ok(None) => {
+                        self.message = Some(
+                            "This directory does not contain a valid Artwork Pack.".to_string(),
+                        );
+                        self.dirty = true;
+                        return;
+                    }
+                    Err(artwork) => {
+                        crate::note(&format!(
+                            "artwork pack directory {}: {} resolves outside the available storage, not used",
+                            current.display(),
+                            artwork.display()
+                        ));
+                        self.message = Some(
+                            "This Artwork Pack points outside the available MiSTer storage."
+                                .to_string(),
+                        );
+                        self.dirty = true;
+                        return;
+                    }
                 };
                 self.begin_source_switch(crate::source_cache::Target::ArtworkPack {
                     docs_root: root,
@@ -9386,24 +10159,27 @@ impl App {
         else {
             return;
         };
+        let members: Vec<&str> = self
+            .all_systems
+            .iter()
+            .filter(|system| crate::artwork_pack::source_group(&system.def.id) == Some(group))
+            .map(|system| system.def.id.as_str())
+            .collect();
         let unchanged = !self.artwork_source_errors.contains_key(group)
             && match &target {
-                crate::source_cache::Target::Gamelist => {
-                    !self.effective_artwork_pack_roots.contains_key(group)
+                crate::source_cache::Target::Gamelist => members
+                    .iter()
+                    .all(|id| !self.effective_artwork_pack_roots.contains_key(*id)),
+                crate::source_cache::Target::ArtworkPack { docs_root } => {
+                    members.iter().all(|id| {
+                        self.effective_artwork_pack_roots
+                            .get(*id)
+                            .is_some_and(|root| Path::new(root) == docs_root)
+                    })
                 }
-                crate::source_cache::Target::ArtworkPack { docs_root } => self
-                    .effective_artwork_pack_roots
-                    .get(group)
-                    .is_some_and(|root| Path::new(root) == docs_root),
             };
         if unchanged {
-            match persist_source_mode(
-                &self.settings,
-                &self.settings_path,
-                group,
-                &target,
-                self.source_switch_automatic,
-            ) {
+            match persist_source_choice(&self.settings, &self.settings_path, group, &target) {
                 Ok((settings, _, warning)) => {
                     self.settings = settings;
                     self.open_game_data_source();
@@ -9411,7 +10187,6 @@ impl App {
                 }
                 Err(error) => self.message = Some(source_change_failure_message(&error)),
             }
-            self.source_switch_automatic = false;
             self.dirty = true;
             return;
         }
@@ -9459,6 +10234,7 @@ impl App {
         };
         if purpose != SourceRecoveryPurpose::FullBuild {
             self.source_recovery_warnings.clear();
+            self.source_recovery_storage_warnings.clear();
         }
         self.source_system_id = Some(system_id.to_string());
         self.start_source_job(
@@ -9469,17 +10245,389 @@ impl App {
         self.source_job.is_some()
     }
 
+    /// A Prepare or Update: one visible, cancellable preparation of the
+    /// one system, against the root it was asked about. The root is not
+    /// taken into use before the complete result is installed.
+    fn begin_consented_preparation(&mut self, offer: PackOffer) {
+        let Some(group) = crate::artwork_pack::source_group(&offer.system_id) else {
+            return;
+        };
+        if self.source_job.is_some()
+            || self.provider_job.is_some()
+            || self.build.is_some()
+            || self.refreshing.is_some()
+        {
+            self.message = Some("Wait for the current library update to finish.".to_string());
+            self.dirty = true;
+            return;
+        }
+        self.source_recovery_warnings.clear();
+        self.source_recovery_storage_warnings.clear();
+        self.source_system_id = Some(offer.system_id.clone());
+        self.start_source_job(
+            crate::source_cache::Target::ArtworkPack {
+                docs_root: offer.docs_root,
+            },
+            group,
+            SourceOperation::Recover(SourceRecoveryPurpose::Consented),
+        );
+    }
+
+    /// A Not Now or Keep Current: written down for this state of the Pack,
+    /// so the same state is not asked about again, then what the question
+    /// interrupted goes on without the Pack: the system opens on its
+    /// previous complete mapping when it kept one and on its ordinary rows
+    /// when not, or its ordinary list is rebuilt.
+    ///
+    /// A Not Now is the first time anything in the Pack is looked at: its
+    /// signature is taken now, after the answer. A decision that cannot
+    /// be written, or written over a state that cannot be read, is said
+    /// on screen and returns as the question at the next entry.
+    fn decline_pack_offer(&mut self, offer: PackOffer) {
+        let id = offer.system_id.clone();
+        let name = self
+            .all_systems
+            .iter()
+            .find(|system| system.def.id == id)
+            .map(|system| system.name().to_string())
+            .unwrap_or_else(|| id.clone());
+        let mut state = match crate::cache::load_pack_source_state(&self.cache_dir, &id) {
+            Ok(state) => state.unwrap_or_default(),
+            Err(error) => {
+                crate::note(&format!("artwork pack {id}: decline not recorded: {error}"));
+                self.message = Some(format!(
+                    "Artwork Pack decision for {name} was not saved, because its state could not be read: {error}"
+                ));
+                self.dirty = true;
+                return;
+            }
+        };
+        let docs_root = offer.docs_root.to_string_lossy().into_owned();
+        // A previous result to keep browsing on: the acceptance for this
+        // root, and rows the question was raised over. Without rows the
+        // No opens the ordinary system.
+        let keep_current = offer.cache_marker.is_some()
+            && state
+                .accepted
+                .as_ref()
+                .is_some_and(|accepted| accepted.docs_root == docs_root);
+        let signature = match offer.signature {
+            Some(signature) => Ok(signature),
+            None => crate::artwork_pack::known_tables_signature(
+                &id,
+                &offer.docs_root,
+                offer.language.as_deref(),
+            ),
+        };
+        let signature = match signature {
+            Ok(signature) => {
+                state.declined = Some(crate::cache::DeclinedSource {
+                    docs_root,
+                    language: offer.language.clone(),
+                    signature: Some(signature.clone()),
+                    cache_marker: offer.cache_marker,
+                });
+                match crate::cache::save_pack_source_state(&self.cache_dir, &id, &state) {
+                    Ok(()) => crate::note(&format!("artwork pack {id}: declined recorded")),
+                    Err(error) => {
+                        crate::note(&format!("artwork pack {id}: decline not recorded: {error}"));
+                        self.message = Some(format!(
+                            "Artwork Pack decision for {name} was not saved, so the question returns on the next entry: {error}"
+                        ));
+                    }
+                }
+                Some(signature)
+            }
+            Err(error) => {
+                crate::note(&format!("artwork pack {id}: decline not recorded: {error}"));
+                self.message = Some(format!(
+                    "Artwork Pack decision for {name} was not saved, so the question returns on the next entry: {error}"
+                ));
+                None
+            }
+        };
+        let mut provider = None;
+        if keep_current {
+            // The rows stand as prepared, under the language in use now;
+            // the full description reads the tables as they are now.
+            let accepted = state
+                .accepted
+                .clone()
+                .expect("keep_current needs an acceptance");
+            match self.prepared_provider(&id, &offer.docs_root, &accepted, state.declined.as_ref())
+            {
+                Ok(Some(mut kept)) => {
+                    if let Some(signature) = signature {
+                        kept.refresh_snapshot(signature);
+                    }
+                    self.artwork_provider_cache.insert(id.clone(), kept.clone());
+                    provider = Some(kept);
+                }
+                Ok(None) => {}
+                Err(error) => {
+                    self.source_unresolved(&name, &error);
+                    return;
+                }
+            }
+        } else {
+            self.effective_artwork_pack_roots.remove(&id);
+        }
+        // The decision that could not be saved is said under whatever
+        // the entry or the rebuild puts up, not instead of it.
+        let not_saved = self.message.take();
+        match offer.then {
+            OfferFollowUp::OpenSystem => {
+                let root = keep_current.then(|| offer.docs_root.clone());
+                self.open_with_root(&id, root, provider, None);
+                if let Some(not_saved) = not_saved {
+                    self.add_to_message(not_saved);
+                }
+            }
+            OfferFollowUp::RebuildSystem => {
+                self.rebuild_ordinary_system(&id);
+                if let Some(not_saved) = not_saved {
+                    if self.build.is_some() {
+                        self.build_warning(not_saved);
+                    } else {
+                        self.add_to_message(not_saved);
+                    }
+                }
+            }
+        }
+        self.dirty = true;
+    }
+
+    /// A cache from before the state existed that cannot be tied to the
+    /// Pack installed now, because its games no longer validate against
+    /// it: kept as it is, and the user asked whether to prepare the Pack
+    /// again, with the same question a changed Pack raises. The root is
+    /// not taken into use before the answer. There is no current result
+    /// to keep browsing on, so the question is raised over no rows: Keep
+    /// Current keeps the file and opens the system without Pack data.
+    fn offer_legacy_update(&mut self, id: &str, name: &str, root: PathBuf, then: OfferFollowUp) {
+        let language =
+            crate::artwork_pack::normalized_language(self.scraper_settings.language.as_deref());
+        let signature =
+            match crate::artwork_pack::known_tables_signature(id, &root, language.as_deref()) {
+                Ok(signature) => signature,
+                Err(error) => {
+                    self.effective_artwork_pack_roots.remove(id);
+                    self.open_with_root(id, None, None, None);
+                    self.source_unresolved(name, &error);
+                    return;
+                }
+            };
+        self.effective_artwork_pack_roots.remove(id);
+        crate::note(&format!("artwork pack {id}: prompt shown: changed"));
+        self.message = Some(format!(
+            "Artwork Pack Changed\n\nThe installed Artwork Pack data for {name} has changed. Update its prepared artwork and metadata now?\n\nA Update   B Keep Current"
+        ));
+        self.pending = Some(Pending::UpdateArtworkPack(Box::new(PackOffer {
+            system_id: id.to_string(),
+            docs_root: root,
+            language,
+            signature: Some(signature),
+            cache_marker: None,
+            then,
+        })));
+        self.dirty = true;
+    }
+
+    /// The provider worker read a Pack for a system whose prepared state
+    /// was never written: a cache from before the state existed, or an
+    /// explicit choice made before it. Validated, the worker wrote the
+    /// state and the entry goes on. Not validated: an explicit choice is
+    /// consent and the cache is rebuilt as before; an Automatic system is
+    /// asked, its old cache kept until the answer.
+    fn finish_adoption(
+        &mut self,
+        id: &str,
+        provider: crate::artwork_pack::Provider,
+        warnings: Vec<String>,
+    ) {
+        let then = std::mem::replace(&mut self.provider_pending_then, OfferFollowUp::OpenSystem);
+        let root = self.effective_artwork_pack_roots.get(id).map(PathBuf::from);
+        let name = self
+            .all_systems
+            .iter()
+            .find(|system| system.def.id == id)
+            .map(|system| system.name().to_string())
+            .unwrap_or_else(|| id.to_string());
+        let automatic = crate::artwork_source::mode(&self.settings, id)
+            == crate::artwork_source::Mode::Automatic;
+        if automatic && provider.health.usable() && self.provider_recovery_needed.contains(id) {
+            let Some(root) = root else {
+                self.open_with_root(id, None, None, None);
+                return;
+            };
+            if self.screen == Screen::SourceProgress {
+                self.screen = Screen::Browse;
+                self.apply_geometry();
+            }
+            self.offer_legacy_update(id, &name, root, then);
+            return;
+        }
+        match then {
+            OfferFollowUp::OpenSystem => self.open_with_root(id, root, Some(provider), None),
+            OfferFollowUp::RebuildSystem => {
+                if root.is_some() {
+                    self.begin_source_recovery(id, SourceRecoveryPurpose::RefreshSystem);
+                } else {
+                    self.rebuild_ordinary_system(id);
+                }
+            }
+        }
+        if !warnings.is_empty() && self.source_job.is_none() {
+            let report = format!(
+                "Artwork Pack for {name} prepared with problems:\n{}",
+                warnings.join("\n")
+            );
+            // Said under whatever the entry or the rebuild puts up: a
+            // rebuild's progress takes the message down, so the report
+            // goes into its overview instead.
+            if self.build.is_some() {
+                self.build_warning(report);
+            } else {
+                self.add_to_message(report);
+            }
+        }
+    }
+
+    /// Automatic chosen in the Game Data Source screen: the saved choice is
+    /// removed and every member of the group goes back to what was decided
+    /// for it, from its state file, without preparing anything. The open
+    /// system, when it is one of them, is checked again the way an entry
+    /// checks it: it may be asked.
+    fn choose_automatic_source(&mut self) {
+        let Some(system_id) = self.source_system_id.clone() else {
+            return;
+        };
+        let Some(group) = crate::artwork_pack::source_group(&system_id) else {
+            return;
+        };
+        if self.source_job.is_some()
+            || self.provider_job.is_some()
+            || self.build.is_some()
+            || self.refreshing.is_some()
+        {
+            self.message = Some("Wait for the current library update to finish.".to_string());
+            self.dirty = true;
+            return;
+        }
+        let mut warnings = Vec::new();
+        match persist_automatic_source(&self.settings, &self.settings_path, group) {
+            Ok((settings, _, warning)) => {
+                self.settings = settings;
+                warnings.extend(warning);
+            }
+            Err(error) => {
+                self.message = Some(source_change_failure_message(&error));
+                self.dirty = true;
+                return;
+            }
+        }
+        let members: Vec<FoundSystem> = self
+            .all_systems
+            .iter()
+            .filter(|system| crate::artwork_pack::source_group(&system.def.id) == Some(group))
+            .cloned()
+            .collect();
+        let groups = HashSet::from([group.to_string()]);
+        match crate::artwork_source::resolve(
+            &members,
+            &self.settings,
+            &self.cache_dir,
+            &std::sync::atomic::AtomicBool::new(false),
+        ) {
+            Ok(Some(resolution)) => {
+                self.apply_resolution(&groups, &resolution);
+                warnings.extend(resolution.errors.values().cloned());
+            }
+            Ok(None) => {}
+            Err(error) => {
+                self.artwork_source_errors
+                    .insert(group.to_string(), error.to_string());
+                warnings.push(error.to_string());
+            }
+        }
+        self.open_game_data_source();
+        self.message = (!warnings.is_empty()).then(|| warnings.join("\n"));
+        let open = self
+            .open_system
+            .clone()
+            .filter(|open| crate::artwork_pack::source_group(open) == Some(group));
+        if let Some(open) = open {
+            self.reload_open_system_source(&open);
+        }
+        self.dirty = true;
+    }
+
+    /// The open system's source changed under it: its rows are shown again
+    /// on the state the entry check settles on, or it is asked first.
+    fn reload_open_system_source(&mut self, id: &str) {
+        match self.entry_check(id, OfferFollowUp::OpenSystem) {
+            Entry::Proceed(Some(root), Some(provider), rows) => {
+                let Some(data) =
+                    rows.or_else(|| crate::cache::load_artwork_pack_data(&self.cache_dir, id))
+                else {
+                    self.open_with_root(id, Some(root), Some(provider), None);
+                    return;
+                };
+                self.artwork_provider_cache
+                    .insert(id.to_string(), provider.clone());
+                self.artwork_provider = Some(provider);
+                self.system_cache = Some(data.cache);
+                self.library = None;
+                if self.browsing == Browsing::Games {
+                    self.relist_here();
+                }
+                // Shown on the state as an entry shows it, its health
+                // included: a Pack whose storage is gone is said, not
+                // silently drawn without.
+                self.show_pack_health_once();
+            }
+            Entry::Proceed(root, provider, rows) => {
+                if root.is_some() {
+                    self.open_with_root(id, root, provider, rows);
+                    return;
+                }
+                self.system_cache = crate::cache::load_system(&self.cache_dir, id);
+                self.artwork_provider = None;
+                self.library = None;
+                if self.browsing == Browsing::Games {
+                    self.relist_here();
+                }
+            }
+            Entry::Waiting => {}
+        }
+    }
+
+    /// Which members of the group the worker prepares: a choice made in the
+    /// Game Data Source screen is the group's; a rebuild of the card covers
+    /// its Pack-selected members; a system entered, rebuilt on its own or
+    /// answered about is prepared on its own.
     fn start_source_job(
         &mut self,
         target: crate::source_cache::Target,
         group: &str,
         operation: SourceOperation,
     ) {
-        let require_usable_provider = matches!(operation, SourceOperation::Switch);
+        let require_usable_provider = matches!(
+            operation,
+            SourceOperation::Switch | SourceOperation::Recover(SourceRecoveryPurpose::Consented)
+        );
+        let one_system = self.source_system_id.clone();
         let systems: Vec<crate::source_cache::System> = self
             .all_systems
             .iter()
             .filter(|system| crate::artwork_pack::source_group(&system.def.id) == Some(group))
+            .filter(|system| match operation {
+                SourceOperation::Switch => true,
+                SourceOperation::Recover(SourceRecoveryPurpose::FullBuild) => {
+                    self.pack_selected(&system.def.id)
+                }
+                SourceOperation::Recover(_) => one_system.as_deref() == Some(&system.def.id),
+            })
             .map(|system| crate::source_cache::System {
                 id: system.def.id.clone(),
                 name: system.name().to_string(),
@@ -9568,6 +10716,7 @@ impl App {
                     prepared,
                     providers,
                     progress,
+                    warnings,
                 } => {
                     if self.source_cancelling && self.build.is_some() {
                         self.source_job = None;
@@ -9582,11 +10731,10 @@ impl App {
                     self.source_cancelling = false;
                     match self.source_operation.take() {
                         Some(SourceOperation::Switch) => {
-                            self.finish_source_switch(target, prepared, providers)
+                            self.finish_source_switch(target, prepared, providers, warnings)
                         }
-                        Some(SourceOperation::Recover(purpose)) => {
-                            self.finish_source_recovery(target, prepared, providers, purpose)
-                        }
+                        Some(SourceOperation::Recover(purpose)) => self
+                            .finish_source_recovery(target, prepared, providers, warnings, purpose),
                         None => {
                             crate::note("game source  worker completed without an operation");
                             self.screen = Screen::Browse;
@@ -9669,20 +10817,24 @@ impl App {
                         self.start_provider_job_if_ready();
                         break;
                     }
+                    let mut adoption_warnings = Vec::new();
+                    for snapshot in &snapshots {
+                        adoption_warnings.extend(snapshot.warnings.iter().cloned());
+                    }
                     self.store_provider_snapshots(snapshots);
 
                     if let Some(system_id) = self.provider_pending_open.clone() {
                         if let Some(provider) = self.artwork_provider_cache.get(&system_id).cloned()
                         {
                             self.provider_pending_open = None;
-                            self.provider_validated.remove(&system_id);
-                            self.open_system_now_with_provider(Some(provider));
+                            self.finish_adoption(&system_id, provider, adoption_warnings);
                         } else if !self
                             .provider_requests
                             .iter()
                             .any(|request| request.system_id == system_id)
                         {
                             self.provider_pending_open = None;
+                            self.drop_unadopted_root(&system_id);
                             self.screen = Screen::Browse;
                             self.message = Some(
                                 "The selected Artwork Pack changed before it could be read. Choose it again or restart Degauss."
@@ -9710,7 +10862,8 @@ impl App {
                         self.source_locations.clear();
                         self.open_game_data_source();
                         self.message = Some("Artwork Pack search cancelled.".to_string());
-                    } else if self.provider_pending_open.take().is_some() {
+                    } else if let Some(id) = self.provider_pending_open.take() {
+                        self.drop_unadopted_root(&id);
                         self.screen = Screen::Browse;
                         self.message = Some("Artwork Pack reading cancelled.".to_string());
                         self.apply_geometry();
@@ -9734,7 +10887,8 @@ impl App {
                             "Artwork Pack locations could not be checked.\n{}",
                             artwork_pack_error_action(&error)
                         ));
-                    } else if self.provider_pending_open.take().is_some() {
+                    } else if let Some(id) = self.provider_pending_open.take() {
+                        self.drop_unadopted_root(&id);
                         self.screen = Screen::Browse;
                         self.message = Some(format!(
                             "Artwork Pack read failed; system not opened.\n{}",
@@ -9772,9 +10926,13 @@ impl App {
                 });
             }
             Some(SourceOperation::Recover(purpose)) => {
-                if let Some(system_id) = self.source_system_id.as_deref() {
-                    if let Some(group) = crate::artwork_pack::source_group(system_id) {
-                        self.source_recovery_suppressed.insert(group.to_string());
+                // A preparation the user asked for is not held against the
+                // next entry: it asks again, and nothing starts by itself.
+                if purpose != SourceRecoveryPurpose::Consented {
+                    if let Some(system_id) = self.source_system_id.as_deref() {
+                        if let Some(group) = crate::artwork_pack::source_group(system_id) {
+                            self.source_recovery_suppressed.insert(group.to_string());
+                        }
                     }
                 }
                 self.screen = Screen::Browse;
@@ -9845,14 +11003,54 @@ impl App {
                     });
                 self.source_recovery_queue.clear();
                 if purpose == SourceRecoveryPurpose::OpenSystem {
-                    let provider = self
-                        .source_system_id
-                        .as_deref()
-                        .and_then(|id| self.artwork_provider_cache.get(id))
-                        .cloned();
-                    self.open_system_now_with_provider(provider);
+                    if let Some(id) = self.source_system_id.clone() {
+                        let root = self
+                            .effective_artwork_pack_roots
+                            .get(&id)
+                            .map(PathBuf::from);
+                        let provider = self.artwork_provider_cache.get(&id).cloned();
+                        self.open_with_root(&id, root, provider, None);
+                    }
                 }
-                self.message = Some(match (purpose, error) {
+                // The root the system goes on with: none when the Pack
+                // was never taken into use, or was set aside for the
+                // question; then no previous result is in use, whatever
+                // cache file is on disk.
+                let root = self
+                    .source_system_id
+                    .as_ref()
+                    .and_then(|id| self.effective_artwork_pack_roots.get(id))
+                    .map(PathBuf::from);
+                if purpose == SourceRecoveryPurpose::Consented {
+                    // The system opens as it was: on its previous complete
+                    // mapping when it had one, on its ordinary rows when
+                    // it had none. Nothing is written down.
+                    if let Some(id) = self.source_system_id.clone() {
+                        let already_open = self.open_system.as_deref() == Some(id.as_str());
+                        if !already_open {
+                            let provider = root
+                                .as_deref()
+                                .and_then(|root| self.cached_artwork_provider(&id, root));
+                            self.open_with_root(&id, root.clone(), provider, None);
+                        }
+                    }
+                }
+                let previous = root.as_ref().and_then(|_| {
+                    self.source_system_id
+                        .as_deref()
+                        .map(|id| crate::cache::load_artwork_pack_data_checked(&self.cache_dir, id))
+                });
+                let previous_complete = matches!(
+                    previous,
+                    Some(Ok(Some(ref data))) if data.fingerprints_complete
+                );
+                // Whether a complete result is there is what the message
+                // says; a cache that cannot be read is said as that.
+                let previous_unread = match previous {
+                    Some(Err(error)) => Some(error),
+                    _ => None,
+                };
+                let mut message = match (purpose, error) {
                     (SourceRecoveryPurpose::OpenSystem, Some(error))
                         if !open_system_cache_available =>
                     {
@@ -9881,11 +11079,33 @@ impl App {
                     (SourceRecoveryPurpose::RefreshSystem, None) if cancelled => format!(
                         "{name} list rebuild cancelled. The previous complete cache remains in use."
                     ),
+                    (SourceRecoveryPurpose::Consented, Some(error)) if previous_complete => {
+                        format!(
+                            "{name} Artwork Pack was not prepared.\n{}\nThe previous complete cache remains in use.",
+                            artwork_pack_error_action(&error)
+                        )
+                    }
+                    (SourceRecoveryPurpose::Consented, Some(error)) => format!(
+                        "{name} Artwork Pack was not prepared.\n{}",
+                        artwork_pack_error_action(&error)
+                    ),
+                    (SourceRecoveryPurpose::Consented, None) if cancelled && previous_complete => {
+                        format!(
+                            "Artwork Pack preparation for {name} cancelled. The previous complete cache remains in use."
+                        )
+                    }
+                    (SourceRecoveryPurpose::Consented, None) if cancelled => {
+                        format!("Artwork Pack preparation for {name} cancelled.")
+                    }
                     (SourceRecoveryPurpose::FullBuild, _) => {
                         unreachable!("full-build terminals return above")
                     }
                     (_, None) => "Artwork Pack cache was not refreshed.".to_string(),
-                });
+                };
+                if let Some(error) = previous_unread {
+                    message.push_str(&format!("\nThe previous cache could not be read: {error}"));
+                }
+                self.message = Some(message);
                 self.apply_geometry();
                 self.dirty = true;
             }
@@ -9909,9 +11129,10 @@ impl App {
         target: crate::source_cache::Target,
         prepared: crate::cache::PreparedCacheGroup,
         providers: Vec<crate::artwork_pack::Provider>,
+        scan_warnings: Vec<String>,
         purpose: SourceRecoveryPurpose,
     ) {
-        let crate::source_cache::Target::ArtworkPack { .. } = target else {
+        let crate::source_cache::Target::ArtworkPack { docs_root } = &target else {
             self.finish_source_terminal(
                 Some(SourceOperation::Recover(purpose)),
                 Some(crate::error::DegaussError::unsupported(
@@ -9946,11 +11167,20 @@ impl App {
                 return;
             }
         };
-        for warning in install_warnings {
+        // What the scan left out is the cause and goes on screen as it is,
+        // path-free; a storage warning names its files and goes to the
+        // log, with one sentence on screen pointing there.
+        for warning in &scan_warnings {
             crate::note(&format!("cache        recovery warning: {warning}"));
-            self.source_recovery_warnings.push(warning);
         }
+        self.source_recovery_warnings.extend(scan_warnings);
+        for warning in &install_warnings {
+            crate::note(&format!("cache        recovery warning: {warning}"));
+        }
+        self.source_recovery_storage_warnings
+            .extend(install_warnings);
 
+        let staged_ids: HashSet<String> = caches.iter().map(|staged| staged.id.clone()).collect();
         let group = self
             .source_system_id
             .as_deref()
@@ -9958,6 +11188,17 @@ impl App {
         if let Some(group) = group {
             self.invalidate_artwork_provider_group(group);
             self.source_recovery_suppressed.remove(group);
+        }
+        if purpose == SourceRecoveryPurpose::Consented {
+            // The complete result is installed: from here the system is
+            // accepted, for itself alone, on the root it was asked about.
+            if let Some(id) = self.source_system_id.clone() {
+                self.effective_artwork_pack_roots
+                    .insert(id, docs_root.to_string_lossy().into_owned());
+            }
+            if let Some(group) = group {
+                self.artwork_source_errors.remove(group);
+            }
         }
         self.store_source_providers(providers);
         if purpose == SourceRecoveryPurpose::FullBuild {
@@ -9979,14 +11220,17 @@ impl App {
                         self.library = None;
                     }
                 }
-                build.left.retain(|at| {
-                    crate::artwork_pack::source_group(&self.all_systems[*at].def.id) != group
-                });
+                build
+                    .left
+                    .retain(|at| !staged_ids.contains(&self.all_systems[*at].def.id));
                 build.current = None;
                 build.folders = 0;
                 build.games = 0;
                 build.displayed = None;
-                for warning in std::mem::take(&mut self.source_recovery_warnings) {
+                for warning in std::mem::take(&mut self.source_recovery_warnings)
+                    .into_iter()
+                    .chain(std::mem::take(&mut self.source_recovery_storage_warnings))
+                {
                     self.build_warning(warning);
                 }
                 self.message = None;
@@ -10007,14 +11251,39 @@ impl App {
         match purpose {
             SourceRecoveryPurpose::OpenSystem => {
                 self.open_system_now();
-                if !self.source_recovery_warnings.is_empty() {
-                    self.message = Some(
-                        "Artwork Pack cache refreshed with a storage warning.\nSee degauss.log for details."
-                            .to_string(),
-                    );
-                } else if self.message.is_none() {
-                    self.message = Some("Artwork Pack cache refreshed.".to_string());
+                let problems = !self.source_recovery_warnings.is_empty()
+                    || !self.source_recovery_storage_warnings.is_empty();
+                if problems || self.message.is_none() {
+                    self.message = Some(recovery_report(
+                        "Artwork Pack cache refreshed",
+                        &self.source_recovery_warnings,
+                        !self.source_recovery_storage_warnings.is_empty(),
+                    ));
                 }
+            }
+            SourceRecoveryPurpose::Consented => {
+                // Prepared from the system's menu while it was open: its
+                // rows are shown again on the new state. Prepared on the
+                // way in: the entry goes on, on the state just written.
+                let opened = self
+                    .open_system
+                    .as_deref()
+                    .is_some_and(|open| self.source_system_id.as_deref() == Some(open));
+                if opened {
+                    if let Some(group) = group {
+                        self.reload_open_pack_group(group);
+                    }
+                } else {
+                    self.open_system_now();
+                }
+                let report = recovery_report(
+                    "Artwork Pack prepared",
+                    &self.source_recovery_warnings,
+                    !self.source_recovery_storage_warnings.is_empty(),
+                );
+                // A health warning put up by the entry stays on screen with
+                // the report after it, rather than being replaced by it.
+                self.add_to_message(report);
             }
             SourceRecoveryPurpose::RefreshSystem => {
                 let name = self
@@ -10027,13 +11296,13 @@ impl App {
                             .map(|system| system.name().to_string())
                     })
                     .unwrap_or_else(|| "System".to_string());
-                self.message = Some(if self.source_recovery_warnings.is_empty() {
-                    format!("{name} list rebuilt.")
-                } else {
-                    format!(
-                        "{name} list rebuilt with a storage warning.\nSee degauss.log for details."
-                    )
-                });
+                // The rows left without Pack data are counted on screen
+                // by reason, as they are for a preparation.
+                self.message = Some(recovery_report(
+                    &format!("{name} list rebuilt"),
+                    &self.source_recovery_warnings,
+                    !self.source_recovery_storage_warnings.is_empty(),
+                ));
             }
             SourceRecoveryPurpose::FullBuild => {
                 if !self.start_next_source_recovery() {
@@ -10066,7 +11335,7 @@ impl App {
             .map(Path::to_path_buf);
         self.artwork_provider = root
             .as_deref()
-            .and_then(|root| self.cached_artwork_provider(&id, root, false));
+            .and_then(|root| self.cached_artwork_provider(&id, root));
         if self.browsing == Browsing::Games {
             self.relist_here();
         }
@@ -10094,6 +11363,7 @@ impl App {
         target: crate::source_cache::Target,
         prepared: crate::cache::PreparedCacheGroup,
         providers: Vec<crate::artwork_pack::Provider>,
+        scan_warnings: Vec<String>,
     ) {
         let Some(system_id) = self.source_system_id.clone() else {
             return;
@@ -10101,8 +11371,14 @@ impl App {
         let Some(group) = crate::artwork_pack::source_group(&system_id) else {
             return;
         };
-        let (caches, mut warnings) = match prepared.install() {
-            Ok(installed) => installed,
+        // What the install and the save warned about names files: logged,
+        // and on screen as one sentence pointing at the log.
+        let mut warnings = Vec::new();
+        let caches = match prepared.install() {
+            Ok((caches, installed)) => {
+                warnings.extend(installed);
+                caches
+            }
             Err(error) => {
                 crate::note(&format!("game source  cache install failed: {error}"));
                 self.open_game_data_source();
@@ -10111,32 +11387,27 @@ impl App {
             }
         };
 
-        let (settings, label, settings_warning) = match persist_source_mode(
-            &self.settings,
-            &self.settings_path,
-            group,
-            &target,
-            self.source_switch_automatic,
-        ) {
-            Ok(saved) => saved,
-            Err(error) => {
-                crate::note(&format!("game source  settings unchanged: {error}"));
-                self.open_game_data_source();
-                self.message = Some(source_change_failure_message(&error));
-                return;
-            }
-        };
+        let (settings, label, settings_warning) =
+            match persist_source_choice(&self.settings, &self.settings_path, group, &target) {
+                Ok(saved) => saved,
+                Err(error) => {
+                    crate::note(&format!("game source  settings unchanged: {error}"));
+                    self.open_game_data_source();
+                    self.message = Some(source_settings_failure_message(&error, &target));
+                    return;
+                }
+            };
         warnings.extend(settings_warning);
         self.settings = settings;
-        self.source_switch_automatic = false;
         self.artwork_source_errors.remove(group);
         match &target {
             crate::source_cache::Target::Gamelist => {
-                self.effective_artwork_pack_roots.remove(group);
+                // Gamelist is the explicit way to stop every Pack check and
+                // question for the group, accepted members included.
+                self.clear_group_roots(group);
             }
             crate::source_cache::Target::ArtworkPack { docs_root } => {
-                self.effective_artwork_pack_roots
-                    .insert(group.into(), docs_root.to_string_lossy().into_owned());
+                self.set_group_root(group, &docs_root.to_string_lossy());
             }
         }
         if let Some(index) = self.index.as_mut() {
@@ -10177,8 +11448,7 @@ impl App {
                     .map(Path::to_path_buf);
             self.artwork_provider = pack_root
                 .as_deref()
-                .and_then(|root| self.cached_artwork_provider(&id, root, false));
-            self.provider_validated.remove(&id);
+                .and_then(|root| self.cached_artwork_provider(&id, root));
             if self.browsing == Browsing::Games {
                 self.relist_here();
             }
@@ -10188,13 +11458,22 @@ impl App {
         self.screen = Screen::Browse;
         self.apply_geometry();
         self.touch_selection();
-        for warning in &warnings {
+        for warning in scan_warnings.iter().chain(&warnings) {
             crate::note(&format!("game source  installed with warning: {warning}"));
         }
-        self.message = Some(match warnings.is_empty() {
-            false => format!("Now using {label}.\nSaved with a storage warning; see degauss.log."),
-            true => format!("Now using {label}."),
-        });
+        // The rows left without Pack data are counted on screen by
+        // reason, as they are when a Pack system is prepared on opening.
+        let mut message = format!("Now using {label}.");
+        if !scan_warnings.is_empty() {
+            message.push_str(&format!(
+                "\nFinished with problems:\n{}",
+                scan_warnings.join("\n")
+            ));
+        }
+        if !warnings.is_empty() {
+            message.push_str("\nSaved with a storage warning; see degauss.log.");
+        }
+        self.message = Some(message);
         self.dirty = true;
     }
 
@@ -11441,6 +12720,7 @@ impl App {
                 cache_dir: self.cache_dir.clone(),
                 forced: true,
                 artwork_pack: false,
+                automatic_pack: false,
                 index: self.index.clone().unwrap_or_default(),
                 retain_cache: self.open_system.as_deref() == Some(id.as_str()),
             })
@@ -11698,17 +12978,14 @@ impl App {
             self.dirty = true;
             return;
         }
-        let group = self
-            .open_system
-            .as_deref()
-            .and_then(crate::artwork_pack::source_group);
-        if let Some(group) = group {
-            self.resolve_artwork_sources(Some(group), SourceResolutionAction::RefreshSystem);
-        } else {
-            self.rebuild_open_system_resolved();
-        }
+        self.rebuild_open_system_resolved();
     }
 
+    /// Rebuild This System List. For a system with a Pack root, explicit
+    /// or accepted, the deliberate way to prepare the current source
+    /// again, whatever change was kept. For an Automatic system with a
+    /// Pack it declined, or was never asked about, the question first:
+    /// Prepare prepares it, Not Now rebuilds the ordinary list.
     fn rebuild_open_system_resolved(&mut self) {
         if let Some(problem) = self
             .open_system
@@ -11738,6 +13015,25 @@ impl App {
             self.begin_source_recovery(&id, SourceRecoveryPurpose::RefreshSystem);
             return;
         }
+        if crate::artwork_source::mode(&self.settings, &id)
+            == crate::artwork_source::Mode::Automatic
+        {
+            // A decline is set aside for the question, in memory only:
+            // this is the retry, and the file changes when it is answered.
+            match self.entry_check(&id, OfferFollowUp::RebuildSystem) {
+                Entry::Waiting => return,
+                Entry::Proceed(Some(_), _, _) => {
+                    self.begin_source_recovery(&id, SourceRecoveryPurpose::RefreshSystem);
+                    return;
+                }
+                Entry::Proceed(None, _, _) => {}
+            }
+        }
+        self.rebuild_ordinary_system(&id);
+    }
+
+    /// The ordinary single-system rebuild: read its folders again.
+    fn rebuild_ordinary_system(&mut self, id: &str) {
         let Some(at) = self
             .all_systems
             .iter()
@@ -11930,6 +13226,28 @@ impl App {
                         Pending::UseScraperMatch(matched) => {
                             self.start_selected_scraper_match(*matched);
                         }
+                        Pending::PrepareArtworkPack(offer) | Pending::UpdateArtworkPack(offer) => {
+                            self.begin_consented_preparation(*offer);
+                        }
+                    }
+                    return None;
+                }
+                // B is an answer to an Artwork Pack question, and the only
+                // press that is: Not Now or Keep Current, remembered for
+                // this state of the Pack.
+                Action::Quit
+                    if matches!(
+                        pending,
+                        Pending::PrepareArtworkPack(_) | Pending::UpdateArtworkPack(_)
+                    ) =>
+                {
+                    self.pending = None;
+                    self.message = None;
+                    self.dirty = true;
+                    if let Pending::PrepareArtworkPack(offer) | Pending::UpdateArtworkPack(offer) =
+                        pending
+                    {
+                        self.decline_pack_offer(*offer);
                     }
                     return None;
                 }
@@ -12295,26 +13613,9 @@ impl App {
                 Screen::Information => {}
                 Screen::Scraper => self.activate_scraper_row(),
                 Screen::GameDataSource => match self.menu_list.selected() {
-                    0 => {
-                        if let Some(group) = self
-                            .source_system_id
-                            .as_deref()
-                            .and_then(crate::artwork_pack::source_group)
-                        {
-                            self.resolve_artwork_sources(
-                                Some(group),
-                                SourceResolutionAction::Automatic,
-                            );
-                        }
-                    }
-                    1 => {
-                        self.source_switch_automatic = false;
-                        self.begin_source_switch(crate::source_cache::Target::Gamelist);
-                    }
-                    2 => {
-                        self.source_switch_automatic = false;
-                        self.open_artwork_pack_locations();
-                    }
+                    0 => self.choose_automatic_source(),
+                    1 => self.begin_source_switch(crate::source_cache::Target::Gamelist),
+                    2 => self.open_artwork_pack_locations(),
                     _ => {}
                 },
                 Screen::ArtworkPackLocation => self.activate_artwork_pack_location(),
@@ -13237,6 +14538,9 @@ impl App {
                     "Reading Artwork Pack Database".to_string()
                 } else {
                     match self.source_operation {
+                        Some(SourceOperation::Recover(SourceRecoveryPurpose::Consented)) => {
+                            "Preparing Artwork Pack".to_string()
+                        }
                         Some(SourceOperation::Recover(_)) => {
                             "Refreshing Artwork Pack Cache".to_string()
                         }
@@ -14581,6 +15885,36 @@ mod tests {
         }
     }
 
+    /// The report a finished recovery puts on the 352 pixel screen: the
+    /// path-free count lines of what the scan left out, and for a storage
+    /// warning one sentence pointing at the log, never the warning itself,
+    /// which names the cache files by path.
+    #[test]
+    fn recovery_report_keeps_storage_warning_paths_off_the_screen() {
+        assert_eq!(
+            recovery_report("Artwork Pack prepared", &[], false),
+            "Artwork Pack prepared."
+        );
+        let skipped = ["Arcade: 1 game left without Pack data: missing file".to_string()];
+        assert_eq!(
+            recovery_report("Arcade list rebuilt", &skipped, false),
+            "Arcade list rebuilt with problems:\nArcade: 1 game left without Pack data: missing file"
+        );
+        let with_storage = recovery_report("Artwork Pack cache refreshed", &skipped, true);
+        assert!(
+            with_storage.starts_with("Artwork Pack cache refreshed with problems:\nArcade: 1 game")
+        );
+        assert!(with_storage.ends_with("\nSaved with a storage warning; see degauss.log."));
+        assert!(
+            !with_storage.contains('/'),
+            "no cache path reaches the screen: {with_storage}"
+        );
+        assert_eq!(
+            recovery_report("Artwork Pack prepared", &[], true),
+            "Artwork Pack prepared.\nSaved with a storage warning; see degauss.log."
+        );
+    }
+
     #[test]
     fn source_failure_messages_distinguish_storage_data_and_internal_failures() {
         let io = crate::error::DegaussError::io(
@@ -14734,6 +16068,57 @@ mod tests {
         std::fs::remove_dir_all(root).ok();
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn chosen_pack_root_refuses_a_mapped_artwork_link_out_of_the_storage() {
+        use std::os::unix::fs::symlink;
+
+        // The provider reads every mapped Artwork directory under the root
+        // the user picks, so a link that leaves the available storage would
+        // be read from a place the picker itself never shows.
+        let root = picker_temp("pack-root-link");
+        let mount = root.join("mount");
+        let games = mount.join("games");
+        let docs = mount.join("docs");
+        let outside = root.join("outside").join("Artwork");
+        std::fs::create_dir_all(&games).unwrap();
+        std::fs::create_dir_all(docs.join("NES")).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        let game_roots = vec![games.to_string_lossy().into_owned()];
+        let canonical_docs = std::fs::canonicalize(&docs).unwrap();
+
+        assert_eq!(
+            chosen_pack_root("NES", &docs, &game_roots),
+            Ok(None),
+            "no mapped Artwork directory is no pack"
+        );
+        symlink(&outside, docs.join("NES").join("Artwork")).unwrap();
+        assert_eq!(
+            chosen_pack_root("NES", &docs, &game_roots),
+            Err(canonical_docs.join("NES").join("Artwork")),
+            "a mapped Artwork directory linked out of the storage is refused by its path"
+        );
+        std::fs::remove_file(docs.join("NES").join("Artwork")).unwrap();
+        std::fs::create_dir_all(docs.join("NES").join("Artwork")).unwrap();
+        assert_eq!(
+            chosen_pack_root("NES", &docs, &game_roots),
+            Ok(Some(canonical_docs.clone()))
+        );
+        std::fs::remove_dir_all(docs.join("NES").join("Artwork")).unwrap();
+        std::fs::create_dir_all(mount.join("elsewhere").join("Artwork")).unwrap();
+        symlink(
+            mount.join("elsewhere").join("Artwork"),
+            docs.join("NES").join("Artwork"),
+        )
+        .unwrap();
+        assert_eq!(
+            chosen_pack_root("NES", &docs, &game_roots),
+            Ok(Some(canonical_docs)),
+            "a link that stays inside the storage is the user's arrangement to make"
+        );
+        std::fs::remove_dir_all(root).ok();
+    }
+
     #[test]
     fn source_choice_persists_through_pack_gamelist_and_restart() {
         let root = picker_temp("source-persistence");
@@ -14781,14 +16166,8 @@ mod tests {
                 .is_empty(),
             "a restart must return to Gamelist"
         );
-        let (automatic, label, _) = persist_source_mode(
-            &gamelist,
-            &settings_path,
-            "SuperGrafx",
-            &crate::source_cache::Target::Gamelist,
-            true,
-        )
-        .unwrap();
+        let (automatic, label, _) =
+            persist_automatic_source(&gamelist, &settings_path, "SuperGrafx").unwrap();
         assert_eq!(label, SOURCE_AUTOMATIC);
         assert!(automatic.artwork_pack_roots.is_empty());
         assert!(Settings::load(&settings_path)
@@ -15646,6 +17025,7 @@ mod tests {
                     &crate::cache::ContentFingerprints::new(),
                     &crate::mgl::Homes::default(),
                     &std::sync::atomic::AtomicBool::new(false),
+                    &mut crate::artwork_pack::SkippedEntries::new(),
                 )
                 .unwrap()
                 .expect("test provider preparation completes");
@@ -15979,6 +17359,7 @@ mod tests {
                         &crate::cache::ContentFingerprints::new(),
                         &homes,
                         &std::sync::atomic::AtomicBool::new(false),
+                        &mut crate::artwork_pack::SkippedEntries::new(),
                     )
                     .unwrap()
                     .expect("test provider preparation completes");
