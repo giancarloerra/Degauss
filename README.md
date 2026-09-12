@@ -839,8 +839,9 @@ no pack work at all, however many packs are installed, and installing every
 pack through Update All does not make the first run prepare them. With
 neither a gamelist nor a pack, the usual filesystem presentation remains
 available. A candidate location that cannot be looked at is reported, not
-silently skipped to another source; a `docs` that is a link to somewhere
-outside its own mount is not offered, and `degauss.log` says so. Existing
+silently skipped to another source; a `docs`, or a mapped Artwork folder
+under it, that is a link to somewhere outside its own mount is not offered,
+and `degauss.log` says so. Existing
 saved Artwork Pack locations retain their meaning.
 
 Older settings did not record an explicit Gamelist choice. An existing settings
@@ -989,8 +990,10 @@ listed with its filesystem name and no pack artwork, the preparation finishes
 as "prepared with problems" saying how many games and why, each path is
 written to `/tmp/degauss.log`, and **Rebuild This System List** after
 repairing the file matches it normally. A missing or unreadable database
-location, a damaged database or a cache that cannot be written still stops
-the whole preparation and keeps the previous complete result.
+location, a damaged database, a cache that cannot be written, or a read
+error that is the process's or the storage's rather than the file's (out of
+file descriptors or memory, a device error) still stops the whole
+preparation and keeps the previous complete result.
 
 An MGL is read the way MiSTer Main reads it. A `<file path>` written
 absolute is used as written. Any other path, `./` and `../` forms

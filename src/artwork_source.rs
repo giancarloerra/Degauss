@@ -159,31 +159,45 @@ pub fn gamelist_present(system: &FoundSystem) -> Result<bool> {
 /// there: the first base, in priority order, whose `docs` holds a mapped
 /// Artwork directory of the system. Only those exact directories are
 /// stat'd; nothing under a base is listed and nothing in the Pack is read.
-/// A `docs` that is a link out of its base is not that base's Pack and is
-/// passed over, as the explicit location list passes it over: what is
-/// offered here is written down as the accepted root once the user says
-/// yes, so it stays under the location it was found at.
+/// A `docs`, or a mapped Artwork directory under it, that is a link out of
+/// its base is not that base's Pack and is passed over, as the explicit
+/// location list passes it over: what is offered here is written down as
+/// the accepted root once the user says yes, and the Pack read from that
+/// root covers every mapped folder, so all of it stays under the location
+/// it was found at.
 pub fn candidate_root(system_id: &str, bases: &[PathBuf]) -> Result<Option<PathBuf>> {
     let folders = artwork_pack::expected_folders(system_id);
     let mut probes = BTreeMap::new();
     for base in bases {
         let docs = base.join("docs");
+        let mut present = Vec::new();
         for folder in folders {
-            if exists_checked(&docs.join(folder).join("Artwork"), &mut probes)? {
-                let resolved = std::fs::canonicalize(&docs)
-                    .map_err(|error| DegaussError::io("probing artwork source", &docs, error))?;
-                let allowed = std::fs::canonicalize(base)
-                    .map_err(|error| DegaussError::io("probing artwork source", base, error))?;
-                if resolved.starts_with(&allowed) {
-                    return Ok(Some(docs));
-                }
+            let artwork = docs.join(folder).join("Artwork");
+            if exists_checked(&artwork, &mut probes)? {
+                present.push(artwork);
+            }
+        }
+        if present.is_empty() {
+            continue;
+        }
+        let allowed = std::fs::canonicalize(base)
+            .map_err(|error| DegaussError::io("probing artwork source", base, error))?;
+        let mut contained = true;
+        for path in std::iter::once(&docs).chain(&present) {
+            let resolved = std::fs::canonicalize(path)
+                .map_err(|error| DegaussError::io("probing artwork source", path, error))?;
+            if !resolved.starts_with(&allowed) {
                 crate::note(&format!(
                     "artwork pack {system_id}: candidate at {} resolves outside {}, not offered",
-                    docs.display(),
+                    path.display(),
                     base.display()
                 ));
+                contained = false;
                 break;
             }
+        }
+        if contained {
+            return Ok(Some(docs));
         }
     }
     Ok(None)
@@ -629,6 +643,60 @@ mod tests {
         assert_eq!(
             candidate_root("SuperGrafx", std::slice::from_ref(&inside)).unwrap(),
             Some(inside.join("docs"))
+        );
+    }
+
+    /// The Pack read from an offered root covers every mapped folder under
+    /// `docs`, so a mapped Artwork directory that links out of the base
+    /// would have the Pack read from elsewhere with an in-base root written
+    /// down: the base is passed over whichever mapped folder links out,
+    /// and one whose link stays inside the base is offered.
+    #[cfg(unix)]
+    #[test]
+    fn candidate_root_passes_over_a_mapped_artwork_link_out_of_its_base() {
+        let fixture = Fixture::new();
+        let elsewhere = fixture.pack("elsewhere", "NES");
+        let first = fixture.0.join("first");
+        std::fs::create_dir_all(first.join("docs/NES")).unwrap();
+        std::os::unix::fs::symlink(
+            elsewhere.join("docs/NES/Artwork"),
+            first.join("docs/NES/Artwork"),
+        )
+        .unwrap();
+        assert_eq!(
+            candidate_root("NES", std::slice::from_ref(&first)).unwrap(),
+            None,
+            "the only mapped folder links out of the base"
+        );
+
+        let second = fixture.pack("second", "FDS");
+        std::fs::create_dir_all(second.join("docs/NES")).unwrap();
+        std::os::unix::fs::symlink(
+            elsewhere.join("docs/NES/Artwork"),
+            second.join("docs/NES/Artwork"),
+        )
+        .unwrap();
+        assert_eq!(
+            candidate_root("FDS", std::slice::from_ref(&second)).unwrap(),
+            None,
+            "the second mapped folder links out of the base"
+        );
+
+        let inside = fixture.pack("inside", "SuperGrafx");
+        std::fs::rename(
+            inside.join("docs/SuperGrafx/Artwork"),
+            inside.join("images"),
+        )
+        .unwrap();
+        std::os::unix::fs::symlink(
+            inside.join("images"),
+            inside.join("docs/SuperGrafx/Artwork"),
+        )
+        .unwrap();
+        assert_eq!(
+            candidate_root("SuperGrafx", &[first, inside.clone()]).unwrap(),
+            Some(inside.join("docs")),
+            "a link that stays inside the base is the base's own layout"
         );
     }
 

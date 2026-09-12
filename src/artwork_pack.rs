@@ -1159,12 +1159,17 @@ pub type SkippedEntries = HashMap<Launch, SkippedEntry>;
 /// nothing when the error is not about the row at all. Structural on
 /// purpose: every error the per-row identity step can return concerns that
 /// row's own descriptor, target, archive or file, except the poisoned
-/// archive lock, which is the process's. No error text is matched.
+/// archive lock, which is the process's, and an I/O error whose code says
+/// the process or the storage failed rather than the path: those would
+/// fail every row that follows, and a preparation that skipped them all
+/// would replace a complete result with an empty one. No error text is
+/// matched.
 pub fn entry_failure(error: &DegaussError) -> Option<&'static str> {
     Some(match error {
         DegaussError::Io { source, .. } if source.kind() == std::io::ErrorKind::NotFound => {
             "missing file"
         }
+        DegaussError::Io { source, .. } if !path_local(source) => return None,
         DegaussError::Io { .. } => "inaccessible file",
         DegaussError::Malformed { what, .. } if *what == "Artwork Pack identity MGL" => {
             "invalid redirect chain"
@@ -1176,6 +1181,16 @@ pub fn entry_failure(error: &DegaussError) -> Option<&'static str> {
         }
         DegaussError::Unsupported { .. } => "unsupported file",
     })
+}
+
+/// Whether an I/O error is about the path it was raised for. The process
+/// out of descriptors or memory, or the storage answering with a device
+/// error, is not: the next row would fail the same way.
+fn path_local(error: &std::io::Error) -> bool {
+    !matches!(
+        error.raw_os_error(),
+        Some(libc::EMFILE | libc::ENFILE | libc::ENOMEM | libc::EIO | libc::ENODEV | libc::ENXIO)
+    )
 }
 
 /// Write down a row the walk could not identify and let the walk go on,
@@ -1463,15 +1478,26 @@ pub fn discover_candidate_roots(system_id: &str, game_roots: &[String]) -> Vec<P
         } else {
             base.join("docs")
         };
-        if !expected_folders(system_id)
+        let present: Vec<PathBuf> = expected_folders(system_id)
             .iter()
-            .any(|folder| docs.join(folder).join("Artwork").is_dir())
-        {
+            .map(|folder| docs.join(folder).join("Artwork"))
+            .filter(|artwork| artwork.is_dir())
+            .collect();
+        if present.is_empty() {
             continue;
         }
         let canonical = std::fs::canonicalize(&docs).unwrap_or(docs);
         let allowed_base = std::fs::canonicalize(&base).unwrap_or(base);
-        if !canonical.starts_with(&allowed_base) {
+        // The Pack read from a root covers every mapped folder under it, so
+        // a mapped Artwork directory linked out of the base takes the base
+        // out with it, as a `docs` linked out does.
+        if !canonical.starts_with(&allowed_base)
+            || present.iter().any(|artwork| {
+                !std::fs::canonicalize(artwork)
+                    .unwrap_or_else(|_| artwork.clone())
+                    .starts_with(&allowed_base)
+            })
+        {
             continue;
         }
         if seen.insert(canonical.clone()) {
@@ -3627,6 +3653,31 @@ mod tests {
         std::fs::remove_dir_all(root).ok();
     }
 
+    /// The Pack read from a listed root covers every mapped folder under
+    /// it, so an in-mount `docs` whose mapped Artwork directory links out
+    /// of the mount is passed over like a linked `docs`: the list must not
+    /// offer a root that reads another location's Pack.
+    #[cfg(unix)]
+    #[test]
+    fn discovery_rejects_a_mapped_artwork_symlink_outside_its_mount() {
+        use std::os::unix::fs::symlink;
+
+        let root = temp("discover-artwork-symlink-escape");
+        let mount = root.join("mount");
+        let outside = root.join("outside/docs/SuperGrafx/Artwork");
+        let games = mount.join("games");
+        std::fs::create_dir_all(&games).unwrap();
+        std::fs::create_dir_all(mount.join("docs/SuperGrafx")).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        symlink(&outside, mount.join("docs/SuperGrafx/Artwork")).unwrap();
+
+        assert!(
+            discover_candidate_roots("SuperGrafx", &[games.to_string_lossy().into_owned()])
+                .is_empty()
+        );
+        std::fs::remove_dir_all(root).ok();
+    }
+
     #[test]
     fn archive_identity_uses_central_directory_crc_and_size() {
         let archive = temp("zip").join("games.zip");
@@ -5570,6 +5621,42 @@ mod tests {
             )),
             Some("inaccessible file")
         );
+        for code in [
+            libc::EMFILE,
+            libc::ENFILE,
+            libc::ENOMEM,
+            libc::EIO,
+            libc::ENODEV,
+            libc::ENXIO,
+        ] {
+            assert_eq!(
+                entry_failure(&DegaussError::io(
+                    "opening game descriptor",
+                    "/any",
+                    std::io::Error::from_raw_os_error(code),
+                )),
+                None,
+                "code {code} is the process's or the storage's, not the row's"
+            );
+        }
+        assert_eq!(
+            entry_failure(&DegaussError::io(
+                "opening game descriptor",
+                "/sealed",
+                std::io::Error::from_raw_os_error(libc::EACCES),
+            )),
+            Some("inaccessible file"),
+            "a permission is the path's"
+        );
+        assert_eq!(
+            entry_failure(&DegaussError::io(
+                "opening game descriptor",
+                "/file/child",
+                std::io::Error::from_raw_os_error(libc::ENOTDIR),
+            )),
+            Some("inaccessible file"),
+            "a component that is not a directory is the path's"
+        );
         assert_eq!(
             entry_failure(&DegaussError::malformed(
                 "Artwork Pack identity MGL",
@@ -5948,6 +6035,45 @@ mod tests {
         assert!(error.to_string().contains("poisoned"), "{error}");
         assert!(skipped.is_empty());
         std::fs::remove_dir_all(root).ok();
+    }
+
+    /// The process out of file descriptors, or the storage answering with
+    /// a device error, fails every row that follows, so the walk must stop
+    /// with the error, as it does for the poisoned lock: written down as a
+    /// skipped row, the preparation would go on to replace a complete
+    /// result with one that matched nothing. A permission is the row's.
+    #[test]
+    fn a_process_or_storage_wide_error_stops_the_walk_instead_of_skipping_the_row() {
+        let launch = Launch::File(PathBuf::from("/library/Game.mra"));
+        let mut skipped = SkippedEntries::new();
+        for code in [libc::EMFILE, libc::EIO] {
+            let error = skip_entry(
+                &mut skipped,
+                &launch,
+                DegaussError::io(
+                    "opening game descriptor",
+                    "/library/Game.mra",
+                    std::io::Error::from_raw_os_error(code),
+                ),
+            )
+            .unwrap_err();
+            assert!(error.to_string().contains("Game.mra"), "{error}");
+            assert!(skipped.is_empty(), "code {code} must not be a skipped row");
+        }
+        skip_entry(
+            &mut skipped,
+            &launch,
+            DegaussError::io(
+                "opening game descriptor",
+                "/library/Game.mra",
+                std::io::Error::from_raw_os_error(libc::EACCES),
+            ),
+        )
+        .unwrap();
+        assert_eq!(
+            skipped.get(&launch).map(|entry| entry.category),
+            Some("inaccessible file")
+        );
     }
 
     /// Validating a persisted mapping passes over a row whose descriptor
