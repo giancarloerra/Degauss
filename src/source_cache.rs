@@ -63,6 +63,10 @@ pub enum Event {
         prepared: PreparedCacheGroup,
         providers: Vec<crate::artwork_pack::Provider>,
         progress: Progress,
+        /// What the walk found wrong without failing: a Neo Geo catalogue
+        /// that could not be read, one line per file, so the build's
+        /// report can say it the way a non-Pack build's does.
+        warnings: Vec<String>,
     },
     Cancelled(Progress),
     Failed {
@@ -159,6 +163,7 @@ fn run(request: Request, events: &SyncSender<Event>, cancelled: &Arc<AtomicBool>
     };
     let mut caches = Vec::new();
     let mut providers = Vec::new();
+    let mut warnings = Vec::new();
 
     for (position, system) in request.systems.into_iter().enumerate() {
         if cancelled.load(Ordering::Relaxed) {
@@ -222,6 +227,7 @@ fn run(request: Request, events: &SyncSender<Event>, cancelled: &Arc<AtomicBool>
                 return;
             }
         };
+        warnings.extend(crate::index_job::catalogue_warnings(&library));
         let fingerprints = if let Some(provider) = provider
             .as_ref()
             .filter(|provider| provider.health.usable())
@@ -285,6 +291,7 @@ fn run(request: Request, events: &SyncSender<Event>, cancelled: &Arc<AtomicBool>
                 prepared,
                 providers,
                 progress,
+                warnings,
             });
         }
         Ok(Some(_)) | Ok(None) => {
@@ -525,6 +532,82 @@ mod tests {
         assert!(warnings.is_empty());
         assert!(crate::cache::load_artwork_pack_data(&root.join("cache"), "NeoGeo").is_some());
         assert!(crate::cache::load_artwork_pack_data(&root.join("cache"), "NeoGeoMVS").is_some());
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn a_broken_neo_geo_catalogue_is_reported_with_the_pack_build_and_the_rest_is_staged() {
+        // With an Artwork Pack selected the system is walked here, not by
+        // the index job, and the walk records a romsets.xml it could not
+        // read only in the library it drops. The sets are then cached as
+        // archives and folders; the report of the build must say why,
+        // exactly as it does for a system the index job walks.
+        let root = temp("neogeo-broken-catalogue");
+        let docs = root.join("docs");
+        let artwork = docs.join("NEOGEO/Artwork");
+        let games = root.join("games");
+        std::fs::create_dir_all(&artwork).unwrap();
+        std::fs::create_dir_all(&games).unwrap();
+        std::fs::write(
+            artwork.join("manifest.tsv"),
+            "#key\tstyle\tss_system_id\nKnown\tbox-2D\t142\n",
+        )
+        .unwrap();
+        std::fs::write(
+            artwork.join("index.tsv"),
+            "#name\tcrc\tsize\tkey\nKnown\t\t\tKnown\n",
+        )
+        .unwrap();
+        std::fs::write(
+            artwork.join("gameinfo.tsv"),
+            "#key\tname\tyear\tgenre\tdeveloper\tplayers\n",
+        )
+        .unwrap();
+        std::fs::write(artwork.join("Known.jpg"), b"jpeg").unwrap();
+        std::fs::write(games.join("romsets.xml"), "<romsets><romset name=\"mslug\"").unwrap();
+        std::fs::write(games.join("mslug.zip"), crate::zip::tests_fixture()).unwrap();
+        std::fs::write(games.join("Known.neo"), b"rom").unwrap();
+        let mut neogeo = config(&games, "neo");
+        neogeo.rbf = "_Console/NeoGeo".to_string();
+
+        let mut job = start(Request {
+            target: Target::ArtworkPack { docs_root: docs },
+            systems: vec![System {
+                id: "NeoGeo".to_string(),
+                name: "Neo Geo".to_string(),
+                config: neogeo,
+            }],
+            names: DisplayNames::default(),
+            synopsis_language: Some("en".to_string()),
+            cache_dir: root.join("cache"),
+            require_usable_provider: true,
+        })
+        .unwrap();
+        let Event::Staged {
+            prepared, warnings, ..
+        } = terminal(&mut job)
+        else {
+            panic!("a broken catalogue must not fail the Pack build");
+        };
+        assert_eq!(warnings.len(), 1, "got: {warnings:?}");
+        let expected = games.join("romsets.xml").display().to_string();
+        assert!(
+            warnings[0].starts_with(&expected) && warnings[0].contains("malformed"),
+            "the file and the reason are named: {}",
+            warnings[0]
+        );
+        // The .neo is a game and the set ZIP fell back to an archive that
+        // was entered: its two .neo members are counted, which a
+        // recognised set's never are.
+        let (caches, install_warnings) = prepared.install().unwrap();
+        assert!(install_warnings.is_empty());
+        assert_eq!(
+            caches[0]
+                .cache
+                .summary(&crate::browse::Place::Dir(games.clone()))
+                .games,
+            3
+        );
         std::fs::remove_dir_all(root).ok();
     }
 

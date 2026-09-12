@@ -500,17 +500,23 @@ the stock menu as well for any set the catalogue names. A folder known only
 by its own `romset.xml` is the exception: given an absolute path, Main looks
 for that file under the card root and, not finding it, falls back to the
 catalogue, so such a favourite starts only if the catalogue names the folder
-too. Gamelist entries bind to a set by its path (`./mslug.zip` or
-`./mslug`), and an Artwork Pack matches it by set name.
+too. A favourite written elsewhere with a bare set name (`mslug` or
+`mslug.zip`, no folder) starts the set: the name is looked up in the
+system's game folder, as Main looks it up in the core's home folder.
+Gamelist entries bind to a set by its path (`./mslug.zip` or `./mslug`),
+and an Artwork Pack matches it by set name, an `.mgl` pointing at a set
+included.
 
-A catalogue or `romset.xml` that cannot be read is reported by `--report` and
-`--audit` as an unreadable file, and in the log. Its scope then holds no
-recognised sets, so ZIPs and folders there fall back to archives and folders,
-while every `.neo` and `.mgl` stays listed. After upgrading from a release
-that listed sets as folders, rebuild the system list of Neo Geo and of Neo
-Geo MVS once each (or run one full rebuild) to pick the sets up: the two keep
-separate caches even when they share the folder. Nothing else needs
-resetting.
+A catalogue or `romset.xml` that cannot be read, or whose presence cannot
+be established, is reported by `--report` and `--audit` as an unreadable
+file, in the log, and with the report of the library build or system rebuild
+that met it, whether the system uses a Gamelist or an Artwork Pack. Its scope
+then holds no recognised sets, so ZIPs and folders there fall back to
+archives and folders, while every `.neo` and `.mgl` stays listed. After
+upgrading from a release that listed sets as folders, rebuild the system list
+of Neo Geo and of Neo Geo MVS once each (or run one full rebuild) to pick the
+sets up: the two keep separate caches even when they share the folder.
+Nothing else needs resetting.
 
 ### RetroAchievements and Unstable cores
 

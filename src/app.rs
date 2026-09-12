@@ -9417,6 +9417,7 @@ impl App {
                     prepared,
                     providers,
                     progress,
+                    warnings,
                 } => {
                     if self.source_cancelling && self.build.is_some() {
                         self.source_job = None;
@@ -9431,11 +9432,10 @@ impl App {
                     self.source_cancelling = false;
                     match self.source_operation.take() {
                         Some(SourceOperation::Switch) => {
-                            self.finish_source_switch(target, prepared, providers)
+                            self.finish_source_switch(target, prepared, providers, warnings)
                         }
-                        Some(SourceOperation::Recover(purpose)) => {
-                            self.finish_source_recovery(target, prepared, providers, purpose)
-                        }
+                        Some(SourceOperation::Recover(purpose)) => self
+                            .finish_source_recovery(target, prepared, providers, warnings, purpose),
                         None => {
                             crate::note("game source  worker completed without an operation");
                             self.screen = Screen::Browse;
@@ -9758,6 +9758,7 @@ impl App {
         target: crate::source_cache::Target,
         prepared: crate::cache::PreparedCacheGroup,
         providers: Vec<crate::artwork_pack::Provider>,
+        walk_warnings: Vec<String>,
         purpose: SourceRecoveryPurpose,
     ) {
         let crate::source_cache::Target::ArtworkPack { .. } = target else {
@@ -9799,6 +9800,9 @@ impl App {
             crate::note(&format!("cache        recovery warning: {warning}"));
             self.source_recovery_warnings.push(warning);
         }
+        // Already in the log, where the walk put them; said with the
+        // build here, as the index job says them.
+        self.source_recovery_warnings.extend(walk_warnings);
 
         let group = self
             .source_system_id
@@ -9858,7 +9862,7 @@ impl App {
                 self.open_system_now();
                 if !self.source_recovery_warnings.is_empty() {
                     self.message = Some(
-                        "Artwork Pack cache refreshed with a storage warning.\nSee degauss.log for details."
+                        "Artwork Pack cache refreshed with a warning.\nSee degauss.log for details."
                             .to_string(),
                     );
                 } else if self.message.is_none() {
@@ -9879,9 +9883,7 @@ impl App {
                 self.message = Some(if self.source_recovery_warnings.is_empty() {
                     format!("{name} list rebuilt.")
                 } else {
-                    format!(
-                        "{name} list rebuilt with a storage warning.\nSee degauss.log for details."
-                    )
+                    format!("{name} list rebuilt with a warning.\nSee degauss.log for details.")
                 });
             }
             SourceRecoveryPurpose::FullBuild => {
@@ -9943,6 +9945,7 @@ impl App {
         target: crate::source_cache::Target,
         prepared: crate::cache::PreparedCacheGroup,
         providers: Vec<crate::artwork_pack::Provider>,
+        walk_warnings: Vec<String>,
     ) {
         let Some(system_id) = self.source_system_id.clone() else {
             return;
@@ -9959,6 +9962,7 @@ impl App {
                 return;
             }
         };
+        warnings.extend(walk_warnings);
 
         let (settings, label, settings_warning) = match persist_source_mode(
             &self.settings,
@@ -10041,7 +10045,7 @@ impl App {
             crate::note(&format!("game source  installed with warning: {warning}"));
         }
         self.message = Some(match warnings.is_empty() {
-            false => format!("Now using {label}.\nSaved with a storage warning; see degauss.log."),
+            false => format!("Now using {label}.\nSaved with a warning; see degauss.log."),
             true => format!("Now using {label}."),
         });
         self.dirty = true;
