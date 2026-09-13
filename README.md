@@ -528,6 +528,12 @@ counted through every subfolder, and can sit before the games or after
 them. Favourites carry a heart in every view and can be gathered at the
 top of their folder.
 
+By default, handheld systems remain in the same MiSTer categories their cores
+use. **Options → Library → Separate Handheld Category** can instead present
+recognised handheld systems in a dedicated **Handheld** category. This changes
+only navigation: system discovery, games, artwork, favourites and launching
+keep their existing system identity.
+
 **Hide This**, in **Actions → Find**, takes any row out of the list: a
 game, a folder, or a whole system while you are looking at the system
 list. That is separate from the folders and systems left out because they
@@ -566,6 +572,7 @@ require **A** and confirmation, never a sideways press.
 | Library | Favourites First | Show favourites first in each folder, keeping them in alphabetical order |
 | Library | Folders Before Games | On, folders lead a system's listing; off, the games come first |
 | Library | Core Preference | Standard First (default) or RetroAchievements First. Used by systems whose Core Version is Default; the other version is used only when the preferred version is absent |
+| Library | Separate Handheld Category | Off by default. When On, recognised handheld systems appear in a Handheld category after Console. This is a display-only grouping and does not change core or game launching |
 | Library | Show Other Folder | Show the Other group, the cores that are not games |
 | Library | Show Utility Folder | Show the Utility group, test patterns and measurement cores |
 | Library | Show Unstable Folder | Show installed Unstable cores. On by default |
@@ -1246,6 +1253,7 @@ To give a category a fixed image, name the file exactly after the category:
 ```text
 Arcade.png
 Console.png
+Handheld.png
 Computer.png
 Utility.png
 Other.png

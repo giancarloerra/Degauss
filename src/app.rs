@@ -59,6 +59,18 @@ use crate::theme_editor::{
 };
 use crate::{DegaussWindow, DetailLine, Row};
 
+const HANDHELD_CATEGORY: &str = "Handheld";
+
+/// The category shown by the frontend. The system's own category remains
+/// unchanged because launch, cache and library ownership follow MiSTer.
+fn display_category(system: &FoundSystem, separate_handheld: bool) -> &str {
+    if separate_handheld && system.def.handheld {
+        HANDHELD_CATEGORY
+    } else {
+        system.category()
+    }
+}
+
 /// Which screen is in front.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Screen {
@@ -267,6 +279,7 @@ fn option_operation(option: OptionId, input: OptionInput) -> OptionOperation {
         | OptionId::ShowUnstable
         | OptionId::ShowScripts
         | OptionId::CorePreference
+        | OptionId::SeparateHandheldCategory
         | OptionId::ShowBar
         | OptionId::FavoritesFirst
         | OptionId::HoldXFavorite
@@ -6920,6 +6933,7 @@ impl App {
         };
         let hidden = &self.settings.hidden;
         let show_hidden = self.show_hidden;
+        let separate_handheld = self.settings.separate_handheld_category.unwrap_or(false);
         let visible: Vec<FoundSystem> = self
             .all_systems
             .iter()
@@ -6932,9 +6946,10 @@ impl App {
         // MiSTer's own menu uses, and only when something is in them.
         // Favourites last: it is not a machine, it is a shelf of things
         // picked off the others.
-        const ORDER: [&str; 7] = [
+        const ORDER: [&str; 8] = [
             "Arcade",
             "Console",
+            HANDHELD_CATEGORY,
             "Computer",
             "Utility",
             "Other",
@@ -6956,16 +6971,22 @@ impl App {
             if name == "Utility" && !self.show_utility {
                 continue;
             }
-            let count = visible.iter().filter(|s| s.category() == name).count();
+            let count = visible
+                .iter()
+                .filter(|system| display_category(system, separate_handheld) == name)
+                .count();
             if count > 0 {
                 categories.push((name.to_string(), count));
             }
         }
         // Anything with a group we did not anticipate still gets shown.
         for system in &visible {
-            let name = system.category();
+            let name = display_category(system, separate_handheld);
             if !ORDER.contains(&name) && !categories.iter().any(|(c, _)| c == name) {
-                let count = visible.iter().filter(|s| s.category() == name).count();
+                let count = visible
+                    .iter()
+                    .filter(|candidate| display_category(candidate, separate_handheld) == name)
+                    .count();
                 categories.push((name.to_string(), count));
             }
         }
@@ -6973,7 +6994,7 @@ impl App {
         self.systems = match self.open_category.as_deref() {
             Some(open) => visible
                 .into_iter()
-                .filter(|s| s.category() == open)
+                .filter(|system| display_category(system, separate_handheld) == open)
                 .collect(),
             None => visible,
         };
@@ -6999,6 +7020,7 @@ impl App {
     /// showing the same member's logo says it is.
     fn reroll_category_art(&mut self) {
         let mut seed = self.seed;
+        let separate_handheld = self.settings.separate_handheld_category.unwrap_or(false);
         let mut picks = std::collections::BTreeMap::new();
         for (name, _) in &self.categories {
             if let Some(explicit) = self.named_logo(name) {
@@ -7008,7 +7030,7 @@ impl App {
             let logos: Vec<PathBuf> = self
                 .all_systems
                 .iter()
-                .filter(|system| system.category() == name)
+                .filter(|system| display_category(system, separate_handheld) == name)
                 .filter_map(|system| self.system_logo(system))
                 .collect();
             if logos.is_empty() {
@@ -7531,6 +7553,69 @@ impl App {
         }
     }
 
+    /// Reclassify only the visible navigation tree. If the option changes
+    /// while a system is selected or open, keep that stable system id and
+    /// the current game row instead of leaving the browser in an empty old
+    /// category.
+    fn set_separate_handheld_category(&mut self, enabled: bool) {
+        let selected_category = (self.browsing == Browsing::Categories)
+            .then(|| self.categories.get(self.category_list.selected()))
+            .flatten()
+            .map(|(name, _)| name.clone());
+        let selected_system = match self.browsing {
+            Browsing::Systems => self
+                .systems
+                .get(self.system_list.selected())
+                .map(|system| system.def.id.clone()),
+            Browsing::Games => self.open_system.clone(),
+            Browsing::Categories => None,
+        };
+
+        self.settings.separate_handheld_category = Some(enabled);
+        if let Some(id) = selected_system.as_deref() {
+            if let Some(system) = self.all_systems.iter().find(|system| system.def.id == id) {
+                let category = display_category(system, enabled).to_string();
+                self.open_category = Some(category.clone());
+                self.category_system.insert(category, id.to_string());
+            }
+        }
+        self.rebuild_system_list();
+
+        if let Some(id) = selected_system.as_deref() {
+            if let Some(index) = self.systems.iter().position(|system| system.def.id == id) {
+                self.system_list.select(index);
+            }
+            if self.browsing == Browsing::Games {
+                self.skipped_systems = self.systems.len() == 1;
+            }
+        } else if let Some(category) = selected_category {
+            let category = match (category.as_str(), enabled) {
+                ("Console", true)
+                    if !self.categories.iter().any(|(name, _)| name == "Console")
+                        && self
+                            .categories
+                            .iter()
+                            .any(|(name, _)| name == HANDHELD_CATEGORY) =>
+                {
+                    HANDHELD_CATEGORY
+                }
+                (HANDHELD_CATEGORY, false)
+                    if self.categories.iter().any(|(name, _)| name == "Console") =>
+                {
+                    "Console"
+                }
+                _ => category.as_str(),
+            };
+            if let Some(index) = self
+                .categories
+                .iter()
+                .position(|(name, _)| name == category)
+            {
+                self.category_list.select(index);
+            }
+        }
+    }
+
     fn adjust_option_value(&mut self, option: OptionId, delta: isize) {
         match option {
             // The cursor never rests on one, but a stale index after a
@@ -7658,6 +7743,10 @@ impl App {
                 self.settings.core_preference =
                     Some(self.settings.core_preference.unwrap_or_default().next());
             }
+            OptionId::SeparateHandheldCategory => {
+                let enabled = !self.settings.separate_handheld_category.unwrap_or(false);
+                self.set_separate_handheld_category(enabled);
+            }
             OptionId::ShowUtility => {
                 self.show_utility = !self.show_utility;
                 self.settings.show_utility = Some(self.show_utility);
@@ -7776,6 +7865,9 @@ impl App {
                 .unwrap_or_default()
                 .label()
                 .to_string(),
+            OptionId::SeparateHandheldCategory => {
+                on_off(self.settings.separate_handheld_category.unwrap_or(false))
+            }
             OptionId::ShowBar => on_off(self.show_bar),
             OptionId::FavoritesFirst => on_off(self.favorites_first),
             OptionId::HoldXFavorite => on_off(self.hold_x_favorite),
@@ -13582,7 +13674,16 @@ impl App {
         // system recalls the other groups exactly as before the exit.
         self.category_system = saved.category_system.clone();
         if !saved.category.is_empty() {
-            self.open_category = Some(saved.category.clone());
+            let separate_handheld = self.settings.separate_handheld_category.unwrap_or(false);
+            let category = self
+                .all_systems
+                .iter()
+                .find(|system| system.def.id == saved.system)
+                .map(|system| display_category(system, separate_handheld).to_string())
+                .unwrap_or_else(|| saved.category.clone());
+            self.category_system
+                .insert(category.clone(), saved.system.clone());
+            self.open_category = Some(category);
             self.rebuild_system_list();
             self.browsing = Browsing::Systems;
             self.resolve_view();
@@ -14336,6 +14437,41 @@ mod tests {
         assert_eq!(super::compact_detail_text(&ranged_players).0, "1–2 Players");
     }
     use super::*;
+
+    #[test]
+    fn handheld_category_is_display_only() {
+        let table = crate::systems::parse_table(
+            include_str!("../assets/systems.toml"),
+            Path::new("systems.toml"),
+        )
+        .unwrap();
+        let def = table
+            .into_iter()
+            .find(|system| system.id == "NeoGeoPocket")
+            .unwrap();
+        let system = FoundSystem {
+            def,
+            paths: vec![PathBuf::from("/media/fat/games/NGP")],
+            logo_dir: None,
+            menu_folder: Some("Arcade".into()),
+        };
+        let before = system.to_config();
+
+        assert_eq!(display_category(&system, false), "Arcade");
+        assert_eq!(display_category(&system, true), HANDHELD_CATEGORY);
+        assert_eq!(system.category(), "Arcade");
+
+        let after = system.to_config();
+        assert_eq!(after.name, before.name);
+        assert_eq!(after.path, before.path);
+        assert_eq!(after.extensions, before.extensions);
+        assert_eq!(after.rbf, before.rbf);
+        assert_eq!(after.launch, before.launch);
+        assert_eq!(after.setname, before.setname);
+        assert_eq!(after.skip_folders, before.skip_folders);
+        assert_eq!(after.extra_paths, before.extra_paths);
+        assert_eq!(after.preserve_rbf_stem, before.preserve_rbf_stem);
+    }
 
     fn picker_temp(tag: &str) -> PathBuf {
         let path =

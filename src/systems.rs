@@ -53,6 +53,11 @@ pub struct SystemDef {
     /// value wins when the guess would be wrong.
     #[serde(default)]
     pub category: Option<String>,
+    /// Whether this logical system is handheld hardware. Presentation may
+    /// use this to separate it from MiSTer's physical core-folder category;
+    /// discovery, launch and cache identity continue to use the normal data.
+    #[serde(default)]
+    pub handheld: bool,
     /// Folder names to skip while scanning this system.
     ///
     /// Some collections ship the same games several times over: a card's
@@ -290,6 +295,7 @@ pub fn prepare_table(mut table: Vec<SystemDef>, menu_root: &Path) -> Result<Vec<
             launch: Vec::new(),
             logo: None,
             category: Some("Unstable".into()),
+            handheld: false,
             skip_folders: Vec::new(),
             setname: None,
         });
@@ -662,6 +668,7 @@ extensions = ["md", "bin"]
             launch: Vec::new(),
             logo: None,
             category: None,
+            handheld: false,
             skip_folders: Vec::new(),
             setname: None,
         }
@@ -834,6 +841,48 @@ extensions = ["md", "bin"]
             c64.launch.iter().any(|r| r.kind == "s" && r.index == 0),
             "the disk slot must survive generation"
         );
+        let handhelds: std::collections::BTreeSet<&str> = table
+            .iter()
+            .filter(|system| system.handheld)
+            .map(|system| system.id.as_str())
+            .collect();
+        assert_eq!(
+            handhelds,
+            [
+                "Arduboy",
+                "AtariLynx",
+                "GBA",
+                "GBA2P",
+                "Gamate",
+                "GameGear",
+                "GameGear2P",
+                "GameNWatch",
+                "Gameboy",
+                "Gameboy2P",
+                "GameboyColor",
+                "MegaDuck",
+                "NeoGeoPocket",
+                "NeoGeoPocketColor",
+                "PocketChallengeV2",
+                "PokemonMini",
+                "SuperVision",
+                "WonderSwan",
+                "WonderSwanColor",
+            ]
+            .into_iter()
+            .collect(),
+            "the opt-in category follows logical systems rather than core folders"
+        );
+        for id in ["AdventureVision", "SuperGameboy", "VirtualBoy"] {
+            assert!(
+                !table
+                    .iter()
+                    .find(|system| system.id == id)
+                    .unwrap()
+                    .handheld,
+                "{id} remains a Console system"
+            );
+        }
         // Every system must be startable: either it says which slot a file
         // goes into, or its files say it themselves (.mra, .mgl and .rbf
         // name their own core).
@@ -997,6 +1046,8 @@ extensions = ["md", "bin"]
         assert_eq!(c64.category(), "Computer", "_Computer/C64");
         let genesis = &table[1];
         assert_eq!(genesis.category(), "Console", "_Console/MegaDrive");
+        assert!(!c64.handheld);
+        assert!(!genesis.handheld, "old tables default to not handheld");
 
         let stated = SystemDef {
             category: Some("Arcade".into()),

@@ -164,6 +164,10 @@ pub struct Settings {
     pub show_scripts: Option<bool>,
     /// Absent preserves standard-first launches.
     pub core_preference: Option<CorePreference>,
+    /// Present handheld systems in their own category. Absent is off, so
+    /// existing installations retain MiSTer's Console grouping.
+    #[serde(default)]
+    pub separate_handheld_category: Option<bool>,
     /// Explicit per-system core version. Absence uses the global preference.
     /// Values are standard, ra, or an exact menu-relative Unstable RBF path.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -335,6 +339,7 @@ mod tests {
             "v0.2.0 installations have no explicit Pack choices"
         );
         assert!(settings.gamelist_sources.is_empty());
+        assert_eq!(settings.separate_handheld_category, None);
     }
 
     #[test]
@@ -403,6 +408,7 @@ mod tests {
                 .into(),
             },
             show_stats: Some(true),
+            separate_handheld_category: Some(true),
             overscan_x: Some(24),
             artwork_pack_roots: [("SuperGrafx".into(), "/media/fat/docs".into())].into(),
             gamelist_sources: ["NES".into()].into(),
