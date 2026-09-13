@@ -821,6 +821,23 @@ impl Provider {
         matched
     }
 
+    /// The prepared picture for one playable row, for a caller that wants
+    /// only the picture: the same lookup `apply_prepared` makes, with the
+    /// same answer of nothing when the Pack is unusable or unprepared.
+    pub fn prepared_cover(&self, launch: &Launch) -> Option<&Path> {
+        if !self.covers_prepared() {
+            return None;
+        }
+        self.prepared.as_ref()?.get(launch)?.cover.as_deref()
+    }
+
+    /// Whether `prepared_cover` can answer for any row: the Pack is usable
+    /// and a worker has prepared it. Until then a walk over the rows under
+    /// a folder finds no picture, so a caller can spare itself the walk.
+    pub fn covers_prepared(&self) -> bool {
+        self.health.usable() && self.prepared.is_some()
+    }
+
     pub fn apply_with_fingerprints(
         &self,
         rows: &mut [Row],

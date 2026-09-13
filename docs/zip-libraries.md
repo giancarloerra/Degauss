@@ -1,6 +1,6 @@
 # ZIP libraries
 
-A system that does not list `zip` among its launchable extensions opens each ZIP as a virtual folder. Root and nested games retain the native `archive.zip/folder/game.ext` target; neither browsing nor launch preparation extracts or modifies the archive. Directories can be explicit ZIP records or implied by member paths. A system already configured to launch `zip` keeps the whole archive as one game.
+A system that does not list `zip` among its launchable extensions opens each ZIP as a virtual folder. Root and nested games retain the native `archive.zip/folder/game.ext` target; neither browsing nor launch preparation extracts or modifies the archive. Directories can be explicit ZIP records or implied by member paths. A system already configured to launch `zip` keeps the whole archive as one game. An archive, or a virtual directory inside one, holding exactly one game with artwork, whatever else without a picture sits beside it, or several members that all share one picture, shows that artwork on its folder row before it is opened; it still opens as a folder.
 
 The reader supports single-disk classic ZIP and ZIP64 with stored or deflated entries. Problems are handled at two levels.
 
