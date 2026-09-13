@@ -3020,6 +3020,12 @@ pub struct Loaded {
     pub themes: ThemeSet,
 }
 
+fn needs_native_arcade_core_link(system: Option<&FoundSystem>, game: &Path) -> bool {
+    game.extension()
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("mra"))
+        && system.is_some_and(|system| system.category() == "Arcade")
+}
+
 impl App {
     pub fn new(
         loaded: Loaded,
@@ -8675,6 +8681,7 @@ impl App {
             .map(|row| row.name.clone())
             .unwrap_or_default();
         let target = self.favorites_root().join(folder);
+        let native_arcade_favourite = needs_native_arcade_core_link(self.open_system_ref(), &game);
 
         // A title rather than a file: written as an MGL that starts
         // AmigaVision, carrying the title in an element Main ignores.
@@ -8746,7 +8753,12 @@ impl App {
                     .file_name()
                     .map(|s| s.to_string_lossy().into_owned())
                     .unwrap_or_else(|| name.clone());
-                self.link_favorite(&target, &file, &game)
+                if native_arcade_favourite {
+                    crate::favorites::ensure_arcade_cores_link(Path::new(&self.config.menu_root))
+                        .and_then(|()| self.link_favorite(&target, &file, &game))
+                } else {
+                    self.link_favorite(&target, &file, &game)
+                }
             }
             Err(e) => Err(e),
         };
@@ -12017,7 +12029,7 @@ impl App {
                         .cloned()
                         .unwrap_or_default();
                     if choice == NEW_FOLDER {
-                        self.filter.clear();
+                        self.filter = "_".to_string();
                         self.open_find(FindMode::NewFolder);
                     } else {
                         self.add_favorite_in(&choice);
@@ -14149,6 +14161,26 @@ pub(crate) fn test_library_launch_flow(window: Rc<MinimalSoftwareWindow>) {
     let ui = DegaussWindow::new().unwrap();
     let mut app = App::new(loaded, window, ui, StartupTimings::default(), 352, 240);
     app.finish_background_work_for_headless();
+    app.open_favorite_folders();
+    app.menu_list.select(
+        app.menu
+            .iter()
+            .position(|entry| entry == NEW_FOLDER)
+            .expect("new folder choice"),
+    );
+    app.handle(Action::Accept);
+    assert_eq!(app.screen, Screen::Find);
+    assert_eq!(app.find_mode, FindMode::NewFolder);
+    assert_eq!(
+        app.filter, "_",
+        "native-visible names start with underscore"
+    );
+    app.handle(Action::Context);
+    assert_eq!(app.filter, "", "X can delete the suggested underscore");
+    app.filter = "_Arcade".to_string();
+    app.handle(Action::Menu);
+    assert_eq!(app.filter, "", "Y can clear the complete folder name");
+    app.screen = Screen::Browse;
     let initial_screen = app.screen;
     app.screen = Screen::ScraperProgress;
     app.scraper_progress.phase = crate::scraper::Phase::Account;
@@ -15233,6 +15265,41 @@ mod tests {
             logo_dir: None,
             menu_folder: None,
         }
+    }
+
+    #[test]
+    fn only_an_arcade_system_mra_needs_the_native_core_link() {
+        let arcade = found_system_with_core(
+            "ArcadeFixture",
+            vec![PathBuf::from("/games/Arcade")],
+            &["mra"],
+            "_Arcade/ArcadeFixture",
+            None,
+        );
+        let console = found_system_with_core(
+            "ConsoleFixture",
+            vec![PathBuf::from("/games/Console")],
+            &["mra"],
+            "_Console/ConsoleFixture",
+            None,
+        );
+
+        assert!(needs_native_arcade_core_link(
+            Some(&arcade),
+            Path::new("/media/fat/_Arcade/Game.mra")
+        ));
+        assert!(!needs_native_arcade_core_link(
+            Some(&console),
+            Path::new("/media/fat/games/Game.mra")
+        ));
+        assert!(!needs_native_arcade_core_link(
+            Some(&arcade),
+            Path::new("/media/fat/_Arcade/Game.rbf")
+        ));
+        assert!(!needs_native_arcade_core_link(
+            None,
+            Path::new("/media/fat/_Arcade/Game.mra")
+        ));
     }
 
     #[test]

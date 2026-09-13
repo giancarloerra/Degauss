@@ -764,6 +764,38 @@ pub fn add_core(folder: &Path, name: &str, source: &Path) -> Result<PathBuf> {
     Ok(path)
 }
 
+/// Make an Arcade favourite usable from MiSTer's native menu on a card where
+/// the Favorites script has never prepared its shared core link.
+///
+/// Anything already named `cores` is deliberately authoritative. It may be a
+/// file, directory, working link or dangling link owned by the user's setup,
+/// and must not be replaced.
+#[cfg(unix)]
+pub fn ensure_arcade_cores_link(menu_root: &Path) -> Result<()> {
+    let favorites_root = menu_root.join(FAVORITES_DIR);
+    let link = favorites_root.join("cores");
+    match std::fs::symlink_metadata(&link) {
+        Ok(_) => return Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => {
+            return Err(DegaussError::io(
+                "checking the Arcade favourites core link",
+                &link,
+                error,
+            ));
+        }
+    }
+
+    std::fs::create_dir_all(&favorites_root).map_err(|error| {
+        DegaussError::io("making the favourites folder", &favorites_root, error)
+    })?;
+    let target = menu_root.join("_Arcade/cores");
+    std::os::unix::fs::symlink(&target, &link).map_err(|error| {
+        DegaussError::io("linking the Arcade favourites core folder", &link, error)
+    })?;
+    Ok(())
+}
+
 pub fn remove(path: &Path) -> Result<()> {
     std::fs::remove_file(path).map_err(|e| DegaussError::io("removing a favourite", path, e))
 }
@@ -935,6 +967,82 @@ extensions = ["nes", "mgl"]
         std::fs::write(&file, "x").unwrap();
         assert!(folders(&file).is_err());
         std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_missing_arcade_core_link_is_created_once_for_the_native_menu() {
+        let root = temp("arcade-core-link");
+        let expected = root.join("_Arcade/cores");
+
+        ensure_arcade_cores_link(&root).expect("fresh card is prepared");
+        let link = root.join(FAVORITES_DIR).join("cores");
+        assert!(std::fs::symlink_metadata(&link)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        assert_eq!(std::fs::read_link(&link).unwrap(), expected);
+
+        ensure_arcade_cores_link(&root).expect("an existing link is accepted");
+        assert_eq!(std::fs::read_link(&link).unwrap(), expected);
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn every_existing_arcade_cores_object_is_left_unchanged() {
+        let root = temp("existing-arcade-cores");
+
+        let file_root = root.join("file");
+        let file = file_root.join(FAVORITES_DIR).join("cores");
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(&file, b"owned by the user").unwrap();
+        ensure_arcade_cores_link(&file_root).unwrap();
+        assert_eq!(std::fs::read(&file).unwrap(), b"owned by the user");
+
+        let directory_root = root.join("directory");
+        let directory = directory_root.join(FAVORITES_DIR).join("cores");
+        std::fs::create_dir_all(&directory).unwrap();
+        std::fs::write(directory.join("marker"), b"keep").unwrap();
+        ensure_arcade_cores_link(&directory_root).unwrap();
+        assert_eq!(std::fs::read(directory.join("marker")).unwrap(), b"keep");
+
+        let link_root = root.join("link");
+        let link = link_root.join(FAVORITES_DIR).join("cores");
+        std::fs::create_dir_all(link.parent().unwrap()).unwrap();
+        std::os::unix::fs::symlink(Path::new("/custom/arcade/cores"), &link).unwrap();
+        ensure_arcade_cores_link(&link_root).unwrap();
+        assert_eq!(
+            std::fs::read_link(&link).unwrap(),
+            PathBuf::from("/custom/arcade/cores")
+        );
+
+        let dangling_root = root.join("dangling");
+        let dangling = dangling_root.join(FAVORITES_DIR).join("cores");
+        std::fs::create_dir_all(dangling.parent().unwrap()).unwrap();
+        std::os::unix::fs::symlink(Path::new("../missing/cores"), &dangling).unwrap();
+        ensure_arcade_cores_link(&dangling_root).unwrap();
+        assert_eq!(
+            std::fs::read_link(&dangling).unwrap(),
+            PathBuf::from("../missing/cores")
+        );
+
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_arcade_core_link_failure_is_reported_before_a_favourite_is_written() {
+        let root = temp("arcade-core-link-error");
+        let favorites_root = root.join(FAVORITES_DIR);
+        std::fs::write(&favorites_root, b"not a directory").unwrap();
+        let destination = favorites_root.join("Arcade").join("Game.mra");
+
+        let error = ensure_arcade_cores_link(&root).unwrap_err().to_string();
+
+        assert!(error.contains("Arcade favourites core link"));
+        assert!(!destination.exists());
+        std::fs::remove_dir_all(root).ok();
     }
 
     /// A game that needs a companion disc has the disc written into the MGL
