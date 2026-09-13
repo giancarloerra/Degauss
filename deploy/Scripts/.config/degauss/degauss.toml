@@ -36,7 +36,8 @@ menu_root = "/media/fat"
 
 [app]
 # Longest edge artwork is decoded to. The picture view draws it at roughly
-# half the screen, so this wants to be at least that big.
+# half the screen, or about 62% of the width with the Large Artwork Details
+# Style, so this wants to be at least that big.
 cover_size = 320
 
 # How many decoded pictures to keep in memory. Memory only, never the card.
