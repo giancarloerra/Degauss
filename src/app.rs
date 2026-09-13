@@ -64,7 +64,7 @@ const HANDHELD_CATEGORY: &str = "Handheld";
 /// The category shown by the frontend. The system's own category remains
 /// unchanged because launch, cache and library ownership follow MiSTer.
 fn display_category(system: &FoundSystem, separate_handheld: bool) -> &str {
-    if separate_handheld && system.def.handheld {
+    if separate_handheld && system.def.is_handheld() {
         HANDHELD_CATEGORY
     } else {
         system.category()
