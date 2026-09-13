@@ -26,6 +26,8 @@ pub struct Request {
     /// A parsed snapshot may be reused, but only after its filesystem
     /// identity has been rechecked on this worker.
     pub cached_provider: Option<crate::artwork_pack::Provider>,
+    /// Where the paths inside an `.mgl` point, for the Pack match.
+    pub homes: Arc<crate::mgl::Homes>,
 }
 
 #[derive(Debug)]
@@ -202,6 +204,7 @@ fn run(
                 &cached.cache,
                 &cached.fingerprints,
                 cached.fingerprints_complete,
+                &request.homes,
                 cancelled,
             ) {
                 Ok(Some(true)) => (cached.fingerprints.clone(), false),
@@ -228,7 +231,7 @@ fn run(
                 });
                 return;
             };
-            match provider.prepare_for_cache(cache, &fingerprints, cancelled) {
+            match provider.prepare_for_cache(cache, &fingerprints, &request.homes, cancelled) {
                 Ok(Some(_)) => {}
                 Ok(None) => {
                     let _ = events.send(Event::Cancelled(progress));
@@ -347,6 +350,7 @@ mod tests {
                 cache_dir: root.join("cache"),
                 validate_location_only: false,
                 cached_provider: None,
+                homes: Arc::new(crate::mgl::Homes::default()),
             },
             Request {
                 system_id: "NES".to_string(),
@@ -356,6 +360,7 @@ mod tests {
                 cache_dir: root.join("cache"),
                 validate_location_only: false,
                 cached_provider: None,
+                homes: Arc::new(crate::mgl::Homes::default()),
             },
         ])
         .unwrap();
@@ -408,6 +413,7 @@ mod tests {
             cache_dir: root.join("cache-that-does-not-exist"),
             validate_location_only: true,
             cached_provider: None,
+            homes: Arc::new(crate::mgl::Homes::default()),
         };
         let mut job = start(vec![request(ready_docs.clone()), request(invalid_docs)]).unwrap();
         let Event::Loaded { snapshots, .. } = terminal(&mut job) else {
@@ -451,6 +457,7 @@ mod tests {
             cache_dir,
             validate_location_only: false,
             cached_provider: None,
+            homes: Arc::new(crate::mgl::Homes::default()),
         }])
         .unwrap();
         let Event::Loaded { mut snapshots, .. } = terminal(&mut job) else {
@@ -480,6 +487,7 @@ mod tests {
                 cache_dir: root.join("cache"),
                 validate_location_only: false,
                 cached_provider: None,
+                homes: Arc::new(crate::mgl::Homes::default()),
             }],
             &sender,
             &cancelled,
@@ -524,7 +532,12 @@ mod tests {
         let provider = crate::artwork_pack::Provider::load("SuperGrafx", &docs, None);
         let cancelled = AtomicBool::new(false);
         let fingerprint = provider
-            .fingerprint_for_launch(&Launch::File(rom.clone()), &cancelled, &mut |_| {})
+            .fingerprint_for_launch(
+                &Launch::File(rom.clone()),
+                &crate::mgl::Homes::default(),
+                &cancelled,
+                &mut |_| {},
+            )
             .unwrap()
             .expect("CRC-only match requires a loose-file fingerprint");
         let fingerprints = crate::cache::ContentFingerprints::from([fingerprint]);
@@ -550,6 +563,7 @@ mod tests {
             cache_dir: cache_dir.clone(),
             validate_location_only: false,
             cached_provider,
+            homes: Arc::new(crate::mgl::Homes::default()),
         };
         let mut job = start(vec![request(None)]).unwrap();
         let Event::Loaded { mut snapshots, .. } = terminal(&mut job) else {

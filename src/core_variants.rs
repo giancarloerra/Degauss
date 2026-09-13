@@ -578,9 +578,9 @@ extensions = ["nes", "mgl"]
             .collect();
         let favorite = root.join("Nightly.mgl");
         std::fs::write(&favorite, &original).unwrap();
+        let homes = crate::mgl::Homes::new(&[], &owners);
         let owner = || {
-            let reference =
-                crate::favorites::reference_of_with_systems(&favorite, &owners).unwrap();
+            let reference = crate::favorites::reference_of(&favorite, &homes).unwrap();
             crate::app::owner_of_favorite(&owners, &reference)
         };
         assert!(recognized_favorite(&favorite, &system).unwrap());
