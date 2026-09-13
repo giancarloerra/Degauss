@@ -139,6 +139,17 @@ impl FoundSystem {
     /// The system as the catalog and launcher want it: a folder, the
     /// extensions that count, and how to start each of them.
     pub fn to_config(&self) -> crate::config::SystemConfig {
+        let mut skip_folders = self.def.skip_folders.clone();
+        if is_favorites(self.category())
+            && !skip_folders
+                .iter()
+                .any(|name| name.eq_ignore_ascii_case("cores"))
+        {
+            // `cores` is support data used by MiSTer's native Arcade
+            // favourites, never a user-created shelf. Enforce this in code
+            // so tables retained from earlier releases are safe too.
+            skip_folders.push("cores".into());
+        }
         crate::config::SystemConfig {
             preserve_rbf_stem: self.category() == "Unstable",
             name: self.def.name.clone(),
@@ -152,7 +163,7 @@ impl FoundSystem {
             extensions: self.def.extensions.clone(),
             rbf: self.def.rbf.clone(),
             launch: self.def.launch.clone(),
-            skip_folders: self.def.skip_folders.clone(),
+            skip_folders,
             setname: self.def.setname.clone(),
         }
     }
@@ -1169,6 +1180,20 @@ extensions = ["ngp"]
             assert_eq!(rows.len(), 1, "one {category} collection");
             assert_eq!(rows[0].path(), menu.join(folder));
         }
+        let favorites = found
+            .iter()
+            .find(|row| is_favorites(row.category()))
+            .expect("legacy Favorites collection");
+        assert_eq!(
+            favorites
+                .to_config()
+                .skip_folders
+                .iter()
+                .filter(|name| name.eq_ignore_ascii_case("cores"))
+                .count(),
+            1,
+            "old retained tables gain the native support-folder exclusion"
+        );
         let again = prepare_table(table, &menu).unwrap();
         assert_eq!(
             again

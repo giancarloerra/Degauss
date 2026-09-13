@@ -27,6 +27,14 @@ pub const FAVORITES_DIR: &str = "_@Favorites";
 const MAX_MGL_BYTES: u64 = 1024 * 1024;
 const MAX_MGL_VALUE_BYTES: usize = 4096;
 
+/// MiSTer's Favorites tooling uses `cores` as an Arcade support directory,
+/// not as a shelf or a favourite. Ignore the name at every depth so an old
+/// directory or link cannot be imported or traversed as user content.
+fn is_native_cores_name(name: &std::ffi::OsStr) -> bool {
+    name.to_str()
+        .is_some_and(|name| name.eq_ignore_ascii_case("cores"))
+}
+
 /// What a Favorite points at, plus optional descriptor evidence that can
 /// distinguish systems sharing one folder and file extension. `cache_target`
 /// preserves the exact target used by MiSTer's Favorites representation;
@@ -84,6 +92,9 @@ impl Favorites {
             return;
         };
         for item in listing.flatten() {
+            if is_native_cores_name(&item.file_name()) {
+                continue;
+            }
             let path = item.path();
             // Asked of the card rather than taken from the directory
             // listing: on some filesystems the type in a listing calls a
@@ -679,7 +690,10 @@ pub fn folders(root: &Path) -> Result<Vec<String>> {
             .file_type()
             .map_err(|e| DegaussError::io("reading a favourite folder", &path, e))?;
         let name = item.file_name().to_string_lossy().into_owned();
-        if kind.is_dir() && !name.starts_with('.') {
+        if kind.is_dir()
+            && !name.starts_with('.')
+            && !is_native_cores_name(item.file_name().as_os_str())
+        {
             names.push(name);
         }
     }
@@ -964,6 +978,7 @@ extensions = ["nes", "mgl"]
         let root = temp("folder-list");
         std::fs::create_dir_all(root.join("zeta")).unwrap();
         std::fs::create_dir_all(root.join("Arcade")).unwrap();
+        std::fs::create_dir_all(root.join("CORES")).unwrap();
         std::fs::create_dir_all(root.join(".private")).unwrap();
         std::fs::write(root.join("loose.mgl"), "x").unwrap();
 
@@ -1353,6 +1368,35 @@ extensions = ["nes", "mgl"]
         assert!(found.holds(&original));
         assert_eq!(target_of(&favourite), Some(original));
         std::fs::remove_dir_all(root).ok();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn native_cores_trees_are_not_favourites_or_walked_at_any_depth() {
+        let card = temp("native-cores-tree");
+        let favorites = card.join(FAVORITES_DIR);
+        let arcade_cores = card.join("_Arcade/cores");
+        let originals = card.join("originals");
+        std::fs::create_dir_all(favorites.join("_Arcade/Nested")).unwrap();
+        std::fs::create_dir_all(&arcade_cores).unwrap();
+        std::fs::create_dir_all(&originals).unwrap();
+
+        let support_core = arcade_cores.join("Support.rbf");
+        std::fs::write(&support_core, b"rbf").unwrap();
+        std::os::unix::fs::symlink(&arcade_cores, favorites.join("cores")).unwrap();
+        std::os::unix::fs::symlink(&arcade_cores, arcade_cores.join("cores")).unwrap();
+
+        let game = originals.join("Game.mra");
+        std::fs::write(&game, b"mra").unwrap();
+        std::os::unix::fs::symlink(&game, favorites.join("_Arcade/Nested/Game.mra")).unwrap();
+
+        let found = Favorites::read(&favorites);
+
+        assert_eq!(found.len(), 1);
+        assert!(found.holds(&game));
+        assert!(!found.holds(&support_core));
+        assert!(!found.holds(&arcade_cores));
+        std::fs::remove_dir_all(card).ok();
     }
 
     #[cfg(unix)]

@@ -882,6 +882,35 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn a_favourites_cache_skips_native_cores_links_and_legacy_loops() {
+        let card = temp("favourites-cores-loop");
+        let favorites = card.join("_@Favorites");
+        let arcade_cores = card.join("_Arcade/cores");
+        std::fs::create_dir_all(favorites.join("_Games/Nested")).unwrap();
+        std::fs::create_dir_all(&arcade_cores).unwrap();
+        std::fs::write(arcade_cores.join("Support.rbf"), b"rbf").unwrap();
+        std::os::unix::fs::symlink(&arcade_cores, favorites.join("cores")).unwrap();
+        std::os::unix::fs::symlink(&arcade_cores, arcade_cores.join("cores")).unwrap();
+        std::fs::write(favorites.join("_Games/Nested/Game.mgl"), b"mgl").unwrap();
+
+        let mut config = system(&favorites);
+        config.extensions = vec!["rbf".into(), "mra".into(), "mgl".into()];
+        config.skip_folders = vec!["cores".into()];
+        let library = Library::open(&config).unwrap();
+        let cache = build_system_checked(&library).expect("support links do not fail refresh");
+
+        assert_eq!(cache.summary(&library.start()).games, 1);
+        assert!(cache.folders.values().all(|folder| {
+            folder
+                .rows
+                .iter()
+                .all(|row| row.name != "cores" && row.name != "Support")
+        }));
+        std::fs::remove_dir_all(card).ok();
+    }
+
     #[test]
     fn games_inside_a_folder_full_of_pictures_are_still_counted() {
         // The DOS core keeps its games in a folder called media, which is
