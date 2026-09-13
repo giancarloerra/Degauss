@@ -438,6 +438,141 @@ fn run_browse_bar_settings_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) 
     }
 }
 
+fn run_handheld_category_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
+    let mut app = fixture_app(root, window, Settings::default());
+    let mut handheld = app.all_systems[0].clone();
+    handheld.def.handheld = true;
+    let mut console = handheld.clone();
+    console.def.id = "SNES".into();
+    console.def.name = "Super Nintendo".into();
+    console.def.handheld = false;
+    console.paths = vec![root.join("games/SNES")];
+    app.all_systems = vec![handheld, console];
+    app.open_category = Some("Console".into());
+    app.category_system.insert("Console".into(), "NES".into());
+    app.rebuild_system_list();
+    app.browsing = Browsing::Games;
+    app.game_list.select(1);
+
+    assert_eq!(app.settings.separate_handheld_category, None);
+    assert_eq!(app.open_category.as_deref(), Some("Console"));
+    assert_eq!(
+        app.categories
+            .iter()
+            .map(|(name, _)| name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["Console"]
+    );
+    let saved = app.position();
+    let selected_game = row_key(&app.here[app.game_list.selected()]);
+    let cache_before = cache_snapshot(&app.cache_dir);
+    let launch_before = app
+        .all_systems
+        .iter()
+        .find(|system| system.def.id == "NES")
+        .unwrap()
+        .to_config();
+    app.settings
+        .custom_views
+        .systems
+        .insert(HANDHELD_CATEGORY.into(), "gallery".into());
+
+    select_option(
+        &mut app,
+        OptionsPage::Library,
+        OptionId::SeparateHandheldCategory,
+    );
+    app.handle(Action::Accept);
+
+    assert_eq!(app.settings.separate_handheld_category, Some(true));
+    assert_eq!(app.open_category.as_deref(), Some(HANDHELD_CATEGORY));
+    assert_eq!(app.open_system.as_deref(), Some("NES"));
+    assert_eq!(row_key(&app.here[app.game_list.selected()]), selected_game);
+    assert_eq!(
+        app.categories
+            .iter()
+            .map(|(name, _)| name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["Console", HANDHELD_CATEGORY]
+    );
+    assert_eq!(app.systems.len(), 1);
+    assert_eq!(app.systems[0].def.id, "NES");
+    assert_eq!(cache_snapshot(&app.cache_dir), cache_before);
+    assert_eq!(
+        app.settings
+            .custom_views
+            .systems
+            .get(HANDHELD_CATEGORY)
+            .map(String::as_str),
+        Some("gallery")
+    );
+    app.browsing = Browsing::Systems;
+    app.resolve_view();
+    assert_eq!(app.layout, Layout::Gallery);
+    app.browsing = Browsing::Games;
+    app.resolve_view();
+
+    app.restore_position(&saved);
+    app.finish_background_work_for_headless();
+    assert_eq!(app.open_category.as_deref(), Some(HANDHELD_CATEGORY));
+    assert_eq!(app.open_system.as_deref(), Some("NES"));
+    assert!(
+        app.message.is_none(),
+        "restoring the saved position must not leave an overlay: {:?}",
+        app.message
+    );
+    let selected_after_restore = row_key(&app.here[app.game_list.selected()]);
+
+    select_option(
+        &mut app,
+        OptionsPage::Library,
+        OptionId::SeparateHandheldCategory,
+    );
+    app.handle(Action::Accept);
+    assert_eq!(app.settings.separate_handheld_category, Some(false));
+    assert_eq!(app.open_category.as_deref(), Some("Console"));
+    assert_eq!(app.open_system.as_deref(), Some("NES"));
+    assert_eq!(
+        row_key(&app.here[app.game_list.selected()]),
+        selected_after_restore
+    );
+    assert_eq!(cache_snapshot(&app.cache_dir), cache_before);
+    assert_eq!(
+        app.settings
+            .custom_views
+            .systems
+            .get(HANDHELD_CATEGORY)
+            .map(String::as_str),
+        Some("gallery"),
+        "the optional category's saved view remains dormant when disabled"
+    );
+
+    let launch_after = app
+        .all_systems
+        .iter()
+        .find(|system| system.def.id == "NES")
+        .unwrap()
+        .to_config();
+    assert_eq!(launch_after.path, launch_before.path);
+    assert_eq!(launch_after.extensions, launch_before.extensions);
+    assert_eq!(launch_after.rbf, launch_before.rbf);
+    assert_eq!(launch_after.launch, launch_before.launch);
+    assert_eq!(launch_after.setname, launch_before.setname);
+
+    app.handle(Action::Quit);
+    let reloaded = Settings::load(&app.settings_path).unwrap();
+    assert_eq!(reloaded.separate_handheld_category, Some(false));
+    assert_eq!(
+        reloaded
+            .custom_views
+            .systems
+            .get(HANDHELD_CATEGORY)
+            .map(String::as_str),
+        Some("gallery")
+    );
+    app.ui.hide().unwrap();
+}
+
 fn run_scripts_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
     let scripts_root = root.join("Scripts");
     let nested = scripts_root.join("Tools and Tests");
@@ -7946,6 +8081,7 @@ pub(super) fn run_ui_acceptance_flow(window: Rc<MinimalSoftwareWindow>) {
     std::fs::write(&gamelist_path, &gamelist_xml).unwrap();
     run_browse_bar_settings_flow(&root, window.clone());
     run_details_style_flow(&root, window.clone());
+    run_handheld_category_flow(&root, window.clone());
     run_scripts_flow(&root, window.clone());
     run_neogeo_romset_flow(&root, window.clone());
     run_artwork_matte_flow(&root, window.clone());

@@ -45,6 +45,8 @@ pub enum OptionId {
     CorePreference,
     /// Preferred available source for systems left on Automatic.
     AutomaticDataSource,
+    /// Present recognised handheld systems in their own home category.
+    SeparateHandheldCategory,
     /// The strip along the bottom of the screen, while browsing.
     ShowBar,
     /// Read the card again into the written-down copy of it.
@@ -101,6 +103,7 @@ pub const OPTIONS: &[OptionId] = &[
     OptionId::RandomLaunches,
     OptionId::CorePreference,
     OptionId::AutomaticDataSource,
+    OptionId::SeparateHandheldCategory,
     OptionId::Spacer,
     OptionId::ShowOther,
     OptionId::ShowUtility,
@@ -214,6 +217,7 @@ impl OptionsPage {
                 OptionId::FoldersLast,
                 OptionId::CorePreference,
                 OptionId::AutomaticDataSource,
+                OptionId::SeparateHandheldCategory,
                 OptionId::ShowOther,
                 OptionId::ShowUtility,
                 OptionId::ShowUnstable,
@@ -256,6 +260,7 @@ impl OptionId {
             OptionId::ShowScripts => "Show Scripts Folder",
             OptionId::CorePreference => "Core Preference",
             OptionId::AutomaticDataSource => "Automatic Data Source",
+            OptionId::SeparateHandheldCategory => "Separate Handheld Category",
             OptionId::ShowBar => "Bottom Bar While Browsing",
             OptionId::RebuildCache => "Rebuild All System Lists",
             OptionId::ScrapeAll => "Scrape All Systems",
@@ -320,6 +325,9 @@ impl OptionId {
             OptionId::CorePreference => "Choose the preferred core when standard and RetroAchievements versions are both installed.",
             OptionId::AutomaticDataSource => {
                 "Choose which available source systems left on Automatic try first when they are entered."
+            }
+            OptionId::SeparateHandheldCategory => {
+                "Show recognised handheld systems in a separate Handheld category. Off keeps MiSTer's Console grouping."
             }
             OptionId::ShowBar => "Show the clock, connections and button hints while browsing. Menus keep the bar.",
             OptionId::FoldersLast => {
@@ -482,6 +490,12 @@ mod tests {
             .ids()
             .contains(&OptionId::FavoritesFirst));
         assert!(OptionsPage::Library.ids().contains(&OptionId::FoldersLast));
+        assert!(OptionsPage::Library.ids().windows(3).any(|ids| ids
+            == [
+                OptionId::CorePreference,
+                OptionId::AutomaticDataSource,
+                OptionId::SeparateHandheldCategory,
+            ]));
         assert_eq!(OptionsPage::Developer.ids(), &ADVANCED);
     }
 
