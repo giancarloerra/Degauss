@@ -18724,10 +18724,11 @@ mod tests {
             below: None,
             details: browse::Details::default(),
         }];
+        let homes = crate::mgl::Homes::new(&[], std::slice::from_ref(&system));
         enrich_favorite_rows(
             &mut rows,
-            &[system],
-            &Default::default(),
+            std::slice::from_ref(&system),
+            &homes,
             &Default::default(),
             &cache_dir,
             |_, _, _| None,

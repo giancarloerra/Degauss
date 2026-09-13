@@ -1125,12 +1125,13 @@ extensions = ["nes", "mgl"]
         );
 
         let target = Path::new("/media/fat/games/NES/Game.nes");
-        let found = Favorites::read(&root);
+        let homes = homes_knowing("_Console/NES");
+        let found = Favorites::read_with(&root, &homes);
         assert!(found.holds(target), "a root-level favourite is read back");
         assert_eq!(found.file_for(target), Some(written.as_path()));
 
         remove(&written).unwrap();
-        assert!(!Favorites::read(&root).holds(target));
+        assert!(!Favorites::read_with(&root, &homes).holds(target));
         std::fs::remove_dir_all(&root).ok();
     }
 

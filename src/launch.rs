@@ -1485,6 +1485,21 @@ mod tests {
         std::fs::write(dir.join("games/NEOGEO/mslug.zip"), b"zip").unwrap();
         let mut system = neogeo();
         system.path = dir.join("games/NEOGEO").to_string_lossy().into_owned();
+        let def = crate::systems::parse_table(
+            include_str!("../assets/systems.toml"),
+            Path::new("systems.toml"),
+        )
+        .unwrap()
+        .into_iter()
+        .find(|candidate| candidate.id == "NeoGeo")
+        .expect("the shipped table has Neo Geo");
+        let found = crate::systems::FoundSystem {
+            def,
+            paths: vec![dir.join("games/NEOGEO")],
+            logo_dir: None,
+            menu_folder: None,
+        };
+        let homes = crate::mgl::Homes::new(&[], &[found]);
 
         for set in ["mslug.zip", "kof98"] {
             let game = dir.join("games/NEOGEO").join(set);
@@ -1503,8 +1518,12 @@ mod tests {
             );
             let favourite = dir.join(format!("{set}.mgl"));
             std::fs::write(&favourite, &mgl).unwrap();
-            assert_eq!(crate::favorites::target_of(&favourite), Some(game.clone()));
-            let favorites = crate::favorites::Favorites::read(&dir);
+            assert_eq!(
+                crate::favorites::reference_of(&favourite, &homes)
+                    .map(|reference| reference.cache_target),
+                Some(game.clone())
+            );
+            let favorites = crate::favorites::Favorites::read_with(&dir, &homes);
             assert!(favorites.holds(&game), "{set} is held after a fresh read");
             // Chosen from the shelf, the favourite is passed through as
             // the ordinary MGL it is.
