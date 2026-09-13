@@ -2815,7 +2815,7 @@ fn run_automatic_pack_consent_flow(root: &Path, window: Rc<MinimalSoftwareWindow
     assert!(app.ui.get_about_line().contains("2 games"));
     assert_eq!(
         app.source_label("NES"),
-        format!("Automatic: {SOURCE_GAMELIST}"),
+        format!("Automatic (Using: {SOURCE_GAMELIST})"),
         "an installed Pack nobody accepted is not the source"
     );
     assert_no_pack_work(&app);
@@ -2860,6 +2860,52 @@ fn run_automatic_pack_consent_flow(root: &Path, window: Rc<MinimalSoftwareWindow
     assert!(app.artwork_provider.is_none());
     assert_ordinary_rows(&app);
     assert_no_pack_work(&app);
+    leave_system(&mut app);
+
+    // The opt-in priority affects only systems left on Automatic. It is a
+    // source-order setting, not a per-system rewrite or an eager Pack read.
+    let source_settings_before = (
+        app.settings.artwork_pack_roots.clone(),
+        app.settings.gamelist_sources.clone(),
+    );
+    app.adjust_option_value(OptionId::AutomaticDataSource, 1);
+    assert_eq!(
+        app.option_value(OptionId::AutomaticDataSource),
+        "Artwork Pack First"
+    );
+    assert_eq!(
+        (
+            app.settings.artwork_pack_roots.clone(),
+            app.settings.gamelist_sources.clone(),
+        ),
+        source_settings_before,
+        "the global priority must not rewrite per-system choices"
+    );
+    assert_no_pack_work(&app);
+    open(&mut app);
+    assert_prompt(&app, available);
+    assert!(
+        games.join("gamelist.xml").exists(),
+        "Artwork Pack First asks despite an available gamelist"
+    );
+    app.handle(Action::Up);
+    assert_no_pack_work(&app);
+    app.adjust_option_value(OptionId::AutomaticDataSource, 1);
+    assert_eq!(
+        app.option_value(OptionId::AutomaticDataSource),
+        "Gamelist First"
+    );
+    assert!(app.save_settings());
+    assert_eq!(
+        Settings::load(&app.settings_path)
+            .unwrap()
+            .automatic_data_source,
+        Some(crate::settings::AutomaticDataSource::GamelistFirst)
+    );
+    open(&mut app);
+    assert!(app.pending.is_none(), "{:?}", app.message);
+    assert_eq!(app.open_system.as_deref(), Some("NES"));
+    assert_ordinary_rows(&app);
     leave_system(&mut app);
     std::fs::remove_file(games.join("gamelist.xml")).unwrap();
 
@@ -2947,7 +2993,7 @@ fn run_automatic_pack_consent_flow(root: &Path, window: Rc<MinimalSoftwareWindow
     assert!(log_since(logged_from).contains("artwork pack NES: declined recorded"));
     assert_eq!(
         app.source_label("NES"),
-        format!("Automatic: {SOURCE_GAMELIST}")
+        format!("Automatic (Using: {SOURCE_GAMELIST})")
     );
     for _ in 0..2 {
         leave_system(&mut app);
@@ -3189,7 +3235,7 @@ fn run_automatic_pack_consent_flow(root: &Path, window: Rc<MinimalSoftwareWindow
     assert_pack_rows(&app);
     assert_eq!(
         app.source_label("NES"),
-        format!("Automatic: {SOURCE_ARTWORK_PACK}")
+        format!("Automatic (Using: {SOURCE_ARTWORK_PACK})")
     );
     let [rows, decision, prepared] = pack_files(&app.cache_dir, "NES");
     assert!(rows.is_some() && decision.is_some() && prepared.is_some());
@@ -3213,6 +3259,31 @@ fn run_automatic_pack_consent_flow(root: &Path, window: Rc<MinimalSoftwareWindow
     assert_eq!(app.index.as_ref().unwrap().systems["NES"].games, 2);
     assert_eq!(app.total_games, 2);
     let prepared_files = pack_files(&app.cache_dir, "NES");
+
+    // With both sources available, changing the global priority makes the
+    // already-prepared Pack dormant or active without rewriting, deleting or
+    // rebuilding it. Returning to Pack First reuses the same prepared state.
+    leave_system(&mut app);
+    std::fs::write(games.join("gamelist.xml"), "<gameList/>").unwrap();
+    open(&mut app);
+    assert!(app.pending.is_none());
+    assert_ordinary_rows(&app);
+    assert_eq!(pack_files(&app.cache_dir, "NES"), prepared_files);
+    leave_system(&mut app);
+    app.adjust_option_value(OptionId::AutomaticDataSource, 1);
+    open(&mut app);
+    assert!(app.pending.is_none(), "{:?}", app.message);
+    assert_pack_rows(&app);
+    assert!(app.source_job.is_none() && app.provider_job.is_none());
+    assert_eq!(pack_files(&app.cache_dir, "NES"), prepared_files);
+    leave_system(&mut app);
+    app.adjust_option_value(OptionId::AutomaticDataSource, 1);
+    open(&mut app);
+    assert!(app.pending.is_none());
+    assert_ordinary_rows(&app);
+    assert_eq!(pack_files(&app.cache_dir, "NES"), prepared_files);
+    leave_system(&mut app);
+    std::fs::remove_file(games.join("gamelist.xml")).unwrap();
 
     // 9. Left and entered again: no worker, no progress, the same rows.
     for _ in 0..3 {
@@ -3835,7 +3906,7 @@ fn run_automatic_pack_consent_flow(root: &Path, window: Rc<MinimalSoftwareWindow
         .is_some_and(|declined| declined.cache_marker.is_none()));
     assert_eq!(
         app.source_label("NES"),
-        format!("Automatic: {SOURCE_GAMELIST}")
+        format!("Automatic (Using: {SOURCE_GAMELIST})")
     );
     leave_system(&mut app);
     open(&mut app);
@@ -3934,7 +4005,7 @@ fn run_automatic_pack_consent_flow(root: &Path, window: Rc<MinimalSoftwareWindow
     app.open_game_data_source();
     assert_eq!(
         app.menu[0],
-        format!("Automatic (Current: {SOURCE_ARTWORK_PACK})")
+        format!("Automatic (Using: {SOURCE_ARTWORK_PACK})")
     );
     app.screen = Screen::Browse;
     open(&mut app);
@@ -3963,11 +4034,11 @@ fn run_automatic_pack_consent_flow(root: &Path, window: Rc<MinimalSoftwareWindow
         app.finish_background_work_for_headless();
         std::fs::set_permissions(&root, std::fs::Permissions::from_mode(mode)).unwrap();
         let message = app.message.clone().expect("a failed save is said");
+        assert!(message.starts_with(
+            "Artwork Pack could not be enabled for NES.\n\nAutomatic remains active and is currently using Gamelist."
+        ), "{message}");
         assert!(
-            message.starts_with("Game data source was not changed.")
-                && message.ends_with(
-                    "The prepared Artwork Pack data was saved and is used under Automatic."
-                ),
+            message.ends_with("The prepared Artwork Pack data was saved for a later retry."),
             "{message}"
         );
         assert_eq!(
@@ -4074,7 +4145,7 @@ fn run_automatic_pack_consent_flow(root: &Path, window: Rc<MinimalSoftwareWindow
     assert!(!app.effective_artwork_pack_roots.contains_key("NeoGeoMVS"));
     assert_eq!(
         app.source_label("NeoGeoMVS"),
-        format!("Automatic: {SOURCE_GAMELIST}")
+        format!("Automatic (Using: {SOURCE_GAMELIST})")
     );
     leave_system(&mut app);
     app.open_system_by_index(0);
@@ -4333,7 +4404,7 @@ fn run_legacy_pack_cache_adoption_flow(root: &Path, window: Rc<MinimalSoftwareWi
         );
         assert_eq!(
             app.source_label("NES"),
-            format!("Automatic: {SOURCE_GAMELIST}")
+            format!("Automatic (Using: {SOURCE_GAMELIST})")
         );
         assert!(pack_files(&app.cache_dir, "NES")[1].is_none());
         app.message = None;
@@ -4349,7 +4420,7 @@ fn run_legacy_pack_cache_adoption_flow(root: &Path, window: Rc<MinimalSoftwareWi
     assert_eq!(pack_files(&app.cache_dir, "NES")[0], Some(legacy_bytes));
     assert_eq!(
         app.source_label("NES"),
-        format!("Automatic: {SOURCE_ARTWORK_PACK}")
+        format!("Automatic (Using: {SOURCE_ARTWORK_PACK})")
     );
     leave_system(&mut app);
     let logged_from = log_len();
@@ -4976,7 +5047,7 @@ fn run_auto_source_choice_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
     assert!(!app.effective_artwork_pack_roots.contains_key("NES"));
     assert_eq!(
         app.source_label("NES"),
-        format!("Automatic: {SOURCE_GAMELIST}")
+        format!("Automatic (Using: {SOURCE_GAMELIST})")
     );
     let initial_cache = cache_snapshot(&app.cache_dir);
     let initial_rows: Vec<_> = app.here.iter().map(row_key).collect();
@@ -5057,10 +5128,7 @@ fn run_auto_source_choice_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
         "Automatic starts no work of its own"
     );
     assert_eq!(app.screen, Screen::GameDataSource);
-    assert_eq!(
-        app.menu[0],
-        format!("Automatic (Current: {SOURCE_GAMELIST})")
-    );
+    assert_eq!(app.menu[0], format!("Automatic (Using: {SOURCE_GAMELIST})"));
     assert_eq!(
         crate::artwork_source::mode(&app.settings, "NES"),
         Mode::Automatic

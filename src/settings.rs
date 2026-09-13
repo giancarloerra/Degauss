@@ -40,6 +40,32 @@ impl CorePreference {
     }
 }
 
+/// Which available source an Automatic system tries first.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum AutomaticDataSource {
+    /// Preserve the behaviour shipped before this setting existed.
+    #[default]
+    GamelistFirst,
+    ArtworkPackFirst,
+}
+
+impl AutomaticDataSource {
+    pub fn next(self) -> Self {
+        match self {
+            Self::GamelistFirst => Self::ArtworkPackFirst,
+            Self::ArtworkPackFirst => Self::GamelistFirst,
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::GamelistFirst => "Gamelist First",
+            Self::ArtworkPackFirst => "Artwork Pack First",
+        }
+    }
+}
+
 /// Views chosen for exact places in the browser. The shape is deliberately
 /// nested rather than encoded into one string key: category names, system ids
 /// and filesystem paths are user-controlled and must not be able to collide.
@@ -164,6 +190,10 @@ pub struct Settings {
     pub show_scripts: Option<bool>,
     /// Absent preserves standard-first launches.
     pub core_preference: Option<CorePreference>,
+    /// Preferred source for systems left on Automatic. Absent preserves
+    /// the Gamelist-first behaviour shipped before this setting existed.
+    #[serde(default)]
+    pub automatic_data_source: Option<AutomaticDataSource>,
     /// Explicit per-system core version. Absence uses the global preference.
     /// Values are standard, ra, or an exact menu-relative Unstable RBF path.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -397,6 +427,11 @@ mod tests {
             "v0.2.0 installations have no explicit Pack choices"
         );
         assert!(settings.gamelist_sources.is_empty());
+        assert_eq!(settings.automatic_data_source, None);
+        assert_eq!(
+            settings.automatic_data_source.unwrap_or_default(),
+            AutomaticDataSource::GamelistFirst
+        );
     }
 
     #[test]
@@ -420,6 +455,11 @@ mod tests {
             "v0.3.0 installations have no explicit Pack choices"
         );
         assert!(settings.gamelist_sources.is_empty());
+        assert_eq!(settings.automatic_data_source, None);
+        assert_eq!(
+            settings.automatic_data_source.unwrap_or_default(),
+            AutomaticDataSource::GamelistFirst
+        );
     }
 
     fn temp_path(tag: &str) -> std::path::PathBuf {
@@ -468,6 +508,7 @@ mod tests {
             overscan_x: Some(24),
             artwork_pack_roots: [("SuperGrafx".into(), "/media/fat/docs".into())].into(),
             gamelist_sources: ["NES".into()].into(),
+            automatic_data_source: Some(AutomaticDataSource::ArtworkPackFirst),
             ..Default::default()
         };
         settings.save(&path).expect("saved");
@@ -639,6 +680,25 @@ mod tests {
         assert_eq!(
             CorePreference::StandardFirst.next().next(),
             CorePreference::StandardFirst
+        );
+    }
+
+    #[test]
+    fn automatic_data_source_cycles_and_old_settings_keep_gamelist_first() {
+        let old: Settings =
+            toml::from_str(include_str!("../tests/fixtures/v0.3.0-settings.toml")).unwrap();
+        assert_eq!(old.automatic_data_source, None);
+        assert_eq!(
+            old.automatic_data_source.unwrap_or_default(),
+            AutomaticDataSource::GamelistFirst
+        );
+        assert_eq!(
+            AutomaticDataSource::GamelistFirst.next(),
+            AutomaticDataSource::ArtworkPackFirst
+        );
+        assert_eq!(
+            AutomaticDataSource::ArtworkPackFirst.next(),
+            AutomaticDataSource::GamelistFirst
         );
     }
 

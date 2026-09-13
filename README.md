@@ -70,9 +70,11 @@ remain labelled by release.
 </p>
 
 **Game Artwork Databases:** choose **Automatic**, **Gamelist** or **Artwork Pack**
-for each supported system. Automatic is the default and prefers a `gamelist.xml` in any of that system's
-library roots; otherwise it looks for a supported pack installed in the default
-SD or USB locations when the system is entered, and asks before preparing it.
+for each supported system. Automatic is the default; **Options → Library →
+Automatic Data Source** chooses whether it tries Gamelist or an installed pack
+first. The backward-compatible default is Gamelist First. Packs remain lazy:
+Degauss checks the relevant pack only when that system is entered and asks
+before preparing it.
 Explicit Gamelist and Artwork Pack choices stay saved until
 Automatic is selected again. [How to install and select a pack](#using-mister-game-artwork-databases).
 
@@ -585,6 +587,7 @@ require **A** and confirmation, never a sideways press.
 | Library | Favourites First | Show favourites first in each folder, keeping them in alphabetical order |
 | Library | Folders Before Games | On, folders lead a system's listing; off, the games come first |
 | Library | Core Preference | Standard First (default) or RetroAchievements First. Used by systems whose Core Version is Default; the other version is used only when the preferred version is absent |
+| Library | Automatic Data Source | Gamelist First (default) or Artwork Pack First. Applies only to systems whose Game Data Source remains Automatic; explicit per-system choices always win |
 | Library | Show Other Folder | Show the Other group, the cores that are not games |
 | Library | Show Utility Folder | Show the Utility group, test patterns and measurement cores |
 | Library | Show Unstable Folder | Show installed Unstable cores. On by default |
@@ -816,10 +819,19 @@ is only what `<path>` points at:
 
 Degauss can also read the local [MiSTer Game Artwork Databases](https://github.com/chipster6502/MiSTer_artwork_pack)
 installed by MiSTer's Update All and Downloader tools. **Automatic** is the
-default when no source choice has been saved. A `gamelist.xml` in any of the
-system's library roots keeps the whole system on Gamelist. Otherwise, when
-the system is entered, Degauss looks for an installed pack for it under
-`docs` on SD, then USB0 through USB7, and asks before reading it:
+default when no per-system source choice has been saved. **Options → Library →
+Automatic Data Source** sets its priority:
+
+- **Gamelist First** is the default and preserves existing behaviour. A
+  `gamelist.xml` in any library root keeps the system on Gamelist; otherwise
+  Degauss looks for an installed pack.
+- **Artwork Pack First** offers or reuses an installed pack when available;
+  otherwise the system uses Gamelist.
+
+This option never rewrites explicit per-system choices. In either priority,
+pack discovery stays lazy: when the relevant Automatic system is entered,
+Degauss looks under `docs` on SD, then USB0 through USB7, and asks before
+reading an unprepared pack:
 
 ```text
 Artwork Pack Available
@@ -847,9 +859,10 @@ saved Artwork Pack locations retain their meaning.
 
 Older settings did not record an explicit Gamelist choice. An existing settings
 file without a saved Pack choice therefore uses Automatic, so an installed pack
-is offered when the system is entered and no root `gamelist.xml` exists.
+is offered according to the global priority when the system is entered.
 Choosing **Gamelist** now saves that explicit choice. No migration or reset is
-needed.
+If the new global setting is absent, it resolves to **Gamelist First**, so
+existing installations retain their current source behaviour.
 
 Install and update a database through **Update All → Settings → Extra Content
 → Game Artwork DBs**. Update All also chooses its 2D, 3D or mixed artwork
@@ -861,7 +874,8 @@ Databases can also be downloaded directly from the original
 [MiSTer Game Artwork Databases repository](https://github.com/chipster6502/MiSTer_artwork_pack).
 Degauss reads the installed database in place rather than importing or copying it.
 **Game Data Source** is selected separately for each supported system from its
-**X Actions → Library** menu, not from the global Options menu.
+**X Actions → Library** menu. The global option changes only the priority used
+by systems still set to Automatic.
 
 To choose a pack manually:
 
@@ -889,15 +903,15 @@ two is still asked about, prepared and remembered on its own. Favourites have
 no separate choice: each one follows the current source of the system that
 owns its game.
 
-The source menu shows both the saved mode and its effective source. Under
-Automatic a `gamelist.xml` in any of the system's library roots always comes
-first and a pack is used only while there is none: the effective source is
-Gamelist, which is the ordinary filesystem presentation when there is no
-gamelist either, until a pack has been prepared for that system, and a root
-gamelist that appears later takes the system back to Gamelist, noticed at
-the next entry into it and at the next start. Automatic checks only standard SD/USB
-locations; the explicit Pack picker continues to support network and custom
-locations.
+The source menu shows both the saved mode and its effective source, for example
+**Automatic (Using: Gamelist)**. Under Gamelist First, a root `gamelist.xml`
+takes the system back to Gamelist at the next entry and next start. Under
+Artwork Pack First, an accepted prepared pack stays in use when a gamelist is
+also present. Switching the global priority leaves prepared Pack state intact,
+so an unchanged Pack is reused without another scan. A previous **Not Now**
+decision remains respected for that same Pack state. Automatic checks only
+standard SD/USB locations; the explicit Pack picker continues to support
+network and custom locations.
 
 What a preparation remembers is written beside the system's cache: the
 system, the pack location, a signature of the pack's tables, the language the

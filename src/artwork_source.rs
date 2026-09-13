@@ -9,7 +9,7 @@ use std::thread::JoinHandle;
 
 use crate::artwork_pack;
 use crate::error::{DegaussError, Result};
-use crate::settings::Settings;
+use crate::settings::{AutomaticDataSource, Settings};
 use crate::systems::FoundSystem;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -56,8 +56,8 @@ pub fn production_bases() -> Vec<PathBuf> {
 /// before: explicit choices from the settings, Automatic acceptances from
 /// each system's state file. Nothing is probed for a Pack and no Pack is
 /// read here: an Automatic system that was never entered has no state and
-/// costs nothing, and one that was accepted keeps its root unless a
-/// `gamelist.xml` has appeared under its group's folders since.
+/// costs nothing. Accepted roots are then filtered only when Gamelist First
+/// is selected and a `gamelist.xml` has appeared under the group since.
 pub fn resolve(
     systems: &[FoundSystem],
     settings: &Settings,
@@ -92,8 +92,17 @@ pub fn resolve(
             }
         }
     }
-    // A root gamelist keeps the whole group on Gamelist, accepted or not:
-    // the members of a group share their folders on the card.
+    if settings.automatic_data_source.unwrap_or_default() == AutomaticDataSource::ArtworkPackFirst {
+        for members in accepted.into_values() {
+            for (system, root) in members {
+                resolved.roots.insert(system.def.id.clone(), root);
+            }
+        }
+        return Ok((!cancelled.load(Ordering::Relaxed)).then_some(resolved));
+    }
+
+    // Under Gamelist First, a root gamelist keeps the whole group on
+    // Gamelist, accepted or not: group members share folders on the card.
     let mut probes = BTreeMap::new();
     for (group, members) in accepted {
         let gamelist = (|| -> Result<Option<bool>> {
@@ -480,6 +489,29 @@ mod tests {
         assert!(resolved.errors["NeoGeo"].contains("gamelist.xml"));
     }
 
+    /// The opt-in priority changes only Automatic systems: an accepted Pack
+    /// remains selected when a gamelist is also present, without probing the
+    /// gamelist or changing either explicit per-system setting.
+    #[test]
+    fn artwork_pack_first_keeps_an_accepted_pack_when_a_gamelist_exists() {
+        let fixture = Fixture::new();
+        let systems = [fixture.system("NeoGeo", &["neo"])];
+        let docs = fixture.pack("sd", "NEOGEO").join("docs");
+        fixture.accept("NeoGeo", &docs);
+        std::fs::write(systems[0].paths[0].join("gamelist.xml"), "<gameList/>").unwrap();
+        let settings = Settings {
+            automatic_data_source: Some(AutomaticDataSource::ArtworkPackFirst),
+            ..Settings::default()
+        };
+
+        let resolved = fixture.resolve(&systems, &settings);
+        assert_eq!(resolved.roots["NeoGeo"], docs.to_string_lossy());
+        assert!(resolved.errors.is_empty());
+        assert_eq!(mode(&settings, "NeoGeo"), Mode::Automatic);
+        assert!(settings.artwork_pack_roots.is_empty());
+        assert!(settings.gamelist_sources.is_empty());
+    }
+
     /// An accepted system whose state file is there but cannot be read
     /// is reported for its group, not started as undecided: reading it as
     /// no state would drop the accepted root and let the next entry ask a
@@ -527,7 +559,10 @@ mod tests {
             fixture.system("GBA", &["gba"]),
             fixture.system("GBA2P", &["gba2p"]),
         ];
-        let mut settings = Settings::default();
+        let mut settings = Settings {
+            automatic_data_source: Some(AutomaticDataSource::ArtworkPackFirst),
+            ..Settings::default()
+        };
         settings.gamelist_sources.insert("GBA".into());
         assert_eq!(mode(&settings, "GBA"), Mode::Gamelist);
         let resolved = fixture.resolve(&systems, &settings);

@@ -300,6 +300,7 @@ fn option_operation(option: OptionId, input: OptionInput) -> OptionOperation {
         | OptionId::ShowUnstable
         | OptionId::ShowScripts
         | OptionId::CorePreference
+        | OptionId::AutomaticDataSource
         | OptionId::ShowBar
         | OptionId::FavoritesFirst
         | OptionId::HoldXFavorite
@@ -1308,17 +1309,21 @@ fn source_change_failure_message(error: &crate::error::DegaussError) -> String {
     )
 }
 
-/// A switch whose settings could not be saved after its result was
-/// installed. The Pack's rows and state stand as prepared by then: under
-/// Automatic the group's members open on them as an acceptance, so the
-/// message says so rather than claiming nothing changed.
-fn source_settings_failure_message(
+fn explicit_source_failure_message(
     error: &crate::error::DegaussError,
     target: &crate::source_cache::Target,
+    system: &str,
+    retained: &str,
 ) -> String {
-    let mut message = source_change_failure_message(error);
-    if matches!(target, crate::source_cache::Target::ArtworkPack { .. }) {
-        message.push_str("\nThe prepared Artwork Pack data was saved and is used under Automatic.");
+    let attempted = match target {
+        crate::source_cache::Target::Gamelist => SOURCE_GAMELIST,
+        crate::source_cache::Target::ArtworkPack { .. } => SOURCE_ARTWORK_PACK,
+    };
+    let action = artwork_pack_error_action(error);
+    let mut message =
+        format!("{attempted} could not be enabled for {system}.\n\n{retained}\n{action}");
+    if !action.contains("degauss.log") {
+        message.push_str("\nSee degauss.log for details.");
     }
     message
 }
@@ -2114,11 +2119,11 @@ enum SourceRecoveryPurpose {
     Consented,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum SourceOperation {
     /// A choice explicitly made in the Game Data Source screen. Settings are
     /// committed only after every source-group cache is installed.
-    Switch,
+    Switch(crate::source_cache::Target),
     /// Recreate a missing, stale or deliberately rebuilt Pack cache without
     /// changing the already selected source.
     Recover(SourceRecoveryPurpose),
@@ -4608,12 +4613,13 @@ impl App {
     /// screen, a worker is reading, or a problem was said.
     ///
     /// Bounded on purpose. A Gamelist system, or one without Pack support,
-    /// costs nothing. An Automatic system costs a stat of its folders for
-    /// a gamelist and, with none, a stat of its documented candidate
-    /// locations and one small state file. A prepared system costs the
-    /// check of [`crate::artwork_pack::snapshot_status`]. No table is
-    /// parsed, no row walked and no ROM stat'd on this path: that is what
-    /// the state written at preparation is for.
+    /// costs nothing. An Automatic system checks only what its selected
+    /// priority requires: the system's gamelist folders when Gamelist First
+    /// is active, then its recorded state and documented candidate Pack
+    /// locations when needed. A prepared system costs the check of
+    /// [`crate::artwork_pack::snapshot_status`]. No table is parsed, no row
+    /// walked and no ROM stat'd on this path: that is what the state written
+    /// at preparation is for.
     ///
     /// Asked by Rebuild This System List, a No given before is set aside:
     /// the rebuild is the retry, and the question is put again. Nothing
@@ -4638,15 +4644,22 @@ impl App {
             };
             return self.pack_state(id, &name, &root, state, then);
         }
-        // Automatic: a gamelist under the system's own folders decides
-        // before anything about a Pack is looked at.
-        match crate::artwork_source::gamelist_present(system) {
-            Ok(true) => {
-                self.effective_artwork_pack_roots.remove(id);
-                return Entry::Proceed(None, None, None);
+        // Automatic with the legacy/default priority: a gamelist under the
+        // system's own folders decides before anything about a Pack is
+        // looked at. Artwork Pack First follows the same lazy state and
+        // candidate path below, then falls through to Gamelist when no Pack
+        // is accepted or offered.
+        if self.settings.automatic_data_source.unwrap_or_default()
+            == crate::settings::AutomaticDataSource::GamelistFirst
+        {
+            match crate::artwork_source::gamelist_present(system) {
+                Ok(true) => {
+                    self.effective_artwork_pack_roots.remove(id);
+                    return Entry::Proceed(None, None, None);
+                }
+                Ok(false) => {}
+                Err(error) => return self.source_unresolved(&name, &error),
             }
-            Ok(false) => {}
-            Err(error) => return self.source_unresolved(&name, &error),
         }
         let state = match crate::cache::load_pack_source_state(&self.cache_dir, id) {
             Ok(state) => state.unwrap_or_default(),
@@ -5561,10 +5574,43 @@ impl App {
             SOURCE_GAMELIST
         };
         match crate::artwork_source::mode(&self.settings, id) {
-            crate::artwork_source::Mode::Automatic => format!("Automatic: {effective}"),
+            crate::artwork_source::Mode::Automatic => {
+                format!("Automatic (Using: {effective})")
+            }
             crate::artwork_source::Mode::Gamelist => SOURCE_GAMELIST.to_string(),
             crate::artwork_source::Mode::ArtworkPack => SOURCE_ARTWORK_PACK.to_string(),
         }
+    }
+
+    fn retained_source_message(&self, id: &str) -> String {
+        match crate::artwork_source::mode(&self.settings, id) {
+            crate::artwork_source::Mode::Automatic if self.source_problem(id).is_some() => {
+                "Automatic remains active, but its source is unresolved.".to_string()
+            }
+            crate::artwork_source::Mode::Automatic if self.pack_selected(id) => {
+                "Automatic remains active and is currently using Artwork Pack.".to_string()
+            }
+            crate::artwork_source::Mode::Automatic => {
+                "Automatic remains active and is currently using Gamelist.".to_string()
+            }
+            crate::artwork_source::Mode::Gamelist => "Gamelist remains active.".to_string(),
+            crate::artwork_source::Mode::ArtworkPack => "Artwork Pack remains active.".to_string(),
+        }
+    }
+
+    fn explicit_source_failure_message(
+        &self,
+        target: &crate::source_cache::Target,
+        error: &crate::error::DegaussError,
+    ) -> String {
+        let id = self.source_system_id.as_deref().unwrap_or("this system");
+        let system = self
+            .all_systems
+            .iter()
+            .find(|system| system.def.id == id)
+            .map(|system| system.name())
+            .unwrap_or(id);
+        explicit_source_failure_message(error, target, system, &self.retained_source_message(id))
     }
 
     /// Work out every system's Pack root from what was saved and decided,
@@ -8551,6 +8597,14 @@ impl App {
                 self.settings.core_preference =
                     Some(self.settings.core_preference.unwrap_or_default().next());
             }
+            OptionId::AutomaticDataSource => {
+                self.settings.automatic_data_source = Some(
+                    self.settings
+                        .automatic_data_source
+                        .unwrap_or_default()
+                        .next(),
+                );
+            }
             OptionId::ShowUtility => {
                 self.show_utility = !self.show_utility;
                 self.settings.show_utility = Some(self.show_utility);
@@ -8666,6 +8720,12 @@ impl App {
             OptionId::CorePreference => self
                 .settings
                 .core_preference
+                .unwrap_or_default()
+                .label()
+                .to_string(),
+            OptionId::AutomaticDataSource => self
+                .settings
+                .automatic_data_source
                 .unwrap_or_default()
                 .label()
                 .to_string(),
@@ -9849,7 +9909,7 @@ impl App {
             } else {
                 SOURCE_GAMELIST
             };
-            self.menu[0] = format!("Automatic (Current: {effective})");
+            self.menu[0] = format!("Automatic (Using: {effective})");
         }
         self.menu_list = ListState::new(self.menu.len(), self.geometry.visible);
         self.menu_list.select(match mode {
@@ -10185,7 +10245,9 @@ impl App {
                     self.open_game_data_source();
                     self.message = warning;
                 }
-                Err(error) => self.message = Some(source_change_failure_message(&error)),
+                Err(error) => {
+                    self.message = Some(self.explicit_source_failure_message(&target, &error))
+                }
             }
             self.dirty = true;
             return;
@@ -10205,7 +10267,7 @@ impl App {
         let Some(group) = crate::artwork_pack::source_group(system_id) else {
             return;
         };
-        self.start_source_job(target, group, SourceOperation::Switch);
+        self.start_source_job(target.clone(), group, SourceOperation::Switch(target));
     }
 
     fn begin_source_recovery(&mut self, system_id: &str, purpose: SourceRecoveryPurpose) -> bool {
@@ -10613,16 +10675,16 @@ impl App {
         operation: SourceOperation,
     ) {
         let require_usable_provider = matches!(
-            operation,
-            SourceOperation::Switch | SourceOperation::Recover(SourceRecoveryPurpose::Consented)
+            &operation,
+            SourceOperation::Switch(_) | SourceOperation::Recover(SourceRecoveryPurpose::Consented)
         );
         let one_system = self.source_system_id.clone();
         let systems: Vec<crate::source_cache::System> = self
             .all_systems
             .iter()
             .filter(|system| crate::artwork_pack::source_group(&system.def.id) == Some(group))
-            .filter(|system| match operation {
-                SourceOperation::Switch => true,
+            .filter(|system| match &operation {
+                SourceOperation::Switch(_) => true,
                 SourceOperation::Recover(SourceRecoveryPurpose::FullBuild) => {
                     self.pack_selected(&system.def.id)
                 }
@@ -10646,7 +10708,7 @@ impl App {
         match crate::source_cache::start(request) {
             Ok(job) => {
                 self.source_job = Some(job);
-                self.source_operation = Some(operation);
+                self.source_operation = Some(operation.clone());
                 self.source_progress = crate::source_cache::Progress::default();
                 self.source_cancelling = false;
                 if operation == SourceOperation::Recover(SourceRecoveryPurpose::FullBuild)
@@ -10661,7 +10723,9 @@ impl App {
                 self.source_operation = None;
                 crate::note(&format!("game source  could not start: {error}"));
                 self.message = Some(match operation {
-                    SourceOperation::Switch => source_change_failure_message(&error),
+                    SourceOperation::Switch(target) => {
+                        self.explicit_source_failure_message(&target, &error)
+                    }
                     SourceOperation::Recover(_) => format!(
                         "Artwork Pack refresh could not start.\n{}",
                         artwork_pack_error_action(&error)
@@ -10684,8 +10748,8 @@ impl App {
             match event {
                 crate::source_cache::Event::Progress(progress) => {
                     if let Some(build) = self.build.as_mut().filter(|_| {
-                        self.source_operation
-                            == Some(SourceOperation::Recover(SourceRecoveryPurpose::FullBuild))
+                        self.source_operation.as_ref()
+                            == Some(&SourceOperation::Recover(SourceRecoveryPurpose::FullBuild))
                     }) {
                         build.folders = progress.folders;
                         build.games = progress.games;
@@ -10730,7 +10794,7 @@ impl App {
                     self.source_progress = progress;
                     self.source_cancelling = false;
                     match self.source_operation.take() {
-                        Some(SourceOperation::Switch) => {
+                        Some(SourceOperation::Switch(_)) => {
                             self.finish_source_switch(target, prepared, providers, warnings)
                         }
                         Some(SourceOperation::Recover(purpose)) => self
@@ -10917,10 +10981,10 @@ impl App {
         cancelled: bool,
     ) {
         match operation {
-            Some(SourceOperation::Switch) => {
+            Some(SourceOperation::Switch(target)) => {
                 self.open_game_data_source();
                 self.message = Some(match error {
-                    Some(error) => source_change_failure_message(&error),
+                    Some(error) => self.explicit_source_failure_message(&target, &error),
                     None if cancelled => "Game data source change cancelled.".to_string(),
                     None => "Game data source was not changed.".to_string(),
                 });
@@ -11382,7 +11446,7 @@ impl App {
             Err(error) => {
                 crate::note(&format!("game source  cache install failed: {error}"));
                 self.open_game_data_source();
-                self.message = Some(source_change_failure_message(&error));
+                self.message = Some(self.explicit_source_failure_message(&target, &error));
                 return;
             }
         };
@@ -11393,7 +11457,13 @@ impl App {
                 Err(error) => {
                     crate::note(&format!("game source  settings unchanged: {error}"));
                     self.open_game_data_source();
-                    self.message = Some(source_settings_failure_message(&error, &target));
+                    let mut message = self.explicit_source_failure_message(&target, &error);
+                    if matches!(target, crate::source_cache::Target::ArtworkPack { .. }) {
+                        message.push_str(
+                            "\nThe prepared Artwork Pack data was saved for a later retry.",
+                        );
+                    }
+                    self.message = Some(message);
                     return;
                 }
             };
@@ -14510,7 +14580,12 @@ impl App {
                     "Game Data Source".to_string()
                 },
                 match self.menu_list.selected() {
-                    0 => "Use gamelist.xml when present; otherwise use an installed SD/USB pack.",
+                    0 if self.settings.automatic_data_source.unwrap_or_default()
+                        == crate::settings::AutomaticDataSource::ArtworkPackFirst =>
+                    {
+                        "Use an installed Artwork Pack when available; otherwise use gamelist.xml."
+                    }
+                    0 => "Use gamelist.xml when present; otherwise use an installed Artwork Pack.",
                     1 => "Always use gamelist.xml, even when an artwork pack is installed.",
                     _ => "Choose a pack for images and metadata. Scraping is disabled.",
                 }
@@ -14537,7 +14612,7 @@ impl App {
                 } else if self.provider_pending_open.is_some() {
                     "Reading Artwork Pack Database".to_string()
                 } else {
-                    match self.source_operation {
+                    match self.source_operation.as_ref() {
                         Some(SourceOperation::Recover(SourceRecoveryPurpose::Consented)) => {
                             "Preparing Artwork Pack".to_string()
                         }
@@ -15950,6 +16025,21 @@ mod tests {
         let unsupported_message = source_change_failure_message(&unsupported);
         assert!(unsupported_message.contains("degauss.log"));
         assert!(!unsupported_message.contains("private diagnostic detail"));
+
+        let explicit = explicit_source_failure_message(
+            &io,
+            &crate::source_cache::Target::ArtworkPack {
+                docs_root: PathBuf::from("/media/usb0/docs"),
+            },
+            "Arcade",
+            "Automatic remains active and is currently using Gamelist.",
+        );
+        assert!(explicit.starts_with(
+            "Artwork Pack could not be enabled for Arcade.\n\nAutomatic remains active and is currently using Gamelist."
+        ));
+        assert!(explicit.contains("selected storage"));
+        assert!(explicit.ends_with("See degauss.log for details."));
+        assert!(!explicit.contains("/media/"));
     }
 
     #[test]
