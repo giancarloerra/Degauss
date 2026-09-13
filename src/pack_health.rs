@@ -1,0 +1,346 @@
+//! Artwork Pack warnings already seen, remembered across a game.
+//!
+//! An incomplete Pack stays usable, and its warning is worth one look, not
+//! one per start: launching a game ends this program, so a warning kept only
+//! in memory came back on every return. This file holds, per source group,
+//! the identity of the snapshot whose warning was dismissed. A pack that is
+//! unavailable or invalid is never written here; those need acting on and
+//! are shown again on every start.
+//!
+//! Kept apart from `state.toml`, which a cold start deletes, and from
+//! `settings.toml`, which refuses to start on a broken value. This file may
+//! be missing, stale or broken and the only cost is one more warning, which
+//! the next acknowledgement then replaces. Read fresh each time it is
+//! needed, never cached: deleting it while this program runs must not be
+//! undone by the next save.
+
+use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
+
+use serde::{Deserialize, Serialize};
+
+use crate::error::{DegaussError, Result};
+use crate::settings::{install_beside_settings, SaveLabels, SaveOutcome};
+
+pub const FILE: &str = "artwork-pack-warnings.toml";
+
+/// Beside the settings, which is beside the configuration.
+pub fn path_beside(settings_path: &Path) -> PathBuf {
+    settings_path
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .join(FILE)
+}
+
+#[derive(Debug, Default, Serialize, Deserialize)]
+pub struct Acknowledgements {
+    /// Source group to the health digest whose incomplete warning was shown.
+    #[serde(default)]
+    degraded: BTreeMap<String, String>,
+    /// Why the file read as empty, when it was there but could not be
+    /// parsed: the warning it would have silenced says so, and that the
+    /// next dismissal writes over it.
+    #[serde(skip)]
+    malformed: Option<String>,
+}
+
+impl Acknowledgements {
+    /// Read it back. A missing file is the normal case, and one that cannot
+    /// be parsed, as text or as TOML, is read as empty with the reason kept
+    /// in `malformed`, so the warning is shown once more, saying why, and
+    /// the next acknowledgement replaces it. Nothing is logged here: the
+    /// file is read again before that save, and the caller that puts the
+    /// warning up writes the reason down once. A file that is there but
+    /// cannot be read is an error: saving over it would throw away every
+    /// acknowledgement it holds.
+    pub fn load(path: &Path) -> Result<Self> {
+        match std::fs::read(path) {
+            Ok(bytes) => {
+                let parsed = match String::from_utf8(bytes) {
+                    Ok(text) => toml::from_str::<Self>(&text).map_err(|error| error.to_string()),
+                    Err(error) => Err(error.to_string()),
+                };
+                Ok(parsed.unwrap_or_else(|malformed| Self {
+                    malformed: Some(malformed),
+                    ..Self::default()
+                }))
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Self::default()),
+            Err(error) => Err(DegaussError::io(
+                "reading artwork pack warnings",
+                path,
+                error,
+            )),
+        }
+    }
+
+    pub fn acknowledged(&self, group: &str, digest: &str) -> bool {
+        self.degraded.get(group).is_some_and(|seen| seen == digest)
+    }
+
+    /// Why the file was read as empty, when that is what happened.
+    pub fn malformed(&self) -> Option<&str> {
+        self.malformed.as_deref()
+    }
+
+    /// Record the snapshot whose warning was dismissed. One entry per
+    /// group: an updated pack's warning is for another state, and the old
+    /// one is of no further use.
+    pub fn acknowledge(&mut self, group: &str, digest: &str) {
+        self.degraded.insert(group.to_string(), digest.to_string());
+    }
+
+    /// Written beside and moved into place by the settings writer's
+    /// install, so a file cut short is never read back as a shorter list of
+    /// warnings already seen, and the outcome says when the move could not
+    /// be confirmed durable.
+    pub fn save(&self, path: &Path) -> Result<SaveOutcome> {
+        let text = toml::to_string_pretty(self).map_err(|error| {
+            DegaussError::malformed("artwork pack warnings", path, error.to_string())
+        })?;
+        let body = format!(
+            "# Written by Degauss when an incomplete Artwork Pack warning is dismissed.\n\
+             # Delete this file and restart Degauss to see those warnings again.\n\n{text}"
+        );
+        install_beside_settings(&LABELS, path, &body)
+    }
+}
+
+const LABELS: SaveLabels = SaveLabels {
+    creating_temporary: "creating temporary artwork pack warnings",
+    writing_temporary: "writing temporary artwork pack warnings",
+    flushing_temporary: "flushing temporary artwork pack warnings",
+    writing: "writing artwork pack warnings",
+    no_file_name: "artwork pack warnings path has no file name",
+    could_not_reserve: "could not reserve a temporary artwork pack warnings file",
+    installing: "installing artwork pack warnings",
+    flushing_directory: "flushing artwork pack warnings directory",
+};
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn temp(name: &str) -> PathBuf {
+        let dir =
+            std::env::temp_dir().join(format!("degauss-pack-health-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn a_saved_acknowledgement_reads_back_for_its_group_only() {
+        let dir = temp("round-trip");
+        let path = path_beside(&dir.join("settings.toml"));
+        assert_eq!(path, dir.join(FILE));
+        let mut seen = Acknowledgements::default();
+        seen.acknowledge("NES", "abc");
+        assert!(
+            matches!(seen.save(&path).unwrap(), SaveOutcome::Durable),
+            "a save into a writable directory is complete, file and directory alike"
+        );
+
+        let read = Acknowledgements::load(&path).unwrap();
+        assert!(
+            read.acknowledged("NES", "abc"),
+            "a warning dismissed before a game must stay acknowledged in the next process"
+        );
+        assert!(
+            !read.acknowledged("NES", "abd"),
+            "a changed snapshot is a different warning"
+        );
+        assert!(
+            !read.acknowledged("SNES", "abc"),
+            "one group's acknowledgement must not silence another group's pack"
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_missing_file_acknowledges_nothing() {
+        let dir = temp("missing");
+        let read = Acknowledgements::load(&dir.join(FILE)).unwrap();
+        assert!(!read.acknowledged("NES", "abc"));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_malformed_file_acknowledges_nothing_and_is_replaced_by_the_next_save() {
+        let dir = temp("malformed");
+        let path = dir.join(FILE);
+        std::fs::write(&path, "degraded = 3\n[[[").unwrap();
+        let mut read = Acknowledgements::load(&path).unwrap();
+        assert!(
+            !read.acknowledged("NES", "abc"),
+            "a broken file must cost one more warning, never a refusal to start"
+        );
+        assert!(
+            read.malformed().is_some(),
+            "the warning shown in its place must be able to say why the file was set aside"
+        );
+        read.acknowledge("NES", "abc");
+        read.save(&path).unwrap();
+        let replaced = Acknowledgements::load(&path).unwrap();
+        assert!(replaced.acknowledged("NES", "abc"));
+        assert!(
+            replaced.malformed().is_none(),
+            "the replacement reads back clean; the reason must not be written into it"
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_file_that_is_not_text_is_malformed_not_unreadable() {
+        // Bytes that are not UTF-8 are a broken file like broken TOML is:
+        // read as an error, nothing would ever write over it and the
+        // warning would return at every start with no way to dismiss it.
+        let dir = temp("not-text");
+        let path = dir.join(FILE);
+        std::fs::write(&path, [0xff, 0xfe, b'd', b'e', b'g']).unwrap();
+        let mut read = Acknowledgements::load(&path)
+            .expect("a file that is not text costs one more warning, never an error");
+        assert!(!read.acknowledged("NES", "abc"));
+        assert!(
+            read.malformed().is_some(),
+            "the warning shown in its place must be able to say why the file was set aside"
+        );
+        read.acknowledge("NES", "abc");
+        read.save(&path).unwrap();
+        let replaced = Acknowledgements::load(&path).unwrap();
+        assert!(
+            replaced.acknowledged("NES", "abc"),
+            "the next dismissal must replace the broken file"
+        );
+        assert!(replaced.malformed().is_none());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_file_that_cannot_be_read_is_an_error_not_an_empty_list() {
+        let dir = temp("unreadable");
+        let path = dir.join(FILE);
+        std::fs::create_dir_all(&path).unwrap();
+        let error = Acknowledgements::load(&path).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .starts_with("reading artwork pack warnings failed for"),
+            "a read failure must be reported, not read as nothing acknowledged: {error}"
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_new_snapshot_replaces_the_old_one_and_leaves_other_groups_alone() {
+        let mut seen = Acknowledgements::default();
+        seen.acknowledge("NES", "first");
+        seen.acknowledge("SNES", "other");
+        seen.acknowledge("NES", "second");
+        assert!(
+            !seen.acknowledged("NES", "first"),
+            "the pack was updated; the old snapshot's warning was for another state"
+        );
+        assert!(seen.acknowledged("NES", "second"));
+        assert!(seen.acknowledged("SNES", "other"));
+    }
+
+    #[test]
+    fn saving_leaves_no_temporary_file_beside_the_warnings() {
+        let dir = temp("no-part");
+        let path = dir.join(FILE);
+        let mut seen = Acknowledgements::default();
+        seen.acknowledge("NES", "abc");
+        seen.save(&path).unwrap();
+        let names: Vec<String> = std::fs::read_dir(&dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(names, vec![FILE.to_string()]);
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            text.starts_with("# Written by Degauss"),
+            "the file says what it is for and how to reset it"
+        );
+        assert!(
+            text.contains("restart Degauss"),
+            "the reset instruction must say that a running program keeps its own list"
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_leftover_temporary_file_is_stepped_around_not_written_over() {
+        let dir = temp("leftover");
+        let path = dir.join(FILE);
+        let leftover = dir.join(format!(".{FILE}.degauss-{}-0.tmp", std::process::id()));
+        std::fs::write(&leftover, b"left by an interrupted run").unwrap();
+        let mut seen = Acknowledgements::default();
+        seen.acknowledge("NES", "abc");
+        seen.save(&path).unwrap();
+        assert!(
+            Acknowledgements::load(&path)
+                .unwrap()
+                .acknowledged("NES", "abc"),
+            "a name already taken must not stop the save"
+        );
+        assert_eq!(
+            std::fs::read(&leftover).unwrap(),
+            b"left by an interrupted run",
+            "a file already at the temporary name is not this save's to truncate"
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_save_whose_temporary_file_cannot_be_created_reports_its_error() {
+        let dir = temp("blocked");
+        let blocked = dir.join("not-a-directory");
+        std::fs::write(&blocked, b"file").unwrap();
+        let mut seen = Acknowledgements::default();
+        seen.acknowledge("NES", "abc");
+        let error = seen.save(&blocked.join(FILE)).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .starts_with("creating temporary artwork pack warnings failed for"),
+            "a failed save must say which step failed: {error}"
+        );
+        assert_eq!(
+            std::fs::read(&blocked).unwrap(),
+            b"file",
+            "a failed save must leave what was in the way alone"
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_save_that_cannot_move_into_place_reports_it_and_leaves_no_temporary_file() {
+        let dir = temp("in-the-way");
+        let path = dir.join(FILE);
+        std::fs::create_dir(&path).unwrap();
+        let mut seen = Acknowledgements::default();
+        seen.acknowledge("NES", "abc");
+        let error = seen.save(&path).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .starts_with("installing artwork pack warnings failed for"),
+            "the move is the step that failed, and the error must say so: {error}"
+        );
+        assert!(
+            !error.to_string().contains("also failed"),
+            "a temporary file that was removed is not part of the failure: {error}"
+        );
+        let names: Vec<String> = std::fs::read_dir(&dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(
+            names,
+            vec![FILE.to_string()],
+            "the written temporary file must not be left beside the settings"
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+}

@@ -14,6 +14,7 @@ use std::sync::Arc;
 
 use quick_xml::events::Event;
 use quick_xml::Reader;
+use sha1::{Digest, Sha1};
 
 use crate::browse::{Details, Kind, Launch, Row};
 use crate::error::{DegaussError, Result};
@@ -964,6 +965,52 @@ impl Provider {
             Some(problem) => format!("{}: {problem}", self.health.label()),
             None => self.health.label().to_string(),
         }
+    }
+
+    /// Identity of this snapshot's health, for remembering that its warning
+    /// was seen: the selected root, the health, every diagnostic and the
+    /// source fingerprint. The system is left out so systems sharing one
+    /// mapping share one acknowledgement, as they share one source.
+    pub fn health_digest(&self) -> String {
+        use std::fmt::Write as _;
+
+        let mut hasher = Sha1::new();
+        let mut field = |bytes: &[u8]| {
+            hasher.update(bytes);
+            hasher.update([0]);
+        };
+        field(self.docs_root.to_string_lossy().as_bytes());
+        field(self.health.label().as_bytes());
+        for diagnostic in &self.diagnostics {
+            field(diagnostic.as_bytes());
+        }
+        match self.snapshot.as_ref() {
+            None => field(b"no-snapshot"),
+            Some(SourceFingerprint(directories)) => {
+                for (folder, fingerprint) in directories {
+                    field(folder.as_bytes());
+                    let Some(fingerprint) = fingerprint else {
+                        field(b"absent");
+                        continue;
+                    };
+                    field(&fingerprint.directory_modified.to_le_bytes());
+                    for (name, size, modified, content_crc32) in &fingerprint.tables {
+                        field(name.as_bytes());
+                        field(&size.to_le_bytes());
+                        field(&modified.to_le_bytes());
+                        match content_crc32 {
+                            Some(crc32) => field(&crc32.to_le_bytes()),
+                            None => field(b"no-crc32"),
+                        }
+                    }
+                }
+            }
+        }
+        let mut digest = String::with_capacity(40);
+        for byte in hasher.finalize() {
+            let _ = write!(digest, "{byte:02x}");
+        }
+        digest
     }
 }
 
@@ -2898,6 +2945,127 @@ mod tests {
         let provider = Provider::load("SuperGrafx", &root, None);
         assert_eq!(provider.health, ProviderHealth::Invalid);
         assert!(!provider.health.usable());
+    }
+
+    #[test]
+    fn health_digest_is_stable_for_an_unchanged_degraded_pack() {
+        let (root, _art) = pack("digest-stable");
+        let first = Provider::load("SuperGrafx", &root, None);
+        assert_eq!(first.health, ProviderHealth::Degraded);
+        let again = Provider::load("SuperGrafx", &root, None);
+        assert_eq!(
+            first.health_digest(),
+            again.health_digest(),
+            "the same pack read by a later process must carry the same acknowledged identity"
+        );
+        assert_eq!(first.health_digest().len(), 40);
+        std::fs::remove_dir_all(root.parent().unwrap()).ok();
+    }
+
+    #[test]
+    fn health_digest_is_shared_by_systems_of_one_source_group() {
+        let root = temp("digest-group").join("docs");
+        let art = root.join("NEOGEO/Artwork");
+        std::fs::create_dir_all(&art).unwrap();
+        std::fs::write(
+            art.join("manifest.tsv"),
+            "#key\tstyle\tss_system_id\nOne\tbox-2D\t142\nTwo\tbox-2D\t142\n",
+        )
+        .unwrap();
+        std::fs::write(art.join("One.jpg"), b"jpeg").unwrap();
+        let mvs = Provider::load("NeoGeoMVS", &root, None);
+        let aes = Provider::load("NeoGeo", &root, None);
+        assert_eq!(mvs.health, ProviderHealth::Degraded);
+        assert_eq!(
+            mvs.health_digest(),
+            aes.health_digest(),
+            "one shared source is one warning, whichever member of the group is opened"
+        );
+        let elsewhere = temp("digest-group-elsewhere").join("docs");
+        std::fs::create_dir_all(elsewhere.join("NEOGEO")).unwrap();
+        std::fs::rename(&art, elsewhere.join("NEOGEO/Artwork")).unwrap();
+        assert_ne!(
+            Provider::load("NeoGeo", &elsewhere, None).health_digest(),
+            aes.health_digest(),
+            "the same content at another root is another selection"
+        );
+        std::fs::remove_dir_all(root.parent().unwrap()).ok();
+        std::fs::remove_dir_all(elsewhere.parent().unwrap()).ok();
+    }
+
+    #[test]
+    fn health_digest_changes_with_content_diagnostics_and_health() {
+        let (root, art) = pack("digest-changes");
+        ready_tables(&art, "Chosen Game (USA)\t\t\tChosen Game (USA)\n", "");
+        std::fs::write(
+            art.join("manifest.tsv"),
+            "#key\tstyle\tss_system_id\nChosen Game (USA)\tbox-2D\t105\nMissing\tbox-2D\t105\n",
+        )
+        .unwrap();
+        let missing_one = Provider::load("SuperGrafx", &root, None);
+        assert_eq!(missing_one.health, ProviderHealth::Degraded);
+        assert!(missing_one
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.contains("1 manifest images are missing")));
+
+        // A well-formed row added to gameinfo.tsv changes the table's size
+        // and nothing that the diagnostics or the health report: only the
+        // source fingerprint tells this state from the one already seen.
+        ready_tables(
+            &art,
+            "Chosen Game (USA)\t\t\tChosen Game (USA)\n",
+            "Chosen Game (USA)\tChosen Game\t1990\t\t\t\n",
+        );
+        let more_gameinfo = Provider::load("SuperGrafx", &root, None);
+        assert_eq!(more_gameinfo.health, missing_one.health);
+        assert_eq!(more_gameinfo.diagnostics, missing_one.diagnostics);
+        assert_ne!(
+            missing_one.health_digest(),
+            more_gameinfo.health_digest(),
+            "updated pack content with the same diagnostic is a new pack state whose warning has not been seen"
+        );
+
+        std::fs::write(
+            art.join("manifest.tsv"),
+            "#key\tstyle\tss_system_id\nChosen Game (USA)\tbox-2D\t105\nMissing\tbox-2D\t105\nAlso Missing\tbox-2D\t105\n",
+        )
+        .unwrap();
+        let missing_two = Provider::load("SuperGrafx", &root, None);
+        assert_eq!(missing_two.health, ProviderHealth::Degraded);
+        assert_ne!(
+            more_gameinfo.health_digest(),
+            missing_two.health_digest(),
+            "an updated manifest is a new pack state whose warning has not been seen"
+        );
+
+        std::fs::remove_file(art.join("index.tsv")).unwrap();
+        let no_index = Provider::load("SuperGrafx", &root, None);
+        assert_eq!(no_index.health, ProviderHealth::Degraded);
+        assert_ne!(
+            missing_two.health_digest(),
+            no_index.health_digest(),
+            "a new diagnostic must be reported even when the health label is unchanged"
+        );
+
+        std::fs::write(
+            art.join("manifest.tsv"),
+            "#key\tstyle\tss_system_id\n../escape\tbox-2D\t105\n",
+        )
+        .unwrap();
+        let invalid = Provider::load("SuperGrafx", &root, None);
+        assert_eq!(invalid.health, ProviderHealth::Invalid);
+        assert_ne!(no_index.health_digest(), invalid.health_digest());
+
+        std::fs::remove_dir_all(&art).unwrap();
+        let unavailable = Provider::load("SuperGrafx", &root, None);
+        assert_eq!(unavailable.health, ProviderHealth::Unavailable);
+        assert_ne!(invalid.health_digest(), unavailable.health_digest());
+        assert_eq!(
+            unavailable.health_digest(),
+            Provider::load("SuperGrafx", &root, None).health_digest()
+        );
+        std::fs::remove_dir_all(root.parent().unwrap()).ok();
     }
 
     #[test]
