@@ -1425,9 +1425,12 @@ mod tests {
         config.extensions = vec!["rbf".into(), "mra".into(), "mgl".into()];
         config.skip_folders = vec!["cores".into()];
         let library = Library::open(&config).unwrap();
-        let cache = build_system_checked(&library).expect("support links do not fail refresh");
+        let mut warnings = Vec::new();
+        let cache = build_system_checked(&library, &mut warnings)
+            .expect("support links do not fail refresh");
 
         assert_eq!(cache.summary(&library.start()).games, 1);
+        assert!(warnings.is_empty(), "support links are skipped without warnings");
         assert!(cache.folders.values().all(|folder| {
             folder
                 .rows
