@@ -2209,6 +2209,22 @@ fn reselect(rows: &[browse::Row], remembered: Option<&str>, fallback: usize) -> 
         .unwrap_or(fallback)
 }
 
+/// First saved place that still needs entering after opening a system.
+///
+/// Current and saved releases may disagree only about whether a Roots
+/// chooser is present. Matching by place also leaves a changed or missing
+/// root at the valid location the current card opened.
+fn restore_resume_at(current: Option<&Place>, saved: &[Place]) -> usize {
+    match (
+        current,
+        current.and_then(|place| saved.iter().position(|saved| saved == place)),
+    ) {
+        (_, Some(index)) => index + 1,
+        (Some(Place::Roots), None) => 0,
+        _ => saved.len(),
+    }
+}
+
 /// A title with the characters MiSTer's favourites script refuses taken
 /// out, so a name made here is one it would have made.
 fn sanitise(name: &str) -> String {
@@ -4472,10 +4488,16 @@ impl App {
         }
         self.opened_config = Some(config.clone());
         if self.system_cache.is_some() {
+            let configured_start = browse::start_for(&config);
+            let start = self
+                .system_cache
+                .as_ref()
+                .map(|cache| cache.navigation_start(&configured_start))
+                .unwrap_or(configured_start);
             self.library = None;
             self.trail.clear();
             self.open_system = Some(id);
-            self.enter(browse::start_for(&config));
+            self.enter(start);
             self.show_pack_health_once();
             return;
         }
@@ -13621,26 +13643,36 @@ impl App {
             return;
         }
 
-        // The first place is the one opening the system already reached.
-        // `places` stops at anything the card no longer has, so a renamed
-        // folder lands on its parent instead of an error screen.
+        // The system may now skip a Roots chooser that a previous release
+        // saved, or regain one after a second root begins contributing. Find
+        // the place opening already reached rather than assuming both trails
+        // have the same first entry. `places` stops at anything the card no
+        // longer has, so a renamed folder still lands on its parent.
         let places = saved.places();
         let walked_everything = places.len() == saved.trail.len();
-        for place in places.into_iter().skip(1) {
+        let resume_at = restore_resume_at(self.trail.first().map(|crumb| &crumb.place), &places);
+        for place in places.iter().skip(resume_at).cloned() {
             self.enter(place);
         }
         // Every level keeps the row it was left on. `enter` above wrote the
         // live cursor into each parent as it walked, which during a restore
-        // is always zero, so the saved values go back in afterwards: without
-        // this, Back out of a game landed at the top of every parent folder.
-        for (crumb, saved_place) in self.trail.iter_mut().zip(saved.trail.iter()) {
-            crumb.selected = saved_place.selected();
+        // is always zero, so the saved values go back by place identity. The
+        // identity matters when an old Roots crumb has just been skipped.
+        for crumb in &mut self.trail {
+            if let Some(index) = places.iter().position(|place| place == &crumb.place) {
+                crumb.selected = saved.trail[index].selected();
+            }
         }
         // The walk also wrote places down as it stepped, from cursors that
         // were the walk's own rather than the user's. The saved memory is
         // the truthful one, so it goes back in whole.
         self.left_at = saved.left_at.clone();
-        if walked_everything {
+        let reached_saved_destination = places.is_empty()
+            || places
+                .last()
+                .zip(self.trail.last())
+                .is_some_and(|(saved, current)| saved == &current.place);
+        if walked_everything && reached_saved_destination {
             self.game_list.select(reselect(
                 &self.here,
                 saved.selected_row.as_deref(),
@@ -14306,6 +14338,34 @@ pub(crate) fn test_library_launch_flow(window: Rc<MinimalSoftwareWindow>) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn resume_alignment_accepts_old_and_new_multi_root_navigation_trails() {
+        use crate::browse::Place;
+
+        let first = Place::Dir("/games/First".into());
+        let nested = Place::Dir("/games/First/Nested".into());
+        assert_eq!(
+            super::restore_resume_at(Some(&first), &[Place::Roots, first.clone(), nested.clone()]),
+            2,
+            "a new direct opening skips the old chooser and its root"
+        );
+        assert_eq!(
+            super::restore_resume_at(Some(&Place::Roots), &[first.clone(), nested.clone()]),
+            0,
+            "a newly required chooser resumes the old direct path"
+        );
+        assert_eq!(
+            super::restore_resume_at(Some(&Place::Roots), &[Place::Roots, first.clone(), nested]),
+            1,
+            "unchanged chooser trails still skip their current start"
+        );
+        assert_eq!(
+            super::restore_resume_at(Some(&Place::Dir("/games/Other".into())), &[first]),
+            1,
+            "a changed sole root stays at the current valid root"
+        );
+    }
+
     #[test]
     fn compact_details_keep_full_source_and_omit_empty_separators() {
         let details = crate::browse::Details {

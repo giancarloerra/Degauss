@@ -429,6 +429,9 @@ then the card, each under its `games` folder. For each system folder the
 first place that has it wins, so a system kept on both the stick and the
 card browses from the stick, exactly as the stock menu would load it.
 Different folders of one system may resolve in different places.
+When only one configured folder actually contains games for that system,
+Degauss opens it directly. The folder chooser appears only when two or more
+real locations contribute compatible games.
 
 Two things to know. Storage is looked for when Degauss starts, so plug
 the stick in first (or restart after); and moving a system between

@@ -153,6 +153,42 @@ impl SystemCache {
             folders: self.folders.len(),
         }
     }
+
+    /// Where the browser should enter an already indexed system.
+    ///
+    /// A configured multi-root system keeps [`Place::Roots`] in its cache so
+    /// its complete count and every real location remain represented. The
+    /// chooser itself is useful only when at least two roots contribute
+    /// playable content. The bottom-up counts already written on its rows
+    /// answer that without touching the card again.
+    pub fn navigation_start(&self, configured: &Place) -> Place {
+        if configured != &Place::Roots {
+            return configured.clone();
+        }
+        let Some(roots) = self.get(configured) else {
+            return Place::Roots;
+        };
+        let mut contributing = None;
+        for row in &roots.rows {
+            let Some(below) = row.below else {
+                // A cache that cannot prove a root empty keeps the chooser.
+                return Place::Roots;
+            };
+            if below == 0 {
+                continue;
+            }
+            let Kind::Enter(place) = &row.kind else {
+                // Root listings contain folders. Preserve the established
+                // screen if a future cache contains another row shape.
+                return Place::Roots;
+            };
+            if contributing.is_some() {
+                return Place::Roots;
+            }
+            contributing = Some(place.clone());
+        }
+        contributing.unwrap_or(Place::Roots)
+    }
 }
 
 /// Where the cache lives: beside the settings, on the card, so it survives
@@ -843,6 +879,98 @@ mod tests {
             skip_folders: Vec::new(),
             extra_paths: Vec::new(),
         }
+    }
+
+    fn root_row(path: &str, below: Option<usize>) -> Row {
+        Row {
+            name: path.to_string(),
+            sort_key: path.to_string(),
+            kind: Kind::Enter(Place::Dir(path.into())),
+            cover: None,
+            genre: None,
+            favorite: false,
+            below,
+            details: Default::default(),
+        }
+    }
+
+    fn roots_cache(rows: Vec<Row>) -> SystemCache {
+        SystemCache {
+            format: FORMAT,
+            folders: BTreeMap::from([(
+                Place::Roots.key(),
+                Folder {
+                    mtime: 0,
+                    games: rows.iter().filter_map(|row| row.below).sum(),
+                    rows,
+                },
+            )]),
+        }
+    }
+
+    #[test]
+    fn one_content_contributing_root_opens_directly_from_the_existing_cache() {
+        let cache = roots_cache(vec![root_row("sd", Some(0)), root_row("usb", Some(7))]);
+
+        assert_eq!(
+            cache.navigation_start(&Place::Roots),
+            Place::Dir("usb".into())
+        );
+    }
+
+    #[test]
+    fn multiple_content_contributing_roots_keep_the_folder_chooser() {
+        let cache = roots_cache(vec![root_row("sd", Some(1)), root_row("usb", Some(7))]);
+
+        assert_eq!(cache.navigation_start(&Place::Roots), Place::Roots);
+    }
+
+    #[test]
+    fn empty_or_unproven_multi_root_caches_keep_the_folder_chooser() {
+        let empty = roots_cache(vec![root_row("sd", Some(0)), root_row("usb", Some(0))]);
+        let unknown = roots_cache(vec![root_row("sd", Some(0)), root_row("usb", None)]);
+        let missing = SystemCache {
+            format: FORMAT,
+            folders: BTreeMap::new(),
+        };
+
+        for cache in [&empty, &unknown, &missing] {
+            assert_eq!(cache.navigation_start(&Place::Roots), Place::Roots);
+        }
+    }
+
+    #[test]
+    fn a_configured_single_root_is_never_changed_or_touched_on_disk() {
+        let configured = Place::Dir("/path/that/does/not/exist".into());
+        let cache = roots_cache(vec![root_row("other", Some(4))]);
+
+        assert_eq!(cache.navigation_start(&configured), configured);
+    }
+
+    #[test]
+    fn nested_content_in_one_real_root_opens_that_root_without_flattening_it() {
+        let first = temp("navigation-empty-root");
+        let second = temp("navigation-nested-root");
+        std::fs::create_dir_all(second.join("Region/Series")).unwrap();
+        std::fs::write(second.join("Region/Series/Game.d64"), b"game").unwrap();
+        let mut config = system(&first);
+        config.extra_paths = vec![second.to_string_lossy().into_owned()];
+        let library = Library::open(&config).unwrap();
+        let cache = build_system(&library);
+
+        assert_eq!(
+            cache.navigation_start(&Place::Roots),
+            Place::Dir(second.clone())
+        );
+        assert!(
+            cache
+                .get(&Place::Dir(second.join("Region/Series")))
+                .is_some(),
+            "the cached hierarchy remains intact below the skipped chooser"
+        );
+
+        std::fs::remove_dir_all(first).ok();
+        std::fs::remove_dir_all(second).ok();
     }
 
     #[test]
