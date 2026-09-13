@@ -194,11 +194,11 @@ All System Lists**. Both random choices use the currently open folder and
 controls; **Library** contains scraping, core choice, data source and
 rebuilding; **Appearance** contains view and image controls.
 
-For Arcade favourites to work, if you have never launched MiSTer's
-**Favorites** script, run it once and create one Arcade favourite there.
-Folders inside `_@Favorites` without a leading `_` are visible only in Degauss,
-not in MiSTer's native OSD. Create them with the `_`, for example `_Arcade`, to
-see them in both.
+When Degauss creates an Arcade favourite, it also prepares MiSTer's native menu
+link if the Favorites script has not already done so. New favourite folder names
+start with `_`: keep it to show the folder in both Degauss and MiSTer's native
+OSD, or remove it with **X** (or clear the name with **Y**) to make the folder
+Degauss-only. Existing folders are never renamed.
 
 A gamepad needs no extra setup and browsing and settings need no keyboard. While Degauss
 owns the screen, MiSTer sends the d-pad as arrows and the face buttons as

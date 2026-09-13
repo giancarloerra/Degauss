@@ -1415,7 +1415,9 @@ fn run_main_favourites_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
     app.handle(Action::Accept);
     assert_eq!(app.screen, Screen::Find);
     assert_eq!(app.find_mode, FindMode::NewFolder);
-    assert!(app.filter.is_empty());
+    assert_eq!(app.filter, "_");
+    app.handle(Action::Context);
+    assert!(app.filter.is_empty(), "X removes the native-menu prefix");
     app.filter = "ARCADE".into();
     app.handle(Action::Quit);
     assert_eq!(app.screen, Screen::Browse);
