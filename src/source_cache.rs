@@ -65,6 +65,12 @@ pub enum Event {
         prepared: PreparedCacheGroup,
         providers: Vec<crate::artwork_pack::Provider>,
         progress: Progress,
+        /// Rows the preparation left without Pack data because their own
+        /// descriptor could not be read: one count line per reason,
+        /// prefixed with the system's name and without a path. The group
+        /// still stages: one broken descriptor is not a reason to fail
+        /// every row in it.
+        warnings: Vec<String>,
     },
     Cancelled(Progress),
     Failed {
@@ -161,6 +167,10 @@ fn run(request: Request, events: &SyncSender<Event>, cancelled: &Arc<AtomicBool>
     };
     let mut caches = Vec::new();
     let mut providers = Vec::new();
+    let mut warnings = Vec::new();
+    // Per prepared system, the rows its preparation left without Pack
+    // data, for the state written beside its cache.
+    let mut skipped_counts = Vec::new();
 
     for (position, system) in request.systems.into_iter().enumerate() {
         if cancelled.load(Ordering::Relaxed) {
@@ -181,12 +191,32 @@ fn run(request: Request, events: &SyncSender<Event>, cancelled: &Arc<AtomicBool>
                 let _ = events.send(Event::Cancelled(progress));
                 return;
             };
-            if request.require_usable_provider && !provider.health.usable() {
-                let _ = events.send(Event::Failed {
-                    error: DegaussError::unsupported("Artwork Pack", provider.status_line()),
-                    progress,
-                });
-                return;
+            if !provider.health.usable() {
+                // A new choice needs a usable Pack. So does a recovery that
+                // would replace a complete result: a Pack root that cannot
+                // be read is a failure of the whole system, and the rows
+                // prepared while it could be are kept, not replaced by
+                // rows with nothing in them. Only a system with no complete
+                // cache to keep is staged with its ordinary rows, so it can
+                // open and show the real health error.
+                let complete_before = match crate::cache::load_artwork_pack_data_checked(
+                    &request.cache_dir,
+                    &system.id,
+                ) {
+                    Ok(cached) => cached.is_some_and(|data| data.fingerprints_complete),
+                    // Not known to be absent: nothing is staged over it.
+                    Err(error) => {
+                        let _ = events.send(Event::Failed { error, progress });
+                        return;
+                    }
+                };
+                if request.require_usable_provider || complete_before {
+                    let _ = events.send(Event::Failed {
+                        error: DegaussError::unsupported("Artwork Pack", provider.status_line()),
+                        progress,
+                    });
+                    return;
+                }
             }
             Some(provider)
         } else {
@@ -224,6 +254,7 @@ fn run(request: Request, events: &SyncSender<Event>, cancelled: &Arc<AtomicBool>
                 return;
             }
         };
+        let mut skipped = crate::artwork_pack::SkippedEntries::new();
         let fingerprints = if let Some(provider) = provider
             .as_ref()
             .filter(|provider| provider.health.usable())
@@ -239,6 +270,7 @@ fn run(request: Request, events: &SyncSender<Event>, cancelled: &Arc<AtomicBool>
                     progress.hashed_bytes = base_hashed_bytes.saturating_add(bytes);
                     let _ = events.try_send(Event::Progress(progress.clone()));
                 },
+                &mut skipped,
             ) {
                 Ok(Some(fingerprints)) => fingerprints,
                 Ok(None) => {
@@ -257,7 +289,13 @@ fn run(request: Request, events: &SyncSender<Event>, cancelled: &Arc<AtomicBool>
             .as_ref()
             .is_some_and(|provider| provider.health.usable());
         if let Some(provider) = provider.as_mut() {
-            match provider.prepare_for_cache(&cache, &fingerprints, &request.homes, cancelled) {
+            match provider.prepare_for_cache(
+                &cache,
+                &fingerprints,
+                &request.homes,
+                cancelled,
+                &mut skipped,
+            ) {
                 Ok(Some(_)) => {}
                 Ok(None) => {
                     let _ = events.send(Event::Cancelled(progress));
@@ -268,10 +306,12 @@ fn run(request: Request, events: &SyncSender<Event>, cancelled: &Arc<AtomicBool>
                     return;
                 }
             }
+            warnings.extend(crate::artwork_pack::skipped_summary(&system.name, &skipped));
         }
         if let Some(mut provider) = provider {
             provider.discard_catalogue();
             providers.push(provider);
+            skipped_counts.push(skipped.len());
         }
         caches.push(StagedSystemCache {
             id: system.id,
@@ -285,13 +325,26 @@ fn run(request: Request, events: &SyncSender<Event>, cancelled: &Arc<AtomicBool>
         Target::Gamelist => CacheKind::Gamelist,
         Target::ArtworkPack { .. } => CacheKind::ArtworkPack,
     };
-    match crate::cache::stage_transactional(&request.cache_dir, kind, caches, cancelled) {
+    let staged = crate::cache::stage_transactional(&request.cache_dir, kind, caches, cancelled)
+        .and_then(|prepared| match prepared {
+            Some(prepared) => stage_pack_state(
+                prepared,
+                &request.cache_dir,
+                &request.target,
+                &providers,
+                &skipped_counts,
+            )
+            .map(Some),
+            None => Ok(None),
+        });
+    match staged {
         Ok(Some(prepared)) if !cancelled.load(Ordering::Relaxed) => {
             let _ = events.send(Event::Staged {
                 target: request.target,
                 prepared,
                 providers,
                 progress,
+                warnings,
             });
         }
         Ok(Some(_)) | Ok(None) => {
@@ -301,6 +354,57 @@ fn run(request: Request, events: &SyncSender<Event>, cancelled: &Arc<AtomicBool>
             let _ = events.send(Event::Failed { error, progress });
         }
     }
+}
+
+/// The state written beside each prepared system's rows, in the same
+/// transaction: what the rows were prepared against and the presentation
+/// they were given. Every Pack switch and every recovery of a usable Pack
+/// leaves it behind, so the next entry into the system needs no worker. A
+/// Gamelist target has nothing to write.
+fn stage_pack_state(
+    mut prepared: PreparedCacheGroup,
+    cache_dir: &std::path::Path,
+    target: &Target,
+    providers: &[crate::artwork_pack::Provider],
+    skipped_counts: &[usize],
+) -> Result<PreparedCacheGroup> {
+    let Target::ArtworkPack { docs_root } = target else {
+        return Ok(prepared);
+    };
+    let markers = prepared.markers().to_vec();
+    for ((provider, marker), skipped) in providers.iter().zip(markers).zip(skipped_counts) {
+        // An unusable Pack prepares nothing worth remembering: its rows are
+        // staged so the system can open and say so, and the next entry
+        // reads the Pack again to see whether it has been repaired.
+        if !provider.health.usable() {
+            continue;
+        }
+        let state = crate::cache::PackSourceState {
+            accepted: Some(crate::cache::AcceptedSource {
+                docs_root: docs_root.to_string_lossy().into_owned(),
+                language: provider.synopsis_language().map(str::to_string),
+                signature: provider.snapshot().cloned(),
+                cache_marker: marker,
+                health: provider.health,
+                diagnostics: provider.diagnostics.clone(),
+                skipped_entries: u32::try_from(*skipped).unwrap_or(u32::MAX),
+            }),
+            declined: None,
+        };
+        let map = provider.prepared_map().ok_or_else(|| {
+            DegaussError::unsupported(
+                "Artwork Pack",
+                format!("{}: nothing was prepared to write down", provider.system_id),
+            )
+        })?;
+        prepared = prepared.with_pack_state(
+            cache_dir,
+            &provider.system_id,
+            &crate::cache::encode_pack_source(&state)?,
+            &crate::cache::encode_pack_prepared(map)?,
+        )?;
+    }
+    Ok(prepared)
 }
 
 #[cfg(test)]
@@ -633,10 +737,26 @@ mod tests {
         assert_eq!(
             installed
                 .cache
-                .summary(&crate::browse::Place::Dir(games))
+                .summary(&crate::browse::Place::Dir(games.clone()))
                 .games,
             1
         );
+
+        // A previous cache that is there but cannot be read at that
+        // moment is not a missing one: nothing is staged over it, and
+        // the recovery fails with the read error, not the Pack's health.
+        let cache_path = crate::cache::artwork_pack_system_path(&cache_dir, "SuperGrafx");
+        std::fs::remove_file(&cache_path).unwrap();
+        std::fs::create_dir(&cache_path).unwrap();
+        let mut recovery = start(request(false)).unwrap();
+        let Event::Failed { error, .. } = terminal(&mut recovery) else {
+            panic!("a cache that cannot be read must not be replaced by ordinary rows");
+        };
+        assert!(
+            error.to_string().contains("reading the Artwork Pack cache"),
+            "{error}"
+        );
+        assert!(cache_path.is_dir(), "the unreadable cache is left as it is");
         std::fs::remove_dir_all(root).ok();
     }
 
@@ -673,6 +793,370 @@ mod tests {
         assert_eq!(std::fs::read(&cache_path).unwrap(), b"previous-cache");
         assert_eq!(std::fs::read(&index_path).unwrap(), b"previous-index");
         assert_eq!(std::fs::read_dir(&cache_dir).unwrap().count(), 2);
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    /// An arcade folder for the Pack worker: a healthy descriptor and a
+    /// malformed one, and a Pack that knows the healthy one.
+    fn arcade_fixture(tag: &str) -> (PathBuf, PathBuf, PathBuf, PathBuf) {
+        let root = temp(tag);
+        let docs = root.join("docs");
+        let artwork = docs.join("Arcade/Artwork");
+        let games = root.join("_Arcade");
+        std::fs::create_dir_all(&artwork).unwrap();
+        std::fs::create_dir_all(&games).unwrap();
+        std::fs::write(
+            artwork.join("manifest.tsv"),
+            "#key\tstyle\tss_system_id\nhealthy\tbox-2D\t75\n",
+        )
+        .unwrap();
+        std::fs::write(
+            artwork.join("index.tsv"),
+            "#name\tcrc\tsize\tkey\nhealthy\t\t\thealthy\n",
+        )
+        .unwrap();
+        std::fs::write(
+            artwork.join("gameinfo.tsv"),
+            "#key\tname\tyear\tgenre\tdeveloper\tplayers\nhealthy\tPack Healthy\t1990\tShooter\tStudio\t2\n",
+        )
+        .unwrap();
+        std::fs::write(artwork.join("healthy.jpg"), b"jpeg").unwrap();
+        let healthy = games.join("Healthy.mra");
+        std::fs::write(
+            &healthy,
+            "<misterromdescription><setname>healthy</setname></misterromdescription>",
+        )
+        .unwrap();
+        let broken = games.join("Broken.mra");
+        std::fs::write(&broken, "<misterromdescription><rom></wrong>").unwrap();
+        (root, docs, games, broken)
+    }
+
+    fn arcade_request(
+        docs: &std::path::Path,
+        games: &std::path::Path,
+        cache_dir: &std::path::Path,
+        require_usable_provider: bool,
+    ) -> Request {
+        Request {
+            target: Target::ArtworkPack {
+                docs_root: docs.to_path_buf(),
+            },
+            systems: vec![System {
+                id: "Arcade".to_string(),
+                name: "Arcade".to_string(),
+                config: config(games, "mra"),
+            }],
+            names: DisplayNames::default(),
+            synopsis_language: None,
+            cache_dir: cache_dir.to_path_buf(),
+            require_usable_provider,
+            homes: Arc::new(crate::mgl::Homes::default()),
+        }
+    }
+
+    /// Every prepared member of a Pack group leaves its decision and its
+    /// prepared rows beside its cache, in the same transaction, so the
+    /// next entry into it needs no worker; a Gamelist target leaves no
+    /// such thing. The marker written down is the one the installed rows
+    /// read back with.
+    #[test]
+    fn every_pack_member_stages_its_state_and_a_gamelist_target_stages_none() {
+        let root = temp("state-per-member");
+        let docs = root.join("docs");
+        let artwork = docs.join("NEOGEO/Artwork");
+        let console_games = root.join("console-games");
+        let arcade_games = root.join("arcade-games");
+        std::fs::create_dir_all(&artwork).unwrap();
+        std::fs::create_dir_all(&console_games).unwrap();
+        std::fs::create_dir_all(&arcade_games).unwrap();
+        std::fs::write(
+            artwork.join("manifest.tsv"),
+            "#key\tstyle\tss_system_id\nKnown\tbox-2D\t142\n",
+        )
+        .unwrap();
+        std::fs::write(
+            artwork.join("index.tsv"),
+            "#name\tcrc\tsize\tkey\nKnown\t\t\tKnown\n",
+        )
+        .unwrap();
+        std::fs::write(
+            artwork.join("gameinfo.tsv"),
+            "#key\tname\tyear\tgenre\tdeveloper\tplayers\nKnown\tPack Known\t1990\tAction\tStudio\t1\n",
+        )
+        .unwrap();
+        std::fs::write(artwork.join("Known.jpg"), b"jpeg").unwrap();
+        std::fs::write(console_games.join("Known.neo"), b"rom").unwrap();
+        std::fs::write(arcade_games.join("Known.neo"), b"rom").unwrap();
+        let cache_dir = root.join("cache");
+        let systems = vec![
+            System {
+                id: "NeoGeo".to_string(),
+                name: "Neo Geo".to_string(),
+                config: config(&console_games, "neo"),
+            },
+            System {
+                id: "NeoGeoMVS".to_string(),
+                name: "Neo Geo MVS".to_string(),
+                config: config(&arcade_games, "neo"),
+            },
+        ];
+        let mut job = start(Request {
+            target: Target::ArtworkPack {
+                docs_root: docs.clone(),
+            },
+            systems: systems.clone(),
+            names: DisplayNames::default(),
+            synopsis_language: Some("EN".to_string()),
+            cache_dir: cache_dir.clone(),
+            require_usable_provider: true,
+            homes: Arc::new(crate::mgl::Homes::default()),
+        })
+        .unwrap();
+        let Event::Staged {
+            prepared,
+            providers,
+            warnings,
+            ..
+        } = terminal(&mut job)
+        else {
+            panic!("the Pack worker did not stage its group");
+        };
+        assert!(warnings.is_empty());
+        let markers = prepared.markers().to_vec();
+        for id in ["NeoGeo", "NeoGeoMVS"] {
+            assert!(
+                crate::cache::load_pack_source_state(&cache_dir, id)
+                    .unwrap()
+                    .is_none(),
+                "nothing is live before the install"
+            );
+        }
+        prepared.install().unwrap();
+        for (position, id) in ["NeoGeo", "NeoGeoMVS"].into_iter().enumerate() {
+            let state = crate::cache::load_pack_source_state(&cache_dir, id)
+                .unwrap()
+                .unwrap_or_else(|| panic!("{id} has its decision written down"));
+            let accepted = state.accepted.expect("a preparation is an acceptance");
+            assert!(state.declined.is_none());
+            assert_eq!(accepted.docs_root, docs.to_str().unwrap());
+            assert_eq!(accepted.language.as_deref(), Some("en"));
+            assert_eq!(accepted.cache_marker, markers[position]);
+            assert_eq!(
+                accepted.cache_marker,
+                crate::cache::load_artwork_pack_data_marked(&cache_dir, id)
+                    .unwrap()
+                    .unwrap()
+                    .1
+            );
+            assert_eq!(accepted.health, crate::artwork_pack::ProviderHealth::Ready);
+            assert_eq!(accepted.skipped_entries, 0);
+            assert!(accepted.signature.is_some());
+            let prepared = crate::cache::load_pack_prepared_map(&cache_dir, id)
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                prepared.len(),
+                1,
+                "{id}: the one matched row is written down"
+            );
+            assert_eq!(
+                prepared.values().next().unwrap().name.as_deref(),
+                Some("Pack Known"),
+                "{id}: with the presentation the worker prepared"
+            );
+            assert_eq!(
+                providers
+                    .iter()
+                    .find(|provider| provider.system_id == id)
+                    .unwrap()
+                    .prepared_map()
+                    .unwrap()
+                    .len(),
+                1
+            );
+        }
+
+        let gamelist_store = root.join("gamelist-cache");
+        let mut job = start(Request {
+            target: Target::Gamelist,
+            systems: vec![systems[0].clone()],
+            names: DisplayNames::default(),
+            synopsis_language: None,
+            cache_dir: gamelist_store.clone(),
+            require_usable_provider: true,
+            homes: Arc::new(crate::mgl::Homes::default()),
+        })
+        .unwrap();
+        let Event::Staged { prepared, .. } = terminal(&mut job) else {
+            panic!("the Gamelist worker did not stage its cache");
+        };
+        prepared.install().unwrap();
+        assert!(crate::cache::load_system(&gamelist_store, "NeoGeo").is_some());
+        assert!(
+            !gamelist_store.join("artwork-pack").exists(),
+            "a Gamelist target has no Pack decision to write"
+        );
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    /// A descriptor that cannot be parsed costs its own row its Pack data
+    /// and nothing else: the group is staged, the healthy row is prepared,
+    /// the screen is told how many rows were left out and why, and the
+    /// count is written down with the decision. Repaired and run again,
+    /// the row is prepared like any other. Before, the first broken file
+    /// failed the whole group.
+    #[test]
+    fn a_broken_descriptor_does_not_fail_the_source_group() {
+        let (root, docs, games, broken) = arcade_fixture("broken-descriptor");
+        let cache_dir = root.join("cache");
+        let mut job = start(arcade_request(&docs, &games, &cache_dir, true)).unwrap();
+        let Event::Staged {
+            prepared,
+            providers,
+            warnings,
+            ..
+        } = terminal(&mut job)
+        else {
+            panic!("a broken descriptor must not fail the group");
+        };
+        assert_eq!(
+            warnings,
+            ["Arcade: 1 game left without Pack data: malformed descriptor"]
+        );
+        let (caches, _) = prepared.install().unwrap();
+        assert!(caches[0].fingerprints_complete);
+        let mut rows: Vec<_> = caches[0]
+            .cache
+            .folders
+            .values()
+            .flat_map(|folder| folder.rows.iter().cloned())
+            .collect();
+        assert_eq!(rows.len(), 2, "the broken row is still listed");
+        assert_eq!(providers[0].apply_prepared(&mut rows), 1);
+        assert!(rows.iter().any(|row| row.name == "Pack Healthy"));
+        assert!(
+            rows.iter()
+                .any(|row| row.name == "Broken" && row.cover.is_none()),
+            "{rows:?}"
+        );
+        let state = crate::cache::load_pack_source_state(&cache_dir, "Arcade")
+            .unwrap()
+            .unwrap();
+        assert_eq!(state.accepted.as_ref().unwrap().skipped_entries, 1);
+        assert_eq!(
+            state.accepted.as_ref().unwrap().health,
+            crate::artwork_pack::ProviderHealth::Ready,
+            "a broken descriptor is not a degraded Pack"
+        );
+
+        std::fs::write(
+            &broken,
+            "<misterromdescription><setname>healthy</setname></misterromdescription>",
+        )
+        .unwrap();
+        let mut job = start(arcade_request(&docs, &games, &cache_dir, false)).unwrap();
+        let Event::Staged {
+            prepared,
+            providers,
+            warnings,
+            ..
+        } = terminal(&mut job)
+        else {
+            panic!("the repaired group did not stage");
+        };
+        assert!(warnings.is_empty());
+        let (caches, _) = prepared.install().unwrap();
+        let mut rows: Vec<_> = caches[0]
+            .cache
+            .folders
+            .values()
+            .flat_map(|folder| folder.rows.iter().cloned())
+            .collect();
+        assert_eq!(providers[0].apply_prepared(&mut rows), 2);
+        assert_eq!(
+            crate::cache::load_pack_source_state(&cache_dir, "Arcade")
+                .unwrap()
+                .unwrap()
+                .accepted
+                .unwrap()
+                .skipped_entries,
+            0
+        );
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    /// A Pack root that is not there fails a recovery whole when there is
+    /// a complete result to keep: the rows prepared while it could be read
+    /// are not replaced by rows with nothing in them. Only a system with
+    /// no complete result stages its ordinary rows, so it can open and say
+    /// what is wrong.
+    #[test]
+    fn a_disconnected_pack_root_fails_a_recovery_that_has_a_complete_cache() {
+        let (root, docs, games, _) = arcade_fixture("disconnected-root");
+        let cache_dir = root.join("cache");
+        let mut job = start(arcade_request(&docs, &games, &cache_dir, true)).unwrap();
+        let Event::Staged { prepared, .. } = terminal(&mut job) else {
+            panic!("the first preparation did not stage");
+        };
+        prepared.install().unwrap();
+        let complete =
+            std::fs::read(crate::cache::artwork_pack_system_path(&cache_dir, "Arcade")).unwrap();
+        let state =
+            std::fs::read(crate::cache::artwork_pack_source_path(&cache_dir, "Arcade")).unwrap();
+        std::fs::rename(&docs, root.join("docs-away")).unwrap();
+
+        let mut job = start(arcade_request(&docs, &games, &cache_dir, false)).unwrap();
+        let Event::Failed { error, .. } = terminal(&mut job) else {
+            panic!("a Pack that is gone must not replace a complete result");
+        };
+        assert!(error.to_string().contains("Unavailable"), "{error}");
+        assert_eq!(
+            std::fs::read(crate::cache::artwork_pack_system_path(&cache_dir, "Arcade")).unwrap(),
+            complete
+        );
+        assert_eq!(
+            std::fs::read(crate::cache::artwork_pack_source_path(&cache_dir, "Arcade")).unwrap(),
+            state
+        );
+
+        let empty_store = root.join("cache-without-result");
+        let mut job = start(arcade_request(&docs, &games, &empty_store, false)).unwrap();
+        let Event::Staged { prepared, .. } = terminal(&mut job) else {
+            panic!("with nothing to keep, the ordinary rows are staged so the system can open");
+        };
+        let (caches, _) = prepared.install().unwrap();
+        assert!(!caches[0].fingerprints_complete);
+        assert!(
+            crate::cache::load_pack_source_state(&empty_store, "Arcade")
+                .unwrap()
+                .is_none(),
+            "an unusable Pack is not written down as accepted"
+        );
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    /// A cache folder that cannot be written is the whole preparation's
+    /// failure, not a row's: nothing is installed and the previous result
+    /// in another store is untouched.
+    #[test]
+    fn a_cache_write_failure_is_terminal_not_a_skip() {
+        let (root, docs, games, _) = arcade_fixture("cache-write-failure");
+        let cache_dir = root.join("cache");
+        std::fs::create_dir_all(&cache_dir).unwrap();
+        std::fs::write(cache_dir.join("artwork-pack"), b"not a directory").unwrap();
+        let mut job = start(arcade_request(&docs, &games, &cache_dir, true)).unwrap();
+        let Event::Failed { error, .. } = terminal(&mut job) else {
+            panic!("a cache folder that is a file must fail the preparation");
+        };
+        assert!(
+            matches!(&error, DegaussError::Io { path, .. } if path.starts_with(&cache_dir)),
+            "the failure names the cache, not a row: {error}"
+        );
+        assert_eq!(
+            std::fs::read(cache_dir.join("artwork-pack")).unwrap(),
+            b"not a directory"
+        );
         std::fs::remove_dir_all(root).ok();
     }
 }

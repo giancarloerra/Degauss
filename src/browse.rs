@@ -93,7 +93,7 @@ impl Place {
 }
 
 /// How a game is started.
-#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq, Eq)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Launch {
     /// A path handed to the loader, possibly pointing inside an archive.
     File(PathBuf),
