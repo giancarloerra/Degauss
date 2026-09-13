@@ -232,6 +232,7 @@ name = "Arduboy"
 id = "Arduboy"
 folders = ["Arduboy"]
 rbf = "_Other/Arduboy"
+handheld = true
 extensions = ["hex", "bin", "mgl"]
 
 [[systems.launch]]
@@ -310,6 +311,7 @@ name = "Atari Lynx"
 id = "AtariLynx"
 folders = ["AtariLynx"]
 rbf = "_Console/AtariLynx"
+handheld = true
 extensions = ["lnx", "mgl"]
 
 [[systems.launch]]
@@ -637,6 +639,7 @@ name = "Gamate"
 id = "Gamate"
 folders = ["Gamate"]
 rbf = "_Console/Gamate"
+handheld = true
 extensions = ["bin", "mgl"]
 
 [[systems.launch]]
@@ -650,6 +653,7 @@ name = "Game & Watch"
 id = "GameNWatch"
 folders = ["GameNWatch", "Game and Watch"]
 rbf = "_Console/GnW"
+handheld = true
 extensions = ["bin", "mgl", "gnw"]
 
 [[systems.launch]]
@@ -669,6 +673,7 @@ name = "Game Gear"
 id = "GameGear"
 folders = ["SMS", "GameGear"]
 rbf = "_Console/SMS"
+handheld = true
 setname = "GameGear"
 extensions = ["gg", "mgl"]
 
@@ -683,6 +688,7 @@ name = "Game Gear (2 Player)"
 id = "GameGear2P"
 folders = ["GameGear2P"]
 rbf = "_Console/GameGear2P"
+handheld = true
 setname = "GameGear2P"
 extensions = ["gg", "mgl"]
 
@@ -697,6 +703,7 @@ name = "Gameboy"
 id = "Gameboy"
 folders = ["GAMEBOY"]
 rbf = "_Console/Gameboy"
+handheld = true
 extensions = ["gb", "mgl"]
 
 [[systems.launch]]
@@ -710,6 +717,7 @@ name = "Gameboy (2 Player)"
 id = "Gameboy2P"
 folders = ["GAMEBOY2P"]
 rbf = "_Console/Gameboy2P"
+handheld = true
 extensions = ["gb", "gbc", "mgl"]
 
 [[systems.launch]]
@@ -723,6 +731,7 @@ name = "Gameboy Advance"
 id = "GBA"
 folders = ["GBA"]
 rbf = "_Console/GBA"
+handheld = true
 extensions = ["gba", "mgl"]
 
 [[systems.launch]]
@@ -736,6 +745,7 @@ name = "Gameboy Advance (2 Player)"
 id = "GBA2P"
 folders = ["GBA2P"]
 rbf = "_Console/GBA2P"
+handheld = true
 extensions = ["gba", "mgl"]
 
 [[systems.launch]]
@@ -749,6 +759,7 @@ name = "Gameboy Color"
 id = "GameboyColor"
 folders = ["GAMEBOY", "GBC"]
 rbf = "_Console/Gameboy"
+handheld = true
 setname = "GBC"
 extensions = ["gbc", "mgl"]
 
@@ -992,6 +1003,7 @@ name = "Mega Duck"
 id = "MegaDuck"
 folders = ["GAMEBOY", "MegaDuck"]
 rbf = "_Console/Gameboy"
+handheld = true
 extensions = ["bin", "mgl"]
 
 [[systems.launch]]
@@ -1095,6 +1107,7 @@ name = "Neo Geo Pocket"
 id = "NeoGeoPocket"
 folders = ["NGP"]
 rbf = "_Arcade/JTNGP"
+handheld = true
 setname = "NeoGeoPocket"
 extensions = ["ngp", "mgl"]
 
@@ -1109,6 +1122,7 @@ name = "Neo Geo Pocket Color"
 id = "NeoGeoPocketColor"
 folders = ["NGPC"]
 rbf = "_Arcade/JTNGPC"
+handheld = true
 setname = "JTNGPC"
 extensions = ["ngc", "mgl"]
 
@@ -1325,6 +1339,7 @@ name = "Pocket Challenge V2"
 id = "PocketChallengeV2"
 folders = ["WonderSwan", "PocketChallengeV2"]
 rbf = "_Console/WonderSwan"
+handheld = true
 setname = "PocketChallengeV2"
 extensions = ["pc2", "mgl"]
 
@@ -1339,6 +1354,7 @@ name = "Pokemon Mini"
 id = "PokemonMini"
 folders = ["PokemonMini"]
 rbf = "_Console/PokemonMini"
+handheld = true
 extensions = ["min", "mgl"]
 
 [[systems.launch]]
@@ -1514,6 +1530,7 @@ name = "SuperVision"
 id = "SuperVision"
 folders = ["SuperVision"]
 rbf = "_Console/SuperVision"
+handheld = true
 extensions = ["bin", "sv", "mgl"]
 
 [[systems.launch]]
@@ -1838,6 +1855,7 @@ name = "WonderSwan"
 id = "WonderSwan"
 folders = ["WonderSwan"]
 rbf = "_Console/WonderSwan"
+handheld = true
 extensions = ["ws", "mgl"]
 
 [[systems.launch]]
@@ -1851,6 +1869,7 @@ name = "WonderSwan Color"
 id = "WonderSwanColor"
 folders = ["WonderSwan", "WonderSwanColor"]
 rbf = "_Console/WonderSwan"
+handheld = true
 setname = "WonderSwanColor"
 extensions = ["wsc", "mgl"]
 
