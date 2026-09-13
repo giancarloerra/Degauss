@@ -74,6 +74,38 @@ pub struct SystemDef {
 }
 
 impl SystemDef {
+    /// Whether this logical system belongs in the optional Handheld category.
+    ///
+    /// Released systems tables predate the `handheld` field and customised
+    /// copies are deliberately preserved during upgrades. Stable built-in IDs
+    /// therefore carry the same classification without rewriting user files;
+    /// the field remains available for user-added systems.
+    pub fn is_handheld(&self) -> bool {
+        self.handheld
+            || matches!(
+                self.id.as_str(),
+                "Arduboy"
+                    | "AtariLynx"
+                    | "GBA"
+                    | "GBA2P"
+                    | "Gamate"
+                    | "GameGear"
+                    | "GameGear2P"
+                    | "GameNWatch"
+                    | "Gameboy"
+                    | "Gameboy2P"
+                    | "GameboyColor"
+                    | "MegaDuck"
+                    | "NeoGeoPocket"
+                    | "NeoGeoPocketColor"
+                    | "PocketChallengeV2"
+                    | "PokemonMini"
+                    | "SuperVision"
+                    | "WonderSwan"
+                    | "WonderSwanColor"
+            )
+    }
+
     /// The group this system belongs to.
     pub fn category(&self) -> &str {
         if let Some(explicit) = self.category.as_deref() {
@@ -843,7 +875,7 @@ extensions = ["md", "bin"]
         );
         let handhelds: std::collections::BTreeSet<&str> = table
             .iter()
-            .filter(|system| system.handheld)
+            .filter(|system| system.is_handheld())
             .map(|system| system.id.as_str())
             .collect();
         assert_eq!(
@@ -879,7 +911,7 @@ extensions = ["md", "bin"]
                     .iter()
                     .find(|system| system.id == id)
                     .unwrap()
-                    .handheld,
+                    .is_handheld(),
                 "{id} remains a Console system"
             );
         }
@@ -1054,6 +1086,32 @@ extensions = ["md", "bin"]
             ..c64.clone()
         };
         assert_eq!(stated.category(), "Arcade", "an explicit value wins");
+    }
+
+    #[test]
+    fn released_custom_systems_tables_keep_builtin_handheld_classification() {
+        let table = parse_table(
+            include_str!("../tests/fixtures/v0.1.0-and-v0.2.0-systems.toml"),
+            Path::new("v0.2.0-systems.toml"),
+        )
+        .unwrap();
+
+        for id in ["AtariLynx", "Gameboy", "GBA", "GameGear", "WonderSwan"] {
+            let system = table.iter().find(|system| system.id == id).unwrap();
+            assert!(
+                !system.handheld,
+                "the released table intentionally has no new field"
+            );
+            assert!(
+                system.is_handheld(),
+                "the stable {id} identity supplies upgrade classification"
+            );
+        }
+        assert!(!table
+            .iter()
+            .find(|system| system.id == "NES")
+            .unwrap()
+            .is_handheld());
     }
 
     #[test]
