@@ -771,6 +771,19 @@ pub fn add_core(folder: &Path, name: &str, source: &Path) -> Result<PathBuf> {
 /// file, directory, working link or dangling link owned by the user's setup,
 /// and must not be replaced.
 #[cfg(unix)]
+fn arcade_cores_target(menu_root: &Path) -> Result<PathBuf> {
+    std::path::absolute(menu_root)
+        .map(|root| root.join("_Arcade/cores"))
+        .map_err(|error| {
+            DegaussError::io(
+                "resolving the Arcade favourites core folder",
+                menu_root,
+                error,
+            )
+        })
+}
+
+#[cfg(unix)]
 pub fn ensure_arcade_cores_link(menu_root: &Path) -> Result<()> {
     let favorites_root = menu_root.join(FAVORITES_DIR);
     let link = favorites_root.join("cores");
@@ -789,7 +802,10 @@ pub fn ensure_arcade_cores_link(menu_root: &Path) -> Result<()> {
     std::fs::create_dir_all(&favorites_root).map_err(|error| {
         DegaussError::io("making the favourites folder", &favorites_root, error)
     })?;
-    let target = menu_root.join("_Arcade/cores");
+    // A symlink target is resolved from the directory containing the link,
+    // not from Degauss's working directory. Make a configured relative menu
+    // root absolute before storing it so both forms point to the same place.
+    let target = arcade_cores_target(menu_root)?;
     std::os::unix::fs::symlink(&target, &link).map_err(|error| {
         DegaussError::io("linking the Arcade favourites core folder", &link, error)
     })?;
@@ -986,6 +1002,21 @@ extensions = ["nes", "mgl"]
         ensure_arcade_cores_link(&root).expect("an existing link is accepted");
         assert_eq!(std::fs::read_link(&link).unwrap(), expected);
         std::fs::remove_dir_all(root).ok();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_relative_menu_root_resolves_to_an_absolute_arcade_core_target() {
+        let menu_root = Path::new("relative-card-root");
+        let target = arcade_cores_target(menu_root).unwrap();
+
+        assert!(target.is_absolute());
+        assert_eq!(
+            target,
+            std::env::current_dir()
+                .unwrap()
+                .join("relative-card-root/_Arcade/cores")
+        );
     }
 
     #[cfg(unix)]
