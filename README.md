@@ -185,7 +185,9 @@ data source and rebuilding; **Appearance** contains view and image controls.
 
 A gamepad needs no extra setup and browsing and settings need no keyboard. While Degauss
 owns the screen, MiSTer sends the d-pad as arrows and the face buttons as
-Enter, Escape, Space and Tab.
+Enter, Escape, Space and Tab. One physical press counts once even when a
+controller or the input stack delivers it as two press and release pairs
+within 40 ms; held scrolling and deliberate repeated taps are not affected.
 
 ### Running MiSTer scripts
 
