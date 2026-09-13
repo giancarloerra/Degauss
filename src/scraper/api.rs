@@ -563,8 +563,8 @@ impl Client {
         let response = self
             .transport
             .get("ssuserInfos.php", &self.auth(), MAX_XML_BYTES)?;
-        response_status(&response)?;
-        content_is_xml(&response)?;
+        response_status(&response, Answer::Account)?;
+        content_is_xml(&response, Answer::Account)?;
         parse(
             &response.body,
             self.region.as_deref(),
@@ -624,7 +624,7 @@ impl Client {
             ("sha1".into(), hashes.sha1.clone()),
         ]);
         let response = self.transport.get("jeuInfos.php", &params, MAX_XML_BYTES)?;
-        match response_status(&response) {
+        match response_status(&response, Answer::Lookup) {
             Err(error) if error.kind == ErrorKind::NotFound => {
                 return Ok(LookupResponse {
                     lookup: Lookup::NotFound,
@@ -636,7 +636,7 @@ impl Client {
             Err(error) => return Err(error),
             Ok(()) => {}
         }
-        if let Err(error) = content_is_xml(&response) {
+        if let Err(error) = content_is_xml(&response, Answer::Lookup) {
             if error.kind == ErrorKind::NotFound {
                 return Ok(LookupResponse {
                     lookup: Lookup::NotFound,
@@ -711,7 +711,7 @@ impl Client {
         let response = self
             .transport
             .get("jeuRecherche.php", &params, MAX_XML_BYTES)?;
-        match response_status(&response) {
+        match response_status(&response, Answer::Lookup) {
             Err(error) if error.kind == ErrorKind::NotFound => {
                 return Ok(LookupResponse {
                     lookup: Lookup::NotFound,
@@ -723,7 +723,7 @@ impl Client {
             Err(error) => return Err(error),
             Ok(()) => {}
         }
-        if let Err(error) = content_is_xml(&response) {
+        if let Err(error) = content_is_xml(&response, Answer::Lookup) {
             if error.kind == ErrorKind::NotFound {
                 return Ok(LookupResponse {
                     lookup: Lookup::NotFound,
@@ -790,7 +790,7 @@ impl Client {
 
     pub fn media(&self, media: &Media, limit: u64) -> Result<HttpResponse> {
         let response = self.transport.get_media(&media.url, limit, None)?;
-        response_status(&response)?;
+        response_status(&response, Answer::Media)?;
         if std::str::from_utf8(&response.body)
             .ok()
             .is_some_and(|text| text.trim().eq_ignore_ascii_case("NOMEDIA"))
@@ -914,13 +914,24 @@ pub struct LookupResponse {
     pub server_miss: bool,
 }
 
+/// What a response answers, which decides whose problem a rejection is:
+/// a lookup's concerns the one game, the account check runs before any
+/// game, and a media transfer answers with an image rather than text.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Answer {
+    /// `jeuInfos.php` or `jeuRecherche.php` for one game.
+    Lookup,
+    /// `ssuserInfos.php` before the run.
+    Account,
+    /// An image download for a matched game.
+    Media,
+}
+
+/// The meaning of an HTTP status other than 400, which `rejected_request`
+/// classifies from the body.
 fn status(code: u16) -> Result<()> {
     match code {
         200..=299 => Ok(()),
-        400 => Err(Error::new(
-            ErrorKind::Configuration,
-            "ScreenScraper rejected the request parameters (HTTP 400)",
-        )),
         401 | 423 => Err(Error::new(
             ErrorKind::Unavailable,
             format!("ScreenScraper is temporarily closed (HTTP {code})"),
@@ -963,13 +974,23 @@ fn status(code: u16) -> Result<()> {
 /// Interpret a body-level ScreenScraper error before losing its more precise
 /// login diagnosis to a generic HTTP status. In particular, the service can
 /// use HTTP 403 for either developer credentials or an end-user login and
-/// states which pair failed only in its plain-text response.
-fn response_status(response: &HttpResponse) -> Result<()> {
-    if let Ok(text) = std::str::from_utf8(&response.body) {
-        let trimmed = text.trim_start_matches('\u{feff}').trim_start();
-        if trimmed.to_lowercase().starts_with("erreur") {
-            let body_error = text_error(trimmed);
-            if response.status < 300 || body_error.kind == ErrorKind::Authentication {
+/// states which pair failed only in its plain-text response. A documented
+/// error text keeps its classification under HTTP 400 as well; any other
+/// body under that status is classified by `rejected_request`.
+fn response_status(response: &HttpResponse, answer: Answer) -> Result<()> {
+    let text = std::str::from_utf8(&response.body)
+        .ok()
+        .map(|text| text.trim_start_matches('\u{feff}').trim_start());
+    if let Some(trimmed) = text {
+        let lower = trimmed.to_lowercase();
+        if lower.starts_with("erreur") {
+            let documented = documented_error(&lower, trimmed);
+            let documented_under_400 = response.status == 400 && documented.is_some();
+            let body_error = documented.unwrap_or_else(|| unrecognised_error(trimmed, answer));
+            if response.status < 300
+                || body_error.kind == ErrorKind::Authentication
+                || documented_under_400
+            {
                 crate::note(match authentication_source(trimmed) {
                     Some(AuthenticationSource::Application) => {
                         "scraper      ScreenScraper rejected application authentication"
@@ -983,65 +1004,249 @@ fn response_status(response: &HttpResponse) -> Result<()> {
             }
         }
     }
-    status(response.status)
+    match response.status {
+        400 => Err(rejected_request(response, text, answer)),
+        code => status(code),
+    }
 }
 
-fn content_is_xml(response: &HttpResponse) -> Result<()> {
-    if response.content_type.as_deref().is_some_and(|value| {
+/// HTTP 400 is one game's rejection on a lookup or a media transfer and a
+/// setup fault at the account check. The XML endpoints answer it with text,
+/// so markup, a page content type, an empty or non-text body stops the run.
+fn rejected_request(response: &HttpResponse, text: Option<&str>, answer: Answer) -> Error {
+    let text = text.map(str::trim).filter(|text| !text.is_empty());
+    let kind = match answer {
+        Answer::Account => ErrorKind::Configuration,
+        Answer::Lookup | Answer::Media => ErrorKind::InvalidRequest,
+    };
+    if answer != Answer::Media {
+        if let Some(content_type) = page_content_type(response) {
+            return not_an_answer(&format!(
+                "content type {} under HTTP 400",
+                excerpt(content_type)
+            ));
+        }
+        if text.is_none() {
+            return not_an_answer("no error text under HTTP 400");
+        }
+        if text.is_some_and(|text| text.starts_with('<')) {
+            return not_an_answer("markup instead of an error text under HTTP 400");
+        }
+    }
+    let rejected = "ScreenScraper rejected the request parameters (HTTP 400)";
+    Error::new(
+        kind,
+        match text {
+            Some(text) => format!("{rejected}: {}", excerpt(text)),
+            None => rejected.into(),
+        },
+    )
+}
+
+/// The content type of a body that is neither XML nor plain text: a
+/// maintenance or intermediary page rather than a ScreenScraper answer.
+fn page_content_type(response: &HttpResponse) -> Option<&str> {
+    response.content_type.as_deref().filter(|value| {
         let value = value.to_ascii_lowercase();
         !value.contains("xml") && !value.starts_with("text/plain")
-    }) {
+    })
+}
+
+fn content_is_xml(response: &HttpResponse, answer: Answer) -> Result<()> {
+    // ScreenScraper answers with XML or a plain-text error. Any other
+    // content type (a maintenance or intermediary page) is not an answer
+    // to the one request, so it counts as the service being unavailable
+    // rather than as one game's unreadable match. So does a body that is
+    // not text at all: no `<Data>` answer can be read from it.
+    if let Some(content_type) = page_content_type(response) {
         return Err(Error::new(
-            ErrorKind::MalformedResponse,
-            "ScreenScraper returned a non-XML response",
+            ErrorKind::Unavailable,
+            format!(
+                "ScreenScraper returned a non-XML response (content type {})",
+                excerpt(content_type)
+            ),
         ));
     }
-    let text = std::str::from_utf8(&response.body).map_err(|_| {
-        Error::new(
-            ErrorKind::MalformedResponse,
-            "ScreenScraper returned non-UTF-8 XML",
-        )
-    })?;
+    let text = std::str::from_utf8(&response.body).map_err(|_| not_an_answer("non-UTF-8 body"))?;
     let trimmed = text.trim_start_matches('\u{feff}').trim_start();
     if !trimmed.starts_with('<') {
-        return Err(text_error(trimmed));
+        return Err(text_error(trimmed, answer));
     }
     Ok(())
 }
 
-fn text_error(text: &str) -> Error {
-    let lower = text.to_lowercase();
-    if lower.starts_with("erreur") {
-        if lower.contains("développeur") || lower.contains("developpeur") {
-            return Error::new(
-                ErrorKind::Authentication,
-                "this Degauss build could not authenticate with ScreenScraper",
-            );
-        }
-        if lower.contains("utilisateur") {
-            return Error::new(
-                ErrorKind::Authentication,
-                "ScreenScraper rejected the login. Check the username and password",
-            );
-        }
-        if lower.contains("quota") {
-            return Error::new(
-                ErrorKind::DailyQuota,
-                "the ScreenScraper allowance is exhausted",
-            );
-        }
-        if lower.contains("introuv") || lower.contains("non trouv") {
-            return Error::new(ErrorKind::NotFound, "no matching game");
-        }
+fn text_error(text: &str, answer: Answer) -> Error {
+    if text.trim().is_empty() {
         return Error::new(
             ErrorKind::Unavailable,
-            "ScreenScraper returned an error response",
+            "ScreenScraper returned an empty response",
         );
     }
+    let lower = text.to_lowercase();
+    if lower.starts_with("erreur") {
+        return documented_error(&lower, text).unwrap_or_else(|| unrecognised_error(text, answer));
+    }
+    // Neither XML nor an error text is not an answer to the one request
+    // (a maintenance notice), so the run stops.
     Error::new(
-        ErrorKind::MalformedResponse,
-        "ScreenScraper returned a response that was not XML",
+        ErrorKind::Unavailable,
+        format!(
+            "ScreenScraper returned a response that was not XML: {}",
+            excerpt(text)
+        ),
     )
+}
+
+/// The classification of an error text ScreenScraper documents; `lower`
+/// is `text` lowercased. None for a text the service has not documented.
+fn documented_error(lower: &str, text: &str) -> Option<Error> {
+    if lower.contains("développeur") || lower.contains("developpeur") {
+        return Some(Error::new(
+            ErrorKind::Authentication,
+            "this Degauss build could not authenticate with ScreenScraper",
+        ));
+    }
+    if lower.contains("utilisateur") {
+        return Some(Error::new(
+            ErrorKind::Authentication,
+            "ScreenScraper rejected the login. Check the username and password",
+        ));
+    }
+    if lower.contains("quota") {
+        return Some(Error::new(
+            ErrorKind::DailyQuota,
+            "the ScreenScraper allowance is exhausted",
+        ));
+    }
+    if lower.contains("introuv") || lower.contains("non trouv") {
+        return Some(Error::new(ErrorKind::NotFound, "no matching game"));
+    }
+    // The documented closure texts ("API fermé pour les non membres",
+    // "API totalement fermé") describe the service, not the request.
+    if lower.contains("ferm") {
+        return Some(Error::new(
+            ErrorKind::Unavailable,
+            "ScreenScraper reported that the API is closed",
+        ));
+    }
+    // The documented HTTP 429 texts (every one names "threads") and the
+    // HTTP 431 text describe the account's limits, not the request. Their
+    // HTTP statuses carry the retryable and allowance kinds; the text on
+    // its own stops the run like any other outage, wherever it arrives.
+    if lower.contains("threads") {
+        return Some(Error::new(
+            ErrorKind::Unavailable,
+            "ScreenScraper reported that its thread limit is reached",
+        ));
+    }
+    if lower.contains("faite du tri") || lower.contains("repassez demain") {
+        return Some(Error::new(
+            ErrorKind::Unavailable,
+            "the ScreenScraper failed-search allowance is exhausted",
+        ));
+    }
+    // The blacklist text is the one HTTP 426 carries: the same kind, so a
+    // refused client stops the run wherever the text arrives.
+    if lower.contains("blacklist") {
+        return Some(Error::new(
+            ErrorKind::Configuration,
+            "this Degauss scraper client was refused by ScreenScraper",
+        ));
+    }
+    // Degauss sends the same request fields for every game, so the
+    // documented texts for a call missing its fields concern the run.
+    if lower.contains("l'url") {
+        return Some(Error::new(
+            ErrorKind::Configuration,
+            format!(
+                "ScreenScraper rejected the request address, which is the same for every game: {}",
+                excerpt(text)
+            ),
+        ));
+    }
+    // The documented HTTP 400 texts for a rom name carrying a path or not
+    // conforming and for a malformed hash field concern this one request:
+    // the run continues with the next game.
+    if lower.contains("fichier rom") || lower.contains("crc, md5 ou sha1") {
+        return Some(Error::new(
+            ErrorKind::InvalidRequest,
+            format!("ScreenScraper rejected this request: {}", excerpt(text)),
+        ));
+    }
+    None
+}
+
+/// An error text ScreenScraper has not documented: one game's rejection
+/// on a lookup, an outage at the account check or on a media transfer.
+fn unrecognised_error(text: &str, answer: Answer) -> Error {
+    match answer {
+        Answer::Lookup => Error::new(
+            ErrorKind::InvalidRequest,
+            format!(
+                "ScreenScraper rejected this request (unrecognised error text): {}",
+                excerpt(text)
+            ),
+        ),
+        Answer::Account | Answer::Media => Error::new(
+            ErrorKind::Unavailable,
+            format!(
+                "ScreenScraper returned an unrecognised error response: {}",
+                excerpt(text)
+            ),
+        ),
+    }
+}
+
+/// One bounded line of a server text for the log. The documented error
+/// texts are short sentences; a longer body is cut so a page cannot
+/// flood the log, and the cut line is redacted so a page that echoes the
+/// request address cannot put the credentials from its query in the log.
+fn excerpt(text: &str) -> String {
+    const LIMIT: usize = 120;
+    let mut chars = text
+        .split_whitespace()
+        .flat_map(|word| std::iter::once(' ').chain(word.chars()))
+        .skip(1);
+    let line = redact_credentials(&chars.by_ref().take(LIMIT).collect::<String>());
+    if chars.next().is_some() {
+        format!("{line}...")
+    } else {
+        line
+    }
+}
+
+/// Replace the value of every credential query parameter Degauss sends
+/// (`devid`, `devpassword`, `ssid`, `sspassword`) with "[redacted]". The
+/// value runs to the next `&`, whitespace or markup delimiter, or to the
+/// end of the line, so a value the cut left half in place is blanked too.
+fn redact_credentials(line: &str) -> String {
+    const KEYS: [&str; 4] = ["devid", "devpassword", "ssid", "sspassword"];
+    let lower = line.to_ascii_lowercase();
+    let mut redacted = String::with_capacity(line.len());
+    let mut index = 0;
+    while let Some(next) = line[index..].chars().next() {
+        let key = KEYS.iter().copied().find(|key| {
+            let at_boundary = index == 0 || !lower.as_bytes()[index - 1].is_ascii_alphanumeric();
+            at_boundary
+                && lower[index..].starts_with(key)
+                && lower[index + key.len()..].starts_with('=')
+        });
+        let Some(key) = key else {
+            redacted.push(next);
+            index += next.len_utf8();
+            continue;
+        };
+        let value_start = index + key.len() + 1;
+        let value_end = line[value_start..]
+            .find(|character: char| {
+                character == '&' || character.is_whitespace() || "\"'<>".contains(character)
+            })
+            .map_or(line.len(), |offset| value_start + offset);
+        redacted.push_str(&line[index..value_start]);
+        redacted.push_str("[redacted]");
+        index = value_end;
+    }
+    redacted
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1125,10 +1330,17 @@ fn parse(
     let mut saw_account = false;
     let mut game: Option<RawGame> = None;
     let mut capture: Option<Capture> = None;
+    // Every ScreenScraper answer is a `<Data>` document. A body with any
+    // other root (a maintenance, proxy or challenge page, whatever content
+    // type it was served with) is not an answer to the one request, so it
+    // is the service being unavailable; only a `<Data>` answer whose
+    // content is unusable is a malformed response for that request.
+    let mut saw_data_root = false;
 
     loop {
         match reader.read_event() {
             Ok(Event::Eof) => break,
+            Err(_) if !saw_data_root => return Err(not_an_answer("invalid XML")),
             Err(_) => {
                 return Err(Error::new(
                     ErrorKind::MalformedResponse,
@@ -1140,6 +1352,10 @@ fn parse(
             }
             Ok(Event::Start(element)) => {
                 let tag = element.name().as_ref().to_ascii_lowercase();
+                if !saw_data_root {
+                    require_data_root(&tag)?;
+                    saw_data_root = true;
+                }
                 let attributes = xml_attributes(&element)?;
                 let parent = stack.last().map(String::as_str);
                 let direct_game_rom = parent == Some("rom")
@@ -1235,6 +1451,10 @@ fn parse(
                 stack.push(element.name().as_ref().to_ascii_lowercase());
             }
             Ok(Event::Empty(element)) => {
+                if !saw_data_root {
+                    require_data_root(&element.name().as_ref().to_ascii_lowercase())?;
+                    saw_data_root = true;
+                }
                 xml_attributes(&element)?;
                 if element.name().as_ref().eq_ignore_ascii_case("jeux") {
                     parsed.saw_games_container = true;
@@ -1249,11 +1469,17 @@ fn parse(
                 }
             }
             Ok(Event::Text(value)) => {
+                if !saw_data_root && !value.xml10_content().trim().is_empty() {
+                    return Err(not_an_answer("text before the root element"));
+                }
                 if let Some(capture) = capture.as_mut() {
                     capture.text.push_str(&value.xml10_content());
                 }
             }
             Ok(Event::CData(value)) => {
+                if !saw_data_root {
+                    return Err(not_an_answer("text before the root element"));
+                }
                 if let Some(capture) = capture.as_mut() {
                     capture.text.push_str(value.as_ref());
                 }
@@ -1295,6 +1521,9 @@ fn parse(
             _ => {}
         }
     }
+    if !saw_data_root {
+        return Err(not_an_answer("no root element"));
+    }
     if !stack.is_empty() || game.is_some() || capture.is_some() {
         return Err(Error::new(
             ErrorKind::MalformedResponse,
@@ -1305,6 +1534,22 @@ fn parse(
         parsed.account = Some(account);
     }
     Ok(parsed)
+}
+
+/// Accepts ScreenScraper's `<Data>` root; any other root element is a
+/// page the service did not answer with.
+fn require_data_root(tag: &str) -> Result<()> {
+    if tag == "data" {
+        return Ok(());
+    }
+    Err(not_an_answer(&format!("root element <{}>", excerpt(tag))))
+}
+
+fn not_an_answer(what: &str) -> Error {
+    Error::new(
+        ErrorKind::Unavailable,
+        format!("ScreenScraper returned a page instead of an answer ({what})"),
+    )
 }
 
 fn xml_attributes(element: &BytesStart<'_>) -> Result<Vec<(String, String)>> {
@@ -1733,8 +1978,10 @@ mod tests {
 
     #[test]
     fn every_documented_status_has_a_specific_meaning() {
+        // HTTP 400 is classified from its body, so every status goes
+        // through `response_status` with a text that is no error text.
         for (code, kind) in [
-            (400, ErrorKind::Configuration),
+            (400, ErrorKind::InvalidRequest),
             (401, ErrorKind::Unavailable),
             (403, ErrorKind::Authentication),
             (404, ErrorKind::NotFound),
@@ -1745,7 +1992,15 @@ mod tests {
             (431, ErrorKind::FailedQuota),
             (503, ErrorKind::Server),
         ] {
-            let error = status(code).unwrap_err();
+            let error = response_status(
+                &HttpResponse {
+                    status: code,
+                    content_type: Some("text/plain".into()),
+                    body: b"Rejected".to_vec(),
+                },
+                Answer::Lookup,
+            )
+            .unwrap_err();
             assert_eq!(error.kind, kind);
             assert!(
                 error.detail.contains(&code.to_string()),
@@ -2043,6 +2298,9 @@ mod tests {
 
     #[test]
     fn content_type_cannot_turn_html_into_xml() {
+        // An HTML page is never parsed as the account answer, and it is
+        // reported as the service being unavailable rather than as a
+        // malformed answer to one request.
         let error = client(HttpResponse {
             status: 200,
             content_type: Some("text/html".into()),
@@ -2050,7 +2308,149 @@ mod tests {
         })
         .account()
         .unwrap_err();
-        assert_eq!(error.kind, ErrorKind::MalformedResponse);
+        assert_eq!(error.kind, ErrorKind::Unavailable);
+    }
+
+    #[test]
+    fn a_page_without_the_data_root_is_an_outage_whatever_its_content_type() {
+        // A maintenance, proxy or challenge page can arrive with no
+        // Content-Type header or with an XML one; its body starts with '<'
+        // like an answer, so the content type alone cannot tell it apart.
+        // Without the root check it would count as one game's unreadable
+        // match and a batch would spend one lookup per remaining game
+        // against a service that is not answering. A body that is not
+        // text at all carries no `<Data>` root either.
+        let hashes = Hashes {
+            size: 3,
+            crc32: "352441C2".into(),
+            md5: "900150983CD24FB0D6963F7D28E17F72".into(),
+            sha1: "A9993E364706816ABA3E25717850C26C9CD0D89D".into(),
+        };
+        for (content_type, body) in [
+            (None, &b"<html><body>Maintenance</body></html>"[..]),
+            (
+                Some("application/xml"),
+                &b"<html><body>Maintenance</body></html>"[..],
+            ),
+            (
+                None,
+                &b"<!DOCTYPE html><html><body><p>Maintenance</html>"[..],
+            ),
+            (
+                Some("text/xml"),
+                &b"<?xml version='1.0'?><Response>busy</Response>"[..],
+            ),
+            (None, &b"<!-- nothing -->"[..]),
+            (None, &b"<<<"[..]),
+            (None, &b"<html>Maint\xe9nance</html>"[..]),
+            (Some("application/xml"), &b"\xff\xfe<Data/>"[..]),
+            // A notice placed between the XML declaration and the `<Data>`
+            // root is text the service never emits; without the check it
+            // would pass as a miss for every game.
+            (
+                None,
+                &b"<?xml version=\"1.0\"?>Maintenance<Data><jeux/></Data>"[..],
+            ),
+            (
+                Some("text/xml"),
+                &b"<?xml version=\"1.0\"?>\n  Maintenance\n<Data><jeux/></Data>"[..],
+            ),
+            (
+                None,
+                &b"<?xml version=\"1.0\"?><![CDATA[Maintenance]]><Data><jeux/></Data>"[..],
+            ),
+        ] {
+            let response = HttpResponse {
+                status: 200,
+                content_type: content_type.map(str::to_string),
+                body: body.to_vec(),
+            };
+            let body = String::from_utf8_lossy(body);
+            let searched = client(response.clone()).by_name(3, "Game").unwrap_err();
+            assert_eq!(searched.kind, ErrorKind::Unavailable, "{body}");
+            assert!(
+                !searched.detail.contains("Maintenance"),
+                "{}",
+                searched.detail
+            );
+            assert_eq!(
+                client(response.clone())
+                    .by_hash(3, "Game.rom", &hashes)
+                    .unwrap_err()
+                    .kind,
+                ErrorKind::Unavailable,
+                "{body}"
+            );
+            assert_eq!(
+                client(response).account().unwrap_err().kind,
+                ErrorKind::Unavailable,
+                "{body}"
+            );
+        }
+        // A byte order mark and whitespace between the declaration and the
+        // root are ordinary XML layout, and the empty game list behind them
+        // is a server miss.
+        let response = client(HttpResponse {
+            status: 200,
+            content_type: Some("text/xml".into()),
+            body: b"\xef\xbb\xbf<?xml version=\"1.0\"?>\n  \n<Data>\n  <jeux/>\n</Data>\n".to_vec(),
+        })
+        .by_name(3, "Game")
+        .unwrap();
+        assert_eq!(response.lookup, Lookup::NotFound);
+        assert!(response.server_miss);
+        // A `<Data>` answer that is cut short or carries no game list is
+        // still that one request's unreadable answer.
+        for body in [
+            "<Data><jeux><jeu id='42'><noms>",
+            "<Data><message>no game list here</message></Data>",
+        ] {
+            assert_eq!(
+                client(HttpResponse {
+                    status: 200,
+                    content_type: None,
+                    body: body.as_bytes().to_vec(),
+                })
+                .by_name(3, "Game")
+                .unwrap_err()
+                .kind,
+                ErrorKind::MalformedResponse,
+                "{body}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_reflected_request_address_is_redacted_from_the_diagnosis() {
+        // `Client::auth` carries the developer and account credentials in
+        // the query string, and the excerpt of a rejection, of an
+        // unrecognised error text and of a plain page reaches the local
+        // log. A page that reflects the request address must not put those
+        // values there, including a value the cut leaves half in place.
+        let echo = "?devid=dm1&devpassword=ds1&ssid=um1&sspassword=us1&romnom=G.rom";
+        for text in [
+            format!("Erreur : Problème dans le nom du fichier rom {echo}"),
+            format!("Erreur : Problème dans la recherche {echo}"),
+            format!("Bad request {echo}"),
+        ] {
+            let detail = text_error(&text, Answer::Lookup).detail;
+            for marker in ["=dm1", "=ds1", "=um1", "=us1"] {
+                assert!(!detail.contains(marker), "{detail}");
+            }
+            assert!(
+                detail.ends_with(
+                    "?devid=[redacted]&devpassword=[redacted]&ssid=[redacted]&sspassword=[redacted]&romnom=G.rom"
+                ),
+                "{detail}"
+            );
+        }
+        let straddling = format!("{} sspassword=user-secret-marker", "x".repeat(105));
+        let cut = excerpt(&straddling);
+        assert!(cut.ends_with(" sspassword=[redacted]..."), "{cut}");
+        assert_eq!(
+            redact_credentials("<a href='x.php?ssid=user-marker'>ssid=user-marker</a> myssid=kept"),
+            "<a href='x.php?ssid=[redacted]'>ssid=[redacted]</a> myssid=kept"
+        );
     }
 
     #[test]
@@ -2247,6 +2647,450 @@ mod tests {
         .unwrap();
         assert_eq!(result.lookup, Lookup::NotFound);
         assert!(result.server_miss);
+    }
+
+    #[test]
+    fn only_documented_per_request_error_texts_leave_the_run_going() {
+        // The documented 400 texts about one rom name or hash field, and a
+        // text ScreenScraper has not documented answering a game's lookup
+        // (the invalid search the batch must continue past), concern one
+        // request and must not stop the batch by masquerading as an
+        // outage. The documented 400 texts about the request address concern
+        // every game, because Degauss sends the same fields for each. A
+        // closure, a refused client (the blacklist text is classified like
+        // HTTP 426, which carries it), or a body that is no answer at all
+        // concerns every remaining game and stops the run instead of
+        // costing one lookup per game.
+        for (body, kind) in [
+            (
+                "Erreur : API fermé pour les non membres ou les membres inactifs",
+                ErrorKind::Unavailable,
+            ),
+            ("Erreur : API totalement fermé", ErrorKind::Unavailable),
+            (
+                "Erreur : Le logiciel de scrape utilisé a été blacklisté",
+                ErrorKind::Configuration,
+            ),
+            (
+                "Erreur : Problème dans le nom du fichier rom",
+                ErrorKind::InvalidRequest,
+            ),
+            (
+                "Erreur dans le nom du fichier rom : celui-ci contient un chemin d'accés",
+                ErrorKind::InvalidRequest,
+            ),
+            (
+                "Erreur : Champ crc, md5 ou sha1 erroné",
+                ErrorKind::InvalidRequest,
+            ),
+            (
+                "Erreur : Il manque des champs obligatoires dans l'url",
+                ErrorKind::Configuration,
+            ),
+            ("Erreur : problème avec l'url", ErrorKind::Configuration),
+            (
+                "Erreur : Problème dans la recherche",
+                ErrorKind::InvalidRequest,
+            ),
+            (
+                "Erreur de login : Vérifier vos identifiants développeur !",
+                ErrorKind::Authentication,
+            ),
+            (
+                "Erreur de login : Vérifier les identifiants utilisateurs !",
+                ErrorKind::Authentication,
+            ),
+            (
+                "Erreur : Votre quota de scrape est dépassé pour aujourd'hui !",
+                ErrorKind::DailyQuota,
+            ),
+            (
+                "Erreur : Faite du tri dans vos fichiers roms et repassez demain !",
+                ErrorKind::Unavailable,
+            ),
+            (
+                "Erreur : Le nombre de threads autorisé pour le membre est atteint",
+                ErrorKind::Unavailable,
+            ),
+            (
+                "Erreur : Le nombre de threads par minute autorisé pour le membre est atteint",
+                ErrorKind::Unavailable,
+            ),
+            (
+                "Erreur : The maximum threads allowed to leecher users is already used",
+                ErrorKind::Unavailable,
+            ),
+            (
+                "Erreur : The maximum threads is already used",
+                ErrorKind::Unavailable,
+            ),
+            ("Erreur : Jeu non trouvée !", ErrorKind::NotFound),
+            ("Service paused for maintenance", ErrorKind::Unavailable),
+            ("", ErrorKind::Unavailable),
+        ] {
+            assert_eq!(text_error(body, Answer::Lookup).kind, kind, "{body}");
+        }
+        let rejected = client(HttpResponse {
+            status: 200,
+            content_type: Some("text/plain".into()),
+            body: "Erreur : Problème dans le nom du fichier rom"
+                .as_bytes()
+                .to_vec(),
+        })
+        .by_name(3, "Game")
+        .unwrap_err();
+        assert_eq!(rejected.kind, ErrorKind::InvalidRequest);
+        assert!(!rejected.retryable());
+        let incomplete = client(HttpResponse {
+            status: 200,
+            content_type: Some("text/plain".into()),
+            body: "Erreur : Il manque des champs obligatoires dans l'url"
+                .as_bytes()
+                .to_vec(),
+        })
+        .by_name(3, "Game")
+        .unwrap_err();
+        assert_eq!(incomplete.kind, ErrorKind::Configuration);
+        let undocumented = HttpResponse {
+            status: 200,
+            content_type: Some("text/plain".into()),
+            body: "Erreur : Problème dans la recherche".as_bytes().to_vec(),
+        };
+        assert_eq!(
+            client(undocumented.clone())
+                .by_name(3, "Game")
+                .unwrap_err()
+                .kind,
+            ErrorKind::InvalidRequest
+        );
+        // The same text before the run, at the account check, or on an
+        // image transfer cannot be one game's invalid search: an outage.
+        assert_eq!(
+            client(undocumented.clone()).account().unwrap_err().kind,
+            ErrorKind::Unavailable
+        );
+        assert_eq!(
+            client(undocumented)
+                .media(
+                    &Media {
+                        url: "https://media.screenscraper.fr/box.png".into(),
+                        format: None,
+                    },
+                    1024,
+                )
+                .err()
+                .expect("an undocumented error text on a media transfer was accepted")
+                .kind,
+            ErrorKind::Unavailable
+        );
+        let closed = client(HttpResponse {
+            status: 200,
+            content_type: Some("text/plain".into()),
+            body: "Erreur : API totalement fermé".as_bytes().to_vec(),
+        })
+        .by_name(3, "Game")
+        .unwrap_err();
+        assert_eq!(closed.kind, ErrorKind::Unavailable);
+        // The 429 and 431 texts are classified by their HTTP status; the
+        // same text in a 2xx body is an outage, as it always was: the batch
+        // stops instead of repeating a lookup the server is refusing for
+        // every game.
+        let limited = client(HttpResponse {
+            status: 200,
+            content_type: Some("text/plain".into()),
+            body: "Erreur : The maximum threads is already used"
+                .as_bytes()
+                .to_vec(),
+        })
+        .by_name(3, "Game")
+        .unwrap_err();
+        assert_eq!(limited.kind, ErrorKind::Unavailable);
+        let exhausted = client(HttpResponse {
+            status: 200,
+            content_type: Some("text/plain".into()),
+            body: "Erreur : Faite du tri dans vos fichiers roms et repassez demain !"
+                .as_bytes()
+                .to_vec(),
+        })
+        .by_name(3, "Game")
+        .unwrap_err();
+        assert_eq!(exhausted.kind, ErrorKind::Unavailable);
+        // A page that is not XML at all is not a match response for one
+        // game: it stops the run like any other outage.
+        let page = client(HttpResponse {
+            status: 200,
+            content_type: Some("text/html; charset=utf-8".into()),
+            body: b"<html>maintenance</html>".to_vec(),
+        })
+        .by_name(3, "Game")
+        .unwrap_err();
+        assert_eq!(page.kind, ErrorKind::Unavailable);
+        assert!(page.detail.contains("text/html"), "{}", page.detail);
+        // So does a plain-text body that is no error text, whatever its
+        // content type says, and so does an empty answer.
+        for (content_type, body) in [
+            (Some("text/plain"), "Service paused for maintenance"),
+            (Some("application/xml"), ""),
+            (None, "Service paused for maintenance"),
+        ] {
+            let notice = client(HttpResponse {
+                status: 200,
+                content_type: content_type.map(str::to_string),
+                body: body.as_bytes().to_vec(),
+            })
+            .by_name(3, "Game")
+            .unwrap_err();
+            assert_eq!(
+                notice.kind,
+                ErrorKind::Unavailable,
+                "{content_type:?} {body:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_service_wide_text_under_http_400_still_stops_the_run() {
+        // HTTP 400 is one game's rejection, so it no longer stops the run.
+        // A documented closure, limit, allowance or refused-client text
+        // delivered with that status would otherwise cost one lookup per
+        // remaining game. A per-request text and one ScreenScraper has not
+        // documented keep the status's per-game meaning, and the log detail
+        // keeps the server's words either way, because the fixed HTTP 400
+        // message alone would not say which rejection was sent.
+        for (body, kind) in [
+            ("Erreur : API totalement fermé", ErrorKind::Unavailable),
+            (
+                "Erreur : Le logiciel de scrape utilisé a été blacklisté",
+                ErrorKind::Configuration,
+            ),
+            (
+                "Erreur : Votre quota de scrape est dépassé pour aujourd'hui !",
+                ErrorKind::DailyQuota,
+            ),
+            (
+                "Erreur : Le nombre de threads par minute autorisé pour le membre est atteint",
+                ErrorKind::Unavailable,
+            ),
+            (
+                "Erreur : The maximum threads is already used",
+                ErrorKind::Unavailable,
+            ),
+            (
+                "Erreur : Faite du tri dans vos fichiers roms et repassez demain !",
+                ErrorKind::Unavailable,
+            ),
+            (
+                "Erreur : Il manque des champs obligatoires dans l'url",
+                ErrorKind::Configuration,
+            ),
+            (
+                "Erreur : Problème dans le nom du fichier rom",
+                ErrorKind::InvalidRequest,
+            ),
+            (
+                "Erreur : Problème dans la recherche",
+                ErrorKind::InvalidRequest,
+            ),
+        ] {
+            let error = client(HttpResponse {
+                status: 400,
+                content_type: Some("text/plain".into()),
+                body: body.as_bytes().to_vec(),
+            })
+            .by_name(3, "Game")
+            .unwrap_err();
+            assert_eq!(error.kind, kind, "{body}");
+            if kind == ErrorKind::InvalidRequest {
+                assert!(
+                    error.detail.ends_with(&format!(": {body}")),
+                    "{body}: {}",
+                    error.detail
+                );
+            }
+        }
+        // A documented not-found text keeps its own meaning under HTTP 400
+        // as it does on a successful status: the game is a server miss,
+        // not a rejection.
+        let missed = client(HttpResponse {
+            status: 400,
+            content_type: Some("text/plain".into()),
+            body: "Erreur : Jeu non trouvée !".as_bytes().to_vec(),
+        })
+        .by_name(3, "Game")
+        .unwrap();
+        assert_eq!(missed.lookup, Lookup::NotFound);
+        assert!(missed.server_miss);
+        // Other statuses keep their own meaning over a body text, so a
+        // rate limit stays retryable whatever the text says.
+        let limited = client(HttpResponse {
+            status: 429,
+            content_type: Some("text/plain".into()),
+            body: "Erreur : API totalement fermé".as_bytes().to_vec(),
+        })
+        .by_name(3, "Game")
+        .unwrap_err();
+        assert_eq!(limited.kind, ErrorKind::RateLimited);
+    }
+
+    #[test]
+    fn a_page_under_http_400_stops_the_run_and_a_text_names_the_rejection() {
+        // ScreenScraper answers HTTP 400 with an error text. An HTML page
+        // (whatever content type it is served with, or none), an empty body
+        // or a body that is not text under that status comes from an
+        // intermediary, as it would on a successful status, and must not
+        // cost one lookup per remaining game while the log stays silent
+        // about the cause. A text that is not one of the documented error
+        // texts is still that game's rejection, with the server's words in
+        // the log detail.
+        let hashes = Hashes {
+            size: 3,
+            crc32: "352441C2".into(),
+            md5: "900150983CD24FB0D6963F7D28E17F72".into(),
+            sha1: "A9993E364706816ABA3E25717850C26C9CD0D89D".into(),
+        };
+        for (content_type, body, what) in [
+            (
+                Some("text/html"),
+                &b"<html><body>Bad request</body></html>"[..],
+                "content type text/html",
+            ),
+            (
+                None,
+                &b"<html><body>Bad request</body></html>"[..],
+                "markup instead of an error text",
+            ),
+            (
+                Some("application/xml"),
+                &b"<!DOCTYPE html><html><body><p>Bad request</html>"[..],
+                "markup instead of an error text",
+            ),
+            (Some("application/xml"), &b""[..], "no error text"),
+            (Some("text/plain"), &b" \n"[..], "no error text"),
+            (None, &b"Bad requ\xe9st"[..], "no error text"),
+        ] {
+            let response = HttpResponse {
+                status: 400,
+                content_type: content_type.map(str::to_string),
+                body: body.to_vec(),
+            };
+            let body = String::from_utf8_lossy(body);
+            for error in [
+                client(response.clone()).by_name(3, "Game").unwrap_err(),
+                client(response.clone())
+                    .by_hash(3, "Game.rom", &hashes)
+                    .unwrap_err(),
+                client(response.clone()).account().unwrap_err(),
+            ] {
+                assert_eq!(
+                    error.kind,
+                    ErrorKind::Unavailable,
+                    "{content_type:?} {body:?}"
+                );
+                assert!(
+                    error.detail.contains(what) && error.detail.contains("HTTP 400"),
+                    "{}",
+                    error.detail
+                );
+            }
+        }
+        let response = HttpResponse {
+            status: 400,
+            content_type: Some("text/plain".into()),
+            body: b"Bad request".to_vec(),
+        };
+        let rejected = client(response.clone()).by_name(3, "Game").unwrap_err();
+        assert_eq!(rejected.kind, ErrorKind::InvalidRequest);
+        assert!(
+            rejected.detail.ends_with("(HTTP 400): Bad request"),
+            "{}",
+            rejected.detail
+        );
+        // The account check sends only the credential fields, so a
+        // rejection there is a setup fault as it always was.
+        let setup = client(response).account().unwrap_err();
+        assert_eq!(setup.kind, ErrorKind::Configuration);
+        assert!(
+            setup.detail.ends_with("(HTTP 400): Bad request"),
+            "{}",
+            setup.detail
+        );
+        // An image transfer answers with bytes: a rejection there is that
+        // game's picture failure whatever the body holds.
+        for body in [&b"<html>Bad request</html>"[..], &b""[..], &b"\x89PNG"[..]] {
+            let error = client(HttpResponse {
+                status: 400,
+                content_type: Some("text/html".into()),
+                body: body.to_vec(),
+            })
+            .media(
+                &Media {
+                    url: "https://media.screenscraper.fr/box.png".into(),
+                    format: None,
+                },
+                1024,
+            )
+            .err()
+            .expect("HTTP 400 on a media transfer was accepted");
+            assert_eq!(error.kind, ErrorKind::InvalidRequest, "{body:?}");
+        }
+    }
+
+    #[test]
+    fn an_undocumented_error_text_is_kept_in_the_diagnosis_but_bounded() {
+        // The interface shows only the kind's fixed message, so the log
+        // detail is the one place the server's actual words can be seen,
+        // for a per-game refusal and for the unrecognised text that stopped
+        // a run alike. A long body is cut so a page cannot flood it.
+        let rejected = text_error(
+            "Erreur : Problème   dans le nom\ndu fichier rom",
+            Answer::Lookup,
+        );
+        assert_eq!(rejected.kind, ErrorKind::InvalidRequest);
+        assert!(
+            rejected
+                .detail
+                .ends_with(": Erreur : Problème dans le nom du fichier rom"),
+            "{}",
+            rejected.detail
+        );
+        for (answer, kind) in [
+            (Answer::Lookup, ErrorKind::InvalidRequest),
+            (Answer::Account, ErrorKind::Unavailable),
+        ] {
+            let error = text_error("Erreur : Problème   dans\nla recherche", answer);
+            assert_eq!(error.kind, kind, "{answer:?}");
+            assert!(
+                error
+                    .detail
+                    .ends_with(": Erreur : Problème dans la recherche"),
+                "{}",
+                error.detail
+            );
+        }
+        let long = format!("Erreur : {}", "é".repeat(500));
+        let detail = text_error(&long, Answer::Lookup).detail;
+        assert!(detail.ends_with("..."), "{detail}");
+        assert!(detail.chars().count() < 200, "{detail}");
+        let plain = text_error("Service paused for maintenance", Answer::Lookup);
+        assert_eq!(plain.kind, ErrorKind::Unavailable);
+        assert!(
+            plain.detail.ends_with(": Service paused for maintenance"),
+            "{}",
+            plain.detail
+        );
+        // An empty answer has no words to keep: the detail names the
+        // emptiness instead of ending in a bare colon.
+        for empty in ["", " \n\t"] {
+            let error = text_error(empty, Answer::Lookup);
+            assert_eq!(error.kind, ErrorKind::Unavailable);
+            assert_eq!(error.detail, "ScreenScraper returned an empty response");
+        }
+        // The cut falls exactly at the limit, with the whitespace between
+        // words counted once, so a documented text is never shortened.
+        let exact = format!("{} {}", "a".repeat(60), "b".repeat(59));
+        assert_eq!(excerpt(&exact), exact);
+        assert_eq!(excerpt(&format!("{exact} c")), format!("{exact}..."));
+        assert_eq!(excerpt("  one \n\t two  "), "one two");
     }
 
     #[test]

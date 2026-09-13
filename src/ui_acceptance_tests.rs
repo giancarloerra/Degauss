@@ -1052,6 +1052,113 @@ fn run_scraper_cache_refresh_flow(root: &Path, window: Rc<MinimalSoftwareWindow>
     app.ui.hide().unwrap();
 }
 
+fn run_scraper_unresolved_report_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
+    // A batch never stops for a game it cannot write, so the report after
+    // the run is the only place the user can learn which games those were.
+    let mut app = fixture_app(root, window, Settings::default());
+    app.screen = Screen::ScraperProgress;
+    app.scraper_return = Screen::Browse;
+    app.scraper_details = true;
+    app.scraper_terminal = None;
+    app.handle(Action::End);
+    assert_eq!(
+        app.scraper_progress_list.selected(),
+        SCRAPER_PROGRESS_ROWS - 1
+    );
+    app.scraper_progress = crate::scraper::Progress {
+        phase: crate::scraper::Phase::Finishing,
+        scope: "Fixture System".into(),
+        total: 3,
+        completed: 3,
+        unchanged: 1,
+        not_found: 1,
+        failed: 1,
+        unresolved_games: vec![
+            crate::scraper::UnresolvedGame {
+                label: "Fixture System: Missing Game".into(),
+                reason: "no match".into(),
+            },
+            crate::scraper::UnresolvedGame {
+                label: "Fixture System: Rejected Game".into(),
+                reason: "ScreenScraper rejected this request".into(),
+            },
+        ],
+        ..Default::default()
+    };
+    app.begin_scraper_finish(ScraperTerminal::Finished);
+    assert!(
+        !app.scraper_cache_refresh_active,
+        "nothing was written, so no list refresh runs"
+    );
+    assert_eq!(app.scraper_terminal, Some(ScraperTerminal::Finished));
+    assert_eq!(app.scraper_progress_row_count(), SCRAPER_PROGRESS_ROWS + 3);
+    assert_eq!(
+        app.scraper_progress_list.count(),
+        SCRAPER_PROGRESS_ROWS + 3,
+        "the report can scroll to every unresolved game"
+    );
+    assert_eq!(
+        app.scraper_progress_list.selected(),
+        SCRAPER_PROGRESS_ROWS - 1,
+        "a Details view read during the run is not snapped back to the top when the run ends"
+    );
+    assert_eq!(app.scraper_progress_rows().len(), SCRAPER_PROGRESS_ROWS);
+    app.handle(Action::Quit);
+    assert!(!app.scraper_details);
+    capture_live_if_requested(&mut app, "scraper-unresolved-overview");
+    app.handle(Action::Accept);
+    assert!(app.scraper_details);
+    app.handle(Action::End);
+    assert_eq!(
+        app.scraper_progress_list.selected(),
+        SCRAPER_PROGRESS_ROWS + 2
+    );
+    app.refresh();
+    let selected = app.rows.row_data(app.ui.get_selected() as usize).unwrap();
+    assert_eq!(selected.title, "Fixture System: Rejected Game");
+    assert_eq!(selected.value, "ScreenScraper rejected this request");
+    capture_live_if_requested(&mut app, "scraper-unresolved-details-end");
+    app.handle(Action::Up);
+    app.handle(Action::Up);
+    app.refresh();
+    let header = app.rows.row_data(app.ui.get_selected() as usize).unwrap();
+    assert_eq!(header.title, "Unresolved games");
+    assert_eq!(header.value, "2");
+    capture_live_if_requested(&mut app, "scraper-unresolved-details-header");
+    app.handle(Action::Quit);
+    assert!(!app.scraper_details);
+    app.handle(Action::Quit);
+    assert_eq!(app.screen, Screen::Browse);
+    assert!(
+        app.scraper_progress.unresolved_games.is_empty(),
+        "the closed report cannot be reopened, so its list is released rather than kept until the next scrape"
+    );
+
+    let job = crate::scraper::start(crate::scraper::Request {
+        scope: crate::scraper::Scope::All,
+        scope_label: "All Systems".into(),
+        systems: Vec::new(),
+        names: browse::DisplayNames::default(),
+        settings: crate::scraper::ScraperSettings::default(),
+        developer: None,
+        artwork_pack_system_ids: std::collections::HashSet::new(),
+    })
+    .unwrap();
+    app.scraper_scope = crate::scraper::Scope::All;
+    app.begin_scraper_job(job, false);
+    assert!(
+        app.scraper_progress.unresolved_games.is_empty(),
+        "a new job starts with an empty report"
+    );
+    assert_eq!(
+        app.scraper_progress_list.count(),
+        SCRAPER_PROGRESS_ROWS,
+        "a new job resets the report to its fixed rows"
+    );
+    app.scraper_job = None;
+    app.ui.hide().unwrap();
+}
+
 fn run_scraper_image_choice_flow(app: &mut App) {
     use crate::scraper::{Scope, ScraperSettings};
     let original = app.scraper_settings.clone();
@@ -3575,6 +3682,7 @@ pub(super) fn run_ui_acceptance_flow(window: Rc<MinimalSoftwareWindow>) {
     run_favorite_information_flow(&root, window.clone());
     run_hold_y_flow(&root, window.clone());
     run_scraper_cache_refresh_flow(&root, window.clone());
+    run_scraper_unresolved_report_flow(&root, window.clone());
     run_indexing_ui_flow(&root, window.clone());
     capture_ui_if_requested(&root, window);
     std::fs::remove_dir_all(root).unwrap();
