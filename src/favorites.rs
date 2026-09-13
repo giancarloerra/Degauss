@@ -339,7 +339,7 @@ pub fn relocate_mgl(
                     if raw.starts_with('/') {
                         continue;
                     }
-                    let romset_homes = romset.then_some(folders.as_slice()).unwrap_or(&[]);
+                    let romset_homes = if romset { folders.as_slice() } else { &[] };
                     let target = match crate::mgl::component_with_romset_homes(
                         &raw,
                         &folders,
