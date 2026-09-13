@@ -183,6 +183,12 @@ the currently open folder and **Random Game Behaviour**. **Find** contains
 jump, search and hiding controls; **Library** contains scraping, core choice,
 data source and rebuilding; **Appearance** contains view and image controls.
 
+For Arcade favourites to work, if you have never launched MiSTer's
+**Favorites** script, run it once and create one Arcade favourite there.
+Folders inside `_@Favorites` without a leading `_` are visible only in Degauss,
+not in MiSTer's native OSD. Create them with the `_`, for example `_Arcade`, to
+see them in both.
+
 A gamepad needs no extra setup and browsing and settings need no keyboard. While Degauss
 owns the screen, MiSTer sends the d-pad as arrows and the face buttons as
 Enter, Escape, Space and Tab.
