@@ -451,6 +451,9 @@ card browses from the stick, exactly as the stock menu would load it.
 Different folders of one system may resolve in different places. The
 files an MGL names by a relative path are looked for in the same order,
 under the folder MiSTer Main would use for that core and set name.
+When only one configured folder actually contains games for that system,
+Degauss opens it directly. The folder chooser appears only when two or more
+real locations contribute compatible games.
 
 Two things to know. Storage is looked for when Degauss starts, so plug
 the stick in first (or restart after); and moving a system between
