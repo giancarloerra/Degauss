@@ -5606,11 +5606,17 @@ impl App {
             Ok(installed) => warnings.extend(installed),
             Err(error) => return Some(format!("{name}: {error}")),
         }
+        warnings.extend(crate::index_job::catalogue_warnings(&library));
         // An archive or member the scan left out, and anything publication
-        // had to say, is said out loud with the rest of the message and
-        // logged, named by the system the way a full build names them.
-        for warning in &mut warnings {
+        // had to say is named by the system here. Catalogue warnings already
+        // carry that name. Every warning is said out loud and logged.
+        for warning in warnings
+            .iter_mut()
+            .filter(|warning| !warning.starts_with(&format!("{name}: ")))
+        {
             *warning = format!("{name}: {warning}");
+        }
+        for warning in &warnings {
             crate::note(warning);
         }
         self.index = Some(next_index);
@@ -6827,6 +6833,18 @@ impl App {
                 let at = reselect(&self.here, remembered, crumb.selected);
                 self.game_list.select(at);
                 self.message = None;
+                // Rows read straight from the card have no build report to
+                // carry a broken ROM-set catalogue, and its sets have just
+                // been listed as archives and folders: said here, once.
+                if let Some(library) = self.library.as_ref() {
+                    let problems = library.unannounced_catalogue_problems();
+                    if !problems.is_empty() {
+                        self.message = Some(
+                            crate::index_job::catalogue_lines(library.system_name(), problems)
+                                .join("\n"),
+                        );
+                    }
+                }
                 self.apply_geometry();
                 self.touch_selection();
             }
@@ -11618,7 +11636,6 @@ impl App {
                 return;
             }
         };
-
         let (settings, label, settings_warning) =
             match persist_source_choice(&self.settings, &self.settings_path, group, &target) {
                 Ok(saved) => saved,
