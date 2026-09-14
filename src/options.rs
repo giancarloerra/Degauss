@@ -8,6 +8,7 @@
 //! the screen.
 
 use crate::input::SPEED_STEPS;
+use crate::settings::HoldButton;
 
 /// One adjustable setting.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -55,9 +56,11 @@ pub enum OptionId {
     ScrapeAll,
     /// Gather favourites at the top of a folder.
     FavoritesFirst,
-    /// Add or remove a favourite by holding X for one second.
-    HoldXFavorite,
-    HoldYRandom,
+    /// Browsing action assigned to a one-second face-button hold.
+    HoldA,
+    HoldB,
+    HoldX,
+    HoldY,
     RandomLaunches,
     /// List folders after the games rather than before them.
     FoldersLast,
@@ -87,6 +90,12 @@ pub const OPTIONS: &[OptionId] = &[
     OptionId::ArtLimit,
     OptionId::LeftRight,
     OptionId::Spacer,
+    OptionId::HoldA,
+    OptionId::HoldB,
+    OptionId::HoldX,
+    OptionId::HoldY,
+    OptionId::RandomLaunches,
+    OptionId::Spacer,
     OptionId::Theme,
     OptionId::Layout,
     OptionId::ResetCustomViews,
@@ -97,10 +106,7 @@ pub const OPTIONS: &[OptionId] = &[
     OptionId::ShowBar,
     OptionId::Spacer,
     OptionId::FavoritesFirst,
-    OptionId::HoldXFavorite,
-    OptionId::HoldYRandom,
     OptionId::FoldersLast,
-    OptionId::RandomLaunches,
     OptionId::CorePreference,
     OptionId::AutomaticDataSource,
     OptionId::SeparateHandheldCategory,
@@ -132,6 +138,7 @@ pub const ADVANCED: [OptionId; 2] = [OptionId::Present, OptionId::ShowStats];
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OptionsPage {
     Navigation,
+    Shortcuts,
     Appearance,
     Library,
     Display,
@@ -139,8 +146,9 @@ pub enum OptionsPage {
 }
 
 impl OptionsPage {
-    pub const ALL: [Self; 5] = [
+    pub const ALL: [Self; 6] = [
         Self::Navigation,
+        Self::Shortcuts,
         Self::Appearance,
         Self::Library,
         Self::Display,
@@ -150,16 +158,18 @@ impl OptionsPage {
     pub const fn index(self) -> usize {
         match self {
             Self::Navigation => 0,
-            Self::Appearance => 1,
-            Self::Library => 2,
-            Self::Display => 3,
-            Self::Developer => 4,
+            Self::Shortcuts => 1,
+            Self::Appearance => 2,
+            Self::Library => 3,
+            Self::Display => 4,
+            Self::Developer => 5,
         }
     }
 
     pub const fn key(self) -> &'static str {
         match self {
             Self::Navigation => "navigation",
+            Self::Shortcuts => "shortcuts",
             Self::Appearance => "appearance",
             Self::Library => "library",
             Self::Display => "display",
@@ -174,6 +184,7 @@ impl OptionsPage {
     pub const fn label(self) -> &'static str {
         match self {
             Self::Navigation => "Navigation",
+            Self::Shortcuts => "Shortcuts",
             Self::Appearance => "Appearance",
             Self::Library => "Library",
             Self::Display => "Display",
@@ -183,7 +194,8 @@ impl OptionsPage {
 
     pub const fn help(self) -> &'static str {
         match self {
-            Self::Navigation => "Scrolling, directional controls and browsing shortcuts.",
+            Self::Navigation => "Scrolling, directional controls and random-game behaviour.",
+            Self::Shortcuts => "Choose optional one-second holds for the four face buttons.",
             Self::Appearance => "Theme, global view, text, artwork and the screensaver.",
             Self::Library => "Ordering, visible systems, core preference and library maintenance.",
             Self::Display => "Fit the picture to the screen with margins and position controls.",
@@ -197,9 +209,13 @@ impl OptionsPage {
                 OptionId::Speed,
                 OptionId::ArtLimit,
                 OptionId::LeftRight,
-                OptionId::HoldXFavorite,
-                OptionId::HoldYRandom,
                 OptionId::RandomLaunches,
+            ],
+            Self::Shortcuts => &[
+                OptionId::HoldA,
+                OptionId::HoldB,
+                OptionId::HoldX,
+                OptionId::HoldY,
             ],
             Self::Appearance => &[
                 OptionId::Theme,
@@ -265,8 +281,10 @@ impl OptionId {
             OptionId::RebuildCache => "Rebuild All System Lists",
             OptionId::ScrapeAll => "Scrape All Systems",
             OptionId::FavoritesFirst => "Favourites First",
-            OptionId::HoldXFavorite => "Hold X (1s) to Add/Remove Fav",
-            OptionId::HoldYRandom => "Hold Y (1s) for Random Game",
+            OptionId::HoldA => "Hold A",
+            OptionId::HoldB => "Hold B",
+            OptionId::HoldX => "Hold X",
+            OptionId::HoldY => "Hold Y",
             OptionId::RandomLaunches => "Random Game Behaviour",
             OptionId::FoldersLast => "Folders Before Games",
             OptionId::ResetHidden => "Unhide Everything",
@@ -339,10 +357,9 @@ impl OptionId {
             OptionId::FavoritesFirst => {
                 "Show favourites first in each folder, keeping them in alphabetical order."
             }
-            OptionId::HoldXFavorite => {
-                "Hold X for one second to add or remove the game from Favourites. Unavailable inside Favourites."
+            OptionId::HoldA | OptionId::HoldB | OptionId::HoldX | OptionId::HoldY => {
+                "Hold for one second to run this action while browsing. A short press keeps the button's normal action."
             }
-            OptionId::HoldYRandom => "Hold Y for one second to pick a random game, using Random Game Behaviour.",
             OptionId::RandomLaunches => {
                 "Choose whether a random game is selected for browsing or launched immediately."
             }
@@ -365,6 +382,16 @@ impl OptionId {
             }
             OptionId::Advanced => "Press A for diagnostics: the drawing path and the readout.",
             OptionId::Spacer => "",
+        }
+    }
+
+    pub const fn hold_button(self) -> Option<HoldButton> {
+        match self {
+            Self::HoldA => Some(HoldButton::A),
+            Self::HoldB => Some(HoldButton::B),
+            Self::HoldX => Some(HoldButton::X),
+            Self::HoldY => Some(HoldButton::Y),
+            _ => None,
         }
     }
 }
@@ -462,6 +489,7 @@ mod tests {
             keys,
             [
                 "navigation",
+                "shortcuts",
                 "appearance",
                 "library",
                 "display",
@@ -473,19 +501,19 @@ mod tests {
     }
 
     #[test]
-    fn navigation_keeps_shortcuts_separate_from_library_ordering() {
-        assert!(OptionsPage::Navigation
-            .ids()
-            .contains(&OptionId::HoldXFavorite));
+    fn shortcuts_have_their_own_page_and_library_ordering_stays_separate() {
+        assert_eq!(
+            OptionsPage::Shortcuts.ids(),
+            &[
+                OptionId::HoldA,
+                OptionId::HoldB,
+                OptionId::HoldX,
+                OptionId::HoldY
+            ]
+        );
         assert!(OptionsPage::Navigation
             .ids()
             .contains(&OptionId::RandomLaunches));
-        assert!(OptionsPage::Navigation.ids().windows(3).any(|ids| ids
-            == [
-                OptionId::HoldXFavorite,
-                OptionId::HoldYRandom,
-                OptionId::RandomLaunches
-            ]));
         assert!(OptionsPage::Library
             .ids()
             .contains(&OptionId::FavoritesFirst));
@@ -529,16 +557,17 @@ mod tests {
     }
 
     #[test]
-    fn the_original_flat_list_keeps_the_held_x_option_after_favourites_first() {
-        let favourites = OPTIONS
-            .iter()
-            .position(|option| *option == OptionId::FavoritesFirst)
-            .expect("Favourites first is in Options");
-        assert_eq!(OPTIONS.get(favourites + 1), Some(&OptionId::HoldXFavorite));
-        assert_eq!(
-            OptionId::HoldXFavorite.label(),
-            "Hold X (1s) to Add/Remove Fav"
-        );
+    fn every_hold_row_maps_to_its_face_button() {
+        for (option, button, label) in [
+            (OptionId::HoldA, HoldButton::A, "Hold A"),
+            (OptionId::HoldB, HoldButton::B, "Hold B"),
+            (OptionId::HoldX, HoldButton::X, "Hold X"),
+            (OptionId::HoldY, HoldButton::Y, "Hold Y"),
+        ] {
+            assert_eq!(option.hold_button(), Some(button));
+            assert_eq!(option.label(), label);
+        }
+        assert_eq!(OptionId::FavoritesFirst.hold_button(), None);
     }
 
     #[test]

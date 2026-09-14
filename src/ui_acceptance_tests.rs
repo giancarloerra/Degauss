@@ -647,7 +647,7 @@ fn run_scripts_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
         ]
     );
     assert!(app.build.is_none());
-    assert!(!app.random_shortcut_enabled());
+    assert!(app.available_hold_shortcuts().iter().all(Option::is_none));
     app.refresh();
     assert!(app.ui.get_status().contains("folder"));
     app.handle(Action::Accept);
@@ -935,8 +935,8 @@ fn run_selected_controls_flow(app: &mut App) {
     app.apply_geometry();
 }
 
-fn run_hold_y_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
-    let root = root.join("hold-y");
+fn run_hold_shortcut_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
+    let root = root.join("hold-shortcuts");
     std::fs::create_dir_all(root.join("games/NES")).unwrap();
     std::fs::create_dir(root.join("_Console")).unwrap();
     std::fs::write(root.join("_Console/NES.rbf"), b"fixture core").unwrap();
@@ -944,24 +944,33 @@ fn run_hold_y_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
         std::fs::write(root.join("games/NES").join(name), b"fixture game").unwrap();
     }
     let mut app = fixture_app(&root, window, Settings::default());
-    assert!(!app.hold_y_random, "existing settings retain immediate Y");
-    assert!(!app.random_shortcut_enabled());
+    assert_eq!(
+        app.hold_shortcuts,
+        [HoldShortcut::None; 4],
+        "existing settings retain immediate face buttons"
+    );
     app.handle(Action::Menu);
     assert_eq!(app.screen, Screen::Menu);
     app.handle(Action::Quit);
-    select_option(&mut app, OptionsPage::Navigation, OptionId::HoldYRandom);
+    select_option(&mut app, OptionsPage::Shortcuts, OptionId::HoldY);
     app.handle(Action::Accept);
-    assert!(app.hold_y_random);
-    app.handle(Action::Quit);
+    app.handle(Action::Accept);
     assert_eq!(
-        Settings::load(&app.settings_path).unwrap().hold_y_random,
-        Some(true)
+        app.hold_shortcuts[HoldButton::Y.index()],
+        HoldShortcut::RandomGame
     );
+    app.handle(Action::Quit);
+    let saved = Settings::load(&app.settings_path).unwrap();
+    assert_eq!(saved.hold_y_shortcut, Some(HoldShortcut::RandomGame));
+    assert_eq!(saved.hold_y_random, Some(true));
     app.screen = Screen::Browse;
-    assert!(app.random_shortcut_enabled());
+    assert_eq!(
+        app.available_hold_shortcuts()[HoldButton::Y.index()],
+        Some(HoldShortcut::RandomGame)
+    );
     let held = Instant::now();
     let mut repeater = Repeater::new(RepeatConfig::default());
-    repeater.set_random_hold(app.random_shortcut_enabled());
+    repeater.set_hold_shortcuts(app.available_hold_shortcuts());
     assert_eq!(repeater.press(Action::Menu, held), None);
     let short = repeater
         .release(Action::Menu, held + Duration::from_millis(999))
@@ -975,11 +984,11 @@ fn run_hold_y_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
         app.random_launches = launches;
         app.message = None;
         app.screen = Screen::Browse;
-        repeater.set_random_hold(app.random_shortcut_enabled());
+        repeater.set_hold_shortcuts(app.available_hold_shortcuts());
         let pressed = Instant::now();
         assert_eq!(repeater.press(Action::Menu, pressed), None);
         let due = repeater.tick(pressed + Duration::from_secs(1));
-        assert_eq!(due, vec![Action::RandomShortcut]);
+        assert_eq!(due, vec![Action::HoldShortcut(HoldShortcut::RandomGame)]);
         let outcome = app.handle(due[0]);
         assert_eq!(
             matches!(outcome, Some(Outcome::Launch { .. })),
@@ -994,6 +1003,96 @@ fn run_hold_y_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
             None
         );
     }
+
+    app.random_launches = false;
+    app.message = None;
+    app.screen = Screen::Browse;
+    let place = app.current_view_place().unwrap();
+    let previous_layout = app.layout;
+    assert!(app.perform_hold_shortcut(HoldShortcut::CycleView).is_none());
+    assert_eq!(app.layout, previous_layout.next());
+    assert_eq!(
+        place.get(&app.settings.custom_views),
+        Some(app.layout.label()),
+        "Cycle View saves the exact browse place"
+    );
+    let saved = Settings::load(&app.settings_path).unwrap();
+    assert_eq!(
+        place.get(&saved.custom_views),
+        Some(app.layout.label()),
+        "Cycle View is durable immediately"
+    );
+
+    app.browsing = Browsing::Systems;
+    app.open_category = Some("Console".into());
+    app.layout = Layout::List;
+    app.perform_hold_shortcut(HoldShortcut::CycleView);
+    assert_eq!(
+        app.settings
+            .custom_views
+            .systems
+            .get("Console")
+            .map(String::as_str),
+        Some(Layout::MultiList.label())
+    );
+    app.browsing = Browsing::Categories;
+    app.layout = Layout::Gallery;
+    app.perform_hold_shortcut(HoldShortcut::CycleView);
+    assert_eq!(
+        app.settings.custom_views.categories.as_deref(),
+        Some(Layout::Details.label())
+    );
+    app.browsing = Browsing::Games;
+
+    for (shortcut, mode) in [
+        (HoldShortcut::SearchThisFolder, FindMode::Search),
+        (HoldShortcut::JumpToLetter, FindMode::Jump),
+    ] {
+        app.screen = Screen::Browse;
+        assert!(app.perform_hold_shortcut(shortcut).is_none());
+        assert_eq!(app.screen, Screen::Find);
+        assert_eq!(app.find_mode, mode);
+        app.handle(Action::Quit);
+        assert_eq!(app.screen, Screen::Browse);
+    }
+
+    app.screen = Screen::Browse;
+    assert!(app
+        .perform_hold_shortcut(HoldShortcut::GameInformation)
+        .is_none());
+    assert_eq!(app.screen, Screen::Information);
+    app.finish_background_work_for_headless();
+    app.handle(Action::Quit);
+    assert_eq!(app.screen, Screen::Context);
+    assert!(app.menu.iter().any(|entry| entry == GAME_INFORMATION));
+    app.handle(Action::Quit);
+    app.handle(Action::Quit);
+    assert_eq!(app.screen, Screen::Browse);
+
+    assert!(app
+        .perform_hold_shortcut(HoldShortcut::AddRemoveFavourite)
+        .is_none());
+    assert_eq!(app.screen, Screen::FavoriteFolder);
+    app.handle(Action::Quit);
+    assert_eq!(app.screen, Screen::Browse);
+
+    assert!(app
+        .perform_hold_shortcut(HoldShortcut::RandomFavourite)
+        .is_none());
+    assert_eq!(
+        app.message.as_deref(),
+        Some("No favourites under this folder.")
+    );
+    app.handle(Action::Quit);
+    assert!(app.message.is_none());
+    assert_eq!(app.screen, Screen::Browse);
+
+    app.hold_shortcuts = [
+        HoldShortcut::CycleView,
+        HoldShortcut::SearchThisFolder,
+        HoldShortcut::GameInformation,
+        HoldShortcut::RandomGame,
+    ];
 
     for screen in [
         Screen::Splash,
@@ -1022,38 +1121,38 @@ fn run_hold_y_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
     ] {
         app.screen = screen;
         assert!(
-            !app.random_shortcut_enabled(),
-            "{screen:?} must never delay Y or launch a random game"
+            app.available_hold_shortcuts().iter().all(Option::is_none),
+            "{screen:?} must never delay a face button or run a browsing shortcut"
         );
     }
     app.screen = Screen::Browse;
     for browsing in [Browsing::Systems, Browsing::Categories] {
         app.browsing = browsing;
-        assert!(!app.random_shortcut_enabled());
+        assert!(app.available_hold_shortcuts()[HoldButton::Y.index()].is_none());
     }
     app.browsing = Browsing::Games;
     app.message = Some("Fixture message".into());
-    assert!(!app.random_shortcut_enabled());
+    assert!(app.available_hold_shortcuts()[HoldButton::Y.index()].is_none());
     app.message = None;
     app.pending = Some(Pending::Exit);
-    assert!(!app.random_shortcut_enabled());
+    assert!(app.available_hold_shortcuts()[HoldButton::Y.index()].is_none());
     app.pending = None;
     app.index_terminal = Some(IndexOverview::default());
-    assert!(!app.random_shortcut_enabled());
+    assert!(app.available_hold_shortcuts()[HoldButton::Y.index()].is_none());
     app.index_terminal = None;
     app.scraper_pending_terminal = Some(ScraperTerminal::Finished);
-    assert!(!app.random_shortcut_enabled());
+    assert!(app.available_hold_shortcuts()[HoldButton::Y.index()].is_none());
     app.scraper_pending_terminal = None;
 
     app.saver_return = Screen::Browse;
     app.screen = Screen::Screensaver;
-    repeater.set_random_hold(app.random_shortcut_enabled());
+    repeater.set_hold_shortcuts(app.available_hold_shortcuts());
     let wake = Instant::now();
     assert_eq!(repeater.press(Action::Menu, wake), Some(Action::Menu));
     let selected = app.game_list.selected();
     assert!(app.handle(Action::Menu).is_none());
     assert_eq!(app.screen, Screen::Browse);
-    repeater.set_random_hold(app.random_shortcut_enabled());
+    repeater.set_hold_shortcuts(app.available_hold_shortcuts());
     assert!(repeater.tick(wake + Duration::from_secs(2)).is_empty());
     assert_eq!(
         repeater.release(Action::Menu, wake + Duration::from_secs(2)),
@@ -1279,16 +1378,12 @@ fn run_main_favourites_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
     // in the root is the standard link.
     app.open_system_by_index(0);
     assert_eq!(app.open_system.as_deref(), Some("NES"));
-    select_option(&mut app, OptionsPage::Navigation, OptionId::HoldXFavorite);
-    app.handle(Action::Accept);
-    assert!(app.hold_x_favorite);
-    app.handle(Action::Quit);
-    app.handle(Action::Quit);
-    app.handle(Action::Quit);
-    assert_eq!(app.screen, Screen::Browse);
+    app.hold_shortcuts[HoldButton::X.index()] = HoldShortcut::AddRemoveFavourite;
+    app.settings
+        .set_hold_shortcut(HoldButton::X, HoldShortcut::AddRemoveFavourite);
     select_row_named(&mut app, "Core Game");
     assert_eq!(app.favorite_change(), Some(FavoriteChange::Add));
-    app.handle(Action::FavoriteShortcut);
+    app.handle(Action::HoldShortcut(HoldShortcut::AddRemoveFavourite));
     assert_eq!(app.screen, Screen::FavoriteFolder);
     assert_eq!(app.menu.first().map(String::as_str), Some(MAIN_FAVORITES));
     app.handle(Action::Accept);
@@ -1486,8 +1581,8 @@ fn run_scraper_cache_refresh_flow(root: &Path, window: Rc<MinimalSoftwareWindow>
         app.scraper_refresh_job.is_some(),
         "refresh uses the actual worker"
     );
-    app.hold_y_random = true;
-    assert!(!app.random_shortcut_enabled());
+    app.hold_shortcuts[HoldButton::Y.index()] = HoldShortcut::RandomGame;
+    assert!(app.available_hold_shortcuts()[HoldButton::Y.index()].is_none());
     capture_live_if_requested(&mut app, "scraper-refresh-real-worker");
     app.handle(Action::Accept);
     assert!(app.scraper_details);
@@ -8632,7 +8727,7 @@ pub(super) fn run_ui_acceptance_flow(window: Rc<MinimalSoftwareWindow>) {
     assert!(restarted.settings.hidden_paths.is_empty());
     drop(restarted);
     run_favorite_information_flow(&root, window.clone());
-    run_hold_y_flow(&root, window.clone());
+    run_hold_shortcut_flow(&root, window.clone());
     run_main_favourites_flow(&root, window.clone());
     run_scraper_cache_refresh_flow(&root, window.clone());
     run_scraper_unresolved_report_flow(&root, window.clone());
