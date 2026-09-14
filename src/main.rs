@@ -96,7 +96,7 @@ degauss - a fast game browser for MiSTer FPGA
                       artwork-pack-location, artwork-pack-directory or
                       source-progress, for --render
   --select <n>        which entry to highlight in --render
-  --options-page <p>  navigation, appearance, library, display, developer
+  --options-page <p>  navigation, shortcuts, appearance, library, display, developer
   --find <text>       a search already typed, with --screen find
   --geometry <WxH>    geometry for --render and --bench
   --format <fmt>      rgb565 or xrgb8888, for --render and --bench
@@ -112,6 +112,7 @@ With no flags it takes over the framebuffer and browses.
   escape        back
   tab           this folder: random, favourites, letter, search, view
   space         menu: options, help, about, exit
+  hold A/B/X/Y  optional browsing actions configured in Options > Shortcuts
 ";
 
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]

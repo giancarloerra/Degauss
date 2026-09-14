@@ -45,7 +45,7 @@ use crate::metrics::{FrameTimer, StartupTimings};
 use crate::options::OPTIONS;
 use crate::options::{speed_badge, speed_label, OptionId, OptionsPage, ADVANCED};
 use crate::render::{FrameWork, PresentMode, Presenter};
-use crate::settings::{CustomViews, SaveOutcome, Settings};
+use crate::settings::{CustomViews, HoldButton, HoldShortcut, SaveOutcome, Settings};
 use crate::surface::Surface;
 use crate::systems::{is_favorites, FoundSystem, SystemDef};
 
@@ -269,8 +269,10 @@ fn option_operation(option: OptionId, input: OptionInput) -> OptionOperation {
         | OptionId::CorePreference
         | OptionId::ShowBar
         | OptionId::FavoritesFirst
-        | OptionId::HoldXFavorite
-        | OptionId::HoldYRandom
+        | OptionId::HoldA
+        | OptionId::HoldB
+        | OptionId::HoldX
+        | OptionId::HoldY
         | OptionId::RandomLaunches
         | OptionId::FoldersLast
         | OptionId::ShowStats
@@ -1537,14 +1539,14 @@ impl ImageTarget {
     }
 }
 
-/// What the optional held-X gesture can do to the selected row.
+/// What the optional favourite hold action can do to the selected row.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum FavoriteChange {
     Add,
     Remove,
 }
 
-/// Decide the held-X operation without touching the card, so the boundaries
+/// Decide the favourite hold operation without touching the card, so the boundaries
 /// that protect folders, other screens and the master Favourites system can
 /// be pinned by tests.
 fn favorite_change(
@@ -2714,7 +2716,7 @@ pub struct App {
     context_page_selections: [usize; 4],
     options_page: OptionsPage,
     options_root_list: ListState,
-    option_lists: [ListState; 5],
+    option_lists: [ListState; 6],
     advanced_list: ListState,
     theme_editor_list: ListState,
     help_list: ListState,
@@ -2854,9 +2856,8 @@ pub struct App {
     favorites: crate::favorites::Favorites,
     /// Whether favourites are gathered at the top of a folder.
     favorites_first: bool,
-    /// Whether a one-second X hold adds or removes the selected favourite.
-    hold_x_favorite: bool,
-    hold_y_random: bool,
+    /// Optional one-second browsing action for A, B, X and Y respectively.
+    hold_shortcuts: [HoldShortcut; 4],
     /// The typeface everything is set in.
     font: Font,
     /// The persistent Text option, independent of a theme's optional default.
@@ -2922,6 +2923,9 @@ pub struct App {
     saver_candidates: Option<Vec<usize>>,
 
     settled_since: Option<Instant>,
+    /// Incremented whenever the browse target changes, so a pending hold
+    /// gesture cannot act on a different row with the same availability.
+    selection_revision: u64,
     /// Turns the selected title round at each end of its travel.
     marquee: Rc<slint::Timer>,
     /// The same for the lines under the picture, which travel at half the
@@ -3200,8 +3204,7 @@ impl App {
             empty_systems: None,
             favorites: crate::favorites::Favorites::default(),
             favorites_first: settings.favorites_first.unwrap_or(true),
-            hold_x_favorite: settings.hold_x_favorite.unwrap_or(false),
-            hold_y_random: settings.hold_y_random.unwrap_or(false),
+            hold_shortcuts: settings.resolved_hold_shortcuts(),
             // The file the user edits, then the one Degauss writes, then the
             // typeface that always exists. A name neither of them recognises
             // is not worth refusing to start over.
@@ -3339,6 +3342,7 @@ impl App {
             window,
             rows,
             settled_since: Some(Instant::now()),
+            selection_revision: 0,
             marquee: Rc::new(slint::Timer::default()),
             detail_marquee: Rc::new(slint::Timer::default()),
             art_pending: true,
@@ -4010,6 +4014,7 @@ impl App {
             self.art.deferred += 1;
         }
         self.art_pending = true;
+        self.selection_revision = self.selection_revision.wrapping_add(1);
         let now = Instant::now();
         self.settled_since = Some(now);
         self.gallery_title_shown_at =
@@ -7493,8 +7498,7 @@ impl App {
             | Action::Home
             | Action::End
             | Action::CyclePresent
-            | Action::FavoriteShortcut
-            | Action::RandomShortcut => EditorEffect::None,
+            | Action::HoldShortcut(_) => EditorEffect::None,
         };
         self.apply_theme_editor_effect(effect);
     }
@@ -7693,13 +7697,12 @@ impl App {
                 // The folder on screen was ordered by the old answer.
                 self.relist_here();
             }
-            OptionId::HoldXFavorite => {
-                self.hold_x_favorite = !self.hold_x_favorite;
-                self.settings.hold_x_favorite = Some(self.hold_x_favorite);
-            }
-            OptionId::HoldYRandom => {
-                self.hold_y_random = !self.hold_y_random;
-                self.settings.hold_y_random = Some(self.hold_y_random);
+            OptionId::HoldA | OptionId::HoldB | OptionId::HoldX | OptionId::HoldY => {
+                let button = option.hold_button().expect("hold option has a button");
+                let at = button.index();
+                self.hold_shortcuts[at] = self.hold_shortcuts[at].step(delta);
+                self.settings
+                    .set_hold_shortcut(button, self.hold_shortcuts[at]);
             }
             OptionId::RandomLaunches => {
                 self.random_launches = !self.random_launches;
@@ -7778,8 +7781,10 @@ impl App {
                 .to_string(),
             OptionId::ShowBar => on_off(self.show_bar),
             OptionId::FavoritesFirst => on_off(self.favorites_first),
-            OptionId::HoldXFavorite => on_off(self.hold_x_favorite),
-            OptionId::HoldYRandom => on_off(self.hold_y_random),
+            OptionId::HoldA | OptionId::HoldB | OptionId::HoldX | OptionId::HoldY => {
+                let button = option.hold_button().expect("hold option has a button");
+                self.hold_shortcuts[button.index()].label().to_string()
+            }
             OptionId::RandomLaunches => if self.random_launches {
                 "Launches"
             } else {
@@ -8601,16 +8606,14 @@ impl App {
         }
     }
 
-    /// The operation a held X would perform now. The same answer enables the
-    /// timer and handles its result, so a row that cannot be changed never
-    /// acquires a delayed X press.
+    /// The favourite operation available for the selected row.
     fn favorite_change(&self) -> Option<FavoriteChange> {
         let selected = self.selected_game();
         let favorite = selected
             .as_deref()
             .is_some_and(|game| self.favorites.holds(game));
         favorite_change(
-            self.hold_x_favorite,
+            true,
             self.screen,
             self.browsing,
             self.in_favorites(),
@@ -8619,21 +8622,81 @@ impl App {
         )
     }
 
-    fn random_shortcut_enabled(&self) -> bool {
-        self.hold_y_random
-            && self.screen == Screen::Browse
-            && self.browsing == Browsing::Games
-            && !self.trail.is_empty()
+    fn browse_shortcuts_ready(&self) -> bool {
+        self.screen == Screen::Browse
             && self.message.is_none()
             && self.pending.is_none()
             && self.build.is_none()
             && self.index_terminal.is_none()
             && self.refreshing.is_none()
+            && self.source_resolution.is_none()
             && self.scraper_refresh_job.is_none()
             && self.source_job.is_none()
             && self.provider_job.is_none()
             && self.scraper_job.is_none()
             && self.scraper_pending_terminal.is_none()
+    }
+
+    fn random_shortcut_available(&self) -> bool {
+        self.browse_shortcuts_ready() && self.browsing == Browsing::Games && !self.trail.is_empty()
+    }
+
+    fn hold_shortcut_available(&self, shortcut: HoldShortcut) -> bool {
+        if !self.browse_shortcuts_ready() {
+            return false;
+        }
+        match shortcut {
+            HoldShortcut::None => false,
+            HoldShortcut::CycleView => self.current_view_place().is_some(),
+            HoldShortcut::RandomGame | HoldShortcut::RandomFavourite => {
+                self.random_shortcut_available()
+            }
+            HoldShortcut::AddRemoveFavourite => self.favorite_change().is_some(),
+            HoldShortcut::GameInformation => self.selected_game().is_some(),
+            HoldShortcut::SearchThisFolder | HoldShortcut::JumpToLetter => {
+                self.browsing != Browsing::Categories
+            }
+        }
+    }
+
+    fn available_hold_shortcuts(&self) -> [Option<HoldShortcut>; 4] {
+        HoldButton::ALL.map(|button| {
+            let shortcut = self.hold_shortcuts[button.index()];
+            self.hold_shortcut_available(shortcut).then_some(shortcut)
+        })
+    }
+
+    fn cycle_view_shortcut(&mut self) {
+        self.layout = self.layout.next();
+        self.remember_view();
+        self.apply_geometry();
+        self.touch_selection();
+        self.save_settings();
+        self.dirty = true;
+    }
+
+    fn perform_hold_shortcut(&mut self, shortcut: HoldShortcut) -> Option<Outcome> {
+        if !self.hold_shortcut_available(shortcut) {
+            return None;
+        }
+        match shortcut {
+            HoldShortcut::None => {}
+            HoldShortcut::CycleView => self.cycle_view_shortcut(),
+            HoldShortcut::RandomGame => return self.random_here(false),
+            HoldShortcut::RandomFavourite => return self.random_here(true),
+            HoldShortcut::AddRemoveFavourite => match self.favorite_change() {
+                Some(FavoriteChange::Add) => self.open_favorite_folders(),
+                Some(FavoriteChange::Remove) => self.remove_favorite(),
+                None => {}
+            },
+            HoldShortcut::GameInformation => {
+                self.reopen_context_for(GAME_INFORMATION);
+                self.open_information();
+            }
+            HoldShortcut::SearchThisFolder => self.open_find(FindMode::Search),
+            HoldShortcut::JumpToLetter => self.open_find(FindMode::Jump),
+        }
+        None
     }
 
     /// Offer the folders MiSTer's favourites are already kept in, and the
@@ -11421,7 +11484,7 @@ impl App {
                 self.scraper_keyboard_draft.pop();
             }
             Action::Menu => self.cycle_scraper_keyboard(),
-            Action::CyclePresent | Action::FavoriteShortcut | Action::RandomShortcut => {}
+            Action::CyclePresent | Action::HoldShortcut(_) => {}
         }
         self.dirty = true;
     }
@@ -11470,11 +11533,7 @@ impl App {
             }
             Action::Quit => self.scraper_details = false,
             Action::Accept => {}
-            Action::Menu
-            | Action::Context
-            | Action::CyclePresent
-            | Action::FavoriteShortcut
-            | Action::RandomShortcut => {}
+            Action::Menu | Action::Context | Action::CyclePresent | Action::HoldShortcut(_) => {}
         }
         if selected != self.scraper_progress_list.selected() {
             self.restart_marquee();
@@ -11521,8 +11580,7 @@ impl App {
             | Action::Faster
             | Action::Menu
             | Action::CyclePresent
-            | Action::FavoriteShortcut
-            | Action::RandomShortcut => false,
+            | Action::HoldShortcut(_) => false,
         };
         if moved {
             self.restart_marquee();
@@ -11981,16 +12039,7 @@ impl App {
                     return self.go_back();
                 }
             }
-            Action::FavoriteShortcut => match self.favorite_change() {
-                Some(FavoriteChange::Add) => self.open_favorite_folders(),
-                Some(FavoriteChange::Remove) => self.remove_favorite(),
-                None => {}
-            },
-            Action::RandomShortcut => {
-                if self.random_shortcut_enabled() {
-                    return self.random_here(false);
-                }
-            }
+            Action::HoldShortcut(shortcut) => return self.perform_hold_shortcut(shortcut),
             Action::CyclePresent => self.pending_present_switch = true,
             Action::Accept => match self.screen {
                 Screen::Screensaver => self.leave_screensaver(),
@@ -13217,8 +13266,8 @@ impl App {
             // and again before the repeats so a screen opened under a held
             // stick stops the repeat instead of taking one more step there.
             repeater.set_horizontal_repeats(self.horizontal_scrolls());
-            repeater.set_favorite_hold(self.favorite_change().is_some());
-            repeater.set_random_hold(self.random_shortcut_enabled());
+            repeater.set_hold_context(self.selection_revision);
+            repeater.set_hold_shortcuts(self.available_hold_shortcuts());
             for edge in input.poll() {
                 let action = match edge {
                     KeyEdge::Down(action) => repeater.press(action, now),
@@ -13234,8 +13283,8 @@ impl App {
                 }
             }
             repeater.set_horizontal_repeats(self.horizontal_scrolls());
-            repeater.set_favorite_hold(self.favorite_change().is_some());
-            repeater.set_random_hold(self.random_shortcut_enabled());
+            repeater.set_hold_context(self.selection_revision);
+            repeater.set_hold_shortcuts(self.available_hold_shortcuts());
             for action in repeater.tick(now) {
                 if let Some(outcome) = self.handle(action) {
                     if !matches!(outcome, Outcome::Script(_)) {
