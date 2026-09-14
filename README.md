@@ -1631,10 +1631,10 @@ only the managed copy. Categories then return to their normal named image,
 random system-logo choice, or Favourites heart. Systems return to their normal
 image named after the system ID.
 
-A system's custom image also stands on that system's folder rows, and takes
-precedence over the game artwork a folder holding one game would otherwise
-show. **Clear Custom Image** restores that derived artwork, or the image named
-after the system ID where there is none.
+A system's custom image applies to the system row and remains the fallback for
+a folder that has no unambiguous game picture. A folder holding one game, or
+several discs that share one picture, continues to show that game artwork.
+**Clear Custom Image** restores the image named after the system ID.
 
 `Arcade.png` is already included as the default fixed image for the Arcade
 category.

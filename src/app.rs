@@ -3293,11 +3293,6 @@ pub struct App {
     index: Option<crate::cache::Index>,
     /// The open system's folders, when they have been written down.
     system_cache: Option<crate::cache::SystemCache>,
-    /// Whether the open system has an image chosen for it. Asked of the
-    /// card once, as the system opens, so listing a folder never has to.
-    /// Read only there: an image is chosen or cleared from the system
-    /// list, where no system is open, and opening one reads it again.
-    system_image_chosen: bool,
     /// Current read-only Pack snapshot. Present only for a Pack-selected
     /// system, including an unusable snapshot whose health is shown.
     artwork_provider: Option<crate::artwork_pack::Provider>,
@@ -3671,7 +3666,6 @@ impl App {
             cache_dir: crate::cache::dir_for(&settings_path),
             index: None,
             system_cache: None,
-            system_image_chosen: false,
             artwork_provider: None,
             artwork_provider_cache: HashMap::new(),
             effective_artwork_pack_roots,
@@ -5447,10 +5441,6 @@ impl App {
             self.screen = Screen::Browse;
             self.apply_geometry();
         }
-        self.system_image_chosen = self
-            .logo_dir
-            .as_deref()
-            .is_some_and(|dir| crate::category_images::has_system_override(dir, &id));
         self.opened_config = Some(config.clone());
         if self.system_cache.is_some() {
             let configured_start = browse::start_for(&config);
@@ -6833,9 +6823,9 @@ impl App {
     /// and only the picture is taken: the row stays a folder under its own
     /// name, with its own count, and opens as one.
     ///
-    /// Inside favourites a folder is a shelf and keeps its heart. A system
-    /// given its own image keeps that on its folders, as it does today;
-    /// whether it has one was looked up as the system opened.
+    /// Inside favourites a folder is a shelf and keeps its heart. A custom
+    /// system image remains the fallback for a folder without one clear game
+    /// picture, but does not hide a picture that can be derived for the folder.
     fn derive_folder_covers(&self, rows: &mut [browse::Row]) {
         if self.in_favorites() {
             return;
@@ -6843,9 +6833,6 @@ impl App {
         let Some(cache) = self.system_cache.as_ref() else {
             return;
         };
-        if self.system_image_chosen {
-            return;
-        }
         let provider = self.artwork_provider.as_ref();
         // A Pack that is unusable or not yet prepared answers nothing for
         // any game, so there is nothing under any folder to find.

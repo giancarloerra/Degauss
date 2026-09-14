@@ -7071,34 +7071,36 @@ fn run_folder_artwork_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
     app.game_list.select(at);
     assert_eq!(app.here[at].cover.as_deref(), Some(image.as_path()));
 
-    // An image chosen for the system stands on its folders, as it did
-    // before; clearing it brings the game's picture back. The choice is
-    // read as the system opens, which is where it is made from: listing
-    // a folder never asks the card, so a file that appears underneath an
-    // open system changes nothing until the system is opened again.
-    let managed = crate::category_images::install_system(&logos, "NES", &custom).unwrap();
+    // A custom system image changes the system row and remains the fallback
+    // for a folder without one clear game picture. It must not replace the
+    // game artwork derived for this one-game folder.
+    crate::category_images::install_system(&logos, "NES", &custom).unwrap();
     app.relist_here();
     let at = folder_at(&app);
     assert_eq!(
         app.here[at].cover.as_deref(),
         Some(image.as_path()),
-        "a listing does not ask the card about the system's image"
+        "the custom system image does not replace derived folder artwork"
     );
     app.handle(Action::Quit);
     assert_eq!(app.browsing, Browsing::Systems);
     app.open_system_by_index(0);
     let at = folder_at(&app);
     app.game_list.select(at);
-    assert_eq!(app.here[at].cover, None);
+    assert_eq!(app.here[at].cover.as_deref(), Some(image.as_path()));
     assert_eq!(
         app.current_art(),
-        (Some(managed), "Example Game".to_string(), false, false)
+        (Some(image.clone()), "Example Game".to_string(), false, true)
     );
     assert!(crate::category_images::clear_system(&logos, "NES").unwrap());
     app.handle(Action::Quit);
     app.open_system_by_index(0);
     let at = folder_at(&app);
-    assert_eq!(app.here[at].cover.as_deref(), Some(image.as_path()));
+    assert_eq!(
+        app.here[at].cover.as_deref(),
+        Some(image.as_path()),
+        "clearing the custom image leaves the same derived folder artwork"
+    );
 
     // Reading the system again is answered from the new cache, listed by
     // the reading itself: a second, different game in the folder takes
