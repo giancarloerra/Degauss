@@ -365,7 +365,7 @@ fn unopened_fixture_app_with_systems(
         names: Default::default(),
         logo_dir: None,
         themes_dir: root.join("themes"),
-        themes: Default::default(),
+        themes: crate::theme::load_available(&root.join("themes")),
     };
     App::new(
         loaded,
@@ -8071,6 +8071,111 @@ fn run_details_style_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
     }
 }
 
+fn run_theme_editor_save_changes_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
+    let root = root.join("theme-save-changes");
+    std::fs::create_dir_all(root.join("games/NES")).unwrap();
+    for name in ["First Fixture.nes", "Second Fixture.nes"] {
+        std::fs::write(root.join("games/NES").join(name), b"fixture").unwrap();
+    }
+    let palette = Colors::default();
+    let themes_dir = root.join("themes");
+    let path = crate::theme::save_new(
+        &themes_dir,
+        "Editable",
+        &crate::theme::ThemeFile::complete(&palette, None, 100),
+        &palette,
+    )
+    .unwrap();
+    let settings = Settings {
+        theme: Some("Editable".into()),
+        theme_font_override: Some(false),
+        ..Settings::default()
+    };
+    let mut app = fixture_app(&root, window.clone(), settings);
+    assert_eq!(
+        app.active_theme.map(|at| app.themes[at].name.as_str()),
+        Some("Editable")
+    );
+    app.open_theme_editor();
+    assert_eq!(app.theme_editor.as_ref().unwrap().rows().len(), 18);
+    assert!(app.theme_editor.as_ref().unwrap().source_is_custom());
+    assert!(!app.horizontal_scrolls());
+
+    app.select(1);
+    app.handle(Action::Accept);
+    assert_eq!(app.theme_editor.as_ref().unwrap().mode, EditorMode::Picker);
+    assert!(app.horizontal_scrolls());
+    let before = app.theme_editor.as_ref().unwrap().draft.palette.background;
+    app.handle(Action::Faster);
+    let saved_colour = app.theme_editor.as_ref().unwrap().draft.palette.background;
+    assert_ne!(saved_colour, before);
+    app.handle(Action::Context);
+    assert_eq!(app.theme_editor.as_ref().unwrap().mode, EditorMode::Hex);
+    assert!(
+        !app.horizontal_scrolls(),
+        "hex digit selection and every non-picker editor mode remain one step per press"
+    );
+    app.handle(Action::Context);
+    assert!(app.horizontal_scrolls());
+    app.handle(Action::Accept);
+    assert!(!app.horizontal_scrolls());
+    app.select(14);
+    app.handle(Action::Accept);
+    assert_eq!(app.screen, Screen::Options);
+    assert!(app.theme_editor.is_none());
+    assert_eq!(app.message, None);
+    assert_eq!(
+        crate::theme::load(&themes_dir).themes[0]
+            .file
+            .apply(&palette)
+            .background,
+        saved_colour
+    );
+    let saved_settings = Settings::load(&app.settings_path).unwrap();
+    assert_eq!(saved_settings.theme.as_deref(), Some("Editable"));
+    assert_eq!(saved_settings.theme_font_override, Some(false));
+    app.ui.hide().unwrap();
+    drop(app);
+
+    let mut app = fixture_app(&root, window, saved_settings);
+    assert_eq!(
+        app.active_theme.map(|at| app.themes[at].name.as_str()),
+        Some("Editable"),
+        "the updated selected theme must survive restart"
+    );
+    app.open_theme_editor();
+    app.select(1);
+    app.handle(Action::Accept);
+    app.handle(Action::Slower);
+    app.handle(Action::Accept);
+    let previous_file = std::fs::read(&path).unwrap();
+    let settings_path = app.settings_path.clone();
+    let blocked = root.join("settings-parent-is-a-file");
+    std::fs::write(&blocked, b"not a directory").unwrap();
+    app.settings_path = blocked.join("settings.toml");
+    app.select(14);
+    app.handle(Action::Accept);
+    assert_eq!(app.screen, Screen::ThemeEditor);
+    assert!(
+        app.theme_editor.is_some(),
+        "the unsaved draft remains editable"
+    );
+    assert!(app.message.as_deref().is_some_and(|message| {
+        message.contains("settings") && message.contains("previous theme was restored")
+    }));
+    assert_eq!(
+        std::fs::read(&path).unwrap(),
+        previous_file,
+        "a failed settings write restores the exact previous theme file"
+    );
+    assert!(crate::theme::load(&themes_dir)
+        .themes
+        .iter()
+        .any(|theme| theme.name == "Editable"));
+    app.settings_path = settings_path;
+    app.ui.hide().unwrap();
+}
+
 pub(super) fn run_ui_acceptance_flow(window: Rc<MinimalSoftwareWindow>) {
     let root = fixture_directory();
     std::fs::create_dir_all(root.join("games/NES")).unwrap();
@@ -8095,6 +8200,7 @@ pub(super) fn run_ui_acceptance_flow(window: Rc<MinimalSoftwareWindow>) {
     run_degraded_pack_acknowledgement_flow(&root, window.clone());
     run_arcade_core_descriptor_favourite_flow(&root, window.clone());
     run_folder_artwork_flow(&root, window.clone());
+    run_theme_editor_save_changes_flow(&root, window.clone());
     let mut app = fixture_app(&root, window.clone(), Settings::default());
     run_selected_controls_flow(&mut app);
     run_artwork_visibility_flow(&mut app);

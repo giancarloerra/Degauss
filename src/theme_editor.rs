@@ -138,6 +138,7 @@ pub enum EditorEffect {
     None,
     PreviewChanged,
     Save(String),
+    SaveChanges(String),
     Delete(String),
     Close,
     Error(String),
@@ -251,13 +252,25 @@ impl ThemeEditor {
         self.sources[self.source].created_by_editor
     }
 
+    fn save_changes_row(&self) -> Option<usize> {
+        self.source_is_custom().then_some(14)
+    }
+
+    fn save_as_row(&self) -> usize {
+        if self.source_is_custom() {
+            15
+        } else {
+            14
+        }
+    }
+
     fn delete_row(&self) -> Option<usize> {
-        self.source_is_custom().then_some(15)
+        self.source_is_custom().then_some(16)
     }
 
     fn cancel_row(&self) -> usize {
         if self.source_is_custom() {
-            16
+            17
         } else {
             15
         }
@@ -306,6 +319,9 @@ impl ThemeEditor {
                     "Default text".to_string(),
                     self.draft.font.shown().to_string(),
                 ));
+                if self.source_is_custom() {
+                    rows.push(("Save changes".to_string(), ">".to_string()));
+                }
                 rows.push(("Save as".to_string(), ">".to_string()));
                 if self.source_is_custom() {
                     rows.push(("Delete theme".to_string(), ">".to_string()));
@@ -454,7 +470,10 @@ impl ThemeEditor {
                     }
                     12 => self.change_browse_value(1),
                     13 => self.change_browse_value(1),
-                    14 => {
+                    selected if Some(selected) == self.save_changes_row() => {
+                        EditorEffect::SaveChanges(self.source_name().to_string())
+                    }
+                    selected if selected == self.save_as_row() => {
                         self.mode = EditorMode::Name;
                         self.name.clear();
                         self.sub_selected = 0;
@@ -861,10 +880,11 @@ mod tests {
     }
 
     #[test]
-    fn delete_is_visible_and_confirmed_only_for_editor_saved_sources() {
+    fn save_changes_and_delete_are_only_available_for_editor_saved_sources() {
         let external = editor();
         assert!(!external.source_is_custom());
         assert_eq!(external.rows().len(), EDITOR_ROWS);
+        assert!(!external.rows().iter().any(|row| row.0 == "Save changes"));
         assert!(!external.rows().iter().any(|row| row.0 == "Delete theme"));
 
         let mut file = ThemeFile::complete(&Colors::default(), None, 100);
@@ -881,9 +901,20 @@ mod tests {
             Font::Smooth,
         );
         assert!(custom.source_is_custom());
-        assert_eq!(custom.rows().len(), EDITOR_ROWS + 1);
-        assert_eq!(custom.rows()[15].0, "Delete theme");
+        assert_eq!(custom.rows().len(), EDITOR_ROWS + 2);
+        assert_eq!(custom.rows()[14].0, "Save changes");
+        assert_eq!(custom.rows()[15].0, "Save as");
+        assert_eq!(custom.rows()[16].0, "Delete theme");
+        custom.selected = 14;
+        assert_eq!(
+            custom.accept(),
+            EditorEffect::SaveChanges("My Theme".to_string())
+        );
         custom.selected = 15;
+        assert_eq!(custom.accept(), EditorEffect::None);
+        assert_eq!(custom.mode, EditorMode::Name);
+        custom.back();
+        custom.selected = 16;
         assert_eq!(custom.accept(), EditorEffect::None);
         assert_eq!(custom.mode, EditorMode::Delete);
         assert_eq!(
@@ -892,7 +923,7 @@ mod tests {
             "Keep theme is the default"
         );
         assert_eq!(custom.mode, EditorMode::Browse);
-        custom.selected = 15;
+        custom.selected = 16;
         custom.accept();
         custom.sub_selected = 1;
         assert_eq!(
