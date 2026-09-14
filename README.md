@@ -1010,7 +1010,7 @@ Older settings did not record an explicit Gamelist choice. An existing settings
 file without a saved Pack choice therefore uses Automatic, so an installed pack
 is offered according to the global priority when the system is entered.
 Choosing **Gamelist** now saves that explicit choice. No migration or reset is
-If the new global setting is absent, it resolves to **Gamelist First**, so
+needed. If the new global setting is absent, it resolves to **Gamelist First**, so
 existing installations retain their current source behaviour.
 
 Install and update a database through **Update All → Settings → Extra Content
