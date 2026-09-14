@@ -684,11 +684,17 @@ currently selected palette and previews every change immediately.
 | Control | Does |
 |---|---|
 | **up / down** | choose a colour role or control; in the continuous picker, choose the red, green or blue channel; in hexadecimal editing, change the selected digit with an immediate preview |
-| **left / right** | choose another starting point, change the theme's Default text, change the selected RGB channel through its smooth gradient in five-unit steps, switch logo colour between Original and Selection, change logo colour mix in five-percent steps, or select a hexadecimal digit |
-| **A** | open the continuous colour picker, apply the already-live colour, or activate Save as and other controls |
+| **left / right** | choose another starting point, change the theme's Default text, change the selected RGB channel through its smooth gradient in five-unit steps (hold to repeat), switch logo colour between Original and Selection, change logo colour mix in five-percent steps, or select a hexadecimal digit |
+| **A** | open the continuous colour picker, apply the already-live colour, or activate Save changes, Save as and other controls |
 | **X** | choose another palette role and swap its exact colour with the selected role; switch between the continuous picker and exact hexadecimal editing; in the name grid, delete one character |
 | **Y** | restore the colour that was present when the picker opened; in the name grid, clear the complete name |
 | **B** | cancel the current edit or leave the editor; changed themes require explicit discard confirmation |
+
+An editor-created theme has **Save changes**, which updates that theme under
+the same name, and **Save as**, which keeps it and creates another theme.
+Built-in and hand-written themes remain protected and offer **Save as** only.
+Updating is transactional: if the replacement or settings cannot be saved,
+the previous theme file remains usable and the error stays on screen.
 
 **Save as** opens a controller-operated name grid. Its green checkmark saves
 and its red X cancels. Saving writes a complete

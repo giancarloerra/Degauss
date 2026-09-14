@@ -496,6 +496,11 @@ pub fn save_new(dir: &Path, name: &str, file: &ThemeFile, base: &Colors) -> Resu
         .map_err(|error| DegaussError::unsupported("saving theme", error))?;
 
     let final_path = dir.join(format!("{name}.toml"));
+    write_editor_file_exclusively(&final_path, file, base)?;
+    Ok(final_path)
+}
+
+fn write_editor_file_exclusively(path: &Path, file: &ThemeFile, base: &Colors) -> Result<()> {
     let mut editor_file = file.clone();
     editor_file.created_by_editor = true;
     editor_file.font_problem = None;
@@ -503,31 +508,134 @@ pub fn save_new(dir: &Path, name: &str, file: &ThemeFile, base: &Colors) -> Resu
     let mut handle = std::fs::OpenOptions::new()
         .write(true)
         .create_new(true)
-        .open(&final_path)
-        .map_err(|error| DegaussError::io("creating theme", &final_path, error))?;
+        .open(path)
+        .map_err(|error| DegaussError::io("creating theme", path, error))?;
     let write_result: Result<()> = (|| {
         handle
             .write_all(body.as_bytes())
-            .map_err(|error| DegaussError::io("writing theme", &final_path, error))?;
+            .map_err(|error| DegaussError::io("writing theme", path, error))?;
         handle
             .sync_all()
-            .map_err(|error| DegaussError::io("flushing theme", &final_path, error))?;
+            .map_err(|error| DegaussError::io("flushing theme", path, error))?;
         Ok(())
     })();
     if let Err(error) = write_result {
         drop(handle);
-        return match std::fs::remove_file(&final_path) {
+        return match std::fs::remove_file(path) {
             Ok(()) => Err(error),
             Err(cleanup) => Err(DegaussError::unsupported(
                 "saving theme",
                 format!(
                     "{error}; removing the incomplete file {} also failed: {cleanup}",
-                    final_path.display()
+                    path.display()
                 ),
             )),
         };
     }
-    Ok(final_path)
+    Ok(())
+}
+
+/// An editor-created theme replaced under the same name. The old file remains
+/// beside it under a non-theme suffix until the settings transaction commits,
+/// so any later failure can put the exact previous bytes back.
+#[derive(Debug)]
+pub struct StagedThemeReplacement {
+    original: PathBuf,
+    previous: PathBuf,
+}
+
+impl StagedThemeReplacement {
+    pub fn rollback(self) -> Result<()> {
+        // A same-directory rename replaces the new file atomically. If the
+        // rename itself fails, the new complete file remains usable instead
+        // of first being deleted and leaving no theme under the saved name.
+        std::fs::rename(&self.previous, &self.original)
+            .map_err(|error| DegaussError::io("restoring previous theme", &self.original, error))
+    }
+
+    pub fn commit(self) -> Result<()> {
+        std::fs::remove_file(&self.previous)
+            .map_err(|error| DegaussError::io("removing previous theme", &self.previous, error))
+    }
+}
+
+/// Replace only a file positively identified as Theme Editor output. The new
+/// file is completely written and flushed before the old file is moved, and
+/// the returned transaction retains the old bytes until the caller has saved
+/// the selected theme in settings.
+pub fn replace_editor_theme(
+    dir: &Path,
+    theme: &Theme,
+    file: &ThemeFile,
+    base: &Colors,
+) -> Result<StagedThemeReplacement> {
+    if !theme.file.created_by_editor {
+        return Err(DegaussError::unsupported(
+            "replacing theme",
+            "only themes saved by the Theme editor can be replaced here",
+        ));
+    }
+    let original = dir.join(format!("{}.toml", theme.name));
+    if !original.is_file() {
+        return Err(DegaussError::unsupported(
+            "replacing theme",
+            format!("{} is not a custom theme file", original.display()),
+        ));
+    }
+
+    for attempt in 0..32_u8 {
+        let pending = dir.join(format!(
+            ".{}.{}.{}.degauss-replace-new",
+            theme.name,
+            std::process::id(),
+            attempt
+        ));
+        let previous = dir.join(format!(
+            ".{}.{}.{}.degauss-replace-old",
+            theme.name,
+            std::process::id(),
+            attempt
+        ));
+        if pending.exists() || previous.exists() {
+            continue;
+        }
+        write_editor_file_exclusively(&pending, file, base)?;
+        if let Err(error) = std::fs::rename(&original, &previous) {
+            let cleanup = std::fs::remove_file(&pending).err();
+            return Err(if let Some(cleanup) = cleanup {
+                DegaussError::unsupported(
+                    "replacing theme",
+                    format!(
+                        "moving {} aside failed: {error}; removing {} also failed: {cleanup}",
+                        original.display(),
+                        pending.display()
+                    ),
+                )
+            } else {
+                DegaussError::io("moving previous theme", &original, error)
+            });
+        }
+        if let Err(error) = std::fs::rename(&pending, &original) {
+            let restore = std::fs::rename(&previous, &original).err();
+            let cleanup = std::fs::remove_file(&pending).err();
+            let mut detail = format!("installing {} failed: {error}", original.display());
+            if let Some(restore) = restore {
+                detail.push_str(&format!("; restoring the previous theme failed: {restore}"));
+            }
+            if let Some(cleanup) = cleanup {
+                detail.push_str(&format!(
+                    "; removing {} failed: {cleanup}",
+                    pending.display()
+                ));
+            }
+            return Err(DegaussError::unsupported("replacing theme", detail));
+        }
+        return Ok(StagedThemeReplacement { original, previous });
+    }
+    Err(DegaussError::unsupported(
+        "replacing theme",
+        "could not reserve temporary replacement names",
+    ))
 }
 
 /// A custom theme renamed out of the loader's `.toml` namespace while its
@@ -939,6 +1047,64 @@ mod tests {
             "a failed save must not remove what occupied the name"
         );
         std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn replacing_an_editor_theme_commits_or_restores_the_exact_previous_file() {
+        let dir = temp_dir("replace-custom");
+        let palette = Colors::default();
+        let original_file = ThemeFile::complete(&palette, None, 100);
+        let path = save_new(&dir, "Custom", &original_file, &palette).unwrap();
+        let original_text = std::fs::read_to_string(&path).unwrap();
+        let custom = load(&dir).themes.remove(0);
+
+        let changed_palette = Colors {
+            accent: Color::new(1, 2, 3),
+            ..palette.clone()
+        };
+        let changed_file = ThemeFile::complete(&changed_palette, None, 100);
+        let replacement = replace_editor_theme(&dir, &custom, &changed_file, &palette).unwrap();
+        assert_eq!(
+            load(&dir).themes[0].file.apply(&palette).accent,
+            Color::new(1, 2, 3)
+        );
+        replacement.rollback().unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), original_text);
+
+        let custom = load(&dir).themes.remove(0);
+        replace_editor_theme(&dir, &custom, &changed_file, &palette)
+            .unwrap()
+            .commit()
+            .unwrap();
+        assert_eq!(
+            load(&dir).themes[0].file.apply(&palette).accent,
+            Color::new(1, 2, 3)
+        );
+        assert_eq!(
+            std::fs::read_dir(&dir).unwrap().count(),
+            1,
+            "a committed replacement must not leave its hidden old file"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn replacing_rejects_built_in_and_hand_written_themes_without_touching_them() {
+        let dir = temp_dir("replace-protected");
+        let palette = Colors::default();
+        let changed = ThemeFile::complete(&palette, Some(Color::new(1, 2, 3)), 50);
+
+        let built_in = builtins().remove(0);
+        assert!(replace_editor_theme(&dir, &built_in, &changed, &palette).is_err());
+
+        let hand_path = dir.join("Hand written.toml");
+        let hand_text = r##"text = "#ffffff""##;
+        std::fs::write(&hand_path, hand_text).unwrap();
+        let hand_written = load(&dir).themes.remove(0);
+        assert!(!hand_written.file.created_by_editor);
+        assert!(replace_editor_theme(&dir, &hand_written, &changed, &palette).is_err());
+        assert_eq!(std::fs::read_to_string(&hand_path).unwrap(), hand_text);
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

@@ -68,9 +68,9 @@ pub enum Action {
 impl Action {
     /// Whether holding the key always repeats. Only movement repeats:
     /// repeating "launch" would be dangerous, and repeating a speed change
-    /// would run the whole ladder off one press. Left and right join in
-    /// only through the [`Repeater`]'s own flag, while the Direction
-    /// setting turns them into movement too.
+    /// would run the whole ladder off one press. Left and right join in only
+    /// through the [`Repeater`]'s contextual flag, while the Direction setting
+    /// or continuous colour picker turns them into movement too.
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     fn repeats(self) -> bool {
         matches!(self, Action::Up | Action::Down)
@@ -136,10 +136,9 @@ struct Held {
 pub struct Repeater {
     config: RepeatConfig,
     held: Vec<Held>,
-    /// Whether holding left or right repeats. In the Direction setting
-    /// they move the cursor, and a held stick should scroll the way a held
-    /// up or down does. In every other setting they step a ladder or a
-    /// choice, where one press must mean one step.
+    /// Whether holding left or right repeats. The app enables this only when
+    /// they move continuously: browse Direction/Letter/Page or one RGB channel
+    /// in the colour picker. Choices and ladders remain one step per press.
     horizontal_repeats: bool,
     /// Whether X is being treated as a short/long gesture. This is enabled
     /// only while the optional favourite shortcut can act on the selected
@@ -194,9 +193,9 @@ impl Repeater {
         }
     }
 
-    /// Turn held-key repeat for left and right on or off. Turning it off
-    /// also drops either of them if it is held right now, so a key pressed
-    /// while browsing cannot keep firing into a screen opened under it.
+    /// Turn held-key repeat for left and right on or off. Turning it off also
+    /// drops either of them if held, so a continuous action cannot keep firing
+    /// after its screen or editor mode closes.
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     pub fn set_horizontal_repeats(&mut self, enabled: bool) {
         if self.horizontal_repeats == enabled {

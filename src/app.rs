@@ -2581,9 +2581,18 @@ fn theme_editor_help(mode: EditorMode, selected: usize, custom_source: bool) -> 
         EditorMode::Browse if selected == 0 => "<> Change   A Change   B Back",
         EditorMode::Browse if selected == 11 => "<> Change   A Edit   B Back",
         EditorMode::Browse if matches!(selected, 12 | 13) => "<> Change   A Change   B Back",
-        EditorMode::Browse if selected == 14 => "A Save As   B Back",
-        EditorMode::Browse if selected == 15 && custom_source => "A Delete   B Back",
-        EditorMode::Browse if matches!(selected, 15 | 16) => "A Cancel   B Back",
+        EditorMode::Browse if selected == 14 && custom_source => "A Save Changes   B Back",
+        EditorMode::Browse
+            if (selected == 14 && !custom_source) || (selected == 15 && custom_source) =>
+        {
+            "A Save As   B Back"
+        }
+        EditorMode::Browse if selected == 16 && custom_source => "A Delete   B Back",
+        EditorMode::Browse
+            if (selected == 15 && !custom_source) || (selected == 17 && custom_source) =>
+        {
+            "A Cancel   B Back"
+        }
         EditorMode::Browse => "A Edit   B Back   X Swap",
         EditorMode::Hex => "A Use B Back X RGB Y Reset",
         EditorMode::Picker => "A Apply   B Cancel   X Hex   Y Reset",
@@ -3976,13 +3985,17 @@ impl App {
     }
 
     /// True while a held left or right should repeat: browsing in every
-    /// setting except the speed ladder. Direction scrolls like a held
-    /// stick, and a held Letter or Page walks on at the same cadence;
-    /// only the ladder stays one step per press, because a held repeat
-    /// would run the whole ladder off one touch.
+    /// setting except the speed ladder, or adjusting one RGB channel in the
+    /// continuous colour picker. Every other editor and option action remains
+    /// one step per press.
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     fn horizontal_scrolls(&self) -> bool {
-        self.screen == Screen::Browse && self.horizontal != Horizontal::Speed
+        (self.screen == Screen::Browse && self.horizontal != Horizontal::Speed)
+            || (self.screen == Screen::ThemeEditor
+                && self
+                    .theme_editor
+                    .as_ref()
+                    .is_some_and(|editor| editor.mode == EditorMode::Picker))
     }
 
     fn shift_x(&self) -> i32 {
@@ -7334,6 +7347,88 @@ impl App {
         }
     }
 
+    fn save_theme_editor_changes(&mut self, name: &str) {
+        let Some(editor) = self.theme_editor.as_ref() else {
+            return;
+        };
+        let file = editor.draft.file();
+        let Some(theme) = self
+            .themes
+            .iter()
+            .find(|theme| theme.name.eq_ignore_ascii_case(name))
+            .cloned()
+        else {
+            self.message = Some(format!("Theme {name:?} is no longer available"));
+            self.dirty = true;
+            return;
+        };
+        let staged = match crate::theme::replace_editor_theme(
+            &self.themes_dir,
+            &theme,
+            &file,
+            &self.config.colors,
+        ) {
+            Ok(staged) => staged,
+            Err(error) => {
+                self.message = Some(error.to_string());
+                self.dirty = true;
+                return;
+            }
+        };
+
+        let loaded = crate::theme::load_available(&self.themes_dir);
+        let Some(active_theme) = loaded
+            .themes
+            .iter()
+            .position(|loaded| loaded.name.eq_ignore_ascii_case(&theme.name))
+        else {
+            let rollback = staged.rollback();
+            self.message = Some(match rollback {
+                Ok(()) => format!("Updated theme {name:?} did not reload; the previous theme was restored"),
+                Err(error) => format!(
+                    "Updated theme {name:?} did not reload; restoring the previous theme also failed: {error}"
+                ),
+            });
+            self.dirty = true;
+            return;
+        };
+
+        let mut settings = self.settings.clone();
+        settings.theme = Some(loaded.themes[active_theme].name.clone());
+        settings.theme_font_override = Some(false);
+        let settings_warning = match settings.save(&self.settings_path) {
+            Ok(SaveOutcome::Durable) => None,
+            Ok(SaveOutcome::InstalledWithWarning(warning)) => Some(warning.to_string()),
+            Err(error) => {
+                let rollback = staged.rollback();
+                self.message = Some(match rollback {
+                    Ok(()) => format!("{error}; the previous theme was restored"),
+                    Err(rollback_error) => {
+                        format!(
+                            "{error}; restoring the previous theme also failed: {rollback_error}"
+                        )
+                    }
+                });
+                self.dirty = true;
+                return;
+            }
+        };
+
+        let replacement_warning = staged.commit().err().map(|error| error.to_string());
+        self.themes = loaded.themes;
+        self.active_theme = Some(active_theme);
+        self.settings = settings;
+        self.close_theme_editor();
+        let warnings = settings_warning
+            .into_iter()
+            .chain(replacement_warning)
+            .collect::<Vec<_>>();
+        if !warnings.is_empty() {
+            self.message = Some(format!("Theme {name:?} was saved; {}", warnings.join("; ")));
+            self.dirty = true;
+        }
+    }
+
     fn delete_theme_editor(&mut self, name: &str) {
         let Some(theme) = self
             .themes
@@ -7451,6 +7546,10 @@ impl App {
             EditorEffect::PreviewChanged => self.preview_theme_editor(),
             EditorEffect::Save(name) => {
                 self.save_theme_editor(&name);
+                return;
+            }
+            EditorEffect::SaveChanges(name) => {
+                self.save_theme_editor_changes(&name);
                 return;
             }
             EditorEffect::Delete(name) => {
@@ -13210,12 +13309,11 @@ impl App {
             self.poll_scraper_preview();
             self.poll_information();
 
-            // A held left or right scrolls only where it moves the cursor:
-            // while browsing in the Direction setting. Everywhere else,
-            // and in every other setting, one press stays one step. Decided
+            // A held left or right repeats only where it is a continuous
+            // movement: browse scrolling or one RGB channel in the colour
+            // picker. Choices and ladders remain one step per press. Decided
             // before the presses so the first press of a hold is retained,
-            // and again before the repeats so a screen opened under a held
-            // stick stops the repeat instead of taking one more step there.
+            // and again before repeats so leaving that context drops the hold.
             repeater.set_horizontal_repeats(self.horizontal_scrolls());
             repeater.set_favorite_hold(self.favorite_change().is_some());
             repeater.set_random_hold(self.random_shortcut_enabled());
@@ -13836,7 +13934,7 @@ impl App {
     pub fn select(&mut self, index: usize) {
         if self.screen == Screen::ThemeEditor {
             if let Some(editor) = self.theme_editor.as_mut() {
-                editor.selected = index.min(EDITOR_ROWS - 1);
+                editor.selected = index.min(editor.rows().len().saturating_sub(1));
                 self.sync_theme_editor();
             }
             return;
@@ -15115,10 +15213,18 @@ mod tests {
         );
         assert_eq!(
             theme_editor_help(EditorMode::Browse, 15, true),
-            "A Delete   B Back"
+            "A Save As   B Back"
+        );
+        assert_eq!(
+            theme_editor_help(EditorMode::Browse, 14, true),
+            "A Save Changes   B Back"
         );
         assert_eq!(
             theme_editor_help(EditorMode::Browse, 16, true),
+            "A Delete   B Back"
+        );
+        assert_eq!(
+            theme_editor_help(EditorMode::Browse, 17, true),
             "A Cancel   B Back"
         );
         assert_eq!(
@@ -15129,7 +15235,7 @@ mod tests {
 
     #[test]
     fn only_the_long_theme_control_list_scrolls() {
-        assert_eq!(theme_editor_visible_items(EditorMode::Browse, 17, 16), 16);
+        assert_eq!(theme_editor_visible_items(EditorMode::Browse, 18, 16), 16);
         assert_eq!(theme_editor_visible_items(EditorMode::Name, 42, 16), 42);
         assert_eq!(theme_editor_visible_items(EditorMode::Delete, 2, 16), 2);
     }
