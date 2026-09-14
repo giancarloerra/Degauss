@@ -1430,7 +1430,10 @@ mod tests {
             .expect("support links do not fail refresh");
 
         assert_eq!(cache.summary(&library.start()).games, 1);
-        assert!(warnings.is_empty(), "support links are skipped without warnings");
+        assert!(
+            warnings.is_empty(),
+            "support links are skipped without warnings"
+        );
         assert!(cache.folders.values().all(|folder| {
             folder
                 .rows
