@@ -489,6 +489,7 @@ export component DegaussWindow inherits Window {
     in property <bool> find-search;
     in property <bool> find-filtering;
     in property <string> find-query;
+    in property <string> grid-explanation;
     // Theme editor sub-screen: 0 roles, 1 hex, 2 swap, 3 name, 4 discard,
     // 5 continuous RGB picker.
     in property <int> theme-editor-mode: 0;
@@ -499,6 +500,7 @@ export component DegaussWindow inherits Window {
     in property <string> theme-edit-hex;
     in property <int> theme-picker-channel: 0;
     in property <string> theme-name;
+    in property <string> theme-name-page;
     in property <int> theme-name-save-index: -1;
     in property <int> theme-name-cancel-index: -1;
     /// Screen-specific controls for a grid. Empty keeps the established
@@ -925,7 +927,9 @@ export component DegaussWindow inherits Window {
                     }
                 }
                 if root.find-filtering: Text {
-                    text: "Live Filter · B Keeps the Search";
+                    text: root.grid-explanation != ""
+                        ? root.grid-explanation
+                        : "Live Filter · B Keeps the Search";
                     color: root.c-text-dim;
                     font-size: root.small-glyph;
                     x: root.pad;
@@ -1199,7 +1203,7 @@ export component DegaussWindow inherits Window {
                             x: root.pad;
                             y: root.pad;
                             width: parent.width - root.pad * 2;
-                            height: root.row-height * 2;
+                            height: root.row-height * 3;
                             background: root.c-surface;
                             border-width: 1px;
                             border-color: root.c-accent;
@@ -1209,11 +1213,24 @@ export component DegaussWindow inherits Window {
                                 font-size: root.body-glyph;
                                 horizontal-alignment: center;
                                 vertical-alignment: center;
+                                width: parent.width;
+                                height: root.row-height * 2;
+                            }
+                            Text {
+                                text: root.theme-name-page;
+                                color: root.c-text-dim;
+                                font-size: root.small-glyph;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                                x: root.pad;
+                                y: root.row-height * 2;
+                                width: parent.width - root.pad * 2;
+                                height: root.row-height;
                             }
                         }
                         Rectangle {
                             x: 0;
-                            y: root.row-height * 2 + root.pad * 2;
+                            y: root.row-height * 3 + root.pad * 2;
                             width: parent.width;
                             height: parent.height - self.y;
                             for cell[index] in root.rows: Rectangle {

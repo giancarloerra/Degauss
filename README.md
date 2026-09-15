@@ -171,7 +171,7 @@ Click the image to watch Degauss 0.4.0 on YouTube.
 | **left / right** | scroll speed, 0.5x to 12x, or what **Left and Right Behaviour** says: letter jumps, page jumps, or plain movement. Inside an Options page, left chooses the previous ordered value and right chooses the next; either direction toggles two-choice values |
 | **A** (enter) | open a folder, launch a game; in Options, choose the next value or run an action |
 | **B** (escape) | back, out of the folder |
-| **X** (tab) | **Actions** for the current selection and location: Game Information, random game, random favourite, keep a favourite in Main Favourites or in a folder, drop a favourite, jump to letter, search, hide a row, rebuild this system, change view, etc. |
+| **X** (tab) | **Actions** for the current selection and location: Game Information, random game, random favourite, keep a favourite in Main Favourites or in a folder, drop a favourite, rename or remove an empty Favourites folder, jump to letter, search, hide a row, rebuild this system, change view, etc. |
 | **Y** (space) | **Menu**: Options, Scripts, Help, About, Exit to MiSTer |
 
 **Options → Shortcuts** can assign an optional one-second hold to A, B, X or Y.
@@ -192,6 +192,13 @@ first, then the folders already inside it, then **New folder...**. Choosing
 Main Favourites writes the `.mgl`, or the link for a core file, directly
 under `_@Favorites`; no folder of that name is made, and a folder somebody
 has really called Main Favourites is listed after it as a folder of its own.
+When a real folder is selected in the Favourites shelf, the same Game group
+also offers **Rename Favourite Folder** and **Delete Favourite Folder**.
+Rename keeps everything inside and never overwrites another entry. Delete
+names the folder in its confirmation and works only when it is empty; it never
+removes contained favourites, nested folders, hidden entries or other files.
+If empty folders are hidden, turn on **Options → Library → Show Systems with No
+Games** to make the folder selectable for deletion.
 On a card that had no `_@Favorites` when Degauss started, the first
 favourite makes it, but the Favourites shelf is only listed after **Rebuild
 All System Lists**. Both random choices use the currently open folder and
@@ -202,8 +209,10 @@ rebuilding; **Appearance** contains view and image controls.
 When Degauss creates an Arcade favourite, it also prepares MiSTer's native menu
 link if the Favorites script has not already done so. New favourite folder names
 start with `_`: keep it to show the folder in both Degauss and MiSTer's native
-OSD, or remove it with **X** (or clear the name with **Y**) to make the folder
-Degauss-only. Existing folders are never renamed.
+OSD, or remove it with **X** to make the folder Degauss-only. The naming grid
+starts with lowercase letters; **Y** cycles through lowercase, uppercase and
+symbols, **SP** enters a space and **Clear** clears the complete name. Existing
+folders remain unchanged unless their Rename action is explicitly used.
 
 A gamepad needs no extra setup and browsing and settings need no keyboard. While Degauss
 owns the screen, MiSTer sends the d-pad as arrows and the face buttons as
@@ -851,7 +860,7 @@ currently selected palette and previews every change immediately.
 | **left / right** | choose another starting point, change the theme's Default text, change the selected RGB channel through its smooth gradient in five-unit steps (hold to repeat), switch logo colour between Original and Selection, change logo colour mix in five-percent steps, or select a hexadecimal digit |
 | **A** | open the continuous colour picker, apply the already-live colour, or activate Save changes, Save as and other controls |
 | **X** | choose another palette role and swap its exact colour with the selected role; switch between the continuous picker and exact hexadecimal editing; in the name grid, delete one character |
-| **Y** | restore the colour that was present when the picker opened; in the name grid, clear the complete name |
+| **Y** | restore the colour that was present when the picker opened; in the name grid, cycle lowercase, uppercase and symbol pages |
 | **B** | cancel the current edit or leave the editor; changed themes require explicit discard confirmation |
 
 An editor-created theme has **Save changes**, which updates that theme under
@@ -860,13 +869,16 @@ Built-in and hand-written themes remain protected and offer **Save as** only.
 Updating is transactional: if the replacement or settings cannot be saved,
 the previous theme file remains usable and the error stays on screen.
 
-**Save as** opens a controller-operated name grid. Its green checkmark saves
-and its red X cancels. Saving writes a complete
+**Save as** opens a paged controller-operated name grid. **Y** cycles its
+lowercase, uppercase and symbol pages, **X** deletes one character, **SP**
+enters a space and **Clear** clears the complete name. Its green checkmark
+saves and its red X cancels. Saving writes a complete
 `.toml` file into `Scripts/.config/degauss/themes/`, selects it, and stores
 its name in `settings.toml`; the default text choice remains part of the theme
-file. Names use letters, numbers, spaces, hyphens and
-underscores. An existing theme is never overwritten. A save error remains
-on screen and the unsaved draft stays in the editor.
+file. Names use the characters shown on the grid; `\`, `/`, `:`, `*`, `?`,
+`"`, `<`, `>` and `|` are excluded because they cannot be used in these
+filenames. An existing theme is never overwritten. A save error remains on
+screen and the unsaved draft stays in the editor.
 
 A theme saved by this editor also has a **Delete theme** control. Existing
 canonical editor-saved themes are recognised too. Deletion requires
