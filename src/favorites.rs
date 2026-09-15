@@ -822,6 +822,58 @@ fn same_filesystem_entry(_left: &std::fs::Metadata, _right: &std::fs::Metadata) 
     false
 }
 
+fn rename_case_only(parent: &Path, source: &Path, destination: &Path) -> Result<()> {
+    let mut temporary = None;
+    for attempt in 0..1000 {
+        let candidate = parent.join(format!(
+            ".degauss-favourites-rename-{}-{attempt}",
+            std::process::id()
+        ));
+        match std::fs::symlink_metadata(&candidate) {
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                temporary = Some(candidate);
+                break;
+            }
+            Err(error) => {
+                return Err(DegaussError::io(
+                    "checking a temporary favourites folder name",
+                    candidate,
+                    error,
+                ));
+            }
+        }
+    }
+    let temporary = temporary.ok_or_else(|| {
+        DegaussError::unsupported(
+            "renaming a favourites folder",
+            format!("no temporary name is available below {}", parent.display()),
+        )
+    })?;
+
+    std::fs::rename(source, &temporary)
+        .map_err(|error| DegaussError::io("renaming a favourites folder", source, error))?;
+    if let Err(error) = std::fs::rename(&temporary, destination) {
+        return match std::fs::rename(&temporary, source) {
+            Ok(()) => Err(DegaussError::io(
+                "renaming a favourites folder",
+                destination,
+                error,
+            )),
+            Err(rollback) => Err(DegaussError::unsupported(
+                "renaming a favourites folder",
+                format!(
+                    "moving {} to {} failed: {error}; restoring it from {} also failed: {rollback}",
+                    source.display(),
+                    destination.display(),
+                    temporary.display()
+                ),
+            )),
+        };
+    }
+    Ok(())
+}
+
 /// Rename one real Favourites directory within its current parent. No entry
 /// is overwritten or merged and the contents are left untouched.
 pub fn rename_folder(root: &Path, folder: &Path, requested: &str) -> Result<PathBuf> {
@@ -842,18 +894,19 @@ pub fn rename_folder(root: &Path, folder: &Path, requested: &str) -> Result<Path
     let destination = parent.join(name);
     let source_metadata = std::fs::symlink_metadata(folder)
         .map_err(|error| DegaussError::io("checking a favourites folder", folder, error))?;
-    match std::fs::symlink_metadata(&destination) {
+    let case_only = match std::fs::symlink_metadata(&destination) {
         // FAT and other case-insensitive filesystems report a case-only
-        // destination as the source itself. That is a rename, not an
-        // overwrite, and is how the exact case typed by the user is kept.
-        Ok(existing) if same_filesystem_entry(&source_metadata, &existing) => {}
+        // destination as the source itself. Renaming directly is a successful
+        // no-op there, so use a temporary sibling to change the directory
+        // entry's stored case.
+        Ok(existing) if same_filesystem_entry(&source_metadata, &existing) => true,
         Ok(_) => {
             return Err(DegaussError::unsupported(
                 "renaming a favourites folder",
                 format!("{} already exists", destination.display()),
             ));
         }
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
         Err(error) => {
             return Err(DegaussError::io(
                 "checking a favourites folder name",
@@ -861,9 +914,13 @@ pub fn rename_folder(root: &Path, folder: &Path, requested: &str) -> Result<Path
                 error,
             ));
         }
+    };
+    if case_only {
+        rename_case_only(parent, folder, &destination)?;
+    } else {
+        std::fs::rename(folder, &destination)
+            .map_err(|error| DegaussError::io("renaming a favourites folder", folder, error))?;
     }
-    std::fs::rename(folder, &destination)
-        .map_err(|error| DegaussError::io("renaming a favourites folder", folder, error))?;
     Ok(destination)
 }
 
@@ -1067,6 +1124,31 @@ mod tests {
                 .iter()
                 .any(|name| name == "case name"),
             "the directory entry keeps the requested case"
+        );
+
+        // The host filesystem changes case with one rename, while FAT treats
+        // that call as a successful no-op. Exercise the two-step operation
+        // separately so its content preservation is covered on every host.
+        let two_step_source = root.join("Two Step");
+        let two_step_destination = root.join("two step");
+        std::fs::create_dir(&two_step_source).unwrap();
+        std::fs::write(two_step_source.join("kept.txt"), b"two step").unwrap();
+        rename_case_only(&root, &two_step_source, &two_step_destination).unwrap();
+        assert_eq!(
+            std::fs::read(two_step_destination.join("kept.txt")).unwrap(),
+            b"two step"
+        );
+        let stored_names: Vec<_> = std::fs::read_dir(&root)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        assert!(stored_names.iter().any(|name| name == "two step"));
+        assert!(!stored_names.iter().any(|name| name == "Two Step"));
+        assert!(
+            stored_names.iter().all(|name| !name
+                .to_string_lossy()
+                .starts_with(".degauss-favourites-rename-")),
+            "a successful case-only rename leaves no temporary sibling"
         );
 
         let outside = card.join("Outside");
