@@ -429,22 +429,6 @@ impl Catalogues {
     }
 }
 
-/// Whether a bare name in a favourite could be a set on the card: a
-/// `.zip`, a name with no extension, which is what a set folder is
-/// called, or a folder by that name under one of the system's game
-/// folders, for a set folder with a dot in its name. Asked where the
-/// owning system is chosen by what it accepts, so a ROM-set system claims
-/// a set the way it claims a `.neo`, and no other name it would refuse:
-/// the card is looked at only for a dotted name, which is otherwise
-/// another system's file, and a file by that name claims nothing.
-pub fn set_like_name(path: &Path, roots: &[PathBuf]) -> bool {
-    match path.extension().and_then(|extension| extension.to_str()) {
-        None => true,
-        Some(extension) if extension.eq_ignore_ascii_case("zip") => true,
-        Some(_) => roots.iter().any(|root| root.join(path).is_dir()),
-    }
-}
-
 /// The rule that starts a ROM set, where the system's own rules cover
 /// only extensions. Asked for a file the caller has already found no rule
 /// of the system covers.

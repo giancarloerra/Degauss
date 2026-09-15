@@ -70,9 +70,12 @@ remain labelled by release.
 </p>
 
 **Game Artwork Databases:** choose **Automatic**, **Gamelist** or **Artwork Pack**
-for each supported system. Automatic is the default and prefers a `gamelist.xml` in any of that system's
-library roots; otherwise it looks for a supported pack installed in the default
-SD or USB locations. Explicit Gamelist and Artwork Pack choices stay saved until
+for each supported system. Automatic is the default; **Options → Library →
+Automatic Data Source** chooses whether it tries Gamelist or an installed pack
+first. The backward-compatible default is Gamelist First. Packs remain lazy:
+Degauss checks the relevant pack only when that system is entered and asks
+before preparing it.
+Explicit Gamelist and Artwork Pack choices stay saved until
 Automatic is selected again. [How to install and select a pack](#using-mister-game-artwork-databases).
 
 | | |
@@ -183,9 +186,17 @@ the currently open folder and **Random Game Behaviour**. **Find** contains
 jump, search and hiding controls; **Library** contains scraping, core choice,
 data source and rebuilding; **Appearance** contains view and image controls.
 
+For Arcade favourites to work, if you have never launched MiSTer's
+**Favorites** script, run it once and create one Arcade favourite there.
+Folders inside `_@Favorites` without a leading `_` are visible only in Degauss,
+not in MiSTer's native OSD. Create them with the `_`, for example `_Arcade`, to
+see them in both.
+
 A gamepad needs no extra setup and browsing and settings need no keyboard. While Degauss
 owns the screen, MiSTer sends the d-pad as arrows and the face buttons as
-Enter, Escape, Space and Tab.
+Enter, Escape, Space and Tab. One physical press counts once even when a
+controller or the input stack delivers it as two press and release pairs
+within 40 ms; held scrolling and deliberate repeated taps are not affected.
 
 ### Running MiSTer scripts
 
@@ -250,7 +261,13 @@ scripts report their underlying error.
   from the system's selected Gamelist or Artwork Pack source.
 - **Favourites are MiSTer's favourites**, written into `_@Favorites` in
   MiSTer's own format. One made here works in the stock menu; one made
-  anywhere else appears here.
+  anywhere else appears here: the stock script's absolute paths, the
+  root-relative paths Degauss writes, and hand-written paths relative to
+  the core's games folder are all read the way MiSTer Main reads them. A
+  favourite any of whose files sits in two of its system's folders at once
+  is kept, reported in `/tmp/degauss.log` and Game Information, and
+  refused at launch with the same line, rather than pointed at one of them
+  by folder order.
 - **Awkward systems handled** without hassle: AmigaVision, DOS,
   Neo Geo, Arcade, X68000, and cores that are several machines.
 
@@ -422,7 +439,9 @@ without any setup, in the order MiSTer's own loader searches:
 then the card, each under its `games` folder. For each system folder the
 first place that has it wins, so a system kept on both the stick and the
 card browses from the stick, exactly as the stock menu would load it.
-Different folders of one system may resolve in different places.
+Different folders of one system may resolve in different places. The
+files an MGL names by a relative path are looked for in the same order,
+under the folder MiSTer Main would use for that core and set name.
 
 Two things to know. Storage is looked for when Degauss starts, so plug
 the stick in first (or restart after); and moving a system between
@@ -431,16 +450,32 @@ system** or a full rebuild. A layout the defaults do not cover is one
 `game_roots` edit in `degauss.toml` away.
 
 The first run reads the card and writes an index, about a minute for a
-full one of 97k+ games. Ordinary folder libraries then reuse their saved lists:
+full one of 97k+ games. It reads the ordinary game libraries only: an
+installed Artwork Pack is not opened until its system is entered and you say
+so. Ordinary folder libraries then reuse their saved lists:
 **Options → Library → Rebuild All System Lists** is how you tell Degauss the
 card has changed (for example after adding new games). New images and metadata
-are read on the fly. Automatic Artwork Pack preparation is described
-[below](#using-mister-game-artwork-databases).
+are read on the fly. A system whose Artwork Pack you chose yourself is
+prepared again as part of that rebuild, without a question: the choice is
+the consent. A system that said yes to its pack under Automatic is read the
+ordinary way, without its pack, and what was prepared for it is left as it
+was; the next entry into it asks whether to update the pack data for the
+list just read, and **Keep Current** goes on browsing on the previous
+mapping. A system that declined its pack, or was never asked, is read the
+ordinary way and Rebuild All does not ask it; **Rebuild This System List**
+inside that system is what asks again. Automatic Artwork Pack preparation is
+described [below](#using-mister-game-artwork-databases).
 Adding games to one system does not need the whole card read again:
 **X Actions → Library → Rebuild This System List** inside that system reads just its folders.
 Running it from a subfolder still rebuilds the complete containing system, not only that subfolder.
-A successful rebuild reflects additions and removals. An unreadable folder or archive
-reports its error and keeps that system's previous complete list.
+A successful rebuild reflects additions and removals. An unreadable folder
+reports its error and keeps that system's previous complete list. A malformed
+archive, or a member inside one that MiSTer cannot launch, is skipped with a
+warning and the rest of the system is published; the rebuild then finishes as
+**Finished With Problems**, naming the system, the archive and the reason
+(a system prepared from an Artwork Pack names them in its completion message,
+as does a change of its game data source), with every skipped member written
+to `/tmp/degauss.log`.
 
 Global and single-system rebuilds show a progress dashboard with the active
 system and folder, processed systems, folder/game counts and elapsed time.
@@ -459,7 +494,14 @@ the library. Systems that already launch ZIP files as individual games keep that
 behaviour. ZIP64 is supported
 within the documented bounds. Metadata for a multi-game archive identifies each game
 by its full archive/member path; single-game archives retain legacy archive-level
-metadata. See [ZIP libraries](docs/zip-libraries.md) for details and launch limits.
+metadata. An archive holding one game with artwork shows that artwork on its row
+before it is opened. A damaged archive is skipped whole; a member MiSTer cannot launch (an
+inner archive, an encrypted entry or one using an unsupported compression
+method, a legacy-encoded or ambiguous name) is skipped on its own while the
+other members stay, as is a folder inside an archive that sits deeper than the
+folder depth Degauss walks, with everything under it, and each skip is
+reported. See [ZIP libraries](docs/zip-libraries.md) for details and launch
+limits.
 The one exception is a Neo Geo ROM set, described next: a ZIP the Neo Geo
 catalogue names is one game and is never opened.
 
@@ -594,6 +636,20 @@ counted through every subfolder, and can sit before the games or after
 them. Favourites carry a heart in every view and can be gathered at the
 top of their folder.
 
+A folder or ZIP that holds exactly one game with artwork, whatever else
+without a picture sits beside it, or several entries that all share one
+picture such as a multi-disc game, shows that game's artwork in Details,
+Tiled, Carousel and Gallery before it is opened. It is still a folder: it
+keeps its own name and count, opens as a folder, and inherits nothing else
+from the game. A folder holding two or more games with different pictures,
+no artwork at all, or several entries sharing a picture beside one without,
+keeps the system logo. List and Multi list stay text.
+Hidden entries never contribute their artwork, Favourites shelves keep
+their heart, and the picture follows the selected data source of the
+system. The picture is answered from the system's saved list, so a system
+browsed before its list has been written keeps the system logo on its
+folders until it is indexed or rebuilt.
+
 **Hide This**, in **Actions → Find**, takes any row out of the list: a
 game, a folder, or a whole system while you are looking at the system
 list. That is separate from the folders and systems left out because they
@@ -626,12 +682,13 @@ require **A** and confirmation, never a sideways press.
 | Appearance | Reset All Custom Views | With A and confirmation, remove every place-specific view without changing the global View setting |
 | Appearance | Text | The typeface: Smooth, Pixel (a DOS font on whole pixels), and the bolder Smooth 2 and Pixel 2 |
 | Appearance | Artwork | Turn pictures off entirely |
-| Appearance | Artwork Scale Factor | Framebuffer keeps the original square-pixel fit and is the default. 4:3 and 16:9 correct game artwork for that physical display shape in Details, Tiled, Carousel and Gallery. Category logos, system logos and the screensaver are unchanged |
+| Appearance | Artwork Scale Factor | Framebuffer keeps the original square-pixel fit and is the default. 4:3 and 16:9 correct game artwork for that physical display shape in Details, Tiled, Carousel and Gallery, including a folder showing its game's artwork. Category logos, system logos and the screensaver are unchanged |
 | Appearance | Bottom Bar While Browsing | On by default. Show the time and button hints while browsing. A saved Off choice stays Off after updating or restarting; menus and operation controls remain visible |
 | Appearance | Screensaver | How long with nothing pressed before pictures start |
 | Library | Favourites First | Show favourites first in each folder, keeping them in alphabetical order |
 | Library | Folders Before Games | On, folders lead a system's listing; off, the games come first |
 | Library | Core Preference | Standard First (default) or RetroAchievements First. Used by systems whose Core Version is Default; the other version is used only when the preferred version is absent |
+| Library | Automatic Data Source | Gamelist First (default) or Artwork Pack First. Applies only to systems whose Game Data Source remains Automatic; explicit per-system choices always win |
 | Library | Show Other Folder | Show the Other group, the cores that are not games |
 | Library | Show Utility Folder | Show the Utility group, test patterns and measurement cores |
 | Library | Show Unstable Folder | Show installed Unstable cores. On by default |
@@ -868,17 +925,50 @@ is only what `<path>` points at:
 
 Degauss can also read the local [MiSTer Game Artwork Databases](https://github.com/chipster6502/MiSTer_artwork_pack)
 installed by MiSTer's Update All and Downloader tools. **Automatic** is the
-default when no source choice has been saved. A `gamelist.xml` in any of the
-system's library roots keeps the whole system on Gamelist. Otherwise Degauss
-uses a valid installed pack from SD, then USB0 through USB7. With neither,
-the usual filesystem/Gamelist presentation remains available. Broken or
-unreadable candidates are reported, not silently skipped to another source.
-Existing saved Artwork Pack locations retain their meaning.
+default when no per-system source choice has been saved. **Options → Library →
+Automatic Data Source** sets its priority:
+
+- **Gamelist First** is the default and preserves existing behaviour. A
+  `gamelist.xml` in any library root keeps the system on Gamelist; otherwise
+  Degauss looks for an installed pack.
+- **Artwork Pack First** offers or reuses an installed pack when available;
+  otherwise the system uses Gamelist.
+
+This option never rewrites explicit per-system choices. In either priority,
+pack discovery stays lazy: when the relevant Automatic system is entered,
+Degauss looks under `docs` on SD, then USB0 through USB7, and asks before
+reading an unprepared pack:
+
+```text
+Artwork Pack Available
+
+An installed Artwork Pack was found for NES. Prepare its artwork and metadata now?
+
+A Prepare   B Not Now
+```
+
+**Prepare** reads the pack and matches that one system's games, with the
+same progress, Details and **B Cancel** as a system rebuild; the system
+opens with the pack's artwork and metadata once the result is installed.
+**Not Now** opens the system with its ordinary data and is remembered for
+that pack as it is, so the same unchanged pack is not asked about at every
+entry; a pack that has changed since is offered again. Any other press takes
+the question down without deciding anything. A system you never enter causes
+no pack work at all, however many packs are installed, and installing every
+pack through Update All does not make the first run prepare them. With
+neither a gamelist nor a pack, the usual filesystem presentation remains
+available. A candidate location that cannot be looked at is reported, not
+silently skipped to another source; a `docs`, or a mapped Artwork folder
+under it, that is a link to somewhere outside its own mount is not offered,
+and `degauss.log` says so. Existing
+saved Artwork Pack locations retain their meaning.
 
 Older settings did not record an explicit Gamelist choice. An existing settings
 file without a saved Pack choice therefore uses Automatic, so an installed pack
-can now appear when no root `gamelist.xml` exists. Choosing **Gamelist** now saves
-that explicit choice. No migration or reset is needed.
+is offered according to the global priority when the system is entered.
+Choosing **Gamelist** now saves that explicit choice. No migration or reset is
+needed. If the new global setting is absent, it resolves to **Gamelist First**, so
+existing installations retain their current source behaviour.
 
 Install and update a database through **Update All → Settings → Extra Content
 → Game Artwork DBs**. Update All also chooses its 2D, 3D or mixed artwork
@@ -890,7 +980,8 @@ Databases can also be downloaded directly from the original
 [MiSTer Game Artwork Databases repository](https://github.com/chipster6502/MiSTer_artwork_pack).
 Degauss reads the installed database in place rather than importing or copying it.
 **Game Data Source** is selected separately for each supported system from its
-**X Actions → Library** menu, not from the global Options menu.
+**X Actions → Library** menu. The global option changes only the priority used
+by systems still set to Automatic.
 
 To choose a pack manually:
 
@@ -907,25 +998,99 @@ by configured game roots. A normal installation is under
 `/media/usb0/docs/SuperGrafx/Artwork`. Games and artwork do not have to be on
 the same device. A directory browser is available for a valid installation in
 another permitted MiSTer storage location; it starts at `/media`, above the
-normal SD, USB, network and CIFS mount directories.
+normal SD, USB, network and CIFS mount directories. A directory whose mapped
+Artwork folder is a link to somewhere outside that permitted storage is not
+accepted as a pack, and `degauss.log` names the folder.
 
 The choice applies to the complete system, including all of its game folders.
 Neo Geo and Neo Geo MVS share one choice because they use the same library and
-database. Favourites have no separate choice: each one follows the current
-source of the system that owns its game.
+database; what they share is the saved mode, so under Automatic each of the
+two is still asked about, prepared and remembered on its own. Favourites have
+no separate choice: each one follows the current source of the system that
+owns its game.
 
-The source menu shows both the saved mode and its effective source. Automatic
-is checked off-thread at startup, when reopening a system and when rebuilding
-its list. Installing a pack or adding/removing a root gamelist can therefore
-change an Automatic choice on the next check, without saving a manual path.
-Automatic checks only standard SD/USB locations; the explicit Pack picker
-continues to support network and custom locations.
+The source menu shows both the saved mode and its effective source, for example
+**Automatic (Using: Gamelist)**. Under Gamelist First, a root `gamelist.xml`
+takes the system back to Gamelist at the next entry and next start. Under
+Artwork Pack First, an accepted prepared pack stays in use when a gamelist is
+also present. Switching the global priority leaves prepared Pack state intact,
+so an unchanged Pack is reused without another scan. A previous **Not Now**
+decision remains respected for that same Pack state. Automatic checks only
+standard SD/USB locations; the explicit Pack picker continues to support
+network and custom locations.
 
-A newly detected pack prepares its system lists as part of indexing, before
-the completion report is shown. Its game counts and artwork are then available
-to browsing, favourites and the screensaver without opening that system first.
-No manual cache reset or extra rebuild is needed. Preparation uses the same
-progress, Details and cancellation controls as the rest of indexing.
+What a preparation remembers is written beside the system's cache: the
+system, the pack location, a signature of the pack's tables, the language the
+descriptions were prepared for, the version of the matching rules and the
+list the mapping was prepared from. Entering the system again, after a game or
+a restart, checks that signature against the pack with a handful of file
+stats, then opens at once: no table is parsed, no row is walked and no ROM
+is checked again. The manifest, whose size grows with the number of images
+in the pack, is read and checksummed again only when the Artwork directory
+or the manifest's own size or time changed. The stats cover the tables that
+were there at preparation and the fixed names, `index.tsv`, `gameinfo.tsv`,
+`manifest.tsv` and the synopsis tables of the preferred language and of
+English; a synopsis in another language added later is picked up by
+**Rebuild This System List**. Images are read from the pack on demand as
+before, so an image replaced at its path shows its new picture without any
+rebuild: a file renamed into place, added or removed shows, or stops
+showing, at the next entry; a file overwritten in place, or copied over its
+existing name, at the next start or after **Rebuild This System List**. The
+mapping itself is not touched by any of these; only the pack's completeness
+warning waits for the next preparation. Favourites and the
+screensaver use the same written-down mapping; a system that has not been
+prepared contributes its ordinary data to them. A state file beside the
+cache that cannot be read is reported when the system is entered, and
+nothing is asked or written over it.
+
+When the check finds that a table, the pack location, the language or the
+system's own list has changed since the preparation, Degauss asks before doing
+the work again:
+
+```text
+Artwork Pack Changed
+
+The installed Artwork Pack data for NES has changed. Update its prepared artwork and metadata now?
+
+A Update   B Keep Current
+```
+
+**Update** prepares that one system again and replaces the previous result
+only once the new one is complete. **Keep Current** keeps browsing on the
+previous mapping and is remembered for that change, so it is not asked about
+again until the pack, the language or the system's own list changes once
+more. When the system's own list changed,
+after **Rebuild All System Lists**, the previous mapping is applied to the
+new list: games it knows keep their pack data, games added since have none
+until the pack is prepared again. When the prepared list itself is gone,
+there is no previous result to keep, and **Keep Current** opens the system
+with its ordinary data. The system's prepared data is never written again
+without one of these answers. An image added or removed is not a change to
+the mapping and asks nothing: the picture shows, or stops showing, at the
+next entry, and the pack's completeness is looked at again at the next
+preparation. **Rebuild This System List** is the
+deliberate way to prepare the current pack whatever was kept, and on a system
+whose pack was declined it asks the question again first. A cancelled or
+failed preparation writes nothing: without a previous result the system
+opens with its ordinary data, with one the previous result stays in use, and
+the next entry asks again. If the storage holding a prepared pack is missing,
+the system says so at every entry while it is missing, and opens on its
+ordinary rows only behind that message; the prepared result is kept for when
+the storage is back, and the favourites and the screensaver use it again as
+soon as it is. Two systems that share one database, such as Neo Geo and
+Neo Geo MVS, are each asked about and prepared on their own.
+
+Explicit choices need no question: **Artwork Pack** is the consent, and the
+pack is prepared as the source is switched; **Gamelist** stops every pack
+check and question for that system. Caches prepared by the previous release
+keep working: each is tied to its pack the first time its system is entered,
+by one worker read with the usual overlay, and reused from then on. Nothing
+is reprocessed at startup and nothing needs a reset. A cache that no longer
+matches the pack installed now is kept and asked about instead, with the
+same **Artwork Pack Changed** question: there is no current result to keep
+browsing on, so **Keep Current** keeps the file but opens the system with
+its ordinary data; **Rebuild This System List**, and **Update** when it
+asks, is the way to use the pack again.
 
 The two effective sources are deliberately exclusive:
 
@@ -938,13 +1103,44 @@ The two effective sources are deliberately exclusive:
 If an individual game or field is absent from the database, Degauss keeps the
 filesystem-derived game name and leaves that artwork or field empty. It never
 fills the gap from the gamelist or ScreenScraper. Publisher and game language
-also remain empty because the database format does not provide them. Folder
-rows, system logos and category images remain independent of this choice.
+also remain empty because the database format does not provide them. A folder
+showing its game's artwork takes that picture from the selected source too, and
+keeps the system logo while the Pack is unusable or has no picture for the
+game. System logos and category images remain independent of this choice.
 
 MRA entries are matched by their `<setname>`, including MGLs that point to an
 MRA. Large embedded hexadecimal ROM, patch and cheat payloads do not impose a
 whole-file size limit on that lookup. XML identity metadata remains bounded to
-1 MiB; this is separate from artwork image limits. Neo Geo ROM sets, zipped
+1 MiB; this is separate from artwork image limits. A descriptor Degauss cannot
+read (missing or a dangling link, unreadable, malformed XML, an MGL chain that
+loops or runs past eight files, or one whose game is missing or found in two
+of its system's folders) is left out of the pack mapping only: the game stays
+listed with its filesystem name and no pack artwork, the preparation finishes
+as "prepared with problems" saying how many games and why, each path is
+written to `/tmp/degauss.log`, and **Rebuild This System List** after
+repairing the file matches it normally. A missing or unreadable database
+location, a damaged database, a cache that cannot be written, or a read
+error that is the process's or the storage's rather than the file's (out of
+file descriptors or memory, a device error) still stops the whole
+preparation and keeps the previous complete result.
+
+An MGL is read the way MiSTer Main reads it. A `<file path>` written
+absolute is used as written. Any other path, `./` and `../` forms
+included, is looked for under the core's home directory, never beside the
+MGL: `games/<setname>` when the MGL carries a `<setname>` (without
+`same_dir="1"`), otherwise the core's own games folder, found in the same
+storage order as the system folders. An MGL for one of the systems in the
+table is identified by the game it names, its last `<file>`, as before. An
+MGL for a core outside the table, such as an arcade core with its ROM set
+spelled out as several files under `_Arcade`, is identified by its own name
+and `<setname>`: every file it names by a non-absolute path has to exist
+under that home directory, and none of them is hashed. A file present in two of a system's
+folders at once is reported in `/tmp/degauss.log` and left unmatched rather
+than picked by folder order. A `<setname>` that is not one folder name (a
+`/`, `.` or `..` step in it) is looked for nowhere, so a `<setname>` cannot
+lead that home directory lookup outside the game roots; a `<file path>`
+written absolute is used as written, wherever it points.
+Neo Geo ROM sets, zipped
 or unzipped, are matched by their set name (the ZIP's stem or the folder's
 name), which the Neo Geo database indexes with every catalogue alias; a set is
 never opened or hashed for the lookup.
@@ -955,13 +1151,21 @@ Pack is selected, that system's scrape entries in Actions are hidden and
 **Scrape All Systems** reports it as skipped before checking scraper login or
 making a request.
 
-Degauss rechecks a selected database when the system is entered. After Update
-All replaces a style or updates the database, leave and reopen the system to
-load the current files. A damaged database is reported as incomplete; a
-missing or invalid database remains selected and produces no stale or
-gamelist fallback data. Reconnect its storage, repair it through Update All,
-or choose **Gamelist**. Games remain browseable and launchable from their
-normal filesystem entries.
+Degauss rechecks a selected database when the system is entered, with the
+lightweight signature described above. After Update All replaces a style or
+updates the database, leave and reopen the system: it asks whether to update
+the prepared result. A damaged database is reported as incomplete once per
+database state: dismissing the warning writes it down in
+`artwork-pack-warnings.toml` beside `settings.toml`, so it does not come back
+after a game launch or a restart until the selected location, the database
+content, its health or its diagnostic changes. A missing or invalid database
+is reported again at every start of Degauss; it remains selected and produces
+no stale or gamelist fallback data. Reconnect its storage, repair it through
+Update All, or choose **Gamelist**. The complete diagnostic is still written
+to `/tmp/degauss.log` and printed by `--system <id> --report`; delete
+`artwork-pack-warnings.toml` and restart Degauss to see acknowledged warnings
+again. Games remain browseable and launchable from their normal filesystem
+entries.
 
 Only systems with a reviewed database mapping show **Game Data Source**.
 Currently supported systems are 3DO, Amiga CD32, Arcade, Atari 2600, Atari
@@ -993,20 +1197,27 @@ policies for pictures and metadata:
 | **Images: Missing only** | Keeps the effective `<image>`, `<screenshot>` or `<thumbnail>` when its file exists, and fetches a picture only when artwork is absent or broken. |
 | **Images: Replace existing** | Downloads the selected ScreenScraper media and makes it the entry's `<image>`. The previous media file is not overwritten or deleted. |
 | **Metadata: Off** | Never changes metadata. |
-| **Metadata: Fill missing** | Fills empty fields and preserves every non-empty local or inherited value. |
+| **Metadata: Fill missing** | Fills empty fields and preserves every non-empty local or inherited value. A folder, system or all-systems run treats an entry with any non-empty local or inherited field as complete; **Scrape This Game** and **Search Manually** fill its empty fields one by one. |
 | **Metadata: Replace existing** | Replaces only fields ScreenScraper actually returned. A missing upstream value never erases a local one. |
 
 Both settings cannot be Off when a scrape starts. The metadata fields are
 name, description, publisher, developer, release date, players, genre and
 language.
 
-When the selected image exists and every enabled metadata field is populated,
-Degauss skips the game before making any ScreenScraper request. Fill missing
-still checks all eight fields: a blank language, publisher or other field can
-therefore cause another metadata lookup even when the picture and description
-are present. A field ScreenScraper does not supply remains blank and may be
-retried on a later run; existing artwork is not downloaded again for that
-metadata lookup.
+Pictures and metadata are checked independently before any ScreenScraper
+request. Under **Images: Missing only** a picture is requested only when the
+effective image is absent or its file does not exist. In a folder, system or
+all-systems run, **Metadata: Fill missing** requests metadata only when every
+one of the eight fields is empty: a game with an existing picture and at
+least one non-empty local or inherited field is skipped without a request, so
+a blank language, publisher or other optional field does not send the same
+games back on every run. An entry with metadata but no picture receives only
+its picture; an entry with a picture but no metadata receives only metadata,
+and its picture is not downloaded again. **Scrape This Game** and **Search
+Manually** keep filling individual empty fields, because choosing one game is
+permission to complete that record field by field; a field ScreenScraper does
+not supply remains blank and is retried on the next single-game scrape.
+**Replace existing** requests and replaces the selected data as before.
 
 Ordinary ROM files are matched by CRC32, MD5 and SHA-1 when they are no more
 than 64 MiB. Larger files, archives, `.mgl`, `.mra` and other wrappers use an
@@ -1032,10 +1243,24 @@ artwork or metadata, set the corresponding Images or Metadata policy to
 
 Folder, system and all-systems scrapes never stop for a match choice. Missing
 and ambiguous ScreenScraper matches are counted, skipped without changes, and the remaining
-games continue. Unsupported systems are also skipped and counted. If two
-systems use the same folder but require different ScreenScraper platform IDs,
-the all-systems scrape skips that shared target; a per-system scrape remains
-available.
+games continue. A search ScreenScraper rejects for one game, or a genuine
+ScreenScraper answer for one game whose content cannot be read, is counted
+as failed for that game and the run continues. If only the picture request
+is rejected, any metadata the run was also asked to fill for that game is
+still written and the game is listed with the picture error; a game whose
+metadata was already complete is only listed. A file whose name leaves
+nothing to search for once its extension and dump tags are removed is
+counted as missing with the reason "no searchable title" and no title search
+is sent, although a hash lookup is still made for a file that can be hashed.
+A network failure, a rejected login, a rate limit, a service outage, a
+refused client, an exhausted allowance, a request address reported as
+incomplete (Degauss sends the same fields for every game) or a response that
+is not a ScreenScraper answer at all (an empty body, a body that is neither
+text nor XML, or a maintenance or intermediary page) stops the run. The log
+names the rejection or page behind each of these. Unsupported systems are
+also skipped and counted. If two systems use the same folder but require
+different ScreenScraper platform IDs, the all-systems scrape skips that
+shared target; a per-system scrape remains available.
 
 Symlinked copies share a single scrape and gamelist update only when they point
 to the same physical file and the same existing gamelist entry; extra paths
@@ -1047,7 +1272,16 @@ During a run, the progress dashboard shows current work, game progress,
 written, unchanged, unresolved and failed counts. **A Details** opens a
 scrollable report with status, scope, current title, completed/total, written,
 unchanged, linked copies, unresolved and skipped/error breakdowns, allowance,
-throughput and the last problem. **B Overview** returns without cancelling.
+throughput and the last problem. After the run, the report continues with
+every game the run attempted and could not resolve, one row per game with
+its reason: "no match", "no searchable title", the number of matches (for
+example "3 matches"), "no image", or the message of a failed lookup,
+download or gamelist write. A game whose image failed, or whose match has
+no image, is listed even when its metadata was written, so the rows agree
+with the "no image" count. Games not reached before a failure or
+cancellation are not listed. A missing, ambiguous or rejected
+game can then be found and scraped individually. **B Overview** returns
+without cancelling.
 The report retains
 worker counts, account limits reported by ScreenScraper and Degauss's allowance
 estimate. Another
@@ -1063,11 +1297,16 @@ complete list, including after a single-game scrape. This work runs in a
 Degauss-owned worker, with the system/folder and read counts shown while the
 interface remains responsive. It is not a targeted one-game refresh. The
 dashboard shows safe finishing until that work completes; Details remains
-available. No helper or background service stays running after Degauss exits.
+available. An archive or member a refresh skips is shown as the last problem,
+named by the system, and is not counted as a failed system. No helper or
+background service stays running after Degauss exits.
 
 Connection and server failures remain on the progress screen until they are
 dismissed. The on-screen message is kept concise; technical curl and HTTP
-details are written to `/tmp/degauss.log` without request URLs or login data.
+details are written to `/tmp/degauss.log`. Degauss never writes its own
+request URLs or login data there; a server error text quoted in the log is
+cut to one line and has its login and developer credential parameters
+replaced by "[redacted]".
 Degauss allows 10 seconds to establish each connection and 60 seconds for an
 ordinary API request. An image transfer receives 60 to 300 seconds according
 to its size and the account's reported speed. Retryable failures receive up
@@ -1342,6 +1581,11 @@ only the managed copy. Categories then return to their normal named image,
 random system-logo choice, or Favourites heart. Systems return to their normal
 image named after the system ID.
 
+A system's custom image applies to the system row and remains the fallback for
+a folder that has no unambiguous game picture. A folder holding one game, or
+several discs that share one picture, continues to show that game artwork.
+**Clear Custom Image** restores the image named after the system ID.
+
 `Arcade.png` is already included as the default fixed image for the Arcade
 category.
 
@@ -1486,10 +1730,10 @@ to point somewhere else. `degauss.sh` passes them explicitly.
 
 | Flag | What it answers |
 |---|---|
-| `--audit` | Every system, one line each: games found, artwork bound, folders and any selected Artwork Pack health problem. A Gamelist system with a `gamelist.xml` but no artwork bound, a usable Pack that resolves no pictures, or a system with no games is listed again underneath as a problem. A whole card checked without opening a hundred systems by hand. |
+| `--audit` | Every system, one line each: games found, artwork bound, folders and any selected Artwork Pack health problem. A Gamelist system with a `gamelist.xml` but no artwork bound, a usable Pack that resolves no pictures, or a system with no games is listed again underneath as a problem, as is an archive, or a member of one, that was skipped, with its reason. A whole card checked without opening a hundred systems by hand. |
 | `--list-systems` | Which systems this card actually has, and where each one resolved. The answer to "why is my system missing". |
-| `--check-install` | The installation itself, including every saved Artwork Pack root: what is present, missing, broken or left half-migrated. The first thing to run when something looks wrong. |
-| `--report` | One system in detail, with `--system <id>`. It identifies Gamelist or Artwork Pack; for a Pack it also reports the selected root, health and the first game's local match method. |
+| `--check-install` | The installation itself, including every saved Artwork Pack root and every pack state file written beside a system cache, read under the source the settings choose for that system now: an Automatic acceptance or decline, an explicit Artwork Pack choice's preparation, or a state kept behind a later Gamelist choice, a prepared state with how many games were left without pack data. What is present, missing, broken or left half-migrated. The first thing to run when something looks wrong. |
+| `--report` | One system in detail, with `--system <id>`. It identifies Gamelist or Artwork Pack; for a Pack it also reports the selected root, health and the first game's local match method, a match that fails on an MGL names the file the MGL asked for and the folder it was looked for in, or the set name no games folder was found for, and a descriptor left out of the mapping is counted under its reason. Under Automatic it also says what the pack decision stands at: prepared and current, changed, unavailable, declined, or a candidate not yet asked about. A skipped archive or member is listed as `unreadable` with its reason. |
 | `--dry-run-launch` | The MGL that *would* be written to start a game, printed instead of run. The answer to "why does this game not start". |
 
 ### Seeing it without the screen
