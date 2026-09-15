@@ -468,8 +468,14 @@ described [below](#using-mister-game-artwork-databases).
 Adding games to one system does not need the whole card read again:
 **X Actions → Library → Rebuild This System List** inside that system reads just its folders.
 Running it from a subfolder still rebuilds the complete containing system, not only that subfolder.
-A successful rebuild reflects additions and removals. An unreadable folder or archive
-reports its error and keeps that system's previous complete list.
+A successful rebuild reflects additions and removals. An unreadable folder
+reports its error and keeps that system's previous complete list. A malformed
+archive, or a member inside one that MiSTer cannot launch, is skipped with a
+warning and the rest of the system is published; the rebuild then finishes as
+**Finished With Problems**, naming the system, the archive and the reason
+(a system prepared from an Artwork Pack names them in its completion message,
+as does a change of its game data source), with every skipped member written
+to `/tmp/degauss.log`.
 
 Global and single-system rebuilds show a progress dashboard with the active
 system and folder, processed systems, folder/game counts and elapsed time.
@@ -488,7 +494,13 @@ the library. Systems that already launch ZIP files as individual games keep that
 behaviour. ZIP64 is supported
 within the documented bounds. Metadata for a multi-game archive identifies each game
 by its full archive/member path; single-game archives retain legacy archive-level
-metadata. See [ZIP libraries](docs/zip-libraries.md) for details and launch limits.
+metadata. A damaged archive is skipped whole; a member MiSTer cannot launch (an
+inner archive, an encrypted entry or one using an unsupported compression
+method, a legacy-encoded or ambiguous name) is skipped on its own while the
+other members stay, as is a folder inside an archive that sits deeper than the
+folder depth Degauss walks, with everything under it, and each skip is
+reported. See [ZIP libraries](docs/zip-libraries.md) for details and launch
+limits.
 
 ### RetroAchievements and Unstable cores
 
@@ -1193,7 +1205,9 @@ complete list, including after a single-game scrape. This work runs in a
 Degauss-owned worker, with the system/folder and read counts shown while the
 interface remains responsive. It is not a targeted one-game refresh. The
 dashboard shows safe finishing until that work completes; Details remains
-available. No helper or background service stays running after Degauss exits.
+available. An archive or member a refresh skips is shown as the last problem,
+named by the system, and is not counted as a failed system. No helper or
+background service stays running after Degauss exits.
 
 Connection and server failures remain on the progress screen until they are
 dismissed. The on-screen message is kept concise; technical curl and HTTP
@@ -1619,10 +1633,10 @@ to point somewhere else. `degauss.sh` passes them explicitly.
 
 | Flag | What it answers |
 |---|---|
-| `--audit` | Every system, one line each: games found, artwork bound, folders and any selected Artwork Pack health problem. A Gamelist system with a `gamelist.xml` but no artwork bound, a usable Pack that resolves no pictures, or a system with no games is listed again underneath as a problem. A whole card checked without opening a hundred systems by hand. |
+| `--audit` | Every system, one line each: games found, artwork bound, folders and any selected Artwork Pack health problem. A Gamelist system with a `gamelist.xml` but no artwork bound, a usable Pack that resolves no pictures, or a system with no games is listed again underneath as a problem, as is an archive, or a member of one, that was skipped, with its reason. A whole card checked without opening a hundred systems by hand. |
 | `--list-systems` | Which systems this card actually has, and where each one resolved. The answer to "why is my system missing". |
 | `--check-install` | The installation itself, including every saved Artwork Pack root and every pack state file written beside a system cache, read under the source the settings choose for that system now: an Automatic acceptance or decline, an explicit Artwork Pack choice's preparation, or a state kept behind a later Gamelist choice, a prepared state with how many games were left without pack data. What is present, missing, broken or left half-migrated. The first thing to run when something looks wrong. |
-| `--report` | One system in detail, with `--system <id>`. It identifies Gamelist or Artwork Pack; for a Pack it also reports the selected root, health and the first game's local match method, a match that fails on an MGL names the file the MGL asked for and the folder it was looked for in, or the set name no games folder was found for, and a descriptor left out of the mapping is counted under its reason. Under Automatic it also says what the pack decision stands at: prepared and current, changed, unavailable, declined, or a candidate not yet asked about. |
+| `--report` | One system in detail, with `--system <id>`. It identifies Gamelist or Artwork Pack; for a Pack it also reports the selected root, health and the first game's local match method, a match that fails on an MGL names the file the MGL asked for and the folder it was looked for in, or the set name no games folder was found for, and a descriptor left out of the mapping is counted under its reason. Under Automatic it also says what the pack decision stands at: prepared and current, changed, unavailable, declined, or a candidate not yet asked about. A skipped archive or member is listed as `unreadable` with its reason. |
 | `--dry-run-launch` | The MGL that *would* be written to start a game, printed instead of run. The answer to "why does this game not start". |
 
 ### Seeing it without the screen
