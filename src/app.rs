@@ -41,6 +41,7 @@ use crate::input::{
 };
 use crate::list_state::ListState;
 use crate::metrics::{FrameTimer, StartupTimings};
+use crate::name_keyboard::{self, Key as NameKey, Page as NamePage};
 #[cfg(test)]
 use crate::options::OPTIONS;
 use crate::options::{speed_badge, speed_label, OptionId, OptionsPage, ADVANCED};
@@ -53,10 +54,7 @@ use crate::systems::{is_favorites, FoundSystem, SystemDef};
 #[path = "ui_acceptance_tests.rs"]
 mod ui_acceptance_tests;
 use crate::theme::{Theme, ThemeSet};
-use crate::theme_editor::{
-    EditorEffect, EditorMode, ThemeEditor, EDITOR_ROWS, NAME_CANCEL, NAME_CELLS, NAME_COLUMNS,
-    NAME_SAVE,
-};
+use crate::theme_editor::{EditorEffect, EditorMode, ThemeEditor, EDITOR_ROWS, NAME_COLUMNS};
 use crate::{DegaussWindow, DetailLine, Row};
 
 const HANDHELD_CATEGORY: &str = "Handheld";
@@ -94,6 +92,8 @@ pub enum Screen {
     Screensaver,
     /// A grid of letters, for jumping down a long list or narrowing it.
     Find,
+    /// Paged entry for a Favourites directory name.
+    NameKeyboard,
     /// Which folder of MiSTer's favourites a game is going into.
     FavoriteFolder,
     /// ScreenScraper settings for one pending scope.
@@ -139,7 +139,7 @@ impl Screen {
             | Screen::SourceProgress => 1,
             Screen::About | Screen::Splash => 2,
             Screen::Screensaver => 3,
-            Screen::Find | Screen::ScraperKeyboard => 4,
+            Screen::Find | Screen::NameKeyboard | Screen::ScraperKeyboard => 4,
             Screen::ThemeEditor => 5,
             Screen::Information => 6,
             Screen::FavoriteFolder => 1,
@@ -211,6 +211,7 @@ enum Pending {
     /// A prepared Pack whose data changed: A prepares it again, B keeps
     /// the rows already prepared and remembers the change.
     UpdateArtworkPack(Box<PackOffer>),
+    DeleteFavoriteFolder(PathBuf),
 }
 
 /// What an Artwork Pack question is about: the system, the root and the
@@ -1131,6 +1132,8 @@ const ADD_FAVORITE: &str = "Add to Favourites";
 
 /// Take it out again.
 const REMOVE_FAVORITE: &str = "Remove From Favourites";
+const RENAME_FAVORITE_FOLDER: &str = "Rename Favourite Folder";
+const DELETE_FAVORITE_FOLDER: &str = "Delete Favourite Folder";
 
 /// ScreenScraper entry points. These strings are also the action identifiers
 /// while their menu is open, so they stay in one place.
@@ -1836,6 +1839,7 @@ struct ContextActions {
     game_data_source: bool,
     core_version: bool,
     core_version_override: bool,
+    favorite_folder: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1875,7 +1879,13 @@ impl ContextPage {
         match self {
             Self::Game => matches!(
                 action,
-                GAME_INFORMATION | RANDOM | RANDOM_FAVORITE | ADD_FAVORITE | REMOVE_FAVORITE
+                GAME_INFORMATION
+                    | RANDOM
+                    | RANDOM_FAVORITE
+                    | ADD_FAVORITE
+                    | REMOVE_FAVORITE
+                    | RENAME_FAVORITE_FOLDER
+                    | DELETE_FAVORITE_FOLDER
             ),
             Self::Find => matches!(action, JUMP | SEARCH | CLEAR_SEARCH | HIDE_THIS | SHOW_THIS),
             Self::Library => matches!(
@@ -1905,6 +1915,10 @@ fn context_help(action: &str) -> &'static str {
         }
         ADD_FAVORITE => "Keep the selected game in Main Favourites or in a Favourites folder.",
         REMOVE_FAVORITE => "Remove the selected favourite. The original game is not deleted.",
+        RENAME_FAVORITE_FOLDER => {
+            "Rename this Favourites folder without changing anything inside it."
+        }
+        DELETE_FAVORITE_FOLDER => "Delete this Favourites folder only when it is empty.",
         JUMP => "Jump to the first entry beginning with the chosen letter.",
         SEARCH => "Filter this list by name. Back keeps the search until it is cleared.",
         CLEAR_SEARCH => "Clear the search and show the full current list again.",
@@ -1978,6 +1992,12 @@ fn context_entries(
         Some(true) => groups.push(vec![REMOVE_FAVORITE.to_string()]),
         Some(false) => groups.push(vec![ADD_FAVORITE.to_string()]),
         None => {}
+    }
+    if actions.favorite_folder {
+        groups.push(vec![
+            RENAME_FAVORITE_FOLDER.to_string(),
+            DELETE_FAVORITE_FOLDER.to_string(),
+        ]);
     }
     if actions.scrape_scope || actions.scrape_game {
         let mut scrape = Vec::new();
@@ -2294,8 +2314,15 @@ enum FindMode {
     Jump,
     /// Add the letter to a filter over the folder on screen.
     Search,
-    /// Spell out the name of a new favourites folder.
-    NewFolder,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum NamePurpose {
+    /// Create the folder and finish the favourite addition that opened the
+    /// destination chooser.
+    NewFavoriteFolder,
+    /// Rename this real folder in its current parent.
+    RenameFavoriteFolder(PathBuf),
 }
 
 /// The grid, in reading order. Nine across and four down fills a screen
@@ -2997,7 +3024,7 @@ fn theme_editor_help(mode: EditorMode, selected: usize, custom_source: bool) -> 
         EditorMode::Hex => "A Use B Back X RGB Y Reset",
         EditorMode::Picker => "A Apply   B Cancel   X Hex   Y Reset",
         EditorMode::Swap => "A Swap   B Cancel",
-        EditorMode::Name => "A Type B Back X Del Y Clear",
+        EditorMode::Name => "A Type B Back X Del Y Page",
         EditorMode::Discard => "A Choose   B Keep Editing",
         EditorMode::Delete => "A Choose   B Keep Theme",
     }
@@ -3257,6 +3284,10 @@ pub struct App {
     filter: String,
     find_mode: FindMode,
     find_list: ListState,
+    name_keyboard_page: NamePage,
+    name_keyboard_draft: String,
+    name_keyboard_list: ListState,
+    name_keyboard_purpose: NamePurpose,
     /// Which systems have nothing to play in them, once the card has been
     /// read for it. [`None`] until then.
     empty_systems: Option<HashSet<String>>,
@@ -3656,6 +3687,13 @@ impl App {
             filter: String::new(),
             find_mode: FindMode::Jump,
             find_list: ListState::new(FIND_CELLS.chars().count(), FIND_CELLS.chars().count()),
+            name_keyboard_page: NamePage::Lower,
+            name_keyboard_draft: String::new(),
+            name_keyboard_list: ListState::new(
+                name_keyboard::keys(NamePage::Lower, false).len(),
+                name_keyboard::keys(NamePage::Lower, false).len(),
+            ),
+            name_keyboard_purpose: NamePurpose::NewFavoriteFolder,
             empty_systems: None,
             favorites: crate::favorites::Favorites::default(),
             favorites_first: settings.favorites_first.unwrap_or(true),
@@ -3908,6 +3946,7 @@ impl App {
             | Screen::ThemeEditor
             | Screen::Help
             | Screen::Find
+            | Screen::NameKeyboard
             | Screen::FavoriteFolder
             | Screen::Scraper
             | Screen::ScraperKeyboard
@@ -4022,7 +4061,13 @@ impl App {
             self.geometry.visible = EDITOR_ROWS;
             self.geometry.row_height = (body / EDITOR_ROWS as f32).floor().max(9.0);
             self.geometry.body_font = (self.geometry.row_height * 0.58).floor().max(7.0);
-            self.theme_editor_list.reshape(EDITOR_ROWS, 1);
+            let (visible, stride) = self
+                .theme_editor
+                .as_ref()
+                .filter(|editor| editor.mode == EditorMode::Name)
+                .map(|editor| (editor.name_cell_count(), NAME_COLUMNS))
+                .unwrap_or((EDITOR_ROWS, 1));
+            self.theme_editor_list.reshape(visible, stride);
         }
         let geometry = self.geometry;
 
@@ -4077,8 +4122,16 @@ impl App {
         self.ui.set_columns(geometry.columns as i32);
         self.ui.set_tile_width(geometry.tile_width);
         self.ui.set_tile_height(geometry.tile_height);
+        self.ui.set_find_filtering(
+            (self.screen == Screen::Find && self.find_mode == FindMode::Search)
+                || self.screen == Screen::NameKeyboard,
+        );
         self.ui
-            .set_find_filtering(self.screen == Screen::Find && self.find_mode == FindMode::Search);
+            .set_grid_explanation(SharedString::from(if self.screen == Screen::NameKeyboard {
+                "B Uses This Name"
+            } else {
+                ""
+            }));
         if self.screen == Screen::Find {
             // The grid sizes itself from the screen rather than from the
             // list geometry, which is measured for rows of text.
@@ -4086,7 +4139,25 @@ impl App {
             self.ui.set_columns(FIND_COLUMNS as i32);
             self.ui
                 .set_grid_rows(cells.div_ceil(FIND_COLUMNS).max(1) as i32);
-            self.ui.set_find_search(self.find_mode != FindMode::Jump);
+            self.ui.set_find_search(self.find_mode == FindMode::Search);
+        } else if self.screen == Screen::NameKeyboard {
+            let cells = name_keyboard::keys(self.name_keyboard_page, false).len();
+            self.name_keyboard_list
+                .reshape(cells, name_keyboard::COLUMNS);
+            self.ui.set_columns(name_keyboard::COLUMNS as i32);
+            self.ui
+                .set_grid_rows(cells.div_ceil(name_keyboard::COLUMNS).max(1) as i32);
+            self.ui.set_find_search(false);
+        } else if self.screen == Screen::ThemeEditor {
+            if let Some(editor) = self
+                .theme_editor
+                .as_ref()
+                .filter(|editor| editor.mode == EditorMode::Name)
+            {
+                self.ui.set_columns(NAME_COLUMNS as i32);
+                self.ui
+                    .set_grid_rows(editor.name_cell_count().div_ceil(NAME_COLUMNS).max(1) as i32);
+            }
         } else if self.screen == Screen::ScraperKeyboard {
             let cells = scraper_keyboard_keys(self.scraper_keyboard_page).len();
             self.scraper_keyboard_list
@@ -4097,11 +4168,11 @@ impl App {
             self.ui.set_find_search(false);
         }
         self.ui.set_grid_help(SharedString::from(match self.screen {
+            Screen::NameKeyboard => "A Type  B Done  X Del  Y Page",
             Screen::ScraperKeyboard if self.scraper_keyboard_field == ScraperField::SearchTerm => {
                 "A Type  B Search  X Del  Y Page"
             }
             Screen::ScraperKeyboard => "A Type  B Done  X Del  Y Page",
-            Screen::Find if self.find_mode == FindMode::NewFolder => "A Type B Done X Del Y Clear",
             Screen::Find if self.find_mode == FindMode::Search => "A Type B Back X Del Y Clear",
             Screen::Find => "A Pick   B Back",
             _ => "",
@@ -4169,6 +4240,7 @@ impl App {
             Screen::Help => &self.help_list,
             Screen::About => &self.about_list,
             Screen::Find => &self.find_list,
+            Screen::NameKeyboard => &self.name_keyboard_list,
             Screen::FavoriteFolder
             | Screen::CategoryImage
             | Screen::GameDataSource
@@ -4199,6 +4271,7 @@ impl App {
             Screen::Help => &mut self.help_list,
             Screen::About => &mut self.about_list,
             Screen::Find => &mut self.find_list,
+            Screen::NameKeyboard => &mut self.name_keyboard_list,
             Screen::FavoriteFolder
             | Screen::CategoryImage
             | Screen::GameDataSource
@@ -8577,17 +8650,21 @@ impl App {
             .set_theme_edit_hex(SharedString::from(editor.hex_text()));
         self.ui
             .set_theme_picker_channel(editor.picker_channel as i32);
-        self.ui.set_theme_name_save_index(NAME_SAVE as i32);
-        self.ui.set_theme_name_cancel_index(NAME_CANCEL as i32);
+        self.ui
+            .set_theme_name_save_index(editor.name_save_index() as i32);
+        self.ui
+            .set_theme_name_cancel_index(editor.name_cancel_index() as i32);
         self.ui
             .set_theme_name(SharedString::from(editor.name.as_str()));
+        self.ui
+            .set_theme_name_page(SharedString::from(editor.name_page.label()));
         self.ui.set_columns(if editor.mode == EditorMode::Name {
             NAME_COLUMNS as i32
         } else {
             1
         });
         self.ui.set_grid_rows(if editor.mode == EditorMode::Name {
-            NAME_CELLS.div_ceil(NAME_COLUMNS) as i32
+            editor.name_cell_count().div_ceil(NAME_COLUMNS) as i32
         } else {
             1
         });
@@ -9431,24 +9508,6 @@ impl App {
     fn go_back(&mut self) -> Option<Outcome> {
         match self.screen {
             Screen::Screensaver => self.leave_screensaver(),
-            // Spelling out a folder name has no other way to say it is
-            // finished: every button on the grid is a letter.
-            Screen::Find if self.find_mode == FindMode::NewFolder => {
-                let name = self.filter.clone();
-                self.filter.clear();
-                match crate::favorites::make_folder(&self.favorites_root(), &name) {
-                    Ok(_) => {
-                        let target = self.favorites_root().join(&name);
-                        self.add_favorite_in(&target);
-                    }
-                    Err(e) => {
-                        self.message = Some(format!("{e}"));
-                        self.screen = Screen::Browse;
-                        self.apply_geometry();
-                        self.dirty = true;
-                    }
-                }
-            }
             Screen::Find | Screen::FavoriteFolder => {
                 // The chooser's rows are done with once it is left.
                 self.favorite_destinations.clear();
@@ -9457,6 +9516,7 @@ impl App {
                 self.apply_geometry();
                 self.touch_selection();
             }
+            Screen::NameKeyboard => self.finish_name_keyboard(),
             Screen::Scraper => {
                 if self.save_scraper_settings() {
                     self.screen = self.scraper_return;
@@ -9951,6 +10011,152 @@ impl App {
         self.apply_geometry();
     }
 
+    fn open_name_keyboard(&mut self, purpose: NamePurpose, draft: String) {
+        self.name_keyboard_purpose = purpose;
+        self.name_keyboard_page = NamePage::Lower;
+        self.name_keyboard_draft = draft;
+        let cells = name_keyboard::keys(self.name_keyboard_page, false).len();
+        self.name_keyboard_list = ListState::new(cells, cells);
+        self.name_keyboard_list
+            .reshape(cells, name_keyboard::COLUMNS);
+        self.screen = Screen::NameKeyboard;
+        self.apply_geometry();
+        self.dirty = true;
+    }
+
+    fn cycle_name_keyboard(&mut self) {
+        self.name_keyboard_page = self.name_keyboard_page.next();
+        let cells = name_keyboard::keys(self.name_keyboard_page, false).len();
+        self.name_keyboard_list = ListState::new(cells, cells);
+        self.name_keyboard_list
+            .reshape(cells, name_keyboard::COLUMNS);
+        self.apply_geometry();
+        self.dirty = true;
+    }
+
+    fn pick_name_key(&mut self) {
+        let keys = name_keyboard::keys(self.name_keyboard_page, false);
+        let Some(key) = keys.get(self.name_keyboard_list.selected()).copied() else {
+            return;
+        };
+        match key {
+            NameKey::Character(character) => {
+                if self.name_keyboard_draft.chars().count() < 255 {
+                    self.name_keyboard_draft.push(character);
+                }
+            }
+            NameKey::Space => {
+                if self.name_keyboard_draft.chars().count() < 255 {
+                    self.name_keyboard_draft.push(' ');
+                }
+            }
+            NameKey::Clear => self.name_keyboard_draft.clear(),
+            NameKey::Save | NameKey::Cancel => {}
+        }
+        self.dirty = true;
+    }
+
+    fn finish_name_keyboard(&mut self) {
+        let draft = self.name_keyboard_draft.clone();
+        match self.name_keyboard_purpose.clone() {
+            NamePurpose::NewFavoriteFolder => {
+                match crate::favorites::make_folder(&self.favorites_root(), &draft) {
+                    Ok(target) => self.add_favorite_in(&target),
+                    Err(error) => {
+                        self.message = Some(error.to_string());
+                        self.dirty = true;
+                    }
+                }
+            }
+            NamePurpose::RenameFavoriteFolder(source) => {
+                let unchanged = source
+                    .file_name()
+                    .is_some_and(|name| name == draft.as_str());
+                let destination = match crate::favorites::rename_folder(
+                    &self.favorites_root(),
+                    &source,
+                    &draft,
+                ) {
+                    Ok(destination) => destination,
+                    Err(error) => {
+                        self.message = Some(error.to_string());
+                        self.dirty = true;
+                        return;
+                    }
+                };
+                let refresh_error = if unchanged {
+                    None
+                } else {
+                    self.reread_favorites();
+                    self.refresh_favorites_system().map(|error| {
+                        format!("Favourite folder was renamed, but refreshing Favourites failed: {error}")
+                    })
+                };
+                self.screen = Screen::Browse;
+                self.apply_geometry();
+                self.relist_here();
+                if let Some(index) = self.here.iter().position(|row| {
+                    matches!(&row.kind, browse::Kind::Enter(Place::Dir(path)) if path == &destination)
+                }) {
+                    self.game_list.select(index);
+                    self.touch_selection();
+                }
+                self.report_after_relist(refresh_error);
+                self.dirty = true;
+            }
+        }
+    }
+
+    fn delete_favorite_folder(&mut self, path: &Path) {
+        match crate::favorites::remove_empty_folder(&self.favorites_root(), path) {
+            Ok(()) => {
+                self.reread_favorites();
+                let refresh_error = self.refresh_favorites_system().map(|error| {
+                    format!(
+                        "Favourite folder was deleted, but refreshing Favourites failed: {error}"
+                    )
+                });
+                self.screen = Screen::Browse;
+                self.apply_geometry();
+                self.relist_here();
+                self.report_after_relist(refresh_error);
+            }
+            Err(error) => self.message = Some(error.to_string()),
+        }
+        self.dirty = true;
+    }
+
+    fn handle_name_keyboard(&mut self, action: Action) {
+        match action {
+            Action::Up => {
+                self.name_keyboard_list.move_rows(-1);
+            }
+            Action::Down => {
+                self.name_keyboard_list.move_rows(1);
+            }
+            Action::Slower | Action::PageUp => {
+                self.name_keyboard_list.move_items(-1);
+            }
+            Action::Faster | Action::PageDown => {
+                self.name_keyboard_list.move_items(1);
+            }
+            Action::Home => {
+                self.name_keyboard_list.go_first();
+            }
+            Action::End => {
+                self.name_keyboard_list.go_last();
+            }
+            Action::Accept => self.pick_name_key(),
+            Action::Quit => self.finish_name_keyboard(),
+            Action::Context => {
+                self.name_keyboard_draft.pop();
+            }
+            Action::Menu => self.cycle_name_keyboard(),
+            Action::CyclePresent | Action::HoldShortcut(_) => {}
+        }
+        self.dirty = true;
+    }
+
     /// Act on the cell under the cursor.
     fn pick_letter(&mut self) {
         let Some(letter) = FIND_CELLS.chars().nth(self.find_list.selected()) else {
@@ -9970,12 +10176,6 @@ impl App {
                 self.filter.push(letter);
                 self.apply_filter();
             }
-            FindMode::NewFolder => {
-                self.filter.push(letter);
-                self.dirty = true;
-            }
-            #[allow(unreachable_patterns)]
-            _ => {}
         }
     }
 
@@ -10113,6 +10313,21 @@ impl App {
             }
             _ => None,
         }
+    }
+
+    /// The real user directory under `_@Favorites` selected by the browse
+    /// cursor. Archive-like rows, links, the root and native `cores` support
+    /// data are deliberately not manageable folders.
+    fn selected_favorite_folder(&self) -> Option<PathBuf> {
+        if self.browsing != Browsing::Games || !self.in_favorites() {
+            return None;
+        }
+        let path = match &self.here.get(self.game_list.selected())?.kind {
+            browse::Kind::Enter(Place::Dir(path)) => path.clone(),
+            _ => return None,
+        };
+        path.file_name()?.to_str()?;
+        crate::favorites::is_user_folder(&self.favorites_root(), &path).then_some(path)
     }
 
     /// The favourite operation available for the selected row.
@@ -12277,6 +12492,7 @@ impl App {
         let game_data_source = context_system
             .as_deref()
             .is_some_and(crate::artwork_pack::supports);
+        let favorite_folder = self.selected_favorite_folder().is_some();
         self.context_actions = context_entries(
             self.browsing,
             !self.filter.is_empty(),
@@ -12292,6 +12508,7 @@ impl App {
                 core_version_override: self
                     .core_system_id()
                     .is_some_and(|id| self.settings.core_choices.contains_key(&id)),
+                favorite_folder,
             },
         );
         if self.context_actions.is_empty() {
@@ -13965,6 +14182,9 @@ impl App {
                         Pending::PrepareArtworkPack(offer) | Pending::UpdateArtworkPack(offer) => {
                             self.begin_consented_preparation(*offer);
                         }
+                        Pending::DeleteFavoriteFolder(path) => {
+                            self.delete_favorite_folder(&path);
+                        }
                     }
                     return None;
                 }
@@ -14026,6 +14246,10 @@ impl App {
 
         if self.screen == Screen::ScraperKeyboard {
             self.handle_scraper_keyboard(action);
+            return None;
+        }
+        if self.screen == Screen::NameKeyboard {
+            self.handle_name_keyboard(action);
             return None;
         }
         if self.screen == Screen::ScraperProgress {
@@ -14162,7 +14386,7 @@ impl App {
             Action::Menu => {
                 if self.screen == Screen::Browse {
                     self.open_menu();
-                } else if self.screen == Screen::Find && self.find_mode != FindMode::Jump {
+                } else if self.screen == Screen::Find && self.find_mode == FindMode::Search {
                     // Y wipes what has been typed rather than leaving: on a
                     // grid the two spare buttons are the only edit keys
                     // there are.
@@ -14178,7 +14402,7 @@ impl App {
             Action::Context => {
                 if self.screen == Screen::Browse {
                     self.open_context();
-                } else if self.screen == Screen::Find && self.find_mode != FindMode::Jump {
+                } else if self.screen == Screen::Find && self.find_mode == FindMode::Search {
                     self.filter.pop();
                     if self.find_mode == FindMode::Search {
                         self.apply_filter();
@@ -14227,8 +14451,10 @@ impl App {
                             self.add_favorite_in(&target);
                         }
                         Some(FavoriteDestination::NewFolder) => {
-                            self.filter = "_".to_string();
-                            self.open_find(FindMode::NewFolder);
+                            self.open_name_keyboard(
+                                NamePurpose::NewFavoriteFolder,
+                                "_".to_string(),
+                            );
                         }
                         None => {}
                     }
@@ -14300,6 +14526,27 @@ impl App {
                         self.open_favorite_folders();
                     } else if choice == REMOVE_FAVORITE {
                         self.remove_favorite();
+                    } else if choice == RENAME_FAVORITE_FOLDER {
+                        if let Some(path) = self.selected_favorite_folder() {
+                            if let Some(name) = path.file_name().and_then(|name| name.to_str()) {
+                                self.open_name_keyboard(
+                                    NamePurpose::RenameFavoriteFolder(path.clone()),
+                                    name.to_string(),
+                                );
+                            }
+                        }
+                    } else if choice == DELETE_FAVORITE_FOLDER {
+                        if let Some(path) = self.selected_favorite_folder() {
+                            let name = path
+                                .file_name()
+                                .and_then(|name| name.to_str())
+                                .unwrap_or("this folder")
+                                .to_string();
+                            self.message = Some(format!(
+                                "Delete empty Favourites folder {name}?\n\nA yes, B no"
+                            ));
+                            self.pending = Some(Pending::DeleteFavoriteFolder(path));
+                        }
                     } else if choice == REBUILD_SYSTEM {
                         self.rebuild_open_system();
                     } else if choice == CLEAR_SEARCH {
@@ -14365,6 +14612,7 @@ impl App {
                 // Routed before this match so editor controls can assign X
                 // and Y without inheriting menu behaviour.
                 Screen::ThemeEditor
+                | Screen::NameKeyboard
                 | Screen::ScraperKeyboard
                 | Screen::ScraperProgress
                 | Screen::ScraperMatches
@@ -14623,6 +14871,11 @@ impl App {
                         art_scale_x: 1.0,
                         value: SharedString::new(),
                     });
+                }
+            }
+            Screen::NameKeyboard => {
+                for key in name_keyboard::keys(self.name_keyboard_page, false) {
+                    rows.push(plain_row(&key.label(), ""));
                 }
             }
             Screen::ScraperKeyboard => {
@@ -15130,16 +15383,19 @@ impl App {
             Screen::Screensaver => (String::new(), String::new()),
             Screen::FavoriteFolder => ("Keep it in".to_string(), String::new()),
             Screen::Find => match self.find_mode {
-                FindMode::NewFolder => (
-                    format!("New folder {}", self.filter),
-                    "B when done".to_string(),
-                ),
                 FindMode::Jump => ("Jump to letter".to_string(), String::new()),
                 FindMode::Search => (
                     "Search This Folder".to_string(),
                     format!("{} found", self.here.len()),
                 ),
             },
+            Screen::NameKeyboard => (
+                match self.name_keyboard_purpose {
+                    NamePurpose::NewFavoriteFolder => "New Favourite Folder".to_string(),
+                    NamePurpose::RenameFavoriteFolder(_) => "Rename Favourite Folder".to_string(),
+                },
+                self.name_keyboard_page.label().to_string(),
+            ),
             Screen::Browse => {
                 let name = match self.browsing {
                     Browsing::Categories => String::new(),
@@ -15336,6 +15592,9 @@ impl App {
         self.ui.set_status(SharedString::from(status));
         if self.screen == Screen::Find && self.find_mode == FindMode::Search {
             self.ui.set_find_query(self.filter.clone().into());
+        } else if self.screen == Screen::NameKeyboard {
+            self.ui
+                .set_find_query(self.name_keyboard_draft.clone().into());
         }
         self.ui.set_show_stats(self.show_stats);
         self.ui.set_stats(SharedString::from(self.stats_line()));
@@ -16397,17 +16656,29 @@ pub(crate) fn test_library_launch_flow(window: Rc<MinimalSoftwareWindow>) {
             .expect("new folder choice"),
     );
     app.handle(Action::Accept);
-    assert_eq!(app.screen, Screen::Find);
-    assert_eq!(app.find_mode, FindMode::NewFolder);
+    assert_eq!(app.screen, Screen::NameKeyboard);
     assert_eq!(
-        app.filter, "_",
+        app.name_keyboard_draft, "_",
         "native-visible names start with underscore"
     );
     app.handle(Action::Context);
-    assert_eq!(app.filter, "", "X can delete the suggested underscore");
-    app.filter = "_Arcade".to_string();
+    assert_eq!(
+        app.name_keyboard_draft, "",
+        "X can delete the suggested underscore"
+    );
+    app.name_keyboard_draft = "_Arcade".to_string();
     app.handle(Action::Menu);
-    assert_eq!(app.filter, "", "Y can clear the complete folder name");
+    assert_eq!(app.name_keyboard_page, NamePage::Upper);
+    let clear = name_keyboard::keys(app.name_keyboard_page, false)
+        .iter()
+        .position(|key| *key == NameKey::Clear)
+        .expect("Clear cell");
+    app.name_keyboard_list.select(clear);
+    app.handle(Action::Accept);
+    assert_eq!(
+        app.name_keyboard_draft, "",
+        "the Clear cell can clear the complete folder name"
+    );
     app.screen = Screen::Browse;
     let initial_screen = app.screen;
     app.screen = Screen::ScraperProgress;
@@ -17520,7 +17791,7 @@ mod tests {
         );
         assert_eq!(
             theme_editor_help(EditorMode::Name, 0, false),
-            "A Type B Back X Del Y Clear"
+            "A Type B Back X Del Y Page"
         );
         assert_eq!(
             theme_editor_help(EditorMode::Discard, 0, false),
@@ -19522,6 +19793,34 @@ mod tests {
     }
 
     #[test]
+    fn real_favourites_folders_get_rename_and_empty_delete_actions_only_when_selected() {
+        let without = context_entries(
+            Browsing::Games,
+            false,
+            None,
+            None,
+            false,
+            ContextActions::default(),
+        );
+        assert!(!without.iter().any(|entry| entry == RENAME_FAVORITE_FOLDER));
+        assert!(!without.iter().any(|entry| entry == DELETE_FAVORITE_FOLDER));
+
+        let with = context_entries(
+            Browsing::Games,
+            false,
+            None,
+            None,
+            false,
+            ContextActions {
+                favorite_folder: true,
+                ..ContextActions::default()
+            },
+        );
+        assert!(with.iter().any(|entry| entry == RENAME_FAVORITE_FOLDER));
+        assert!(with.iter().any(|entry| entry == DELETE_FAVORITE_FOLDER));
+    }
+
+    #[test]
     fn only_context_menu_separators_use_compact_height() {
         assert!(compact_separators(Screen::Context));
         for screen in [
@@ -19535,6 +19834,7 @@ mod tests {
             Screen::About,
             Screen::Screensaver,
             Screen::Find,
+            Screen::NameKeyboard,
             Screen::FavoriteFolder,
             Screen::Scraper,
             Screen::ScraperKeyboard,

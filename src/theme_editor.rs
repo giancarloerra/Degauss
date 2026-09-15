@@ -5,15 +5,11 @@
 
 use crate::config::{Color, Colors};
 use crate::font::Font;
+use crate::name_keyboard::{self, Key as NameKey, Page as NamePage};
 use crate::theme::{validate_name, Theme, ThemeFile};
 
 pub const EDITOR_ROWS: usize = 16;
-pub const NAME_COLUMNS: usize = 8;
-
-const NAME_CHARS: &str = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 -_";
-pub const NAME_SAVE: usize = NAME_CHARS.len();
-pub const NAME_CANCEL: usize = NAME_SAVE + 1;
-pub const NAME_CELLS: usize = NAME_CANCEL + 1;
+pub const NAME_COLUMNS: usize = name_keyboard::COLUMNS;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ThemeRole {
@@ -173,6 +169,7 @@ pub struct ThemeEditor {
     swap_source: Option<ThemeRole>,
     pub sub_selected: usize,
     pub name: String,
+    pub name_page: NamePage,
     existing_names: Vec<String>,
 }
 
@@ -231,6 +228,7 @@ impl ThemeEditor {
             swap_source: None,
             sub_selected: 0,
             name: String::new(),
+            name_page: NamePage::Lower,
         }
     }
 
@@ -294,6 +292,28 @@ impl ThemeEditor {
         }
     }
 
+    fn name_keys(&self) -> Vec<NameKey> {
+        name_keyboard::keys(self.name_page, true)
+    }
+
+    pub fn name_cell_count(&self) -> usize {
+        self.name_keys().len()
+    }
+
+    pub fn name_save_index(&self) -> usize {
+        self.name_keys()
+            .iter()
+            .position(|key| *key == NameKey::Save)
+            .expect("the theme keyboard always has Save")
+    }
+
+    pub fn name_cancel_index(&self) -> usize {
+        self.name_keys()
+            .iter()
+            .position(|key| *key == NameKey::Cancel)
+            .expect("the theme keyboard always has Cancel")
+    }
+
     pub fn rows(&self) -> Vec<(String, String)> {
         match self.mode {
             EditorMode::Browse => {
@@ -341,13 +361,10 @@ impl ThemeEditor {
                     )
                 })
                 .collect(),
-            EditorMode::Name => NAME_CHARS
-                .chars()
-                .map(|character| (character.to_string(), String::new()))
-                .chain([
-                    ("Save".to_string(), String::new()),
-                    ("Cancel".to_string(), String::new()),
-                ])
+            EditorMode::Name => self
+                .name_keys()
+                .into_iter()
+                .map(|key| (key.label(), String::new()))
                 .collect(),
             EditorMode::Discard => vec![
                 ("Keep editing".to_string(), String::new()),
@@ -376,8 +393,12 @@ impl ThemeEditor {
                 EditorEffect::None
             }
             EditorMode::Name => {
-                self.sub_selected =
-                    step_grid_vertical(self.sub_selected, delta, NAME_COLUMNS, NAME_CELLS);
+                self.sub_selected = step_grid_vertical(
+                    self.sub_selected,
+                    delta,
+                    NAME_COLUMNS,
+                    self.name_cell_count(),
+                );
                 EditorEffect::None
             }
             EditorMode::Discard | EditorMode::Delete => {
@@ -400,7 +421,7 @@ impl ThemeEditor {
                 EditorEffect::None
             }
             EditorMode::Name => {
-                self.sub_selected = stepped(self.sub_selected, delta, NAME_CELLS);
+                self.sub_selected = stepped(self.sub_selected, delta, self.name_cell_count());
                 EditorEffect::None
             }
             EditorMode::Discard | EditorMode::Delete => {
@@ -476,6 +497,7 @@ impl ThemeEditor {
                     selected if selected == self.save_as_row() => {
                         self.mode = EditorMode::Name;
                         self.name.clear();
+                        self.name_page = NamePage::Lower;
                         self.sub_selected = 0;
                         EditorEffect::None
                     }
@@ -581,7 +603,8 @@ impl ThemeEditor {
                 EditorEffect::from_preview_change(changed)
             }
             EditorMode::Name => {
-                self.name.clear();
+                self.name_page = self.name_page.next();
+                self.sub_selected = 0;
                 EditorEffect::None
             }
             _ => EditorEffect::None,
@@ -677,20 +700,34 @@ impl ThemeEditor {
     }
 
     fn accept_name_cell(&mut self) -> EditorEffect {
-        if self.sub_selected < NAME_SAVE {
-            let character = NAME_CHARS.chars().nth(self.sub_selected).unwrap_or(' ');
-            if self.name.chars().count() < 250 {
-                self.name.push(character);
+        let Some(key) = self.name_keys().get(self.sub_selected).copied() else {
+            return EditorEffect::None;
+        };
+        match key {
+            NameKey::Character(character) => {
+                if self.name.chars().count() < 250 {
+                    self.name.push(character);
+                }
+                EditorEffect::None
             }
-            return EditorEffect::None;
-        }
-        if self.sub_selected == NAME_CANCEL {
-            self.mode = EditorMode::Browse;
-            return EditorEffect::None;
-        }
-        match validate_name(&self.name, &self.existing_names) {
-            Ok(name) => EditorEffect::Save(name),
-            Err(error) => EditorEffect::Error(error),
+            NameKey::Space => {
+                if self.name.chars().count() < 250 {
+                    self.name.push(' ');
+                }
+                EditorEffect::None
+            }
+            NameKey::Clear => {
+                self.name.clear();
+                EditorEffect::None
+            }
+            NameKey::Save => match validate_name(&self.name, &self.existing_names) {
+                Ok(name) => EditorEffect::Save(name),
+                Err(error) => EditorEffect::Error(error),
+            },
+            NameKey::Cancel => {
+                self.mode = EditorMode::Browse;
+                EditorEffect::None
+            }
         }
     }
 }
@@ -1025,24 +1062,39 @@ mod tests {
             validate_name("  New Theme  ", &existing).unwrap(),
             "New Theme"
         );
+        assert_eq!(
+            validate_name("lowercase![]", &existing).unwrap(),
+            "lowercase![]"
+        );
         assert!(validate_name("green mono", &existing).is_err());
         assert!(validate_name("../theme", &existing).is_err());
+        assert!(validate_name(".", &existing).is_err());
+        assert!(validate_name("..", &existing).is_err());
+        assert!(validate_name("bad|theme", &existing).is_err());
         assert!(validate_name("NUL", &existing).is_err());
         assert!(validate_name("COM1", &existing).is_err());
         assert!(validate_name("COM0", &existing).is_ok());
     }
 
     #[test]
-    fn name_grid_back_cancels_and_x_and_y_edit_the_name() {
+    fn name_grid_back_cancels_x_deletes_y_pages_and_clear_is_a_cell() {
         let mut editor = editor();
         editor.selected = 14;
         editor.accept();
         editor.accept();
-        assert_eq!(editor.name, "A");
+        assert_eq!(editor.name, "a");
         editor.x();
         assert!(editor.name.is_empty());
         editor.accept();
         editor.y();
+        assert_eq!(editor.name, "a", "changing pages keeps the entered name");
+        assert_eq!(editor.name_page, NamePage::Upper);
+        editor.sub_selected = editor
+            .name_keys()
+            .iter()
+            .position(|key| *key == NameKey::Clear)
+            .unwrap();
+        editor.accept();
         assert!(editor.name.is_empty());
         editor.back();
         assert_eq!(editor.mode, EditorMode::Browse);
@@ -1050,15 +1102,26 @@ mod tests {
 
     #[test]
     fn name_grid_vertical_movement_keeps_its_column_across_the_short_last_row() {
+        let cells = editor().name_cell_count();
+        assert_ne!(cells % NAME_COLUMNS, 0, "the regression needs a short row");
+        let last_row_first = (cells / NAME_COLUMNS) * NAME_COLUMNS;
         assert_eq!(
-            NAME_CELLS, 41,
-            "the regression requires a partial final row"
+            step_grid_vertical(0, -1, NAME_COLUMNS, cells),
+            last_row_first
         );
-        assert_eq!(step_grid_vertical(0, -1, NAME_COLUMNS, NAME_CELLS), 40);
-        assert_eq!(step_grid_vertical(40, 1, NAME_COLUMNS, NAME_CELLS), 0);
-        assert_eq!(step_grid_vertical(1, -1, NAME_COLUMNS, NAME_CELLS), 33);
-        assert_eq!(step_grid_vertical(33, 1, NAME_COLUMNS, NAME_CELLS), 1);
-        assert_eq!(step_grid_vertical(39, 1, NAME_COLUMNS, NAME_CELLS), 7);
-        assert_eq!(step_grid_vertical(7, -1, NAME_COLUMNS, NAME_CELLS), 39);
+        assert_eq!(
+            step_grid_vertical(last_row_first, 1, NAME_COLUMNS, cells),
+            0
+        );
+        let final_column = cells % NAME_COLUMNS - 1;
+        let last = cells - 1;
+        assert_eq!(
+            step_grid_vertical(final_column, -1, NAME_COLUMNS, cells),
+            last
+        );
+        assert_eq!(
+            step_grid_vertical(last, 1, NAME_COLUMNS, cells),
+            final_column
+        );
     }
 }

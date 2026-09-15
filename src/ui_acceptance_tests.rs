@@ -224,6 +224,7 @@ fn every_existing_action_remains_reachable_without_a_placeholder_submenu() {
         game_data_source: true,
         core_version: true,
         core_version_override: true,
+        favorite_folder: false,
     };
     let cases = [
         context_entries(Browsing::Games, true, Some(false), Some(false), true, full),
@@ -1508,20 +1509,93 @@ fn run_main_favourites_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
     accept_game_action(&mut app, ADD_FAVORITE);
     app.menu_list.select(app.menu.len() - 1);
     app.handle(Action::Accept);
-    assert_eq!(app.screen, Screen::Find);
-    assert_eq!(app.find_mode, FindMode::NewFolder);
-    assert_eq!(app.filter, "_");
+    assert_eq!(app.screen, Screen::NameKeyboard);
+    assert_eq!(app.name_keyboard_draft, "_");
     app.handle(Action::Context);
-    assert!(app.filter.is_empty(), "X removes the native-menu prefix");
-    app.filter = "ARCADE".into();
+    assert!(
+        app.name_keyboard_draft.is_empty(),
+        "X removes the native-menu prefix"
+    );
+    app.name_keyboard_draft = "Arcade!".into();
     app.handle(Action::Quit);
     assert_eq!(app.screen, Screen::Browse);
-    assert!(favorites_root.join("ARCADE/First Game.mgl").is_file());
+    assert!(favorites_root.join("Arcade!/First Game.mgl").is_file());
     assert!(
         !favorites_root.join("First Game.mgl").exists(),
         "the new folder's row must not write into the root"
     );
     assert!(app.favorites.holds(&game));
+
+    // A real folder selected inside Favourites can be renamed in place.
+    // Only the Favourites cache changes and the renamed row remains selected.
+    app.open_system_by_index(1);
+    assert_eq!(app.open_system.as_deref(), Some("Favorites"));
+    select_row_named(&mut app, "Arcade!");
+    let nes_cache = std::fs::read(crate::cache::system_path(&app.cache_dir, "NES")).unwrap();
+    accept_game_action(&mut app, RENAME_FAVORITE_FOLDER);
+    assert_eq!(app.screen, Screen::NameKeyboard);
+    assert_eq!(app.name_keyboard_draft, "Arcade!");
+    assert_eq!(app.name_keyboard_page, NamePage::Lower);
+    app.handle(Action::Menu);
+    assert_eq!(app.name_keyboard_page, NamePage::Upper);
+    app.handle(Action::Menu);
+    assert_eq!(app.name_keyboard_page, NamePage::Symbols);
+    app.handle(Action::Menu);
+    assert_eq!(app.name_keyboard_page, NamePage::Lower);
+    app.name_keyboard_draft = "Renamed Folder!".into();
+    app.handle(Action::Quit);
+    let renamed = favorites_root.join("Renamed Folder!");
+    assert_eq!(app.screen, Screen::Browse);
+    assert!(!favorites_root.join("Arcade!").exists());
+    assert!(renamed.join("First Game.mgl").is_file());
+    assert_eq!(app.here[app.game_list.selected()].name, "Renamed Folder!");
+    assert!(
+        app.build.is_none(),
+        "rename must not start a full-library build"
+    );
+    assert_eq!(
+        std::fs::read(crate::cache::system_path(&app.cache_dir, "NES")).unwrap(),
+        nes_cache,
+        "rename must not rewrite another system cache"
+    );
+
+    // Delete first honours cancellation, then removes an empty directory.
+    // Empty folders are deliberately absent under the default browse option,
+    // so expose them through the existing setting before selecting this one.
+    app.show_empty = true;
+    app.relist_here();
+    select_row_named(&mut app, MAIN_FAVORITES);
+    accept_game_action(&mut app, DELETE_FAVORITE_FOLDER);
+    assert!(app
+        .message
+        .as_deref()
+        .is_some_and(|message| message.contains(MAIN_FAVORITES)));
+    app.handle(Action::Quit);
+    assert!(named_folder.is_dir(), "cancel keeps the empty folder");
+    app.handle(Action::Quit);
+    app.handle(Action::Quit);
+    assert_eq!(app.screen, Screen::Browse);
+    accept_game_action(&mut app, DELETE_FAVORITE_FOLDER);
+    app.handle(Action::Accept);
+    assert!(!named_folder.exists());
+    assert!(!app.here.iter().any(|row| row.name == MAIN_FAVORITES));
+    assert!(
+        app.build.is_none(),
+        "delete must not start a full-library build"
+    );
+
+    // A non-empty folder reaches the same named confirmation but the final
+    // non-recursive filesystem operation refuses it and keeps every entry.
+    select_row_named(&mut app, "Renamed Folder!");
+    accept_game_action(&mut app, DELETE_FAVORITE_FOLDER);
+    app.handle(Action::Accept);
+    assert!(renamed.is_dir());
+    assert!(renamed.join("First Game.mgl").is_file());
+    assert!(app
+        .message
+        .as_deref()
+        .is_some_and(|message| message.contains("not empty")));
+    app.handle(Action::Quit);
     app.ui.hide().unwrap();
 }
 
@@ -2229,6 +2303,7 @@ fn capture_every_menu_row(app: &mut App, directory: &Path) {
         game_data_source: true,
         core_version: true,
         core_version_override: true,
+        favorite_folder: false,
     };
     let scenarios = [
         (
@@ -3212,6 +3287,23 @@ fn capture_ui_if_requested(root: &Path, window: Rc<MinimalSoftwareWindow>) {
     app.handle(Action::Accept);
     assert_eq!(app.theme_editor.as_ref().unwrap().mode, EditorMode::Name);
     capture_frame(&mut app, &directory, "theme-editor-save", 352, 240);
+    capture_frame(
+        &mut app,
+        &directory,
+        "theme-editor-name-lowercase",
+        352,
+        240,
+    );
+    app.handle(Action::Menu);
+    capture_frame(
+        &mut app,
+        &directory,
+        "theme-editor-name-uppercase",
+        352,
+        240,
+    );
+    app.handle(Action::Menu);
+    capture_frame(&mut app, &directory, "theme-editor-name-symbols", 352, 240);
     app.handle(Action::Quit);
     app.close_theme_editor();
     app.open_options_page(OptionsPage::Appearance);
@@ -3354,9 +3446,32 @@ fn capture_ui_if_requested(root: &Path, window: Rc<MinimalSoftwareWindow>) {
     assert_eq!(app.screen, Screen::FavoriteFolder);
     capture_frame(&mut app, &directory, "favorite-folder", 352, 240);
     app.handle(Action::Quit);
-    app.open_find(FindMode::NewFolder);
+    app.open_name_keyboard(NamePurpose::NewFavoriteFolder, "_".to_string());
     capture_frame(&mut app, &directory, "new-favorite-folder", 352, 240);
-    app.filter.clear();
+    capture_frame(
+        &mut app,
+        &directory,
+        "new-favorite-folder-lowercase",
+        352,
+        240,
+    );
+    app.handle(Action::Menu);
+    capture_frame(
+        &mut app,
+        &directory,
+        "new-favorite-folder-uppercase",
+        352,
+        240,
+    );
+    app.handle(Action::Menu);
+    capture_frame(
+        &mut app,
+        &directory,
+        "new-favorite-folder-symbols",
+        352,
+        240,
+    );
+    app.name_keyboard_draft.clear();
     app.set_screen(Screen::Browse);
     app.apply_filter();
     app.game_list.select(5);
@@ -8168,6 +8283,122 @@ fn run_details_style_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
     }
 }
 
+fn run_paged_theme_name_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
+    let root = root.join("theme-paged-name");
+    std::fs::create_dir_all(root.join("games/NES")).unwrap();
+    for name in ["First Fixture.nes", "Second Fixture.nes"] {
+        std::fs::write(root.join("games/NES").join(name), b"fixture").unwrap();
+    }
+    let mut app = fixture_app(&root, window.clone(), Settings::default());
+    app.open_theme_editor();
+    let save_as = app
+        .theme_editor
+        .as_ref()
+        .unwrap()
+        .rows()
+        .iter()
+        .position(|(label, _)| label == "Save as")
+        .unwrap();
+    app.select(save_as);
+    app.handle(Action::Accept);
+    assert_eq!(app.theme_editor.as_ref().unwrap().mode, EditorMode::Name);
+    assert_eq!(
+        app.theme_editor.as_ref().unwrap().name_page,
+        NamePage::Lower
+    );
+    app.apply_geometry();
+    assert_eq!(
+        app.theme_editor_list.visible(),
+        app.theme_editor.as_ref().unwrap().name_cell_count(),
+        "a geometry refresh must keep the complete name page visible"
+    );
+    assert_eq!(app.ui.get_columns(), NAME_COLUMNS as i32);
+
+    // Clear is an explicit cell rather than consuming another controller
+    // button. Build the final name through all three pages, including a digit,
+    // an internal space and safe punctuation.
+    app.handle(Action::Accept);
+    assert_eq!(app.theme_editor.as_ref().unwrap().name, "a");
+    let clear = app
+        .theme_editor
+        .as_ref()
+        .unwrap()
+        .rows()
+        .iter()
+        .position(|(label, _)| label == "Clear")
+        .unwrap();
+    app.theme_editor.as_mut().unwrap().sub_selected = clear;
+    app.sync_theme_editor();
+    app.handle(Action::Accept);
+    assert!(app.theme_editor.as_ref().unwrap().name.is_empty());
+
+    app.theme_editor.as_mut().unwrap().sub_selected = 0;
+    app.sync_theme_editor();
+    app.handle(Action::Accept);
+    app.handle(Action::Menu);
+    assert_eq!(
+        app.theme_editor.as_ref().unwrap().name_page,
+        NamePage::Upper
+    );
+    app.handle(Action::Accept);
+    let one = app
+        .theme_editor
+        .as_ref()
+        .unwrap()
+        .rows()
+        .iter()
+        .position(|(label, _)| label == "1")
+        .unwrap();
+    app.theme_editor.as_mut().unwrap().sub_selected = one;
+    app.sync_theme_editor();
+    app.handle(Action::Accept);
+    let space = app
+        .theme_editor
+        .as_ref()
+        .unwrap()
+        .rows()
+        .iter()
+        .position(|(label, _)| label == "SP")
+        .unwrap();
+    app.theme_editor.as_mut().unwrap().sub_selected = space;
+    app.sync_theme_editor();
+    app.handle(Action::Accept);
+    app.handle(Action::Menu);
+    assert_eq!(
+        app.theme_editor.as_ref().unwrap().name_page,
+        NamePage::Symbols
+    );
+    app.handle(Action::Accept);
+    assert_eq!(app.theme_editor.as_ref().unwrap().name, "aA1 !");
+    app.handle(Action::Context);
+    assert_eq!(app.theme_editor.as_ref().unwrap().name, "aA1 ");
+    app.handle(Action::Accept);
+    assert_eq!(app.theme_editor.as_ref().unwrap().name, "aA1 !");
+    app.refresh();
+    assert_eq!(app.ui.get_theme_name_page(), "symbols");
+
+    let save = app.theme_editor.as_ref().unwrap().name_save_index();
+    app.theme_editor.as_mut().unwrap().sub_selected = save;
+    app.sync_theme_editor();
+    app.handle(Action::Accept);
+    assert_eq!(app.screen, Screen::Options);
+    assert!(root.join("themes/aA1 !.toml").is_file());
+    let saved = Settings::load(&app.settings_path).unwrap();
+    assert_eq!(saved.theme.as_deref(), Some("aA1 !"));
+    app.ui.hide().unwrap();
+    drop(app);
+
+    let restarted = fixture_app(&root, window, saved);
+    assert_eq!(
+        restarted
+            .active_theme
+            .map(|at| restarted.themes[at].name.as_str()),
+        Some("aA1 !"),
+        "a mixed-page theme name reloads after restart"
+    );
+    restarted.ui.hide().unwrap();
+}
+
 fn run_theme_editor_save_changes_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
     let root = root.join("theme-save-changes");
     std::fs::create_dir_all(root.join("games/NES")).unwrap();
@@ -8297,6 +8528,7 @@ pub(super) fn run_ui_acceptance_flow(window: Rc<MinimalSoftwareWindow>) {
     run_degraded_pack_acknowledgement_flow(&root, window.clone());
     run_arcade_core_descriptor_favourite_flow(&root, window.clone());
     run_folder_artwork_flow(&root, window.clone());
+    run_paged_theme_name_flow(&root, window.clone());
     run_theme_editor_save_changes_flow(&root, window.clone());
     let mut app = fixture_app(&root, window.clone(), Settings::default());
     run_selected_controls_flow(&mut app);

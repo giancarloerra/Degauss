@@ -266,16 +266,21 @@ pub fn validate_name(name: &str, existing: &[String]) -> std::result::Result<Str
     if name.is_empty() {
         return Err("Theme name cannot be empty".to_string());
     }
+    if matches!(name, "." | "..") {
+        return Err(format!("{name:?} is not a usable theme name"));
+    }
     // FAT32 and exFAT allow 255 characters for the complete filename. The
     // extension consumes five of them, including its dot.
     if name.chars().count() > 250 {
         return Err("Theme name is too long for a 255-character filename".to_string());
     }
-    if !name
-        .chars()
-        .all(|character| character.is_ascii_alphanumeric() || matches!(character, ' ' | '-' | '_'))
-    {
-        return Err("Theme name may contain letters, numbers, spaces, - and _".to_string());
+    if name.chars().any(|character| {
+        crate::favorites::BAD_CHARS.contains(&character)
+            || !crate::name_keyboard::character_is_offered(character)
+    }) {
+        return Err(
+            "Theme name contains a character that is not available for filenames".to_string(),
+        );
     }
     let upper = name.to_ascii_uppercase();
     let reserved = matches!(upper.as_str(), "CON" | "PRN" | "AUX" | "NUL")
