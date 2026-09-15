@@ -25,11 +25,6 @@ speed and for CRTs, with several views, custom theming, different fonts, many fe
 
 Source available, written in Rust and using Slint, and licensed for non-commercial use.
 
-> **Slow exFAT folder scans after the September 7 MiSTer Linux update?**
-> The [optional kernel fix guide](https://github.com/giancarloerra/Degauss/blob/e4b5d2a1d9c0e4196d934be8d0f5dcc0296fb2e7/support/kernel-fix/README.md) explains the
-> separate installer and restoration procedure. Degauss's normal updater
-> does not install or replace the kernel.
-
 > ### Feature request or bug report? Star this repository as well to support it ⭐️
 >
 > Degauss is written and maintained by one person in his own time. A star is
@@ -298,15 +293,6 @@ Measured on the DE10-Nano's own hardware, with a large multi-system
 collection indexed.
 
 ## Installing
-
-> **Slow scans after a MiSTer Linux update:** the September 7, 2026 Linux
-> release can make exFAT folder reads much slower. The
-> [upstream fix](https://github.com/MiSTer-devel/Linux-Kernel_MiSTer/commit/9854075c86455942c2ce57e0b7dc80e3e2c5b108)
-> is merged, but a source-code merge is not a distributed kernel update.
-> Degauss's normal updater does not replace the kernel. Any optional kernel
-> workaround is separate from installing or updating Degauss. See the
-> [optional kernel fix and restoration guide](https://github.com/giancarloerra/Degauss/blob/e4b5d2a1d9c0e4196d934be8d0f5dcc0296fb2e7/support/kernel-fix/README.md).
-
 
 ### Installing through Update All (recommended)
 
