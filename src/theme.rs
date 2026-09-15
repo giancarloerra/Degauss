@@ -15,6 +15,8 @@
 //! Files created by the on-device editor are complete themes. Existing
 //! partial themes remain overlays and retain their original meaning.
 
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
@@ -588,16 +590,17 @@ pub fn replace_editor_theme(
         ));
     }
 
+    let mut hasher = DefaultHasher::new();
+    theme.name.hash(&mut hasher);
+    let name_hash = hasher.finish();
     for attempt in 0..32_u8 {
         let pending = dir.join(format!(
-            ".{}.{}.{}.degauss-replace-new",
-            theme.name,
+            ".degauss-replace-{name_hash:016x}.{}.{}.new",
             std::process::id(),
             attempt
         ));
         let previous = dir.join(format!(
-            ".{}.{}.{}.degauss-replace-old",
-            theme.name,
+            ".degauss-replace-{name_hash:016x}.{}.{}.old",
             std::process::id(),
             attempt
         ));
@@ -1090,6 +1093,39 @@ mod tests {
             1,
             "a committed replacement must not leave its hidden old file"
         );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn replacing_a_maximum_length_theme_uses_bounded_temporary_names() {
+        let dir = temp_dir("replace-long-name");
+        let palette = Colors::default();
+        let name = "x".repeat(250);
+        let original_file = ThemeFile::complete(&palette, None, 100);
+        let path = save_new(&dir, &name, &original_file, &palette).unwrap();
+        let custom = load(&dir)
+            .themes
+            .into_iter()
+            .find(|theme| theme.name == name)
+            .unwrap();
+        let changed_palette = Colors {
+            accent: Color::new(1, 2, 3),
+            ..palette.clone()
+        };
+        let changed_file = ThemeFile::complete(&changed_palette, None, 100);
+
+        let replacement = replace_editor_theme(&dir, &custom, &changed_file, &palette).unwrap();
+        let filenames: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        assert_eq!(filenames.len(), 2);
+        assert!(filenames
+            .iter()
+            .all(|name| name.to_string_lossy().len() <= 255));
+        replacement.commit().unwrap();
+        assert!(path.is_file());
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1);
         std::fs::remove_dir_all(&dir).ok();
     }
 
