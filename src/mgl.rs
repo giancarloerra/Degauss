@@ -147,7 +147,7 @@ impl Homes {
         descriptor: &Path,
         reference: &DescriptorReference,
     ) -> Resolved {
-        let (recognised, home_name, homes) = self.home_dirs(
+        let (recognised, home_name, homes, romset_homes) = self.home_dirs(
             reference.rbf.as_deref(),
             reference.setname.as_deref(),
             reference.same_dir,
@@ -160,8 +160,13 @@ impl Homes {
         let components = reference
             .files
             .iter()
-            .map(
-                |raw| match component(raw, &homes, class == Class::CoreSet) {
+            .map(|raw| {
+                match component_with_romset_homes(
+                    raw,
+                    &homes,
+                    class == Class::CoreSet,
+                    &romset_homes,
+                ) {
                     // No home exists: say where Main would have looked, one
                     // `games/<name>` per root, so the log names the folders.
                     Component::Missing { raw, tried } if tried.is_empty() => Component::Missing {
@@ -178,8 +183,8 @@ impl Homes {
                         raw,
                     },
                     component => component,
-                },
-            )
+                }
+            })
             .collect();
         Resolved {
             descriptor: descriptor.to_path_buf(),
@@ -206,9 +211,9 @@ impl Homes {
         rbf: Option<&str>,
         setname: Option<&str>,
         same_dir: bool,
-    ) -> (bool, Option<String>, Vec<PathBuf>) {
+    ) -> (bool, Option<String>, Vec<PathBuf>, Vec<PathBuf>) {
         let Some(rbf) = rbf else {
-            return (false, None, Vec::new());
+            return (false, None, Vec::new(), Vec::new());
         };
         let stem = Path::new(rbf)
             .file_name()
@@ -228,11 +233,19 @@ impl Homes {
             .collect();
         let recognised = !matching.is_empty();
         let mut homes = Vec::new();
-        let mut add = |folders: &[String]| {
-            for folder in folders.iter().filter(|folder| !folder.is_empty()) {
+        let mut romset_homes = Vec::new();
+        let mut add = |system: &SystemConfig| {
+            let romset = crate::neogeo::is_romset_system(system);
+            for folder in folders_of(system)
+                .into_iter()
+                .filter(|folder| !folder.is_empty())
+            {
                 let folder = PathBuf::from(folder);
                 if !homes.contains(&folder) {
-                    homes.push(folder);
+                    homes.push(folder.clone());
+                }
+                if romset && !romset_homes.contains(&folder) {
+                    romset_homes.push(folder);
                 }
             }
         };
@@ -244,7 +257,7 @@ impl Homes {
                         .as_deref()
                         .is_some_and(|configured| configured.eq_ignore_ascii_case(set))
                 }) {
-                    add(&folders_of(system));
+                    add(system);
                 }
                 set.to_string()
             }
@@ -253,7 +266,7 @@ impl Homes {
                     .iter()
                     .filter(|system| system.setname.as_deref().is_none_or(str::is_empty))
                 {
-                    add(&folders_of(system));
+                    add(system);
                 }
                 if stem.eq_ignore_ascii_case("minimig") {
                     "Amiga".to_string()
@@ -267,7 +280,12 @@ impl Homes {
                 homes.extend(crate::systems::existing_folder(name, &self.roots));
             }
         }
-        (recognised, (!name.is_empty()).then_some(name), homes)
+        (
+            recognised,
+            (!name.is_empty()).then_some(name),
+            homes,
+            romset_homes,
+        )
     }
 }
 
@@ -291,7 +309,15 @@ fn folder_name(name: &str) -> Option<&str> {
 /// would. With several homes, or `verify` on, each candidate is checked
 /// and exactly one existing file is the answer. No home at all is
 /// `Missing` with nothing tried.
-pub fn component(raw: &str, homes: &[PathBuf], verify: bool) -> Component {
+/// Resolve one component while allowing an existing directory to be a game
+/// only under the supplied Neo Geo ROM-set homes. Other systems keep the
+/// released file/member-only rule.
+pub fn component_with_romset_homes(
+    raw: &str,
+    homes: &[PathBuf],
+    verify: bool,
+    romset_homes: &[PathBuf],
+) -> Component {
     if raw.starts_with('/') {
         return Component::Absolute(normalize_path(PathBuf::from(raw)));
     }
@@ -316,7 +342,13 @@ pub fn component(raw: &str, homes: &[PathBuf], verify: bool) -> Component {
     }
     let mut existing: Vec<PathBuf> = candidates
         .iter()
-        .filter(|candidate| exists(candidate))
+        .filter(|candidate| {
+            exists(candidate)
+                || (candidate.is_dir()
+                    && romset_homes
+                        .iter()
+                        .any(|home| normalize_path(home.join(raw)) == **candidate))
+        })
         .cloned()
         .collect();
     match existing.len() {
@@ -829,7 +861,7 @@ mod tests {
         )
         .unwrap();
         let homes = arcade_homes(&root);
-        let (recognised, name, found) =
+        let (recognised, name, found, _) =
             homes.home_dirs(Some("_RA_Cores/Cores/NES"), Some("RA_NES"), true);
         assert!(recognised, "an RA core is the same system");
         assert_eq!(name.as_deref(), Some("NES"));
@@ -1076,7 +1108,7 @@ mod tests {
             &roots,
             &[system("NES", "_Console/NES", None, &[usb.join("NES")])],
         );
-        let (recognised, name, found) = homes.home_dirs(
+        let (recognised, name, found, _) = homes.home_dirs(
             Some("_Arcade/cores/Battletoads"),
             Some("Battletoads"),
             false,
@@ -1084,17 +1116,17 @@ mod tests {
         assert!(!recognised);
         assert_eq!(name.as_deref(), Some("Battletoads"));
         assert_eq!(found, vec![network.join("Battletoads")]);
-        let (recognised, _, found) = homes.home_dirs(Some("_Console/NES"), None, false);
+        let (recognised, _, found, _) = homes.home_dirs(Some("_Console/NES"), None, false);
         assert!(recognised);
         assert_eq!(
             found,
             vec![usb.join("NES")],
             "the recognised system was found under the first root and answers with that folder"
         );
-        let (_, name, found) = homes.home_dirs(Some("_Other/Elsewhere"), None, false);
+        let (_, name, found, _) = homes.home_dirs(Some("_Other/Elsewhere"), None, false);
         assert_eq!(name.as_deref(), Some("Elsewhere"));
         assert_eq!(found, vec![cifs.join("Elsewhere")]);
-        let (_, name, found) = homes.home_dirs(Some("_Computer/minimig"), None, false);
+        let (_, name, found, _) = homes.home_dirs(Some("_Computer/minimig"), None, false);
         assert_eq!(
             name.as_deref(),
             Some("Amiga"),
@@ -1103,7 +1135,7 @@ mod tests {
         assert!(found.is_empty());
         assert_eq!(
             homes.home_dirs(None, None, false),
-            (false, None, Vec::new())
+            (false, None, Vec::new(), Vec::new())
         );
         std::fs::remove_dir_all(root).ok();
     }
