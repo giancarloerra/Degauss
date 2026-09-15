@@ -24,9 +24,35 @@
 //!
 //! Key repeat is generated here rather than taken from the kernel, because
 //! the cadence of a held direction is a setting the user controls.
+//!
+//! Some controllers, or the input stack between them and Degauss, deliver
+//! one physical press as two very fast press and release pairs. The second
+//! pair is dropped by the [`DuplicateGuard`] before anything else sees it,
+//! so one press moves once.
 
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
+/// Declares [`Action`] and [`Action::ALL`] from one list of variants, so
+/// the list that sizes the [`DuplicateGuard`] table cannot miss a variant
+/// or hold one out of declaration order: the guard indexes that table by
+/// discriminant, and a variant absent from the list would send its first
+/// press past the end.
+macro_rules! actions {
+    ($(#[$outer:meta])* pub enum Action { $($(#[$inner:meta])* $variant:ident,)* }) => {
+        $(#[$outer])*
+        pub enum Action {
+            $($(#[$inner])* $variant,)*
+        }
+
+        impl Action {
+            /// Every variant in declaration order, generated from the enum's
+            /// own variant list.
+            pub const ALL: [Action; [$(Action::$variant),*].len()] = [$(Action::$variant),*];
+        }
+    };
+}
+
+actions! {
 /// What Degauss does, independent of which key or button produced it.
 ///
 /// Only the device build turns real key codes into these; a development
@@ -63,6 +89,7 @@ pub enum Action {
     /// Add or remove the selected game as a favourite after X is held.
     FavoriteShortcut,
     RandomShortcut,
+}
 }
 
 impl Action {
@@ -374,6 +401,146 @@ pub enum KeyEdge {
     Up(Action),
 }
 
+/// The edge a Linux key event value means. 1 is a press and 0 a release;
+/// 2 is the kernel's own auto-repeat, ignored because Degauss times its
+/// own repeats.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+pub fn key_edge(action: Action, value: i32) -> Option<KeyEdge> {
+    match value {
+        1 => Some(KeyEdge::Down(action)),
+        0 => Some(KeyEdge::Up(action)),
+        _ => None,
+    }
+}
+
+/// Merge the edges one device delivered, `edges[split..]`, into those the
+/// devices before it delivered, `edges[..split]`, by stamp. Devices are
+/// drained one after another, so without this a batch carries one
+/// device's later edges before another's earlier ones, and the guard and
+/// the repeater take the edges in turn: a press placed before the release
+/// it followed reaches the repeater while that action is still held, and
+/// the press is lost. Each device's own order is kept whatever its stamps
+/// say, so a wall-clock step between a press and its release cannot swap
+/// them and leave the key held. Nothing is allocated unless both sides
+/// hold edges.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+pub fn merge_by_stamp(edges: &mut Vec<(KeyEdge, SystemTime)>, split: usize) {
+    if split == 0 || split == edges.len() {
+        return;
+    }
+    let later = edges.split_off(split);
+    let earlier = std::mem::replace(edges, Vec::with_capacity(split + later.len()));
+    let mut earlier = earlier.into_iter().peekable();
+    let mut later = later.into_iter().peekable();
+    while let (Some(&(_, before)), Some(&(_, after))) = (earlier.peek(), later.peek()) {
+        if after < before {
+            edges.extend(later.next());
+        } else {
+            edges.extend(earlier.next());
+        }
+    }
+    edges.extend(earlier);
+    edges.extend(later);
+}
+
+/// A second press of the same action closer than this to the accepted one
+/// is the same physical press arriving twice, not a deliberate second tap.
+pub const DUPLICATE_WINDOW: Duration = Duration::from_millis(40);
+
+/// One slot per [`Action`], indexed by discriminant. `Action::ALL` is
+/// generated from the enum's own variant list, so the table always has a
+/// slot for every variant at its discriminant.
+const ACTION_SLOTS: usize = Action::ALL.len();
+
+#[derive(Debug, Clone, Copy)]
+struct Slot {
+    /// When the device delivered the last accepted press of this action.
+    /// It anchors the window: a rejected duplicate never moves it, so a
+    /// run of duplicates cannot keep the window open.
+    accepted_at: Option<SystemTime>,
+    /// A rejected duplicate is still down as far as its device is
+    /// concerned, so a release is owed for each one. Those releases must
+    /// be swallowed rather than end the genuine hold under them.
+    duplicates_down: u8,
+}
+
+/// Drops the second delivery of one physical press before it reaches the
+/// [`Repeater`]. Only real key edges pass through here; the repeats the
+/// [`Repeater`] generates for a held key never do, which is what keeps the
+/// 7 ms scroll interval intact.
+///
+/// The window is measured on the kernel's own timestamps, taken when each
+/// device delivered the event, not on the run loop's clock: a frame that
+/// stalls on a system read drains every press queued behind it in one
+/// poll, and two deliberate taps in that queue must still count as two.
+/// One array index, one subtraction and one comparison per edge, nothing
+/// allocated.
+#[derive(Debug)]
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+pub struct DuplicateGuard {
+    slots: [Slot; ACTION_SLOTS],
+}
+
+impl DuplicateGuard {
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    pub fn new() -> Self {
+        DuplicateGuard {
+            slots: [Slot {
+                accepted_at: None,
+                duplicates_down: 0,
+            }; ACTION_SLOTS],
+        }
+    }
+
+    /// Filter one key edge read from a device, `at` being the time the
+    /// kernel stamped on it. `None` means drop it.
+    ///
+    /// A press inside [`DUPLICATE_WINDOW`] of the last accepted press of the
+    /// same action is a duplicate: rejected, and its eventual release is
+    /// swallowed too, one release per rejected press, so a press delivered
+    /// three times still ends its hold on the last release. A press exactly
+    /// at the window's end is accepted. A different action is never
+    /// affected, an opposite direction included. An accepted press clears
+    /// any releases still owed, so a duplicate whose release never arrives
+    /// cannot swallow a later genuine release.
+    ///
+    /// The window reaches both ways from the accepted press. A poll merges
+    /// what it drained by stamp, but a copy injected on one device just
+    /// after that device was read reaches the next poll behind the other
+    /// device's copy stamped later; and the stamps come from the wall
+    /// clock, which can step. A step larger than the window lets one press
+    /// through and the next accepted press re-anchors.
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    pub fn admit(&mut self, edge: KeyEdge, at: SystemTime) -> Option<KeyEdge> {
+        match edge {
+            KeyEdge::Down(action) => {
+                let slot = &mut self.slots[action as usize];
+                if slot.accepted_at.is_some_and(|accepted| {
+                    let apart = match at.duration_since(accepted) {
+                        Ok(later) => later,
+                        Err(earlier) => earlier.duration(),
+                    };
+                    apart < DUPLICATE_WINDOW
+                }) {
+                    slot.duplicates_down = slot.duplicates_down.saturating_add(1);
+                    return None;
+                }
+                slot.accepted_at = Some(at);
+                slot.duplicates_down = 0;
+                Some(edge)
+            }
+            KeyEdge::Up(action) => {
+                let slot = &mut self.slots[action as usize];
+                if slot.duplicates_down > 0 {
+                    slot.duplicates_down -= 1;
+                    return None;
+                }
+                Some(edge)
+            }
+        }
+    }
+}
+
 #[cfg(target_os = "linux")]
 pub use linux::{
     install_signal_handlers, restore_console, restore_terminal, ConsoleGuard, InputReader,
@@ -383,10 +550,11 @@ pub use linux::{
 #[cfg(target_os = "linux")]
 mod linux {
     use std::path::PathBuf;
+    use std::time::SystemTime;
 
     use evdev::{Device, EventSummary};
 
-    use super::{action_for_key, KeyEdge};
+    use super::{action_for_key, key_edge, merge_by_stamp, KeyEdge};
     use crate::error::{DegaussError, Result};
 
     /// What was opened, so Degauss can show whether it is actually
@@ -449,8 +617,9 @@ mod linux {
             self.summaries.iter().any(|d| d.is_mister_virtual)
         }
 
-        /// Drain whatever is waiting. Never blocks.
-        pub fn poll(&mut self) -> Vec<KeyEdge> {
+        /// Drain whatever is waiting, each edge with the time the kernel
+        /// stamped on its event, in stamp order. Never blocks.
+        pub fn poll(&mut self) -> Vec<(KeyEdge, SystemTime)> {
             let mut edges = Vec::new();
             for (_, device) in &mut self.devices {
                 let events = match device.fetch_events() {
@@ -458,20 +627,19 @@ mod linux {
                     // WouldBlock simply means nothing is waiting.
                     Err(_) => continue,
                 };
+                let drained = edges.len();
                 for event in events {
+                    let at = event.timestamp();
                     if let EventSummary::Key(_, code, value) = event.destructure() {
                         let Some(action) = action_for_key(code.code()) else {
                             continue;
                         };
-                        match value {
-                            // 1 = press. 2 = the kernel's own auto-repeat,
-                            // ignored: Degauss times its own repeats.
-                            1 => edges.push(KeyEdge::Down(action)),
-                            0 => edges.push(KeyEdge::Up(action)),
-                            _ => {}
+                        if let Some(edge) = key_edge(action, value) {
+                            edges.push((edge, at));
                         }
                     }
                 }
+                merge_by_stamp(&mut edges, drained);
             }
             edges
         }
@@ -756,6 +924,7 @@ pub use elsewhere::{
 #[allow(dead_code)]
 mod elsewhere {
     use std::path::PathBuf;
+    use std::time::SystemTime;
 
     use super::KeyEdge;
     use crate::error::Result;
@@ -779,7 +948,7 @@ mod elsewhere {
         pub fn has_mister_virtual(&self) -> bool {
             false
         }
-        pub fn poll(&mut self) -> Vec<KeyEdge> {
+        pub fn poll(&mut self) -> Vec<(KeyEdge, SystemTime)> {
             Vec::new()
         }
     }
@@ -1278,5 +1447,757 @@ mod tests {
         let due = repeater.tick(t0 + Duration::from_millis(10));
         assert_eq!(due.len(), 2);
         assert!(due.contains(&Action::Down) && due.contains(&Action::Up));
+    }
+
+    fn ms(n: u64) -> Duration {
+        Duration::from_millis(n)
+    }
+
+    /// The dispatch shape of the run loop: every key edge read from a
+    /// device passes the guard before the repeater, only what the repeater
+    /// returns is dispatched, and the repeater's own ticks never see the
+    /// guard. The guard judges each edge on the kernel's stamp for it; the
+    /// repeater sees the loop's one instant per iteration. Built without
+    /// the guard to show what the repeater alone does with the same edges.
+    struct Pipeline {
+        guard: Option<DuplicateGuard>,
+        repeater: Repeater,
+        t0: Instant,
+    }
+
+    impl Pipeline {
+        fn guarded(repeater: Repeater) -> Self {
+            Pipeline {
+                guard: Some(DuplicateGuard::new()),
+                repeater,
+                t0: Instant::now(),
+            }
+        }
+
+        fn unguarded(repeater: Repeater) -> Self {
+            Pipeline {
+                guard: None,
+                repeater,
+                t0: Instant::now(),
+            }
+        }
+
+        /// One loop iteration at `now` dispatching the edges one poll
+        /// drained from one device, each stamped `at` milliseconds by the
+        /// kernel.
+        fn batch(&mut self, now: u64, edges: &[(KeyEdge, u64)]) -> Vec<Action> {
+            self.devices(now, &[edges])
+        }
+
+        /// One loop iteration at `now` dispatching the edges one poll
+        /// drained from several devices, given in the order the devices
+        /// were drained, merged as the poll merges them.
+        fn devices(&mut self, now: u64, drained: &[&[(KeyEdge, u64)]]) -> Vec<Action> {
+            let now = self.t0 + ms(now);
+            let mut edges: Vec<(KeyEdge, SystemTime)> = Vec::new();
+            for device in drained {
+                let split = edges.len();
+                edges.extend(
+                    device
+                        .iter()
+                        .map(|&(edge, at)| (edge, SystemTime::UNIX_EPOCH + ms(at))),
+                );
+                merge_by_stamp(&mut edges, split);
+            }
+            let mut dispatched = Vec::new();
+            for (edge, at) in edges {
+                let edge = match &mut self.guard {
+                    Some(guard) => match guard.admit(edge, at) {
+                        Some(edge) => edge,
+                        None => continue,
+                    },
+                    None => edge,
+                };
+                let action = match edge {
+                    KeyEdge::Down(action) => self.repeater.press(action, now),
+                    KeyEdge::Up(action) => self.repeater.release(action, now),
+                };
+                dispatched.extend(action);
+            }
+            dispatched
+        }
+
+        /// One edge in an iteration of its own, dispatched as soon as it
+        /// was delivered.
+        fn edge(&mut self, edge: KeyEdge, at: u64) -> Option<Action> {
+            self.batch(at, &[(edge, at)]).pop()
+        }
+
+        /// Edges each dispatched as soon as delivered: the loop keeping up.
+        fn feed(&mut self, edges: &[(KeyEdge, u64)]) -> Vec<Action> {
+            edges
+                .iter()
+                .filter_map(|&(edge, at)| self.edge(edge, at))
+                .collect()
+        }
+
+        fn tick(&mut self, at: u64) -> Vec<Action> {
+            self.repeater.tick(self.t0 + ms(at))
+        }
+    }
+
+    /// One tap delivered twice: the sequence the affected controllers send
+    /// for a single press of `action`.
+    fn double_delivery(action: Action) -> [(KeyEdge, u64); 4] {
+        [
+            (KeyEdge::Down(action), 0),
+            (KeyEdge::Up(action), 5),
+            (KeyEdge::Down(action), 10),
+            (KeyEdge::Up(action), 15),
+        ]
+    }
+
+    #[test]
+    fn a_double_delivery_of_one_press_moves_once() {
+        // The repeater alone cannot catch this: the release in between
+        // clears its held state, so the second press fires again and one
+        // tap moves two rows.
+        let mut unguarded = Pipeline::unguarded(Repeater::new(RepeatConfig::default()));
+        assert_eq!(
+            unguarded.feed(&double_delivery(Action::Down)),
+            vec![Action::Down, Action::Down],
+            "the repeater's own duplicate check does not cover a press, release, press"
+        );
+
+        let mut guarded = Pipeline::guarded(Repeater::new(RepeatConfig::default()));
+        assert_eq!(
+            guarded.feed(&double_delivery(Action::Down)),
+            vec![Action::Down]
+        );
+        assert!(!guarded.repeater.anything_held());
+    }
+
+    #[test]
+    fn overlapping_double_delivery_moves_once_and_leaves_nothing_held() {
+        // Both presses before either release. The second release belongs to
+        // the rejected press; if it reached the repeater it would find
+        // nothing held, and if the first one were swallowed instead the
+        // direction would stay down and scroll for ever.
+        let mut guarded = Pipeline::guarded(Repeater::new(RepeatConfig::default()));
+        assert_eq!(
+            guarded.feed(&[
+                (KeyEdge::Down(Action::Down), 0),
+                (KeyEdge::Down(Action::Down), 5),
+                (KeyEdge::Up(Action::Down), 10),
+                (KeyEdge::Up(Action::Down), 15),
+            ]),
+            vec![Action::Down]
+        );
+        assert!(!guarded.repeater.anything_held());
+        assert!(guarded.tick(1000).is_empty(), "nothing may keep scrolling");
+        assert_eq!(
+            guarded.edge(KeyEdge::Down(Action::Down), 100),
+            Some(Action::Down),
+            "the next deliberate press must work"
+        );
+    }
+
+    #[test]
+    fn deliberate_taps_outside_the_window_both_count() {
+        // Two quick taps are two moves. The window is exactly 40 ms: a
+        // press at 40 ms is a second tap, a press at 39 ms is the same tap.
+        let mut guarded = Pipeline::guarded(Repeater::new(RepeatConfig::default()));
+        assert_eq!(
+            guarded.feed(&[
+                (KeyEdge::Down(Action::Down), 0),
+                (KeyEdge::Up(Action::Down), 10),
+                (KeyEdge::Down(Action::Down), 40),
+                (KeyEdge::Up(Action::Down), 50),
+            ]),
+            vec![Action::Down, Action::Down]
+        );
+
+        let mut guarded = Pipeline::guarded(Repeater::new(RepeatConfig::default()));
+        assert_eq!(
+            guarded.feed(&[
+                (KeyEdge::Down(Action::Down), 0),
+                (KeyEdge::Up(Action::Down), 10),
+                (KeyEdge::Down(Action::Down), 39),
+                (KeyEdge::Up(Action::Down), 50),
+            ]),
+            vec![Action::Down]
+        );
+    }
+
+    #[test]
+    fn taps_queued_behind_a_stalled_frame_are_judged_on_their_own_stamps() {
+        // Opening a large system parses its list inside the loop, so the
+        // next poll drains everything pressed meanwhile at once. Two taps
+        // 100 ms apart in that queue are two moves; only their kernel
+        // stamps can tell them from a double delivery, which shares the
+        // frame with them just the same.
+        let mut guarded = Pipeline::guarded(Repeater::new(RepeatConfig::default()));
+        assert_eq!(
+            guarded.batch(
+                2000,
+                &[
+                    (KeyEdge::Down(Action::Down), 0),
+                    (KeyEdge::Up(Action::Down), 10),
+                    (KeyEdge::Down(Action::Down), 100),
+                    (KeyEdge::Up(Action::Down), 110),
+                ]
+            ),
+            vec![Action::Down, Action::Down],
+            "two deliberate taps dispatched by one frame must both count"
+        );
+        assert!(!guarded.repeater.anything_held());
+
+        let mut guarded = Pipeline::guarded(Repeater::new(RepeatConfig::default()));
+        assert_eq!(
+            guarded.batch(2000, &double_delivery(Action::Down)),
+            vec![Action::Down],
+            "a double delivery dispatched by one frame is still one press"
+        );
+        assert!(!guarded.repeater.anything_held());
+
+        // The other way round: a double delivery split across two frames
+        // by a stall between them is still one press.
+        let mut guarded = Pipeline::guarded(Repeater::new(RepeatConfig::default()));
+        assert_eq!(
+            guarded.batch(
+                0,
+                &[
+                    (KeyEdge::Down(Action::Down), 0),
+                    (KeyEdge::Up(Action::Down), 5)
+                ]
+            ),
+            vec![Action::Down]
+        );
+        assert_eq!(
+            guarded.batch(
+                500,
+                &[
+                    (KeyEdge::Down(Action::Down), 10),
+                    (KeyEdge::Up(Action::Down), 15)
+                ]
+            ),
+            vec![],
+            "the frame clock must not decide what the stamps already have"
+        );
+        assert!(!guarded.repeater.anything_held());
+    }
+
+    #[test]
+    fn a_second_device_stamped_earlier_is_still_the_same_press() {
+        // Devices are drained one after another. A copy of a press
+        // injected on one device just after that device was read waits
+        // for the next poll, behind the other device's copy stamped a
+        // little later, so the copy already accepted can carry the later
+        // stamp. The window has to reach both ways or the earlier copy
+        // would pass and move the selection again.
+        let mut guarded = Pipeline::guarded(Repeater::new(RepeatConfig::default()));
+        assert_eq!(
+            guarded.batch(
+                20,
+                &[
+                    (KeyEdge::Down(Action::Down), 12),
+                    (KeyEdge::Up(Action::Down), 18),
+                ]
+            ),
+            vec![Action::Down]
+        );
+        assert_eq!(
+            guarded.batch(
+                36,
+                &[
+                    (KeyEdge::Down(Action::Down), 10),
+                    (KeyEdge::Up(Action::Down), 16),
+                ]
+            ),
+            vec![]
+        );
+        assert!(!guarded.repeater.anything_held());
+        assert_eq!(
+            guarded.edge(KeyEdge::Down(Action::Down), 52),
+            Some(Action::Down),
+            "the window stays anchored to the accepted stamp, 12 ms"
+        );
+
+        // A stamp a whole window or more earlier is not the same press: a
+        // wall clock stepped back that far lets one press through and the
+        // next accepted press re-anchors the window.
+        let mut guarded = Pipeline::guarded(Repeater::new(RepeatConfig::default()));
+        assert_eq!(
+            guarded.feed(&[
+                (KeyEdge::Down(Action::Down), 1000),
+                (KeyEdge::Up(Action::Down), 1005),
+                (KeyEdge::Down(Action::Down), 960),
+                (KeyEdge::Up(Action::Down), 965),
+                (KeyEdge::Down(Action::Down), 970),
+                (KeyEdge::Up(Action::Down), 975),
+            ]),
+            vec![Action::Down, Action::Down],
+            "the press at 970 ms is inside the window of the one at 960 ms"
+        );
+    }
+
+    #[test]
+    fn a_poll_batch_is_dispatched_in_stamp_order_across_devices() {
+        // Two devices report one press; the second copy is rejected and
+        // its release is owed. A frame then stalls across the genuine
+        // release and the next deliberate tap. The poll drains the first
+        // device, which holds that release and the new press, before the
+        // second, which holds the duplicate's release. In drain order the
+        // owed release swallows the genuine one, the new press reaches the
+        // repeater while it still holds the action and dispatches nothing,
+        // and the duplicate's release then ends the hold: a deliberate tap
+        // lost. In stamp order the two releases come first and the tap
+        // acts.
+        let mut guarded = Pipeline::guarded(Repeater::new(RepeatConfig::default()));
+        assert_eq!(
+            guarded.feed(&[
+                (KeyEdge::Down(Action::Down), 0),
+                (KeyEdge::Down(Action::Down), 2),
+            ]),
+            vec![Action::Down]
+        );
+        assert_eq!(
+            guarded.devices(
+                400,
+                &[
+                    &[
+                        (KeyEdge::Up(Action::Down), 300),
+                        (KeyEdge::Down(Action::Down), 350),
+                    ],
+                    &[(KeyEdge::Up(Action::Down), 302)],
+                ]
+            ),
+            vec![Action::Down],
+            "the tap at 350 ms must act whichever device was drained first"
+        );
+        assert!(
+            guarded.repeater.anything_held(),
+            "the tap at 350 ms is still held when the frame ends"
+        );
+        assert_eq!(guarded.edge(KeyEdge::Up(Action::Down), 500), None);
+        assert!(!guarded.repeater.anything_held());
+
+        // A device's own order is kept whatever its stamps say: the wall
+        // clock stepped back between a press and its release queued in
+        // one frame. Sorted on the stamps alone, the release would come
+        // first and the press would leave the key held.
+        let mut guarded = Pipeline::guarded(Repeater::new(RepeatConfig::default()));
+        assert_eq!(
+            guarded.devices(
+                1000,
+                &[
+                    &[
+                        (KeyEdge::Down(Action::Up), 1000),
+                        (KeyEdge::Up(Action::Up), 5)
+                    ],
+                    &[
+                        (KeyEdge::Down(Action::Down), 8),
+                        (KeyEdge::Up(Action::Down), 12)
+                    ],
+                ]
+            ),
+            vec![Action::Down, Action::Up],
+            "the other device's edges are merged in by stamp"
+        );
+        assert!(
+            !guarded.repeater.anything_held(),
+            "the release still follows its press"
+        );
+    }
+
+    #[test]
+    fn a_different_action_inside_the_window_is_immediate() {
+        // The guard is per action. A reversal of direction, a speed change
+        // either way, or launching then backing out must never wait.
+        for (first, second) in [
+            (Action::Down, Action::Up),
+            (Action::Slower, Action::Faster),
+            (Action::Accept, Action::Quit),
+        ] {
+            let mut guarded = Pipeline::guarded(Repeater::new(RepeatConfig::default()));
+            assert_eq!(
+                guarded.feed(&[(KeyEdge::Down(first), 0), (KeyEdge::Down(second), 2)]),
+                vec![first, second],
+                "{first:?} then {second:?} must both act, in order"
+            );
+            assert_eq!(
+                guarded.feed(&[(KeyEdge::Up(first), 4), (KeyEdge::Up(second), 6)]),
+                vec![]
+            );
+            assert!(!guarded.repeater.anything_held());
+        }
+    }
+
+    #[test]
+    fn a_rejected_duplicate_does_not_move_the_window() {
+        // The window is anchored to the accepted press. If a rejected
+        // duplicate restarted it, a controller that keeps repeating a press
+        // could hold the window open and swallow a deliberate second tap.
+        let mut guarded = Pipeline::guarded(Repeater::new(RepeatConfig::default()));
+        assert_eq!(
+            guarded.feed(&[
+                (KeyEdge::Down(Action::Down), 0),
+                (KeyEdge::Up(Action::Down), 5),
+                (KeyEdge::Down(Action::Down), 30),
+                (KeyEdge::Up(Action::Down), 32),
+            ]),
+            vec![Action::Down]
+        );
+        assert_eq!(
+            guarded.edge(KeyEdge::Down(Action::Down), 45),
+            Some(Action::Down),
+            "45 ms after the accepted press is outside the window even though \
+             a duplicate arrived at 30 ms"
+        );
+    }
+
+    #[test]
+    fn a_second_device_delivering_the_same_press_does_not_end_the_hold() {
+        // Two devices report the same physical press: one press each, a
+        // few milliseconds apart. Only one may act, and the release of the
+        // rejected one must not end the scroll the accepted one started.
+        let config = RepeatConfig {
+            delay: ms(10),
+            interval: ms(10),
+        };
+
+        // The duplicate's release comes first, while the press is held.
+        let mut unguarded = Pipeline::unguarded(Repeater::new(config));
+        assert_eq!(
+            unguarded.feed(&[
+                (KeyEdge::Down(Action::Down), 0),
+                (KeyEdge::Down(Action::Down), 2),
+                (KeyEdge::Up(Action::Down), 5),
+            ]),
+            vec![Action::Down]
+        );
+        assert!(
+            unguarded.tick(10).is_empty(),
+            "the repeater alone lets the duplicate's release end the hold"
+        );
+
+        let mut guarded = Pipeline::guarded(Repeater::new(config));
+        assert_eq!(
+            guarded.feed(&[
+                (KeyEdge::Down(Action::Down), 0),
+                (KeyEdge::Down(Action::Down), 2),
+                (KeyEdge::Up(Action::Down), 5),
+            ]),
+            vec![Action::Down]
+        );
+        assert_eq!(guarded.tick(10), vec![Action::Down], "the hold goes on");
+        assert_eq!(guarded.tick(20), vec![Action::Down]);
+        assert_eq!(guarded.edge(KeyEdge::Up(Action::Down), 500), None);
+        assert!(!guarded.repeater.anything_held());
+        assert!(guarded.tick(1000).is_empty());
+
+        // Both releases come after the repeats started. The guard cannot
+        // tell which device sent which, so the first release is taken as
+        // the duplicate's and the hold ends on the second; nothing may stay
+        // held after both.
+        let mut guarded = Pipeline::guarded(Repeater::new(config));
+        assert_eq!(
+            guarded.feed(&[
+                (KeyEdge::Down(Action::Down), 0),
+                (KeyEdge::Down(Action::Down), 2),
+            ]),
+            vec![Action::Down]
+        );
+        assert_eq!(guarded.tick(10), vec![Action::Down]);
+        assert_eq!(guarded.tick(20), vec![Action::Down]);
+        assert_eq!(guarded.edge(KeyEdge::Up(Action::Down), 30), None);
+        assert_eq!(
+            guarded.tick(30),
+            vec![Action::Down],
+            "one release of two does not end the hold"
+        );
+        assert_eq!(guarded.edge(KeyEdge::Up(Action::Down), 32), None);
+        assert!(!guarded.repeater.anything_held());
+        assert!(guarded.tick(1000).is_empty(), "nothing may stay held");
+    }
+
+    #[test]
+    fn a_press_delivered_three_times_ends_its_hold_on_the_last_release() {
+        // Three copies of one press owe three releases. The guard counts
+        // the rejected copies, so only their releases are swallowed and the
+        // hold ends on the genuine one; a single flag would let the second
+        // release through and stop the scroll while the key is still down.
+        let config = RepeatConfig {
+            delay: ms(10),
+            interval: ms(10),
+        };
+        let mut guarded = Pipeline::guarded(Repeater::new(config));
+        assert_eq!(
+            guarded.feed(&[
+                (KeyEdge::Down(Action::Down), 0),
+                (KeyEdge::Down(Action::Down), 2),
+                (KeyEdge::Down(Action::Down), 4),
+                (KeyEdge::Up(Action::Down), 5),
+                (KeyEdge::Up(Action::Down), 6),
+            ]),
+            vec![Action::Down]
+        );
+        assert_eq!(
+            guarded.tick(10),
+            vec![Action::Down],
+            "two releases of three do not end the hold"
+        );
+        assert_eq!(guarded.tick(20), vec![Action::Down]);
+        assert_eq!(guarded.edge(KeyEdge::Up(Action::Down), 500), None);
+        assert!(!guarded.repeater.anything_held());
+        assert!(guarded.tick(1000).is_empty(), "nothing may stay held");
+
+        // Copies whose releases never come leave releases owed while the
+        // key stays down. The next accepted press clears them, so that
+        // press's own release still ends the hold instead of being
+        // swallowed as the old debt.
+        assert_eq!(
+            guarded.feed(&[
+                (KeyEdge::Down(Action::Down), 1000),
+                (KeyEdge::Down(Action::Down), 1002),
+                (KeyEdge::Down(Action::Down), 1004),
+                (KeyEdge::Up(Action::Down), 1005),
+            ]),
+            vec![Action::Down]
+        );
+        assert!(guarded.repeater.anything_held(), "one release of three");
+        assert_eq!(
+            guarded.feed(&[
+                (KeyEdge::Down(Action::Down), 1100),
+                (KeyEdge::Up(Action::Down), 1105),
+            ]),
+            vec![]
+        );
+        assert!(
+            !guarded.repeater.anything_held(),
+            "the owed releases were cleared"
+        );
+    }
+
+    #[test]
+    fn a_hold_in_every_direction_at_every_speed_starts_and_ends_through_the_guard() {
+        // The repeater's cadence is its own (`a_held_key_repeats_at_the_
+        // configured_interval`) and its ticks never see the guard, so what
+        // the guard can break about a hold is its two ends: the press must
+        // be admitted or nothing scrolls, and the release must be admitted
+        // or the scroll never stops. Every direction, at every speed
+        // including the 7 ms interval, in the settings where left and
+        // right repeat.
+        for (_, interval) in SPEED_STEPS {
+            let config = RepeatConfig {
+                delay: ms(220),
+                interval: ms(interval),
+            };
+            for action in [Action::Up, Action::Down, Action::Slower, Action::Faster] {
+                let mut guarded = Pipeline::guarded(Repeater::new(config));
+                guarded.repeater.set_horizontal_repeats(true);
+                assert_eq!(
+                    guarded.edge(KeyEdge::Down(action), 0),
+                    Some(action),
+                    "{action:?} at {interval} ms: the press starts the hold"
+                );
+                let mut fired = 0;
+                for at in 0..=500 {
+                    fired += guarded.tick(at).len();
+                }
+                let expected = 1 + (500 - 220) / interval;
+                assert_eq!(
+                    fired, expected as usize,
+                    "{action:?} at {interval} ms: the delay and the interval are the repeater's"
+                );
+                assert_eq!(guarded.edge(KeyEdge::Up(action), 500), None);
+                assert!(
+                    !guarded.repeater.anything_held(),
+                    "{action:?} at {interval} ms: the release ends the hold"
+                );
+                assert!(guarded.tick(1000).is_empty());
+                assert_eq!(
+                    guarded.edge(KeyEdge::Down(action), 505),
+                    Some(action),
+                    "{action:?}: a press right after the release is a new press, \
+                     the window ran from the first press, not from the release"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn directions_are_guarded_in_every_left_right_setting() {
+        // Left and right are retained by the repeater in every Left and
+        // Right Behaviour setting other than Scroll Speed Change (Letter,
+        // Page and Direction); up and down always are; page keys never are.
+        // The guard sits before all of that, so a double delivery is one
+        // move in every case and two taps are two.
+        for horizontal in [true, false] {
+            for action in [
+                Action::Up,
+                Action::Down,
+                Action::Slower,
+                Action::Faster,
+                Action::PageUp,
+                Action::PageDown,
+            ] {
+                let mut guarded = Pipeline::guarded(Repeater::new(RepeatConfig::default()));
+                guarded.repeater.set_horizontal_repeats(horizontal);
+                assert_eq!(
+                    guarded.feed(&double_delivery(action)),
+                    vec![action],
+                    "{action:?} with horizontal repeats {horizontal}"
+                );
+                assert_eq!(
+                    guarded.feed(&[
+                        (KeyEdge::Down(action), 100),
+                        (KeyEdge::Up(action), 105),
+                        (KeyEdge::Down(action), 200),
+                        (KeyEdge::Up(action), 205),
+                    ]),
+                    vec![action, action],
+                    "{action:?} with horizontal repeats {horizontal}: two taps"
+                );
+                assert!(!guarded.repeater.anything_held());
+            }
+        }
+    }
+
+    #[test]
+    fn face_buttons_act_once_per_physical_press_with_and_without_hold_shortcuts() {
+        // The repeater does not retain Accept, Back, Menu or Context, so
+        // without the guard a double delivery launches twice or backs out
+        // two levels. With a hold shortcut enabled the repeater retains the
+        // button, so a second press while it is held is already ignored;
+        // what the guard adds is that the duplicate's release cannot end
+        // the hold as a short press before the shortcut fires, and no
+        // release afterwards may leak into the screen the shortcut opened.
+        for action in [Action::Accept, Action::Quit, Action::Menu, Action::Context] {
+            let mut unguarded = Pipeline::unguarded(Repeater::new(RepeatConfig::default()));
+            assert_eq!(
+                unguarded.feed(&double_delivery(action)),
+                vec![action, action],
+                "{action:?} is not retained, so the repeater alone acts twice"
+            );
+            let mut guarded = Pipeline::guarded(Repeater::new(RepeatConfig::default()));
+            assert_eq!(guarded.feed(&double_delivery(action)), vec![action]);
+            assert!(!guarded.repeater.anything_held());
+        }
+
+        for (button, enable, shortcut) in [
+            (
+                Action::Context,
+                Repeater::set_favorite_hold as fn(&mut Repeater, bool),
+                Action::FavoriteShortcut,
+            ),
+            (
+                Action::Menu,
+                Repeater::set_random_hold,
+                Action::RandomShortcut,
+            ),
+        ] {
+            // Two devices report the press, and the duplicate's release
+            // arrives while the button is still held.
+            let mut unguarded = Pipeline::unguarded(Repeater::new(RepeatConfig::default()));
+            enable(&mut unguarded.repeater, true);
+            assert_eq!(
+                unguarded.feed(&[
+                    (KeyEdge::Down(button), 0),
+                    (KeyEdge::Down(button), 5),
+                    (KeyEdge::Up(button), 8),
+                ]),
+                vec![button],
+                "the repeater alone takes the duplicate's release as a short {button:?}"
+            );
+            assert!(
+                unguarded.tick(1000).is_empty(),
+                "and the hold it ended never fires the shortcut"
+            );
+
+            let mut guarded = Pipeline::guarded(Repeater::new(RepeatConfig::default()));
+            enable(&mut guarded.repeater, true);
+            assert_eq!(
+                guarded.feed(&[
+                    (KeyEdge::Down(button), 0),
+                    (KeyEdge::Down(button), 5),
+                    (KeyEdge::Up(button), 8),
+                ]),
+                vec![]
+            );
+            assert_eq!(
+                guarded.tick(1000),
+                vec![shortcut],
+                "{button:?} held for one second fires its shortcut once"
+            );
+            assert!(guarded.tick(1005).is_empty());
+            // The shortcut opened another screen, which disables the gesture.
+            enable(&mut guarded.repeater, false);
+            assert_eq!(
+                guarded.edge(KeyEdge::Up(button), 1010),
+                None,
+                "the release may not act on the new screen"
+            );
+            assert!(!guarded.repeater.anything_held());
+
+            let mut guarded = Pipeline::guarded(Repeater::new(RepeatConfig::default()));
+            enable(&mut guarded.repeater, true);
+            assert_eq!(
+                guarded.feed(&double_delivery(button)),
+                vec![button],
+                "a short {button:?} delivered twice is one short press"
+            );
+            assert!(!guarded.repeater.anything_held());
+        }
+    }
+
+    #[test]
+    fn the_kernel_auto_repeat_value_stays_ignored() {
+        // The kernel repeats a held key on its own schedule. Degauss times
+        // its own repeats, so taking those events as presses would double
+        // every scroll.
+        assert_eq!(key_edge(Action::Down, 1), Some(KeyEdge::Down(Action::Down)));
+        assert_eq!(key_edge(Action::Down, 0), Some(KeyEdge::Up(Action::Down)));
+        assert_eq!(key_edge(Action::Down, 2), None, "value 2 is auto-repeat");
+        assert_eq!(key_edge(Action::Accept, 3), None);
+        assert_eq!(key_edge(Action::Accept, -1), None);
+    }
+
+    #[test]
+    fn ordinary_taps_and_holds_are_unchanged_without_duplicate_delivery() {
+        // A keyboard or controller that delivers each press once must feel
+        // exactly as before: every tap acts, and a hold starts on the
+        // press, repeats what the delay and interval give and ends on the
+        // release. The two shortcuts are left out: only the repeater
+        // produces them.
+        let actions: Vec<Action> = Action::ALL
+            .into_iter()
+            .filter(|action| !matches!(action, Action::FavoriteShortcut | Action::RandomShortcut))
+            .collect();
+        let mut guarded = Pipeline::guarded(Repeater::new(RepeatConfig::default()));
+        let taps: Vec<(KeyEdge, u64)> = actions
+            .iter()
+            .enumerate()
+            .flat_map(|(i, &action)| {
+                let at = i as u64 * 150;
+                [(KeyEdge::Down(action), at), (KeyEdge::Up(action), at + 20)]
+            })
+            .collect();
+        assert_eq!(guarded.feed(&taps), actions);
+        assert!(!guarded.repeater.anything_held());
+
+        let config = RepeatConfig::default();
+        let mut guarded = Pipeline::guarded(Repeater::new(config));
+        assert_eq!(
+            guarded.edge(KeyEdge::Down(Action::Down), 0),
+            Some(Action::Down)
+        );
+        let mut fired = 0;
+        for at in 0..=500 {
+            fired += guarded.tick(at).len();
+        }
+        let expected = 1 + (500 - config.delay.as_millis()) / config.interval.as_millis();
+        assert_eq!(
+            fired, expected as usize,
+            "a 500 ms hold repeats what the delay and the interval give"
+        );
+        assert_eq!(guarded.edge(KeyEdge::Up(Action::Down), 500), None);
+        assert!(!guarded.repeater.anything_held());
+        assert!(guarded.tick(1000).is_empty());
     }
 }

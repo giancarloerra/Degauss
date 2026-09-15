@@ -37,7 +37,7 @@ use crate::covers::{BudgetedCover, CoverCache, CoverStats};
 use crate::error::{DegaussError, Result};
 use crate::font::Font;
 use crate::input::{
-    Action, InputReader, KeyEdge, RepeatConfig, Repeater, SPEED_START, SPEED_STEPS,
+    Action, DuplicateGuard, InputReader, KeyEdge, RepeatConfig, Repeater, SPEED_START, SPEED_STEPS,
 };
 use crate::list_state::ListState;
 use crate::metrics::{FrameTimer, StartupTimings};
@@ -13188,6 +13188,7 @@ impl App {
             interval: Duration::from_millis(self.speed_ms()),
             ..Default::default()
         });
+        let mut duplicates = DuplicateGuard::new();
         let mut first_frame_done = false;
         // Dropped for good if the device ever declines, so a framebuffer
         // without the ioctl costs one failed call rather than one per frame.
@@ -13219,7 +13220,16 @@ impl App {
             repeater.set_horizontal_repeats(self.horizontal_scrolls());
             repeater.set_favorite_hold(self.favorite_change().is_some());
             repeater.set_random_hold(self.random_shortcut_enabled());
-            for edge in input.poll() {
+            for (edge, at) in input.poll() {
+                // Some controllers deliver one press as two very fast press
+                // and release pairs. The second pair is dropped here, before
+                // the repeater, so the held-scroll cadence is not touched.
+                // Judged on the kernel's stamp for each event rather than
+                // this frame's `now`: a frame stalled on a system read
+                // drains every press queued behind it in one poll.
+                let Some(edge) = duplicates.admit(edge, at) else {
+                    continue;
+                };
                 let action = match edge {
                     KeyEdge::Down(action) => repeater.press(action, now),
                     KeyEdge::Up(action) => repeater.release(action, now),
