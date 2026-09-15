@@ -467,7 +467,15 @@ fn owner_candidates<'a>(systems: &'a [FoundSystem], path: &Path) -> Vec<&'a Foun
         let accepting: Vec<&FoundSystem> = deepest_candidates
             .iter()
             .copied()
-            .filter(|system| system.to_config().accepts(path))
+            .filter(|system| {
+                let config = system.to_config();
+                config.accepts(path)
+                    || (crate::neogeo::is_romset_system(&config)
+                        && (path.is_dir()
+                            || path
+                                .extension()
+                                .is_some_and(|extension| extension.eq_ignore_ascii_case("zip"))))
+            })
             .collect();
         if !accepting.is_empty() {
             deepest_candidates = accepting;
@@ -5596,11 +5604,17 @@ impl App {
             Ok(installed) => warnings.extend(installed),
             Err(error) => return Some(format!("{name}: {error}")),
         }
+        warnings.extend(crate::index_job::catalogue_warnings(&library));
         // An archive or member the scan left out, and anything publication
-        // had to say, is said out loud with the rest of the message and
-        // logged, named by the system the way a full build names them.
-        for warning in &mut warnings {
+        // had to say is named by the system here. Catalogue warnings already
+        // carry that name. Every warning is said out loud and logged.
+        for warning in warnings
+            .iter_mut()
+            .filter(|warning| !warning.starts_with(&format!("{name}: ")))
+        {
             *warning = format!("{name}: {warning}");
+        }
+        for warning in &warnings {
             crate::note(warning);
         }
         self.index = Some(next_index);
@@ -6814,6 +6828,18 @@ impl App {
                 let at = reselect(&self.here, remembered, crumb.selected);
                 self.game_list.select(at);
                 self.message = None;
+                // Rows read straight from the card have no build report to
+                // carry a broken ROM-set catalogue, and its sets have just
+                // been listed as archives and folders: said here, once.
+                if let Some(library) = self.library.as_ref() {
+                    let problems = library.unannounced_catalogue_problems();
+                    if !problems.is_empty() {
+                        self.message = Some(
+                            crate::index_job::catalogue_lines(library.system_name(), problems)
+                                .join("\n"),
+                        );
+                    }
+                }
                 self.apply_geometry();
                 self.touch_selection();
             }
@@ -11605,7 +11631,6 @@ impl App {
                 return;
             }
         };
-
         let (settings, label, settings_warning) =
             match persist_source_choice(&self.settings, &self.settings_path, group, &target) {
                 Ok(saved) => saved,
@@ -17205,13 +17230,39 @@ mod tests {
         let games = root.join("games");
         std::fs::create_dir_all(&games).unwrap();
         let game = games.join("Metal Slug.neo");
+        let set = games.join("mslug.zip");
         std::fs::write(&game, b"neo").unwrap();
+        std::fs::write(&set, b"set").unwrap();
         let systems = vec![
-            found_system_with_extensions("NeoGeoMVS", vec![games.clone()], &["neo"]),
-            found_system_with_extensions("NeoGeo", vec![games], &["neo"]),
+            found_system_with_core(
+                "NeoGeoMVS",
+                vec![games.clone()],
+                &["neo", "mgl"],
+                "_Console/NeoGeo",
+                None,
+            ),
+            found_system_with_core(
+                "NeoGeo",
+                vec![games.clone()],
+                &["neo", "mgl"],
+                "_Console/NeoGeo",
+                None,
+            ),
+            found_system_with_core(
+                "NeoGeoCD",
+                vec![games],
+                &["cue", "chd", "mgl"],
+                "_Console/NeoGeo",
+                None,
+            ),
         ];
 
         assert_eq!(owner_of_path(&systems, &game).as_deref(), Some("NeoGeo"));
+        assert_eq!(
+            owner_of_path(&systems, &set).as_deref(),
+            Some("NeoGeo"),
+            "a ROM-set ZIP is owned by the Neo Geo source group, not its overlapping CD system"
+        );
         std::fs::remove_dir_all(root).ok();
     }
 
