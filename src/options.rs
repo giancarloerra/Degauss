@@ -40,6 +40,8 @@ pub enum OptionId {
     ShowScripts,
     /// Preferred installed variant for ordinary game launches.
     CorePreference,
+    /// Preferred available source for systems left on Automatic.
+    AutomaticDataSource,
     /// The strip along the bottom of the screen, while browsing.
     ShowBar,
     /// Read the card again into the written-down copy of it.
@@ -94,6 +96,7 @@ pub const OPTIONS: &[OptionId] = &[
     OptionId::FoldersLast,
     OptionId::RandomLaunches,
     OptionId::CorePreference,
+    OptionId::AutomaticDataSource,
     OptionId::Spacer,
     OptionId::ShowOther,
     OptionId::ShowUtility,
@@ -205,6 +208,7 @@ impl OptionsPage {
                 OptionId::FavoritesFirst,
                 OptionId::FoldersLast,
                 OptionId::CorePreference,
+                OptionId::AutomaticDataSource,
                 OptionId::ShowOther,
                 OptionId::ShowUtility,
                 OptionId::ShowUnstable,
@@ -245,6 +249,7 @@ impl OptionId {
             OptionId::ShowUnstable => "Show Unstable Folder",
             OptionId::ShowScripts => "Show Scripts Folder",
             OptionId::CorePreference => "Core Preference",
+            OptionId::AutomaticDataSource => "Automatic Data Source",
             OptionId::ShowBar => "Bottom Bar While Browsing",
             OptionId::RebuildCache => "Rebuild All System Lists",
             OptionId::ScrapeAll => "Scrape All Systems",
@@ -304,6 +309,9 @@ impl OptionId {
             OptionId::ShowUnstable => "Show the Unstable category for nightly core builds.",
             OptionId::ShowScripts => "Show Scripts in the main menu. Run installed scripts and return to Degauss when they finish.",
             OptionId::CorePreference => "Choose the preferred core when standard and RetroAchievements versions are both installed.",
+            OptionId::AutomaticDataSource => {
+                "Choose which available source systems left on Automatic try first when they are entered."
+            }
             OptionId::ShowBar => "Show the clock, connections and button hints while browsing. Menus keep the bar.",
             OptionId::FoldersLast => {
                 "On puts folders before games. Off puts games before folders."
@@ -523,6 +531,16 @@ mod tests {
             .position(|option| *option == OptionId::RebuildCache)
             .expect("Rebuild All System Lists is in Library");
         assert_eq!(library.get(rebuild + 1), Some(&OptionId::ScrapeAll));
+    }
+
+    #[test]
+    fn automatic_data_source_follows_core_preference_in_library() {
+        let library = OptionsPage::Library.ids();
+        let core = library
+            .iter()
+            .position(|option| *option == OptionId::CorePreference)
+            .expect("Core Preference is in Library");
+        assert_eq!(library.get(core + 1), Some(&OptionId::AutomaticDataSource));
     }
 
     #[test]
