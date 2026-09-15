@@ -433,7 +433,15 @@ fn owner_candidates<'a>(systems: &'a [FoundSystem], path: &Path) -> Vec<&'a Foun
         let accepting: Vec<&FoundSystem> = deepest_candidates
             .iter()
             .copied()
-            .filter(|system| system.to_config().accepts(path))
+            .filter(|system| {
+                let config = system.to_config();
+                config.accepts(path)
+                    || (crate::neogeo::is_romset_system(&config)
+                        && (path.is_dir()
+                            || path
+                                .extension()
+                                .is_some_and(|extension| extension.eq_ignore_ascii_case("zip"))))
+            })
             .collect();
         if !accepting.is_empty() {
             deepest_candidates = accepting;
@@ -15382,13 +15390,39 @@ mod tests {
         let games = root.join("games");
         std::fs::create_dir_all(&games).unwrap();
         let game = games.join("Metal Slug.neo");
+        let set = games.join("mslug.zip");
         std::fs::write(&game, b"neo").unwrap();
+        std::fs::write(&set, b"set").unwrap();
         let systems = vec![
-            found_system_with_extensions("NeoGeoMVS", vec![games.clone()], &["neo"]),
-            found_system_with_extensions("NeoGeo", vec![games], &["neo"]),
+            found_system_with_core(
+                "NeoGeoMVS",
+                vec![games.clone()],
+                &["neo", "mgl"],
+                "_Console/NeoGeo",
+                None,
+            ),
+            found_system_with_core(
+                "NeoGeo",
+                vec![games.clone()],
+                &["neo", "mgl"],
+                "_Console/NeoGeo",
+                None,
+            ),
+            found_system_with_core(
+                "NeoGeoCD",
+                vec![games],
+                &["cue", "chd", "mgl"],
+                "_Console/NeoGeo",
+                None,
+            ),
         ];
 
         assert_eq!(owner_of_path(&systems, &game).as_deref(), Some("NeoGeo"));
+        assert_eq!(
+            owner_of_path(&systems, &set).as_deref(),
+            Some("NeoGeo"),
+            "a ROM-set ZIP is owned by the Neo Geo source group, not its overlapping CD system"
+        );
         std::fs::remove_dir_all(root).ok();
     }
 
