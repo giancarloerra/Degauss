@@ -34,21 +34,24 @@ Source available, written in Rust and using Slint, and licensed for non-commerci
 
 ## Screenshots
 
-The Degauss 0.6.0 images below are captured from the actual MiSTer framebuffer,
-mainly using the Blue-Yellow GE custom theme, with Standard-theme comparisons
-labelled separately. CRT presentation is applied for the README. Older examples
-remain labelled by release.
+The current interface images below are captured from the actual MiSTer
+framebuffer, mainly using the Blue-Yellow GE custom theme, with Standard-theme
+comparisons labelled separately. The 0.7.0 additions are labelled by their
+release, while unchanged screens retain their 0.6.0 captures. CRT presentation
+is applied for the README. Older examples remain labelled by release.
 
-### Current interface (0.6.0)
+### Current interface (0.7.0)
 
 | | | |
 |---|---|---|
-| <img src="docs/screenshots/0.6.0/01-home.png" alt="Home with its Capcom custom category image" height="200"> | <img src="docs/screenshots/0.6.0/02-details.png" alt="Details: DoDonPachi III" height="200"> | <img src="docs/screenshots/0.6.0/03-list.png" alt="List View: Arcade Favourites" height="200"> |
-| Home, with its Capcom custom category image | Details: DoDonPachi III | List View |
-| <img src="docs/screenshots/0.6.0/04-gallery.png" alt="Gallery View: Arcade Favourites" height="200"> | <img src="docs/screenshots/0.6.0/05-multi-list.png" alt="Multi List View: Arcade Favourites" height="200"> | <img src="docs/screenshots/0.6.0/06-carousel.png" alt="Carousel View: Actraiser" height="200"> |
-| Gallery View | Multi List View | Carousel: Actraiser |
-| <img src="docs/screenshots/0.6.0/07-tiled.png" alt="Tiled View: Amiga Favourites" height="200"> | <img src="docs/screenshots/0.6.0/08-options.png" alt="Extensive Options" height="200"> | <img src="docs/screenshots/0.6.0/09-navigation.png" alt="Navigation and Hold Shortcuts" height="200"> |
-| Tiled: Amiga Favourites | Extensive Options | Navigation and Hold Shortcuts |
+| <img src="docs/screenshots/0.6.0/01-home.png" alt="Home with its Capcom custom category image" height="200"> | <img src="docs/screenshots/0.7.0/03-handheld.png" alt="Optional Handheld category" height="200"> | <img src="docs/screenshots/0.6.0/02-details.png" alt="Details: DoDonPachi III" height="200"> |
+| Home, with its Capcom custom category image | Optional Handheld Category | Details: DoDonPachi III |
+| <img src="docs/screenshots/0.7.0/01-large-artwork.png" alt="Large Artwork Details: DonPachi" height="200"> | <img src="docs/screenshots/0.6.0/03-list.png" alt="List View: Arcade Favourites" height="200"> | <img src="docs/screenshots/0.6.0/04-gallery.png" alt="Gallery View: Arcade Favourites" height="200"> |
+| Large Artwork Details | List View | Gallery View |
+| <img src="docs/screenshots/0.6.0/05-multi-list.png" alt="Multi List View: Arcade Favourites" height="200"> | <img src="docs/screenshots/0.6.0/06-carousel.png" alt="Carousel View: Actraiser" height="200"> | <img src="docs/screenshots/0.6.0/07-tiled.png" alt="Tiled View: Amiga Favourites" height="200"> |
+| Multi List View | Carousel: Actraiser | Tiled: Amiga Favourites |
+| <img src="docs/screenshots/0.6.0/29-core-version-retroachievements.png" alt="RetroAchievements &amp; Unstable Cores" height="200"> | <img src="docs/screenshots/0.6.0/08-options.png" alt="Extensive Options" height="200"> | <img src="docs/screenshots/0.7.0/02-shortcuts.png" alt="Configurable Hold Shortcuts" height="200"> |
+| RetroAchievements &amp; Unstable Cores | Extensive Options | Configurable Hold Shortcuts |
 | <img src="docs/screenshots/0.6.0/10-appearance.png" alt="Appearance" height="200"> | <img src="docs/screenshots/0.6.0/11-library.png" alt="Library: Show Scripts Folder" height="200"> | <img src="docs/screenshots/0.6.0/12-display.png" alt="Display" height="200"> |
 | Appearance | Library | Display |
 | <img src="docs/screenshots/0.6.0/13-developer.png" alt="Developer" height="200"> | <img src="docs/screenshots/0.6.0/14-actions.png" alt="Grouped Actions" height="200"> | <img src="docs/screenshots/0.6.0/15-random-favourite.png" alt="Random Game and Random Favourite" height="200"> |
@@ -57,12 +60,6 @@ remain labelled by release.
 | Per-place View | Game Information: Steep Slope Sliders | Standard Theme: Details |
 | <img src="docs/screenshots/0.6.0/18-index-progress.png" alt="Indexing Progress: Running Rebuild" height="200"> | <img src="docs/screenshots/0.6.0/34-index-details.png" alt="Indexing Details: Running Rebuild" height="200"> | <img src="docs/screenshots/0.6.0/19-index-complete.png" alt="Indexing Complete" height="200"> |
 | Indexing Progress | Indexing Details | Indexing Complete |
-
-<p align="center">
-  <img src="docs/screenshots/0.6.0/29-core-version-retroachievements.png" alt="RetroAchievements &amp; Unstable Cores" height="200"><br>
-  <strong>RetroAchievements &amp; Unstable Cores</strong><br>
-  <sub>Choose an installed Standard, RetroAchievements, or matching Unstable core for each system, and Degauss remembers that choice for its games and recognised favourites.</sub>
-</p>
 
 **Game Artwork Databases:** choose **Automatic**, **Gamelist** or **Artwork Pack**
 for each supported system. Automatic is the default; **Options → Library →
