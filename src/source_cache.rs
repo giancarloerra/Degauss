@@ -42,6 +42,8 @@ pub struct Request {
     /// provider so source-neutral rows can be rebuilt and the real health
     /// error can be shown without falling back to gamelist presentation.
     pub require_usable_provider: bool,
+    /// Where the paths inside an `.mgl` point, for the Pack match.
+    pub homes: Arc<crate::mgl::Homes>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -228,11 +230,16 @@ fn run(request: Request, events: &SyncSender<Event>, cancelled: &Arc<AtomicBool>
         {
             let base_hashed_files = progress.hashed_files;
             let base_hashed_bytes = progress.hashed_bytes;
-            match provider.fingerprints_for_cache(&cache, cancelled, &mut |files, bytes| {
-                progress.hashed_files = base_hashed_files.saturating_add(files);
-                progress.hashed_bytes = base_hashed_bytes.saturating_add(bytes);
-                let _ = events.try_send(Event::Progress(progress.clone()));
-            }) {
+            match provider.fingerprints_for_cache(
+                &cache,
+                &request.homes,
+                cancelled,
+                &mut |files, bytes| {
+                    progress.hashed_files = base_hashed_files.saturating_add(files);
+                    progress.hashed_bytes = base_hashed_bytes.saturating_add(bytes);
+                    let _ = events.try_send(Event::Progress(progress.clone()));
+                },
+            ) {
                 Ok(Some(fingerprints)) => fingerprints,
                 Ok(None) => {
                     let _ = events.send(Event::Cancelled(progress));
@@ -250,7 +257,7 @@ fn run(request: Request, events: &SyncSender<Event>, cancelled: &Arc<AtomicBool>
             .as_ref()
             .is_some_and(|provider| provider.health.usable());
         if let Some(provider) = provider.as_mut() {
-            match provider.prepare_for_cache(&cache, &fingerprints, cancelled) {
+            match provider.prepare_for_cache(&cache, &fingerprints, &request.homes, cancelled) {
                 Ok(Some(_)) => {}
                 Ok(None) => {
                     let _ = events.send(Event::Cancelled(progress));
@@ -349,6 +356,7 @@ mod tests {
             synopsis_language: None,
             cache_dir: temp("empty-cache"),
             require_usable_provider: true,
+            homes: Arc::new(crate::mgl::Homes::default()),
         })
         .err()
         .expect("empty group is invalid");
@@ -392,6 +400,7 @@ mod tests {
             synopsis_language: Some("en".to_string()),
             cache_dir: root.join("cache"),
             require_usable_provider: true,
+            homes: Arc::new(crate::mgl::Homes::default()),
         })
         .unwrap();
         let Event::Staged {
@@ -501,6 +510,7 @@ mod tests {
             synopsis_language: Some("en".to_string()),
             cache_dir: root.join("cache"),
             require_usable_provider: true,
+            homes: Arc::new(crate::mgl::Homes::default()),
         })
         .unwrap();
         let Event::Staged {
@@ -555,6 +565,7 @@ mod tests {
             synopsis_language: None,
             cache_dir: root.join("cache"),
             require_usable_provider: true,
+            homes: Arc::new(crate::mgl::Homes::default()),
         })
         .unwrap();
         let Event::Failed { progress, .. } = terminal(&mut job) else {
@@ -589,6 +600,7 @@ mod tests {
             synopsis_language: Some("en".to_string()),
             cache_dir: cache_dir.clone(),
             require_usable_provider,
+            homes: Arc::new(crate::mgl::Homes::default()),
         };
 
         let mut selection = start(request(true)).unwrap();
@@ -651,6 +663,7 @@ mod tests {
                 synopsis_language: None,
                 cache_dir: root.join("cache"),
                 require_usable_provider: true,
+                homes: Arc::new(crate::mgl::Homes::default()),
             },
             &sender,
             &cancelled,
