@@ -25,11 +25,6 @@ speed and for CRTs, with several views, custom theming, different fonts, many fe
 
 Source available, written in Rust and using Slint, and licensed for non-commercial use.
 
-> **Slow exFAT folder scans after the September 7 MiSTer Linux update?**
-> The [optional kernel fix guide](https://github.com/giancarloerra/Degauss/blob/e4b5d2a1d9c0e4196d934be8d0f5dcc0296fb2e7/support/kernel-fix/README.md) explains the
-> separate installer and restoration procedure. Degauss's normal updater
-> does not install or replace the kernel.
-
 > ### Feature request or bug report? Star this repository as well to support it ⭐️
 >
 > Degauss is written and maintained by one person in his own time. A star is
@@ -171,8 +166,13 @@ Click the image to watch Degauss 0.4.0 on YouTube.
 | **left / right** | scroll speed, 0.5x to 12x, or what **Left and Right Behaviour** says: letter jumps, page jumps, or plain movement. Inside an Options page, left chooses the previous ordered value and right chooses the next; either direction toggles two-choice values |
 | **A** (enter) | open a folder, launch a game; in Options, choose the next value or run an action |
 | **B** (escape) | back, out of the folder |
-| **X** (tab) | **Actions** for the current selection and location: Game Information, random game, random favourite, keep or drop a favourite, jump to letter, search, hide a row, rebuild this system, change view, etc. With **Hold X (1s) to Add/Remove Fav** enabled, hold X for one second over a game to use the favourite shortcut |
-| **Y** (space) | **Menu**: Options, Scripts, Help, About, Exit to MiSTer. Optional **Hold Y (1s) for Random Game** uses Random Game Behaviour while browsing inside a system; a short press still opens Menu |
+| **X** (tab) | **Actions** for the current selection and location: Game Information, random game, random favourite, keep a favourite in Main Favourites or in a folder, drop a favourite, rename or remove an empty Favourites folder, jump to letter, search, hide a row, rebuild this system, change view, etc. |
+| **Y** (space) | **Menu**: Options, Scripts, Help, About, Exit to MiSTer |
+
+**Options → Shortcuts** can assign an optional one-second hold to A, B, X or Y.
+A short press keeps the button's normal action. An available hold runs once and
+does not also run the short action when released. If the assigned action is not
+available at the current browse location, the normal action remains immediate.
 
 **Actions** groups the available controls into **Game**, **Find**, **Library**
 and **Appearance**. Groups without applicable actions are omitted. **A** opens
@@ -181,16 +181,33 @@ control has an explanation below the list. The Categories home screen keeps
 its short, flat Actions menu for images and views.
 
 **Game** contains Game Information, separate **Random Game** and **Random
-Favourite** actions, and adding/removing favourites. Both random choices use
-the currently open folder and **Random Game Behaviour**. **Find** contains
-jump, search and hiding controls; **Library** contains scraping, core choice,
-data source and rebuilding; **Appearance** contains view and image controls.
+Favourite** actions, and adding/removing favourites. Adding one opens a
+chooser that lists **Main Favourites** (the `_@Favorites` folder itself)
+first, then the folders already inside it, then **New folder...**. Choosing
+Main Favourites writes the `.mgl`, or the link for a core file, directly
+under `_@Favorites`; no folder of that name is made, and a folder somebody
+has really called Main Favourites is listed after it as a folder of its own.
+When a real folder is selected in the Favourites shelf, the same Game group
+also offers **Rename Favourite Folder** and **Delete Favourite Folder**.
+Rename keeps everything inside and never overwrites another entry. Delete
+names the folder in its confirmation and works only when it is empty; it never
+removes contained favourites, nested folders, hidden entries or other files.
+If empty folders are hidden, turn on **Options → Library → Show Systems with No
+Games** to make the folder selectable for deletion.
+On a card that had no `_@Favorites` when Degauss started, the first
+favourite makes it, but the Favourites shelf is only listed after **Rebuild
+All System Lists**. Both random choices use the currently open folder and
+**Random Game Behaviour**. **Find** contains jump, search and hiding
+controls; **Library** contains scraping, core choice, data source and
+rebuilding; **Appearance** contains view and image controls.
 
-For Arcade favourites to work, if you have never launched MiSTer's
-**Favorites** script, run it once and create one Arcade favourite there.
-Folders inside `_@Favorites` without a leading `_` are visible only in Degauss,
-not in MiSTer's native OSD. Create them with the `_`, for example `_Arcade`, to
-see them in both.
+When Degauss creates an Arcade favourite, it also prepares MiSTer's native menu
+link if the Favorites script has not already done so. New favourite folder names
+start with `_`: keep it to show the folder in both Degauss and MiSTer's native
+OSD, or remove it with **X** to make the folder Degauss-only. The naming grid
+starts with lowercase letters; **Y** cycles through lowercase, uppercase and
+symbols, **SP** enters a space and **Clear** clears the complete name. Existing
+folders remain unchanged unless their Rename action is explicitly used.
 
 A gamepad needs no extra setup and browsing and settings need no keyboard. While Degauss
 owns the screen, MiSTer sends the d-pad as arrows and the face buttons as
@@ -259,8 +276,9 @@ scripts report their underlying error.
 - **Full metadata.** Read the complete description and available publisher,
   developer, release date, players, language and genre in Game Information,
   from the system's selected Gamelist or Artwork Pack source.
-- **Favourites are MiSTer's favourites**, written into `_@Favorites` in
-  MiSTer's own format. One made here works in the stock menu; one made
+- **Favourites are MiSTer's favourites**, written directly into
+  `_@Favorites` or into one of its folders, in MiSTer's own format. One made
+  here works in the stock menu; one made
   anywhere else appears here: the stock script's absolute paths, the
   root-relative paths Degauss writes, and hand-written paths relative to
   the core's games folder are all read the way MiSTer Main reads them. A
@@ -275,15 +293,6 @@ Measured on the DE10-Nano's own hardware, with a large multi-system
 collection indexed.
 
 ## Installing
-
-> **Slow scans after a MiSTer Linux update:** the September 7, 2026 Linux
-> release can make exFAT folder reads much slower. The
-> [upstream fix](https://github.com/MiSTer-devel/Linux-Kernel_MiSTer/commit/9854075c86455942c2ce57e0b7dc80e3e2c5b108)
-> is merged, but a source-code merge is not a distributed kernel update.
-> Degauss's normal updater does not replace the kernel. Any optional kernel
-> workaround is separate from installing or updating Degauss. See the
-> [optional kernel fix and restoration guide](https://github.com/giancarloerra/Degauss/blob/e4b5d2a1d9c0e4196d934be8d0f5dcc0296fb2e7/support/kernel-fix/README.md).
-
 
 ### Installing through Update All (recommended)
 
@@ -442,6 +451,9 @@ card browses from the stick, exactly as the stock menu would load it.
 Different folders of one system may resolve in different places. The
 files an MGL names by a relative path are looked for in the same order,
 under the folder MiSTer Main would use for that core and set name.
+When only one configured folder actually contains games for that system,
+Degauss opens it directly. The folder chooser appears only when two or more
+real locations contribute compatible games.
 
 Two things to know. Storage is looked for when Degauss starts, so plug
 the stick in first (or restart after); and moving a system between
@@ -593,8 +605,13 @@ running under Degauss Main already have the Frontend menu and shortcut.
 ## Views
 
 - **List**: plain text in one column.
-- **Details**: the list beside a large picture, with a compact year/players
-  and publisher summary. Game Information opens the complete metadata.
+- **Details**: the list beside a large picture. **Options → Appearance →
+  Details Style** chooses how the two share the screen while browsing games:
+  **Information**, the default, keeps the list wider with a compact
+  year/players and publisher summary under the picture; **Large Artwork**
+  gives the picture most of the width and the whole height of its column,
+  with no lines under it. Game Information in Actions opens the complete
+  metadata in either style.
 - **Tiled**: a grid of pictures with their titles underneath.
 - **Carousel**: one large cover with its neighbours either side.
 - **Multi list**: two text columns in reading order, showing twice as many entries
@@ -602,6 +619,22 @@ running under Degauss Main already have the Frontend menu and shortcut.
 - **Gallery**: a denser image grid with no permanent captions. The selected
   image has an outline and its title appears above the bottom bar for half a
   second. Entries without artwork remain visible as named text cells.
+
+The Details Style changes only the games level of Details: the Home,
+category and system screens and the other views keep their proportions, and
+switching it does not rebuild the library or the artwork cache. It is saved
+as `details_style` in `settings.toml`; a saved value that is neither
+`information` nor `large-artwork` draws Information and is left in the file
+for you to correct. That substitution is reported on the first screen,
+unless a library read starts at the same time and takes the screen first,
+and always in `/tmp/degauss.log`, which is the copy that survives such a
+read. Pictures are decoded to `cover_size` in `degauss.toml` or half the
+longer screen edge, whichever is larger. With the shipped `cover_size` of
+320 and the default screen margins, the Large Artwork box outgrows that
+decode on landscape screens wider than about 600 pixels (a little sooner
+for a portrait picture on a 4:3 or 5:4 screen), so a picture is drawn
+slightly enlarged there; on a landscape screen, a `cover_size` of at least
+two thirds of the screen width keeps every picture within its decode.
 
 **Options → Appearance → View** is the global default. Every browse place can instead
 keep its own custom view: the Categories screen, each category's Systems
@@ -624,8 +657,9 @@ inspect long values and the full description; left/right moves by a page.
 **B** or **X** returns to Actions / Game, and backing out restores the same game
 without launching it or changing the view. Information comes from the system's
 selected Gamelist or Artwork Pack source, including for favourites. Missing
-fields remain empty. Details keeps the compact summary; Information is where
-all available fields and the complete description can be read.
+fields remain empty. Details in its Information style keeps the compact
+summary and Large Artwork drops it; Game Information is where all available
+fields and the complete description can be read.
 
 Complete descriptions are read only when Game Information opens, with a visible
 loading or error state. Existing compact caches remain valid; no library rebuild
@@ -650,6 +684,12 @@ system. The picture is answered from the system's saved list, so a system
 browsed before its list has been written keeps the system logo on its
 folders until it is indexed or rebuilt.
 
+By default, handheld systems remain in the same MiSTer categories their cores
+use. **Options → Library → Separate Handheld Category** can instead present
+recognised handheld systems in a dedicated **Handheld** category. This changes
+only navigation: system discovery, games, artwork, favourites and launching
+keep their existing system identity.
+
 **Hide This**, in **Actions → Find**, takes any row out of the list: a
 game, a folder, or a whole system while you are looking at the system
 list. That is separate from the folders and systems left out because they
@@ -662,8 +702,8 @@ card.
 
 ## Settings
 
-Open **Y Menu → Options**, then choose Navigation, Appearance, Library,
-Display or Developer. **A** enters a page; **B** returns to the Options
+Open **Y Menu → Options**, then choose Navigation, Shortcuts, Appearance,
+Library, Display or Developer. **A** enters a page; **B** returns to the Options
 categories. Left and right do nothing on the category list. Each page keeps
 its selected row during the current session. Inside a page, left/right adjust
 values and **A** adjusts a value or runs the selected action. Reset actions
@@ -674,12 +714,12 @@ require **A** and confirmation, never a sideways press.
 | Navigation | Scroll Speed | How fast a held direction moves through the list. 3x out of the box |
 | Navigation | Skip Artwork Faster Than | Above this speed, pictures wait until the list stops. 6x out of the box |
 | Navigation | Left and Right Behaviour | What left and right do while browsing: Scroll Speed Change (the default), Letter, Page or Direction. Letter and Page repeat while held; in Direction, left and right move one entry and up and down move a whole row in Tiled, Multi List and Gallery |
-| Navigation | Hold X (1s) to Add/Remove Fav | Off by default. Hold X for one second over a game to open the normal favourite-folder chooser, or to remove it when it is already a favourite. The shortcut does nothing in the master Favourites system |
-| Navigation | Hold Y (1s) for Random Game | Off by default. Hold Y for one second while browsing inside a system to use Random Game. It follows Random Game Behaviour; a short Y still opens Menu. The hold shortcut is inactive in menus and during operations |
 | Navigation | Random Game Behaviour | Whether either random action starts the game, or only moves to it so you can look first |
+| Shortcuts | Hold A / Hold B / Hold X / Hold Y | Off by default. Assign None, Cycle View, Random Game, Random Favourite, Add/Remove Favourite, Game Information, Search This Folder or Jump to Letter to each one-second hold. Short presses retain their normal action. Holds work only while browsing and only where the chosen Actions command is available; otherwise the normal press is immediate |
 | Appearance | Theme | Left and right choose a palette. Press A to open the editor. Standard uses the colours in `degauss.toml`. See [Themes and colours](#themes-and-colours) |
 | Appearance | View | The global default for places without a custom view: Details, Tiled, Carousel, List, Multi List or Gallery |
 | Appearance | Reset All Custom Views | With A and confirmation, remove every place-specific view without changing the global View setting |
+| Appearance | Details Style | How Details shares the screen while browsing games. Information (default) keeps the list beside a picture of about 42% of the width, with the compact summary under it; Large Artwork gives the picture about 62% and the whole column height, with no lines under it |
 | Appearance | Text | The typeface: Smooth, Pixel (a DOS font on whole pixels), and the bolder Smooth 2 and Pixel 2 |
 | Appearance | Artwork | Turn pictures off entirely |
 | Appearance | Artwork Scale Factor | Framebuffer keeps the original square-pixel fit and is the default. 4:3 and 16:9 correct game artwork for that physical display shape in Details, Tiled, Carousel and Gallery, including a folder showing its game's artwork. Category logos, system logos and the screensaver are unchanged |
@@ -689,6 +729,7 @@ require **A** and confirmation, never a sideways press.
 | Library | Folders Before Games | On, folders lead a system's listing; off, the games come first |
 | Library | Core Preference | Standard First (default) or RetroAchievements First. Used by systems whose Core Version is Default; the other version is used only when the preferred version is absent |
 | Library | Automatic Data Source | Gamelist First (default) or Artwork Pack First. Applies only to systems whose Game Data Source remains Automatic; explicit per-system choices always win |
+| Library | Separate Handheld Category | Off by default. When On, recognised handheld systems appear in a Handheld category after Console. This is a display-only grouping and does not change core or game launching |
 | Library | Show Other Folder | Show the Other group, the cores that are not games |
 | Library | Show Utility Folder | Show the Utility group, test patterns and measurement cores |
 | Library | Show Unstable Folder | Show installed Unstable cores. On by default |
@@ -789,9 +830,10 @@ is running appears after the next start. `Green Mono`, `Modern` and `Neon` remai
 available without files because they are built into Degauss. The chosen theme
 is remembered by name in `settings.toml`. If that name resolves to neither a
 built-in theme nor a valid card-theme file, Degauss uses the standard palette
-and a message says so. A same-name card file takes precedence over a built-in;
-if that file is broken, Degauss reports it instead of concealing it with the
-built-in theme.
+and a message says so on the first screen (unless a library read starts at
+the same time and takes the screen first) and in `/tmp/degauss.log`. A
+same-name card file takes precedence over a built-in; if that file is broken,
+Degauss reports it instead of concealing it with the built-in theme.
 
 #### Editing a theme on-device
 
@@ -801,19 +843,28 @@ currently selected palette and previews every change immediately.
 | Control | Does |
 |---|---|
 | **up / down** | choose a colour role or control; in the continuous picker, choose the red, green or blue channel; in hexadecimal editing, change the selected digit with an immediate preview |
-| **left / right** | choose another starting point, change the theme's Default text, change the selected RGB channel through its smooth gradient in five-unit steps, switch logo colour between Original and Selection, change logo colour mix in five-percent steps, or select a hexadecimal digit |
-| **A** | open the continuous colour picker, apply the already-live colour, or activate Save as and other controls |
+| **left / right** | choose another starting point, change the theme's Default text, change the selected RGB channel through its smooth gradient in five-unit steps (hold to repeat), switch logo colour between Original and Selection, change logo colour mix in five-percent steps, or select a hexadecimal digit |
+| **A** | open the continuous colour picker, apply the already-live colour, or activate Save changes, Save as and other controls |
 | **X** | choose another palette role and swap its exact colour with the selected role; switch between the continuous picker and exact hexadecimal editing; in the name grid, delete one character |
-| **Y** | restore the colour that was present when the picker opened; in the name grid, clear the complete name |
+| **Y** | restore the colour that was present when the picker opened; in the name grid, cycle lowercase, uppercase and symbol pages |
 | **B** | cancel the current edit or leave the editor; changed themes require explicit discard confirmation |
 
-**Save as** opens a controller-operated name grid. Its green checkmark saves
-and its red X cancels. Saving writes a complete
+An editor-created theme has **Save changes**, which updates that theme under
+the same name, and **Save as**, which keeps it and creates another theme.
+Built-in and hand-written themes remain protected and offer **Save as** only.
+Updating is transactional: if the replacement or settings cannot be saved,
+the previous theme file remains usable and the error stays on screen.
+
+**Save as** opens a paged controller-operated name grid. **Y** cycles its
+lowercase, uppercase and symbol pages, **X** deletes one character, **SP**
+enters a space and **Clear** clears the complete name. Its green checkmark
+saves and its red X cancels. Saving writes a complete
 `.toml` file into `Scripts/.config/degauss/themes/`, selects it, and stores
 its name in `settings.toml`; the default text choice remains part of the theme
-file. Names use letters, numbers, spaces, hyphens and
-underscores. An existing theme is never overwritten. A save error remains
-on screen and the unsaved draft stays in the editor.
+file. Names use the characters shown on the grid; `\`, `/`, `:`, `*`, `?`,
+`"`, `<`, `>` and `|` are excluded because they cannot be used in these
+filenames. An existing theme is never overwritten. A save error remains on
+screen and the unsaved draft stays in the editor.
 
 A theme saved by this editor also has a **Delete theme** control. Existing
 canonical editor-saved themes are recognised too. Deletion requires
@@ -1559,6 +1610,7 @@ To give a category a fixed image, name the file exactly after the category:
 ```text
 Arcade.png
 Console.png
+Handheld.png
 Computer.png
 Utility.png
 Other.png
@@ -1744,11 +1796,13 @@ framebuffer, which works while the frontend is running. `--screen`,
 shows. `--layout` accepts `details`, `tiled`, `list`, `carousel`,
 `multi-list` and `gallery`. An explicit `--layout` is temporary and takes
 precedence over saved global and custom views; without it, render, bench and
-selftest use Details. This headless facility is useful for inspection and
-diagnostics; it is separate from capturing the live MiSTer framebuffer.
+selftest use Details. A Details frame follows the Details Style saved in
+`settings.toml`; there is no separate flag for it. This headless facility is
+useful for inspection and diagnostics; it is separate from capturing the live
+MiSTer framebuffer.
 
 `--screen options` shows the Options categories. Add
-`--options-page navigation|appearance|library|display|developer` to render
+`--options-page navigation|shortcuts|appearance|library|display|developer` to render
 a settings page directly. `--screen advanced` remains a direct alias for the
 Developer page. `--screen actions` shows Actions, with the existing
 `--screen context` spelling retained as an alias. `--screen information`

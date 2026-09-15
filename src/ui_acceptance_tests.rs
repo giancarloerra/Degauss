@@ -224,6 +224,7 @@ fn every_existing_action_remains_reachable_without_a_placeholder_submenu() {
         game_data_source: true,
         core_version: true,
         core_version_override: true,
+        favorite_folder: false,
     };
     let cases = [
         context_entries(Browsing::Games, true, Some(false), Some(false), true, full),
@@ -365,7 +366,7 @@ fn unopened_fixture_app_with_systems(
         names: Default::default(),
         logo_dir: None,
         themes_dir: root.join("themes"),
-        themes: Default::default(),
+        themes: crate::theme::load_available(&root.join("themes")),
     };
     App::new(
         loaded,
@@ -436,6 +437,141 @@ fn run_browse_bar_settings_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) 
         }
         app.ui.hide().unwrap();
     }
+}
+
+fn run_handheld_category_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
+    let mut app = fixture_app(root, window, Settings::default());
+    let mut handheld = app.all_systems[0].clone();
+    handheld.def.handheld = true;
+    let mut console = handheld.clone();
+    console.def.id = "SNES".into();
+    console.def.name = "Super Nintendo".into();
+    console.def.handheld = false;
+    console.paths = vec![root.join("games/SNES")];
+    app.all_systems = vec![handheld, console];
+    app.open_category = Some("Console".into());
+    app.category_system.insert("Console".into(), "NES".into());
+    app.rebuild_system_list();
+    app.browsing = Browsing::Games;
+    app.game_list.select(1);
+
+    assert_eq!(app.settings.separate_handheld_category, None);
+    assert_eq!(app.open_category.as_deref(), Some("Console"));
+    assert_eq!(
+        app.categories
+            .iter()
+            .map(|(name, _)| name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["Console"]
+    );
+    let saved = app.position();
+    let selected_game = row_key(&app.here[app.game_list.selected()]);
+    let cache_before = cache_snapshot(&app.cache_dir);
+    let launch_before = app
+        .all_systems
+        .iter()
+        .find(|system| system.def.id == "NES")
+        .unwrap()
+        .to_config();
+    app.settings
+        .custom_views
+        .systems
+        .insert(HANDHELD_CATEGORY.into(), "gallery".into());
+
+    select_option(
+        &mut app,
+        OptionsPage::Library,
+        OptionId::SeparateHandheldCategory,
+    );
+    app.handle(Action::Accept);
+
+    assert_eq!(app.settings.separate_handheld_category, Some(true));
+    assert_eq!(app.open_category.as_deref(), Some(HANDHELD_CATEGORY));
+    assert_eq!(app.open_system.as_deref(), Some("NES"));
+    assert_eq!(row_key(&app.here[app.game_list.selected()]), selected_game);
+    assert_eq!(
+        app.categories
+            .iter()
+            .map(|(name, _)| name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["Console", HANDHELD_CATEGORY]
+    );
+    assert_eq!(app.systems.len(), 1);
+    assert_eq!(app.systems[0].def.id, "NES");
+    assert_eq!(cache_snapshot(&app.cache_dir), cache_before);
+    assert_eq!(
+        app.settings
+            .custom_views
+            .systems
+            .get(HANDHELD_CATEGORY)
+            .map(String::as_str),
+        Some("gallery")
+    );
+    app.browsing = Browsing::Systems;
+    app.resolve_view();
+    assert_eq!(app.layout, Layout::Gallery);
+    app.browsing = Browsing::Games;
+    app.resolve_view();
+
+    app.restore_position(&saved);
+    app.finish_background_work_for_headless();
+    assert_eq!(app.open_category.as_deref(), Some(HANDHELD_CATEGORY));
+    assert_eq!(app.open_system.as_deref(), Some("NES"));
+    assert!(
+        app.message.is_none(),
+        "restoring the saved position must not leave an overlay: {:?}",
+        app.message
+    );
+    let selected_after_restore = row_key(&app.here[app.game_list.selected()]);
+
+    select_option(
+        &mut app,
+        OptionsPage::Library,
+        OptionId::SeparateHandheldCategory,
+    );
+    app.handle(Action::Accept);
+    assert_eq!(app.settings.separate_handheld_category, Some(false));
+    assert_eq!(app.open_category.as_deref(), Some("Console"));
+    assert_eq!(app.open_system.as_deref(), Some("NES"));
+    assert_eq!(
+        row_key(&app.here[app.game_list.selected()]),
+        selected_after_restore
+    );
+    assert_eq!(cache_snapshot(&app.cache_dir), cache_before);
+    assert_eq!(
+        app.settings
+            .custom_views
+            .systems
+            .get(HANDHELD_CATEGORY)
+            .map(String::as_str),
+        Some("gallery"),
+        "the optional category's saved view remains dormant when disabled"
+    );
+
+    let launch_after = app
+        .all_systems
+        .iter()
+        .find(|system| system.def.id == "NES")
+        .unwrap()
+        .to_config();
+    assert_eq!(launch_after.path, launch_before.path);
+    assert_eq!(launch_after.extensions, launch_before.extensions);
+    assert_eq!(launch_after.rbf, launch_before.rbf);
+    assert_eq!(launch_after.launch, launch_before.launch);
+    assert_eq!(launch_after.setname, launch_before.setname);
+
+    app.handle(Action::Quit);
+    let reloaded = Settings::load(&app.settings_path).unwrap();
+    assert_eq!(reloaded.separate_handheld_category, Some(false));
+    assert_eq!(
+        reloaded
+            .custom_views
+            .systems
+            .get(HANDHELD_CATEGORY)
+            .map(String::as_str),
+        Some("gallery")
+    );
+    app.ui.hide().unwrap();
 }
 
 fn run_scripts_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
@@ -512,7 +648,7 @@ fn run_scripts_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
         ]
     );
     assert!(app.build.is_none());
-    assert!(!app.random_shortcut_enabled());
+    assert!(app.available_hold_shortcuts().iter().all(Option::is_none));
     app.refresh();
     assert!(app.ui.get_status().contains("folder"));
     app.handle(Action::Accept);
@@ -800,8 +936,8 @@ fn run_selected_controls_flow(app: &mut App) {
     app.apply_geometry();
 }
 
-fn run_hold_y_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
-    let root = root.join("hold-y");
+fn run_hold_shortcut_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
+    let root = root.join("hold-shortcuts");
     std::fs::create_dir_all(root.join("games/NES")).unwrap();
     std::fs::create_dir(root.join("_Console")).unwrap();
     std::fs::write(root.join("_Console/NES.rbf"), b"fixture core").unwrap();
@@ -809,24 +945,33 @@ fn run_hold_y_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
         std::fs::write(root.join("games/NES").join(name), b"fixture game").unwrap();
     }
     let mut app = fixture_app(&root, window, Settings::default());
-    assert!(!app.hold_y_random, "existing settings retain immediate Y");
-    assert!(!app.random_shortcut_enabled());
+    assert_eq!(
+        app.hold_shortcuts,
+        [HoldShortcut::None; 4],
+        "existing settings retain immediate face buttons"
+    );
     app.handle(Action::Menu);
     assert_eq!(app.screen, Screen::Menu);
     app.handle(Action::Quit);
-    select_option(&mut app, OptionsPage::Navigation, OptionId::HoldYRandom);
+    select_option(&mut app, OptionsPage::Shortcuts, OptionId::HoldY);
     app.handle(Action::Accept);
-    assert!(app.hold_y_random);
-    app.handle(Action::Quit);
+    app.handle(Action::Accept);
     assert_eq!(
-        Settings::load(&app.settings_path).unwrap().hold_y_random,
-        Some(true)
+        app.hold_shortcuts[HoldButton::Y.index()],
+        HoldShortcut::RandomGame
     );
+    app.handle(Action::Quit);
+    let saved = Settings::load(&app.settings_path).unwrap();
+    assert_eq!(saved.hold_y_shortcut, Some(HoldShortcut::RandomGame));
+    assert_eq!(saved.hold_y_random, Some(true));
     app.screen = Screen::Browse;
-    assert!(app.random_shortcut_enabled());
+    assert_eq!(
+        app.available_hold_shortcuts()[HoldButton::Y.index()],
+        Some(HoldShortcut::RandomGame)
+    );
     let held = Instant::now();
     let mut repeater = Repeater::new(RepeatConfig::default());
-    repeater.set_random_hold(app.random_shortcut_enabled());
+    repeater.set_hold_shortcuts(app.available_hold_shortcuts());
     assert_eq!(repeater.press(Action::Menu, held), None);
     let short = repeater
         .release(Action::Menu, held + Duration::from_millis(999))
@@ -840,11 +985,11 @@ fn run_hold_y_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
         app.random_launches = launches;
         app.message = None;
         app.screen = Screen::Browse;
-        repeater.set_random_hold(app.random_shortcut_enabled());
+        repeater.set_hold_shortcuts(app.available_hold_shortcuts());
         let pressed = Instant::now();
         assert_eq!(repeater.press(Action::Menu, pressed), None);
         let due = repeater.tick(pressed + Duration::from_secs(1));
-        assert_eq!(due, vec![Action::RandomShortcut]);
+        assert_eq!(due, vec![Action::HoldShortcut(HoldShortcut::RandomGame)]);
         let outcome = app.handle(due[0]);
         assert_eq!(
             matches!(outcome, Some(Outcome::Launch { .. })),
@@ -859,6 +1004,96 @@ fn run_hold_y_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
             None
         );
     }
+
+    app.random_launches = false;
+    app.message = None;
+    app.screen = Screen::Browse;
+    let place = app.current_view_place().unwrap();
+    let previous_layout = app.layout;
+    assert!(app.perform_hold_shortcut(HoldShortcut::CycleView).is_none());
+    assert_eq!(app.layout, previous_layout.next());
+    assert_eq!(
+        place.get(&app.settings.custom_views),
+        Some(app.layout.label()),
+        "Cycle View saves the exact browse place"
+    );
+    let saved = Settings::load(&app.settings_path).unwrap();
+    assert_eq!(
+        place.get(&saved.custom_views),
+        Some(app.layout.label()),
+        "Cycle View is durable immediately"
+    );
+
+    app.browsing = Browsing::Systems;
+    app.open_category = Some("Console".into());
+    app.layout = Layout::List;
+    app.perform_hold_shortcut(HoldShortcut::CycleView);
+    assert_eq!(
+        app.settings
+            .custom_views
+            .systems
+            .get("Console")
+            .map(String::as_str),
+        Some(Layout::MultiList.label())
+    );
+    app.browsing = Browsing::Categories;
+    app.layout = Layout::Gallery;
+    app.perform_hold_shortcut(HoldShortcut::CycleView);
+    assert_eq!(
+        app.settings.custom_views.categories.as_deref(),
+        Some(Layout::Details.label())
+    );
+    app.browsing = Browsing::Games;
+
+    for (shortcut, mode) in [
+        (HoldShortcut::SearchThisFolder, FindMode::Search),
+        (HoldShortcut::JumpToLetter, FindMode::Jump),
+    ] {
+        app.screen = Screen::Browse;
+        assert!(app.perform_hold_shortcut(shortcut).is_none());
+        assert_eq!(app.screen, Screen::Find);
+        assert_eq!(app.find_mode, mode);
+        app.handle(Action::Quit);
+        assert_eq!(app.screen, Screen::Browse);
+    }
+
+    app.screen = Screen::Browse;
+    assert!(app
+        .perform_hold_shortcut(HoldShortcut::GameInformation)
+        .is_none());
+    assert_eq!(app.screen, Screen::Information);
+    app.finish_background_work_for_headless();
+    app.handle(Action::Quit);
+    assert_eq!(app.screen, Screen::Context);
+    assert!(app.menu.iter().any(|entry| entry == GAME_INFORMATION));
+    app.handle(Action::Quit);
+    app.handle(Action::Quit);
+    assert_eq!(app.screen, Screen::Browse);
+
+    assert!(app
+        .perform_hold_shortcut(HoldShortcut::AddRemoveFavourite)
+        .is_none());
+    assert_eq!(app.screen, Screen::FavoriteFolder);
+    app.handle(Action::Quit);
+    assert_eq!(app.screen, Screen::Browse);
+
+    assert!(app
+        .perform_hold_shortcut(HoldShortcut::RandomFavourite)
+        .is_none());
+    assert_eq!(
+        app.message.as_deref(),
+        Some("No favourites under this folder.")
+    );
+    app.handle(Action::Quit);
+    assert!(app.message.is_none());
+    assert_eq!(app.screen, Screen::Browse);
+
+    app.hold_shortcuts = [
+        HoldShortcut::CycleView,
+        HoldShortcut::SearchThisFolder,
+        HoldShortcut::GameInformation,
+        HoldShortcut::RandomGame,
+    ];
 
     for screen in [
         Screen::Splash,
@@ -887,38 +1122,38 @@ fn run_hold_y_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
     ] {
         app.screen = screen;
         assert!(
-            !app.random_shortcut_enabled(),
-            "{screen:?} must never delay Y or launch a random game"
+            app.available_hold_shortcuts().iter().all(Option::is_none),
+            "{screen:?} must never delay a face button or run a browsing shortcut"
         );
     }
     app.screen = Screen::Browse;
     for browsing in [Browsing::Systems, Browsing::Categories] {
         app.browsing = browsing;
-        assert!(!app.random_shortcut_enabled());
+        assert!(app.available_hold_shortcuts()[HoldButton::Y.index()].is_none());
     }
     app.browsing = Browsing::Games;
     app.message = Some("Fixture message".into());
-    assert!(!app.random_shortcut_enabled());
+    assert!(app.available_hold_shortcuts()[HoldButton::Y.index()].is_none());
     app.message = None;
     app.pending = Some(Pending::Exit);
-    assert!(!app.random_shortcut_enabled());
+    assert!(app.available_hold_shortcuts()[HoldButton::Y.index()].is_none());
     app.pending = None;
     app.index_terminal = Some(IndexOverview::default());
-    assert!(!app.random_shortcut_enabled());
+    assert!(app.available_hold_shortcuts()[HoldButton::Y.index()].is_none());
     app.index_terminal = None;
     app.scraper_pending_terminal = Some(ScraperTerminal::Finished);
-    assert!(!app.random_shortcut_enabled());
+    assert!(app.available_hold_shortcuts()[HoldButton::Y.index()].is_none());
     app.scraper_pending_terminal = None;
 
     app.saver_return = Screen::Browse;
     app.screen = Screen::Screensaver;
-    repeater.set_random_hold(app.random_shortcut_enabled());
+    repeater.set_hold_shortcuts(app.available_hold_shortcuts());
     let wake = Instant::now();
     assert_eq!(repeater.press(Action::Menu, wake), Some(Action::Menu));
     let selected = app.game_list.selected();
     assert!(app.handle(Action::Menu).is_none());
     assert_eq!(app.screen, Screen::Browse);
-    repeater.set_random_hold(app.random_shortcut_enabled());
+    repeater.set_hold_shortcuts(app.available_hold_shortcuts());
     assert!(repeater.tick(wake + Duration::from_secs(2)).is_empty());
     assert_eq!(
         repeater.release(Action::Menu, wake + Duration::from_secs(2)),
@@ -929,6 +1164,438 @@ fn run_hold_y_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
         selected,
         "wake must not choose another game"
     );
+    app.ui.hide().unwrap();
+}
+
+/// Open Actions over the selected game and accept one entry of its Game
+/// group, the way a controller reaches it.
+fn accept_game_action(app: &mut App, action: &str) {
+    assert_eq!(app.screen, Screen::Browse);
+    app.handle(Action::Context);
+    assert_eq!(app.screen, Screen::Context);
+    assert_eq!(
+        app.menu.first().map(String::as_str),
+        Some(ContextPage::Game.label())
+    );
+    app.menu_list.select(0);
+    app.handle(Action::Accept);
+    let index = app
+        .menu
+        .iter()
+        .position(|entry| entry == action)
+        .unwrap_or_else(|| panic!("{action} is offered: {:?}", app.menu));
+    app.menu_list.select(index);
+    app.handle(Action::Accept);
+}
+
+fn select_row_named(app: &mut App, name: &str) {
+    let index = app
+        .here
+        .iter()
+        .position(|row| row.name == name)
+        .unwrap_or_else(|| panic!("{name} is listed: {:?}", app.here));
+    app.game_list.select(index);
+}
+
+fn run_main_favourites_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
+    let root = root.join("main-favourites");
+    std::fs::create_dir_all(root.join("games/NES")).unwrap();
+    std::fs::create_dir(root.join("_Console")).unwrap();
+    std::fs::write(root.join("_Console/NES.rbf"), b"fixture core").unwrap();
+    let game = root.join("games/NES/First Game.nes");
+    std::fs::write(&game, b"fixture game").unwrap();
+    std::fs::write(
+        root.join("games/NES/gamelist.xml"),
+        "<gameList><game><path>First Game.nes</path><name>First Game</name></game></gameList>",
+    )
+    .unwrap();
+    // A ready-made descriptor is a core file to the favourites code: it is
+    // linked to rather than described again.
+    let core_file = root.join("games/NES/Core Game.mgl");
+    std::fs::write(
+        &core_file,
+        "<mistergamedescription><rbf>_Console/NES</rbf><file delay=\"1\" type=\"f\" index=\"1\" path=\"/media/fat/games/NES/Core Game.nes\"/></mistergamedescription>",
+    )
+    .unwrap();
+    let favorites_root = root.join("_@Favorites");
+    let mut app = fixture_app(&root, window, Settings::default());
+    assert!(
+        !favorites_root.exists(),
+        "the flow starts on a card that has no favourites yet"
+    );
+    assert!(
+        !app.all_systems
+            .iter()
+            .any(|system| crate::systems::is_favorites(system.category())),
+        "a folder absent at startup is a system discovery never found"
+    );
+
+    // The chooser offers the root first even before the root exists, and
+    // leaving it without choosing drops its rows.
+    select_row_named(&mut app, "First Game");
+    accept_game_action(&mut app, ADD_FAVORITE);
+    assert_eq!(app.screen, Screen::FavoriteFolder);
+    assert_eq!(app.menu, vec![MAIN_FAVORITES, NEW_FOLDER]);
+    assert_eq!(app.favorite_destinations[0], FavoriteDestination::Root);
+    assert_eq!(app.menu_list.selected(), 0);
+    app.handle(Action::Quit);
+    assert_eq!(app.screen, Screen::Browse);
+    assert!(app.favorite_destinations.is_empty());
+    assert!(!favorites_root.exists(), "looking does not make the folder");
+
+    // The first favourite makes the root and goes straight into it. With
+    // no Favorites system discovered there is no shelf to refresh, and
+    // the save stays press-free, the way a folder save on such a card has
+    // always been: the shelf is listed by the next full rebuild.
+    let root_favorite = favorites_root.join("First Game.mgl");
+    select_row_named(&mut app, "First Game");
+    accept_game_action(&mut app, ADD_FAVORITE);
+    assert_eq!(app.menu_list.selected(), 0);
+    app.handle(Action::Accept);
+    assert_eq!(app.screen, Screen::Browse);
+    assert!(app.favorite_destinations.is_empty());
+    assert!(std::fs::symlink_metadata(&root_favorite).unwrap().is_file());
+    assert!(app.favorites.holds(&game));
+    assert!(app
+        .here
+        .iter()
+        .any(|row| row.name == "First Game" && row.favorite));
+    assert!(
+        app.message.is_none(),
+        "a save with no shelf to refresh costs no press: {:?}",
+        app.message
+    );
+    assert!(
+        crate::cache::load_system(&app.cache_dir, "Favorites").is_none(),
+        "no shelf was discovered, so none was written"
+    );
+    assert!(app
+        .systems
+        .iter()
+        .all(|system| system.def.id != "Favorites"));
+    // The existing removal takes it away again, as press-free as before.
+    select_row_named(&mut app, "First Game");
+    accept_game_action(&mut app, REMOVE_FAVORITE);
+    assert_eq!(app.screen, Screen::Browse);
+    assert!(!root_favorite.exists());
+    assert!(!app.favorites.holds(&game));
+    assert!(
+        favorites_root.is_dir(),
+        "removing a favourite keeps the root"
+    );
+    assert!(app.message.is_none(), "{:?}", app.message);
+
+    // The master shelf, declared the way the shipped table declares it and
+    // pointed at this card's root: what the full rebuild discovers now the
+    // folder is there, so the refresh after a write has a system to
+    // rewrite.
+    let mut favorites = crate::systems::parse_table(
+        include_str!("../assets/systems.toml"),
+        Path::new("systems.toml"),
+    )
+    .unwrap()
+    .into_iter()
+    .find(|system| system.id == "Favorites")
+    .unwrap();
+    favorites.folders = vec![favorites_root.to_string_lossy().into_owned()];
+    app.all_systems.push(FoundSystem {
+        def: favorites,
+        paths: vec![favorites_root.clone()],
+        logo_dir: None,
+        menu_folder: None,
+    });
+
+    // Choosing the root writes the .mgl straight into _@Favorites and
+    // makes no folder named after the row.
+    select_row_named(&mut app, "First Game");
+    accept_game_action(&mut app, ADD_FAVORITE);
+    assert_eq!(app.screen, Screen::FavoriteFolder);
+    assert_eq!(app.menu, vec![MAIN_FAVORITES, NEW_FOLDER]);
+    assert_eq!(app.menu_list.selected(), 0);
+    app.handle(Action::Accept);
+    assert_eq!(app.screen, Screen::Browse);
+    assert!(
+        std::fs::symlink_metadata(&root_favorite).unwrap().is_file(),
+        "a game favourite in the root is a plain .mgl"
+    );
+    assert!(std::fs::read_to_string(&root_favorite)
+        .unwrap()
+        .contains("<mistergamedescription>"));
+    assert!(
+        !favorites_root.join(MAIN_FAVORITES).exists(),
+        "Main Favourites is the root, not a folder"
+    );
+    assert!(app.favorites.holds(&game));
+    assert!(app
+        .here
+        .iter()
+        .any(|row| row.name == "First Game" && row.favorite));
+    // The refresh rewrote the shelf's cache with the root-level file, and
+    // said nothing: a shelf listed live would look the same on screen while
+    // a failed refresh went unreported.
+    assert!(app.message.is_none(), "{:?}", app.message);
+    let shelf_cache = crate::cache::load_system(&app.cache_dir, "Favorites")
+        .expect("the Favorites cache is written by the refresh");
+    assert!(
+        shelf_cache
+            .folders
+            .values()
+            .flat_map(|folder| &folder.rows)
+            .any(|row| {
+                matches!(
+                    &row.kind,
+                    browse::Kind::Play(browse::Launch::File(path)) if path == &root_favorite
+                )
+            }),
+        "the refreshed cache lists the root-level favourite: {:?}",
+        shelf_cache.folders
+    );
+
+    // The shelf shows it after the existing refresh, and the existing
+    // removal there takes a root-level favourite away.
+    app.open_system_by_index(1);
+    assert_eq!(app.open_system.as_deref(), Some("Favorites"));
+    assert!(app.in_favorites());
+    assert!(
+        app.here.iter().any(|row| {
+            row.name == "First Game"
+                && matches!(
+                    &row.kind,
+                    browse::Kind::Play(browse::Launch::File(path)) if path == &root_favorite
+                )
+        }),
+        "the shelf lists the root-level favourite: {:?}",
+        app.here
+    );
+    select_row_named(&mut app, "First Game");
+    accept_game_action(&mut app, REMOVE_FAVORITE);
+    assert_eq!(app.screen, Screen::Browse);
+    assert!(app.message.is_none(), "{:?}", app.message);
+    assert!(!root_favorite.exists());
+    assert!(!app.here.iter().any(|row| row.name == "First Game"));
+    assert!(!app.favorites.holds(&game));
+
+    // The held-X shortcut reaches the same chooser, and a core file kept
+    // in the root is the standard link.
+    app.open_system_by_index(0);
+    assert_eq!(app.open_system.as_deref(), Some("NES"));
+    app.hold_shortcuts[HoldButton::X.index()] = HoldShortcut::AddRemoveFavourite;
+    app.settings
+        .set_hold_shortcut(HoldButton::X, HoldShortcut::AddRemoveFavourite);
+    select_row_named(&mut app, "Core Game");
+    assert_eq!(app.favorite_change(), Some(FavoriteChange::Add));
+    app.handle(Action::HoldShortcut(HoldShortcut::AddRemoveFavourite));
+    assert_eq!(app.screen, Screen::FavoriteFolder);
+    assert_eq!(app.menu.first().map(String::as_str), Some(MAIN_FAVORITES));
+    app.handle(Action::Accept);
+    assert_eq!(app.screen, Screen::Browse);
+    let root_link = favorites_root.join("Core Game.mgl");
+    assert!(std::fs::symlink_metadata(&root_link)
+        .unwrap()
+        .file_type()
+        .is_symlink());
+    assert_eq!(std::fs::read_link(&root_link).unwrap(), core_file);
+    assert!(app.favorites.holds(&core_file));
+    assert!(app
+        .here
+        .iter()
+        .any(|row| row.name == "Core Game" && row.favorite));
+
+    // A root-level favourite made outside Degauss, for another file but
+    // under this game's name, is not this game's favourite, so the game is
+    // still offered Add to Favourites. The write is refused by name, and
+    // the refusal is shown rather than lost to the redraw that follows it.
+    std::fs::write(
+        &root_favorite,
+        "<mistergamedescription><rbf>_Console/NES</rbf><file delay=\"1\" type=\"f\" index=\"1\" path=\"/media/fat/games/NES/Other Game.nes\"/></mistergamedescription>",
+    )
+    .unwrap();
+    select_row_named(&mut app, "First Game");
+    accept_game_action(&mut app, ADD_FAVORITE);
+    assert_eq!(app.screen, Screen::FavoriteFolder);
+    assert_eq!(app.menu_list.selected(), 0);
+    app.handle(Action::Accept);
+    assert_eq!(app.screen, Screen::Browse);
+    let refusal = app.message.clone().expect("a failed write is reported");
+    assert!(
+        refusal.contains("already has a favourite called First Game"),
+        "the real cause is shown: {refusal}"
+    );
+    assert!(
+        !app.favorites.holds(&game),
+        "a refused write does not mark the game"
+    );
+    // The next press dismisses the message and is spent on that.
+    app.handle(Action::Quit);
+    assert!(app.message.is_none());
+    assert_eq!(app.screen, Screen::Browse);
+
+    // When the redraw after the refusal cannot list the folder either,
+    // both causes are shown: the refusal alone would leave the emptied
+    // list looking like an empty folder once it was dismissed.
+    let place = app.trail.last().unwrap().place.clone();
+    select_row_named(&mut app, "First Game");
+    accept_game_action(&mut app, ADD_FAVORITE);
+    assert_eq!(app.screen, Screen::FavoriteFolder);
+    app.trail.last_mut().unwrap().place = Place::Dir(root.join("games/Gone"));
+    app.handle(Action::Accept);
+    assert_eq!(app.screen, Screen::Browse);
+    let both = app.message.clone().expect("both failures are reported");
+    assert!(
+        both.contains("already has a favourite called First Game"),
+        "the refusal comes first: {both}"
+    );
+    assert!(
+        both.contains("reading folder"),
+        "the listing failure is kept under it: {both}"
+    );
+    assert!(both.find("already has").unwrap() < both.find("reading folder").unwrap());
+    assert!(app.here.is_empty());
+    app.handle(Action::Quit);
+    assert!(app.message.is_none());
+    app.trail.last_mut().unwrap().place = place;
+    app.relist_here();
+    assert_eq!(app.here.len(), 2);
+    std::fs::remove_file(&root_favorite).unwrap();
+
+    // A folder really called Main Favourites shows the same words as the
+    // root and stays a destination of its own, chosen by row rather than
+    // by label.
+    let named_folder = favorites_root.join(MAIN_FAVORITES);
+    std::fs::create_dir(&named_folder).unwrap();
+    select_row_named(&mut app, "First Game");
+    accept_game_action(&mut app, ADD_FAVORITE);
+    assert_eq!(app.screen, Screen::FavoriteFolder);
+    assert_eq!(app.menu, vec![MAIN_FAVORITES, MAIN_FAVORITES, NEW_FOLDER]);
+    assert_eq!(
+        app.favorite_destinations,
+        vec![
+            FavoriteDestination::Root,
+            FavoriteDestination::Folder(MAIN_FAVORITES.to_string()),
+            FavoriteDestination::NewFolder,
+        ]
+    );
+    app.menu_list.select(1);
+    app.handle(Action::Accept);
+    assert_eq!(app.screen, Screen::Browse);
+    assert!(named_folder.join("First Game.mgl").is_file());
+    assert!(
+        !root_favorite.exists(),
+        "the folder's row must not write into the root"
+    );
+    assert!(app.favorites.holds(&game));
+    select_row_named(&mut app, "First Game");
+    accept_game_action(&mut app, REMOVE_FAVORITE);
+    assert!(!named_folder.join("First Game.mgl").exists());
+    assert!(!app.favorites.holds(&game));
+    select_row_named(&mut app, "First Game");
+    accept_game_action(&mut app, ADD_FAVORITE);
+    assert_eq!(app.menu.len(), 3);
+    app.menu_list.select(0);
+    app.handle(Action::Accept);
+    assert!(root_favorite.is_file());
+    assert!(
+        !named_folder.join("First Game.mgl").exists(),
+        "the root's row must not write into the folder of the same name"
+    );
+    select_row_named(&mut app, "First Game");
+    accept_game_action(&mut app, REMOVE_FAVORITE);
+    assert!(!root_favorite.exists());
+    assert!(!app.favorites.holds(&game));
+
+    // Naming a new folder is still the last row and still makes the folder
+    // before writing into it.
+    select_row_named(&mut app, "First Game");
+    accept_game_action(&mut app, ADD_FAVORITE);
+    app.menu_list.select(app.menu.len() - 1);
+    app.handle(Action::Accept);
+    assert_eq!(app.screen, Screen::NameKeyboard);
+    assert_eq!(app.name_keyboard_draft, "_");
+    app.handle(Action::Context);
+    assert!(
+        app.name_keyboard_draft.is_empty(),
+        "X removes the native-menu prefix"
+    );
+    app.name_keyboard_draft = "Arcade!".into();
+    app.handle(Action::Quit);
+    assert_eq!(app.screen, Screen::Browse);
+    assert!(favorites_root.join("Arcade!/First Game.mgl").is_file());
+    assert!(
+        !favorites_root.join("First Game.mgl").exists(),
+        "the new folder's row must not write into the root"
+    );
+    assert!(app.favorites.holds(&game));
+
+    // A real folder selected inside Favourites can be renamed in place.
+    // Only the Favourites cache changes and the renamed row remains selected.
+    app.open_system_by_index(1);
+    assert_eq!(app.open_system.as_deref(), Some("Favorites"));
+    select_row_named(&mut app, "Arcade!");
+    let nes_cache = std::fs::read(crate::cache::system_path(&app.cache_dir, "NES")).unwrap();
+    accept_game_action(&mut app, RENAME_FAVORITE_FOLDER);
+    assert_eq!(app.screen, Screen::NameKeyboard);
+    assert_eq!(app.name_keyboard_draft, "Arcade!");
+    assert_eq!(app.name_keyboard_page, NamePage::Lower);
+    app.handle(Action::Menu);
+    assert_eq!(app.name_keyboard_page, NamePage::Upper);
+    app.handle(Action::Menu);
+    assert_eq!(app.name_keyboard_page, NamePage::Symbols);
+    app.handle(Action::Menu);
+    assert_eq!(app.name_keyboard_page, NamePage::Lower);
+    app.name_keyboard_draft = "Renamed Folder!".into();
+    app.handle(Action::Quit);
+    let renamed = favorites_root.join("Renamed Folder!");
+    assert_eq!(app.screen, Screen::Browse);
+    assert!(!favorites_root.join("Arcade!").exists());
+    assert!(renamed.join("First Game.mgl").is_file());
+    assert_eq!(app.here[app.game_list.selected()].name, "Renamed Folder!");
+    assert!(
+        app.build.is_none(),
+        "rename must not start a full-library build"
+    );
+    assert_eq!(
+        std::fs::read(crate::cache::system_path(&app.cache_dir, "NES")).unwrap(),
+        nes_cache,
+        "rename must not rewrite another system cache"
+    );
+
+    // Delete first honours cancellation, then removes an empty directory.
+    // Empty folders are deliberately absent under the default browse option,
+    // so expose them through the existing setting before selecting this one.
+    app.show_empty = true;
+    app.relist_here();
+    select_row_named(&mut app, MAIN_FAVORITES);
+    accept_game_action(&mut app, DELETE_FAVORITE_FOLDER);
+    assert!(app
+        .message
+        .as_deref()
+        .is_some_and(|message| message.contains(MAIN_FAVORITES)));
+    app.handle(Action::Quit);
+    assert!(named_folder.is_dir(), "cancel keeps the empty folder");
+    app.handle(Action::Quit);
+    app.handle(Action::Quit);
+    assert_eq!(app.screen, Screen::Browse);
+    accept_game_action(&mut app, DELETE_FAVORITE_FOLDER);
+    app.handle(Action::Accept);
+    assert!(!named_folder.exists());
+    assert!(!app.here.iter().any(|row| row.name == MAIN_FAVORITES));
+    assert!(
+        app.build.is_none(),
+        "delete must not start a full-library build"
+    );
+
+    // A non-empty folder reaches the same named confirmation but the final
+    // non-recursive filesystem operation refuses it and keeps every entry.
+    select_row_named(&mut app, "Renamed Folder!");
+    accept_game_action(&mut app, DELETE_FAVORITE_FOLDER);
+    app.handle(Action::Accept);
+    assert!(renamed.is_dir());
+    assert!(renamed.join("First Game.mgl").is_file());
+    assert!(app
+        .message
+        .as_deref()
+        .is_some_and(|message| message.contains("not empty")));
+    app.handle(Action::Quit);
     app.ui.hide().unwrap();
 }
 
@@ -988,8 +1655,8 @@ fn run_scraper_cache_refresh_flow(root: &Path, window: Rc<MinimalSoftwareWindow>
         app.scraper_refresh_job.is_some(),
         "refresh uses the actual worker"
     );
-    app.hold_y_random = true;
-    assert!(!app.random_shortcut_enabled());
+    app.hold_shortcuts[HoldButton::Y.index()] = HoldShortcut::RandomGame;
+    assert!(app.available_hold_shortcuts()[HoldButton::Y.index()].is_none());
     capture_live_if_requested(&mut app, "scraper-refresh-real-worker");
     app.handle(Action::Accept);
     assert!(app.scraper_details);
@@ -1636,6 +2303,7 @@ fn capture_every_menu_row(app: &mut App, directory: &Path) {
         game_data_source: true,
         core_version: true,
         core_version_override: true,
+        favorite_folder: false,
     };
     let scenarios = [
         (
@@ -2619,6 +3287,23 @@ fn capture_ui_if_requested(root: &Path, window: Rc<MinimalSoftwareWindow>) {
     app.handle(Action::Accept);
     assert_eq!(app.theme_editor.as_ref().unwrap().mode, EditorMode::Name);
     capture_frame(&mut app, &directory, "theme-editor-save", 352, 240);
+    capture_frame(
+        &mut app,
+        &directory,
+        "theme-editor-name-lowercase",
+        352,
+        240,
+    );
+    app.handle(Action::Menu);
+    capture_frame(
+        &mut app,
+        &directory,
+        "theme-editor-name-uppercase",
+        352,
+        240,
+    );
+    app.handle(Action::Menu);
+    capture_frame(&mut app, &directory, "theme-editor-name-symbols", 352, 240);
     app.handle(Action::Quit);
     app.close_theme_editor();
     app.open_options_page(OptionsPage::Appearance);
@@ -2761,9 +3446,32 @@ fn capture_ui_if_requested(root: &Path, window: Rc<MinimalSoftwareWindow>) {
     assert_eq!(app.screen, Screen::FavoriteFolder);
     capture_frame(&mut app, &directory, "favorite-folder", 352, 240);
     app.handle(Action::Quit);
-    app.open_find(FindMode::NewFolder);
+    app.open_name_keyboard(NamePurpose::NewFavoriteFolder, "_".to_string());
     capture_frame(&mut app, &directory, "new-favorite-folder", 352, 240);
-    app.filter.clear();
+    capture_frame(
+        &mut app,
+        &directory,
+        "new-favorite-folder-lowercase",
+        352,
+        240,
+    );
+    app.handle(Action::Menu);
+    capture_frame(
+        &mut app,
+        &directory,
+        "new-favorite-folder-uppercase",
+        352,
+        240,
+    );
+    app.handle(Action::Menu);
+    capture_frame(
+        &mut app,
+        &directory,
+        "new-favorite-folder-symbols",
+        352,
+        240,
+    );
+    app.name_keyboard_draft.clear();
     app.set_screen(Screen::Browse);
     app.apply_filter();
     app.game_list.select(5);
@@ -2802,7 +3510,13 @@ fn capture_ui_if_requested(root: &Path, window: Rc<MinimalSoftwareWindow>) {
             240,
         );
         app.open_options_page(OptionsPage::Appearance);
-        app.select(3);
+        app.select(
+            OptionsPage::Appearance
+                .ids()
+                .iter()
+                .position(|id| *id == OptionId::Font)
+                .unwrap(),
+        );
         capture_frame(
             &mut app,
             &directory,
@@ -3034,39 +3748,15 @@ fn run_automatic_pack_consent_flow(root: &Path, window: Rc<MinimalSoftwareWindow
         assert_eq!(app.here[0].name, "Known.nes", "{:?}", app.here);
         assert_eq!(app.here[0].cover, None);
     };
-    let assert_complete = |app: &App, games: usize, fingerprints_complete: bool, stage: &str| {
-        assert!(app.build.is_none());
-        assert!(app.source_job.is_none());
-        assert!(app.source_recovery_queue.is_empty());
-        assert_eq!(app.index.as_ref().unwrap().systems["NES"].games, games);
-        assert_eq!(
-            crate::cache::load_index(&app.cache_dir).unwrap().systems["NES"].games,
-            games
-        );
-        assert_eq!(
-            app.total_games, games,
-            "About and total counts must include prepared Pack caches"
-        );
-        assert!(app.ui.get_about_line().contains(&format!("{games} games")));
-        assert!(!app.empty_systems.as_ref().unwrap().contains("NES"));
-        assert_eq!(
-            crate::artwork_source::mode(&app.settings, "NES"),
-            crate::artwork_source::Mode::Automatic
-        );
-        assert!(app.settings.artwork_pack_roots.is_empty());
-        let data = crate::cache::load_artwork_pack_data(&app.cache_dir, "NES").unwrap();
-        assert_eq!(
-            data.fingerprints_complete, fingerprints_complete,
-            "unexpected fingerprint completeness after {stage}"
-        );
-        assert_eq!(data.cache.summary(&Place::Roots).games, games);
+    let open = |app: &mut App| {
+        app.open_system_by_index(0);
+        if app.open_system.is_some() {
+            app.enter(Place::Dir(games.clone()));
+        }
     };
     let assert_operation_controls = |app: &mut App, details: bool, controls: &str| {
         app.refresh();
-        assert!(
-            !app.show_bar,
-            "operation controls must not change the browse-bar preference"
-        );
+        assert!(!app.show_bar);
         assert!(!app.ui.get_show_bar());
         assert!(app.geometry.bar > 0.0);
         assert!(app.ui.get_bar_height() >= app.ui.get_bar_glyph());
@@ -3079,11 +3769,31 @@ fn run_automatic_pack_consent_flow(root: &Path, window: Rc<MinimalSoftwareWindow
             assert!(app.ui.get_operation_footer_visible());
         }
     };
-    let open = |app: &mut App| {
-        app.open_system_by_index(0);
-        if app.open_system.is_some() {
-            app.enter(Place::Dir(games.clone()));
-        }
+    let assert_complete = |app: &App, expected_games: usize| {
+        assert!(app.build.is_none());
+        assert!(app.source_job.is_none());
+        assert!(app.source_recovery_queue.is_empty());
+        assert_eq!(
+            app.index.as_ref().unwrap().systems["NES"].games,
+            expected_games
+        );
+        assert_eq!(
+            crate::cache::load_index(&app.cache_dir).unwrap().systems["NES"].games,
+            expected_games
+        );
+        assert_eq!(app.total_games, expected_games);
+        assert!(app
+            .ui
+            .get_about_line()
+            .contains(&format!("{expected_games} games")));
+        assert!(!app.empty_systems.as_ref().unwrap().contains("NES"));
+        assert_eq!(
+            crate::artwork_source::mode(&app.settings, "NES"),
+            crate::artwork_source::Mode::Automatic
+        );
+        assert!(app.settings.artwork_pack_roots.is_empty());
+        let data = crate::cache::load_artwork_pack_data(&app.cache_dir, "NES").unwrap();
+        assert_eq!(data.cache.summary(&Place::Roots).games, expected_games);
     };
     let browse_bar_off = Settings {
         show_bar: Some(false),
@@ -4215,7 +4925,7 @@ fn run_automatic_pack_consent_flow(root: &Path, window: Rc<MinimalSoftwareWindow
         .unwrap()
         .unwrap();
     assert!(state.accepted.is_some() && state.declined.is_none());
-    assert_complete(&app, 3, true, "initial Pack preparation");
+    assert_complete(&app, 3);
     // A corrupt archive in a Pack system is reported as the ZIP problem it
     // is, with the healthy games still prepared; it must never come back as
     // a missing prepared cache, which would hide the cause.
@@ -4258,7 +4968,7 @@ fn run_automatic_pack_consent_flow(root: &Path, window: Rc<MinimalSoftwareWindow
         !log.lines().any(|line| line == recovery_line),
         "a full build logged the warning twice: {log}"
     );
-    assert_complete(&app, 3, false, "full library rebuild");
+    assert_complete(&app, 3);
     assert_operation_controls(&mut app, false, "A Details   B Back");
     capture_live_if_requested(&mut app, "source-auto-pack-finished-with-problems");
     app.handle(Action::Quit);
@@ -4283,7 +4993,7 @@ fn run_automatic_pack_consent_flow(root: &Path, window: Rc<MinimalSoftwareWindow
         1,
         "{log}"
     );
-    assert_complete(&app, 3, true, "single-system Pack rebuild");
+    assert_complete(&app, 3);
     capture_live_if_requested(&mut app, "source-auto-pack-rebuilt-with-problems");
     std::fs::remove_file(&broken).unwrap();
     app.message = None;
@@ -7004,10 +7714,9 @@ fn run_neogeo_romset_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
 
     for (set, title) in sets {
         app.game_list.select(position(&app, title));
-        app.add_favorite_in("Neo Geo");
-        let favourite = root
-            .join("_@Favorites/Neo Geo")
-            .join(format!("{title}.mgl"));
+        let favourite_folder = root.join("_@Favorites/Neo Geo");
+        app.add_favorite_in(&favourite_folder);
+        let favourite = favourite_folder.join(format!("{title}.mgl"));
         let text = std::fs::read_to_string(&favourite).expect("the favourite is written");
         assert!(
             text.contains(&format!("path=\"{}\"", games.join(set).display())),
@@ -7069,6 +7778,732 @@ fn run_neogeo_romset_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
     app.ui.hide().unwrap();
 }
 
+/// The picture's half of the safe width in Details, before the browse-games
+/// split is applied to it.
+fn details_half_width(app: &App) -> f32 {
+    Geometry::compute(
+        Layout::Details,
+        app.plain_screen(),
+        app.chrome_here(),
+        app.bar_here(),
+        app.width,
+        app.height,
+        &app.config,
+    )
+    .art_width
+}
+
+fn assert_details_split(app: &App, style: DetailsStyle, over_game: bool, context: &str) {
+    assert_eq!(app.details_style, style, "{context}");
+    assert_eq!(app.layout, Layout::Details, "{context}");
+    // The picture's share of the safe width while browsing games, 42% for
+    // Information and 62% for Large Artwork, measured from the safe width
+    // itself rather than from the Details half, so a drift in either the
+    // base split or the factor fails here. The half is rounded to a pixel
+    // before the factor, hence the tolerance.
+    let share = match style {
+        DetailsStyle::Information => 0.42,
+        DetailsStyle::LargeArtwork => 0.62,
+    };
+    let inset = (app.width as f32 * app.config.app.overscan_x as f32 / 100.0).round();
+    let safe = (app.width as f32 - inset * 2.0).max(64.0);
+    let expected = safe * share;
+    assert!(
+        (app.ui.get_art_width() - expected).abs() <= 1.0,
+        "{context}: {style:?} must give the picture {expected} of the width, not {}",
+        app.ui.get_art_width()
+    );
+    let panel = app.ui.get_detail_height();
+    match style {
+        DetailsStyle::Information if over_game => assert!(
+            panel > 0.0,
+            "{context}: Information keeps the compact lines under the picture"
+        ),
+        DetailsStyle::Information => {
+            assert_eq!(panel, 0.0, "{context}: a folder has no compact lines")
+        }
+        DetailsStyle::LargeArtwork => assert_eq!(
+            panel, 0.0,
+            "{context}: Large Artwork gives the whole column height to the picture"
+        ),
+    }
+}
+
+fn leave_options_to_browse(app: &mut App) {
+    app.handle(Action::Quit);
+    assert_eq!(app.screen, Screen::OptionsRoot, "leaving the page saves");
+    app.handle(Action::Quit);
+    app.handle(Action::Quit);
+    assert_eq!(app.screen, Screen::Browse);
+}
+
+fn run_details_style_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
+    let artwork = Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/logos/NES.png");
+    assert!(artwork.is_file());
+
+    // An older settings file has no key: it must draw exactly the layout
+    // it was drawn with, and starting must not write a choice the user
+    // never made. The legacy "preview" name still means Details.
+    let games_place = {
+        let app = fixture_app(root, window.clone(), Settings::default());
+        let place = app.current_view_place().unwrap();
+        app.ui.hide().unwrap();
+        place
+    };
+    for layout in [None, Some("preview")] {
+        let mut app = fixture_app(
+            root,
+            window.clone(),
+            Settings {
+                layout: layout.map(str::to_string),
+                ..Default::default()
+            },
+        );
+        app.refresh();
+        assert_details_split(&app, DetailsStyle::Information, true, "no saved key");
+        assert!(
+            app.settings.details_style.is_none(),
+            "startup must not rewrite a choice"
+        );
+        assert_eq!(app.option_value(OptionId::DetailsStyle), "Information");
+        app.ui.hide().unwrap();
+    }
+
+    // A token that is neither name is not quietly drawn as Information:
+    // the first screen says so, and the text stays in the setting for the
+    // user to correct rather than being replaced by a choice never made.
+    // The startup source check finishes before anyone has read the line,
+    // so its result must go under the report rather than replace it. The
+    // log gets the same line, because a first-start library read takes
+    // the screen before it and would leave the substitution without a
+    // trace.
+    {
+        let log_before = std::fs::metadata(crate::LOG_PATH)
+            .map(|meta| meta.len() as usize)
+            .unwrap_or(0);
+        let mut app = unopened_fixture_app(
+            root,
+            window.clone(),
+            Settings {
+                details_style: Some("large_artwork".into()),
+                ..Default::default()
+            },
+        );
+        assert_eq!(app.details_style, DetailsStyle::Information);
+        assert_eq!(
+            app.settings.details_style.as_deref(),
+            Some("large_artwork"),
+            "startup must not rewrite the text it could not read"
+        );
+        // The log is the one path outside the fixture; a log that cannot
+        // be read fails the same assertion, with the reason in its place.
+        let logged = match std::fs::read(crate::LOG_PATH) {
+            Ok(log) => String::from_utf8_lossy(&log[log_before.min(log.len())..]).into_owned(),
+            Err(error) => format!(
+                "(the log at {} could not be read: {error})",
+                crate::LOG_PATH
+            ),
+        };
+        assert!(
+            logged.contains("Details Style large_artwork is not information or large-artwork"),
+            "the unreadable token is logged: {logged}"
+        );
+        app.finish_background_work_for_headless();
+        assert!(
+            app.source_resolution.is_none(),
+            "the startup source check must have finished"
+        );
+        let message = app
+            .message
+            .clone()
+            .expect("an unreadable Details Style is still reported once the startup check is in");
+        assert!(message.contains("large_artwork"), "{message}");
+        assert!(message.contains("using Information"), "{message}");
+        app.leave_splash();
+        app.handle(Action::Accept);
+        assert!(
+            app.message.is_none(),
+            "a press takes the report down: {:?}",
+            app.message
+        );
+        app.ui.hide().unwrap();
+    }
+
+    // Cancelling the startup check with B is its third way to finish and
+    // follows the same rule as the other two: the problem lines stay and
+    // the check's word goes under them, and the lines are given up so
+    // nothing later can put them back over another message.
+    {
+        let mut app = unopened_fixture_app(
+            root,
+            window.clone(),
+            Settings {
+                details_style: Some("large_artwork".into()),
+                ..Default::default()
+            },
+        );
+        assert!(
+            app.source_resolution.is_some() && app.build.is_none(),
+            "the startup check is pending and B can cancel it"
+        );
+        app.handle(Action::Quit);
+        app.finish_background_work_for_headless();
+        let message = app
+            .message
+            .clone()
+            .expect("the cancelled check leaves the problem lines up");
+        assert!(
+            message.starts_with("Details Style large_artwork"),
+            "{message}"
+        );
+        assert!(
+            message.ends_with("\nGame data source check cancelled"),
+            "{message}"
+        );
+        assert!(
+            app.startup_problems.is_none(),
+            "every completion of the startup check takes the lines"
+        );
+        app.ui.hide().unwrap();
+    }
+
+    // A first start reads the card, and a press while the startup check is
+    // pending opens the build report in place of the problem lines. A
+    // check that then fails must say only its own word: the report it did
+    // not write, ending in "No problems reported", must not stand above
+    // the failure.
+    {
+        let first = root.join("details-style-first-start");
+        std::fs::create_dir_all(first.join("games/NES")).unwrap();
+        std::fs::write(first.join("games/NES/First Game.nes"), b"fixture").unwrap();
+        let mut app = unopened_fixture_app(
+            &first,
+            window.clone(),
+            Settings {
+                details_style: Some("large_artwork".into()),
+                ..Default::default()
+            },
+        );
+        assert!(app.build.is_some(), "a first start reads the card");
+        assert!(
+            app.source_resolution.is_some(),
+            "the startup check is still pending"
+        );
+        assert!(
+            app.message
+                .as_deref()
+                .is_some_and(|message| message.contains("large_artwork")),
+            "{:?}",
+            app.message
+        );
+        app.leave_splash();
+        app.handle(Action::Accept);
+        assert!(app.index_details, "a press opens the build report");
+        let report = app.message.clone().expect("the build report is on screen");
+        assert!(report.contains("No problems reported"), "{report}");
+        app.report_source_check(
+            SourceResolutionAction::Startup,
+            Some("Game data source check failed".into()),
+        );
+        assert_eq!(
+            app.message.as_deref(),
+            Some("Game data source check failed"),
+            "a failed check replaces the report it did not write"
+        );
+        app.ui.hide().unwrap();
+    }
+
+    // Both styles persist: the choice is written when the page is left and
+    // survives a fresh App from the reloaded file, in both directions.
+    let mut app = fixture_app(root, window.clone(), Settings::default());
+    let cache_before = cache_snapshot(&app.cache_dir);
+    for (style, saved) in [
+        (DetailsStyle::LargeArtwork, "large-artwork"),
+        (DetailsStyle::Information, "information"),
+    ] {
+        select_option(&mut app, OptionsPage::Appearance, OptionId::DetailsStyle);
+        // On the Options screen load_art wants no picture and only clears
+        // the request, so a handler that asked for one again would leave
+        // the flag raised.
+        app.load_art();
+        assert!(!app.art_pending);
+        app.handle(Action::Faster);
+        assert_eq!(app.details_style, style);
+        assert_eq!(app.option_value(OptionId::DetailsStyle), style.shown());
+        assert!(
+            !app.art_pending,
+            "a style change must not ask for the picture again"
+        );
+        assert!(
+            app.build.is_none(),
+            "a style change must not rebuild the library"
+        );
+        leave_options_to_browse(&mut app);
+        app.refresh();
+        assert_details_split(&app, style, true, "after leaving Options");
+        assert_eq!(app.settings.details_style.as_deref(), Some(saved));
+        let reloaded = Settings::load(&app.settings_path).unwrap();
+        assert_eq!(reloaded.details_style.as_deref(), Some(saved));
+        assert_eq!(
+            cache_snapshot(&app.cache_dir),
+            cache_before,
+            "a display option must not touch the index or the artwork cache"
+        );
+        app.ui.hide().unwrap();
+        drop(app);
+        app = fixture_app(root, window.clone(), reloaded);
+        app.refresh();
+        assert_details_split(&app, style, true, "the saved style survives restart");
+        assert_eq!(app.settings.details_style.as_deref(), Some(saved));
+    }
+    // Left steps back through the same two values, so neither is a dead end.
+    select_option(&mut app, OptionsPage::Appearance, OptionId::DetailsStyle);
+    app.handle(Action::Slower);
+    assert_eq!(app.details_style, DetailsStyle::LargeArtwork);
+    app.handle(Action::Slower);
+    assert_eq!(app.details_style, DetailsStyle::Information);
+    leave_options_to_browse(&mut app);
+
+    // A folder, a game with a picture, a game without one and a title far
+    // longer than the list column: every one has to remain usable in both
+    // styles. The long title is left to the row to elide or scroll; the
+    // list must hand it over whole.
+    let long_title: String = "Fixture Game With A Very Long Name "
+        .chars()
+        .cycle()
+        .take(120)
+        .collect();
+    let game = |name: &str, cover: Option<PathBuf>| {
+        let mut row = information_row();
+        row.name = name.to_string();
+        row.sort_key = row.name.to_ascii_uppercase();
+        row.kind = browse::Kind::Play(browse::Launch::File(root.join("games/NES/First Game.nes")));
+        row.cover = cover;
+        row
+    };
+    let rows = vec![
+        browse::Row {
+            name: "Fixture Folder".into(),
+            sort_key: "FIXTURE FOLDER".into(),
+            kind: browse::Kind::Enter(Place::Dir(root.join("games/NES"))),
+            cover: None,
+            genre: None,
+            favorite: false,
+            below: Some(2),
+            details: browse::Details::default(),
+        },
+        game("Fixture Game With Picture", Some(artwork.clone())),
+        game("Fixture Game Without Picture", None),
+        game(&long_title, Some(artwork.clone())),
+    ];
+    app.here = rows.clone();
+    app.all_here = rows;
+    app.game_list = ListState::new(app.here.len(), app.geometry.visible);
+    for style in DetailsStyle::ALL {
+        app.details_style = style;
+        app.apply_geometry();
+        for (index, has_art, over_game) in [
+            (0, false, false),
+            (1, true, true),
+            (2, false, true),
+            (3, true, true),
+        ] {
+            app.game_list.select(index);
+            app.load_art();
+            app.refresh();
+            let context = format!("{style:?} over row {index}");
+            assert_details_split(&app, style, over_game, &context);
+            assert_eq!(app.ui.get_has_art(), has_art, "{context}");
+            if !has_art {
+                assert_eq!(
+                    app.ui.get_art_caption().as_str(),
+                    app.here[index].name,
+                    "{context}: the name stands in for a missing picture"
+                );
+            }
+            // A folder's title is bracketed; a game's is the name itself.
+            let title = app
+                .rows
+                .row_data(app.ui.get_selected() as usize)
+                .unwrap()
+                .title;
+            assert!(
+                title.contains(app.here[index].name.as_str()),
+                "{context}: the selected row must carry its whole title, not {title:?}"
+            );
+            app.open_context();
+            assert_eq!(app.screen, Screen::Context);
+            assert_eq!(
+                app.context_actions
+                    .iter()
+                    .any(|entry| entry == GAME_INFORMATION),
+                over_game,
+                "{context}: Game Information stays in Actions in both styles"
+            );
+            app.handle(Action::Quit);
+            assert_eq!(app.screen, Screen::Browse);
+        }
+        // With artwork off the column shows the name instead of the
+        // picture; the split and the compact lines are the style's own.
+        app.game_list.select(1);
+        app.show_art = false;
+        app.load_art();
+        app.refresh();
+        assert!(!app.ui.get_has_art());
+        assert_details_split(&app, style, true, "artwork off");
+        app.show_art = true;
+        app.load_art();
+        app.refresh();
+        assert!(app.ui.get_has_art());
+    }
+
+    // The display correction belongs to the picture, not to the style:
+    // 4:3 artwork on a 4:3 tube needs the same horizontal stretch whether
+    // its column is the narrow one or the wide one.
+    app.game_list.select(1);
+    app.artwork_scale = ArtworkScale::FourThree;
+    let corrected = artwork_horizontal(ArtworkScale::FourThree, app.width, app.height, true);
+    assert!(
+        (corrected - 1.0).abs() > 0.01,
+        "the fixture screen must need correction for this to prove anything"
+    );
+    for style in DetailsStyle::ALL {
+        app.details_style = style;
+        app.apply_geometry();
+        app.load_art();
+        app.refresh();
+        assert!(app.ui.get_has_art());
+        assert_eq!(
+            app.ui.get_art_scale_x(),
+            corrected,
+            "{style:?} must keep the artwork aspect correction"
+        );
+    }
+    app.artwork_scale = ArtworkScale::Framebuffer;
+    app.load_art();
+    assert_eq!(app.ui.get_art_scale_x(), 1.0);
+
+    // The tube first, then the higher resolutions: every one of them
+    // draws through the same split and hands the picture the whole column
+    // in Large Artwork.
+    for style in DetailsStyle::ALL {
+        app.details_style = style;
+        app.game_list.select(1);
+        for (width, height) in [(352, 240), (640, 480), (1280, 720)] {
+            app.width = width;
+            app.height = height;
+            app.window.set_size(slint::PhysicalSize::new(width, height));
+            app.apply_geometry();
+            if let Some(directory) = std::env::var_os("DEGAUSS_UI_CAPTURE_DIR") {
+                let name = format!("details-{}", style.setting());
+                capture_frame(&mut app, &PathBuf::from(directory), &name, width, height);
+            }
+            app.load_art();
+            app.refresh();
+            assert_details_split(&app, style, true, &format!("{width}x{height}"));
+        }
+    }
+    app.width = 352;
+    app.height = 240;
+    app.window.set_size(slint::PhysicalSize::new(352, 240));
+    app.apply_geometry();
+
+    // Only the games level of Details changes shape. The category and
+    // system screens keep the half split their logos are placed in, and
+    // every other view keeps the whole width for its rows.
+    for style in DetailsStyle::ALL {
+        app.details_style = style;
+        for browsing in [Browsing::Categories, Browsing::Systems] {
+            app.browsing = browsing;
+            app.apply_geometry();
+            assert!(
+                (app.ui.get_art_width() - details_half_width(&app)).abs() < 0.01,
+                "{style:?} must leave {browsing:?} at half the width"
+            );
+            assert_eq!(app.ui.get_detail_height(), 0.0);
+        }
+        app.browsing = Browsing::Games;
+        for layout in Layout::ALL {
+            if layout == Layout::Details {
+                continue;
+            }
+            app.layout = layout;
+            app.apply_geometry();
+            assert_eq!(
+                app.ui.get_art_width(),
+                0.0,
+                "{style:?} must leave {layout:?} without a picture column"
+            );
+            assert_eq!(app.ui.get_detail_height(), 0.0);
+        }
+        app.layout = Layout::Details;
+        app.apply_geometry();
+    }
+    app.ui.hide().unwrap();
+    drop(app);
+
+    // A custom view naming Details, and the legacy "preview" spelling,
+    // resolve to Details under either style: this is a style of one view,
+    // not a seventh view.
+    for (style, saved) in [
+        (DetailsStyle::Information, "information"),
+        (DetailsStyle::LargeArtwork, "large-artwork"),
+    ] {
+        let mut custom_views = CustomViews::default();
+        games_place.set(&mut custom_views, "details".into());
+        let mut app = fixture_app(
+            root,
+            window.clone(),
+            Settings {
+                layout: Some("tiled".into()),
+                custom_views,
+                details_style: Some(saved.into()),
+                ..Default::default()
+            },
+        );
+        app.refresh();
+        assert_eq!(app.global_layout, Layout::Tiled);
+        assert_details_split(&app, style, true, "custom Details view");
+        app.ui.hide().unwrap();
+        drop(app);
+
+        let mut app = fixture_app(
+            root,
+            window.clone(),
+            Settings {
+                layout: Some("preview".into()),
+                details_style: Some(saved.into()),
+                ..Default::default()
+            },
+        );
+        app.refresh();
+        assert_eq!(app.global_layout, Layout::Details);
+        assert_details_split(&app, style, true, "legacy preview view");
+        app.ui.hide().unwrap();
+    }
+}
+
+fn run_paged_theme_name_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
+    let root = root.join("theme-paged-name");
+    std::fs::create_dir_all(root.join("games/NES")).unwrap();
+    for name in ["First Fixture.nes", "Second Fixture.nes"] {
+        std::fs::write(root.join("games/NES").join(name), b"fixture").unwrap();
+    }
+    let mut app = fixture_app(&root, window.clone(), Settings::default());
+    app.open_theme_editor();
+    let save_as = app
+        .theme_editor
+        .as_ref()
+        .unwrap()
+        .rows()
+        .iter()
+        .position(|(label, _)| label == "Save as")
+        .unwrap();
+    app.select(save_as);
+    app.handle(Action::Accept);
+    assert_eq!(app.theme_editor.as_ref().unwrap().mode, EditorMode::Name);
+    assert_eq!(
+        app.theme_editor.as_ref().unwrap().name_page,
+        NamePage::Lower
+    );
+    app.apply_geometry();
+    assert_eq!(
+        app.theme_editor_list.visible(),
+        app.theme_editor.as_ref().unwrap().name_cell_count(),
+        "a geometry refresh must keep the complete name page visible"
+    );
+    assert_eq!(app.ui.get_columns(), NAME_COLUMNS as i32);
+
+    // Clear is an explicit cell rather than consuming another controller
+    // button. Build the final name through all three pages, including a digit,
+    // an internal space and safe punctuation.
+    app.handle(Action::Accept);
+    assert_eq!(app.theme_editor.as_ref().unwrap().name, "a");
+    let clear = app
+        .theme_editor
+        .as_ref()
+        .unwrap()
+        .rows()
+        .iter()
+        .position(|(label, _)| label == "Clear")
+        .unwrap();
+    app.theme_editor.as_mut().unwrap().sub_selected = clear;
+    app.sync_theme_editor();
+    app.handle(Action::Accept);
+    assert!(app.theme_editor.as_ref().unwrap().name.is_empty());
+
+    app.theme_editor.as_mut().unwrap().sub_selected = 0;
+    app.sync_theme_editor();
+    app.handle(Action::Accept);
+    app.handle(Action::Menu);
+    assert_eq!(
+        app.theme_editor.as_ref().unwrap().name_page,
+        NamePage::Upper
+    );
+    app.handle(Action::Accept);
+    let one = app
+        .theme_editor
+        .as_ref()
+        .unwrap()
+        .rows()
+        .iter()
+        .position(|(label, _)| label == "1")
+        .unwrap();
+    app.theme_editor.as_mut().unwrap().sub_selected = one;
+    app.sync_theme_editor();
+    app.handle(Action::Accept);
+    let space = app
+        .theme_editor
+        .as_ref()
+        .unwrap()
+        .rows()
+        .iter()
+        .position(|(label, _)| label == "SP")
+        .unwrap();
+    app.theme_editor.as_mut().unwrap().sub_selected = space;
+    app.sync_theme_editor();
+    app.handle(Action::Accept);
+    app.handle(Action::Menu);
+    assert_eq!(
+        app.theme_editor.as_ref().unwrap().name_page,
+        NamePage::Symbols
+    );
+    app.handle(Action::Accept);
+    assert_eq!(app.theme_editor.as_ref().unwrap().name, "aA1 !");
+    app.handle(Action::Context);
+    assert_eq!(app.theme_editor.as_ref().unwrap().name, "aA1 ");
+    app.handle(Action::Accept);
+    assert_eq!(app.theme_editor.as_ref().unwrap().name, "aA1 !");
+    app.refresh();
+    assert_eq!(app.ui.get_theme_name_page(), "symbols");
+
+    let save = app.theme_editor.as_ref().unwrap().name_save_index();
+    app.theme_editor.as_mut().unwrap().sub_selected = save;
+    app.sync_theme_editor();
+    app.handle(Action::Accept);
+    assert_eq!(app.screen, Screen::Options);
+    assert!(root.join("themes/aA1 !.toml").is_file());
+    let saved = Settings::load(&app.settings_path).unwrap();
+    assert_eq!(saved.theme.as_deref(), Some("aA1 !"));
+    app.ui.hide().unwrap();
+    drop(app);
+
+    let restarted = fixture_app(&root, window, saved);
+    assert_eq!(
+        restarted
+            .active_theme
+            .map(|at| restarted.themes[at].name.as_str()),
+        Some("aA1 !"),
+        "a mixed-page theme name reloads after restart"
+    );
+    restarted.ui.hide().unwrap();
+}
+
+fn run_theme_editor_save_changes_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
+    let root = root.join("theme-save-changes");
+    std::fs::create_dir_all(root.join("games/NES")).unwrap();
+    for name in ["First Fixture.nes", "Second Fixture.nes"] {
+        std::fs::write(root.join("games/NES").join(name), b"fixture").unwrap();
+    }
+    let palette = Colors::default();
+    let themes_dir = root.join("themes");
+    let path = crate::theme::save_new(
+        &themes_dir,
+        "Editable",
+        &crate::theme::ThemeFile::complete(&palette, None, 100),
+        &palette,
+    )
+    .unwrap();
+    let settings = Settings {
+        theme: Some("Editable".into()),
+        theme_font_override: Some(false),
+        ..Settings::default()
+    };
+    let mut app = fixture_app(&root, window.clone(), settings);
+    assert_eq!(
+        app.active_theme.map(|at| app.themes[at].name.as_str()),
+        Some("Editable")
+    );
+    app.open_theme_editor();
+    assert_eq!(app.theme_editor.as_ref().unwrap().rows().len(), 18);
+    assert!(app.theme_editor.as_ref().unwrap().source_is_custom());
+    assert!(!app.horizontal_scrolls());
+
+    app.select(1);
+    app.handle(Action::Accept);
+    assert_eq!(app.theme_editor.as_ref().unwrap().mode, EditorMode::Picker);
+    assert!(app.horizontal_scrolls());
+    let before = app.theme_editor.as_ref().unwrap().draft.palette.background;
+    app.handle(Action::Faster);
+    let saved_colour = app.theme_editor.as_ref().unwrap().draft.palette.background;
+    assert_ne!(saved_colour, before);
+    app.handle(Action::Context);
+    assert_eq!(app.theme_editor.as_ref().unwrap().mode, EditorMode::Hex);
+    assert!(
+        !app.horizontal_scrolls(),
+        "hex digit selection and every non-picker editor mode remain one step per press"
+    );
+    app.handle(Action::Context);
+    assert!(app.horizontal_scrolls());
+    app.handle(Action::Accept);
+    assert!(!app.horizontal_scrolls());
+    app.select(14);
+    app.handle(Action::Accept);
+    assert_eq!(app.screen, Screen::Options);
+    assert!(app.theme_editor.is_none());
+    assert_eq!(app.message, None);
+    assert_eq!(
+        crate::theme::load(&themes_dir).themes[0]
+            .file
+            .apply(&palette)
+            .background,
+        saved_colour
+    );
+    let saved_settings = Settings::load(&app.settings_path).unwrap();
+    assert_eq!(saved_settings.theme.as_deref(), Some("Editable"));
+    assert_eq!(saved_settings.theme_font_override, Some(false));
+    app.ui.hide().unwrap();
+    drop(app);
+
+    let mut app = fixture_app(&root, window, saved_settings);
+    assert_eq!(
+        app.active_theme.map(|at| app.themes[at].name.as_str()),
+        Some("Editable"),
+        "the updated selected theme must survive restart"
+    );
+    app.open_theme_editor();
+    app.select(1);
+    app.handle(Action::Accept);
+    app.handle(Action::Slower);
+    app.handle(Action::Accept);
+    let previous_file = std::fs::read(&path).unwrap();
+    let settings_path = app.settings_path.clone();
+    let blocked = root.join("settings-parent-is-a-file");
+    std::fs::write(&blocked, b"not a directory").unwrap();
+    app.settings_path = blocked.join("settings.toml");
+    app.select(14);
+    app.handle(Action::Accept);
+    assert_eq!(app.screen, Screen::ThemeEditor);
+    assert!(
+        app.theme_editor.is_some(),
+        "the unsaved draft remains editable"
+    );
+    assert!(app.message.as_deref().is_some_and(|message| {
+        message.contains("settings") && message.contains("previous theme was restored")
+    }));
+    assert_eq!(
+        std::fs::read(&path).unwrap(),
+        previous_file,
+        "a failed settings write restores the exact previous theme file"
+    );
+    assert!(crate::theme::load(&themes_dir)
+        .themes
+        .iter()
+        .any(|theme| theme.name == "Editable"));
+    app.settings_path = settings_path;
+    app.ui.hide().unwrap();
+}
+
 pub(super) fn run_ui_acceptance_flow(window: Rc<MinimalSoftwareWindow>) {
     let root = fixture_directory();
     std::fs::create_dir_all(root.join("games/NES")).unwrap();
@@ -7080,6 +8515,8 @@ pub(super) fn run_ui_acceptance_flow(window: Rc<MinimalSoftwareWindow>) {
     let gamelist_xml = format!("<gameList><game><path>First Game.nes</path><desc><![CDATA[{complete_description}]]></desc></game><game><path>Second Game.nes</path><desc><![CDATA[{complete_description}]]></desc></game></gameList>");
     std::fs::write(&gamelist_path, &gamelist_xml).unwrap();
     run_browse_bar_settings_flow(&root, window.clone());
+    run_details_style_flow(&root, window.clone());
+    run_handheld_category_flow(&root, window.clone());
     run_scripts_flow(&root, window.clone());
     run_neogeo_romset_flow(&root, window.clone());
     run_artwork_matte_flow(&root, window.clone());
@@ -7091,6 +8528,8 @@ pub(super) fn run_ui_acceptance_flow(window: Rc<MinimalSoftwareWindow>) {
     run_degraded_pack_acknowledgement_flow(&root, window.clone());
     run_arcade_core_descriptor_favourite_flow(&root, window.clone());
     run_folder_artwork_flow(&root, window.clone());
+    run_paged_theme_name_flow(&root, window.clone());
+    run_theme_editor_save_changes_flow(&root, window.clone());
     let mut app = fixture_app(&root, window.clone(), Settings::default());
     run_selected_controls_flow(&mut app);
     run_artwork_visibility_flow(&mut app);
@@ -7520,7 +8959,8 @@ pub(super) fn run_ui_acceptance_flow(window: Rc<MinimalSoftwareWindow>) {
     assert!(restarted.settings.hidden_paths.is_empty());
     drop(restarted);
     run_favorite_information_flow(&root, window.clone());
-    run_hold_y_flow(&root, window.clone());
+    run_hold_shortcut_flow(&root, window.clone());
+    run_main_favourites_flow(&root, window.clone());
     run_scraper_cache_refresh_flow(&root, window.clone());
     run_scraper_unresolved_report_flow(&root, window.clone());
     run_indexing_ui_flow(&root, window.clone());

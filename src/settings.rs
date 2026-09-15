@@ -24,6 +24,80 @@ pub enum CorePreference {
     RetroAchievementsFirst,
 }
 
+/// A face button whose short press keeps its normal meaning while a
+/// one-second hold may run one browsing action.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HoldButton {
+    A,
+    B,
+    X,
+    Y,
+}
+
+impl HoldButton {
+    pub const ALL: [Self; 4] = [Self::A, Self::B, Self::X, Self::Y];
+
+    pub const fn index(self) -> usize {
+        match self {
+            Self::A => 0,
+            Self::B => 1,
+            Self::X => 2,
+            Self::Y => 3,
+        }
+    }
+}
+
+/// An optional browsing action performed after a face button is held for
+/// one second. The order is also the order used by the Options rows.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum HoldShortcut {
+    #[default]
+    None,
+    CycleView,
+    RandomGame,
+    RandomFavourite,
+    AddRemoveFavourite,
+    GameInformation,
+    SearchThisFolder,
+    JumpToLetter,
+}
+
+impl HoldShortcut {
+    pub const ALL: [Self; 8] = [
+        Self::None,
+        Self::CycleView,
+        Self::RandomGame,
+        Self::RandomFavourite,
+        Self::AddRemoveFavourite,
+        Self::GameInformation,
+        Self::SearchThisFolder,
+        Self::JumpToLetter,
+    ];
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::None => "None",
+            Self::CycleView => "Cycle View",
+            Self::RandomGame => "Random Game",
+            Self::RandomFavourite => "Random Favourite",
+            Self::AddRemoveFavourite => "Add/Remove Favourite",
+            Self::GameInformation => "Game Information",
+            Self::SearchThisFolder => "Search This Folder",
+            Self::JumpToLetter => "Jump to Letter",
+        }
+    }
+
+    pub fn step(self, delta: isize) -> Self {
+        let current = Self::ALL
+            .iter()
+            .position(|candidate| *candidate == self)
+            .unwrap_or_default() as isize;
+        let next = (current + delta).rem_euclid(Self::ALL.len() as isize) as usize;
+        Self::ALL[next]
+    }
+}
+
 impl CorePreference {
     pub fn next(self) -> Self {
         match self {
@@ -141,13 +215,22 @@ pub struct Settings {
     pub theme: Option<String>,
     /// Whether favourites are gathered at the top of a folder.
     pub favorites_first: Option<bool>,
-    /// Whether holding X for one second adds or removes the selected game.
-    /// Absent is off, preserving the immediate X behaviour from releases
-    /// before the shortcut existed.
+    /// Legacy shortcut fields retained for settings written by and read by
+    /// releases before configurable hold actions. New explicit bindings win.
     #[serde(default)]
     pub hold_x_favorite: Option<bool>,
     #[serde(default)]
     pub hold_y_random: Option<bool>,
+    /// Configurable one-second face-button holds. Optional fields distinguish
+    /// old settings, which need legacy migration, from an explicit None.
+    #[serde(default)]
+    pub hold_a_shortcut: Option<HoldShortcut>,
+    #[serde(default)]
+    pub hold_b_shortcut: Option<HoldShortcut>,
+    #[serde(default)]
+    pub hold_x_shortcut: Option<HoldShortcut>,
+    #[serde(default)]
+    pub hold_y_shortcut: Option<HoldShortcut>,
     /// Whether picking a random game starts it, or only moves the cursor to
     /// it. Absent means only moving the cursor.
     #[serde(default)]
@@ -174,6 +257,11 @@ pub struct Settings {
     /// framebuffer-pixel behaviour.
     #[serde(default)]
     pub artwork_scale: Option<String>,
+    /// How Details balances the list, the picture and the compact lines:
+    /// "information" or "large-artwork". Absent means information, the
+    /// layout Degauss always drew.
+    #[serde(default)]
+    pub details_style: Option<String>,
     pub present: Option<String>,
     /// Systems the user has hidden, by id. Hiding is per-system and
     /// reversible; nothing is ever removed from the table.
@@ -194,6 +282,10 @@ pub struct Settings {
     /// the Gamelist-first behaviour shipped before this setting existed.
     #[serde(default)]
     pub automatic_data_source: Option<AutomaticDataSource>,
+    /// Present handheld systems in their own category. Absent is off, so
+    /// existing installations retain MiSTer's Console grouping.
+    #[serde(default)]
+    pub separate_handheld_category: Option<bool>,
     /// Explicit per-system core version. Absence uses the global preference.
     /// Values are standard, ra, or an exact menu-relative Unstable RBF path.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -223,6 +315,62 @@ pub struct Settings {
 }
 
 impl Settings {
+    /// Resolve explicit bindings first, then the two compatible legacy flags.
+    /// A and B had no legacy shortcut and therefore resolve to None.
+    pub fn hold_shortcut(&self, button: HoldButton) -> HoldShortcut {
+        match button {
+            HoldButton::A => self.hold_a_shortcut.unwrap_or_default(),
+            HoldButton::B => self.hold_b_shortcut.unwrap_or_default(),
+            HoldButton::X => self.hold_x_shortcut.unwrap_or_else(|| {
+                if self.hold_x_favorite.unwrap_or(false) {
+                    HoldShortcut::AddRemoveFavourite
+                } else {
+                    HoldShortcut::None
+                }
+            }),
+            HoldButton::Y => self.hold_y_shortcut.unwrap_or_else(|| {
+                if self.hold_y_random.unwrap_or(false) {
+                    HoldShortcut::RandomGame
+                } else {
+                    HoldShortcut::None
+                }
+            }),
+        }
+    }
+
+    pub fn resolved_hold_shortcuts(&self) -> [HoldShortcut; 4] {
+        HoldButton::ALL.map(|button| self.hold_shortcut(button))
+    }
+
+    pub fn set_hold_shortcut(&mut self, button: HoldButton, shortcut: HoldShortcut) {
+        match button {
+            HoldButton::A => self.hold_a_shortcut = Some(shortcut),
+            HoldButton::B => self.hold_b_shortcut = Some(shortcut),
+            HoldButton::X => {
+                self.hold_x_shortcut = Some(shortcut);
+                self.hold_x_favorite = Some(shortcut == HoldShortcut::AddRemoveFavourite);
+            }
+            HoldButton::Y => {
+                self.hold_y_shortcut = Some(shortcut);
+                self.hold_y_random = Some(shortcut == HoldShortcut::RandomGame);
+            }
+        }
+    }
+
+    /// Write explicit resolved bindings and keep the two legacy booleans
+    /// truthful for an older Degauss release reading this settings file.
+    fn with_resolved_hold_shortcuts(&self) -> Self {
+        let mut resolved = self.clone();
+        let shortcuts = self.resolved_hold_shortcuts();
+        for button in HoldButton::ALL {
+            resolved.set_hold_shortcut(button, shortcuts[button.index()]);
+        }
+        resolved.hold_x_favorite =
+            Some(shortcuts[HoldButton::X.index()] == HoldShortcut::AddRemoveFavourite);
+        resolved.hold_y_random = Some(shortcuts[HoldButton::Y.index()] == HoldShortcut::RandomGame);
+        resolved
+    }
+
     /// Read the overlay. A missing file is normal and means "no changes
     /// yet"; a corrupt one is reported rather than silently ignored, or the
     /// user's settings would vanish with no explanation.
@@ -246,7 +394,8 @@ impl Settings {
         path: &Path,
         sync_directory: impl FnOnce(&Path) -> std::io::Result<()>,
     ) -> Result<SaveOutcome> {
-        let text = toml::to_string_pretty(self)
+        let settings = self.with_resolved_hold_shortcuts();
+        let text = toml::to_string_pretty(&settings)
             .map_err(|e| DegaussError::malformed("settings", path, e.to_string()))?;
         let body = format!(
             "# Written by Degauss when you change something in Options.\n\
@@ -413,6 +562,10 @@ mod tests {
         assert_eq!(settings.theme_font_override, None);
         assert_eq!(settings.layout.as_deref(), Some("details"));
         assert!(settings.artwork_scale.is_none());
+        assert!(
+            settings.details_style.is_none(),
+            "an older settings file must keep the Information layout it was drawn with"
+        );
         assert_eq!(settings.overscan_x, Some(5));
         assert_eq!(settings.hidden, ["PDP1", "VC4000"]);
         assert_eq!(settings.folder_views.len(), 2);
@@ -422,6 +575,7 @@ mod tests {
             "an older settings file must leave the opt-in shortcut off"
         );
         assert_eq!(settings.hold_y_random, None);
+        assert_eq!(settings.resolved_hold_shortcuts(), [HoldShortcut::None; 4]);
         assert!(
             settings.artwork_pack_roots.is_empty(),
             "v0.2.0 installations have no explicit Pack choices"
@@ -432,6 +586,7 @@ mod tests {
             settings.automatic_data_source.unwrap_or_default(),
             AutomaticDataSource::GamelistFirst
         );
+        assert_eq!(settings.separate_handheld_category, None);
     }
 
     #[test]
@@ -448,8 +603,10 @@ mod tests {
         assert_eq!(settings.folder_views.len(), 2);
         assert!(settings.custom_views.is_empty());
         assert!(settings.artwork_scale.is_none());
+        assert!(settings.details_style.is_none());
         assert_eq!(settings.hold_x_favorite, None);
         assert_eq!(settings.hold_y_random, None);
+        assert_eq!(settings.resolved_hold_shortcuts(), [HoldShortcut::None; 4]);
         assert!(
             settings.artwork_pack_roots.is_empty(),
             "v0.3.0 installations have no explicit Pack choices"
@@ -485,12 +642,17 @@ mod tests {
             art_limit: Some(0),
             layout: Some("covers".into()),
             artwork_scale: Some("4:3".into()),
+            details_style: Some("large-artwork".into()),
             left_right: Some("letter".into()),
             font: Some("pixel".into()),
             theme_font_override: Some(true),
             theme: Some("amber".into()),
             hold_x_favorite: Some(true),
             hold_y_random: Some(true),
+            hold_a_shortcut: Some(HoldShortcut::CycleView),
+            hold_b_shortcut: Some(HoldShortcut::GameInformation),
+            hold_x_shortcut: Some(HoldShortcut::AddRemoveFavourite),
+            hold_y_shortcut: Some(HoldShortcut::RandomGame),
             custom_views: CustomViews {
                 categories: Some("list".into()),
                 systems: [("Console".into(), "tiled".into())].into(),
@@ -505,6 +667,7 @@ mod tests {
                 .into(),
             },
             show_stats: Some(true),
+            separate_handheld_category: Some(true),
             overscan_x: Some(24),
             artwork_pack_roots: [("SuperGrafx".into(), "/media/fat/docs".into())].into(),
             gamelist_sources: ["NES".into()].into(),
@@ -514,7 +677,7 @@ mod tests {
         settings.save(&path).expect("saved");
 
         let read = Settings::load(&path).expect("read back");
-        assert_eq!(read, settings);
+        assert_eq!(read, settings.with_resolved_hold_shortcuts());
         // Untouched values stay absent, so the documented defaults keep
         // applying rather than being frozen at whatever they were today.
         assert!(read.present.is_none());
@@ -573,10 +736,131 @@ mod tests {
         }
         assert_eq!(
             Settings::load(&path).expect("installed settings remain readable"),
-            settings,
+            settings.with_resolved_hold_shortcuts(),
             "a post-install warning must not roll back the installed file"
         );
         std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn legacy_hold_flags_migrate_only_to_the_equivalent_buttons() {
+        let legacy: Settings =
+            toml::from_str("hold_x_favorite = true\nhold_y_random = true\n").unwrap();
+        assert_eq!(
+            legacy.resolved_hold_shortcuts(),
+            [
+                HoldShortcut::None,
+                HoldShortcut::None,
+                HoldShortcut::AddRemoveFavourite,
+                HoldShortcut::RandomGame,
+            ]
+        );
+
+        let absent: Settings = toml::from_str("").unwrap();
+        assert_eq!(absent.resolved_hold_shortcuts(), [HoldShortcut::None; 4]);
+
+        let disabled: Settings =
+            toml::from_str("hold_x_favorite = false\nhold_y_random = false\n").unwrap();
+        assert_eq!(disabled.resolved_hold_shortcuts(), [HoldShortcut::None; 4]);
+    }
+
+    #[test]
+    fn explicit_hold_bindings_win_over_legacy_flags() {
+        let settings: Settings = toml::from_str(
+            "hold_x_favorite = true\n\
+             hold_y_random = true\n\
+             hold_x_shortcut = 'none'\n\
+             hold_y_shortcut = 'cycle-view'\n",
+        )
+        .unwrap();
+        assert_eq!(settings.hold_shortcut(HoldButton::X), HoldShortcut::None);
+        assert_eq!(
+            settings.hold_shortcut(HoldButton::Y),
+            HoldShortcut::CycleView
+        );
+    }
+
+    #[test]
+    fn every_face_button_accepts_every_shortcut_without_changing_the_others() {
+        for button in HoldButton::ALL {
+            for shortcut in HoldShortcut::ALL {
+                let mut settings = Settings::default();
+                settings.set_hold_shortcut(button, shortcut);
+                for candidate in HoldButton::ALL {
+                    assert_eq!(
+                        settings.hold_shortcut(candidate),
+                        if candidate == button {
+                            shortcut
+                        } else {
+                            HoldShortcut::None
+                        }
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn saving_materialises_bindings_and_keeps_legacy_flags_truthful() {
+        let path = temp_path("hold-migration");
+        let settings = Settings {
+            hold_x_favorite: Some(true),
+            hold_y_random: Some(true),
+            hold_a_shortcut: Some(HoldShortcut::SearchThisFolder),
+            hold_x_shortcut: Some(HoldShortcut::RandomFavourite),
+            ..Default::default()
+        };
+        settings.save(&path).unwrap();
+
+        let text = std::fs::read_to_string(&path).unwrap();
+        let saved = Settings::load(&path).unwrap();
+        assert_eq!(
+            saved.resolved_hold_shortcuts(),
+            [
+                HoldShortcut::SearchThisFolder,
+                HoldShortcut::None,
+                HoldShortcut::RandomFavourite,
+                HoldShortcut::RandomGame,
+            ]
+        );
+        assert_eq!(saved.hold_x_favorite, Some(false));
+        assert_eq!(saved.hold_y_random, Some(true));
+        for key in [
+            "hold_a_shortcut",
+            "hold_b_shortcut",
+            "hold_x_shortcut",
+            "hold_y_shortcut",
+        ] {
+            assert!(text.contains(key), "{key} was not materialised");
+        }
+        std::fs::remove_file(path).ok();
+    }
+
+    #[test]
+    fn hold_shortcut_order_and_labels_are_stable() {
+        let mut shortcut = HoldShortcut::None;
+        let labels: Vec<_> = (0..HoldShortcut::ALL.len())
+            .map(|_| {
+                let label = shortcut.label();
+                shortcut = shortcut.step(1);
+                label
+            })
+            .collect();
+        assert_eq!(shortcut, HoldShortcut::None);
+        assert_eq!(
+            labels,
+            [
+                "None",
+                "Cycle View",
+                "Random Game",
+                "Random Favourite",
+                "Add/Remove Favourite",
+                "Game Information",
+                "Search This Folder",
+                "Jump to Letter",
+            ]
+        );
+        assert_eq!(HoldShortcut::None.step(-1), HoldShortcut::JumpToLetter);
     }
 
     #[test]

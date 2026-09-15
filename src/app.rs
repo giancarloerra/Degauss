@@ -41,11 +41,12 @@ use crate::input::{
 };
 use crate::list_state::ListState;
 use crate::metrics::{FrameTimer, StartupTimings};
+use crate::name_keyboard::{self, Key as NameKey, Page as NamePage};
 #[cfg(test)]
 use crate::options::OPTIONS;
 use crate::options::{speed_badge, speed_label, OptionId, OptionsPage, ADVANCED};
 use crate::render::{FrameWork, PresentMode, Presenter};
-use crate::settings::{CustomViews, SaveOutcome, Settings};
+use crate::settings::{CustomViews, HoldButton, HoldShortcut, SaveOutcome, Settings};
 use crate::surface::Surface;
 use crate::systems::{is_favorites, FoundSystem, SystemDef};
 
@@ -53,11 +54,20 @@ use crate::systems::{is_favorites, FoundSystem, SystemDef};
 #[path = "ui_acceptance_tests.rs"]
 mod ui_acceptance_tests;
 use crate::theme::{Theme, ThemeSet};
-use crate::theme_editor::{
-    EditorEffect, EditorMode, ThemeEditor, EDITOR_ROWS, NAME_CANCEL, NAME_CELLS, NAME_COLUMNS,
-    NAME_SAVE,
-};
+use crate::theme_editor::{EditorEffect, EditorMode, ThemeEditor, EDITOR_ROWS, NAME_COLUMNS};
 use crate::{DegaussWindow, DetailLine, Row};
+
+const HANDHELD_CATEGORY: &str = "Handheld";
+
+/// The category shown by the frontend. The system's own category remains
+/// unchanged because launch, cache and library ownership follow MiSTer.
+fn display_category(system: &FoundSystem, separate_handheld: bool) -> &str {
+    if separate_handheld && system.def.is_handheld() {
+        HANDHELD_CATEGORY
+    } else {
+        system.category()
+    }
+}
 
 /// Which screen is in front.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -82,6 +92,8 @@ pub enum Screen {
     Screensaver,
     /// A grid of letters, for jumping down a long list or narrowing it.
     Find,
+    /// Paged entry for a Favourites directory name.
+    NameKeyboard,
     /// Which folder of MiSTer's favourites a game is going into.
     FavoriteFolder,
     /// ScreenScraper settings for one pending scope.
@@ -127,7 +139,7 @@ impl Screen {
             | Screen::SourceProgress => 1,
             Screen::About | Screen::Splash => 2,
             Screen::Screensaver => 3,
-            Screen::Find | Screen::ScraperKeyboard => 4,
+            Screen::Find | Screen::NameKeyboard | Screen::ScraperKeyboard => 4,
             Screen::ThemeEditor => 5,
             Screen::Information => 6,
             Screen::FavoriteFolder => 1,
@@ -199,6 +211,7 @@ enum Pending {
     /// A prepared Pack whose data changed: A prepares it again, B keeps
     /// the rows already prepared and remembers the change.
     UpdateArtworkPack(Box<PackOffer>),
+    DeleteFavoriteFolder(PathBuf),
 }
 
 /// What an Artwork Pack question is about: the system, the root and the
@@ -293,6 +306,7 @@ fn option_operation(option: OptionId, input: OptionInput) -> OptionOperation {
         | OptionId::Font
         | OptionId::ShowArt
         | OptionId::ArtworkScale
+        | OptionId::DetailsStyle
         | OptionId::ShowHidden
         | OptionId::ShowEmpty
         | OptionId::ShowOther
@@ -301,10 +315,13 @@ fn option_operation(option: OptionId, input: OptionInput) -> OptionOperation {
         | OptionId::ShowScripts
         | OptionId::CorePreference
         | OptionId::AutomaticDataSource
+        | OptionId::SeparateHandheldCategory
         | OptionId::ShowBar
         | OptionId::FavoritesFirst
-        | OptionId::HoldXFavorite
-        | OptionId::HoldYRandom
+        | OptionId::HoldA
+        | OptionId::HoldB
+        | OptionId::HoldX
+        | OptionId::HoldY
         | OptionId::RandomLaunches
         | OptionId::FoldersLast
         | OptionId::ShowStats
@@ -855,6 +872,63 @@ impl ArtworkScale {
     }
 }
 
+/// How Details divides its width between the list and the picture, and
+/// whether the compact lines sit under the picture. The stored names are
+/// part of the settings format.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum DetailsStyle {
+    /// Preserve the original layout: the list beside a picture with the
+    /// compact summary, publisher and information hint under it.
+    #[default]
+    Information,
+    /// A wider picture taking the whole height of its column, with no
+    /// lines under it.
+    LargeArtwork,
+}
+
+impl DetailsStyle {
+    const ALL: [DetailsStyle; 2] = [DetailsStyle::Information, DetailsStyle::LargeArtwork];
+
+    fn setting(self) -> &'static str {
+        match self {
+            DetailsStyle::Information => "information",
+            DetailsStyle::LargeArtwork => "large-artwork",
+        }
+    }
+
+    fn shown(self) -> &'static str {
+        match self {
+            DetailsStyle::Information => "Information",
+            DetailsStyle::LargeArtwork => "Large Artwork",
+        }
+    }
+
+    fn parse(text: &str) -> Option<Self> {
+        match text {
+            "information" => Some(DetailsStyle::Information),
+            "large-artwork" => Some(DetailsStyle::LargeArtwork),
+            _ => None,
+        }
+    }
+
+    fn index(self) -> usize {
+        DetailsStyle::ALL
+            .iter()
+            .position(|&style| style == self)
+            .expect("every details style is listed")
+    }
+
+    /// What the picture's half of the safe width becomes while browsing
+    /// games: 42% for Information, which leaves the list room for a long
+    /// title, and 62% for Large Artwork.
+    fn art_factor(self) -> f32 {
+        match self {
+            DetailsStyle::Information => 0.84,
+            DetailsStyle::LargeArtwork => 1.24,
+        }
+    }
+}
+
 /// What left and right do while browsing.
 ///
 /// Speed is how Degauss always behaved and stays the default. The other
@@ -1058,6 +1132,8 @@ const ADD_FAVORITE: &str = "Add to Favourites";
 
 /// Take it out again.
 const REMOVE_FAVORITE: &str = "Remove From Favourites";
+const RENAME_FAVORITE_FOLDER: &str = "Rename Favourite Folder";
+const DELETE_FAVORITE_FOLDER: &str = "Delete Favourite Folder";
 
 /// ScreenScraper entry points. These strings are also the action identifiers
 /// while their menu is open, so they stay in one place.
@@ -1674,14 +1750,14 @@ impl ImageTarget {
     }
 }
 
-/// What the optional held-X gesture can do to the selected row.
+/// What the optional favourite hold action can do to the selected row.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum FavoriteChange {
     Add,
     Remove,
 }
 
-/// Decide the held-X operation without touching the card, so the boundaries
+/// Decide the favourite hold operation without touching the card, so the boundaries
 /// that protect folders, other screens and the master Favourites system can
 /// be pinned by tests.
 fn favorite_change(
@@ -1707,6 +1783,40 @@ fn favorite_change(
     })
 }
 
+/// Where a favourite is kept: the root of MiSTer's favourites folder, one
+/// of the folders inside it, or a folder still to be named.
+///
+/// Typed rather than read back from the row's label: a folder somebody
+/// has really called "Main Favourites" shows the same words as the root
+/// and must stay a folder of its own.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum FavoriteDestination {
+    Root,
+    Folder(String),
+    NewFolder,
+}
+
+impl FavoriteDestination {
+    /// The words on the chooser's row.
+    fn label(&self) -> &str {
+        match self {
+            Self::Root => MAIN_FAVORITES,
+            Self::Folder(name) => name,
+            Self::NewFolder => NEW_FOLDER,
+        }
+    }
+}
+
+/// The chooser's rows in order: the root first, the folders as they were
+/// listed, and the chance to name another last.
+fn favorite_destinations(folders: Vec<String>) -> Vec<FavoriteDestination> {
+    let mut destinations = Vec::with_capacity(folders.len() + 2);
+    destinations.push(FavoriteDestination::Root);
+    destinations.extend(folders.into_iter().map(FavoriteDestination::Folder));
+    destinations.push(FavoriteDestination::NewFolder);
+    destinations
+}
+
 /// Favourites keeps its familiar heart only when it has no real image.
 /// Suppressing an image unconditionally made `Favorites.png` discoverable
 /// by the category code but impossible to see in the Details view.
@@ -1729,6 +1839,7 @@ struct ContextActions {
     game_data_source: bool,
     core_version: bool,
     core_version_override: bool,
+    favorite_folder: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1768,7 +1879,13 @@ impl ContextPage {
         match self {
             Self::Game => matches!(
                 action,
-                GAME_INFORMATION | RANDOM | RANDOM_FAVORITE | ADD_FAVORITE | REMOVE_FAVORITE
+                GAME_INFORMATION
+                    | RANDOM
+                    | RANDOM_FAVORITE
+                    | ADD_FAVORITE
+                    | REMOVE_FAVORITE
+                    | RENAME_FAVORITE_FOLDER
+                    | DELETE_FAVORITE_FOLDER
             ),
             Self::Find => matches!(action, JUMP | SEARCH | CLEAR_SEARCH | HIDE_THIS | SHOW_THIS),
             Self::Library => matches!(
@@ -1796,8 +1913,12 @@ fn context_help(action: &str) -> &'static str {
         RANDOM_FAVORITE => {
             "Pick only from favourites under the open folder, using Random Game Behaviour."
         }
-        ADD_FAVORITE => "Choose a Favourites folder for the selected game.",
+        ADD_FAVORITE => "Keep the selected game in Main Favourites or in a Favourites folder.",
         REMOVE_FAVORITE => "Remove the selected favourite. The original game is not deleted.",
+        RENAME_FAVORITE_FOLDER => {
+            "Rename this Favourites folder without changing anything inside it."
+        }
+        DELETE_FAVORITE_FOLDER => "Delete this Favourites folder only when it is empty.",
         JUMP => "Jump to the first entry beginning with the chosen letter.",
         SEARCH => "Filter this list by name. Back keeps the search until it is cleared.",
         CLEAR_SEARCH => "Clear the search and show the full current list again.",
@@ -1841,6 +1962,9 @@ fn category_image_preview(
 
 /// The entry that spells out a folder name rather than picking one.
 const NEW_FOLDER: &str = "New folder...";
+/// The entry for the favourites root itself, which has no folder name of
+/// its own to show.
+const MAIN_FAVORITES: &str = "Main Favourites";
 
 /// What can be done where the cursor is, in groups.
 ///
@@ -1868,6 +1992,12 @@ fn context_entries(
         Some(true) => groups.push(vec![REMOVE_FAVORITE.to_string()]),
         Some(false) => groups.push(vec![ADD_FAVORITE.to_string()]),
         None => {}
+    }
+    if actions.favorite_folder {
+        groups.push(vec![
+            RENAME_FAVORITE_FOLDER.to_string(),
+            DELETE_FAVORITE_FOLDER.to_string(),
+        ]);
     }
     if actions.scrape_scope || actions.scrape_game {
         let mut scrape = Vec::new();
@@ -2184,8 +2314,15 @@ enum FindMode {
     Jump,
     /// Add the letter to a filter over the folder on screen.
     Search,
-    /// Spell out the name of a new favourites folder.
-    NewFolder,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum NamePurpose {
+    /// Create the folder and finish the favourite addition that opened the
+    /// destination chooser.
+    NewFavoriteFolder,
+    /// Rename this real folder in its current parent.
+    RenameFavoriteFolder(PathBuf),
 }
 
 /// The grid, in reading order. Nine across and four down fills a screen
@@ -2481,6 +2618,22 @@ fn gather_folder_cover<'c>(
         }
     }
     true
+}
+
+/// First saved place that still needs entering after opening a system.
+///
+/// Current and saved releases may disagree only about whether a Roots
+/// chooser is present. Matching by place also leaves a changed or missing
+/// root at the valid location the current card opened.
+fn restore_resume_at(current: Option<&Place>, saved: &[Place]) -> usize {
+    match (
+        current,
+        current.and_then(|place| saved.iter().position(|saved| saved == place)),
+    ) {
+        (_, Some(index)) => index + 1,
+        (Some(Place::Roots), None) => 0,
+        _ => saved.len(),
+    }
 }
 
 /// A title with the characters MiSTer's favourites script refuses taken
@@ -2855,14 +3008,23 @@ fn theme_editor_help(mode: EditorMode, selected: usize, custom_source: bool) -> 
         EditorMode::Browse if selected == 0 => "<> Change   A Change   B Back",
         EditorMode::Browse if selected == 11 => "<> Change   A Edit   B Back",
         EditorMode::Browse if matches!(selected, 12 | 13) => "<> Change   A Change   B Back",
-        EditorMode::Browse if selected == 14 => "A Save As   B Back",
-        EditorMode::Browse if selected == 15 && custom_source => "A Delete   B Back",
-        EditorMode::Browse if matches!(selected, 15 | 16) => "A Cancel   B Back",
+        EditorMode::Browse if selected == 14 && custom_source => "A Save Changes   B Back",
+        EditorMode::Browse
+            if (selected == 14 && !custom_source) || (selected == 15 && custom_source) =>
+        {
+            "A Save As   B Back"
+        }
+        EditorMode::Browse if selected == 16 && custom_source => "A Delete   B Back",
+        EditorMode::Browse
+            if (selected == 15 && !custom_source) || (selected == 17 && custom_source) =>
+        {
+            "A Cancel   B Back"
+        }
         EditorMode::Browse => "A Edit   B Back   X Swap",
         EditorMode::Hex => "A Use B Back X RGB Y Reset",
         EditorMode::Picker => "A Apply   B Cancel   X Hex   Y Reset",
         EditorMode::Swap => "A Swap   B Cancel",
-        EditorMode::Name => "A Type B Back X Del Y Clear",
+        EditorMode::Name => "A Type B Back X Del Y Page",
         EditorMode::Discard => "A Choose   B Keep Editing",
         EditorMode::Delete => "A Choose   B Keep Theme",
     }
@@ -2988,7 +3150,7 @@ pub struct App {
     context_page_selections: [usize; 4],
     options_page: OptionsPage,
     options_root_list: ListState,
-    option_lists: [ListState; 5],
+    option_lists: [ListState; 6],
     advanced_list: ListState,
     theme_editor_list: ListState,
     help_list: ListState,
@@ -3104,6 +3266,7 @@ pub struct App {
     speed: usize,
     show_art: bool,
     artwork_scale: ArtworkScale,
+    details_style: DetailsStyle,
     show_stats: bool,
     show_hidden: bool,
     /// Every system found, before hiding is applied. `systems` is the
@@ -3121,6 +3284,10 @@ pub struct App {
     filter: String,
     find_mode: FindMode,
     find_list: ListState,
+    name_keyboard_page: NamePage,
+    name_keyboard_draft: String,
+    name_keyboard_list: ListState,
+    name_keyboard_purpose: NamePurpose,
     /// Which systems have nothing to play in them, once the card has been
     /// read for it. [`None`] until then.
     empty_systems: Option<HashSet<String>>,
@@ -3136,9 +3303,8 @@ pub struct App {
     favorites: crate::favorites::Favorites,
     /// Whether favourites are gathered at the top of a folder.
     favorites_first: bool,
-    /// Whether a one-second X hold adds or removes the selected favourite.
-    hold_x_favorite: bool,
-    hold_y_random: bool,
+    /// Optional one-second browsing action for A, B, X and Y respectively.
+    hold_shortcuts: [HoldShortcut; 4],
     /// The typeface everything is set in.
     font: Font,
     /// The persistent Text option, independent of a theme's optional default.
@@ -3207,6 +3373,9 @@ pub struct App {
     saver_candidates: Option<Vec<usize>>,
 
     settled_since: Option<Instant>,
+    /// Incremented whenever the browse target changes, so a pending hold
+    /// gesture cannot act on a different row with the same availability.
+    selection_revision: u64,
     /// Turns the selected title round at each end of its travel.
     marquee: Rc<slint::Timer>,
     /// The same for the lines under the picture, which travel at half the
@@ -3256,6 +3425,9 @@ pub struct App {
     category_image_choices: Vec<crate::category_images::Choice>,
     /// The category or system whose image is being chosen.
     category_image_target: Option<ImageTarget>,
+    /// The places offered by the favourite-folder chooser while it is open,
+    /// one per row of `menu`.
+    favorite_destinations: Vec<FavoriteDestination>,
     /// When something was last pressed, for deciding the machine is idle.
     last_input: Instant,
     /// The machine's own state for the bar, re-read on a timer.
@@ -3281,6 +3453,10 @@ pub struct App {
     /// Seed for picking a game at random.
     seed: u64,
     message: Option<String>,
+    /// The theme and Details Style problem lines the first screen carries,
+    /// kept apart so the startup source check can tell them from whatever
+    /// has been put on screen since.
+    startup_problems: Option<String>,
     dirty: bool,
 }
 
@@ -3303,6 +3479,12 @@ pub struct Loaded {
     /// What the themes folder held, with a line for each file that did
     /// not load.
     pub themes: ThemeSet,
+}
+
+fn needs_native_arcade_core_link(system: Option<&FoundSystem>, game: &Path) -> bool {
+    game.extension()
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("mra"))
+        && system.is_some_and(|system| system.category() == "Arcade")
 }
 
 impl App {
@@ -3332,7 +3514,7 @@ impl App {
         } = loaded;
         let ThemeSet {
             themes,
-            problems: mut theme_problems,
+            problems: mut startup_problems,
         } = themes;
         let scraper_settings_path = crate::scraper::ScraperSettings::path_beside(&settings_path);
         let (scraper_settings, scraper_settings_problem) =
@@ -3362,7 +3544,7 @@ impl App {
                     // "Did not load" rather than "is missing": the file may
                     // be there and broken, in which case the folder's own
                     // problem line above this one says what is wrong.
-                    theme_problems.push(format!("Theme {name} did not load; using standard."));
+                    startup_problems.push(format!("Theme {name} did not load; using standard."));
                 }
                 found
             }
@@ -3385,6 +3567,19 @@ impl App {
             .as_deref()
             .and_then(ArtworkScale::parse)
             .unwrap_or_default();
+        // Absent means the layout older installations draw. A token that
+        // is present but not one of the two names is said out loud rather
+        // than quietly drawn as Information, and stays in settings.toml
+        // untouched, like a theme name the folder does not answer to.
+        let details_style = match settings.details_style.as_deref() {
+            None => DetailsStyle::default(),
+            Some(text) => DetailsStyle::parse(text).unwrap_or_else(|| {
+                startup_problems.push(format!(
+                    "Details Style {text} is not information or large-artwork; using Information."
+                ));
+                DetailsStyle::default()
+            }),
+        };
         // Margins are saved when changed and read back here. Without this the
         // Options screen would show the saved figure while the screen kept
         // the one from the config file, and the two would disagree.
@@ -3482,6 +3677,7 @@ impl App {
                 .min(SPEED_STEPS.len() - 1),
             show_art: settings.show_art.unwrap_or(true),
             artwork_scale,
+            details_style,
             show_stats: settings.show_stats.unwrap_or(config.app.show_stats),
             show_hidden: settings.show_hidden.unwrap_or(false),
             all_systems: Vec::new(),
@@ -3491,11 +3687,17 @@ impl App {
             filter: String::new(),
             find_mode: FindMode::Jump,
             find_list: ListState::new(FIND_CELLS.chars().count(), FIND_CELLS.chars().count()),
+            name_keyboard_page: NamePage::Lower,
+            name_keyboard_draft: String::new(),
+            name_keyboard_list: ListState::new(
+                name_keyboard::keys(NamePage::Lower, false).len(),
+                name_keyboard::keys(NamePage::Lower, false).len(),
+            ),
+            name_keyboard_purpose: NamePurpose::NewFavoriteFolder,
             empty_systems: None,
             favorites: crate::favorites::Favorites::default(),
             favorites_first: settings.favorites_first.unwrap_or(true),
-            hold_x_favorite: settings.hold_x_favorite.unwrap_or(false),
-            hold_y_random: settings.hold_y_random.unwrap_or(false),
+            hold_shortcuts: settings.resolved_hold_shortcuts(),
             // The file the user edits, then the one Degauss writes, then the
             // typeface that always exists. A name neither of them recognises
             // is not worth refusing to start over.
@@ -3635,6 +3837,7 @@ impl App {
             window,
             rows,
             settled_since: Some(Instant::now()),
+            selection_revision: 0,
             marquee: Rc::new(slint::Timer::default()),
             detail_marquee: Rc::new(slint::Timer::default()),
             art_pending: true,
@@ -3659,6 +3862,7 @@ impl App {
             category_picks: std::collections::BTreeMap::new(),
             category_image_choices: Vec::new(),
             category_image_target: None,
+            favorite_destinations: Vec::new(),
             last_input: Instant::now(),
             status: crate::status::Status::read(),
             speed_shown_at: None,
@@ -3675,6 +3879,7 @@ impl App {
             message_after_build: None,
             skipped_systems: false,
             message: None,
+            startup_problems: None,
             dirty: true,
         };
         app.all_systems = std::mem::take(&mut app.systems);
@@ -3707,10 +3912,16 @@ impl App {
             }));
         app.ui.set_about_copyright(SharedString::from(COPYRIGHT));
         app.ui.set_about_licence(SharedString::from(LICENCE));
-        // A theme file that did not load, or a saved theme that is gone, is
-        // said out loud on the first screen. Any press takes it down.
-        if !theme_problems.is_empty() {
-            app.message = Some(theme_problems.join("\n"));
+        // A theme file that did not load, a saved theme that is gone, or a
+        // Details Style token that is neither name, is said out loud on the
+        // first screen. Any press takes it down, and a first-start library
+        // read replaces it with its own progress, so the log keeps a copy.
+        if !startup_problems.is_empty() {
+            for line in &startup_problems {
+                crate::note(&format!("startup      {line}"));
+            }
+            app.message = Some(startup_problems.join("\n"));
+            app.startup_problems = app.message.clone();
         }
         app.resolve_artwork_sources(SourceResolutionAction::Startup);
         app.apply_geometry();
@@ -3735,6 +3946,7 @@ impl App {
             | Screen::ThemeEditor
             | Screen::Help
             | Screen::Find
+            | Screen::NameKeyboard
             | Screen::FavoriteFolder
             | Screen::Scraper
             | Screen::ScraperKeyboard
@@ -3786,8 +3998,9 @@ impl App {
             && self.browsing == Browsing::Games
             && self.layout == Layout::Details
         {
-            // The approved compact preview leaves more room for game titles.
-            geometry.art_width *= 0.84;
+            // The approved compact preview leaves more room for game titles;
+            // Large Artwork gives that room to the picture instead.
+            geometry.art_width *= self.details_style.art_factor();
         }
         let help_height = if matches!(
             self.screen,
@@ -3848,7 +4061,13 @@ impl App {
             self.geometry.visible = EDITOR_ROWS;
             self.geometry.row_height = (body / EDITOR_ROWS as f32).floor().max(9.0);
             self.geometry.body_font = (self.geometry.row_height * 0.58).floor().max(7.0);
-            self.theme_editor_list.reshape(EDITOR_ROWS, 1);
+            let (visible, stride) = self
+                .theme_editor
+                .as_ref()
+                .filter(|editor| editor.mode == EditorMode::Name)
+                .map(|editor| (editor.name_cell_count(), NAME_COLUMNS))
+                .unwrap_or((EDITOR_ROWS, 1));
+            self.theme_editor_list.reshape(visible, stride);
         }
         let geometry = self.geometry;
 
@@ -3903,8 +4122,16 @@ impl App {
         self.ui.set_columns(geometry.columns as i32);
         self.ui.set_tile_width(geometry.tile_width);
         self.ui.set_tile_height(geometry.tile_height);
+        self.ui.set_find_filtering(
+            (self.screen == Screen::Find && self.find_mode == FindMode::Search)
+                || self.screen == Screen::NameKeyboard,
+        );
         self.ui
-            .set_find_filtering(self.screen == Screen::Find && self.find_mode == FindMode::Search);
+            .set_grid_explanation(SharedString::from(if self.screen == Screen::NameKeyboard {
+                "B Uses This Name"
+            } else {
+                ""
+            }));
         if self.screen == Screen::Find {
             // The grid sizes itself from the screen rather than from the
             // list geometry, which is measured for rows of text.
@@ -3912,7 +4139,25 @@ impl App {
             self.ui.set_columns(FIND_COLUMNS as i32);
             self.ui
                 .set_grid_rows(cells.div_ceil(FIND_COLUMNS).max(1) as i32);
-            self.ui.set_find_search(self.find_mode != FindMode::Jump);
+            self.ui.set_find_search(self.find_mode == FindMode::Search);
+        } else if self.screen == Screen::NameKeyboard {
+            let cells = name_keyboard::keys(self.name_keyboard_page, false).len();
+            self.name_keyboard_list
+                .reshape(cells, name_keyboard::COLUMNS);
+            self.ui.set_columns(name_keyboard::COLUMNS as i32);
+            self.ui
+                .set_grid_rows(cells.div_ceil(name_keyboard::COLUMNS).max(1) as i32);
+            self.ui.set_find_search(false);
+        } else if self.screen == Screen::ThemeEditor {
+            if let Some(editor) = self
+                .theme_editor
+                .as_ref()
+                .filter(|editor| editor.mode == EditorMode::Name)
+            {
+                self.ui.set_columns(NAME_COLUMNS as i32);
+                self.ui
+                    .set_grid_rows(editor.name_cell_count().div_ceil(NAME_COLUMNS).max(1) as i32);
+            }
         } else if self.screen == Screen::ScraperKeyboard {
             let cells = scraper_keyboard_keys(self.scraper_keyboard_page).len();
             self.scraper_keyboard_list
@@ -3923,11 +4168,11 @@ impl App {
             self.ui.set_find_search(false);
         }
         self.ui.set_grid_help(SharedString::from(match self.screen {
+            Screen::NameKeyboard => "A Type  B Done  X Del  Y Page",
             Screen::ScraperKeyboard if self.scraper_keyboard_field == ScraperField::SearchTerm => {
                 "A Type  B Search  X Del  Y Page"
             }
             Screen::ScraperKeyboard => "A Type  B Done  X Del  Y Page",
-            Screen::Find if self.find_mode == FindMode::NewFolder => "A Type B Done X Del Y Clear",
             Screen::Find if self.find_mode == FindMode::Search => "A Type B Back X Del Y Clear",
             Screen::Find => "A Pick   B Back",
             _ => "",
@@ -3995,6 +4240,7 @@ impl App {
             Screen::Help => &self.help_list,
             Screen::About => &self.about_list,
             Screen::Find => &self.find_list,
+            Screen::NameKeyboard => &self.name_keyboard_list,
             Screen::FavoriteFolder
             | Screen::CategoryImage
             | Screen::GameDataSource
@@ -4025,6 +4271,7 @@ impl App {
             Screen::Help => &mut self.help_list,
             Screen::About => &mut self.about_list,
             Screen::Find => &mut self.find_list,
+            Screen::NameKeyboard => &mut self.name_keyboard_list,
             Screen::FavoriteFolder
             | Screen::CategoryImage
             | Screen::GameDataSource
@@ -4280,13 +4527,17 @@ impl App {
     }
 
     /// True while a held left or right should repeat: browsing in every
-    /// setting except the speed ladder. Direction scrolls like a held
-    /// stick, and a held Letter or Page walks on at the same cadence;
-    /// only the ladder stays one step per press, because a held repeat
-    /// would run the whole ladder off one touch.
+    /// setting except the speed ladder, or adjusting one RGB channel in the
+    /// continuous colour picker. Every other editor and option action remains
+    /// one step per press.
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     fn horizontal_scrolls(&self) -> bool {
-        self.screen == Screen::Browse && self.horizontal != Horizontal::Speed
+        (self.screen == Screen::Browse && self.horizontal != Horizontal::Speed)
+            || (self.screen == Screen::ThemeEditor
+                && self
+                    .theme_editor
+                    .as_ref()
+                    .is_some_and(|editor| editor.mode == EditorMode::Picker))
     }
 
     fn shift_x(&self) -> i32 {
@@ -4314,6 +4565,7 @@ impl App {
             self.art.deferred += 1;
         }
         self.art_pending = true;
+        self.selection_revision = self.selection_revision.wrapping_add(1);
         let now = Instant::now();
         self.settled_since = Some(now);
         self.gallery_title_shown_at =
@@ -5277,10 +5529,16 @@ impl App {
         }
         self.opened_config = Some(config.clone());
         if self.system_cache.is_some() {
+            let configured_start = browse::start_for(&config);
+            let start = self
+                .system_cache
+                .as_ref()
+                .map(|cache| cache.navigation_start(&configured_start))
+                .unwrap_or(configured_start);
             self.library = None;
             self.trail.clear();
             self.open_system = Some(id);
-            self.enter(browse::start_for(&config));
+            self.enter(start);
             self.show_pack_health_once();
             return;
         }
@@ -5775,10 +6033,30 @@ impl App {
                 }
                 self.build = None;
                 self.ui.set_index_active(false);
-                self.message = Some(error.to_string());
+                self.report_source_check(action, Some(error.to_string()));
             }
         }
         self.dirty = true;
+    }
+
+    /// What the screen says once a source check is in. Startup keeps the
+    /// lines the first screen carries, a theme or Details Style problem
+    /// waiting for a press, and puts the check's word under them; once
+    /// something else is on screen, the build report opened with a press
+    /// or nothing at all, the check's word stands alone. Every other check
+    /// replaces its own "Checking..." line.
+    fn report_source_check(&mut self, action: SourceResolutionAction, text: Option<String>) {
+        let lines = match action {
+            SourceResolutionAction::Startup => self
+                .startup_problems
+                .take()
+                .filter(|lines| self.message.as_deref() == Some(lines.as_str())),
+            _ => None,
+        };
+        self.message = match (lines, text) {
+            (Some(lines), Some(text)) => Some(format!("{lines}\n{text}")),
+            (lines, text) => lines.or(text),
+        };
     }
 
     fn poll_artwork_sources(&mut self) {
@@ -5807,7 +6085,7 @@ impl App {
                 }
                 self.build = None;
                 self.ui.set_index_active(false);
-                self.message = Some("Game data source check cancelled".into());
+                self.report_source_check(action, Some("Game data source check cancelled".into()));
                 self.dirty = true;
                 return;
             }
@@ -5818,14 +6096,14 @@ impl App {
                 }
                 self.build = None;
                 self.ui.set_index_active(false);
-                self.message = Some(error.to_string());
+                self.report_source_check(action, Some(error.to_string()));
                 self.dirty = true;
                 return;
             }
         };
         let groups = std::mem::take(&mut self.source_resolution_groups);
         self.apply_resolution(&groups, &resolution);
-        self.message = (!resolution.errors.is_empty()).then(|| {
+        let errors = (!resolution.errors.is_empty()).then(|| {
             resolution
                 .errors
                 .values()
@@ -5833,6 +6111,7 @@ impl App {
                 .collect::<Vec<_>>()
                 .join("\n")
         });
+        self.report_source_check(action, errors);
         match action {
             SourceResolutionAction::Startup => {
                 if self.build.is_some() {
@@ -8037,6 +8316,7 @@ impl App {
         };
         let hidden = &self.settings.hidden;
         let show_hidden = self.show_hidden;
+        let separate_handheld = self.settings.separate_handheld_category.unwrap_or(false);
         let visible: Vec<FoundSystem> = self
             .all_systems
             .iter()
@@ -8049,9 +8329,10 @@ impl App {
         // MiSTer's own menu uses, and only when something is in them.
         // Favourites last: it is not a machine, it is a shelf of things
         // picked off the others.
-        const ORDER: [&str; 7] = [
+        const ORDER: [&str; 8] = [
             "Arcade",
             "Console",
+            HANDHELD_CATEGORY,
             "Computer",
             "Utility",
             "Other",
@@ -8073,16 +8354,22 @@ impl App {
             if name == "Utility" && !self.show_utility {
                 continue;
             }
-            let count = visible.iter().filter(|s| s.category() == name).count();
+            let count = visible
+                .iter()
+                .filter(|system| display_category(system, separate_handheld) == name)
+                .count();
             if count > 0 {
                 categories.push((name.to_string(), count));
             }
         }
         // Anything with a group we did not anticipate still gets shown.
         for system in &visible {
-            let name = system.category();
+            let name = display_category(system, separate_handheld);
             if !ORDER.contains(&name) && !categories.iter().any(|(c, _)| c == name) {
-                let count = visible.iter().filter(|s| s.category() == name).count();
+                let count = visible
+                    .iter()
+                    .filter(|candidate| display_category(candidate, separate_handheld) == name)
+                    .count();
                 categories.push((name.to_string(), count));
             }
         }
@@ -8090,7 +8377,7 @@ impl App {
         self.systems = match self.open_category.as_deref() {
             Some(open) => visible
                 .into_iter()
-                .filter(|s| s.category() == open)
+                .filter(|system| display_category(system, separate_handheld) == open)
                 .collect(),
             None => visible,
         };
@@ -8116,6 +8403,7 @@ impl App {
     /// showing the same member's logo says it is.
     fn reroll_category_art(&mut self) {
         let mut seed = self.seed;
+        let separate_handheld = self.settings.separate_handheld_category.unwrap_or(false);
         let mut picks = std::collections::BTreeMap::new();
         for (name, _) in &self.categories {
             if let Some(explicit) = self.named_logo(name) {
@@ -8125,7 +8413,7 @@ impl App {
             let logos: Vec<PathBuf> = self
                 .all_systems
                 .iter()
-                .filter(|system| system.category() == name)
+                .filter(|system| display_category(system, separate_handheld) == name)
                 .filter_map(|system| self.system_logo(system))
                 .collect();
             if logos.is_empty() {
@@ -8362,17 +8650,21 @@ impl App {
             .set_theme_edit_hex(SharedString::from(editor.hex_text()));
         self.ui
             .set_theme_picker_channel(editor.picker_channel as i32);
-        self.ui.set_theme_name_save_index(NAME_SAVE as i32);
-        self.ui.set_theme_name_cancel_index(NAME_CANCEL as i32);
+        self.ui
+            .set_theme_name_save_index(editor.name_save_index() as i32);
+        self.ui
+            .set_theme_name_cancel_index(editor.name_cancel_index() as i32);
         self.ui
             .set_theme_name(SharedString::from(editor.name.as_str()));
+        self.ui
+            .set_theme_name_page(SharedString::from(editor.name_page.label()));
         self.ui.set_columns(if editor.mode == EditorMode::Name {
             NAME_COLUMNS as i32
         } else {
             1
         });
         self.ui.set_grid_rows(if editor.mode == EditorMode::Name {
-            NAME_CELLS.div_ceil(NAME_COLUMNS) as i32
+            editor.name_cell_count().div_ceil(NAME_COLUMNS) as i32
         } else {
             1
         });
@@ -8447,6 +8739,88 @@ impl App {
         self.close_theme_editor();
         if let Some(warning) = settings_warning {
             self.message = Some(format!("Theme {name:?} was saved; {warning}"));
+            self.dirty = true;
+        }
+    }
+
+    fn save_theme_editor_changes(&mut self, name: &str) {
+        let Some(editor) = self.theme_editor.as_ref() else {
+            return;
+        };
+        let file = editor.draft.file();
+        let Some(theme) = self
+            .themes
+            .iter()
+            .find(|theme| theme.name.eq_ignore_ascii_case(name))
+            .cloned()
+        else {
+            self.message = Some(format!("Theme {name:?} is no longer available"));
+            self.dirty = true;
+            return;
+        };
+        let staged = match crate::theme::replace_editor_theme(
+            &self.themes_dir,
+            &theme,
+            &file,
+            &self.config.colors,
+        ) {
+            Ok(staged) => staged,
+            Err(error) => {
+                self.message = Some(error.to_string());
+                self.dirty = true;
+                return;
+            }
+        };
+
+        let loaded = crate::theme::load_available(&self.themes_dir);
+        let Some(active_theme) = loaded
+            .themes
+            .iter()
+            .position(|loaded| loaded.name.eq_ignore_ascii_case(&theme.name))
+        else {
+            let rollback = staged.rollback();
+            self.message = Some(match rollback {
+                Ok(()) => format!("Updated theme {name:?} did not reload; the previous theme was restored"),
+                Err(error) => format!(
+                    "Updated theme {name:?} did not reload; restoring the previous theme also failed: {error}"
+                ),
+            });
+            self.dirty = true;
+            return;
+        };
+
+        let mut settings = self.settings.clone();
+        settings.theme = Some(loaded.themes[active_theme].name.clone());
+        settings.theme_font_override = Some(false);
+        let settings_warning = match settings.save(&self.settings_path) {
+            Ok(SaveOutcome::Durable) => None,
+            Ok(SaveOutcome::InstalledWithWarning(warning)) => Some(warning.to_string()),
+            Err(error) => {
+                let rollback = staged.rollback();
+                self.message = Some(match rollback {
+                    Ok(()) => format!("{error}; the previous theme was restored"),
+                    Err(rollback_error) => {
+                        format!(
+                            "{error}; restoring the previous theme also failed: {rollback_error}"
+                        )
+                    }
+                });
+                self.dirty = true;
+                return;
+            }
+        };
+
+        let replacement_warning = staged.commit().err().map(|error| error.to_string());
+        self.themes = loaded.themes;
+        self.active_theme = Some(active_theme);
+        self.settings = settings;
+        self.close_theme_editor();
+        let warnings = settings_warning
+            .into_iter()
+            .chain(replacement_warning)
+            .collect::<Vec<_>>();
+        if !warnings.is_empty() {
+            self.message = Some(format!("Theme {name:?} was saved; {}", warnings.join("; ")));
             self.dirty = true;
         }
     }
@@ -8570,6 +8944,10 @@ impl App {
                 self.save_theme_editor(&name);
                 return;
             }
+            EditorEffect::SaveChanges(name) => {
+                self.save_theme_editor_changes(&name);
+                return;
+            }
             EditorEffect::Delete(name) => {
                 self.delete_theme_editor(&name);
                 return;
@@ -8611,8 +8989,7 @@ impl App {
             | Action::Home
             | Action::End
             | Action::CyclePresent
-            | Action::FavoriteShortcut
-            | Action::RandomShortcut => EditorEffect::None,
+            | Action::HoldShortcut(_) => EditorEffect::None,
         };
         self.apply_theme_editor_effect(effect);
     }
@@ -8645,6 +9022,69 @@ impl App {
                 self.screen = Screen::Advanced;
                 self.apply_geometry();
                 self.dirty = true;
+            }
+        }
+    }
+
+    /// Reclassify only the visible navigation tree. If the option changes
+    /// while a system is selected or open, keep that stable system id and
+    /// the current game row instead of leaving the browser in an empty old
+    /// category.
+    fn set_separate_handheld_category(&mut self, enabled: bool) {
+        let selected_category = (self.browsing == Browsing::Categories)
+            .then(|| self.categories.get(self.category_list.selected()))
+            .flatten()
+            .map(|(name, _)| name.clone());
+        let selected_system = match self.browsing {
+            Browsing::Systems => self
+                .systems
+                .get(self.system_list.selected())
+                .map(|system| system.def.id.clone()),
+            Browsing::Games => self.open_system.clone(),
+            Browsing::Categories => None,
+        };
+
+        self.settings.separate_handheld_category = Some(enabled);
+        if let Some(id) = selected_system.as_deref() {
+            if let Some(system) = self.all_systems.iter().find(|system| system.def.id == id) {
+                let category = display_category(system, enabled).to_string();
+                self.open_category = Some(category.clone());
+                self.category_system.insert(category, id.to_string());
+            }
+        }
+        self.rebuild_system_list();
+
+        if let Some(id) = selected_system.as_deref() {
+            if let Some(index) = self.systems.iter().position(|system| system.def.id == id) {
+                self.system_list.select(index);
+            }
+            if self.browsing == Browsing::Games {
+                self.skipped_systems = self.systems.len() == 1;
+            }
+        } else if let Some(category) = selected_category {
+            let category = match (category.as_str(), enabled) {
+                ("Console", true)
+                    if !self.categories.iter().any(|(name, _)| name == "Console")
+                        && self
+                            .categories
+                            .iter()
+                            .any(|(name, _)| name == HANDHELD_CATEGORY) =>
+                {
+                    HANDHELD_CATEGORY
+                }
+                (HANDHELD_CATEGORY, false)
+                    if self.categories.iter().any(|(name, _)| name == "Console") =>
+                {
+                    "Console"
+                }
+                _ => category.as_str(),
+            };
+            if let Some(index) = self
+                .categories
+                .iter()
+                .position(|(name, _)| name == category)
+            {
+                self.category_list.select(index);
             }
         }
     }
@@ -8721,6 +9161,11 @@ impl App {
                 self.settings.artwork_scale = Some(self.artwork_scale.setting().to_string());
                 self.touch_selection();
             }
+            OptionId::DetailsStyle => {
+                let at = step(self.details_style.index(), delta, DetailsStyle::ALL.len());
+                self.details_style = DetailsStyle::ALL[at];
+                self.settings.details_style = Some(self.details_style.setting().to_string());
+            }
             OptionId::ShowStats => {
                 self.show_stats = !self.show_stats;
                 self.settings.show_stats = Some(self.show_stats);
@@ -8784,6 +9229,10 @@ impl App {
                         .next(),
                 );
             }
+            OptionId::SeparateHandheldCategory => {
+                let enabled = !self.settings.separate_handheld_category.unwrap_or(false);
+                self.set_separate_handheld_category(enabled);
+            }
             OptionId::ShowUtility => {
                 self.show_utility = !self.show_utility;
                 self.settings.show_utility = Some(self.show_utility);
@@ -8819,13 +9268,12 @@ impl App {
                 // The folder on screen was ordered by the old answer.
                 self.relist_here();
             }
-            OptionId::HoldXFavorite => {
-                self.hold_x_favorite = !self.hold_x_favorite;
-                self.settings.hold_x_favorite = Some(self.hold_x_favorite);
-            }
-            OptionId::HoldYRandom => {
-                self.hold_y_random = !self.hold_y_random;
-                self.settings.hold_y_random = Some(self.hold_y_random);
+            OptionId::HoldA | OptionId::HoldB | OptionId::HoldX | OptionId::HoldY => {
+                let button = option.hold_button().expect("hold option has a button");
+                let at = button.index();
+                self.hold_shortcuts[at] = self.hold_shortcuts[at].step(delta);
+                self.settings
+                    .set_hold_shortcut(button, self.hold_shortcuts[at]);
             }
             OptionId::RandomLaunches => {
                 self.random_launches = !self.random_launches;
@@ -8888,6 +9336,7 @@ impl App {
             },
             OptionId::ShowArt => on_off(self.show_art),
             OptionId::ArtworkScale => self.artwork_scale.shown().to_string(),
+            OptionId::DetailsStyle => self.details_style.shown().to_string(),
             OptionId::ShowStats => on_off(self.show_stats),
             OptionId::Present => capitalised(self.present_label),
             OptionId::ShowHidden => on_off(self.show_hidden),
@@ -8908,10 +9357,15 @@ impl App {
                 .unwrap_or_default()
                 .label()
                 .to_string(),
+            OptionId::SeparateHandheldCategory => {
+                on_off(self.settings.separate_handheld_category.unwrap_or(false))
+            }
             OptionId::ShowBar => on_off(self.show_bar),
             OptionId::FavoritesFirst => on_off(self.favorites_first),
-            OptionId::HoldXFavorite => on_off(self.hold_x_favorite),
-            OptionId::HoldYRandom => on_off(self.hold_y_random),
+            OptionId::HoldA | OptionId::HoldB | OptionId::HoldX | OptionId::HoldY => {
+                let button = option.hold_button().expect("hold option has a button");
+                self.hold_shortcuts[button.index()].label().to_string()
+            }
             OptionId::RandomLaunches => if self.random_launches {
                 "Launches"
             } else {
@@ -9054,27 +9508,15 @@ impl App {
     fn go_back(&mut self) -> Option<Outcome> {
         match self.screen {
             Screen::Screensaver => self.leave_screensaver(),
-            // Spelling out a folder name has no other way to say it is
-            // finished: every button on the grid is a letter.
-            Screen::Find if self.find_mode == FindMode::NewFolder => {
-                let name = self.filter.clone();
-                self.filter.clear();
-                match crate::favorites::make_folder(&self.favorites_root(), &name) {
-                    Ok(_) => self.add_favorite_in(&name),
-                    Err(e) => {
-                        self.message = Some(format!("{e}"));
-                        self.screen = Screen::Browse;
-                        self.apply_geometry();
-                        self.dirty = true;
-                    }
-                }
-            }
             Screen::Find | Screen::FavoriteFolder => {
+                // The chooser's rows are done with once it is left.
+                self.favorite_destinations.clear();
                 self.screen = Screen::Browse;
                 self.resolve_view();
                 self.apply_geometry();
                 self.touch_selection();
             }
+            Screen::NameKeyboard => self.finish_name_keyboard(),
             Screen::Scraper => {
                 if self.save_scraper_settings() {
                     self.screen = self.scraper_return;
@@ -9569,6 +10011,152 @@ impl App {
         self.apply_geometry();
     }
 
+    fn open_name_keyboard(&mut self, purpose: NamePurpose, draft: String) {
+        self.name_keyboard_purpose = purpose;
+        self.name_keyboard_page = NamePage::Lower;
+        self.name_keyboard_draft = draft;
+        let cells = name_keyboard::keys(self.name_keyboard_page, false).len();
+        self.name_keyboard_list = ListState::new(cells, cells);
+        self.name_keyboard_list
+            .reshape(cells, name_keyboard::COLUMNS);
+        self.screen = Screen::NameKeyboard;
+        self.apply_geometry();
+        self.dirty = true;
+    }
+
+    fn cycle_name_keyboard(&mut self) {
+        self.name_keyboard_page = self.name_keyboard_page.next();
+        let cells = name_keyboard::keys(self.name_keyboard_page, false).len();
+        self.name_keyboard_list = ListState::new(cells, cells);
+        self.name_keyboard_list
+            .reshape(cells, name_keyboard::COLUMNS);
+        self.apply_geometry();
+        self.dirty = true;
+    }
+
+    fn pick_name_key(&mut self) {
+        let keys = name_keyboard::keys(self.name_keyboard_page, false);
+        let Some(key) = keys.get(self.name_keyboard_list.selected()).copied() else {
+            return;
+        };
+        match key {
+            NameKey::Character(character) => {
+                if self.name_keyboard_draft.chars().count() < 255 {
+                    self.name_keyboard_draft.push(character);
+                }
+            }
+            NameKey::Space => {
+                if self.name_keyboard_draft.chars().count() < 255 {
+                    self.name_keyboard_draft.push(' ');
+                }
+            }
+            NameKey::Clear => self.name_keyboard_draft.clear(),
+            NameKey::Save | NameKey::Cancel => {}
+        }
+        self.dirty = true;
+    }
+
+    fn finish_name_keyboard(&mut self) {
+        let draft = self.name_keyboard_draft.clone();
+        match self.name_keyboard_purpose.clone() {
+            NamePurpose::NewFavoriteFolder => {
+                match crate::favorites::make_folder(&self.favorites_root(), &draft) {
+                    Ok(target) => self.add_favorite_in(&target),
+                    Err(error) => {
+                        self.message = Some(error.to_string());
+                        self.dirty = true;
+                    }
+                }
+            }
+            NamePurpose::RenameFavoriteFolder(source) => {
+                let unchanged = source
+                    .file_name()
+                    .is_some_and(|name| name == draft.as_str());
+                let destination = match crate::favorites::rename_folder(
+                    &self.favorites_root(),
+                    &source,
+                    &draft,
+                ) {
+                    Ok(destination) => destination,
+                    Err(error) => {
+                        self.message = Some(error.to_string());
+                        self.dirty = true;
+                        return;
+                    }
+                };
+                let refresh_error = if unchanged {
+                    None
+                } else {
+                    self.reread_favorites();
+                    self.refresh_favorites_system().map(|error| {
+                        format!("Favourite folder was renamed, but refreshing Favourites failed: {error}")
+                    })
+                };
+                self.screen = Screen::Browse;
+                self.apply_geometry();
+                self.relist_here();
+                if let Some(index) = self.here.iter().position(|row| {
+                    matches!(&row.kind, browse::Kind::Enter(Place::Dir(path)) if path == &destination)
+                }) {
+                    self.game_list.select(index);
+                    self.touch_selection();
+                }
+                self.report_after_relist(refresh_error);
+                self.dirty = true;
+            }
+        }
+    }
+
+    fn delete_favorite_folder(&mut self, path: &Path) {
+        match crate::favorites::remove_empty_folder(&self.favorites_root(), path) {
+            Ok(()) => {
+                self.reread_favorites();
+                let refresh_error = self.refresh_favorites_system().map(|error| {
+                    format!(
+                        "Favourite folder was deleted, but refreshing Favourites failed: {error}"
+                    )
+                });
+                self.screen = Screen::Browse;
+                self.apply_geometry();
+                self.relist_here();
+                self.report_after_relist(refresh_error);
+            }
+            Err(error) => self.message = Some(error.to_string()),
+        }
+        self.dirty = true;
+    }
+
+    fn handle_name_keyboard(&mut self, action: Action) {
+        match action {
+            Action::Up => {
+                self.name_keyboard_list.move_rows(-1);
+            }
+            Action::Down => {
+                self.name_keyboard_list.move_rows(1);
+            }
+            Action::Slower | Action::PageUp => {
+                self.name_keyboard_list.move_items(-1);
+            }
+            Action::Faster | Action::PageDown => {
+                self.name_keyboard_list.move_items(1);
+            }
+            Action::Home => {
+                self.name_keyboard_list.go_first();
+            }
+            Action::End => {
+                self.name_keyboard_list.go_last();
+            }
+            Action::Accept => self.pick_name_key(),
+            Action::Quit => self.finish_name_keyboard(),
+            Action::Context => {
+                self.name_keyboard_draft.pop();
+            }
+            Action::Menu => self.cycle_name_keyboard(),
+            Action::CyclePresent | Action::HoldShortcut(_) => {}
+        }
+        self.dirty = true;
+    }
+
     /// Act on the cell under the cursor.
     fn pick_letter(&mut self) {
         let Some(letter) = FIND_CELLS.chars().nth(self.find_list.selected()) else {
@@ -9588,12 +10176,6 @@ impl App {
                 self.filter.push(letter);
                 self.apply_filter();
             }
-            FindMode::NewFolder => {
-                self.filter.push(letter);
-                self.dirty = true;
-            }
-            #[allow(unreachable_patterns)]
-            _ => {}
         }
     }
 
@@ -9733,16 +10315,29 @@ impl App {
         }
     }
 
-    /// The operation a held X would perform now. The same answer enables the
-    /// timer and handles its result, so a row that cannot be changed never
-    /// acquires a delayed X press.
+    /// The real user directory under `_@Favorites` selected by the browse
+    /// cursor. Archive-like rows, links, the root and native `cores` support
+    /// data are deliberately not manageable folders.
+    fn selected_favorite_folder(&self) -> Option<PathBuf> {
+        if self.browsing != Browsing::Games || !self.in_favorites() {
+            return None;
+        }
+        let path = match &self.here.get(self.game_list.selected())?.kind {
+            browse::Kind::Enter(Place::Dir(path)) => path.clone(),
+            _ => return None,
+        };
+        path.file_name()?.to_str()?;
+        crate::favorites::is_user_folder(&self.favorites_root(), &path).then_some(path)
+    }
+
+    /// The favourite operation available for the selected row.
     fn favorite_change(&self) -> Option<FavoriteChange> {
         let selected = self.selected_game();
         let favorite = selected
             .as_deref()
             .is_some_and(|game| self.favorites.holds(game));
         favorite_change(
-            self.hold_x_favorite,
+            true,
             self.screen,
             self.browsing,
             self.in_favorites(),
@@ -9751,16 +10346,14 @@ impl App {
         )
     }
 
-    fn random_shortcut_enabled(&self) -> bool {
-        self.hold_y_random
-            && self.screen == Screen::Browse
-            && self.browsing == Browsing::Games
-            && !self.trail.is_empty()
+    fn browse_shortcuts_ready(&self) -> bool {
+        self.screen == Screen::Browse
             && self.message.is_none()
             && self.pending.is_none()
             && self.build.is_none()
             && self.index_terminal.is_none()
             && self.refreshing.is_none()
+            && self.source_resolution.is_none()
             && self.scraper_refresh_job.is_none()
             && self.source_job.is_none()
             && self.provider_job.is_none()
@@ -9768,11 +10361,73 @@ impl App {
             && self.scraper_pending_terminal.is_none()
     }
 
-    /// Offer the folders MiSTer's favourites are already kept in, and the
-    /// chance to name another.
+    fn random_shortcut_available(&self) -> bool {
+        self.browse_shortcuts_ready() && self.browsing == Browsing::Games && !self.trail.is_empty()
+    }
+
+    fn hold_shortcut_available(&self, shortcut: HoldShortcut) -> bool {
+        if !self.browse_shortcuts_ready() {
+            return false;
+        }
+        match shortcut {
+            HoldShortcut::None => false,
+            HoldShortcut::CycleView => self.current_view_place().is_some(),
+            HoldShortcut::RandomGame | HoldShortcut::RandomFavourite => {
+                self.random_shortcut_available()
+            }
+            HoldShortcut::AddRemoveFavourite => self.favorite_change().is_some(),
+            HoldShortcut::GameInformation => self.selected_game().is_some(),
+            HoldShortcut::SearchThisFolder | HoldShortcut::JumpToLetter => {
+                self.browsing != Browsing::Categories
+            }
+        }
+    }
+
+    fn available_hold_shortcuts(&self) -> [Option<HoldShortcut>; 4] {
+        HoldButton::ALL.map(|button| {
+            let shortcut = self.hold_shortcuts[button.index()];
+            self.hold_shortcut_available(shortcut).then_some(shortcut)
+        })
+    }
+
+    fn cycle_view_shortcut(&mut self) {
+        self.layout = self.layout.next();
+        self.remember_view();
+        self.apply_geometry();
+        self.touch_selection();
+        self.save_settings();
+        self.dirty = true;
+    }
+
+    fn perform_hold_shortcut(&mut self, shortcut: HoldShortcut) -> Option<Outcome> {
+        if !self.hold_shortcut_available(shortcut) {
+            return None;
+        }
+        match shortcut {
+            HoldShortcut::None => {}
+            HoldShortcut::CycleView => self.cycle_view_shortcut(),
+            HoldShortcut::RandomGame => return self.random_here(false),
+            HoldShortcut::RandomFavourite => return self.random_here(true),
+            HoldShortcut::AddRemoveFavourite => match self.favorite_change() {
+                Some(FavoriteChange::Add) => self.open_favorite_folders(),
+                Some(FavoriteChange::Remove) => self.remove_favorite(),
+                None => {}
+            },
+            HoldShortcut::GameInformation => {
+                self.reopen_context_for(GAME_INFORMATION);
+                self.open_information();
+            }
+            HoldShortcut::SearchThisFolder => self.open_find(FindMode::Search),
+            HoldShortcut::JumpToLetter => self.open_find(FindMode::Jump),
+        }
+        None
+    }
+
+    /// Offer the favourites folder itself, the folders MiSTer's favourites
+    /// are already kept in, and the chance to name another.
     fn open_favorite_folders(&mut self) {
-        let mut entries = match crate::favorites::folders(&self.favorites_root()) {
-            Ok(entries) => entries,
+        let folders = match crate::favorites::folders(&self.favorites_root()) {
+            Ok(folders) => folders,
             Err(e) => {
                 self.screen = Screen::Browse;
                 self.apply_geometry();
@@ -9781,20 +10436,25 @@ impl App {
                 return;
             }
         };
-        entries.push(NEW_FOLDER.to_string());
-        self.menu = entries;
+        self.favorite_destinations = favorite_destinations(folders);
+        self.menu = self
+            .favorite_destinations
+            .iter()
+            .map(|destination| destination.label().to_string())
+            .collect();
         self.menu_list = ListState::new(self.menu.len(), self.geometry.visible);
         self.screen = Screen::FavoriteFolder;
         self.apply_geometry();
     }
 
-    /// Keep the selected game in a folder of MiSTer's favourites.
+    /// Keep the selected game in `target`: MiSTer's favourites folder
+    /// itself, or one of the folders inside it.
     ///
     /// Written the way its own script writes one: an `.mgl` naming the core
     /// and the file for a game, a link for a core file. Nothing here is
     /// Degauss's own format, so a favourite made here is a favourite in the
     /// stock menu too.
-    fn add_favorite_in(&mut self, folder: &str) {
+    fn add_favorite_in(&mut self, target: &Path) {
         let Some(game) = self.selected_game() else {
             return;
         };
@@ -9806,7 +10466,7 @@ impl App {
             .get(self.game_list.selected())
             .map(|row| row.name.clone())
             .unwrap_or_default();
-        let target = self.favorites_root().join(folder);
+        let native_arcade_favourite = needs_native_arcade_core_link(self.open_system_ref(), &game);
 
         // A title rather than a file: written as an MGL that starts
         // AmigaVision, carrying the title in an element Main ignores.
@@ -9824,28 +10484,21 @@ impl App {
             // The title is already the shown name, so sanitising it keeps
             // the favourite recognisable while making the name one the
             // card can hold.
-            let outcome =
-                crate::launch::favorite_mgl_amiga(&config, &install, &title).and_then(|mgl| {
-                    crate::favorites::add_game(&target, &sanitise(&title), &mgl).map(|_| title)
-                });
+            let outcome = crate::launch::favorite_mgl_amiga(&config, &install, &title)
+                .and_then(|mgl| crate::favorites::add_game(target, &sanitise(&title), &mgl));
+            let mut outcome_error = None;
             let mut refresh_error = None;
             match outcome {
-                Ok(what) => {
-                    self.message = Some(format!("{what}\n\nkept in {folder}"));
+                Ok(_) => {
                     self.reread_favorites();
                     refresh_error = self.refresh_favorites_system();
                 }
-                Err(e) => self.message = Some(format!("{e}")),
+                Err(e) => outcome_error = Some(format!("{e}")),
             }
             self.screen = Screen::Browse;
             self.apply_geometry();
             self.relist_here();
-            if let Some(error) = refresh_error {
-                // Set after show_here, which clears the message field as
-                // part of its redraw; set before, the error would never be
-                // seen.
-                self.message = Some(error);
-            }
+            self.report_after_relist(outcome_error.or(refresh_error));
             self.dirty = true;
             return;
         }
@@ -9867,7 +10520,7 @@ impl App {
                 // stem: a favourite called "mslug" would be a stranger in a
                 // list that has always said "Metal Slug".
                 let fav_name = crate::favorites::favorite_name(&name, &game);
-                crate::favorites::add_game(&target, &fav_name, &mgl).map(|_| fav_name)
+                crate::favorites::add_game(target, &fav_name, &mgl)
             }
             // A core file is linked to, not described. The link keeps the
             // real filename, not the shown name: the stock script resolves
@@ -9878,34 +10531,46 @@ impl App {
                     .file_name()
                     .map(|s| s.to_string_lossy().into_owned())
                     .unwrap_or_else(|| name.clone());
-                self.link_favorite(&target, &file, &game)
+                if native_arcade_favourite {
+                    crate::favorites::ensure_arcade_cores_link(Path::new(&self.config.menu_root))
+                        .and_then(|()| crate::favorites::add_core(target, &file, &game))
+                } else {
+                    crate::favorites::add_core(target, &file, &game)
+                }
             }
             Err(e) => Err(e),
         };
 
+        let mut outcome_error = None;
         let mut refresh_error = None;
         match outcome {
-            Ok(what) => {
-                self.message = Some(format!("{what}\n\nkept in {folder}"));
+            Ok(_) => {
                 self.reread_favorites();
                 refresh_error = self.refresh_favorites_system();
             }
-            Err(e) => self.message = Some(format!("{e}")),
+            Err(e) => outcome_error = Some(format!("{e}")),
         }
         self.screen = Screen::Browse;
         self.apply_geometry();
         self.relist_here();
-        if let Some(error) = refresh_error {
-            // Set after show_here, which clears the message field as
-            // part of its redraw; set before, the error would never be
-            // seen.
-            self.message = Some(error);
-        }
+        self.report_after_relist(outcome_error.or(refresh_error));
         self.dirty = true;
     }
 
-    fn link_favorite(&self, folder: &Path, name: &str, game: &Path) -> Result<String> {
-        crate::favorites::add_core(folder, name, game).map(|_| name.to_string())
+    /// Say what went wrong with a favourite change, after the redraw that
+    /// follows it: `show_here` clears the message field as part of its
+    /// redraw, so anything set before it would never be seen. When the
+    /// redraw itself could not list the folder, its own message is kept
+    /// under this one: dropped, the empty list left behind would look like
+    /// an empty folder once this was dismissed.
+    fn report_after_relist(&mut self, error: Option<String>) {
+        let Some(error) = error else {
+            return;
+        };
+        self.message = Some(match self.message.take() {
+            Some(listing) => format!("{error}\n\n{listing}"),
+            None => error,
+        });
     }
 
     /// Take a favourite away, by removing the file that makes it one.
@@ -9925,23 +10590,19 @@ impl App {
         let Some(file) = file else {
             return;
         };
+        let mut outcome_error = None;
         let mut refresh_error = None;
         match crate::favorites::remove(&file) {
             Ok(()) => {
                 self.reread_favorites();
                 refresh_error = self.refresh_favorites_system();
             }
-            Err(e) => self.message = Some(format!("{e}")),
+            Err(e) => outcome_error = Some(format!("{e}")),
         }
         self.screen = Screen::Browse;
         self.apply_geometry();
         self.relist_here();
-        if let Some(error) = refresh_error {
-            // Set after show_here, which clears the message field as
-            // part of its redraw; set before, the error would never be
-            // seen.
-            self.message = Some(error);
-        }
+        self.report_after_relist(outcome_error.or(refresh_error));
         self.dirty = true;
     }
 
@@ -11541,7 +12202,7 @@ impl App {
                             .map(|system| system.name().to_string())
                     })
                     .unwrap_or_else(|| "System".to_string());
-                // Rows, archives and members left out are reported on
+                // The rows, archives and members left out are reported on
                 // screen by reason, as they are for a preparation.
                 self.message = Some(recovery_report(
                     &format!("{name} list rebuilt"),
@@ -11711,8 +12372,8 @@ impl App {
         for warning in scan_warnings.iter().chain(&warnings) {
             crate::note(&format!("game source  installed with warning: {warning}"));
         }
-        // Rows, archives and members left out are reported on screen by
-        // reason, as they are when a Pack system is prepared on opening.
+        // Scan problems are shown by reason, as they are when a Pack
+        // system is prepared on opening. Storage detail remains in the log.
         let mut message = format!("Now using {label}.");
         if !scan_warnings.is_empty() {
             message.push_str(&format!(
@@ -11831,6 +12492,7 @@ impl App {
         let game_data_source = context_system
             .as_deref()
             .is_some_and(crate::artwork_pack::supports);
+        let favorite_folder = self.selected_favorite_folder().is_some();
         self.context_actions = context_entries(
             self.browsing,
             !self.filter.is_empty(),
@@ -11846,6 +12508,7 @@ impl App {
                 core_version_override: self
                     .core_system_id()
                     .is_some_and(|id| self.settings.core_choices.contains_key(&id)),
+                favorite_folder,
             },
         );
         if self.context_actions.is_empty() {
@@ -13148,7 +13811,7 @@ impl App {
                 self.scraper_keyboard_draft.pop();
             }
             Action::Menu => self.cycle_scraper_keyboard(),
-            Action::CyclePresent | Action::FavoriteShortcut | Action::RandomShortcut => {}
+            Action::CyclePresent | Action::HoldShortcut(_) => {}
         }
         self.dirty = true;
     }
@@ -13197,11 +13860,7 @@ impl App {
             }
             Action::Quit => self.scraper_details = false,
             Action::Accept => {}
-            Action::Menu
-            | Action::Context
-            | Action::CyclePresent
-            | Action::FavoriteShortcut
-            | Action::RandomShortcut => {}
+            Action::Menu | Action::Context | Action::CyclePresent | Action::HoldShortcut(_) => {}
         }
         if selected != self.scraper_progress_list.selected() {
             self.restart_marquee();
@@ -13248,8 +13907,7 @@ impl App {
             | Action::Faster
             | Action::Menu
             | Action::CyclePresent
-            | Action::FavoriteShortcut
-            | Action::RandomShortcut => false,
+            | Action::HoldShortcut(_) => false,
         };
         if moved {
             self.restart_marquee();
@@ -13524,6 +14182,9 @@ impl App {
                         Pending::PrepareArtworkPack(offer) | Pending::UpdateArtworkPack(offer) => {
                             self.begin_consented_preparation(*offer);
                         }
+                        Pending::DeleteFavoriteFolder(path) => {
+                            self.delete_favorite_folder(&path);
+                        }
                     }
                     return None;
                 }
@@ -13585,6 +14246,10 @@ impl App {
 
         if self.screen == Screen::ScraperKeyboard {
             self.handle_scraper_keyboard(action);
+            return None;
+        }
+        if self.screen == Screen::NameKeyboard {
+            self.handle_name_keyboard(action);
             return None;
         }
         if self.screen == Screen::ScraperProgress {
@@ -13721,7 +14386,7 @@ impl App {
             Action::Menu => {
                 if self.screen == Screen::Browse {
                     self.open_menu();
-                } else if self.screen == Screen::Find && self.find_mode != FindMode::Jump {
+                } else if self.screen == Screen::Find && self.find_mode == FindMode::Search {
                     // Y wipes what has been typed rather than leaving: on a
                     // grid the two spare buttons are the only edit keys
                     // there are.
@@ -13737,7 +14402,7 @@ impl App {
             Action::Context => {
                 if self.screen == Screen::Browse {
                     self.open_context();
-                } else if self.screen == Screen::Find && self.find_mode != FindMode::Jump {
+                } else if self.screen == Screen::Find && self.find_mode == FindMode::Search {
                     self.filter.pop();
                     if self.find_mode == FindMode::Search {
                         self.apply_filter();
@@ -13747,16 +14412,7 @@ impl App {
                     return self.go_back();
                 }
             }
-            Action::FavoriteShortcut => match self.favorite_change() {
-                Some(FavoriteChange::Add) => self.open_favorite_folders(),
-                Some(FavoriteChange::Remove) => self.remove_favorite(),
-                None => {}
-            },
-            Action::RandomShortcut => {
-                if self.random_shortcut_enabled() {
-                    return self.random_here(false);
-                }
-            }
+            Action::HoldShortcut(shortcut) => return self.perform_hold_shortcut(shortcut),
             Action::CyclePresent => self.pending_present_switch = true,
             Action::Accept => match self.screen {
                 Screen::Screensaver => self.leave_screensaver(),
@@ -13777,16 +14433,30 @@ impl App {
                 },
                 Screen::Find => self.pick_letter(),
                 Screen::FavoriteFolder => {
-                    let choice = self
-                        .menu
+                    // The row's destination, not its words: a folder can
+                    // share its name with the root's entry. The rows are
+                    // done with once one is taken.
+                    let destination = self
+                        .favorite_destinations
                         .get(self.menu_list.selected())
-                        .cloned()
-                        .unwrap_or_default();
-                    if choice == NEW_FOLDER {
-                        self.filter.clear();
-                        self.open_find(FindMode::NewFolder);
-                    } else {
-                        self.add_favorite_in(&choice);
+                        .cloned();
+                    self.favorite_destinations.clear();
+                    match destination {
+                        Some(FavoriteDestination::Root) => {
+                            let target = self.favorites_root();
+                            self.add_favorite_in(&target);
+                        }
+                        Some(FavoriteDestination::Folder(name)) => {
+                            let target = self.favorites_root().join(&name);
+                            self.add_favorite_in(&target);
+                        }
+                        Some(FavoriteDestination::NewFolder) => {
+                            self.open_name_keyboard(
+                                NamePurpose::NewFavoriteFolder,
+                                "_".to_string(),
+                            );
+                        }
+                        None => {}
                     }
                 }
                 Screen::CategoryImage => self.choose_category_image(),
@@ -13856,6 +14526,27 @@ impl App {
                         self.open_favorite_folders();
                     } else if choice == REMOVE_FAVORITE {
                         self.remove_favorite();
+                    } else if choice == RENAME_FAVORITE_FOLDER {
+                        if let Some(path) = self.selected_favorite_folder() {
+                            if let Some(name) = path.file_name().and_then(|name| name.to_str()) {
+                                self.open_name_keyboard(
+                                    NamePurpose::RenameFavoriteFolder(path.clone()),
+                                    name.to_string(),
+                                );
+                            }
+                        }
+                    } else if choice == DELETE_FAVORITE_FOLDER {
+                        if let Some(path) = self.selected_favorite_folder() {
+                            let name = path
+                                .file_name()
+                                .and_then(|name| name.to_str())
+                                .unwrap_or("this folder")
+                                .to_string();
+                            self.message = Some(format!(
+                                "Delete empty Favourites folder {name}?\n\nA yes, B no"
+                            ));
+                            self.pending = Some(Pending::DeleteFavoriteFolder(path));
+                        }
                     } else if choice == REBUILD_SYSTEM {
                         self.rebuild_open_system();
                     } else if choice == CLEAR_SEARCH {
@@ -13921,6 +14612,7 @@ impl App {
                 // Routed before this match so editor controls can assign X
                 // and Y without inheriting menu behaviour.
                 Screen::ThemeEditor
+                | Screen::NameKeyboard
                 | Screen::ScraperKeyboard
                 | Screen::ScraperProgress
                 | Screen::ScraperMatches
@@ -14179,6 +14871,11 @@ impl App {
                         art_scale_x: 1.0,
                         value: SharedString::new(),
                     });
+                }
+            }
+            Screen::NameKeyboard => {
+                for key in name_keyboard::keys(self.name_keyboard_page, false) {
+                    rows.push(plain_row(&key.label(), ""));
                 }
             }
             Screen::ScraperKeyboard => {
@@ -14550,7 +15247,11 @@ impl App {
                 .is_some_and(|row| !row.is_folder());
         // Not the carousel: it is a row of pictures, and six lines of text
         // under them leaves the picture too small to be the point of it.
-        let wants = self.layout == Layout::Details && over_game;
+        // Not Large Artwork either: its rows go to the picture, and Game
+        // Information in Actions still carries every line.
+        let wants = self.layout == Layout::Details
+            && over_game
+            && self.details_style == DetailsStyle::Information;
         self.ui.set_detail_line(line);
         self.ui.set_detail_height(if wants { panel } else { 0.0 });
     }
@@ -14682,16 +15383,19 @@ impl App {
             Screen::Screensaver => (String::new(), String::new()),
             Screen::FavoriteFolder => ("Keep it in".to_string(), String::new()),
             Screen::Find => match self.find_mode {
-                FindMode::NewFolder => (
-                    format!("New folder {}", self.filter),
-                    "B when done".to_string(),
-                ),
                 FindMode::Jump => ("Jump to letter".to_string(), String::new()),
                 FindMode::Search => (
                     "Search This Folder".to_string(),
                     format!("{} found", self.here.len()),
                 ),
             },
+            Screen::NameKeyboard => (
+                match self.name_keyboard_purpose {
+                    NamePurpose::NewFavoriteFolder => "New Favourite Folder".to_string(),
+                    NamePurpose::RenameFavoriteFolder(_) => "Rename Favourite Folder".to_string(),
+                },
+                self.name_keyboard_page.label().to_string(),
+            ),
             Screen::Browse => {
                 let name = match self.browsing {
                     Browsing::Categories => String::new(),
@@ -14888,6 +15592,9 @@ impl App {
         self.ui.set_status(SharedString::from(status));
         if self.screen == Screen::Find && self.find_mode == FindMode::Search {
             self.ui.set_find_query(self.filter.clone().into());
+        } else if self.screen == Screen::NameKeyboard {
+            self.ui
+                .set_find_query(self.name_keyboard_draft.clone().into());
         }
         self.ui.set_show_stats(self.show_stats);
         self.ui.set_stats(SharedString::from(self.stats_line()));
@@ -14971,15 +15678,14 @@ impl App {
             self.poll_scraper_preview();
             self.poll_information();
 
-            // A held left or right scrolls only where it moves the cursor:
-            // while browsing in the Direction setting. Everywhere else,
-            // and in every other setting, one press stays one step. Decided
+            // A held left or right repeats only where it is a continuous
+            // movement: browse scrolling or one RGB channel in the colour
+            // picker. Choices and ladders remain one step per press. Decided
             // before the presses so the first press of a hold is retained,
-            // and again before the repeats so a screen opened under a held
-            // stick stops the repeat instead of taking one more step there.
+            // and again before repeats so leaving that context drops the hold.
             repeater.set_horizontal_repeats(self.horizontal_scrolls());
-            repeater.set_favorite_hold(self.favorite_change().is_some());
-            repeater.set_random_hold(self.random_shortcut_enabled());
+            repeater.set_hold_context(self.selection_revision);
+            repeater.set_hold_shortcuts(self.available_hold_shortcuts());
             for (edge, at) in input.poll() {
                 // Some controllers deliver one press as two very fast press
                 // and release pairs. The second pair is dropped here, before
@@ -15004,8 +15710,8 @@ impl App {
                 }
             }
             repeater.set_horizontal_repeats(self.horizontal_scrolls());
-            repeater.set_favorite_hold(self.favorite_change().is_some());
-            repeater.set_random_hold(self.random_shortcut_enabled());
+            repeater.set_hold_context(self.selection_revision);
+            repeater.set_hold_shortcuts(self.available_hold_shortcuts());
             for action in repeater.tick(now) {
                 if let Some(outcome) = self.handle(action) {
                     if !matches!(outcome, Outcome::Script(_)) {
@@ -15352,7 +16058,16 @@ impl App {
         // system recalls the other groups exactly as before the exit.
         self.category_system = saved.category_system.clone();
         if !saved.category.is_empty() {
-            self.open_category = Some(saved.category.clone());
+            let separate_handheld = self.settings.separate_handheld_category.unwrap_or(false);
+            let category = self
+                .all_systems
+                .iter()
+                .find(|system| system.def.id == saved.system)
+                .map(|system| display_category(system, separate_handheld).to_string())
+                .unwrap_or_else(|| saved.category.clone());
+            self.category_system
+                .insert(category.clone(), saved.system.clone());
+            self.open_category = Some(category);
             self.rebuild_system_list();
             self.browsing = Browsing::Systems;
             self.resolve_view();
@@ -15391,26 +16106,36 @@ impl App {
             return;
         }
 
-        // The first place is the one opening the system already reached.
-        // `places` stops at anything the card no longer has, so a renamed
-        // folder lands on its parent instead of an error screen.
+        // The system may now skip a Roots chooser that a previous release
+        // saved, or regain one after a second root begins contributing. Find
+        // the place opening already reached rather than assuming both trails
+        // have the same first entry. `places` stops at anything the card no
+        // longer has, so a renamed folder still lands on its parent.
         let places = saved.places();
         let walked_everything = places.len() == saved.trail.len();
-        for place in places.into_iter().skip(1) {
+        let resume_at = restore_resume_at(self.trail.first().map(|crumb| &crumb.place), &places);
+        for place in places.iter().skip(resume_at).cloned() {
             self.enter(place);
         }
         // Every level keeps the row it was left on. `enter` above wrote the
         // live cursor into each parent as it walked, which during a restore
-        // is always zero, so the saved values go back in afterwards: without
-        // this, Back out of a game landed at the top of every parent folder.
-        for (crumb, saved_place) in self.trail.iter_mut().zip(saved.trail.iter()) {
-            crumb.selected = saved_place.selected();
+        // is always zero, so the saved values go back by place identity. The
+        // identity matters when an old Roots crumb has just been skipped.
+        for crumb in &mut self.trail {
+            if let Some(index) = places.iter().position(|place| place == &crumb.place) {
+                crumb.selected = saved.trail[index].selected();
+            }
         }
         // The walk also wrote places down as it stepped, from cursors that
         // were the walk's own rather than the user's. The saved memory is
         // the truthful one, so it goes back in whole.
         self.left_at = saved.left_at.clone();
-        if walked_everything {
+        let reached_saved_destination = places.is_empty()
+            || places
+                .last()
+                .zip(self.trail.last())
+                .is_some_and(|(saved, current)| saved == &current.place);
+        if walked_everything && reached_saved_destination {
             self.game_list.select(reselect(
                 &self.here,
                 saved.selected_row.as_deref(),
@@ -15610,7 +16335,7 @@ impl App {
     pub fn select(&mut self, index: usize) {
         if self.screen == Screen::ThemeEditor {
             if let Some(editor) = self.theme_editor.as_mut() {
-                editor.selected = index.min(EDITOR_ROWS - 1);
+                editor.selected = index.min(editor.rows().len().saturating_sub(1));
                 self.sync_theme_editor();
             }
             return;
@@ -15923,6 +16648,38 @@ pub(crate) fn test_library_launch_flow(window: Rc<MinimalSoftwareWindow>) {
     let ui = DegaussWindow::new().unwrap();
     let mut app = App::new(loaded, window, ui, StartupTimings::default(), 352, 240);
     app.finish_background_work_for_headless();
+    app.open_favorite_folders();
+    app.menu_list.select(
+        app.menu
+            .iter()
+            .position(|entry| entry == NEW_FOLDER)
+            .expect("new folder choice"),
+    );
+    app.handle(Action::Accept);
+    assert_eq!(app.screen, Screen::NameKeyboard);
+    assert_eq!(
+        app.name_keyboard_draft, "_",
+        "native-visible names start with underscore"
+    );
+    app.handle(Action::Context);
+    assert_eq!(
+        app.name_keyboard_draft, "",
+        "X can delete the suggested underscore"
+    );
+    app.name_keyboard_draft = "_Arcade".to_string();
+    app.handle(Action::Menu);
+    assert_eq!(app.name_keyboard_page, NamePage::Upper);
+    let clear = name_keyboard::keys(app.name_keyboard_page, false)
+        .iter()
+        .position(|key| *key == NameKey::Clear)
+        .expect("Clear cell");
+    app.name_keyboard_list.select(clear);
+    app.handle(Action::Accept);
+    assert_eq!(
+        app.name_keyboard_draft, "",
+        "the Clear cell can clear the complete folder name"
+    );
+    app.screen = Screen::Browse;
     let initial_screen = app.screen;
     app.screen = Screen::ScraperProgress;
     app.scraper_progress.phase = crate::scraper::Phase::Account;
@@ -16081,6 +16838,34 @@ pub(crate) fn test_library_launch_flow(window: Rc<MinimalSoftwareWindow>) {
 #[cfg(test)]
 mod tests {
     #[test]
+    fn resume_alignment_accepts_old_and_new_multi_root_navigation_trails() {
+        use crate::browse::Place;
+
+        let first = Place::Dir("/games/First".into());
+        let nested = Place::Dir("/games/First/Nested".into());
+        assert_eq!(
+            super::restore_resume_at(Some(&first), &[Place::Roots, first.clone(), nested.clone()]),
+            2,
+            "a new direct opening skips the old chooser and its root"
+        );
+        assert_eq!(
+            super::restore_resume_at(Some(&Place::Roots), &[first.clone(), nested.clone()]),
+            0,
+            "a newly required chooser resumes the old direct path"
+        );
+        assert_eq!(
+            super::restore_resume_at(Some(&Place::Roots), &[Place::Roots, first.clone(), nested]),
+            1,
+            "unchanged chooser trails still skip their current start"
+        );
+        assert_eq!(
+            super::restore_resume_at(Some(&Place::Dir("/games/Other".into())), &[first]),
+            1,
+            "a changed sole root stays at the current valid root"
+        );
+    }
+
+    #[test]
     fn compact_details_keep_full_source_and_omit_empty_separators() {
         let details = crate::browse::Details {
             released: "1990-12-16T00:00:00".into(),
@@ -16110,6 +16895,41 @@ mod tests {
         assert_eq!(super::compact_detail_text(&ranged_players).0, "1–2 Players");
     }
     use super::*;
+
+    #[test]
+    fn handheld_category_is_display_only() {
+        let table = crate::systems::parse_table(
+            include_str!("../assets/systems.toml"),
+            Path::new("systems.toml"),
+        )
+        .unwrap();
+        let def = table
+            .into_iter()
+            .find(|system| system.id == "NeoGeoPocket")
+            .unwrap();
+        let system = FoundSystem {
+            def,
+            paths: vec![PathBuf::from("/media/fat/games/NGP")],
+            logo_dir: None,
+            menu_folder: Some("Arcade".into()),
+        };
+        let before = system.to_config();
+
+        assert_eq!(display_category(&system, false), "Arcade");
+        assert_eq!(display_category(&system, true), HANDHELD_CATEGORY);
+        assert_eq!(system.category(), "Arcade");
+
+        let after = system.to_config();
+        assert_eq!(after.name, before.name);
+        assert_eq!(after.path, before.path);
+        assert_eq!(after.extensions, before.extensions);
+        assert_eq!(after.rbf, before.rbf);
+        assert_eq!(after.launch, before.launch);
+        assert_eq!(after.setname, before.setname);
+        assert_eq!(after.skip_folders, before.skip_folders);
+        assert_eq!(after.extra_paths, before.extra_paths);
+        assert_eq!(after.preserve_rbf_stem, before.preserve_rbf_stem);
+    }
 
     fn picker_temp(tag: &str) -> PathBuf {
         let path =
@@ -16971,7 +17791,7 @@ mod tests {
         );
         assert_eq!(
             theme_editor_help(EditorMode::Name, 0, false),
-            "A Type B Back X Del Y Clear"
+            "A Type B Back X Del Y Page"
         );
         assert_eq!(
             theme_editor_help(EditorMode::Discard, 0, false),
@@ -16979,10 +17799,18 @@ mod tests {
         );
         assert_eq!(
             theme_editor_help(EditorMode::Browse, 15, true),
-            "A Delete   B Back"
+            "A Save As   B Back"
+        );
+        assert_eq!(
+            theme_editor_help(EditorMode::Browse, 14, true),
+            "A Save Changes   B Back"
         );
         assert_eq!(
             theme_editor_help(EditorMode::Browse, 16, true),
+            "A Delete   B Back"
+        );
+        assert_eq!(
+            theme_editor_help(EditorMode::Browse, 17, true),
             "A Cancel   B Back"
         );
         assert_eq!(
@@ -16993,7 +17821,7 @@ mod tests {
 
     #[test]
     fn only_the_long_theme_control_list_scrolls() {
-        assert_eq!(theme_editor_visible_items(EditorMode::Browse, 17, 16), 16);
+        assert_eq!(theme_editor_visible_items(EditorMode::Browse, 18, 16), 16);
         assert_eq!(theme_editor_visible_items(EditorMode::Name, 42, 16), 42);
         assert_eq!(theme_editor_visible_items(EditorMode::Delete, 2, 16), 2);
     }
@@ -17097,6 +17925,41 @@ mod tests {
             logo_dir: None,
             menu_folder: None,
         }
+    }
+
+    #[test]
+    fn only_an_arcade_system_mra_needs_the_native_core_link() {
+        let arcade = found_system_with_core(
+            "ArcadeFixture",
+            vec![PathBuf::from("/games/Arcade")],
+            &["mra"],
+            "_Arcade/ArcadeFixture",
+            None,
+        );
+        let console = found_system_with_core(
+            "ConsoleFixture",
+            vec![PathBuf::from("/games/Console")],
+            &["mra"],
+            "_Console/ConsoleFixture",
+            None,
+        );
+
+        assert!(needs_native_arcade_core_link(
+            Some(&arcade),
+            Path::new("/media/fat/_Arcade/Game.mra")
+        ));
+        assert!(!needs_native_arcade_core_link(
+            Some(&console),
+            Path::new("/media/fat/games/Game.mra")
+        ));
+        assert!(!needs_native_arcade_core_link(
+            Some(&arcade),
+            Path::new("/media/fat/_Arcade/Game.rbf")
+        ));
+        assert!(!needs_native_arcade_core_link(
+            None,
+            Path::new("/media/fat/_Arcade/Game.mra")
+        ));
     }
 
     #[test]
@@ -18438,7 +19301,7 @@ mod tests {
         let homes = crate::mgl::Homes::new(&[], std::slice::from_ref(&system));
         enrich_favorite_rows(
             &mut rows,
-            &[system],
+            std::slice::from_ref(&system),
             &homes,
             &Default::default(),
             &cache_dir,
@@ -18717,6 +19580,27 @@ mod tests {
     }
 
     #[test]
+    fn every_details_style_is_reachable_and_round_trips() {
+        // The option cycles only through ALL and persists the setting token.
+        // Missing either side would make a style unreachable or forget it
+        // at the next start.
+        for (at, style) in DetailsStyle::ALL.iter().copied().enumerate() {
+            assert_eq!(style.index(), at);
+            assert_eq!(DetailsStyle::parse(style.setting()), Some(style));
+        }
+        assert_eq!(DetailsStyle::parse("nonsense"), None);
+        assert_eq!(
+            DetailsStyle::default(),
+            DetailsStyle::Information,
+            "an absent setting must draw the layout older installations have"
+        );
+        // Half the safe width times these factors is the 42% and 62% the
+        // two styles give the picture; the list keeps the rest.
+        assert!((0.5 * DetailsStyle::Information.art_factor() - 0.42).abs() < 0.0001);
+        assert!((0.5 * DetailsStyle::LargeArtwork.art_factor() - 0.62).abs() < 0.0001);
+    }
+
+    #[test]
     fn artwork_scale_preserves_source_aspect_on_the_selected_display() {
         // A 400x200 framebuffer has 2:1 pixel geometry. On a 4:3 display its
         // pixels are narrower, so 4:3 source art needs a 1.5x raw width; on a
@@ -18909,6 +19793,34 @@ mod tests {
     }
 
     #[test]
+    fn real_favourites_folders_get_rename_and_empty_delete_actions_only_when_selected() {
+        let without = context_entries(
+            Browsing::Games,
+            false,
+            None,
+            None,
+            false,
+            ContextActions::default(),
+        );
+        assert!(!without.iter().any(|entry| entry == RENAME_FAVORITE_FOLDER));
+        assert!(!without.iter().any(|entry| entry == DELETE_FAVORITE_FOLDER));
+
+        let with = context_entries(
+            Browsing::Games,
+            false,
+            None,
+            None,
+            false,
+            ContextActions {
+                favorite_folder: true,
+                ..ContextActions::default()
+            },
+        );
+        assert!(with.iter().any(|entry| entry == RENAME_FAVORITE_FOLDER));
+        assert!(with.iter().any(|entry| entry == DELETE_FAVORITE_FOLDER));
+    }
+
+    #[test]
     fn only_context_menu_separators_use_compact_height() {
         assert!(compact_separators(Screen::Context));
         for screen in [
@@ -18922,6 +19834,7 @@ mod tests {
             Screen::About,
             Screen::Screensaver,
             Screen::Find,
+            Screen::NameKeyboard,
             Screen::FavoriteFolder,
             Screen::Scraper,
             Screen::ScraperKeyboard,
@@ -19540,6 +20453,67 @@ mod tests {
             favorite_change(true, Screen::Context, Browsing::Games, false, true, false),
             None,
             "the shortcut exists only while browsing"
+        );
+    }
+
+    #[test]
+    fn main_favourites_is_the_first_destination_and_new_folder_the_last() {
+        // The root is where the stock menu shows favourites first, so it
+        // comes first; the existing folders keep their listed order and
+        // naming a new one stays the last row, where it has always been.
+        let destinations = favorite_destinations(vec!["Arcade".into(), "Consoles".into()]);
+        assert_eq!(
+            destinations,
+            vec![
+                FavoriteDestination::Root,
+                FavoriteDestination::Folder("Arcade".into()),
+                FavoriteDestination::Folder("Consoles".into()),
+                FavoriteDestination::NewFolder,
+            ]
+        );
+        assert_eq!(
+            destinations
+                .iter()
+                .map(FavoriteDestination::label)
+                .collect::<Vec<_>>(),
+            vec!["Main Favourites", "Arcade", "Consoles", "New folder..."]
+        );
+        // A card with no folders offers the root and the chance to name one.
+        assert_eq!(
+            favorite_destinations(Vec::new()),
+            vec![FavoriteDestination::Root, FavoriteDestination::NewFolder]
+        );
+    }
+
+    #[test]
+    fn a_user_folder_called_main_favourites_stays_distinct_from_the_root() {
+        // Both rows read "Main Favourites", so the label cannot say which
+        // is which; the typed destination must, or the folder would be
+        // unreachable and a choice of the root could land in the folder.
+        let destinations = favorite_destinations(vec!["Main Favourites".into()]);
+        assert_eq!(destinations[0], FavoriteDestination::Root);
+        assert_eq!(
+            destinations[1],
+            FavoriteDestination::Folder("Main Favourites".into())
+        );
+        assert_eq!(destinations[0].label(), destinations[1].label());
+        assert_ne!(destinations[0], destinations[1]);
+    }
+
+    #[test]
+    fn a_user_folder_called_new_folder_is_a_folder_and_not_the_naming_row() {
+        // The naming row used to be told apart by its words, so a folder
+        // somebody had really called "New folder..." opened the name grid
+        // instead of taking the favourite. Typed rows keep such a folder a
+        // destination of its own and the naming row the last one.
+        let destinations = favorite_destinations(vec![NEW_FOLDER.to_string()]);
+        assert_eq!(
+            destinations,
+            vec![
+                FavoriteDestination::Root,
+                FavoriteDestination::Folder(NEW_FOLDER.to_string()),
+                FavoriteDestination::NewFolder,
+            ]
         );
     }
 

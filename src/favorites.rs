@@ -27,6 +27,14 @@ pub const FAVORITES_DIR: &str = "_@Favorites";
 const MAX_MGL_BYTES: u64 = 1024 * 1024;
 const MAX_MGL_VALUE_BYTES: usize = 4096;
 
+/// MiSTer's Favorites tooling uses `cores` as an Arcade support directory,
+/// not as a shelf or a favourite. Ignore the name at every depth so an old
+/// directory or link cannot be imported or traversed as user content.
+fn is_native_cores_name(name: &std::ffi::OsStr) -> bool {
+    name.to_str()
+        .is_some_and(|name| name.eq_ignore_ascii_case("cores"))
+}
+
 /// What a Favorite points at, plus optional descriptor evidence that can
 /// distinguish systems sharing one folder and file extension. `cache_target`
 /// preserves the exact target used by MiSTer's Favorites representation;
@@ -96,6 +104,9 @@ impl Favorites {
             return;
         };
         for item in listing.flatten() {
+            if is_native_cores_name(&item.file_name()) {
+                continue;
+            }
             let path = item.path();
             // Asked of the card rather than taken from the directory
             // listing: on some filesystems the type in a listing calls a
@@ -632,8 +643,9 @@ pub(crate) fn normalize_path(path: PathBuf) -> PathBuf {
 pub fn folders(root: &Path) -> Result<Vec<String>> {
     let listing = match std::fs::read_dir(root) {
         Ok(listing) => listing,
-        // A card with no favourites yet has no root. The New folder entry is
-        // how the first one is created, so absence is an empty collection.
+        // A card with no favourites yet has no root. The Main Favourites and
+        // New folder entries are how the first one is created, so absence
+        // is an empty collection.
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
         Err(e) => return Err(DegaussError::io("reading favourite folders", root, e)),
     };
@@ -645,7 +657,10 @@ pub fn folders(root: &Path) -> Result<Vec<String>> {
             .file_type()
             .map_err(|e| DegaussError::io("reading a favourite folder", &path, e))?;
         let name = item.file_name().to_string_lossy().into_owned();
-        if kind.is_dir() && !name.starts_with('.') {
+        if kind.is_dir()
+            && !name.starts_with('.')
+            && !is_native_cores_name(item.file_name().as_os_str())
+        {
             names.push(name);
         }
     }
@@ -662,6 +677,38 @@ pub fn name_is_usable(name: &str) -> bool {
     // "." and ".." carry no forbidden character but are not names: joined to
     // the favourites root they resolve to the root itself or above it.
     !name.is_empty() && name != "." && name != ".." && !name.chars().any(|c| BAD_CHARS.contains(&c))
+}
+
+/// Validate a folder name entered through Degauss. Existing folders may have
+/// names made by other tools; this applies only when Degauss creates or
+/// renames one and therefore matches the characters its naming keyboard
+/// offers.
+pub fn validate_folder_name(name: &str) -> Result<String> {
+    if !name_is_usable(name) {
+        return Err(DegaussError::unsupported(
+            "favourites folder name",
+            format!("{name:?} is not a usable folder name"),
+        ));
+    }
+    if name.chars().count() > 255 {
+        return Err(DegaussError::unsupported(
+            "favourites folder name",
+            "the name is longer than 255 characters".to_string(),
+        ));
+    }
+    if is_native_cores_name(std::ffi::OsStr::new(name)) {
+        return Err(DegaussError::unsupported(
+            "favourites folder name",
+            format!("{name:?} is reserved for native MiSTer support data"),
+        ));
+    }
+    if !name.chars().all(crate::name_keyboard::character_is_offered) {
+        return Err(DegaussError::unsupported(
+            "favourites folder name",
+            "the name contains a character that is not available for filenames".to_string(),
+        ));
+    }
+    Ok(name.to_string())
 }
 
 /// The name a favourite is filed under: the name the browser showed for the
@@ -684,16 +731,217 @@ pub fn favorite_name(display: &str, path: &Path) -> String {
 
 /// Make a folder inside the favourites folder.
 pub fn make_folder(root: &Path, name: &str) -> Result<PathBuf> {
-    if !name_is_usable(name) {
+    let name = validate_folder_name(name)?;
+    std::fs::create_dir_all(root)
+        .map_err(|e| DegaussError::io("making the favourites root", root, e))?;
+    let path = root.join(name);
+    std::fs::create_dir(&path).map_err(|e| {
+        if e.kind() == std::io::ErrorKind::AlreadyExists {
+            DegaussError::unsupported(
+                "making a favourites folder",
+                format!("{} already exists", path.display()),
+            )
+        } else {
+            DegaussError::io("making a favourites folder", &path, e)
+        }
+    })?;
+    Ok(path)
+}
+
+fn validate_user_folder(root: &Path, folder: &Path) -> Result<()> {
+    let relative = folder.strip_prefix(root).map_err(|_| {
+        DegaussError::unsupported(
+            "favourites folder",
+            format!("{} is outside {}", folder.display(), root.display()),
+        )
+    })?;
+    if relative.as_os_str().is_empty()
+        || relative
+            .components()
+            .any(|component| !matches!(component, std::path::Component::Normal(_)))
+    {
         return Err(DegaussError::unsupported(
-            "favourites",
-            format!("{name:?} is not a usable folder name"),
+            "favourites folder",
+            format!(
+                "{} is not a user folder below {}",
+                folder.display(),
+                root.display()
+            ),
         ));
     }
-    let path = root.join(name);
-    std::fs::create_dir_all(&path)
-        .map_err(|e| DegaussError::io("making a favourites folder", &path, e))?;
-    Ok(path)
+    if relative.components().any(|component| {
+        matches!(component, std::path::Component::Normal(name) if is_native_cores_name(name))
+    }) {
+        return Err(DegaussError::unsupported(
+            "favourites folder",
+            format!("{} is native support data", folder.display()),
+        ));
+    }
+    let metadata = std::fs::symlink_metadata(folder)
+        .map_err(|e| DegaussError::io("checking a favourites folder", folder, e))?;
+    if metadata.file_type().is_symlink() {
+        return Err(DegaussError::unsupported(
+            "favourites folder",
+            format!("{} is a symbolic link", folder.display()),
+        ));
+    }
+    if !metadata.is_dir() {
+        return Err(DegaussError::unsupported(
+            "favourites folder",
+            format!("{} is not a directory", folder.display()),
+        ));
+    }
+    let canonical_root = std::fs::canonicalize(root)
+        .map_err(|error| DegaussError::io("checking the Favourites root", root, error))?;
+    let canonical_folder = std::fs::canonicalize(folder)
+        .map_err(|error| DegaussError::io("checking a favourites folder", folder, error))?;
+    if canonical_folder == canonical_root || !canonical_folder.starts_with(&canonical_root) {
+        return Err(DegaussError::unsupported(
+            "favourites folder",
+            format!("{} resolves outside {}", folder.display(), root.display()),
+        ));
+    }
+    Ok(())
+}
+
+/// Whether a selected Favourites row is a real user directory which may be
+/// offered rename and empty-delete actions.
+pub fn is_user_folder(root: &Path, folder: &Path) -> bool {
+    validate_user_folder(root, folder).is_ok()
+}
+
+#[cfg(unix)]
+fn same_filesystem_entry(left: &std::fs::Metadata, right: &std::fs::Metadata) -> bool {
+    use std::os::unix::fs::MetadataExt;
+
+    left.dev() == right.dev() && left.ino() == right.ino()
+}
+
+#[cfg(not(unix))]
+fn same_filesystem_entry(_left: &std::fs::Metadata, _right: &std::fs::Metadata) -> bool {
+    false
+}
+
+fn rename_case_only(parent: &Path, source: &Path, destination: &Path) -> Result<()> {
+    let mut temporary = None;
+    for attempt in 0..1000 {
+        let candidate = parent.join(format!(
+            ".degauss-favourites-rename-{}-{attempt}",
+            std::process::id()
+        ));
+        match std::fs::symlink_metadata(&candidate) {
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                temporary = Some(candidate);
+                break;
+            }
+            Err(error) => {
+                return Err(DegaussError::io(
+                    "checking a temporary favourites folder name",
+                    candidate,
+                    error,
+                ));
+            }
+        }
+    }
+    let temporary = temporary.ok_or_else(|| {
+        DegaussError::unsupported(
+            "renaming a favourites folder",
+            format!("no temporary name is available below {}", parent.display()),
+        )
+    })?;
+
+    std::fs::rename(source, &temporary)
+        .map_err(|error| DegaussError::io("renaming a favourites folder", source, error))?;
+    if let Err(error) = std::fs::rename(&temporary, destination) {
+        return match std::fs::rename(&temporary, source) {
+            Ok(()) => Err(DegaussError::io(
+                "renaming a favourites folder",
+                destination,
+                error,
+            )),
+            Err(rollback) => Err(DegaussError::unsupported(
+                "renaming a favourites folder",
+                format!(
+                    "moving {} to {} failed: {error}; restoring it from {} also failed: {rollback}",
+                    source.display(),
+                    destination.display(),
+                    temporary.display()
+                ),
+            )),
+        };
+    }
+    Ok(())
+}
+
+/// Rename one real Favourites directory within its current parent. No entry
+/// is overwritten or merged and the contents are left untouched.
+pub fn rename_folder(root: &Path, folder: &Path, requested: &str) -> Result<PathBuf> {
+    validate_user_folder(root, folder)?;
+    let parent = folder.parent().ok_or_else(|| {
+        DegaussError::unsupported(
+            "renaming a favourites folder",
+            format!("{} has no parent", folder.display()),
+        )
+    })?;
+    if folder
+        .file_name()
+        .is_some_and(|current| current == std::ffi::OsStr::new(requested))
+    {
+        return Ok(folder.to_path_buf());
+    }
+    let name = validate_folder_name(requested)?;
+    let destination = parent.join(name);
+    let source_metadata = std::fs::symlink_metadata(folder)
+        .map_err(|error| DegaussError::io("checking a favourites folder", folder, error))?;
+    let case_only = match std::fs::symlink_metadata(&destination) {
+        // FAT and other case-insensitive filesystems report a case-only
+        // destination as the source itself. Renaming directly is a successful
+        // no-op there, so use a temporary sibling to change the directory
+        // entry's stored case.
+        Ok(existing) if same_filesystem_entry(&source_metadata, &existing) => true,
+        Ok(_) => {
+            return Err(DegaussError::unsupported(
+                "renaming a favourites folder",
+                format!("{} already exists", destination.display()),
+            ));
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+        Err(error) => {
+            return Err(DegaussError::io(
+                "checking a favourites folder name",
+                &destination,
+                error,
+            ));
+        }
+    };
+    if case_only {
+        rename_case_only(parent, folder, &destination)?;
+    } else {
+        std::fs::rename(folder, &destination)
+            .map_err(|error| DegaussError::io("renaming a favourites folder", folder, error))?;
+    }
+    Ok(destination)
+}
+
+/// Remove one real Favourites directory only when it is empty. The final
+/// operation remains non-recursive, so a last-moment new entry makes the OS
+/// refuse deletion rather than deleting content.
+pub fn remove_empty_folder(root: &Path, folder: &Path) -> Result<()> {
+    validate_user_folder(root, folder)?;
+    let mut listing = std::fs::read_dir(folder)
+        .map_err(|error| DegaussError::io("reading a favourites folder", folder, error))?;
+    if listing.next().is_some() {
+        return Err(DegaussError::unsupported(
+            "deleting a favourites folder",
+            format!(
+                "{} is not empty; remove its contents first",
+                folder.display()
+            ),
+        ));
+    }
+    std::fs::remove_dir(folder)
+        .map_err(|error| DegaussError::io("deleting a favourites folder", folder, error))
 }
 
 /// Write a favourite for a game: an `.mgl` named after it.
@@ -730,6 +978,54 @@ pub fn add_core(folder: &Path, name: &str, source: &Path) -> Result<PathBuf> {
     Ok(path)
 }
 
+/// Make an Arcade favourite usable from MiSTer's native menu on a card where
+/// the Favorites script has never prepared its shared core link.
+///
+/// Anything already named `cores` is deliberately authoritative. It may be a
+/// file, directory, working link or dangling link owned by the user's setup,
+/// and must not be replaced.
+#[cfg(unix)]
+fn arcade_cores_target(menu_root: &Path) -> Result<PathBuf> {
+    std::path::absolute(menu_root)
+        .map(|root| root.join("_Arcade/cores"))
+        .map_err(|error| {
+            DegaussError::io(
+                "resolving the Arcade favourites core folder",
+                menu_root,
+                error,
+            )
+        })
+}
+
+#[cfg(unix)]
+pub fn ensure_arcade_cores_link(menu_root: &Path) -> Result<()> {
+    let favorites_root = menu_root.join(FAVORITES_DIR);
+    let link = favorites_root.join("cores");
+    match std::fs::symlink_metadata(&link) {
+        Ok(_) => return Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => {
+            return Err(DegaussError::io(
+                "checking the Arcade favourites core link",
+                &link,
+                error,
+            ));
+        }
+    }
+
+    std::fs::create_dir_all(&favorites_root).map_err(|error| {
+        DegaussError::io("making the favourites folder", &favorites_root, error)
+    })?;
+    // A symlink target is resolved from the directory containing the link,
+    // not from Degauss's working directory. Make a configured relative menu
+    // root absolute before storing it so both forms point to the same place.
+    let target = arcade_cores_target(menu_root)?;
+    std::os::unix::fs::symlink(&target, &link).map_err(|error| {
+        DegaussError::io("linking the Arcade favourites core folder", &link, error)
+    })?;
+    Ok(())
+}
+
 pub fn remove(path: &Path) -> Result<()> {
     std::fs::remove_file(path).map_err(|e| DegaussError::io("removing a favourite", path, e))
 }
@@ -747,6 +1043,180 @@ mod tests {
         assert!(!name_is_usable("a/b"));
         assert!(name_is_usable("Arcade"));
         assert!(name_is_usable("Shoot 'em ups"));
+    }
+
+    #[test]
+    fn entered_folder_names_accept_every_keyboard_page_and_reject_invalid_paths() {
+        for name in ["_native", "Mixed Case 20", "safe!#$%&'()+,;=[]^`{}~"] {
+            assert_eq!(validate_folder_name(name).unwrap(), name);
+        }
+        for name in [
+            "",
+            ".",
+            "..",
+            "bad/name",
+            "bad:name",
+            "bad*name",
+            "cores",
+            "CORES",
+            "snowman ☃",
+        ] {
+            assert!(
+                validate_folder_name(name).is_err(),
+                "{name:?} must not become a directory name"
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn renaming_a_user_folder_preserves_every_entry_and_refuses_unsafe_targets() {
+        let card = temp("rename-folder");
+        let root = card.join(FAVORITES_DIR);
+        let source = root.join("_Old Folder");
+        let nested = source.join("Nested");
+        std::fs::create_dir_all(&nested).unwrap();
+        std::fs::write(source.join("Game.mgl"), b"favourite").unwrap();
+        std::fs::write(nested.join("kept.txt"), b"nested").unwrap();
+        std::os::unix::fs::symlink("../../../_Arcade/Core.mra", source.join("Core.mra")).unwrap();
+
+        let renamed = rename_folder(&root, &source, "new Name!").unwrap();
+        assert_eq!(renamed, root.join("new Name!"));
+        assert!(!source.exists());
+        assert_eq!(
+            std::fs::read(renamed.join("Game.mgl")).unwrap(),
+            b"favourite"
+        );
+        assert_eq!(
+            std::fs::read(renamed.join("Nested/kept.txt")).unwrap(),
+            b"nested"
+        );
+        assert_eq!(
+            std::fs::read_link(renamed.join("Core.mra")).unwrap(),
+            PathBuf::from("../../../_Arcade/Core.mra")
+        );
+
+        let collision = root.join("Already Here");
+        std::fs::create_dir(&collision).unwrap();
+        assert!(rename_folder(&root, &renamed, "Already Here").is_err());
+        assert!(renamed.is_dir(), "a collision leaves the source untouched");
+
+        let cores = root.join("cores");
+        std::fs::create_dir(&cores).unwrap();
+        assert!(rename_folder(&root, &cores, "Not Cores").is_err());
+        assert!(rename_folder(&root, &root, "Not Root").is_err());
+        let link = root.join("Linked Folder");
+        std::os::unix::fs::symlink(&renamed, &link).unwrap();
+        assert!(rename_folder(&root, &link, "Not Linked").is_err());
+
+        let case_source = root.join("Case Name");
+        std::fs::create_dir(&case_source).unwrap();
+        std::fs::write(case_source.join("kept.txt"), b"case").unwrap();
+        let case_destination = rename_folder(&root, &case_source, "case name").unwrap();
+        assert_eq!(case_destination.file_name().unwrap(), "case name");
+        assert_eq!(
+            std::fs::read(case_destination.join("kept.txt")).unwrap(),
+            b"case"
+        );
+        assert!(
+            folders(&root)
+                .unwrap()
+                .iter()
+                .any(|name| name == "case name"),
+            "the directory entry keeps the requested case"
+        );
+
+        // The host filesystem changes case with one rename, while FAT treats
+        // that call as a successful no-op. Exercise the two-step operation
+        // separately so its content preservation is covered on every host.
+        let two_step_source = root.join("Two Step");
+        let two_step_destination = root.join("two step");
+        std::fs::create_dir(&two_step_source).unwrap();
+        std::fs::write(two_step_source.join("kept.txt"), b"two step").unwrap();
+        rename_case_only(&root, &two_step_source, &two_step_destination).unwrap();
+        assert_eq!(
+            std::fs::read(two_step_destination.join("kept.txt")).unwrap(),
+            b"two step"
+        );
+        let stored_names: Vec<_> = std::fs::read_dir(&root)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        assert!(stored_names.iter().any(|name| name == "two step"));
+        assert!(!stored_names.iter().any(|name| name == "Two Step"));
+        assert!(
+            stored_names.iter().all(|name| !name
+                .to_string_lossy()
+                .starts_with(".degauss-favourites-rename-")),
+            "a successful case-only rename leaves no temporary sibling"
+        );
+
+        let outside = card.join("Outside");
+        std::fs::create_dir(&outside).unwrap();
+        let linked_parent = root.join("Linked Parent");
+        std::os::unix::fs::symlink(&outside, &linked_parent).unwrap();
+        let escaped = linked_parent.join("Child");
+        std::fs::create_dir(&escaped).unwrap();
+        assert!(rename_folder(&root, &escaped, "Not Outside").is_err());
+
+        std::fs::remove_dir_all(card).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_unchanged_legacy_name_can_leave_rename_without_rewriting_it() {
+        let card = temp("rename-legacy-no-op");
+        let root = card.join(FAVORITES_DIR);
+        let source = root.join("Existing ☃ Folder");
+        std::fs::create_dir_all(&source).unwrap();
+        std::fs::write(source.join("kept.txt"), b"kept").unwrap();
+
+        assert_eq!(
+            rename_folder(&root, &source, "Existing ☃ Folder").unwrap(),
+            source
+        );
+        assert_eq!(std::fs::read(source.join("kept.txt")).unwrap(), b"kept");
+
+        std::fs::remove_dir_all(card).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn empty_delete_is_non_recursive_and_rejects_support_data_and_links() {
+        let card = temp("delete-folder");
+        let root = card.join(FAVORITES_DIR);
+        std::fs::create_dir_all(&root).unwrap();
+
+        let empty = root.join("Empty");
+        std::fs::create_dir(&empty).unwrap();
+        remove_empty_folder(&root, &empty).unwrap();
+        assert!(!empty.exists());
+
+        for (name, entry) in [
+            ("File", ".hidden"),
+            ("Favourite", "Game.mgl"),
+            ("Nested", "Child/file.txt"),
+        ] {
+            let folder = root.join(name);
+            let entry = folder.join(entry);
+            std::fs::create_dir_all(entry.parent().unwrap()).unwrap();
+            std::fs::write(&entry, b"kept").unwrap();
+            assert!(remove_empty_folder(&root, &folder).is_err());
+            assert_eq!(std::fs::read(entry).unwrap(), b"kept");
+        }
+
+        let cores = root.join("cores");
+        std::fs::create_dir(&cores).unwrap();
+        assert!(remove_empty_folder(&root, &cores).is_err());
+        assert!(remove_empty_folder(&root, &root).is_err());
+        let linked_target = root.join("Target");
+        let link = root.join("Link");
+        std::fs::create_dir(&linked_target).unwrap();
+        std::os::unix::fs::symlink(&linked_target, &link).unwrap();
+        assert!(remove_empty_folder(&root, &link).is_err());
+        assert!(link.symlink_metadata().unwrap().file_type().is_symlink());
+
+        std::fs::remove_dir_all(card).unwrap();
     }
 
     use super::*;
@@ -1089,6 +1559,7 @@ extensions = ["nes", "mgl"]
         let root = temp("folder-list");
         std::fs::create_dir_all(root.join("zeta")).unwrap();
         std::fs::create_dir_all(root.join("Arcade")).unwrap();
+        std::fs::create_dir_all(root.join("CORES")).unwrap();
         std::fs::create_dir_all(root.join(".private")).unwrap();
         std::fs::write(root.join("loose.mgl"), "x").unwrap();
 
@@ -1100,6 +1571,70 @@ extensions = ["nes", "mgl"]
     }
 
     #[test]
+    fn a_game_favourite_can_be_kept_directly_in_the_root() {
+        // The stock menu lists what sits directly in _@Favorites before any
+        // folder, so the root is a destination in its own right. A card
+        // with no favourites yet has no root, and the first one has to make
+        // it rather than fail on it.
+        let root = temp("root-game");
+        std::fs::remove_dir_all(&root).ok();
+        assert!(!root.exists());
+        let mgl = "<mistergamedescription><rbf>_Console/NES</rbf><file delay=\"1\" type=\"f\" index=\"1\" path=\"/media/fat/games/NES/Game.nes\"/></mistergamedescription>";
+        let written = add_game(&root, "Game", mgl).expect("the first favourite makes the root");
+        assert_eq!(written, root.join("Game.mgl"));
+        assert!(
+            std::fs::symlink_metadata(&written).unwrap().is_file(),
+            "a game favourite is a plain .mgl file"
+        );
+        assert_eq!(std::fs::read_to_string(&written).unwrap(), mgl);
+        assert!(
+            std::fs::read_dir(&root)
+                .unwrap()
+                .all(|item| !item.unwrap().path().is_dir()),
+            "the root gets the file, not a folder"
+        );
+
+        let target = Path::new("/media/fat/games/NES/Game.nes");
+        let homes = homes_knowing("_Console/NES");
+        let found = Favorites::read_with(&root, &homes);
+        assert!(found.holds(target), "a root-level favourite is read back");
+        assert_eq!(found.file_for(target), Some(written.as_path()));
+
+        remove(&written).unwrap();
+        assert!(!Favorites::read_with(&root, &homes).holds(target));
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_core_favourite_can_be_linked_directly_in_the_root() {
+        // A core file kept in the root is the same link the stock script
+        // writes, only one level up; the link goes, the original stays.
+        let root = temp("root-core");
+        let games = temp("root-core-games");
+        std::fs::remove_dir_all(&root).ok();
+        assert!(!root.exists());
+        let source = games.join("Game.mra");
+        std::fs::write(&source, b"fixture core").unwrap();
+
+        let written = add_core(&root, "Game.mra", &source).expect("the first link makes the root");
+        assert_eq!(written, root.join("Game.mra"));
+        assert!(std::fs::symlink_metadata(&written)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        assert_eq!(std::fs::read_link(&written).unwrap(), source);
+        assert!(Favorites::read(&root).holds(&source));
+
+        remove(&written).unwrap();
+        assert!(!written.exists());
+        assert!(source.is_file(), "removing the favourite keeps the game");
+        assert!(!Favorites::read(&root).holds(&source));
+        std::fs::remove_dir_all(&root).ok();
+        std::fs::remove_dir_all(&games).ok();
+    }
+
+    #[test]
     fn a_favourites_path_that_cannot_be_a_directory_is_reported() {
         // A storage/path failure must not look like an empty collection and
         // offer New folder as if nothing were wrong.
@@ -1108,6 +1643,97 @@ extensions = ["nes", "mgl"]
         std::fs::write(&file, "x").unwrap();
         assert!(folders(&file).is_err());
         std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_missing_arcade_core_link_is_created_once_for_the_native_menu() {
+        let root = temp("arcade-core-link");
+        let expected = root.join("_Arcade/cores");
+
+        ensure_arcade_cores_link(&root).expect("fresh card is prepared");
+        let link = root.join(FAVORITES_DIR).join("cores");
+        assert!(std::fs::symlink_metadata(&link)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        assert_eq!(std::fs::read_link(&link).unwrap(), expected);
+
+        ensure_arcade_cores_link(&root).expect("an existing link is accepted");
+        assert_eq!(std::fs::read_link(&link).unwrap(), expected);
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_relative_menu_root_resolves_to_an_absolute_arcade_core_target() {
+        let menu_root = Path::new("relative-card-root");
+        let target = arcade_cores_target(menu_root).unwrap();
+
+        assert!(target.is_absolute());
+        assert_eq!(
+            target,
+            std::env::current_dir()
+                .unwrap()
+                .join("relative-card-root/_Arcade/cores")
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn every_existing_arcade_cores_object_is_left_unchanged() {
+        let root = temp("existing-arcade-cores");
+
+        let file_root = root.join("file");
+        let file = file_root.join(FAVORITES_DIR).join("cores");
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(&file, b"owned by the user").unwrap();
+        ensure_arcade_cores_link(&file_root).unwrap();
+        assert_eq!(std::fs::read(&file).unwrap(), b"owned by the user");
+
+        let directory_root = root.join("directory");
+        let directory = directory_root.join(FAVORITES_DIR).join("cores");
+        std::fs::create_dir_all(&directory).unwrap();
+        std::fs::write(directory.join("marker"), b"keep").unwrap();
+        ensure_arcade_cores_link(&directory_root).unwrap();
+        assert_eq!(std::fs::read(directory.join("marker")).unwrap(), b"keep");
+
+        let link_root = root.join("link");
+        let link = link_root.join(FAVORITES_DIR).join("cores");
+        std::fs::create_dir_all(link.parent().unwrap()).unwrap();
+        std::os::unix::fs::symlink(Path::new("/custom/arcade/cores"), &link).unwrap();
+        ensure_arcade_cores_link(&link_root).unwrap();
+        assert_eq!(
+            std::fs::read_link(&link).unwrap(),
+            PathBuf::from("/custom/arcade/cores")
+        );
+
+        let dangling_root = root.join("dangling");
+        let dangling = dangling_root.join(FAVORITES_DIR).join("cores");
+        std::fs::create_dir_all(dangling.parent().unwrap()).unwrap();
+        std::os::unix::fs::symlink(Path::new("../missing/cores"), &dangling).unwrap();
+        ensure_arcade_cores_link(&dangling_root).unwrap();
+        assert_eq!(
+            std::fs::read_link(&dangling).unwrap(),
+            PathBuf::from("../missing/cores")
+        );
+
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_arcade_core_link_failure_is_reported_before_a_favourite_is_written() {
+        let root = temp("arcade-core-link-error");
+        let favorites_root = root.join(FAVORITES_DIR);
+        std::fs::write(&favorites_root, b"not a directory").unwrap();
+        let destination = favorites_root.join("Arcade").join("Game.mra");
+
+        let error = ensure_arcade_cores_link(&root).unwrap_err().to_string();
+
+        assert!(error.contains("Arcade favourites core link"));
+        assert!(!destination.exists());
+        std::fs::remove_dir_all(root).ok();
     }
 
     /// A game that needs a companion disc has the disc written into the MGL
@@ -1410,6 +2036,35 @@ extensions = ["nes", "mgl"]
         assert!(found.holds(&original));
         assert_eq!(target_of(&favourite), Some(original));
         std::fs::remove_dir_all(root).ok();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn native_cores_trees_are_not_favourites_or_walked_at_any_depth() {
+        let card = temp("native-cores-tree");
+        let favorites = card.join(FAVORITES_DIR);
+        let arcade_cores = card.join("_Arcade/cores");
+        let originals = card.join("originals");
+        std::fs::create_dir_all(favorites.join("_Arcade/Nested")).unwrap();
+        std::fs::create_dir_all(&arcade_cores).unwrap();
+        std::fs::create_dir_all(&originals).unwrap();
+
+        let support_core = arcade_cores.join("Support.rbf");
+        std::fs::write(&support_core, b"rbf").unwrap();
+        std::os::unix::fs::symlink(&arcade_cores, favorites.join("cores")).unwrap();
+        std::os::unix::fs::symlink(&arcade_cores, arcade_cores.join("cores")).unwrap();
+
+        let game = originals.join("Game.mra");
+        std::fs::write(&game, b"mra").unwrap();
+        std::os::unix::fs::symlink(&game, favorites.join("_Arcade/Nested/Game.mra")).unwrap();
+
+        let found = Favorites::read(&favorites);
+
+        assert_eq!(found.len(), 1);
+        assert!(found.holds(&game));
+        assert!(!found.holds(&support_core));
+        assert!(!found.holds(&arcade_cores));
+        std::fs::remove_dir_all(card).ok();
     }
 
     #[cfg(unix)]

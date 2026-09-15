@@ -53,6 +53,11 @@ pub struct SystemDef {
     /// value wins when the guess would be wrong.
     #[serde(default)]
     pub category: Option<String>,
+    /// Whether this logical system is handheld hardware. Presentation may
+    /// use this to separate it from MiSTer's physical core-folder category;
+    /// discovery, launch and cache identity continue to use the normal data.
+    #[serde(default)]
+    pub handheld: bool,
     /// Folder names to skip while scanning this system.
     ///
     /// Some collections ship the same games several times over: a card's
@@ -69,6 +74,38 @@ pub struct SystemDef {
 }
 
 impl SystemDef {
+    /// Whether this logical system belongs in the optional Handheld category.
+    ///
+    /// Released systems tables predate the `handheld` field and customised
+    /// copies are deliberately preserved during upgrades. Stable built-in IDs
+    /// therefore carry the same classification without rewriting user files;
+    /// the field remains available for user-added systems.
+    pub fn is_handheld(&self) -> bool {
+        self.handheld
+            || matches!(
+                self.id.as_str(),
+                "Arduboy"
+                    | "AtariLynx"
+                    | "GBA"
+                    | "GBA2P"
+                    | "Gamate"
+                    | "GameGear"
+                    | "GameGear2P"
+                    | "GameNWatch"
+                    | "Gameboy"
+                    | "Gameboy2P"
+                    | "GameboyColor"
+                    | "MegaDuck"
+                    | "NeoGeoPocket"
+                    | "NeoGeoPocketColor"
+                    | "PocketChallengeV2"
+                    | "PokemonMini"
+                    | "SuperVision"
+                    | "WonderSwan"
+                    | "WonderSwanColor"
+            )
+    }
+
     /// The group this system belongs to.
     pub fn category(&self) -> &str {
         if let Some(explicit) = self.category.as_deref() {
@@ -139,6 +176,17 @@ impl FoundSystem {
     /// The system as the catalog and launcher want it: a folder, the
     /// extensions that count, and how to start each of them.
     pub fn to_config(&self) -> crate::config::SystemConfig {
+        let mut skip_folders = self.def.skip_folders.clone();
+        if is_favorites(self.category())
+            && !skip_folders
+                .iter()
+                .any(|name| name.eq_ignore_ascii_case("cores"))
+        {
+            // `cores` is support data used by MiSTer's native Arcade
+            // favourites, never a user-created shelf. Enforce this in code
+            // so tables retained from earlier releases are safe too.
+            skip_folders.push("cores".into());
+        }
         crate::config::SystemConfig {
             preserve_rbf_stem: self.category() == "Unstable",
             name: self.def.name.clone(),
@@ -152,7 +200,7 @@ impl FoundSystem {
             extensions: self.def.extensions.clone(),
             rbf: self.def.rbf.clone(),
             launch: self.def.launch.clone(),
-            skip_folders: self.def.skip_folders.clone(),
+            skip_folders,
             setname: self.def.setname.clone(),
         }
     }
@@ -290,6 +338,7 @@ pub fn prepare_table(mut table: Vec<SystemDef>, menu_root: &Path) -> Result<Vec<
             launch: Vec::new(),
             logo: None,
             category: Some("Unstable".into()),
+            handheld: false,
             skip_folders: Vec::new(),
             setname: None,
         });
@@ -670,6 +719,7 @@ extensions = ["md", "bin"]
             launch: Vec::new(),
             logo: None,
             category: None,
+            handheld: false,
             skip_folders: Vec::new(),
             setname: None,
         }
@@ -842,6 +892,48 @@ extensions = ["md", "bin"]
             c64.launch.iter().any(|r| r.kind == "s" && r.index == 0),
             "the disk slot must survive generation"
         );
+        let handhelds: std::collections::BTreeSet<&str> = table
+            .iter()
+            .filter(|system| system.is_handheld())
+            .map(|system| system.id.as_str())
+            .collect();
+        assert_eq!(
+            handhelds,
+            [
+                "Arduboy",
+                "AtariLynx",
+                "GBA",
+                "GBA2P",
+                "Gamate",
+                "GameGear",
+                "GameGear2P",
+                "GameNWatch",
+                "Gameboy",
+                "Gameboy2P",
+                "GameboyColor",
+                "MegaDuck",
+                "NeoGeoPocket",
+                "NeoGeoPocketColor",
+                "PocketChallengeV2",
+                "PokemonMini",
+                "SuperVision",
+                "WonderSwan",
+                "WonderSwanColor",
+            ]
+            .into_iter()
+            .collect(),
+            "the opt-in category follows logical systems rather than core folders"
+        );
+        for id in ["AdventureVision", "SuperGameboy", "VirtualBoy"] {
+            assert!(
+                !table
+                    .iter()
+                    .find(|system| system.id == id)
+                    .unwrap()
+                    .is_handheld(),
+                "{id} remains a Console system"
+            );
+        }
         // Every system must be startable: either it says which slot a file
         // goes into, or its files say it themselves (.mra, .mgl and .rbf
         // name their own core).
@@ -1005,12 +1097,40 @@ extensions = ["md", "bin"]
         assert_eq!(c64.category(), "Computer", "_Computer/C64");
         let genesis = &table[1];
         assert_eq!(genesis.category(), "Console", "_Console/MegaDrive");
+        assert!(!c64.handheld);
+        assert!(!genesis.handheld, "old tables default to not handheld");
 
         let stated = SystemDef {
             category: Some("Arcade".into()),
             ..c64.clone()
         };
         assert_eq!(stated.category(), "Arcade", "an explicit value wins");
+    }
+
+    #[test]
+    fn released_custom_systems_tables_keep_builtin_handheld_classification() {
+        let table = parse_table(
+            include_str!("../tests/fixtures/v0.1.0-and-v0.2.0-systems.toml"),
+            Path::new("v0.2.0-systems.toml"),
+        )
+        .unwrap();
+
+        for id in ["AtariLynx", "Gameboy", "GBA", "GameGear", "WonderSwan"] {
+            let system = table.iter().find(|system| system.id == id).unwrap();
+            assert!(
+                !system.handheld,
+                "the released table intentionally has no new field"
+            );
+            assert!(
+                system.is_handheld(),
+                "the stable {id} identity supplies upgrade classification"
+            );
+        }
+        assert!(!table
+            .iter()
+            .find(|system| system.id == "NES")
+            .unwrap()
+            .is_handheld());
     }
 
     #[test]
@@ -1177,6 +1297,20 @@ extensions = ["ngp"]
             assert_eq!(rows.len(), 1, "one {category} collection");
             assert_eq!(rows[0].path(), menu.join(folder));
         }
+        let favorites = found
+            .iter()
+            .find(|row| is_favorites(row.category()))
+            .expect("legacy Favorites collection");
+        assert_eq!(
+            favorites
+                .to_config()
+                .skip_folders
+                .iter()
+                .filter(|name| name.eq_ignore_ascii_case("cores"))
+                .count(),
+            1,
+            "old retained tables gain the native support-folder exclusion"
+        );
         let again = prepare_table(table, &menu).unwrap();
         assert_eq!(
             again
