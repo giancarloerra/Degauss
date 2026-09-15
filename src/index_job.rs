@@ -111,6 +111,13 @@ pub struct Request {
     pub cache_dir: PathBuf,
     pub forced: bool,
     pub artwork_pack: bool,
+    /// The Pack root is an Automatic acceptance, prepared only when the
+    /// user says so: a forced read, or one with no rows to reuse, reads
+    /// the system's folders the source-neutral way into the Pack cache,
+    /// without the Pack, and the next entry asks about the changed rows.
+    /// An explicit choice is prepared by the source worker instead and
+    /// never has its rows read here.
+    pub automatic_pack: bool,
     pub index: Index,
     pub retain_cache: bool,
 }
@@ -280,17 +287,18 @@ fn run(
         return Ok(None);
     }
     let start = crate::browse::start_for(&request.config);
-    let cached = if request.artwork_pack {
-        crate::cache::load_artwork_pack_system(&request.cache_dir, &request.id)
-    } else if !request.forced {
-        crate::cache::load_system(&request.cache_dir, &request.id)
-    } else {
+    let source_neutral = request.artwork_pack && request.automatic_pack;
+    let cached = if request.forced && (!request.artwork_pack || source_neutral) {
         None
+    } else if request.artwork_pack {
+        crate::cache::load_artwork_pack_system(&request.cache_dir, &request.id)
+    } else {
+        crate::cache::load_system(&request.cache_dir, &request.id)
     };
     if cancelled.load(Ordering::Relaxed) {
         return Ok(None);
     }
-    if request.artwork_pack && cached.is_none() {
+    if request.artwork_pack && !source_neutral && cached.is_none() {
         return Err(DegaussError::unsupported(
             "Artwork Pack cache",
             format!(
@@ -312,7 +320,12 @@ fn run(
             warnings: Vec::new(),
         }));
     }
-    let library = Library::open_with_names(&request.config, std::mem::take(&mut request.names))?;
+    let names = std::mem::take(&mut request.names);
+    let library = if source_neutral {
+        Library::open_source_neutral(&request.config, names)?
+    } else {
+        Library::open_with_names(&request.config, names)?
+    };
     let mut last_progress = Instant::now() - PROGRESS_INTERVAL;
     let Some(cache) = crate::cache::build_system_observed(
         &library,
@@ -345,9 +358,15 @@ fn run(
     let previous = request.index.systems.insert(request.id.clone(), summary);
     // Keep the released complete-system transaction unchanged. Cancellation
     // during publication waits for its result, rather than interrupting it.
+    let kind = if source_neutral {
+        crate::cache::CacheKind::ArtworkPack
+    } else {
+        crate::cache::CacheKind::Gamelist
+    };
     let publication = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         crate::cache::save_system_with_index(
             &request.cache_dir,
+            kind,
             &request.id,
             &cache,
             &request.index,
@@ -415,6 +434,7 @@ mod tests {
             cache_dir: root.join("cache"),
             forced: true,
             artwork_pack: false,
+            automatic_pack: false,
             index: Index::new(),
             retain_cache: true,
         };
@@ -544,6 +564,56 @@ mod tests {
             .to_string()
             .contains("prepared system cache is missing or unreadable"));
         assert!(!dir.exists());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    /// An Automatic acceptance is read the ordinary way by a forced
+    /// build: its rows go into the Pack cache, without the Pack and
+    /// without gamelist presentation, and nothing written down about
+    /// its Pack is touched. Reading it with the Pack here would prepare
+    /// a Pack the user is asked about at the next entry instead.
+    #[test]
+    fn a_forced_read_of_an_automatic_pack_system_rewrites_its_rows_without_the_pack() {
+        let (root, mut request) = fixture();
+        std::fs::write(
+            root.join("games/gamelist.xml"),
+            "<gameList><game><path>./One.rom</path><name>Listed One</name></game></gameList>",
+        )
+        .unwrap();
+        request.artwork_pack = true;
+        request.automatic_pack = true;
+        let dir = request.cache_dir.clone();
+        let state_path = crate::cache::artwork_pack_source_path(&dir, "Test");
+        std::fs::create_dir_all(state_path.parent().unwrap()).unwrap();
+        std::fs::write(&state_path, b"left alone").unwrap();
+        let mut job = start(request).unwrap();
+        let Event::Ready {
+            summary: Some(summary),
+            cache: Some(cache),
+            ..
+        } = terminal(&mut job)
+        else {
+            panic!("the rows are read");
+        };
+        assert_eq!(summary.games, 1);
+        assert!(
+            !crate::cache::system_path(&dir, "Test").exists(),
+            "the rows belong to the Pack cache, not the ordinary file"
+        );
+        let data = crate::cache::load_artwork_pack_data(&dir, "Test").expect("Pack cache rows");
+        assert!(
+            !data.fingerprints_complete && data.fingerprints.is_empty(),
+            "rows read without the Pack are not a preparation"
+        );
+        assert_eq!(data.cache.folders.len(), cache.folders.len());
+        let names: Vec<&str> = cache
+            .folders
+            .values()
+            .flat_map(|folder| folder.rows.iter())
+            .map(|row| row.name.as_str())
+            .collect();
+        assert_eq!(names, ["One"], "no gamelist presentation is bound");
+        assert_eq!(std::fs::read(&state_path).unwrap(), b"left alone");
         std::fs::remove_dir_all(root).unwrap();
     }
 

@@ -200,15 +200,54 @@ pub fn load_artwork_pack_system(dir: &Path, id: &str) -> Option<SystemCache> {
 }
 
 pub fn load_artwork_pack_data(dir: &Path, id: &str) -> Option<ArtworkPackData> {
-    let bytes = std::fs::read(artwork_pack_system_path(dir, id)).ok()?;
-    let cache: ArtworkPackCache = postcard::from_bytes(&bytes).ok()?;
-    (cache.format == ARTWORK_PACK_FORMAT && cache.cache.format == FORMAT).then_some(
-        ArtworkPackData {
-            cache: cache.cache,
-            fingerprints: cache.fingerprints,
-            fingerprints_complete: cache.fingerprints_complete,
-        },
-    )
+    load_artwork_pack_data_checked(dir, id).ok().flatten()
+}
+
+/// The same, telling a cache that is not there from one that cannot be
+/// read: where the answer decides whether a complete result exists to be
+/// kept, a file that cannot be read at that moment is not a missing one.
+/// A file that does not decode is no cache, as it is for every cache.
+pub fn load_artwork_pack_data_checked(dir: &Path, id: &str) -> Result<Option<ArtworkPackData>> {
+    Ok(read_artwork_pack_cache(dir, id)?.map(|(_, data)| data))
+}
+
+/// The same, with the cache's marker: CRC32 of the file's bytes as read,
+/// the revision a prepared mapping was made against. A replaced file,
+/// whoever wrote it, is a different marker, and a mapping prepared
+/// against the old one says so. Hashed only here, for the readers that
+/// compare or write the marker down; every other reader decodes alone.
+pub fn load_artwork_pack_data_marked(
+    dir: &Path,
+    id: &str,
+) -> Result<Option<(ArtworkPackData, u32)>> {
+    Ok(read_artwork_pack_cache(dir, id)?.map(|(bytes, data)| (data, crc32fast::hash(&bytes))))
+}
+
+fn read_artwork_pack_cache(dir: &Path, id: &str) -> Result<Option<(Vec<u8>, ArtworkPackData)>> {
+    let path = artwork_pack_system_path(dir, id);
+    let bytes = match std::fs::read(&path) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(DegaussError::io(
+                "reading the Artwork Pack cache",
+                &path,
+                error,
+            ))
+        }
+    };
+    let Ok(cache) = postcard::from_bytes::<ArtworkPackCache>(&bytes) else {
+        return Ok(None);
+    };
+    if cache.format != ARTWORK_PACK_FORMAT || cache.cache.format != FORMAT {
+        return Ok(None);
+    }
+    let data = ArtworkPackData {
+        cache: cache.cache,
+        fingerprints: cache.fingerprints,
+        fingerprints_complete: cache.fingerprints_complete,
+    };
+    Ok(Some((bytes, data)))
 }
 
 fn write(path: &Path, bytes: &[u8]) -> Result<()> {
@@ -440,6 +479,9 @@ struct StagedCacheFile {
 #[derive(Debug)]
 pub struct PreparedCacheGroup {
     caches: Vec<StagedSystemCache>,
+    /// CRC32 of each staged cache's bytes, in the order of `caches`: the
+    /// marker the installed file will carry, known before it is installed.
+    markers: Vec<u32>,
     files: Vec<StagedCacheFile>,
     finished: bool,
 }
@@ -460,9 +502,59 @@ impl PreparedCacheGroup {
         &self.caches
     }
 
+    /// The marker each staged cache will carry once installed, in the order
+    /// of `caches`.
+    pub fn markers(&self) -> &[u32] {
+        &self.markers
+    }
+
     /// Stage the matching index in the same rollback transaction as its rows.
     pub fn with_index(mut self, dir: &Path, index: &Index) -> Result<Self> {
-        let final_path = index_path(dir);
+        let bytes = postcard::to_stdvec(index)
+            .map_err(|e| DegaussError::unsupported("cache index", e.to_string()))?;
+        self.stage_extra_file(index_path(dir), &bytes, "index", |written| {
+            postcard::from_bytes::<Index>(written).is_ok_and(|decoded| decoded.format == FORMAT)
+        })?;
+        Ok(self)
+    }
+
+    /// Stage one system's prepared Pack state, both files, in the same
+    /// rollback transaction as its rows: the rows, the signature they were
+    /// prepared against and the prepared presentation are one result, and
+    /// none of them is installed without the others.
+    pub fn with_pack_state(
+        mut self,
+        dir: &Path,
+        id: &str,
+        source: &[u8],
+        prepared: &[u8],
+    ) -> Result<Self> {
+        self.stage_extra_file(
+            artwork_pack_prepared_path(dir, id),
+            prepared,
+            "prepared",
+            |written| matches!(decode_pack_prepared(written), Ok(Some(_))),
+        )?;
+        self.stage_extra_file(
+            artwork_pack_source_path(dir, id),
+            source,
+            "state",
+            |written| matches!(decode_pack_source(written), Ok(Some(_))),
+        )?;
+        Ok(self)
+    }
+
+    /// Write one more file into the transaction: created beside its final
+    /// path, synced, read back and decoded before it counts. Tracked from
+    /// the moment it exists, so a failure after that cleans it up with the
+    /// rest.
+    fn stage_extra_file(
+        &mut self,
+        final_path: PathBuf,
+        bytes: &[u8],
+        what: &str,
+        valid: impl FnOnce(&[u8]) -> bool,
+    ) -> Result<()> {
         if self
             .files
             .iter()
@@ -470,28 +562,26 @@ impl PreparedCacheGroup {
         {
             return Err(DegaussError::unsupported(
                 "cache transaction",
-                "index already staged",
+                format!("{} already staged", final_path.display()),
             ));
         }
-        // Inspect the previous index before creating a file, so a failed
+        // Inspect the previous file before creating one, so a failed
         // metadata check cannot leave an untracked staging file behind.
         let had_old = path_exists(&final_path)?;
         let (new_path, backup_path) = loop {
             let serial = NEXT_CACHE_TRANSACTION.fetch_add(1, Ordering::Relaxed);
-            let tag = format!("degauss-index-{}-{serial}", std::process::id());
+            let tag = format!("degauss-{what}-{}-{serial}", std::process::id());
             let new_path = final_path.with_extension(format!("{tag}.new"));
             let backup_path = final_path.with_extension(format!("{tag}.bak"));
             if !path_exists(&new_path)? && !path_exists(&backup_path)? {
                 break (new_path, backup_path);
             }
         };
-        let bytes = postcard::to_stdvec(index)
-            .map_err(|e| DegaussError::unsupported("cache index", e.to_string()))?;
         let mut file = std::fs::OpenOptions::new()
             .write(true)
             .create_new(true)
             .open(&new_path)
-            .map_err(|e| DegaussError::io("creating staged index", &new_path, e))?;
+            .map_err(|e| DegaussError::io("creating staged cache", &new_path, e))?;
         self.files.push(StagedCacheFile {
             had_old,
             final_path,
@@ -501,21 +591,19 @@ impl PreparedCacheGroup {
             installed: false,
         });
         use std::io::Write as _;
-        file.write_all(&bytes)
+        file.write_all(bytes)
             .and_then(|_| file.sync_all())
-            .map_err(|e| DegaussError::io("writing staged index", &new_path, e))?;
+            .map_err(|e| DegaussError::io("writing staged cache", &new_path, e))?;
         let written = std::fs::read(&new_path)
-            .map_err(|e| DegaussError::io("validating staged index", &new_path, e))?;
-        let decoded: Index = postcard::from_bytes(&written)
-            .map_err(|e| DegaussError::malformed("staged index", &new_path, e.to_string()))?;
-        if decoded.format != FORMAT {
+            .map_err(|e| DegaussError::io("validating staged cache", &new_path, e))?;
+        if !valid(&written) {
             return Err(DegaussError::malformed(
-                "staged index",
+                "staged cache",
                 &new_path,
-                "incompatible format",
+                "the written file could not be decoded",
             ));
         }
-        Ok(self)
+        Ok(())
     }
 
     /// Replace every member of the group as one transaction. If any member
@@ -697,6 +785,7 @@ fn stage_transactional_with_tag(
     }
     let mut prepared = PreparedCacheGroup {
         caches,
+        markers: Vec::new(),
         files: Vec::new(),
         finished: false,
     };
@@ -712,6 +801,7 @@ fn stage_transactional_with_tag(
         let new_path = final_path.with_extension(format!("{tag}-{position}.new"));
         let backup_path = final_path.with_extension(format!("{tag}-{position}.bak"));
         let bytes = encode_for(kind, cache)?;
+        prepared.markers.push(crc32fast::hash(&bytes));
         let had_old = path_exists(&final_path)?;
         let mut file = std::fs::OpenOptions::new()
             .write(true)
@@ -766,9 +856,13 @@ pub fn install_transactional(
     prepared.install().map(|(_, warnings)| warnings)
 }
 
-/// Commit a complete system scan and its summary together.
+/// Commit a complete system scan and its summary together. Written as
+/// the ordinary system file, or as the Pack cache's rows without a
+/// preparation: no fingerprints, and not complete, for a system whose
+/// Pack is prepared only when its user says so.
 pub fn save_system_with_index(
     dir: &Path,
+    kind: CacheKind,
     id: &str,
     cache: &SystemCache,
     index: &Index,
@@ -779,16 +873,206 @@ pub fn save_system_with_index(
         fingerprints: ContentFingerprints::new(),
         fingerprints_complete: false,
     };
-    stage_transactional(
-        dir,
-        CacheKind::Gamelist,
-        vec![staged],
-        &AtomicBool::new(false),
-    )?
-    .ok_or_else(|| DegaussError::unsupported("cache transaction", "cancelled"))?
-    .with_index(dir, index)?
-    .install()
-    .map(|(_, warnings)| warnings)
+    stage_transactional(dir, kind, vec![staged], &AtomicBool::new(false))?
+        .ok_or_else(|| DegaussError::unsupported("cache transaction", "cancelled"))?
+        .with_index(dir, index)?
+        .install()
+        .map(|(_, warnings)| warnings)
+}
+
+/// Bumped when the shape of a state file changes. The source state's
+/// version doubles as the matching policy's: a mapping prepared under an
+/// older policy reads as no state, and is prepared again.
+const PACK_SOURCE_FORMAT: u32 = 1;
+const PACK_PREPARED_FORMAT: u32 = 1;
+
+/// A Pack the user let Degauss prepare for one system, and what it was
+/// prepared against. Written with the prepared rows, in the same
+/// transaction as the source-neutral cache, so the next entry can tell
+/// from stats alone whether the rows still stand.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+pub struct AcceptedSource {
+    pub docs_root: String,
+    /// The synopsis language the rows were prepared for, normalised.
+    pub language: Option<String>,
+    /// The source as it was read, or nothing when it could not be
+    /// fingerprinted whole; nothing reads as changed.
+    pub signature: Option<crate::artwork_pack::SourceFingerprint>,
+    /// The marker of the `<id>.bin` the rows were prepared from.
+    pub cache_marker: u32,
+    pub health: crate::artwork_pack::ProviderHealth,
+    pub diagnostics: Vec<String>,
+    /// Rows the preparation left without Pack data because their own
+    /// descriptor could not be read. A count only: the paths are in the
+    /// log of the run that prepared them.
+    pub skipped_entries: u32,
+}
+
+/// A Pack state the user chose not to prepare: Not Now for a Pack never
+/// prepared, Keep Current for a change to a prepared one. Remembered so
+/// the same unchanged state is not asked about at every entry.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+pub struct DeclinedSource {
+    pub docs_root: String,
+    pub language: Option<String>,
+    pub signature: Option<crate::artwork_pack::SourceFingerprint>,
+    /// The `<id>.bin` marker the decline was made against, when there was
+    /// a prepared cache to keep.
+    pub cache_marker: Option<u32>,
+}
+
+/// What is known about one system's Automatic or explicit Pack decision.
+#[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq, Eq)]
+pub struct PackSourceState {
+    pub accepted: Option<AcceptedSource>,
+    pub declined: Option<DeclinedSource>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+struct PackSourceFile {
+    format: u32,
+    state: PackSourceState,
+}
+
+/// The prepared presentation of every matched row, keyed by how the row is
+/// started, exactly as the worker's map is held in memory.
+pub type PackPreparedMap =
+    std::collections::HashMap<crate::browse::Launch, crate::artwork_pack::PackPresentation>;
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+struct PackPreparedFile {
+    format: u32,
+    prepared: PackPreparedMap,
+}
+
+/// `<id>.source.bin` beside `<id>.bin`: small, read at startup for every
+/// Automatic member and at every entry.
+pub fn artwork_pack_source_path(dir: &Path, id: &str) -> PathBuf {
+    artwork_pack_system_path(dir, id).with_extension("source.bin")
+}
+
+/// `<id>.prepared.bin` beside `<id>.bin`: read only when the system is
+/// entered on the unchanged path, or a favourite or the screensaver needs
+/// its rows.
+pub fn artwork_pack_prepared_path(dir: &Path, id: &str) -> PathBuf {
+    artwork_pack_system_path(dir, id).with_extension("prepared.bin")
+}
+
+pub fn encode_pack_source(state: &PackSourceState) -> Result<Vec<u8>> {
+    postcard::to_stdvec(&PackSourceFile {
+        format: PACK_SOURCE_FORMAT,
+        state: state.clone(),
+    })
+    .map_err(|error| DegaussError::unsupported("artwork pack state", error.to_string()))
+}
+
+/// The same shape as [`PackPreparedFile`], borrowed: the map handed in
+/// is encoded as it is, not copied into an owned file first.
+#[derive(Serialize)]
+struct PackPreparedFileRef<'a> {
+    format: u32,
+    prepared: &'a PackPreparedMap,
+}
+
+pub fn encode_pack_prepared(prepared: &PackPreparedMap) -> Result<Vec<u8>> {
+    postcard::to_stdvec(&PackPreparedFileRef {
+        format: PACK_PREPARED_FORMAT,
+        prepared,
+    })
+    .map_err(|error| DegaussError::unsupported("artwork pack state", error.to_string()))
+}
+
+/// The version written at the front of a state file, read on its own
+/// before the body: a file written under another version is told apart
+/// from one of this version that is cut short or damaged.
+fn written_format(bytes: &[u8]) -> std::result::Result<u32, postcard::Error> {
+    postcard::take_from_bytes::<u32>(bytes).map(|(format, _)| format)
+}
+
+fn decode_pack_source(
+    bytes: &[u8],
+) -> std::result::Result<Option<PackSourceState>, postcard::Error> {
+    if written_format(bytes)? != PACK_SOURCE_FORMAT {
+        return Ok(None);
+    }
+    let file: PackSourceFile = postcard::from_bytes(bytes)?;
+    Ok(Some(file.state))
+}
+
+fn decode_pack_prepared(
+    bytes: &[u8],
+) -> std::result::Result<Option<PackPreparedMap>, postcard::Error> {
+    if written_format(bytes)? != PACK_PREPARED_FORMAT {
+        return Ok(None);
+    }
+    let file: PackPreparedFile = postcard::from_bytes(bytes)?;
+    Ok(Some(file.prepared))
+}
+
+/// Read a state file. A missing file is the ordinary case and says
+/// nothing. One that is there but cannot be read, or that carries this
+/// version and does not decode (cut short, or damaged), is an error for
+/// the caller to show: what was decided is unknown, and a question or a
+/// preparation in its place would write over the decision. One written
+/// under another version of the state or the matching policy is by
+/// design read as no state and prepared again; the log says so.
+fn load_state_file<T>(
+    path: &Path,
+    decode: impl FnOnce(&[u8]) -> std::result::Result<Option<T>, postcard::Error>,
+) -> Result<Option<T>> {
+    let bytes = match std::fs::read(path) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(DegaussError::io(
+                "reading the Artwork Pack state",
+                path,
+                error,
+            ))
+        }
+    };
+    let decoded = decode(&bytes)
+        .map_err(|error| DegaussError::malformed("Artwork Pack state", path, error.to_string()))?;
+    if decoded.is_none() {
+        crate::note(&format!(
+            "artwork pack state {}: written under another version, read as no state, prepared again on consent",
+            path.display()
+        ));
+    }
+    Ok(decoded)
+}
+
+pub fn load_pack_source_state(dir: &Path, id: &str) -> Result<Option<PackSourceState>> {
+    load_state_file(&artwork_pack_source_path(dir, id), decode_pack_source)
+}
+
+pub fn load_pack_prepared_map(dir: &Path, id: &str) -> Result<Option<PackPreparedMap>> {
+    load_state_file(&artwork_pack_prepared_path(dir, id), decode_pack_prepared)
+}
+
+/// The decision file alone: a decline, or a refreshed signature, changes
+/// nothing about the prepared rows.
+pub fn save_pack_source_state(dir: &Path, id: &str, state: &PackSourceState) -> Result<()> {
+    write(
+        &artwork_pack_source_path(dir, id),
+        &encode_pack_source(state)?,
+    )
+}
+
+/// Both state files, the rows first: a crash between the two leaves rows
+/// without a decision, which is read as no state, never a decision
+/// without rows.
+pub fn save_pack_state(
+    dir: &Path,
+    id: &str,
+    state: &PackSourceState,
+    prepared: &PackPreparedMap,
+) -> Result<()> {
+    write(
+        &artwork_pack_prepared_path(dir, id),
+        &encode_pack_prepared(prepared)?,
+    )?;
+    save_pack_source_state(dir, id, state)
 }
 
 /// When a folder itself last changed, seconds since the epoch, or 0.
@@ -1366,7 +1650,7 @@ mod tests {
                 folders: 2,
             },
         );
-        save_system_with_index(&store, "Test", &initial, &index).unwrap();
+        save_system_with_index(&store, CacheKind::Gamelist, "Test", &initial, &index).unwrap();
         std::fs::write(system_path(&store, "Untouched"), b"other-cache-bytes").unwrap();
         let independent = artwork_pack_system_path(&store, "Test");
         std::fs::create_dir_all(independent.parent().unwrap()).unwrap();
@@ -1383,9 +1667,11 @@ mod tests {
         index
             .systems
             .insert("Test".into(), rebuilt.summary(&library.start()));
-        assert!(save_system_with_index(&store, "Test", &rebuilt, &index)
-            .unwrap()
-            .is_empty());
+        assert!(
+            save_system_with_index(&store, CacheKind::Gamelist, "Test", &rebuilt, &index)
+                .unwrap()
+                .is_empty()
+        );
         let reloaded = load_system(&store, "Test").unwrap();
         assert_eq!(reloaded.summary(&library.start()).games, 2);
         assert_eq!(load_index(&store).unwrap().systems["Test"].games, 2);
@@ -1412,7 +1698,7 @@ mod tests {
         index
             .systems
             .insert("Test".into(), old.summary(&library.start()));
-        save_system_with_index(&store, "Test", &old, &index).unwrap();
+        save_system_with_index(&store, CacheKind::Gamelist, "Test", &old, &index).unwrap();
         let old_cache_bytes = std::fs::read(system_path(&store, "Test")).unwrap();
         let old_index_bytes = std::fs::read(index_path(&store)).unwrap();
         std::fs::write(&archive, b"broken archive").unwrap();
@@ -1433,7 +1719,8 @@ mod tests {
         let store = temp("index-install-rollback");
         let old = staged("Test");
         let old_index = Index::new();
-        save_system_with_index(&store, "Test", &old.cache, &old_index).unwrap();
+        save_system_with_index(&store, CacheKind::Gamelist, "Test", &old.cache, &old_index)
+            .unwrap();
         let old_cache_bytes = std::fs::read(system_path(&store, "Test")).unwrap();
         let old_index_bytes = std::fs::read(index_path(&store)).unwrap();
         let mut next = Index::new();
@@ -1487,7 +1774,7 @@ mod tests {
         let store = temp("cancel-staged-pair");
         let cache = staged("Test");
         let index = Index::new();
-        save_system_with_index(&store, "Test", &cache.cache, &index).unwrap();
+        save_system_with_index(&store, CacheKind::Gamelist, "Test", &cache.cache, &index).unwrap();
         let old_cache_bytes = std::fs::read(system_path(&store, "Test")).unwrap();
         let old_index_bytes = std::fs::read(index_path(&store)).unwrap();
         let prepared = stage_transactional(
@@ -1547,5 +1834,201 @@ mod tests {
         assert!(error.to_string().contains("maximum folder depth"));
         assert!(cache.folders.is_empty());
         std::fs::remove_dir_all(games).unwrap();
+    }
+
+    fn accepted_state(marker: u32) -> PackSourceState {
+        PackSourceState {
+            accepted: Some(AcceptedSource {
+                docs_root: "/docs".into(),
+                language: Some("en".into()),
+                signature: None,
+                cache_marker: marker,
+                health: crate::artwork_pack::ProviderHealth::Ready,
+                diagnostics: Vec::new(),
+                skipped_entries: 2,
+            }),
+            declined: None,
+        }
+    }
+
+    /// The rows, the decision and the prepared presentation of one system
+    /// are one result: staged together, installed together, and when the
+    /// last of them cannot be installed every earlier one goes back to
+    /// what it was. The marker the decision records is the marker the
+    /// installed rows read back with, or the next entry would find its
+    /// own preparation "changed".
+    #[test]
+    fn pack_state_is_installed_with_the_rows_and_rolls_back_with_them() {
+        let store = temp("pack-state-transaction");
+        let rows_path = artwork_pack_system_path(&store, "Test");
+        let source_path = artwork_pack_source_path(&store, "Test");
+        let prepared_path = artwork_pack_prepared_path(&store, "Test");
+        std::fs::create_dir_all(rows_path.parent().unwrap()).unwrap();
+        std::fs::write(&rows_path, b"old-rows").unwrap();
+        std::fs::write(&source_path, b"old-decision").unwrap();
+        std::fs::write(&prepared_path, b"old-prepared").unwrap();
+        let cancelled = AtomicBool::new(false);
+        let prepared = stage_transactional_with_tag(
+            &store,
+            CacheKind::ArtworkPack,
+            vec![staged("Test")],
+            &cancelled,
+            "with-state",
+        )
+        .unwrap()
+        .unwrap();
+        let marker = prepared.markers()[0];
+        let prepared = prepared
+            .with_pack_state(
+                &store,
+                "Test",
+                &encode_pack_source(&accepted_state(marker)).unwrap(),
+                &encode_pack_prepared(&PackPreparedMap::new()).unwrap(),
+            )
+            .unwrap();
+        assert_eq!(prepared.files.len(), 3);
+        assert_eq!(std::fs::read(&rows_path).unwrap(), b"old-rows");
+        assert_eq!(std::fs::read(&source_path).unwrap(), b"old-decision");
+        assert_eq!(std::fs::read(&prepared_path).unwrap(), b"old-prepared");
+        assert!(
+            prepared.with_pack_state(&store, "Test", b"", b"").is_err(),
+            "one state per system per transaction"
+        );
+
+        // Block the last file's backup so the install fails after the rows
+        // and the prepared presentation have already gone in.
+        let prepared = stage_transactional_with_tag(
+            &store,
+            CacheKind::ArtworkPack,
+            vec![staged("Test")],
+            &cancelled,
+            "with-state-blocked",
+        )
+        .unwrap()
+        .unwrap()
+        .with_pack_state(
+            &store,
+            "Test",
+            &encode_pack_source(&accepted_state(marker)).unwrap(),
+            &encode_pack_prepared(&PackPreparedMap::new()).unwrap(),
+        )
+        .unwrap();
+        let blocked = prepared.files[2].backup_path.clone();
+        assert_eq!(prepared.files[2].final_path, source_path);
+        std::fs::create_dir(&blocked).unwrap();
+        let error = prepared.install().unwrap_err();
+        assert!(
+            error.to_string().contains("backing up the previous cache"),
+            "{error}"
+        );
+        assert_eq!(std::fs::read(&rows_path).unwrap(), b"old-rows");
+        assert_eq!(std::fs::read(&source_path).unwrap(), b"old-decision");
+        assert_eq!(std::fs::read(&prepared_path).unwrap(), b"old-prepared");
+        std::fs::remove_dir(&blocked).unwrap();
+
+        let prepared = stage_transactional_with_tag(
+            &store,
+            CacheKind::ArtworkPack,
+            vec![staged("Test")],
+            &cancelled,
+            "with-state-installed",
+        )
+        .unwrap()
+        .unwrap();
+        let marker = prepared.markers()[0];
+        let (_, warnings) = prepared
+            .with_pack_state(
+                &store,
+                "Test",
+                &encode_pack_source(&accepted_state(marker)).unwrap(),
+                &encode_pack_prepared(&PackPreparedMap::new()).unwrap(),
+            )
+            .unwrap()
+            .install()
+            .unwrap();
+        assert!(warnings.is_empty());
+        let (_, installed) = load_artwork_pack_data_marked(&store, "Test")
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            installed, marker,
+            "the marker written down is the marker the rows read back with"
+        );
+        assert_eq!(crc32fast::hash(&std::fs::read(&rows_path).unwrap()), marker);
+        assert_eq!(
+            load_pack_source_state(&store, "Test").unwrap().unwrap(),
+            accepted_state(marker)
+        );
+        assert!(load_pack_prepared_map(&store, "Test")
+            .unwrap()
+            .unwrap()
+            .is_empty());
+        assert_eq!(
+            std::fs::read_dir(rows_path.parent().unwrap())
+                .unwrap()
+                .count(),
+            3,
+            "no staging or backup file is left behind"
+        );
+        std::fs::remove_dir_all(store).ok();
+    }
+
+    /// A state file that is not there says nothing, as the other cache
+    /// files do. One that does not decode was written under another
+    /// version and reads as no state: the consequence is a question or a
+    /// preparation, which is visible, rather than rows drawn from a
+    /// decision nobody made. One that is there but cannot be read is an
+    /// error and not no state: reading it as no state would let a
+    /// question or a preparation write over a decision that still exists.
+    #[test]
+    fn a_stale_state_file_reads_as_no_state_and_an_unreadable_one_is_an_error() {
+        let store = temp("pack-state-loading");
+        assert!(load_pack_source_state(&store, "Test").unwrap().is_none());
+        assert!(load_pack_prepared_map(&store, "Test").unwrap().is_none());
+        save_pack_state(&store, "Test", &accepted_state(9), &PackPreparedMap::new()).unwrap();
+        assert_eq!(
+            load_pack_source_state(&store, "Test").unwrap().unwrap(),
+            accepted_state(9)
+        );
+        // Cut short, as a write that did not finish leaves it: the
+        // version at the front is this one, so the decision is not read
+        // as never taken; the error names the file.
+        let source_path = artwork_pack_source_path(&store, "Test");
+        let written = std::fs::read(&source_path).unwrap();
+        std::fs::write(&source_path, &written[..written.len() / 2]).unwrap();
+        let error = load_pack_source_state(&store, "Test").unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("Artwork Pack state is malformed at"),
+            "{error}"
+        );
+        std::fs::write(&source_path, b"").unwrap();
+        assert!(
+            load_pack_source_state(&store, "Test").is_err(),
+            "an empty file has no version to read: not no state"
+        );
+        let stale = postcard::to_stdvec(&PackSourceFile {
+            format: PACK_SOURCE_FORMAT + 1,
+            state: accepted_state(9),
+        })
+        .unwrap();
+        std::fs::write(&source_path, stale).unwrap();
+        assert!(
+            load_pack_source_state(&store, "Test").unwrap().is_none(),
+            "a state written under another policy is prepared again, not misread"
+        );
+        std::fs::remove_file(&source_path).unwrap();
+        std::fs::create_dir(&source_path).unwrap();
+        let error = load_pack_source_state(&store, "Test").unwrap_err();
+        assert!(
+            error.to_string().contains("reading the Artwork Pack state"),
+            "{error}"
+        );
+        assert!(
+            load_pack_prepared_map(&store, "Test").unwrap().is_some(),
+            "the other file is read on its own"
+        );
+        std::fs::remove_dir_all(store).ok();
     }
 }
