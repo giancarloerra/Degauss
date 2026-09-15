@@ -1,0 +1,29 @@
+# Controller double delivery hardware checks
+
+Some controllers, or the input stack between them and Degauss, deliver one physical press as two very fast press and release pairs. Degauss drops the second pair of the same action when its press arrives less than 40 ms after the first press, measured between the two presses on the kernel's event timestamps (a press exactly 40 ms later is a new press), before the press reaches its own held-key repeater. Pairs inside that window cannot be produced by hand: the host tests in `src/input.rs` feed them directly (`deliberate_taps_outside_the_window_both_count` holds the boundary, a second press 39 ms later dropped and one 40 ms later accepted), and the checks below need a real MiSTer, a keyboard, an ordinary controller and, for the last section, a controller known to deliver presses twice.
+
+## Ordinary keyboard and controller
+
+Use a keyboard and a controller that deliver each press once. Nothing about them may feel different.
+
+1. Tap up and down once in the Categories home screen, a system list, a folder, Favourites, search results, Actions, Menu and every Options page. Each tap moves one row.
+2. Repeat single taps of left and right with each **Left and Right Behaviour** value. Each tap changes the speed, jumps one letter, jumps one page or moves one row, once.
+3. Tap A, B, X and Y once each where they apply. Each press acts once: one folder opened, one level backed out, one Actions list, one Menu.
+4. Hold up and down through the initial delay at every **Scroll Speed**, including the fastest. The scroll starts after the same delay and runs at the same cadence as before. Hold left and right with **Left and Right Behaviour** set to Letter, to Page and to Direction, and confirm each starts after the same delay and runs at the same cadence as before.
+5. Enable **Hold X (1s) to Add/Remove Fav** and **Hold Y (1s) for Random Game**. A one-second hold fires each shortcut once; a short press still opens Actions or Menu. Releasing the button on the screen a shortcut opened does nothing there.
+6. Tap the same direction twice in quick succession, deliberately, with more than 40 ms between the taps. Both taps move.
+7. Open a large system and tap the same direction twice, deliberately and more than 40 ms apart, while its list is still being read; repeat while a rebuild of the library is running. Both taps move once the screen catches up: presses that queue up behind a slow frame are judged on the time each was delivered, not on the frame that dispatches them.
+
+## Affected controller
+
+Use a controller or input stack that delivers one press as two pairs.
+
+1. Tap up and down in the same views as above. Each tap moves exactly one row.
+2. Tap left and right with each **Left and Right Behaviour** value. Each tap acts once.
+3. Tap A, B, X and Y. Each press acts once and no screen is opened or left twice.
+4. Hold a direction. The scroll starts after the initial delay, runs at the configured speed and stops on release; nothing keeps scrolling afterwards.
+5. Reverse direction quickly, and alternate left and right quickly. Every change of direction acts immediately.
+6. Hold X and Y for one second with their shortcuts enabled. Each shortcut fires once, and releasing the button afterwards does nothing.
+7. Connect the ordinary controller alongside the affected one and repeat the taps on each controller in turn. One press is one action whichever controller sends it: the affected controller's second pair, inside 40 ms, is dropped, and two deliberate taps more than 40 ms apart, on the same controller or one on each, move twice. Repeat check 7 of the previous section with both connected: both deliberate taps move once the screen catches up.
+
+Record which controller and MiSTer input configuration was used and which checks were performed. A check not performed is not a pass.
