@@ -17,6 +17,7 @@ pub use targets::{Scope, Target};
 pub use worker::{
     start, start_preview, start_search, start_selected, Event, Job, Phase, PreviewEvent,
     PreviewJob, PreviewRequest, Progress, Request, SearchEvent, SearchJob, SearchRequest,
+    UnresolvedGame,
 };
 
 /// Resolve the reviewed ScreenScraper platform id used by the production
@@ -72,6 +73,7 @@ impl Error {
             ErrorKind::DailyQuota => "Daily request allowance exhausted",
             ErrorKind::FailedQuota => "Failed-search allowance exhausted",
             ErrorKind::NotFound => "No matching game was found",
+            ErrorKind::InvalidRequest => "ScreenScraper rejected this request",
             ErrorKind::MalformedResponse => "ScreenScraper response was unreadable",
             ErrorKind::Transport => "Network connection failed",
             ErrorKind::Timeout => "ScreenScraper timed out",
@@ -98,6 +100,11 @@ pub enum ErrorKind {
     DailyQuota,
     FailedQuota,
     NotFound,
+    /// ScreenScraper refused this one request (a rejected search term,
+    /// parameter or media address, or an error text it does not document
+    /// answering one game's lookup). Unlike an outage, the next game can
+    /// still be looked up.
+    InvalidRequest,
     MalformedResponse,
     Transport,
     Timeout,
@@ -116,6 +123,7 @@ impl ErrorKind {
             ErrorKind::DailyQuota => "daily quota",
             ErrorKind::FailedQuota => "failed-search quota",
             ErrorKind::NotFound => "not found",
+            ErrorKind::InvalidRequest => "invalid request",
             ErrorKind::MalformedResponse => "bad server response",
             ErrorKind::Transport => "network",
             ErrorKind::Timeout => "timeout",

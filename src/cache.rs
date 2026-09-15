@@ -200,15 +200,54 @@ pub fn load_artwork_pack_system(dir: &Path, id: &str) -> Option<SystemCache> {
 }
 
 pub fn load_artwork_pack_data(dir: &Path, id: &str) -> Option<ArtworkPackData> {
-    let bytes = std::fs::read(artwork_pack_system_path(dir, id)).ok()?;
-    let cache: ArtworkPackCache = postcard::from_bytes(&bytes).ok()?;
-    (cache.format == ARTWORK_PACK_FORMAT && cache.cache.format == FORMAT).then_some(
-        ArtworkPackData {
-            cache: cache.cache,
-            fingerprints: cache.fingerprints,
-            fingerprints_complete: cache.fingerprints_complete,
-        },
-    )
+    load_artwork_pack_data_checked(dir, id).ok().flatten()
+}
+
+/// The same, telling a cache that is not there from one that cannot be
+/// read: where the answer decides whether a complete result exists to be
+/// kept, a file that cannot be read at that moment is not a missing one.
+/// A file that does not decode is no cache, as it is for every cache.
+pub fn load_artwork_pack_data_checked(dir: &Path, id: &str) -> Result<Option<ArtworkPackData>> {
+    Ok(read_artwork_pack_cache(dir, id)?.map(|(_, data)| data))
+}
+
+/// The same, with the cache's marker: CRC32 of the file's bytes as read,
+/// the revision a prepared mapping was made against. A replaced file,
+/// whoever wrote it, is a different marker, and a mapping prepared
+/// against the old one says so. Hashed only here, for the readers that
+/// compare or write the marker down; every other reader decodes alone.
+pub fn load_artwork_pack_data_marked(
+    dir: &Path,
+    id: &str,
+) -> Result<Option<(ArtworkPackData, u32)>> {
+    Ok(read_artwork_pack_cache(dir, id)?.map(|(bytes, data)| (data, crc32fast::hash(&bytes))))
+}
+
+fn read_artwork_pack_cache(dir: &Path, id: &str) -> Result<Option<(Vec<u8>, ArtworkPackData)>> {
+    let path = artwork_pack_system_path(dir, id);
+    let bytes = match std::fs::read(&path) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(DegaussError::io(
+                "reading the Artwork Pack cache",
+                &path,
+                error,
+            ))
+        }
+    };
+    let Ok(cache) = postcard::from_bytes::<ArtworkPackCache>(&bytes) else {
+        return Ok(None);
+    };
+    if cache.format != ARTWORK_PACK_FORMAT || cache.cache.format != FORMAT {
+        return Ok(None);
+    }
+    let data = ArtworkPackData {
+        cache: cache.cache,
+        fingerprints: cache.fingerprints,
+        fingerprints_complete: cache.fingerprints_complete,
+    };
+    Ok(Some((bytes, data)))
 }
 
 fn write(path: &Path, bytes: &[u8]) -> Result<()> {
@@ -254,14 +293,19 @@ pub fn save_system(dir: &Path, id: &str, cache: &SystemCache) -> Result<()> {
 /// playable things under each folder is worked out on the way back up, so
 /// the answer to "is there anything in here" costs a lookup rather than a
 /// walk.
-pub fn build_system_checked(library: &Library) -> Result<SystemCache> {
-    build_system_controlled(library, &AtomicBool::new(false), &mut |_, _| {})?
+///
+/// An archive that cannot be read, or a member of one that Main cannot use,
+/// is left out and written to `warnings` with its reason: the rest of the
+/// system is still written down. A folder that cannot be read is still an
+/// error, because nothing says how much of the system sat under it.
+pub fn build_system_checked(library: &Library, warnings: &mut Vec<String>) -> Result<SystemCache> {
+    build_system_controlled(library, &AtomicBool::new(false), warnings, &mut |_, _| {})?
         .ok_or_else(|| DegaussError::unsupported("cache build", "cancelled"))
 }
 
 #[cfg(test)]
 pub fn build_system(library: &Library) -> SystemCache {
-    build_system_checked(library).expect("fixture cache must build")
+    build_system_checked(library, &mut Vec::new()).expect("fixture cache must build")
 }
 
 /// Build with cooperative cancellation and progress between filesystem
@@ -269,18 +313,25 @@ pub fn build_system(library: &Library) -> SystemCache {
 pub fn build_system_controlled(
     library: &Library,
     cancelled: &AtomicBool,
+    warnings: &mut Vec<String>,
     progress: &mut impl FnMut(usize, usize),
 ) -> Result<Option<SystemCache>> {
-    build_system_observed(library, cancelled, &mut |_, folders, games, starting| {
-        if !starting {
-            progress(folders, games);
-        }
-    })
+    build_system_observed(
+        library,
+        cancelled,
+        warnings,
+        &mut |_, folders, games, starting| {
+            if !starting {
+                progress(folders, games);
+            }
+        },
+    )
 }
 
 pub fn build_system_observed(
     library: &Library,
     cancelled: &AtomicBool,
+    warnings: &mut Vec<String>,
     progress: &mut impl FnMut(&Place, usize, usize, bool),
 ) -> Result<Option<SystemCache>> {
     let mut cache = SystemCache {
@@ -297,11 +348,31 @@ pub fn build_system_observed(
         &mut cache,
         &mut seen,
         cancelled,
+        warnings,
         &mut folders,
         &mut games,
         progress,
     )?;
     Ok(completed.map(|_| cache))
+}
+
+/// The reason an archive is skipped whole, when the error is the archive
+/// reader's own: its directory could not be read or does not hold together.
+/// The archive is named once by the caller; its own error would name it
+/// again, and the summary has to fit a screen.
+fn archive_skip_reason(error: &DegaussError, place: &Place) -> Option<String> {
+    let Place::Archive(archive) = place else {
+        return None;
+    };
+    match error {
+        DegaussError::Malformed { what, path, detail } if path == archive => {
+            Some(format!("{what} is malformed: {detail}"))
+        }
+        DegaussError::Io { what, path, source } if path == archive => {
+            Some(format!("{what} failed: {source}"))
+        }
+        _ => None,
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -312,6 +383,7 @@ fn walk_controlled(
     cache: &mut SystemCache,
     seen: &mut Vec<String>,
     cancelled: &AtomicBool,
+    warnings: &mut Vec<String>,
     folders_done: &mut usize,
     games_done: &mut usize,
     progress: &mut impl FnMut(&Place, usize, usize, bool),
@@ -337,10 +409,28 @@ fn walk_controlled(
     if cancelled.load(Ordering::Relaxed) {
         return Ok(None);
     }
-    let (mut rows, _) = library.list(place, true)?;
+    let (mut rows, _, skipped) = library.list_reporting(place, true)?;
+    if !skipped.is_empty() {
+        // The listing wrote every member to the log with its reason when it
+        // read the archive. The summary on screen gets one line per reason,
+        // with a count, so it stays readable for an archive with hundreds
+        // of them.
+        let mut reasons = BTreeMap::new();
+        for skipped in skipped {
+            *reasons.entry(skipped.reason).or_insert(0usize) += 1;
+        }
+        for (reason, count) in reasons {
+            warnings.push(format!(
+                "{}: {count} member{} skipped: {reason}",
+                place.path().display(),
+                if count == 1 { "" } else { "s" }
+            ));
+        }
+    }
 
     let mut games = 0;
-    for row in &mut rows {
+    let mut dropped = Vec::new();
+    for (index, row) in rows.iter_mut().enumerate() {
         if cancelled.load(Ordering::Relaxed) {
             return Ok(None);
         }
@@ -350,24 +440,87 @@ fn walk_controlled(
                 *games_done += 1;
             }
             Kind::Enter(inner) => {
-                let Some(below) = walk_controlled(
+                if let Place::ArchiveDirectory { archive, prefix } = inner {
+                    if depth + 1 > MAX_DEPTH {
+                        // A folder inside an archive that would sit past
+                        // the depth the walk goes is that folder's
+                        // condition, not the archive's and not the
+                        // system's: its row goes and nothing under it is
+                        // written down, the warning names the archive and
+                        // the folder, and the archive's other members stay.
+                        // A folder on the card that deep is the system's
+                        // failure it has always been.
+                        let line = format!(
+                            "{}/{prefix}: skipped: {}",
+                            archive.display(),
+                            crate::browse::member_depth_reason()
+                        );
+                        crate::note(&format!("zip          {line}"));
+                        warnings.push(line);
+                        dropped.push(index);
+                        continue;
+                    }
+                }
+                let before = (seen.len(), *folders_done, *games_done, warnings.len());
+                let below = match walk_controlled(
                     library,
                     &inner.clone(),
                     depth + 1,
                     cache,
                     seen,
                     cancelled,
+                    warnings,
                     folders_done,
                     games_done,
                     progress,
-                )?
-                else {
-                    return Ok(None);
+                ) {
+                    Ok(Some(below)) => below,
+                    Ok(None) => return Ok(None),
+                    Err(error) => {
+                        // An archive whose directory does not hold together
+                        // is left out whole: every folder its subtree already
+                        // wrote is taken back (its keys were pushed to `seen`
+                        // before being written), the progress counts it
+                        // raised and the member lines its listing added to
+                        // the summary go back with it, its row goes, and the
+                        // rest of the system carries on. Nothing of it is
+                        // ever published half done. Any other failure under
+                        // it is the system's as before.
+                        let Some(reason) = archive_skip_reason(&error, inner) else {
+                            return Err(error);
+                        };
+                        // The log gets the whole error here, whatever later
+                        // becomes of the summary this scan is building.
+                        crate::note(&format!(
+                            "zip          {}: skipped: {error}",
+                            inner.path().display()
+                        ));
+                        for key in seen.drain(before.0..) {
+                            cache.folders.remove(&key);
+                        }
+                        *folders_done = before.1;
+                        *games_done = before.2;
+                        warnings.truncate(before.3);
+                        warnings.push(format!("{}: skipped: {reason}", inner.path().display()));
+                        dropped.push(index);
+                        continue;
+                    }
                 };
                 row.below = Some(below);
                 games += below;
             }
         }
+    }
+    if !dropped.is_empty() {
+        // `dropped` was filled in row order, so one cursor over it meets
+        // each dropped row as `retain` reaches it.
+        let mut next = dropped.iter().copied().peekable();
+        let mut index = 0;
+        rows.retain(|_| {
+            let drop = next.next_if_eq(&index).is_some();
+            index += 1;
+            !drop
+        });
     }
     cache.folders.insert(
         key,
@@ -440,6 +593,9 @@ struct StagedCacheFile {
 #[derive(Debug)]
 pub struct PreparedCacheGroup {
     caches: Vec<StagedSystemCache>,
+    /// CRC32 of each staged cache's bytes, in the order of `caches`: the
+    /// marker the installed file will carry, known before it is installed.
+    markers: Vec<u32>,
     files: Vec<StagedCacheFile>,
     finished: bool,
 }
@@ -460,9 +616,59 @@ impl PreparedCacheGroup {
         &self.caches
     }
 
+    /// The marker each staged cache will carry once installed, in the order
+    /// of `caches`.
+    pub fn markers(&self) -> &[u32] {
+        &self.markers
+    }
+
     /// Stage the matching index in the same rollback transaction as its rows.
     pub fn with_index(mut self, dir: &Path, index: &Index) -> Result<Self> {
-        let final_path = index_path(dir);
+        let bytes = postcard::to_stdvec(index)
+            .map_err(|e| DegaussError::unsupported("cache index", e.to_string()))?;
+        self.stage_extra_file(index_path(dir), &bytes, "index", |written| {
+            postcard::from_bytes::<Index>(written).is_ok_and(|decoded| decoded.format == FORMAT)
+        })?;
+        Ok(self)
+    }
+
+    /// Stage one system's prepared Pack state, both files, in the same
+    /// rollback transaction as its rows: the rows, the signature they were
+    /// prepared against and the prepared presentation are one result, and
+    /// none of them is installed without the others.
+    pub fn with_pack_state(
+        mut self,
+        dir: &Path,
+        id: &str,
+        source: &[u8],
+        prepared: &[u8],
+    ) -> Result<Self> {
+        self.stage_extra_file(
+            artwork_pack_prepared_path(dir, id),
+            prepared,
+            "prepared",
+            |written| matches!(decode_pack_prepared(written), Ok(Some(_))),
+        )?;
+        self.stage_extra_file(
+            artwork_pack_source_path(dir, id),
+            source,
+            "state",
+            |written| matches!(decode_pack_source(written), Ok(Some(_))),
+        )?;
+        Ok(self)
+    }
+
+    /// Write one more file into the transaction: created beside its final
+    /// path, synced, read back and decoded before it counts. Tracked from
+    /// the moment it exists, so a failure after that cleans it up with the
+    /// rest.
+    fn stage_extra_file(
+        &mut self,
+        final_path: PathBuf,
+        bytes: &[u8],
+        what: &str,
+        valid: impl FnOnce(&[u8]) -> bool,
+    ) -> Result<()> {
         if self
             .files
             .iter()
@@ -470,28 +676,26 @@ impl PreparedCacheGroup {
         {
             return Err(DegaussError::unsupported(
                 "cache transaction",
-                "index already staged",
+                format!("{} already staged", final_path.display()),
             ));
         }
-        // Inspect the previous index before creating a file, so a failed
+        // Inspect the previous file before creating one, so a failed
         // metadata check cannot leave an untracked staging file behind.
         let had_old = path_exists(&final_path)?;
         let (new_path, backup_path) = loop {
             let serial = NEXT_CACHE_TRANSACTION.fetch_add(1, Ordering::Relaxed);
-            let tag = format!("degauss-index-{}-{serial}", std::process::id());
+            let tag = format!("degauss-{what}-{}-{serial}", std::process::id());
             let new_path = final_path.with_extension(format!("{tag}.new"));
             let backup_path = final_path.with_extension(format!("{tag}.bak"));
             if !path_exists(&new_path)? && !path_exists(&backup_path)? {
                 break (new_path, backup_path);
             }
         };
-        let bytes = postcard::to_stdvec(index)
-            .map_err(|e| DegaussError::unsupported("cache index", e.to_string()))?;
         let mut file = std::fs::OpenOptions::new()
             .write(true)
             .create_new(true)
             .open(&new_path)
-            .map_err(|e| DegaussError::io("creating staged index", &new_path, e))?;
+            .map_err(|e| DegaussError::io("creating staged cache", &new_path, e))?;
         self.files.push(StagedCacheFile {
             had_old,
             final_path,
@@ -501,21 +705,19 @@ impl PreparedCacheGroup {
             installed: false,
         });
         use std::io::Write as _;
-        file.write_all(&bytes)
+        file.write_all(bytes)
             .and_then(|_| file.sync_all())
-            .map_err(|e| DegaussError::io("writing staged index", &new_path, e))?;
+            .map_err(|e| DegaussError::io("writing staged cache", &new_path, e))?;
         let written = std::fs::read(&new_path)
-            .map_err(|e| DegaussError::io("validating staged index", &new_path, e))?;
-        let decoded: Index = postcard::from_bytes(&written)
-            .map_err(|e| DegaussError::malformed("staged index", &new_path, e.to_string()))?;
-        if decoded.format != FORMAT {
+            .map_err(|e| DegaussError::io("validating staged cache", &new_path, e))?;
+        if !valid(&written) {
             return Err(DegaussError::malformed(
-                "staged index",
+                "staged cache",
                 &new_path,
-                "incompatible format",
+                "the written file could not be decoded",
             ));
         }
-        Ok(self)
+        Ok(())
     }
 
     /// Replace every member of the group as one transaction. If any member
@@ -697,6 +899,7 @@ fn stage_transactional_with_tag(
     }
     let mut prepared = PreparedCacheGroup {
         caches,
+        markers: Vec::new(),
         files: Vec::new(),
         finished: false,
     };
@@ -712,6 +915,7 @@ fn stage_transactional_with_tag(
         let new_path = final_path.with_extension(format!("{tag}-{position}.new"));
         let backup_path = final_path.with_extension(format!("{tag}-{position}.bak"));
         let bytes = encode_for(kind, cache)?;
+        prepared.markers.push(crc32fast::hash(&bytes));
         let had_old = path_exists(&final_path)?;
         let mut file = std::fs::OpenOptions::new()
             .write(true)
@@ -766,9 +970,13 @@ pub fn install_transactional(
     prepared.install().map(|(_, warnings)| warnings)
 }
 
-/// Commit a complete system scan and its summary together.
+/// Commit a complete system scan and its summary together. Written as
+/// the ordinary system file, or as the Pack cache's rows without a
+/// preparation: no fingerprints, and not complete, for a system whose
+/// Pack is prepared only when its user says so.
 pub fn save_system_with_index(
     dir: &Path,
+    kind: CacheKind,
     id: &str,
     cache: &SystemCache,
     index: &Index,
@@ -779,16 +987,206 @@ pub fn save_system_with_index(
         fingerprints: ContentFingerprints::new(),
         fingerprints_complete: false,
     };
-    stage_transactional(
-        dir,
-        CacheKind::Gamelist,
-        vec![staged],
-        &AtomicBool::new(false),
-    )?
-    .ok_or_else(|| DegaussError::unsupported("cache transaction", "cancelled"))?
-    .with_index(dir, index)?
-    .install()
-    .map(|(_, warnings)| warnings)
+    stage_transactional(dir, kind, vec![staged], &AtomicBool::new(false))?
+        .ok_or_else(|| DegaussError::unsupported("cache transaction", "cancelled"))?
+        .with_index(dir, index)?
+        .install()
+        .map(|(_, warnings)| warnings)
+}
+
+/// Bumped when the shape of a state file changes. The source state's
+/// version doubles as the matching policy's: a mapping prepared under an
+/// older policy reads as no state, and is prepared again.
+const PACK_SOURCE_FORMAT: u32 = 1;
+const PACK_PREPARED_FORMAT: u32 = 1;
+
+/// A Pack the user let Degauss prepare for one system, and what it was
+/// prepared against. Written with the prepared rows, in the same
+/// transaction as the source-neutral cache, so the next entry can tell
+/// from stats alone whether the rows still stand.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+pub struct AcceptedSource {
+    pub docs_root: String,
+    /// The synopsis language the rows were prepared for, normalised.
+    pub language: Option<String>,
+    /// The source as it was read, or nothing when it could not be
+    /// fingerprinted whole; nothing reads as changed.
+    pub signature: Option<crate::artwork_pack::SourceFingerprint>,
+    /// The marker of the `<id>.bin` the rows were prepared from.
+    pub cache_marker: u32,
+    pub health: crate::artwork_pack::ProviderHealth,
+    pub diagnostics: Vec<String>,
+    /// Rows the preparation left without Pack data because their own
+    /// descriptor could not be read. A count only: the paths are in the
+    /// log of the run that prepared them.
+    pub skipped_entries: u32,
+}
+
+/// A Pack state the user chose not to prepare: Not Now for a Pack never
+/// prepared, Keep Current for a change to a prepared one. Remembered so
+/// the same unchanged state is not asked about at every entry.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+pub struct DeclinedSource {
+    pub docs_root: String,
+    pub language: Option<String>,
+    pub signature: Option<crate::artwork_pack::SourceFingerprint>,
+    /// The `<id>.bin` marker the decline was made against, when there was
+    /// a prepared cache to keep.
+    pub cache_marker: Option<u32>,
+}
+
+/// What is known about one system's Automatic or explicit Pack decision.
+#[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq, Eq)]
+pub struct PackSourceState {
+    pub accepted: Option<AcceptedSource>,
+    pub declined: Option<DeclinedSource>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+struct PackSourceFile {
+    format: u32,
+    state: PackSourceState,
+}
+
+/// The prepared presentation of every matched row, keyed by how the row is
+/// started, exactly as the worker's map is held in memory.
+pub type PackPreparedMap =
+    std::collections::HashMap<crate::browse::Launch, crate::artwork_pack::PackPresentation>;
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+struct PackPreparedFile {
+    format: u32,
+    prepared: PackPreparedMap,
+}
+
+/// `<id>.source.bin` beside `<id>.bin`: small, read at startup for every
+/// Automatic member and at every entry.
+pub fn artwork_pack_source_path(dir: &Path, id: &str) -> PathBuf {
+    artwork_pack_system_path(dir, id).with_extension("source.bin")
+}
+
+/// `<id>.prepared.bin` beside `<id>.bin`: read only when the system is
+/// entered on the unchanged path, or a favourite or the screensaver needs
+/// its rows.
+pub fn artwork_pack_prepared_path(dir: &Path, id: &str) -> PathBuf {
+    artwork_pack_system_path(dir, id).with_extension("prepared.bin")
+}
+
+pub fn encode_pack_source(state: &PackSourceState) -> Result<Vec<u8>> {
+    postcard::to_stdvec(&PackSourceFile {
+        format: PACK_SOURCE_FORMAT,
+        state: state.clone(),
+    })
+    .map_err(|error| DegaussError::unsupported("artwork pack state", error.to_string()))
+}
+
+/// The same shape as [`PackPreparedFile`], borrowed: the map handed in
+/// is encoded as it is, not copied into an owned file first.
+#[derive(Serialize)]
+struct PackPreparedFileRef<'a> {
+    format: u32,
+    prepared: &'a PackPreparedMap,
+}
+
+pub fn encode_pack_prepared(prepared: &PackPreparedMap) -> Result<Vec<u8>> {
+    postcard::to_stdvec(&PackPreparedFileRef {
+        format: PACK_PREPARED_FORMAT,
+        prepared,
+    })
+    .map_err(|error| DegaussError::unsupported("artwork pack state", error.to_string()))
+}
+
+/// The version written at the front of a state file, read on its own
+/// before the body: a file written under another version is told apart
+/// from one of this version that is cut short or damaged.
+fn written_format(bytes: &[u8]) -> std::result::Result<u32, postcard::Error> {
+    postcard::take_from_bytes::<u32>(bytes).map(|(format, _)| format)
+}
+
+fn decode_pack_source(
+    bytes: &[u8],
+) -> std::result::Result<Option<PackSourceState>, postcard::Error> {
+    if written_format(bytes)? != PACK_SOURCE_FORMAT {
+        return Ok(None);
+    }
+    let file: PackSourceFile = postcard::from_bytes(bytes)?;
+    Ok(Some(file.state))
+}
+
+fn decode_pack_prepared(
+    bytes: &[u8],
+) -> std::result::Result<Option<PackPreparedMap>, postcard::Error> {
+    if written_format(bytes)? != PACK_PREPARED_FORMAT {
+        return Ok(None);
+    }
+    let file: PackPreparedFile = postcard::from_bytes(bytes)?;
+    Ok(Some(file.prepared))
+}
+
+/// Read a state file. A missing file is the ordinary case and says
+/// nothing. One that is there but cannot be read, or that carries this
+/// version and does not decode (cut short, or damaged), is an error for
+/// the caller to show: what was decided is unknown, and a question or a
+/// preparation in its place would write over the decision. One written
+/// under another version of the state or the matching policy is by
+/// design read as no state and prepared again; the log says so.
+fn load_state_file<T>(
+    path: &Path,
+    decode: impl FnOnce(&[u8]) -> std::result::Result<Option<T>, postcard::Error>,
+) -> Result<Option<T>> {
+    let bytes = match std::fs::read(path) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(DegaussError::io(
+                "reading the Artwork Pack state",
+                path,
+                error,
+            ))
+        }
+    };
+    let decoded = decode(&bytes)
+        .map_err(|error| DegaussError::malformed("Artwork Pack state", path, error.to_string()))?;
+    if decoded.is_none() {
+        crate::note(&format!(
+            "artwork pack state {}: written under another version, read as no state, prepared again on consent",
+            path.display()
+        ));
+    }
+    Ok(decoded)
+}
+
+pub fn load_pack_source_state(dir: &Path, id: &str) -> Result<Option<PackSourceState>> {
+    load_state_file(&artwork_pack_source_path(dir, id), decode_pack_source)
+}
+
+pub fn load_pack_prepared_map(dir: &Path, id: &str) -> Result<Option<PackPreparedMap>> {
+    load_state_file(&artwork_pack_prepared_path(dir, id), decode_pack_prepared)
+}
+
+/// The decision file alone: a decline, or a refreshed signature, changes
+/// nothing about the prepared rows.
+pub fn save_pack_source_state(dir: &Path, id: &str, state: &PackSourceState) -> Result<()> {
+    write(
+        &artwork_pack_source_path(dir, id),
+        &encode_pack_source(state)?,
+    )
+}
+
+/// Both state files, the rows first: a crash between the two leaves rows
+/// without a decision, which is read as no state, never a decision
+/// without rows.
+pub fn save_pack_state(
+    dir: &Path,
+    id: &str,
+    state: &PackSourceState,
+    prepared: &PackPreparedMap,
+) -> Result<()> {
+    write(
+        &artwork_pack_prepared_path(dir, id),
+        &encode_pack_prepared(prepared)?,
+    )?;
+    save_pack_source_state(dir, id, state)
 }
 
 /// When a folder itself last changed, seconds since the epoch, or 0.
@@ -1244,12 +1642,13 @@ mod tests {
         let library = Library::open_source_neutral(&system(&games), Default::default()).unwrap();
         let cancelled = AtomicBool::new(false);
 
-        let built = build_system_controlled(&library, &cancelled, &mut |folders, _| {
-            if folders >= 1 {
-                cancelled.store(true, Ordering::Relaxed);
-            }
-        })
-        .unwrap();
+        let built =
+            build_system_controlled(&library, &cancelled, &mut Vec::new(), &mut |folders, _| {
+                if folders >= 1 {
+                    cancelled.store(true, Ordering::Relaxed);
+                }
+            })
+            .unwrap();
 
         assert!(built.is_none());
         std::fs::remove_dir_all(games).ok();
@@ -1262,11 +1661,12 @@ mod tests {
         std::fs::create_dir_all(&child).unwrap();
         std::fs::write(child.join("Game.d64"), b"rom").unwrap();
         let library = Library::open_source_neutral(&system(&games), Default::default()).unwrap();
-        let original = build_system_checked(&library).unwrap();
+        let original = build_system_checked(&library, &mut Vec::new()).unwrap();
         let mut events = Vec::new();
         let observed = build_system_observed(
             &library,
             &AtomicBool::new(false),
+            &mut Vec::new(),
             &mut |place, folders, found, starting| {
                 events.push((place.clone(), folders, found, starting));
             },
@@ -1298,10 +1698,15 @@ mod tests {
         std::fs::remove_dir(&games).unwrap();
         std::fs::write(&games, b"not a directory").unwrap();
         let cancelled = AtomicBool::new(false);
-        let result = build_system_observed(&library, &cancelled, &mut |_, _, _, starting| {
-            assert!(starting);
-            cancelled.store(true, Ordering::Relaxed);
-        });
+        let result = build_system_observed(
+            &library,
+            &cancelled,
+            &mut Vec::new(),
+            &mut |_, _, _, starting| {
+                assert!(starting);
+                cancelled.store(true, Ordering::Relaxed);
+            },
+        );
         assert!(
             result.unwrap().is_none(),
             "cancellation must run before the failing read_dir call"
@@ -1331,6 +1736,7 @@ mod tests {
             &mut cache,
             &mut seen,
             &cancelled,
+            &mut Vec::new(),
             &mut folders,
             &mut games_done,
             &mut |_, _, _, _| {},
@@ -1354,7 +1760,7 @@ mod tests {
         )
         .unwrap();
         let library = Library::open(&system(&games)).unwrap();
-        let initial = build_system_checked(&library).unwrap();
+        let initial = build_system_checked(&library, &mut Vec::new()).unwrap();
         let mut index = Index::new();
         index
             .systems
@@ -1366,7 +1772,7 @@ mod tests {
                 folders: 2,
             },
         );
-        save_system_with_index(&store, "Test", &initial, &index).unwrap();
+        save_system_with_index(&store, CacheKind::Gamelist, "Test", &initial, &index).unwrap();
         std::fs::write(system_path(&store, "Untouched"), b"other-cache-bytes").unwrap();
         let independent = artwork_pack_system_path(&store, "Test");
         std::fs::create_dir_all(independent.parent().unwrap()).unwrap();
@@ -1379,13 +1785,18 @@ mod tests {
             crate::zip::tests_archive(&["One.d64"], false),
         )
         .unwrap();
-        let rebuilt = build_system_checked(&Library::open(&system(&games)).unwrap()).unwrap();
+        let mut warnings = Vec::new();
+        let rebuilt =
+            build_system_checked(&Library::open(&system(&games)).unwrap(), &mut warnings).unwrap();
+        assert!(warnings.is_empty(), "{warnings:?}");
         index
             .systems
             .insert("Test".into(), rebuilt.summary(&library.start()));
-        assert!(save_system_with_index(&store, "Test", &rebuilt, &index)
-            .unwrap()
-            .is_empty());
+        assert!(
+            save_system_with_index(&store, CacheKind::Gamelist, "Test", &rebuilt, &index)
+                .unwrap()
+                .is_empty()
+        );
         let reloaded = load_system(&store, "Test").unwrap();
         assert_eq!(reloaded.summary(&library.start()).games, 2);
         assert_eq!(load_index(&store).unwrap().systems["Test"].games, 2);
@@ -1399,33 +1810,501 @@ mod tests {
         std::fs::remove_dir_all(store).unwrap();
     }
 
+    /// An archive that stops holding together is left out with a warning
+    /// and the system is written down without it, but not before: the
+    /// previous complete cache and index stay until the new scan is
+    /// published as one transaction, and a system whose only content was
+    /// that archive completes with nothing, warned about, rather than
+    /// looking like a healthy empty system.
     #[test]
-    fn malformed_nested_archive_cannot_replace_a_previous_cache_or_index() {
+    fn malformed_nested_archive_is_skipped_with_a_warning_until_published() {
         let games = temp("failed-rebuild-games");
         let store = temp("failed-rebuild-store");
         std::fs::create_dir_all(games.join("Nested")).unwrap();
         let archive = games.join("Nested/Set.zip");
         std::fs::write(&archive, crate::zip::tests_archive(&["Game.d64"], false)).unwrap();
         let library = Library::open(&system(&games)).unwrap();
-        let old = build_system_checked(&library).unwrap();
+        let old = build_system_checked(&library, &mut Vec::new()).unwrap();
         let mut index = Index::new();
         index
             .systems
             .insert("Test".into(), old.summary(&library.start()));
-        save_system_with_index(&store, "Test", &old, &index).unwrap();
+        save_system_with_index(&store, CacheKind::Gamelist, "Test", &old, &index).unwrap();
         let old_cache_bytes = std::fs::read(system_path(&store, "Test")).unwrap();
         let old_index_bytes = std::fs::read(index_path(&store)).unwrap();
         std::fs::write(&archive, b"broken archive").unwrap();
-        let error = build_system_checked(&Library::open(&system(&games)).unwrap()).unwrap_err();
-        assert!(error.to_string().contains("Set.zip"));
+        let mut warnings = Vec::new();
+        let rebuilt =
+            build_system_checked(&Library::open(&system(&games)).unwrap(), &mut warnings).unwrap();
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert!(
+            warnings[0].starts_with(&format!("{}: skipped: ", archive.display())),
+            "{warnings:?}"
+        );
+        assert!(warnings[0].contains("end-of-directory"), "{warnings:?}");
+        assert_eq!(rebuilt.summary(&library.start()).games, 0);
+        assert!(
+            !rebuilt
+                .folders
+                .contains_key(&Place::Archive(archive.clone()).key()),
+            "a rejected archive must not be written down as a folder"
+        );
+        let nested = rebuilt
+            .get(&Place::Dir(games.join("Nested")))
+            .expect("the folder holding the archive is still written down");
+        assert!(nested.rows.is_empty(), "{:?}", nested.rows);
+        assert_eq!(nested.games, 0);
         assert_eq!(
             std::fs::read(system_path(&store, "Test")).unwrap(),
-            old_cache_bytes
+            old_cache_bytes,
+            "scanning publishes nothing by itself"
         );
         assert_eq!(std::fs::read(index_path(&store)).unwrap(), old_index_bytes);
         assert_eq!(load_index(&store).unwrap().systems["Test"].games, 1);
+        index
+            .systems
+            .insert("Test".into(), rebuilt.summary(&library.start()));
+        save_system_with_index(&store, CacheKind::Gamelist, "Test", &rebuilt, &index).unwrap();
+        assert_eq!(load_index(&store).unwrap().systems["Test"].games, 0);
+        assert_eq!(
+            load_system(&store, "Test")
+                .unwrap()
+                .summary(&library.start())
+                .games,
+            0
+        );
         std::fs::remove_dir_all(games).unwrap();
         std::fs::remove_dir_all(store).unwrap();
+    }
+
+    /// A structurally corrupt archive costs the system only that archive,
+    /// whichever way its directory fails to hold together: the healthy file
+    /// beside it and the healthy archive beside it are written down, nothing
+    /// of the rejected one is (not a folder key, not a row, not a count),
+    /// and one warning names it. The mutations are the ones the reader's
+    /// own tests refuse; this is where refusing them has to reach the
+    /// system as a skipped archive rather than a failed build.
+    #[test]
+    fn a_corrupt_archive_is_skipped_and_its_siblings_are_written_down() {
+        let healthy = crate::zip::tests_archive(&["One.d64", "Two.d64"], false);
+        let classic = crate::zip::tests_archive(&["Game.d64", "Plain.d64"], false);
+        let zip64 = crate::zip::tests_archive(&["Game.d64"], true);
+        let central = |bytes: &[u8]| {
+            bytes
+                .windows(4)
+                .position(|b| b == [0x50, 0x4b, 0x01, 0x02])
+                .unwrap()
+        };
+        let end64 = zip64
+            .windows(4)
+            .position(|b| b == [0x50, 0x4b, 6, 6])
+            .unwrap();
+        let eocd = classic.len() - 22;
+        // Tag, the archive to start from, the bytes to change (none means
+        // truncate it by half) and the reason the warning has to carry.
+        type Mutation<'a> = (&'a str, &'a [u8], &'a [(usize, u8)], &'a str);
+        let mutations: [Mutation; 9] = [
+            (
+                "truncated",
+                &healthy,
+                &[],
+                "no valid end-of-directory record",
+            ),
+            (
+                "garbage",
+                b"broken archive",
+                &[],
+                "no valid end-of-directory record",
+            ),
+            (
+                "signature",
+                &classic,
+                &[(central(&classic), 0)],
+                "invalid central-directory signature",
+            ),
+            (
+                "count",
+                &classic,
+                &[(eocd + 8, 9), (eocd + 10, 9)],
+                "central-directory size, count or offset is inconsistent",
+            ),
+            (
+                "offset",
+                &classic,
+                &[(eocd + 16, 1)],
+                "central-directory size, count or offset is inconsistent",
+            ),
+            (
+                "zip64-record",
+                &zip64,
+                &[(end64 + 4, 43)],
+                "invalid ZIP64 end record",
+            ),
+            (
+                "multi-disk",
+                &classic,
+                &[(eocd + 4, 1)],
+                "multi-disk archive",
+            ),
+            (
+                "masked-header",
+                &classic,
+                &[(central(&classic) + 9, 32)],
+                "masked local header",
+            ),
+            (
+                "sentinel-disk",
+                &classic,
+                &[
+                    (central(&classic) + 34, 0xff),
+                    (central(&classic) + 35, 0xff),
+                ],
+                "member starts on another disk",
+            ),
+        ];
+        for (tag, original, changes, reason) in mutations {
+            let games = temp(&format!("corrupt-archive-{tag}"));
+            std::fs::write(games.join("Healthy.d64"), b"rom").unwrap();
+            std::fs::write(games.join("Good.zip"), &healthy).unwrap();
+            let broken = games.join("Broken.zip");
+            let mut bytes = original.to_vec();
+            if changes.is_empty() {
+                bytes.truncate(bytes.len() / 2);
+            }
+            for (offset, value) in changes {
+                bytes[*offset] = *value;
+            }
+            std::fs::write(&broken, &bytes).unwrap();
+            let library = Library::open(&system(&games)).unwrap();
+            let mut warnings = Vec::new();
+            let cache = build_system_checked(&library, &mut warnings)
+                .unwrap_or_else(|error| panic!("{tag}: the system failed: {error}"));
+            assert_eq!(cache.summary(&library.start()).games, 3, "{tag}");
+            let top = cache.get(&library.start()).unwrap();
+            assert_eq!(
+                top.rows
+                    .iter()
+                    .map(|row| row.name.as_str())
+                    .collect::<Vec<_>>(),
+                ["Good", "Healthy"],
+                "{tag}: the rejected archive has no row"
+            );
+            assert_eq!(top.rows[0].below, Some(2), "{tag}");
+            assert!(
+                !cache
+                    .folders
+                    .contains_key(&Place::Archive(broken.clone()).key()),
+                "{tag}"
+            );
+            assert!(
+                cache
+                    .folders
+                    .contains_key(&Place::Archive(games.join("Good.zip")).key()),
+                "{tag}"
+            );
+            assert_eq!(warnings.len(), 1, "{tag}: {warnings:?}");
+            assert!(
+                warnings[0].starts_with(&format!("{}: skipped: ", broken.display()))
+                    && warnings[0].contains(reason),
+                "{tag}: {warnings:?}"
+            );
+            std::fs::remove_dir_all(games).unwrap();
+        }
+    }
+
+    /// Several rejected archives in one folder each lose exactly their own
+    /// row. The rows are taken out by position once the folder is walked,
+    /// so a folder holding rejected archives before, between and after
+    /// the ones it keeps is where a position out of step would drop a
+    /// healthy archive or publish a rejected one.
+    #[test]
+    fn several_rejected_archives_in_one_folder_each_lose_only_their_own_row() {
+        let games = temp("several-rejected-archives");
+        let healthy = crate::zip::tests_archive(&["One.d64"], false);
+        let broken = ["A-Broken.zip", "M-Broken.zip", "Z-Broken.zip"];
+        for name in broken {
+            std::fs::write(games.join(name), b"broken archive").unwrap();
+        }
+        for name in ["B-Good.zip", "N-Good.zip"] {
+            std::fs::write(games.join(name), &healthy).unwrap();
+        }
+        std::fs::write(games.join("Plain.d64"), b"rom").unwrap();
+        let library = Library::open(&system(&games)).unwrap();
+        let mut warnings = Vec::new();
+        let cache = build_system_checked(&library, &mut warnings).unwrap();
+        assert_eq!(cache.summary(&library.start()).games, 3);
+        let top = cache.get(&library.start()).unwrap();
+        assert_eq!(
+            top.rows
+                .iter()
+                .map(|row| (row.name.as_str(), row.below))
+                .collect::<Vec<_>>(),
+            [("B-Good", Some(1)), ("N-Good", Some(1)), ("Plain", None)]
+        );
+        assert_eq!(warnings.len(), 3, "{warnings:?}");
+        for name in broken {
+            let prefix = format!("{}: skipped: ", games.join(name).display());
+            assert!(
+                warnings.iter().any(|warning| warning.starts_with(&prefix)),
+                "{name}: {warnings:?}"
+            );
+            assert!(!cache
+                .folders
+                .contains_key(&Place::Archive(games.join(name)).key()));
+        }
+        std::fs::remove_dir_all(games).unwrap();
+    }
+
+    /// The summary on screen is one line per archive and reason; the log
+    /// is where the complete diagnostic lives for the run, so a skipped
+    /// member has to be there with its name and reason, and a skipped
+    /// archive with its error. Only what the log gains during the build
+    /// counts, searched by this fixture's own paths, because the log is
+    /// shared by every test that writes one and kept across runs. The
+    /// launch check of a retained member reads the archive again and must
+    /// not repeat the member block: a start resolves every favourite in an
+    /// archive through that read.
+    #[test]
+    fn every_skip_is_in_the_log_with_the_member_or_the_archive_and_its_reason() {
+        let games = temp("skips-in-the-log");
+        let broken = games.join("Broken.zip");
+        std::fs::write(&broken, b"broken archive").unwrap();
+        let held = games.join("Held.zip");
+        std::fs::write(
+            &held,
+            crate::zip::tests_archive(&["Game.d64", "inner.zip"], false),
+        )
+        .unwrap();
+        // The log may not exist yet on a fresh machine; `note` creates it.
+        let log_since = |from: usize| {
+            let log = std::fs::read_to_string(crate::LOG_PATH).unwrap_or_default();
+            log[from.min(log.len())..].to_string()
+        };
+        let before = log_since(0).len();
+        let library = Library::open(&system(&games)).unwrap();
+        let mut warnings = Vec::new();
+        let cache = build_system_checked(&library, &mut warnings).unwrap();
+        assert_eq!(cache.summary(&library.start()).games, 1);
+        assert_eq!(warnings.len(), 2, "{warnings:?}");
+        let log = log_since(before);
+        let member = format!(
+            "zip          {}: member inner.zip: nested archive member is unsupported by MiSTer Main",
+            held.display()
+        );
+        assert!(
+            log.lines().any(|line| line == member),
+            "no line {member:?} in the log"
+        );
+        let skipped = format!("zip          {}: skipped: ", broken.display());
+        let error = log
+            .lines()
+            .find_map(|line| line.strip_prefix(&skipped))
+            .unwrap_or_else(|| panic!("no line starting {skipped:?} in the log"));
+        assert!(
+            error.contains(&broken.display().to_string()) && error.contains("malformed"),
+            "the archive line carries the complete error: {error:?}"
+        );
+        let before = log_since(0).len();
+        crate::zip::validate_member(&held.join("Game.d64")).unwrap();
+        let held_line = format!("zip          {}: ", held.display());
+        assert!(
+            !log_since(before)
+                .lines()
+                .any(|line| line.starts_with(&held_line)),
+            "the launch check wrote the archive's members again"
+        );
+        std::fs::remove_dir_all(games).unwrap();
+    }
+
+    /// An archive that fails after part of it was walked (here, one taken
+    /// away between two of its folders) is taken back whole, and the
+    /// progress figures go back with it: the dashboard must not end on more
+    /// games than the cache it announces holds. The member line its
+    /// listing put in the summary goes back too: an archive nothing is
+    /// published from is reported once, as skipped, not also as holding a
+    /// skipped member.
+    #[test]
+    fn a_skipped_archive_takes_its_progress_counts_back_with_it() {
+        let games = temp("skipped-archive-progress");
+        std::fs::write(games.join("Plain.d64"), b"rom").unwrap();
+        let archive = games.join("Gone.zip");
+        let plain = |name: &'static [u8]| crate::zip::TestEntry {
+            name,
+            flags: 0,
+            method: 0,
+            extra: &[],
+        };
+        std::fs::write(
+            &archive,
+            crate::zip::tests_archive_entries(
+                &[
+                    plain(b"a/one.d64"),
+                    plain(b"b/two.d64"),
+                    crate::zip::TestEntry {
+                        name: b"locked.d64",
+                        flags: 1,
+                        method: 0,
+                        extra: &[],
+                    },
+                ],
+                false,
+            ),
+        )
+        .unwrap();
+        let library = Library::open(&system(&games)).unwrap();
+        let mut warnings = Vec::new();
+        let mut last = None;
+        let cache = build_system_observed(
+            &library,
+            &AtomicBool::new(false),
+            &mut warnings,
+            &mut |place, folders, found, starting| {
+                if starting
+                    && matches!(place, Place::ArchiveDirectory { prefix, .. } if prefix == "b")
+                {
+                    assert_eq!(found, 1, "a/one.d64 was counted before b was entered");
+                    std::fs::remove_file(&archive).unwrap();
+                }
+                last = Some((folders, found));
+            },
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(cache.summary(&library.start()).games, 1);
+        assert_eq!(last, Some((cache.folders.len(), 1)));
+        assert_eq!(
+            warnings.len(),
+            1,
+            "the line for locked.d64 must go back with the archive: {warnings:?}"
+        );
+        assert!(
+            warnings[0].starts_with(&format!("{}: skipped: ", archive.display())),
+            "{warnings:?}"
+        );
+        std::fs::remove_dir_all(games).unwrap();
+    }
+
+    /// Main splits its target at the first `.zip`, so an archive inside an
+    /// archive can never be launched: that member is left out, the
+    /// supported member beside it is written down and counted, and the
+    /// warning says which archive and why.
+    #[test]
+    fn an_inner_archive_member_is_skipped_and_the_outer_members_are_kept() {
+        let games = temp("inner-archive-member");
+        let outer = games.join("Outer.zip");
+        std::fs::write(
+            &outer,
+            crate::zip::tests_archive(&["Game.d64", "inner.zip", "Other.d64"], false),
+        )
+        .unwrap();
+        let library = Library::open(&system(&games)).unwrap();
+        let mut warnings = Vec::new();
+        let cache = build_system_checked(&library, &mut warnings).unwrap();
+        assert_eq!(cache.summary(&library.start()).games, 2);
+        let inside = cache.get(&Place::Archive(outer.clone())).unwrap();
+        assert_eq!(
+            inside
+                .rows
+                .iter()
+                .map(|row| row.name.as_str())
+                .collect::<Vec<_>>(),
+            ["Game", "Other"]
+        );
+        assert!(inside.rows.iter().all(|row| !row.is_folder()));
+        assert_eq!(cache.get(&library.start()).unwrap().rows[0].below, Some(2));
+        assert_eq!(
+            warnings,
+            [format!(
+                "{}: 1 member skipped: nested archive member is unsupported by MiSTer Main",
+                outer.display()
+            )]
+        );
+        std::fs::remove_dir_all(games).unwrap();
+    }
+
+    /// A folder inside an archive that sits past the depth the walk goes
+    /// is left out with everything under it, with a warning naming the
+    /// archive and the folder, and the archive's other members are still
+    /// published beside the games outside it: a condition confined to some
+    /// members must not take the archive, let alone the system, down with
+    /// it. A folder on the card that deep stays the system's failure it has
+    /// always been.
+    #[test]
+    fn a_folder_past_the_depth_limit_inside_an_archive_is_skipped_with_what_is_under_it() {
+        let games = temp("archive-depth-overflow");
+        let deep = format!("{}game.d64", "d/".repeat(MAX_DEPTH + 1));
+        let archive = games.join("Deep.zip");
+        std::fs::write(
+            &archive,
+            crate::zip::tests_archive(&[deep.as_str(), "shallow.d64"], false),
+        )
+        .unwrap();
+        std::fs::write(games.join("Beside.d64"), b"x").unwrap();
+        let library = Library::open(&system(&games)).unwrap();
+        let mut warnings = Vec::new();
+        let cache = build_system_checked(&library, &mut warnings).unwrap();
+        assert_eq!(cache.summary(&library.start()).games, 2);
+        let root = cache.get(&library.start()).unwrap();
+        assert_eq!(
+            root.rows
+                .iter()
+                .map(|row| (row.name.as_str(), row.below))
+                .collect::<Vec<_>>(),
+            [("Deep", Some(1)), ("Beside", None)],
+            "the archive is published with its shallow member"
+        );
+        let inside = cache.get(&Place::Archive(archive.clone())).unwrap();
+        assert_eq!(
+            inside
+                .rows
+                .iter()
+                .map(|row| row.name.as_str())
+                .collect::<Vec<_>>(),
+            ["d", "shallow"]
+        );
+        // The archive sits one level below the system, so the folder that
+        // would be one level past the limit is the one with MAX_DEPTH
+        // segments: the level above it is written down, empty, and nothing
+        // from there on is.
+        let prefix = |segments: usize| vec!["d"; segments].join("/");
+        let folder = |segments: usize| {
+            cache.get(&Place::ArchiveDirectory {
+                archive: archive.clone(),
+                prefix: prefix(segments),
+            })
+        };
+        let last = folder(MAX_DEPTH - 1).expect("the folder above the limit");
+        assert!(last.rows.is_empty(), "{:?}", last.rows);
+        assert_eq!(last.games, 0);
+        assert!(folder(MAX_DEPTH).is_none());
+        assert!(folder(MAX_DEPTH + 1).is_none());
+        assert_eq!(
+            warnings,
+            [format!(
+                "{}/{}: skipped: {}",
+                archive.display(),
+                prefix(MAX_DEPTH),
+                crate::browse::member_depth_reason()
+            )]
+        );
+
+        let folders = temp("folder-depth-overflow");
+        let mut deep = folders.clone();
+        for _ in 0..=MAX_DEPTH {
+            deep.push("d");
+        }
+        std::fs::create_dir_all(&deep).unwrap();
+        std::fs::write(deep.join("game.d64"), b"x").unwrap();
+        let library = Library::open(&system(&folders)).unwrap();
+        let mut warnings = Vec::new();
+        let error = build_system_checked(&library, &mut warnings).unwrap_err();
+        assert!(
+            error.to_string().contains("maximum folder depth"),
+            "{error}"
+        );
+        assert!(warnings.is_empty(), "{warnings:?}");
+        std::fs::remove_dir_all(games).unwrap();
+        std::fs::remove_dir_all(folders).unwrap();
     }
 
     #[test]
@@ -1433,7 +2312,8 @@ mod tests {
         let store = temp("index-install-rollback");
         let old = staged("Test");
         let old_index = Index::new();
-        save_system_with_index(&store, "Test", &old.cache, &old_index).unwrap();
+        save_system_with_index(&store, CacheKind::Gamelist, "Test", &old.cache, &old_index)
+            .unwrap();
         let old_cache_bytes = std::fs::read(system_path(&store, "Test")).unwrap();
         let old_index_bytes = std::fs::read(index_path(&store)).unwrap();
         let mut next = Index::new();
@@ -1487,7 +2367,7 @@ mod tests {
         let store = temp("cancel-staged-pair");
         let cache = staged("Test");
         let index = Index::new();
-        save_system_with_index(&store, "Test", &cache.cache, &index).unwrap();
+        save_system_with_index(&store, CacheKind::Gamelist, "Test", &cache.cache, &index).unwrap();
         let old_cache_bytes = std::fs::read(system_path(&store, "Test")).unwrap();
         let old_index_bytes = std::fs::read(index_path(&store)).unwrap();
         let prepared = stage_transactional(
@@ -1516,7 +2396,7 @@ mod tests {
         std::fs::write(games.join("Game.d64"), b"rom").unwrap();
         let library = Library::open(&system(&games)).unwrap();
         let cancelled = AtomicBool::new(false);
-        let cache = build_system_controlled(&library, &cancelled, &mut |_, _| {
+        let cache = build_system_controlled(&library, &cancelled, &mut Vec::new(), &mut |_, _| {
             cancelled.store(true, Ordering::Relaxed)
         })
         .unwrap();
@@ -1539,6 +2419,7 @@ mod tests {
             &mut cache,
             &mut Vec::new(),
             &AtomicBool::new(false),
+            &mut Vec::new(),
             &mut 0,
             &mut 0,
             &mut |_, _, _, _| {},
@@ -1547,5 +2428,201 @@ mod tests {
         assert!(error.to_string().contains("maximum folder depth"));
         assert!(cache.folders.is_empty());
         std::fs::remove_dir_all(games).unwrap();
+    }
+
+    fn accepted_state(marker: u32) -> PackSourceState {
+        PackSourceState {
+            accepted: Some(AcceptedSource {
+                docs_root: "/docs".into(),
+                language: Some("en".into()),
+                signature: None,
+                cache_marker: marker,
+                health: crate::artwork_pack::ProviderHealth::Ready,
+                diagnostics: Vec::new(),
+                skipped_entries: 2,
+            }),
+            declined: None,
+        }
+    }
+
+    /// The rows, the decision and the prepared presentation of one system
+    /// are one result: staged together, installed together, and when the
+    /// last of them cannot be installed every earlier one goes back to
+    /// what it was. The marker the decision records is the marker the
+    /// installed rows read back with, or the next entry would find its
+    /// own preparation "changed".
+    #[test]
+    fn pack_state_is_installed_with_the_rows_and_rolls_back_with_them() {
+        let store = temp("pack-state-transaction");
+        let rows_path = artwork_pack_system_path(&store, "Test");
+        let source_path = artwork_pack_source_path(&store, "Test");
+        let prepared_path = artwork_pack_prepared_path(&store, "Test");
+        std::fs::create_dir_all(rows_path.parent().unwrap()).unwrap();
+        std::fs::write(&rows_path, b"old-rows").unwrap();
+        std::fs::write(&source_path, b"old-decision").unwrap();
+        std::fs::write(&prepared_path, b"old-prepared").unwrap();
+        let cancelled = AtomicBool::new(false);
+        let prepared = stage_transactional_with_tag(
+            &store,
+            CacheKind::ArtworkPack,
+            vec![staged("Test")],
+            &cancelled,
+            "with-state",
+        )
+        .unwrap()
+        .unwrap();
+        let marker = prepared.markers()[0];
+        let prepared = prepared
+            .with_pack_state(
+                &store,
+                "Test",
+                &encode_pack_source(&accepted_state(marker)).unwrap(),
+                &encode_pack_prepared(&PackPreparedMap::new()).unwrap(),
+            )
+            .unwrap();
+        assert_eq!(prepared.files.len(), 3);
+        assert_eq!(std::fs::read(&rows_path).unwrap(), b"old-rows");
+        assert_eq!(std::fs::read(&source_path).unwrap(), b"old-decision");
+        assert_eq!(std::fs::read(&prepared_path).unwrap(), b"old-prepared");
+        assert!(
+            prepared.with_pack_state(&store, "Test", b"", b"").is_err(),
+            "one state per system per transaction"
+        );
+
+        // Block the last file's backup so the install fails after the rows
+        // and the prepared presentation have already gone in.
+        let prepared = stage_transactional_with_tag(
+            &store,
+            CacheKind::ArtworkPack,
+            vec![staged("Test")],
+            &cancelled,
+            "with-state-blocked",
+        )
+        .unwrap()
+        .unwrap()
+        .with_pack_state(
+            &store,
+            "Test",
+            &encode_pack_source(&accepted_state(marker)).unwrap(),
+            &encode_pack_prepared(&PackPreparedMap::new()).unwrap(),
+        )
+        .unwrap();
+        let blocked = prepared.files[2].backup_path.clone();
+        assert_eq!(prepared.files[2].final_path, source_path);
+        std::fs::create_dir(&blocked).unwrap();
+        let error = prepared.install().unwrap_err();
+        assert!(
+            error.to_string().contains("backing up the previous cache"),
+            "{error}"
+        );
+        assert_eq!(std::fs::read(&rows_path).unwrap(), b"old-rows");
+        assert_eq!(std::fs::read(&source_path).unwrap(), b"old-decision");
+        assert_eq!(std::fs::read(&prepared_path).unwrap(), b"old-prepared");
+        std::fs::remove_dir(&blocked).unwrap();
+
+        let prepared = stage_transactional_with_tag(
+            &store,
+            CacheKind::ArtworkPack,
+            vec![staged("Test")],
+            &cancelled,
+            "with-state-installed",
+        )
+        .unwrap()
+        .unwrap();
+        let marker = prepared.markers()[0];
+        let (_, warnings) = prepared
+            .with_pack_state(
+                &store,
+                "Test",
+                &encode_pack_source(&accepted_state(marker)).unwrap(),
+                &encode_pack_prepared(&PackPreparedMap::new()).unwrap(),
+            )
+            .unwrap()
+            .install()
+            .unwrap();
+        assert!(warnings.is_empty());
+        let (_, installed) = load_artwork_pack_data_marked(&store, "Test")
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            installed, marker,
+            "the marker written down is the marker the rows read back with"
+        );
+        assert_eq!(crc32fast::hash(&std::fs::read(&rows_path).unwrap()), marker);
+        assert_eq!(
+            load_pack_source_state(&store, "Test").unwrap().unwrap(),
+            accepted_state(marker)
+        );
+        assert!(load_pack_prepared_map(&store, "Test")
+            .unwrap()
+            .unwrap()
+            .is_empty());
+        assert_eq!(
+            std::fs::read_dir(rows_path.parent().unwrap())
+                .unwrap()
+                .count(),
+            3,
+            "no staging or backup file is left behind"
+        );
+        std::fs::remove_dir_all(store).ok();
+    }
+
+    /// A state file that is not there says nothing, as the other cache
+    /// files do. One that does not decode was written under another
+    /// version and reads as no state: the consequence is a question or a
+    /// preparation, which is visible, rather than rows drawn from a
+    /// decision nobody made. One that is there but cannot be read is an
+    /// error and not no state: reading it as no state would let a
+    /// question or a preparation write over a decision that still exists.
+    #[test]
+    fn a_stale_state_file_reads_as_no_state_and_an_unreadable_one_is_an_error() {
+        let store = temp("pack-state-loading");
+        assert!(load_pack_source_state(&store, "Test").unwrap().is_none());
+        assert!(load_pack_prepared_map(&store, "Test").unwrap().is_none());
+        save_pack_state(&store, "Test", &accepted_state(9), &PackPreparedMap::new()).unwrap();
+        assert_eq!(
+            load_pack_source_state(&store, "Test").unwrap().unwrap(),
+            accepted_state(9)
+        );
+        // Cut short, as a write that did not finish leaves it: the
+        // version at the front is this one, so the decision is not read
+        // as never taken; the error names the file.
+        let source_path = artwork_pack_source_path(&store, "Test");
+        let written = std::fs::read(&source_path).unwrap();
+        std::fs::write(&source_path, &written[..written.len() / 2]).unwrap();
+        let error = load_pack_source_state(&store, "Test").unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("Artwork Pack state is malformed at"),
+            "{error}"
+        );
+        std::fs::write(&source_path, b"").unwrap();
+        assert!(
+            load_pack_source_state(&store, "Test").is_err(),
+            "an empty file has no version to read: not no state"
+        );
+        let stale = postcard::to_stdvec(&PackSourceFile {
+            format: PACK_SOURCE_FORMAT + 1,
+            state: accepted_state(9),
+        })
+        .unwrap();
+        std::fs::write(&source_path, stale).unwrap();
+        assert!(
+            load_pack_source_state(&store, "Test").unwrap().is_none(),
+            "a state written under another policy is prepared again, not misread"
+        );
+        std::fs::remove_file(&source_path).unwrap();
+        std::fs::create_dir(&source_path).unwrap();
+        let error = load_pack_source_state(&store, "Test").unwrap_err();
+        assert!(
+            error.to_string().contains("reading the Artwork Pack state"),
+            "{error}"
+        );
+        assert!(
+            load_pack_prepared_map(&store, "Test").unwrap().is_some(),
+            "the other file is read on its own"
+        );
+        std::fs::remove_dir_all(store).ok();
     }
 }

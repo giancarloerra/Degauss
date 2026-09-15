@@ -111,6 +111,13 @@ pub struct Request {
     pub cache_dir: PathBuf,
     pub forced: bool,
     pub artwork_pack: bool,
+    /// The Pack root is an Automatic acceptance, prepared only when the
+    /// user says so: a forced read, or one with no rows to reuse, reads
+    /// the system's folders the source-neutral way into the Pack cache,
+    /// without the Pack, and the next entry asks about the changed rows.
+    /// An explicit choice is prepared by the source worker instead and
+    /// never has its rows read here.
+    pub automatic_pack: bool,
     pub index: Index,
     pub retain_cache: bool,
 }
@@ -280,17 +287,18 @@ fn run(
         return Ok(None);
     }
     let start = crate::browse::start_for(&request.config);
-    let cached = if request.artwork_pack {
-        crate::cache::load_artwork_pack_system(&request.cache_dir, &request.id)
-    } else if !request.forced {
-        crate::cache::load_system(&request.cache_dir, &request.id)
-    } else {
+    let source_neutral = request.artwork_pack && request.automatic_pack;
+    let cached = if request.forced && (!request.artwork_pack || source_neutral) {
         None
+    } else if request.artwork_pack {
+        crate::cache::load_artwork_pack_system(&request.cache_dir, &request.id)
+    } else {
+        crate::cache::load_system(&request.cache_dir, &request.id)
     };
     if cancelled.load(Ordering::Relaxed) {
         return Ok(None);
     }
-    if request.artwork_pack && cached.is_none() {
+    if request.artwork_pack && !source_neutral && cached.is_none() {
         return Err(DegaussError::unsupported(
             "Artwork Pack cache",
             format!(
@@ -312,11 +320,18 @@ fn run(
             warnings: Vec::new(),
         }));
     }
-    let library = Library::open_with_names(&request.config, std::mem::take(&mut request.names))?;
+    let names = std::mem::take(&mut request.names);
+    let library = if source_neutral {
+        Library::open_source_neutral(&request.config, names)?
+    } else {
+        Library::open_with_names(&request.config, names)?
+    };
     let mut last_progress = Instant::now() - PROGRESS_INTERVAL;
+    let mut warnings = Vec::new();
     let Some(cache) = crate::cache::build_system_observed(
         &library,
         cancelled,
+        &mut warnings,
         &mut |place, folders, games, _| {
             if last_progress.elapsed() >= PROGRESS_INTERVAL {
                 let folder = match place {
@@ -345,9 +360,15 @@ fn run(
     let previous = request.index.systems.insert(request.id.clone(), summary);
     // Keep the released complete-system transaction unchanged. Cancellation
     // during publication waits for its result, rather than interrupting it.
+    let kind = if source_neutral {
+        crate::cache::CacheKind::ArtworkPack
+    } else {
+        crate::cache::CacheKind::Gamelist
+    };
     let publication = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         crate::cache::save_system_with_index(
             &request.cache_dir,
+            kind,
             &request.id,
             &cache,
             &request.index,
@@ -359,8 +380,8 @@ fn run(
             "index publication panicked; inspect the cache before retrying",
         ))
     });
-    let warnings = match publication {
-        Ok(warnings) => warnings,
+    match publication {
+        Ok(published) => warnings.extend(published),
         Err(error) => {
             if let Some(previous) = previous {
                 request.index.systems.insert(request.id.clone(), previous);
@@ -369,7 +390,7 @@ fn run(
             }
             return Err(error);
         }
-    };
+    }
     Ok(Some(Ready {
         summary: Some(summary),
         folders: cache.folders.len(),
@@ -415,6 +436,7 @@ mod tests {
             cache_dir: root.join("cache"),
             forced: true,
             artwork_pack: false,
+            automatic_pack: false,
             index: Index::new(),
             retain_cache: true,
         };
@@ -491,8 +513,55 @@ mod tests {
         std::fs::remove_dir_all(root).unwrap();
     }
 
+    /// One corrupt archive must not cost the system its healthy games: the
+    /// scan completes, the warning names the archive, and what is published
+    /// is the healthy subset with the same count the worker reports.
     #[test]
-    fn corrupt_zip_keeps_released_whole_system_failure_semantics() {
+    fn corrupt_zip_is_skipped_and_the_healthy_subset_is_published() {
+        let (root, mut request) = fixture();
+        let (sender, _) = mpsc::sync_channel(EVENT_CAPACITY);
+        assert!(run(&mut request, &sender, &AtomicBool::new(false))
+            .unwrap()
+            .is_some());
+        let broken = root.join("games/Broken.zip");
+        std::fs::write(&broken, b"broken").unwrap();
+        let ready = run(&mut request, &sender, &AtomicBool::new(false))
+            .unwrap()
+            .expect("not cancelled");
+        assert_eq!(ready.games, 1);
+        assert_eq!(ready.summary.unwrap().games, 1);
+        assert_eq!(ready.warnings.len(), 1, "{:?}", ready.warnings);
+        assert!(
+            ready.warnings[0].starts_with(&format!("{}: skipped: ", broken.display())),
+            "{:?}",
+            ready.warnings
+        );
+        assert_eq!(request.index.systems["Test"].games, 1);
+        let published = crate::cache::load_system(&request.cache_dir, "Test").unwrap();
+        assert_eq!(
+            published
+                .summary(&crate::browse::start_for(&request.config))
+                .games,
+            1
+        );
+        assert!(!published
+            .folders
+            .contains_key(&crate::browse::Place::Archive(broken).key()));
+        assert_eq!(
+            crate::cache::load_index(&request.cache_dir)
+                .unwrap()
+                .systems["Test"]
+                .games,
+            1
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    /// A system whose root cannot be read is a failed transaction, not an
+    /// empty success: the previous cache and index bytes stay exactly as
+    /// they were, and the index still carries the previous count.
+    #[test]
+    fn root_read_failure_keeps_the_previous_cache_and_index() {
         let (root, mut request) = fixture();
         let (sender, _) = mpsc::sync_channel(EVENT_CAPACITY);
         assert!(run(&mut request, &sender, &AtomicBool::new(false))
@@ -501,8 +570,14 @@ mod tests {
         let cache_path = crate::cache::system_path(&request.cache_dir, "Test");
         let before = std::fs::read(&cache_path).unwrap();
         let index_before = std::fs::read(crate::cache::index_path(&request.cache_dir)).unwrap();
-        std::fs::write(root.join("games/Broken.zip"), b"broken").unwrap();
-        assert!(run(&mut request, &sender, &AtomicBool::new(false)).is_err());
+        std::fs::remove_dir_all(root.join("games")).unwrap();
+        std::fs::write(root.join("games"), b"not a directory").unwrap();
+        let error = match run(&mut request, &sender, &AtomicBool::new(false)) {
+            Err(error) => error,
+            Ok(_) => panic!("an unreadable system root must fail the transaction"),
+        };
+        assert!(error.to_string().contains("reading folder"), "{error}");
+        assert_eq!(request.index.systems["Test"].games, 1);
         assert_eq!(std::fs::read(cache_path).unwrap(), before);
         assert_eq!(
             std::fs::read(crate::cache::index_path(&request.cache_dir)).unwrap(),
@@ -544,6 +619,56 @@ mod tests {
             .to_string()
             .contains("prepared system cache is missing or unreadable"));
         assert!(!dir.exists());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    /// An Automatic acceptance is read the ordinary way by a forced
+    /// build: its rows go into the Pack cache, without the Pack and
+    /// without gamelist presentation, and nothing written down about
+    /// its Pack is touched. Reading it with the Pack here would prepare
+    /// a Pack the user is asked about at the next entry instead.
+    #[test]
+    fn a_forced_read_of_an_automatic_pack_system_rewrites_its_rows_without_the_pack() {
+        let (root, mut request) = fixture();
+        std::fs::write(
+            root.join("games/gamelist.xml"),
+            "<gameList><game><path>./One.rom</path><name>Listed One</name></game></gameList>",
+        )
+        .unwrap();
+        request.artwork_pack = true;
+        request.automatic_pack = true;
+        let dir = request.cache_dir.clone();
+        let state_path = crate::cache::artwork_pack_source_path(&dir, "Test");
+        std::fs::create_dir_all(state_path.parent().unwrap()).unwrap();
+        std::fs::write(&state_path, b"left alone").unwrap();
+        let mut job = start(request).unwrap();
+        let Event::Ready {
+            summary: Some(summary),
+            cache: Some(cache),
+            ..
+        } = terminal(&mut job)
+        else {
+            panic!("the rows are read");
+        };
+        assert_eq!(summary.games, 1);
+        assert!(
+            !crate::cache::system_path(&dir, "Test").exists(),
+            "the rows belong to the Pack cache, not the ordinary file"
+        );
+        let data = crate::cache::load_artwork_pack_data(&dir, "Test").expect("Pack cache rows");
+        assert!(
+            !data.fingerprints_complete && data.fingerprints.is_empty(),
+            "rows read without the Pack are not a preparation"
+        );
+        assert_eq!(data.cache.folders.len(), cache.folders.len());
+        let names: Vec<&str> = cache
+            .folders
+            .values()
+            .flat_map(|folder| folder.rows.iter())
+            .map(|row| row.name.as_str())
+            .collect();
+        assert_eq!(names, ["One"], "no gamelist presentation is bound");
+        assert_eq!(std::fs::read(&state_path).unwrap(), b"left alone");
         std::fs::remove_dir_all(root).unwrap();
     }
 
