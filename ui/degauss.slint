@@ -2083,7 +2083,7 @@ export component DegaussWindow inherits Window {
         }
 
         message-panel := Rectangle {
-            visible: root.overlay != "" && (root.screen < 2 || root.screen == 5);
+            visible: root.overlay != "" && (root.screen < 2 || root.screen == 4 || root.screen == 5);
             property <bool> index-report: root.operation-kind == 1 && root.operation-details;
             property <bool> has-hint: root.overlay-dismissible && !root.index-active;
             property <float> max-scroll: max(0, (message-text.preferred-height - message-viewport.height) / 1px);
