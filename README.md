@@ -40,7 +40,7 @@ comparisons labelled separately. The 0.7.0 additions are labelled by their
 release, while unchanged screens retain their 0.6.0 captures. CRT presentation
 is applied for the README. Older examples remain labelled by release.
 
-### Current interface (0.7.0)
+### Current interface (0.7.1)
 
 | | | |
 |---|---|---|
