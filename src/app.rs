@@ -41,6 +41,7 @@ use crate::input::{
 };
 use crate::list_state::ListState;
 use crate::metrics::{FrameTimer, StartupTimings};
+use crate::name_display::GameNameDisplay;
 use crate::name_keyboard::{self, Key as NameKey, Page as NamePage};
 #[cfg(test)]
 use crate::options::OPTIONS;
@@ -307,6 +308,8 @@ fn option_operation(option: OptionId, input: OptionInput) -> OptionOperation {
         | OptionId::ShowArt
         | OptionId::ArtworkScale
         | OptionId::DetailsStyle
+        | OptionId::GameNameDisplay
+        | OptionId::FolderBrackets
         | OptionId::ShowHidden
         | OptionId::ShowEmpty
         | OptionId::ShowOther
@@ -2128,8 +2131,13 @@ fn compact_detail_text(details: &browse::Details) -> (String, String) {
     (summary, publisher)
 }
 
+#[cfg(test)]
 fn game_information(row: &browse::Row) -> String {
-    let mut text = row.name.clone();
+    game_information_named(row, &row.name)
+}
+
+fn game_information_named(row: &browse::Row, shown_name: &str) -> String {
+    let mut text = shown_name.to_string();
     let values = [
         ("Genre", row.genre.as_deref().unwrap_or("")),
         ("Publisher", row.details.publisher.as_str()),
@@ -2148,6 +2156,7 @@ fn game_information(row: &browse::Row) -> String {
 
 struct ReadingInformation {
     row: browse::Row,
+    shown_name: String,
     job: crate::information_job::Job,
     cancelling: bool,
 }
@@ -2512,6 +2521,36 @@ fn reselect(rows: &[browse::Row], remembered: Option<&str>, fallback: usize) -> 
     remembered
         .and_then(|key| rows.iter().position(|row| row_key(row) == key))
         .unwrap_or(fallback)
+}
+
+/// Order canonical rows by the name the user can currently see, without
+/// changing row identity. Full names retain the cache's established key.
+fn sort_rows_for_display(rows: &mut [browse::Row], mode: GameNameDisplay) {
+    rows.sort_by_cached_key(|row| {
+        let shown = match mode {
+            GameNameDisplay::Full => row.sort_key.clone(),
+            _ => mode.apply(&row.name).to_lowercase(),
+        };
+        (shown, row.sort_key.clone())
+    });
+}
+
+/// Apply the existing folder and favourite groups to an already ordered list.
+fn group_rows(rows: &mut [browse::Row], folders_last: bool, favorites_first: bool) {
+    // Stable, so visible alphabetical order survives inside each group.
+    rows.sort_by_key(|row| {
+        let folder = if folders_last {
+            u8::from(row.is_folder())
+        } else {
+            u8::from(!row.is_folder())
+        };
+        let favorite = if favorites_first {
+            u8::from(!row.favorite)
+        } else {
+            0
+        };
+        (folder, favorite)
+    });
 }
 
 /// The one picture that names the game under a place, from what was
@@ -3267,6 +3306,8 @@ pub struct App {
     show_art: bool,
     artwork_scale: ArtworkScale,
     details_style: DetailsStyle,
+    game_name_display: GameNameDisplay,
+    folder_brackets: bool,
     show_stats: bool,
     show_hidden: bool,
     /// Every system found, before hiding is applied. `systems` is the
@@ -3580,6 +3621,8 @@ impl App {
                 DetailsStyle::default()
             }),
         };
+        let game_name_display = settings.game_name_display.unwrap_or_default();
+        let folder_brackets = settings.folder_brackets.unwrap_or(true);
         // Margins are saved when changed and read back here. Without this the
         // Options screen would show the saved figure while the screen kept
         // the one from the config file, and the two would disagree.
@@ -3678,6 +3721,8 @@ impl App {
             show_art: settings.show_art.unwrap_or(true),
             artwork_scale,
             details_style,
+            game_name_display,
+            folder_brackets,
             show_stats: settings.show_stats.unwrap_or(config.app.show_stats),
             show_hidden: settings.show_hidden.unwrap_or(false),
             all_systems: Vec::new(),
@@ -4345,12 +4390,14 @@ impl App {
             return;
         };
         let mut row = row.clone();
+        let shown_name = self.game_name_display.apply(&row.name).into_owned();
         let request = self.information_request(&row);
         match request.and_then(crate::information_job::start) {
             Ok(job) => {
                 row.details.desc = "Reading full description...".to_string();
                 self.information = Some(ReadingInformation {
                     row: row.clone(),
+                    shown_name: shown_name.clone(),
                     job,
                     cancelling: false,
                 });
@@ -4358,7 +4405,10 @@ impl App {
             Err(error) => row.details.desc = format!("Could not read description: {error}"),
         }
         self.ui
-            .set_information_text(SharedString::from(game_information(&row)));
+            .set_information_text(SharedString::from(game_information_named(
+                &row,
+                &shown_name,
+            )));
         self.ui.set_information_offset(0.0);
         self.screen = Screen::Information;
         self.apply_geometry();
@@ -4463,7 +4513,10 @@ impl App {
             crate::information_job::Event::Cancelled => unreachable!(),
         };
         self.ui
-            .set_information_text(SharedString::from(game_information(&reading.row)));
+            .set_information_text(SharedString::from(game_information_named(
+                &reading.row,
+                &reading.shown_name,
+            )));
         self.dirty = true;
     }
 
@@ -4485,7 +4538,10 @@ impl App {
                     reading.cancelling = true;
                     reading.row.details.desc = "Stopping description read...".to_string();
                     self.ui
-                        .set_information_text(SharedString::from(game_information(&reading.row)));
+                        .set_information_text(SharedString::from(game_information_named(
+                            &reading.row,
+                            &reading.shown_name,
+                        )));
                     self.dirty = true;
                     return;
                 }
@@ -7054,25 +7110,31 @@ impl App {
                 }
             }
         }
-        // Stable, so the alphabet inside each group survives. Folders lead
-        // or trail as asked; favourites lead the things that are not
-        // folders. With both left alone this is the order the card was
-        // read in and nothing moves.
-        let folders_last = self.folders_last;
-        let favorites_first = self.favorites_first;
-        rows.sort_by_key(|row| {
-            let folder = if folders_last {
-                u8::from(row.is_folder())
-            } else {
-                u8::from(!row.is_folder())
-            };
-            let favorite = if favorites_first {
-                u8::from(!row.favorite)
-            } else {
-                0
-            };
-            (folder, favorite)
-        });
+        // Library and cache rows already arrive in canonical Full order.
+        // Preserve that exact path and cost for existing configurations.
+        if self.game_name_display != GameNameDisplay::Full {
+            sort_rows_for_display(rows, self.game_name_display);
+        }
+        group_rows(rows, self.folders_last, self.favorites_first);
+    }
+
+    /// Re-project the rows already held in memory after an Appearance change.
+    /// No library, metadata source or cache is opened here.
+    fn refresh_name_presentation(&mut self) {
+        let selected = self.here.get(self.game_list.selected()).map(row_key);
+        if self.filter.is_empty() {
+            sort_rows_for_display(&mut self.here, self.game_name_display);
+            group_rows(&mut self.here, self.folders_last, self.favorites_first);
+            self.game_list = ListState::new(self.here.len(), self.geometry.visible);
+        } else {
+            sort_rows_for_display(&mut self.all_here, self.game_name_display);
+            group_rows(&mut self.all_here, self.folders_last, self.favorites_first);
+            self.apply_filter();
+        }
+        let at = reselect(&self.here, selected.as_deref(), self.game_list.selected());
+        self.game_list.select(at);
+        self.apply_geometry();
+        self.touch_selection();
     }
 
     fn show_here(&mut self) {
@@ -9166,6 +9228,21 @@ impl App {
                 self.details_style = DetailsStyle::ALL[at];
                 self.settings.details_style = Some(self.details_style.setting().to_string());
             }
+            OptionId::GameNameDisplay => {
+                let at = step(
+                    self.game_name_display.index(),
+                    delta,
+                    GameNameDisplay::ALL.len(),
+                );
+                self.game_name_display = GameNameDisplay::ALL[at];
+                self.settings.game_name_display = Some(self.game_name_display);
+                self.refresh_name_presentation();
+            }
+            OptionId::FolderBrackets => {
+                self.folder_brackets = !self.folder_brackets;
+                self.settings.folder_brackets = Some(self.folder_brackets);
+                self.touch_selection();
+            }
             OptionId::ShowStats => {
                 self.show_stats = !self.show_stats;
                 self.settings.show_stats = Some(self.show_stats);
@@ -9337,6 +9414,8 @@ impl App {
             OptionId::ShowArt => on_off(self.show_art),
             OptionId::ArtworkScale => self.artwork_scale.shown().to_string(),
             OptionId::DetailsStyle => self.details_style.shown().to_string(),
+            OptionId::GameNameDisplay => self.game_name_display.label().to_string(),
+            OptionId::FolderBrackets => on_off(self.folder_brackets),
             OptionId::ShowStats => on_off(self.show_stats),
             OptionId::Present => capitalised(self.present_label),
             OptionId::ShowHidden => on_off(self.show_hidden),
@@ -9850,7 +9929,7 @@ impl App {
             match self.browsing {
                 Browsing::Games => {
                     if let Some(row) = self.here.get(self.game_list.selected()) {
-                        return row.name.clone();
+                        return self.game_name_display.apply(&row.name).into_owned();
                     }
                 }
                 Browsing::Systems => {
@@ -10186,7 +10265,7 @@ impl App {
             Browsing::Games => self
                 .here
                 .iter()
-                .map(|row| first_letter(&row.sort_key))
+                .map(|row| first_letter(self.game_name_display.apply(&row.name).as_ref()))
                 .collect(),
             Browsing::Systems => self
                 .systems
@@ -10242,7 +10321,13 @@ impl App {
             Browsing::Games => self
                 .here
                 .iter()
-                .map(|row| (first_letter(&row.sort_key), row.is_folder(), row.favorite))
+                .map(|row| {
+                    (
+                        first_letter(self.game_name_display.apply(&row.name).as_ref()),
+                        row.is_folder(),
+                        row.favorite,
+                    )
+                })
                 .collect(),
             Browsing::Systems => self
                 .systems
@@ -10273,10 +10358,11 @@ impl App {
             self.here = std::mem::take(&mut self.all_here);
         } else {
             let wanted = self.filter.as_str();
+            let mode = self.game_name_display;
             self.here = self
                 .all_here
                 .iter()
-                .filter(|row| squashed(&row.name).contains(wanted))
+                .filter(|row| squashed(mode.apply(&row.name).as_ref()).contains(wanted))
                 .cloned()
                 .collect();
         }
@@ -14683,7 +14769,7 @@ impl App {
                                 self.open_system_ref()
                                     .and_then(|system| self.system_logo(system))
                             }),
-                            row.name.clone(),
+                            self.game_name_display.apply(&row.name).into_owned(),
                             heart,
                             game_art,
                         )
@@ -15019,14 +15105,17 @@ impl App {
                                 self.row_cover_for(wanted, &mut gallery_budget);
                             gallery_pending |= deferred;
                             let row = &self.here[index];
+                            let shown_name = self.game_name_display.apply(&row.name);
                             rows.push(Row {
                                 // A folder is marked as one. Nothing else in
                                 // the list says which rows can be entered.
-                                title: SharedString::from(if row.is_folder() {
-                                    format!("[ {} ]", row.name)
-                                } else {
-                                    row.name.clone()
-                                }),
+                                title: SharedString::from(
+                                    if row.is_folder() && self.folder_brackets {
+                                        format!("[ {shown_name} ]")
+                                    } else {
+                                        shown_name.into_owned()
+                                    },
+                                ),
                                 favorite: browse_row_favorite(
                                     self.layout,
                                     row.favorite,

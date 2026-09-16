@@ -746,6 +746,8 @@ require **A** and confirmation, never a sideways press.
 | Appearance | View | The global default for places without a custom view: Details, Tiled, Carousel, List, Multi List or Gallery |
 | Appearance | Reset All Custom Views | With A and confirmation, remove every place-specific view without changing the global View setting |
 | Appearance | Details Style | How Details shares the screen while browsing games. Information (default) keeps the list beside a picture of about 42% of the width, with the compact summary under it; Large Artwork gives the picture about 62% and the whole column height, with no lines under it |
+| Appearance | Game Name Display | Full (default), remove parenthesised tags, remove square-bracketed tags, remove both, or retain only recognised region and/or disc-index tags. This changes presentation, sorting and search only; names stored in files and caches are unchanged |
+| Appearance | Folder Brackets | On by default. Turn off only Degauss's outer `[ name ]` marker for folders; square brackets that are part of the underlying name still follow Game Name Display |
 | Appearance | Text | The typeface: Smooth, Pixel (a DOS font on whole pixels), and the bolder Smooth 2 and Pixel 2 |
 | Appearance | Artwork | Turn pictures off entirely |
 | Appearance | Artwork Scale Factor | Framebuffer keeps the original square-pixel fit and is the default. 4:3 and 16:9 correct game artwork for that physical display shape in Details, Tiled, Carousel and Gallery, including a folder showing its game's artwork. Category logos, system logos and the screensaver are unchanged |
