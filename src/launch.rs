@@ -34,11 +34,21 @@
 
 use std::path::{Path, PathBuf};
 
+use sha1::{Digest, Sha1};
+
 use crate::config::{LaunchRule, SystemConfig};
 use crate::error::{DegaussError, Result};
 
 /// Where Main listens for commands.
 pub const CMD_FIFO: &str = "/dev/MiSTer_cmd";
+
+const AMIGAVISION_2026_04_GAMES_BYTES: usize = 38_497;
+const AMIGAVISION_2026_04_GAMES_SHA1: [u8; 20] = [
+    0x7a, 0x84, 0x4c, 0x5b, 0xca, 0x31, 0xa6, 0xf6, 0xc4, 0x9f, 0x16, 0x2a, 0xd5, 0xe3, 0xdd, 0x5f,
+    0x6b, 0x62, 0x01, 0xf6,
+];
+const AMIGAVISION_2026_04_LAUNCHES: &[u8] =
+    include_bytes!("../assets/amigavision-2026-04-launches.txt");
 
 /// One action inside an MGL.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -134,7 +144,7 @@ pub fn plan_amiga_vision(
         command: format!("load_core {mgl_path_str}\n"),
         boot_file: Some((
             install.join("shared").join("ags_boot"),
-            latin1(&format!("{title}\n"))?,
+            amiga_vision_boot_title(install, title)?,
         )),
     })
 }
@@ -203,6 +213,79 @@ fn latin1(text: &str) -> Result<Vec<u8>> {
             })
         })
         .collect()
+}
+
+fn amiga_vision_lines(bytes: &[u8]) -> impl Iterator<Item = &[u8]> {
+    bytes.split(|byte| *byte == b'\n').filter_map(|line| {
+        let line = line.strip_suffix(b"\r").unwrap_or(line);
+        (!line.is_empty()).then_some(line)
+    })
+}
+
+fn amiga_vision_boot_title(install: &Path, title: &str) -> Result<Vec<u8>> {
+    let mut original = latin1(title)?;
+    let games_path = install.join("listings").join("games.txt");
+    let Ok(metadata) = std::fs::metadata(&games_path) else {
+        original.push(b'\n');
+        return Ok(original);
+    };
+    if metadata.len() != AMIGAVISION_2026_04_GAMES_BYTES as u64 {
+        original.push(b'\n');
+        return Ok(original);
+    }
+    let Ok(games) = std::fs::read(&games_path) else {
+        original.push(b'\n');
+        return Ok(original);
+    };
+    if Sha1::digest(&games).as_slice() != AMIGAVISION_2026_04_GAMES_SHA1 {
+        original.push(b'\n');
+        return Ok(original);
+    }
+
+    let Some(index) = amiga_vision_lines(&games).position(|line| line == original) else {
+        original.push(b'\n');
+        return Ok(original);
+    };
+    let Some(mapped) = amiga_vision_lines(AMIGAVISION_2026_04_LAUNCHES).nth(index) else {
+        return Err(DegaussError::malformed(
+            "AmigaVision launch map",
+            games_path,
+            format!("missing entry {} for {title:?}", index + 1),
+        ));
+    };
+    let Some((&kind, canonical)) = mapped.split_first() else {
+        return Err(DegaussError::malformed(
+            "AmigaVision launch map",
+            games_path,
+            format!("empty entry {} for {title:?}", index + 1),
+        ));
+    };
+    let Some(canonical) = canonical.strip_prefix(b"\t") else {
+        return Err(DegaussError::malformed(
+            "AmigaVision launch map",
+            games_path,
+            format!("invalid entry {} for {title:?}", index + 1),
+        ));
+    };
+    if kind == b'I' {
+        return Err(DegaussError::unsupported(
+            "AmigaVision direct launch",
+            format!(
+                "{title:?} is listed by AmigaVision under known issues and must be opened from the AmigaVision menu"
+            ),
+        ));
+    }
+    if kind != b'G' || canonical.is_empty() {
+        return Err(DegaussError::malformed(
+            "AmigaVision launch map",
+            games_path,
+            format!("invalid entry {} for {title:?}", index + 1),
+        ));
+    }
+
+    let mut boot_title = canonical.to_vec();
+    boot_title.push(b'\n');
+    Ok(boot_title)
 }
 
 /// Build the MGL document. `rbf` is MiSTer's own core reference, e.g.
@@ -757,6 +840,9 @@ mod tests {
     use super::*;
     use crate::config::LaunchRule;
 
+    const AMIGAVISION_2026_04_GAMES: &[u8] =
+        include_bytes!("../tests/fixtures/amigavision-2026-04-games.txt");
+
     fn rule(exts: &[&str], kind: &str, index: u8, delay: u8) -> LaunchRule {
         LaunchRule {
             extensions: exts.iter().map(|s| s.to_string()).collect(),
@@ -982,6 +1068,27 @@ mod tests {
             .to_string()
             .contains("JTNGP (Legacy) is not installed"));
         std::fs::remove_dir_all(root).ok();
+    fn amiga_vision_system(install: &Path) -> SystemConfig {
+        SystemConfig {
+            preserve_rbf_stem: false,
+            name: "Amiga".into(),
+            path: install.to_string_lossy().into_owned(),
+            extensions: vec![],
+            rbf: "_Computer/Minimig".into(),
+            launch: Vec::new(),
+            skip_folders: Vec::new(),
+            setname: Some("Amiga".into()),
+            extra_paths: Vec::new(),
+        }
+    }
+
+    fn amiga_vision_install(name: &str, games: &[u8]) -> PathBuf {
+        let install =
+            std::env::temp_dir().join(format!("degauss-amigavision-{name}-{}", std::process::id()));
+        std::fs::remove_dir_all(&install).ok();
+        std::fs::create_dir_all(install.join("listings")).unwrap();
+        std::fs::write(install.join("listings/games.txt"), games).unwrap();
+        install
     }
 
     #[test]
@@ -1051,6 +1158,103 @@ mod tests {
             b"B\xe9zier\n",
             "one byte for the accent, not two"
         );
+    }
+
+    #[test]
+    fn april_2026_amigavision_friendly_names_use_their_exact_launch_names() {
+        let install = amiga_vision_install("friendly", AMIGAVISION_2026_04_GAMES);
+        let system = amiga_vision_system(&install);
+
+        for (friendly, canonical) in [
+            ("1000 Miglia", b"1000 Miglia (OCS)[en]\n".as_slice()),
+            ("1869", b"1869 (AGA)[en]\n".as_slice()),
+            (
+                "Ast\u{e9}rix Operation Getafix",
+                b"Ast\xe9rix Operation Getafix (OCS)[en]\n".as_slice(),
+            ),
+        ] {
+            let plan = plan_amiga_vision(&system, &install, friendly, Path::new("/tmp/a.mgl"))
+                .expect("planned");
+            assert_eq!(plan.boot_file.expect("boot file").1, canonical);
+        }
+
+        std::fs::remove_dir_all(install).ok();
+    }
+
+    #[test]
+    fn april_2026_amigavision_demos_keep_their_existing_launch_names() {
+        let install = amiga_vision_install("demo", AMIGAVISION_2026_04_GAMES);
+        let system = amiga_vision_system(&install);
+        let title = "1001 Stolen Ideas (Airwalk)(AGA)";
+        let plan =
+            plan_amiga_vision(&system, &install, title, Path::new("/tmp/a.mgl")).expect("planned");
+
+        assert_eq!(
+            plan.boot_file.expect("boot file").1,
+            b"1001 Stolen Ideas (Airwalk)(AGA)\n"
+        );
+        std::fs::remove_dir_all(install).ok();
+    }
+
+    #[test]
+    fn other_amigavision_listings_are_not_remapped() {
+        let mut changed = AMIGAVISION_2026_04_GAMES.to_vec();
+        changed[0] = b'X';
+        let install = amiga_vision_install("changed", &changed);
+        let system = amiga_vision_system(&install);
+        let plan = plan_amiga_vision(&system, &install, "1000 Miglia", Path::new("/tmp/a.mgl"))
+            .expect("planned");
+
+        assert_eq!(plan.boot_file.expect("boot file").1, b"1000 Miglia\n");
+        std::fs::remove_dir_all(install).ok();
+    }
+
+    #[test]
+    fn april_2026_known_issue_titles_report_that_they_cannot_launch_directly() {
+        let install = amiga_vision_install("known-issue", AMIGAVISION_2026_04_GAMES);
+        let system = amiga_vision_system(&install);
+        let error = plan_amiga_vision(
+            &system,
+            &install,
+            "Dynamite D\u{fc}x",
+            Path::new("/tmp/a.mgl"),
+        )
+        .expect_err("known issue titles have no direct launcher");
+
+        assert!(error.to_string().contains("known issues"), "got: {error}");
+        std::fs::remove_dir_all(install).ok();
+    }
+
+    #[test]
+    fn an_existing_short_name_favourite_uses_the_april_2026_launch_name() {
+        let install = amiga_vision_install("favourite", AMIGAVISION_2026_04_GAMES);
+        let system = amiga_vision_system(&install);
+        let favourite_text = favorite_mgl_amiga(&system, &install, "1000 Miglia").unwrap();
+        let favourite = install.join("1000 Miglia.mgl");
+        std::fs::write(&favourite, favourite_text).unwrap();
+
+        let plan = plan(&system, &favourite, Path::new("/tmp/a.mgl")).expect("planned");
+        assert_eq!(
+            plan.boot_file.expect("boot file").1,
+            b"1000 Miglia (OCS)[en]\n"
+        );
+        std::fs::remove_dir_all(install).ok();
+    }
+
+    #[test]
+    fn april_2026_amigavision_launch_map_stays_aligned_with_its_listing() {
+        let games: Vec<_> = amiga_vision_lines(AMIGAVISION_2026_04_GAMES).collect();
+        let launches: Vec<_> = amiga_vision_lines(AMIGAVISION_2026_04_LAUNCHES).collect();
+
+        assert_eq!(games.len(), 2_670);
+        assert_eq!(launches.len(), games.len());
+        assert!(launches.iter().all(|entry| {
+            matches!(entry.first(), Some(b'G' | b'I'))
+                && entry.get(1) == Some(&b'\t')
+                && entry.len() > 2
+        }));
+        let digest: [u8; 20] = Sha1::digest(AMIGAVISION_2026_04_GAMES).into();
+        assert_eq!(digest, AMIGAVISION_2026_04_GAMES_SHA1);
     }
 
     #[test]
