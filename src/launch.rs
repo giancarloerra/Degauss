@@ -558,7 +558,13 @@ pub fn plan_with_selections(
         if !crate::core_variants::recognized_favorite(game, system)? {
             return plan(system, game, mgl_path);
         }
-        let family = crate::launch_cores::resolve(system, menu_root, selected_family)?;
+        let family = crate::launch_cores::resolve_for_version(
+            system,
+            menu_root,
+            selected_family,
+            selected_version,
+            ra_first,
+        )?;
         let core = crate::core_choices::resolve(&family, menu_root, selected_version, ra_first)?;
         if !crate::core_variants::needs_conversion(game, &core)?
             && !crate::favorites::has_home_relative_paths(game)?
@@ -577,7 +583,13 @@ pub fn plan_with_selections(
     if !needs_system_core(game) {
         return plan(system, game, mgl_path);
     }
-    let family = crate::launch_cores::resolve(system, menu_root, selected_family)?;
+    let family = crate::launch_cores::resolve_for_version(
+        system,
+        menu_root,
+        selected_family,
+        selected_version,
+        ra_first,
+    )?;
     let mut result = plan(&family, game, mgl_path)?;
     let core = crate::core_choices::resolve(&family, menu_root, selected_version, ra_first)?;
     result.mgl = crate::core_variants::apply(&result.mgl, mgl_path, &core)?;
@@ -606,7 +618,13 @@ pub fn favorite_mgl_with_selections(
     let Some(text) = favorite_mgl(system, game)? else {
         return Ok(None);
     };
-    let family = crate::launch_cores::resolve(system, menu_root, selected_family)?;
+    let family = crate::launch_cores::resolve_for_version(
+        system,
+        menu_root,
+        selected_family,
+        selected_version,
+        ra_first,
+    )?;
     let core = crate::core_choices::resolve(&family, menu_root, selected_version, ra_first)?;
     crate::core_variants::apply(&text, game, &core).map(Some)
 }
