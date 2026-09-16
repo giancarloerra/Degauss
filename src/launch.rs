@@ -298,18 +298,30 @@ pub struct LaunchPlan {
 /// been removed after discovery, and an arbitrary path must never become a
 /// core command merely because stale cache bytes named it.
 pub fn plan_core(core: &Path, menu_root: &Path) -> Result<LaunchPlan> {
-    plan_direct_launcher(core, menu_root, false)
+    plan_direct_launcher(core, menu_root, &["RBF", "MGL"])
 }
 
 /// Launch a locally installed item selected from MiSTerZine. Arcade rows
-/// point at MRAs; every other row points at the same RBF/MGL files accepted
-/// by the ordinary Cores browser.
+/// point at MRAs; every other row points at RBFs. Matching establishes which
+/// kind applies before this final launch-boundary check.
 pub fn plan_misterzine(item: &Path, menu_root: &Path) -> Result<LaunchPlan> {
-    plan_direct_launcher(item, menu_root, true)
+    plan_direct_launcher(item, menu_root, &["RBF", "MRA"])
 }
 
-fn plan_direct_launcher(core: &Path, menu_root: &Path, allow_mra: bool) -> Result<LaunchPlan> {
-    let relative = core.strip_prefix(menu_root).map_err(|_| {
+fn plan_direct_launcher(core: &Path, menu_root: &Path, kinds: &[&str]) -> Result<LaunchPlan> {
+    if !core.is_file() {
+        return Err(DegaussError::unsupported(
+            "core launch",
+            format!("{} is no longer installed", core.display()),
+        ));
+    }
+    let canonical_root = menu_root.canonicalize().map_err(|error| {
+        DegaussError::io("checking the configured MiSTer menu", menu_root, error)
+    })?;
+    let canonical_core = core
+        .canonicalize()
+        .map_err(|error| DegaussError::io("checking the installed launcher", core, error))?;
+    let relative = canonical_core.strip_prefix(&canonical_root).map_err(|_| {
         DegaussError::unsupported(
             "core launch",
             format!("{} is outside the configured MiSTer menu", core.display()),
@@ -328,29 +340,22 @@ fn plan_direct_launcher(core: &Path, menu_root: &Path, allow_mra: bool) -> Resul
             format!("{} is outside the configured MiSTer menu", core.display()),
         ));
     }
-    if !core.is_file() {
-        return Err(DegaussError::unsupported(
-            "core launch",
-            format!("{} is no longer installed", core.display()),
-        ));
-    }
-    let supported = core
+    let supported = canonical_core
         .extension()
         .and_then(|extension| extension.to_str())
         .is_some_and(|extension| {
-            extension.eq_ignore_ascii_case("rbf")
-                || extension.eq_ignore_ascii_case("mgl")
-                || (allow_mra && extension.eq_ignore_ascii_case("mra"))
+            kinds
+                .iter()
+                .any(|kind| extension.eq_ignore_ascii_case(kind))
         });
     if !supported {
-        let kinds = if allow_mra {
-            "RBF, MGL or MRA"
-        } else {
-            "RBF or MGL"
-        };
         return Err(DegaussError::unsupported(
             "core launch",
-            format!("{} is not an {kinds} launcher", core.display()),
+            format!(
+                "{} is not an {} launcher",
+                core.display(),
+                kinds.join(" or ")
+            ),
         ));
     }
     let path = core.to_str().ok_or_else(|| {
@@ -1646,6 +1651,10 @@ mod tests {
             plan_misterzine(&arcade, &menu).unwrap().command,
             format!("load_core {}\n", arcade.display())
         );
+        assert!(plan_misterzine(&ra, &menu)
+            .unwrap_err()
+            .to_string()
+            .contains("not an RBF or MRA launcher"));
         assert!(plan_core(&arcade, &menu)
             .unwrap_err()
             .to_string()
@@ -1662,6 +1671,15 @@ mod tests {
             .unwrap_err()
             .to_string()
             .contains("outside the configured MiSTer menu"));
+        #[cfg(unix)]
+        {
+            let linked = menu.join("_Console/Linked.rbf");
+            std::os::unix::fs::symlink(root.join("outside.rbf"), &linked).unwrap();
+            assert!(plan_misterzine(&linked, &menu)
+                .unwrap_err()
+                .to_string()
+                .contains("outside the configured MiSTer menu"));
+        }
         std::fs::remove_file(&standard).unwrap();
         assert!(plan_core(&standard, &menu)
             .unwrap_err()
