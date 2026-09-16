@@ -396,7 +396,14 @@ fn load_everything(args: &Args) -> Result<Loaded> {
     // Which group each system belongs to comes from where its core
     // actually is on this card, not from what the table guessed.
     let cores = systems::CoreIndex::read(Path::new(&config.menu_root));
-    let core_catalogue = cores.catalogue(&table);
+    let core_cache_dir = cache::dir_for(&settings_path);
+    let core_catalogue = cache::load_core_catalogue(&core_cache_dir).unwrap_or_else(|| {
+        if settings.show_cores.unwrap_or(false) {
+            cores.catalogue(&table)
+        } else {
+            systems::CoreCatalogue::default()
+        }
+    });
     let systems = systems::discover_checked(&table, &roots, logo_dir.as_deref(), &cores)?;
     // The names the stock menu shows for cores, arcade boards and
     // shortcuts, when the card carries the file that defines them.

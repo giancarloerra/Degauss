@@ -457,40 +457,18 @@ fn run_cores_browser_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
     std::fs::create_dir_all(&unstable).unwrap();
     let standard = console.join("NES_20260916.rbf");
     let ra_launcher = ra.join("RA_NES.mgl");
-    let unstable_launcher = unstable.join("NES_unstable_20260916.rbf");
-    for path in [&standard, &ra_launcher, &unstable_launcher] {
-        std::fs::write(path, b"fixture").unwrap();
-    }
-    let entries = vec![
-        crate::systems::CoreEntry {
-            name: "Nintendo Entertainment System".into(),
-            category: "Console".into(),
-            variant: crate::systems::CoreVariant::Standard,
-            path: standard.clone(),
-            logo_id: Some("NES".into()),
-        },
-        crate::systems::CoreEntry {
-            name: "Nintendo Entertainment System".into(),
-            category: "Console".into(),
-            variant: crate::systems::CoreVariant::RetroAchievements,
-            path: ra_launcher.clone(),
-            logo_id: Some("NES".into()),
-        },
-        crate::systems::CoreEntry {
-            name: "Nintendo Entertainment System".into(),
-            category: "Console".into(),
-            variant: crate::systems::CoreVariant::Unstable("20260916".into()),
-            path: unstable_launcher,
-            logo_id: Some("NES".into()),
-        },
-    ];
-    let catalogue = crate::systems::CoreCatalogue {
-        format: crate::systems::CoreCatalogue::FORMAT,
-        entries,
-    };
+    let unstable_launcher = unstable.join("NES_unstable_20260916_ab12.rbf");
+    std::fs::write(&standard, b"fixture").unwrap();
+    std::fs::write(&unstable_launcher, b"fixture").unwrap();
+    std::fs::write(
+        &ra_launcher,
+        "<mistergamedescription><rbf>_RA_Cores/Cores/NES</rbf><setname same_dir=\"1\">RA_NES</setname></mistergamedescription>",
+    )
+    .unwrap();
+    std::fs::create_dir_all(ra.join("Cores")).unwrap();
+    std::fs::write(ra.join("Cores/NES.rbf"), b"fixture").unwrap();
 
     let mut app = fixture_app(&root, window, Settings::default());
-    app.core_catalogue = catalogue;
     app.open_system = None;
     app.library = None;
     app.system_cache = None;
@@ -509,6 +487,12 @@ fn run_cores_browser_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
 
     select_option(&mut app, OptionsPage::Library, OptionId::ShowCores);
     app.handle(Action::Accept);
+    assert_eq!(app.core_catalogue.entries.len(), 3);
+    assert_eq!(
+        crate::cache::load_core_catalogue(&app.cache_dir),
+        Some(app.core_catalogue.clone()),
+        "the first opt-in builds and persists the catalogue explicitly"
+    );
     app.handle(Action::Quit);
     app.handle(Action::Quit);
     app.handle(Action::Quit);
@@ -527,12 +511,9 @@ fn run_cores_browser_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
     app.handle(Action::Accept);
     assert_eq!(app.browsing, Browsing::Games);
     assert_eq!(app.here.len(), 3);
-    assert_eq!(app.here[0].name, "Nintendo Entertainment System [Standard]");
-    assert_eq!(app.here[1].name, "Nintendo Entertainment System [RA]");
-    assert_eq!(
-        app.here[2].name,
-        "Nintendo Entertainment System [Unstable: 20260916]"
-    );
+    assert_eq!(app.here[0].name, "NES [Standard]");
+    assert_eq!(app.here[1].name, "NES [RA]");
+    assert_eq!(app.here[2].name, "NES [Unstable: 20260916_ab12]");
     app.open_context();
     assert_eq!(
         app.context_actions,

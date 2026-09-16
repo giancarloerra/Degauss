@@ -3754,7 +3754,9 @@ impl App {
 
         let system_count = systems.len();
         let cache_dir = crate::cache::dir_for(&settings_path);
-        if crate::cache::load_core_catalogue(&cache_dir).as_ref() != Some(&core_catalogue) {
+        if show_cores
+            && crate::cache::load_core_catalogue(&cache_dir).as_ref() != Some(&core_catalogue)
+        {
             if let Err(error) = crate::cache::save_core_catalogue(&cache_dir, &core_catalogue) {
                 startup_problems.push(format!(
                     "Installed cores were found, but their catalogue could not be saved: {error}"
@@ -9698,6 +9700,9 @@ impl App {
             OptionId::ShowCores => {
                 self.show_cores = !self.show_cores;
                 self.settings.show_cores = Some(self.show_cores);
+                if self.show_cores && self.core_catalogue.entries.is_empty() {
+                    self.rebuild_cores_catalogue();
+                }
                 if !self.show_cores && self.in_cores_browser() {
                     self.core_category = None;
                     self.open_category = None;
