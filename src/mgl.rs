@@ -219,9 +219,10 @@ impl Homes {
             .file_name()
             .and_then(|name| name.to_str())
             .unwrap_or("");
-        let matching: Vec<&SystemConfig> = self
+        let matching: Vec<SystemConfig> = self
             .cores
             .iter()
+            .flat_map(SystemConfig::core_family_configs)
             .filter(|system| {
                 let configured = Path::new(&system.rbf)
                     .file_name()
@@ -562,6 +563,41 @@ mod tests {
         let mut found = system("Favorites", "", None, paths);
         found.def.category = Some("Favorites".into());
         found
+    }
+
+    #[test]
+    fn legacy_ngp_favourites_resolve_through_the_current_logical_system() {
+        let root = temp("legacy-ngp-family");
+        let games = root.join("games/NGP");
+        let favourites = root.join("_@Favorites");
+        std::fs::create_dir_all(&games).unwrap();
+        std::fs::create_dir_all(&favourites).unwrap();
+        let game = games.join("Pocket.ngp");
+        std::fs::write(&game, b"cartridge").unwrap();
+        let descriptor = favourites.join("Pocket.mgl");
+        std::fs::write(
+            &descriptor,
+            "<mistergamedescription><rbf>_Arcade/JTNGP</rbf><setname>NeoGeoPocket</setname><file delay=\"2\" type=\"f\" index=\"1\" path=\"Pocket.ngp\"/></mistergamedescription>",
+        )
+        .unwrap();
+        let def = crate::systems::parse_table(
+            "[[systems]]\nname = \"Neo Geo Pocket\"\nid = \"NeoGeoPocket\"\nfolders = [\"NGP\", \"NGPC\"]\nrbf = \"_Console/NGPC\"\nextensions = [\"ngp\", \"mgl\"]\n[[systems.compatible_cores]]\nid = \"jtngp\"\nlabel = \"JTNGP (Legacy)\"\nrbf = \"_Arcade/JTNGP\"\nsetname = \"NeoGeoPocket\"\n",
+            Path::new("ngp family fixture"),
+        )
+        .unwrap()
+        .remove(0);
+        let homes = Homes::new(
+            &[root.join("games").to_string_lossy().into_owned()],
+            &[FoundSystem {
+                def,
+                paths: vec![games],
+                logo_dir: None,
+                menu_folder: None,
+            }],
+        );
+        let resolved = homes.resolve(&descriptor).unwrap();
+        assert_eq!(resolved.game_target().unwrap(), Some(game));
+        std::fs::remove_dir_all(root).ok();
     }
 
     /// A synthetic copy of the public arcade layout: the descriptor under

@@ -11,12 +11,12 @@
 //! that would be a minute of staring at nothing before the first frame, so
 //! nothing is counted until a system is opened.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 
-use crate::config::LaunchRule;
+use crate::config::{CoreProfile, LaunchRule};
 use crate::error::{DegaussError, Result};
 
 /// Favorites semantics also apply to custom collection names and category casing.
@@ -71,9 +71,22 @@ pub struct SystemDef {
     /// the Atari 7800 core running Atari 2600 games.
     #[serde(default)]
     setname: Option<String>,
+    /// Ordered core families that are compatible with the same extensions
+    /// and launch rules. The system-level `rbf` remains preferred.
+    #[serde(default)]
+    pub compatible_cores: Vec<CoreProfile>,
 }
 
 impl SystemDef {
+    /// Core families this system may launch through, in automatic priority.
+    pub fn core_references(&self) -> impl Iterator<Item = &str> {
+        std::iter::once(self.rbf.as_str()).chain(
+            self.compatible_cores
+                .iter()
+                .map(|profile| profile.rbf.as_str()),
+        )
+    }
+
     /// Whether this logical system belongs in the optional Handheld category.
     ///
     /// Released systems tables predate the `handheld` field and customised
@@ -202,6 +215,7 @@ impl FoundSystem {
             launch: self.def.launch.clone(),
             skip_folders,
             setname: self.def.setname.clone(),
+            compatible_cores: self.def.compatible_cores.clone(),
         }
     }
 
@@ -243,6 +257,34 @@ pub fn parse_table(text: &str, origin: &Path) -> Result<Vec<SystemDef>> {
             origin,
             "no [[systems]] entries",
         ));
+    }
+    for system in &file.systems {
+        let mut profile_ids = BTreeSet::new();
+        for profile in &system.compatible_cores {
+            if profile.id.trim().is_empty()
+                || profile.label.trim().is_empty()
+                || profile.rbf.trim().is_empty()
+            {
+                return Err(DegaussError::malformed(
+                    "systems table",
+                    origin,
+                    format!(
+                        "{} has a compatible core whose id, label or rbf is empty",
+                        system.id
+                    ),
+                ));
+            }
+            if !profile_ids.insert(profile.id.as_str()) {
+                return Err(DegaussError::malformed(
+                    "systems table",
+                    origin,
+                    format!(
+                        "{} has duplicate compatible core id {:?}",
+                        system.id, profile.id
+                    ),
+                ));
+            }
+        }
     }
     Ok(file.systems)
 }
@@ -341,6 +383,7 @@ pub fn prepare_table(mut table: Vec<SystemDef>, menu_root: &Path) -> Result<Vec<
             handheld: false,
             skip_folders: Vec::new(),
             setname: None,
+            compatible_cores: Vec::new(),
         });
     }
     Ok(prepared)
@@ -371,8 +414,8 @@ pub fn discover_checked(
             menu_folder: if direct_collection(def) {
                 None
             } else {
-                cores
-                    .folder_of(&def.rbf)
+                def.core_references()
+                    .find_map(|rbf| cores.folder_of(rbf))
                     .or_else(|| cores.folder_of(&def.id))
                     .map(str::to_string)
             },
@@ -722,6 +765,7 @@ extensions = ["md", "bin"]
             handheld: false,
             skip_folders: Vec::new(),
             setname: None,
+            compatible_cores: Vec::new(),
         }
     }
 
@@ -892,6 +936,44 @@ extensions = ["md", "bin"]
             c64.launch.iter().any(|r| r.kind == "s" && r.index == 0),
             "the disk slot must survive generation"
         );
+        let pocket = table
+            .iter()
+            .find(|system| system.id == "NeoGeoPocket")
+            .expect("Neo Geo Pocket is in the table");
+        assert_eq!(pocket.folders, ["NGP", "NGPC"]);
+        assert_eq!(pocket.rbf, "_Console/NGPC");
+        assert_eq!(pocket.setname, None);
+        assert_eq!(pocket.extensions, ["ngp", "mgl"]);
+        assert_eq!(pocket.compatible_cores.len(), 1);
+        assert_eq!(pocket.compatible_cores[0].id, "jtngp");
+        assert_eq!(pocket.compatible_cores[0].rbf, "_Arcade/JTNGP");
+        assert_eq!(
+            pocket.compatible_cores[0].setname.as_deref(),
+            Some("NeoGeoPocket")
+        );
+        let colour = table
+            .iter()
+            .find(|system| system.id == "NeoGeoPocketColor")
+            .expect("Neo Geo Pocket Color is in the table");
+        assert_eq!(colour.folders, ["NGPC"]);
+        assert_eq!(colour.rbf, "_Console/NGPC");
+        assert_eq!(colour.setname, None);
+        assert_eq!(colour.extensions, ["ngc", "npc", "mgl"]);
+        assert_eq!(colour.compatible_cores.len(), 1);
+        assert_eq!(colour.compatible_cores[0].id, "jtngpc");
+        assert_eq!(colour.compatible_cores[0].rbf, "_Arcade/JTNGPC");
+        assert_eq!(
+            colour.compatible_cores[0].setname.as_deref(),
+            Some("JTNGPC")
+        );
+        for system in [pocket, colour] {
+            let cartridge = system
+                .launch
+                .first()
+                .expect("each Pocket system has a cartridge rule");
+            assert_eq!(cartridge.kind, "f");
+            assert_eq!(cartridge.index, 1);
+        }
         let handhelds: std::collections::BTreeSet<&str> = table
             .iter()
             .filter(|system| system.is_handheld())
@@ -1137,6 +1219,75 @@ extensions = ["md", "bin"]
     fn a_malformed_table_is_an_error_rather_than_an_empty_browser() {
         assert!(parse_table("systems = []", Path::new("t.toml")).is_err());
         assert!(parse_table("nonsense", Path::new("t.toml")).is_err());
+    }
+
+    #[test]
+    fn compatible_core_profiles_require_stable_complete_identifiers() {
+        let base = "[[systems]]\nname = \"Test\"\nid = \"Test\"\nfolders = [\"Test\"]\nrbf = \"_Console/Test\"\nextensions = [\"rom\"]\n";
+        for profile in [
+            "[[systems.compatible_cores]]\nid = \"\"\nlabel = \"Legacy\"\nrbf = \"_Arcade/Legacy\"\n",
+            "[[systems.compatible_cores]]\nid = \"legacy\"\nlabel = \"\"\nrbf = \"_Arcade/Legacy\"\n",
+            "[[systems.compatible_cores]]\nid = \"legacy\"\nlabel = \"Legacy\"\nrbf = \"\"\n",
+        ] {
+            assert!(
+                parse_table(&format!("{base}{profile}"), Path::new("profiles.toml")).is_err(),
+                "an incomplete profile must not become a launch choice"
+            );
+        }
+        let duplicate = format!(
+            "{base}{}{}",
+            "[[systems.compatible_cores]]\nid = \"legacy\"\nlabel = \"Legacy one\"\nrbf = \"_Arcade/One\"\n",
+            "[[systems.compatible_cores]]\nid = \"legacy\"\nlabel = \"Legacy two\"\nrbf = \"_Arcade/Two\"\n"
+        );
+        assert!(parse_table(&duplicate, Path::new("profiles.toml")).is_err());
+    }
+
+    #[test]
+    fn ngpc_systems_follow_the_first_installed_compatible_core_family() {
+        let card = temp_dir("ngpc-core-family");
+        let games = temp_dir("ngpc-core-family-games");
+        std::fs::create_dir_all(games.join("NGP")).unwrap();
+        std::fs::create_dir_all(games.join("NGPC")).unwrap();
+        let table: Vec<_> = load_table(Path::new("assets/systems.toml"))
+            .unwrap()
+            .into_iter()
+            .filter(|system| matches!(system.id.as_str(), "NeoGeoPocket" | "NeoGeoPocketColor"))
+            .collect();
+
+        std::fs::create_dir_all(card.join("_Console")).unwrap();
+        std::fs::write(card.join("_Console/NGPC_20260916.rbf"), b"core").unwrap();
+        let current = discover(
+            &table,
+            std::slice::from_ref(&games),
+            None,
+            &CoreIndex::read(&card),
+        );
+        assert_eq!(current.len(), 2);
+        assert!(current.iter().all(|system| system.category() == "Console"));
+
+        std::fs::remove_file(card.join("_Console/NGPC_20260916.rbf")).unwrap();
+        std::fs::create_dir_all(card.join("_Arcade")).unwrap();
+        std::fs::write(card.join("_Arcade/JTNGP.rbf"), b"core").unwrap();
+        std::fs::write(card.join("_Arcade/JTNGPC.rbf"), b"core").unwrap();
+        let legacy = discover(
+            &table,
+            std::slice::from_ref(&games),
+            None,
+            &CoreIndex::read(&card),
+        );
+        assert_eq!(legacy.len(), 2);
+        assert!(legacy.iter().all(|system| system.category() == "Arcade"));
+
+        std::fs::write(card.join("_Console/NGPC_20260916.rbf"), b"core").unwrap();
+        let both = discover(
+            &table,
+            std::slice::from_ref(&games),
+            None,
+            &CoreIndex::read(&card),
+        );
+        assert!(both.iter().all(|system| system.category() == "Console"));
+        std::fs::remove_dir_all(card).ok();
+        std::fs::remove_dir_all(games).ok();
     }
 
     #[test]

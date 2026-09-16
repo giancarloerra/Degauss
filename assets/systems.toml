@@ -1105,11 +1105,16 @@ delay = 1
 [[systems]]
 name = "Neo Geo Pocket"
 id = "NeoGeoPocket"
-folders = ["NGP"]
-rbf = "_Arcade/JTNGP"
+folders = ["NGP", "NGPC"]
+rbf = "_Console/NGPC"
 handheld = true
-setname = "NeoGeoPocket"
 extensions = ["ngp", "mgl"]
+
+[[systems.compatible_cores]]
+id = "jtngp"
+label = "JTNGP (Legacy)"
+rbf = "_Arcade/JTNGP"
+setname = "NeoGeoPocket"
 
 [[systems.launch]]
 extensions = ["ngp"]
@@ -1121,13 +1126,18 @@ delay = 2
 name = "Neo Geo Pocket Color"
 id = "NeoGeoPocketColor"
 folders = ["NGPC"]
-rbf = "_Arcade/JTNGPC"
+rbf = "_Console/NGPC"
 handheld = true
+extensions = ["ngc", "npc", "mgl"]
+
+[[systems.compatible_cores]]
+id = "jtngpc"
+label = "JTNGPC (Legacy)"
+rbf = "_Arcade/JTNGPC"
 setname = "JTNGPC"
-extensions = ["ngc", "mgl"]
 
 [[systems.launch]]
-extensions = ["ngc"]
+extensions = ["ngc", "npc"]
 type = "f"
 index = 1
 delay = 2

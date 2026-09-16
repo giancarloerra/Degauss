@@ -539,45 +539,49 @@ pub(crate) fn owner_of_favorite(
         let matching: Vec<&FoundSystem> = candidates
             .iter()
             .copied()
-            .filter(|system| system.def.rbf.trim().eq_ignore_ascii_case(rbf.trim()))
+            .filter(|system| {
+                system
+                    .to_config()
+                    .core_family_configs()
+                    .iter()
+                    .any(|family| {
+                        family.rbf.trim().eq_ignore_ascii_case(rbf.trim())
+                            && match reference.setname.as_deref() {
+                                Some(setname) => {
+                                    family.setname.as_deref().is_some_and(|candidate| {
+                                        candidate.eq_ignore_ascii_case(setname.trim())
+                                    })
+                                }
+                                None if reference.mgl => {
+                                    family.setname.as_deref().is_none_or(str::is_empty)
+                                }
+                                None => true,
+                            }
+                    })
+            })
             .collect();
         if !matching.is_empty() {
             candidates = matching;
         }
-    }
-
-    if let Some(setname) = reference.setname.as_deref() {
+    } else if let Some(setname) = reference.setname.as_deref() {
         let matching: Vec<&FoundSystem> = candidates
             .iter()
             .copied()
             .filter(|system| {
                 system
                     .to_config()
-                    .setname
-                    .as_deref()
-                    .is_some_and(|candidate| candidate.eq_ignore_ascii_case(setname.trim()))
+                    .core_family_configs()
+                    .iter()
+                    .any(|family| {
+                        family
+                            .setname
+                            .as_deref()
+                            .is_some_and(|candidate| candidate.eq_ignore_ascii_case(setname.trim()))
+                    })
             })
             .collect();
         if !matching.is_empty() {
             candidates = matching;
-        }
-    } else if reference.mgl && reference.rbf.is_some() {
-        // With a shared core, omission is meaningful: MiSTer starts the
-        // core's default system. A setname-bearing sibling is therefore not
-        // the owner of that MGL.
-        let defaults: Vec<&FoundSystem> = candidates
-            .iter()
-            .copied()
-            .filter(|system| {
-                system
-                    .to_config()
-                    .setname
-                    .as_deref()
-                    .is_none_or(str::is_empty)
-            })
-            .collect();
-        if !defaults.is_empty() {
-            candidates = defaults;
         }
     }
 
@@ -17375,6 +17379,7 @@ mod tests {
             rbf: "_Console/Test".to_string(),
             launch: Vec::new(),
             setname: None,
+            compatible_cores: Vec::new(),
             skip_folders: Vec::new(),
             extra_paths: Vec::new(),
         };
@@ -18185,6 +18190,7 @@ mod tests {
             rbf: "_Console/TurboGrafx16".to_string(),
             launch: Vec::new(),
             setname: Some("SuperGrafx".to_string()),
+            compatible_cores: Vec::new(),
             skip_folders: Vec::new(),
             extra_paths: Vec::new(),
         };

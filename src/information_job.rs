@@ -189,6 +189,7 @@ mod tests {
             rbf: String::new(),
             launch: vec![],
             setname: None,
+            compatible_cores: Vec::new(),
             skip_folders: vec![],
             extra_paths: vec![],
             preserve_rbf_stem: false,

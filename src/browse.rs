@@ -1537,6 +1537,7 @@ mod tests {
             launch: Vec::new(),
             skip_folders: Vec::new(),
             setname: None,
+            compatible_cores: Vec::new(),
             extra_paths: Vec::new(),
         }
     }
@@ -2658,6 +2659,7 @@ mod tests {
             }],
             skip_folders: Vec::new(),
             setname: None,
+            compatible_cores: Vec::new(),
             extra_paths: Vec::new(),
         }
     }
