@@ -468,6 +468,7 @@ impl CoreVariant {
         match self {
             Self::Standard => "Standard".into(),
             Self::RetroAchievements => "RA".into(),
+            Self::Unstable(build) if build.is_empty() => "Unstable".into(),
             Self::Unstable(build) => format!("Unstable: {build}"),
         }
     }
@@ -772,7 +773,7 @@ impl CoreIndex {
                 right_preferred
                     .cmp(&left_preferred)
                     .then_with(|| left.depth.cmp(&right.depth))
-                    .then_with(|| right.path.as_os_str().cmp(left.path.as_os_str()))
+                    .then_with(|| left.path.as_os_str().cmp(right.path.as_os_str()))
             });
             let Some(chosen) = candidates.first() else {
                 continue;
@@ -919,7 +920,7 @@ fn unstable_build(stem: &str) -> String {
             suffix.len() >= 8 && suffix.as_bytes()[..8].iter().all(u8::is_ascii_digit)
         })
         .map(|(_, suffix)| suffix.to_string())
-        .unwrap_or_else(|| stem.to_string())
+        .unwrap_or_default()
 }
 
 /// True when the core an MGL naming `rbf` would load is really on the card.
@@ -1833,6 +1834,7 @@ extensions = ["ngp"]
             "_RA_Cores/Cores/SNES.rbf",
             "_Unstable/NES_unstable_20260912_ab12cd.rbf",
             "_Unstable/Mystery_unstable_20260913_beef.rbf",
+            "_Unstable/NoBuild.rbf",
             "_Arcade/cores/NES.rbf",
             "_Arcade/Game.mra",
             "_Custom/Arbitrary.mgl",
@@ -1884,7 +1886,7 @@ extensions = ["md"]
                 ("Console".into(), 5),
                 ("Utility".into(), 1),
                 ("Custom".into(), 1),
-                ("Unmatched Unstable".into(), 1),
+                ("Unmatched Unstable".into(), 2),
             ]
         );
         assert_eq!(
@@ -1925,6 +1927,45 @@ extensions = ["md"]
             Some("Console"),
             "support and Unstable copies do not change existing grouping"
         );
+        assert_eq!(
+            catalogue
+                .in_category("Unmatched Unstable")
+                .map(CoreEntry::label)
+                .collect::<Vec<_>>(),
+            vec!["Mystery [Unstable: 20260913_beef]", "NoBuild [Unstable]",],
+            "an Unstable filename without a build marker has a clean variant label"
+        );
+        std::fs::remove_dir_all(menu).unwrap();
+    }
+
+    #[test]
+    fn duplicate_standard_core_paths_choose_the_ascending_tie_break() {
+        let menu = temp_dir("core-catalogue-tie");
+        for file in ["_Zeta/NES.rbf", "_Alpha/NES.rbf"] {
+            let path = menu.join(file);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, b"fixture").unwrap();
+        }
+        let table = parse_table(
+            r#"
+[[systems]]
+name = "Nintendo Entertainment System"
+id = "NES"
+folders = ["NES"]
+rbf = "_Missing/NES"
+extensions = ["nes"]
+"#,
+            Path::new("core catalogue tie fixture"),
+        )
+        .unwrap();
+
+        let catalogue = CoreIndex::read(&menu).catalogue(&table);
+        let standard = catalogue
+            .entries
+            .iter()
+            .find(|entry| entry.variant == CoreVariant::Standard)
+            .expect("one deterministic Standard row");
+        assert_eq!(standard.path, menu.join("_Alpha/NES.rbf"));
         std::fs::remove_dir_all(menu).unwrap();
     }
 

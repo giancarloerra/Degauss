@@ -501,6 +501,30 @@ fn run_cores_browser_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
         Some(app.core_catalogue.clone()),
         "the first opt-in builds and persists the catalogue explicitly"
     );
+
+    // The Cores catalogue is an optional companion to the main index. A
+    // failure to persist it must be reported, but must not discard a complete
+    // system discovery or the newly built system lists.
+    let catalogue_path = crate::cache::core_catalogue_path(&app.cache_dir);
+    std::fs::remove_file(&catalogue_path).unwrap();
+    std::fs::create_dir(&catalogue_path).unwrap();
+    std::fs::write(root.join("games/NES/Third Game.nes"), b"fixture").unwrap();
+    app.rebuild_all_systems();
+    app.finish_background_work_for_headless();
+    assert_eq!(app.index.as_ref().unwrap().systems["NES"].games, 3);
+    assert_eq!(
+        app.index_terminal.as_ref().unwrap().state,
+        "Finished With Problems"
+    );
+    assert!(app
+        .index_terminal
+        .as_ref()
+        .unwrap()
+        .problem
+        .contains("Core catalogue not saved"));
+    std::fs::remove_dir(&catalogue_path).unwrap();
+    crate::cache::save_core_catalogue(&app.cache_dir, &app.core_catalogue).unwrap();
+
     app.handle(Action::Quit);
     assert_eq!(app.screen, Screen::Options);
     app.handle(Action::Quit);

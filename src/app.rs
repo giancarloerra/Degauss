@@ -1142,6 +1142,10 @@ const FAVORITES_ID: &str = "Favorites";
 const CORES_CATEGORY: &str = "Cores";
 const CORES_SYSTEM_ID: &str = "__cores";
 
+fn core_category_pick_key(category: &str) -> String {
+    format!("{CORES_SYSTEM_ID}:{category}")
+}
+
 /// Take this row out of the list until it is asked for again.
 const HIDE_THIS: &str = "Hide This";
 
@@ -4776,14 +4780,6 @@ impl App {
     /// A picture for a group: whichever system lent its logo this time, or
     /// a file named after the group if one was put in the logos folder.
     fn category_logo(&self, category: &str) -> Option<PathBuf> {
-        if category == CORES_CATEGORY {
-            return self.named_logo(category).or_else(|| {
-                self.core_catalogue
-                    .entries
-                    .iter()
-                    .find_map(|entry| self.core_logo(entry))
-            });
-        }
         self.category_picks.get(category).cloned()
     }
 
@@ -8635,28 +8631,7 @@ impl App {
                 if let Err(error) =
                     crate::cache::save_core_catalogue(&self.cache_dir, &discovered.cores)
                 {
-                    self.message = Some(error.to_string());
-                    let report = format!(
-                        "{}\n{} seconds elapsed\nNo system lists were replaced.",
-                        error,
-                        preparation.started.elapsed().as_secs()
-                    );
-                    self.index_terminal = Some(IndexOverview {
-                        title: "Index All Systems".into(),
-                        state: "Failed".into(),
-                        subject: "Core Catalogue".into(),
-                        elapsed: preparation.started.elapsed().as_secs(),
-                        problem: error.to_string(),
-                        report: report.clone(),
-                        ..IndexOverview::default()
-                    });
-                    if self.index_details {
-                        self.message = Some(report);
-                    }
-                    self.ui.set_index_active(false);
-                    self.last_input = Instant::now();
-                    self.touch_selection();
-                    return;
+                    self.build_warning(format!("Core catalogue not saved: {error}"));
                 }
                 self.core_catalogue = discovered.cores;
                 self.apply_discovered_systems(discovered.systems);
@@ -8999,11 +8974,9 @@ impl App {
     }
 
     fn core_category_logo(&self, category: &str) -> Option<PathBuf> {
-        self.named_logo(category).or_else(|| {
-            self.core_catalogue
-                .in_category(category)
-                .find_map(|entry| self.core_logo(entry))
-        })
+        self.category_picks
+            .get(&core_category_pick_key(category))
+            .cloned()
     }
 
     fn core_rows(&self, category: &str) -> Vec<browse::Row> {
@@ -9250,6 +9223,25 @@ impl App {
             }
             let pick = (next_random(&mut seed) as usize) % logos.len();
             picks.insert(name.clone(), logos[pick].clone());
+        }
+        if self.show_cores {
+            if let Some(logo) = self.named_logo(CORES_CATEGORY).or_else(|| {
+                self.core_catalogue
+                    .entries
+                    .iter()
+                    .find_map(|entry| self.core_logo(entry))
+            }) {
+                picks.insert(CORES_CATEGORY.to_string(), logo);
+            }
+            for (category, _) in self.core_categories() {
+                if let Some(logo) = self.named_logo(&category).or_else(|| {
+                    self.core_catalogue
+                        .in_category(&category)
+                        .find_map(|entry| self.core_logo(entry))
+                }) {
+                    picks.insert(core_category_pick_key(&category), logo);
+                }
+            }
         }
         self.seed = seed;
         self.category_picks = picks;
