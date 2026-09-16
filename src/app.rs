@@ -62,6 +62,9 @@ use crate::theme_editor::{EditorEffect, EditorMode, ThemeEditor, EDITOR_ROWS, NA
 use crate::{DegaussWindow, DetailLine, Row};
 
 const HANDHELD_CATEGORY: &str = "Handheld";
+const LAST_PLAYED_CATEGORY: &str = "Last Played";
+const LAST_PLAYED_PLACE: &str = "last-played:";
+const LAST_PLAYED_SYSTEM: &str = "@LastPlayed";
 
 /// The category shown by the frontend. The system's own category remains
 /// unchanged because launch, cache and library ownership follow MiSTer.
@@ -331,6 +334,7 @@ fn option_operation(option: OptionId, input: OptionInput) -> OptionOperation {
         | OptionId::SeparateHandheldCategory
         | OptionId::ShowBar
         | OptionId::FavoritesFirst
+        | OptionId::LastPlayed
         | OptionId::HoldA
         | OptionId::HoldB
         | OptionId::HoldX
@@ -1853,7 +1857,7 @@ fn effective_system_logo(logo_dir: Option<&Path>, system: &FoundSystem) -> Optio
         .or_else(|| system.logo())
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct ContextActions {
     scrape_scope: bool,
     scrape_game: bool,
@@ -1863,6 +1867,25 @@ struct ContextActions {
     core_version_override: bool,
     favorite_folder: bool,
     metadata_filters: bool,
+    rebuild_system: bool,
+}
+
+impl Default for ContextActions {
+    fn default() -> Self {
+        Self {
+            scrape_scope: false,
+            scrape_game: false,
+            image_override: None,
+            game_data_source: false,
+            core_version: false,
+            core_version_override: false,
+            favorite_folder: false,
+            metadata_filters: false,
+            // Before mixed-system collections existed, every Games context
+            // represented one system and always offered its rebuild action.
+            rebuild_system: true,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2080,7 +2103,7 @@ fn context_entries(
     }
     // Only inside a system: at the levels above there is no one system
     // to read again.
-    if browsing == Browsing::Games {
+    if browsing == Browsing::Games && actions.rebuild_system {
         groups.push(vec![REBUILD_SYSTEM.to_string()]);
     }
     if let Some(has_override) = actions.image_override {
@@ -3210,6 +3233,14 @@ pub struct App {
     category_system: std::collections::BTreeMap<String, String>,
     /// The rows of the folder being shown.
     here: Vec<browse::Row>,
+    /// The bounded history read at startup. Presentation is resolved from
+    /// current caches only when its optional collection is visible or open.
+    last_played: crate::history::History,
+    last_played_problem: Option<String>,
+    last_played_open: bool,
+    /// Hidden row key to stable origin. The key is kept in `sort_key` after
+    /// the ordinary sort text and never rendered.
+    last_played_rows: HashMap<String, crate::history::Entry>,
     game_list: ListState,
     menu_list: ListState,
     context_actions: Vec<String>,
@@ -3591,6 +3622,12 @@ impl App {
         let show_cores = loaded.settings.show_cores.unwrap_or(false);
         let show_unstable = loaded.settings.show_unstable.unwrap_or(true);
         let show_bar = loaded.settings.show_bar.unwrap_or(true);
+        let history_path = crate::history::path_beside(&loaded.settings_path);
+        let (last_played, last_played_problem) = match crate::history::History::load(&history_path)
+        {
+            Ok(history) => (history, None),
+            Err(error) => (crate::history::History::default(), Some(error.to_string())),
+        };
         let Loaded {
             config,
             mut settings,
@@ -3607,6 +3644,9 @@ impl App {
             themes,
             problems: mut startup_problems,
         } = themes;
+        if let Some(problem) = last_played_problem.as_ref() {
+            startup_problems.push(format!("Last Played could not be read: {problem}"));
+        }
         let scraper_settings_path = crate::scraper::ScraperSettings::path_beside(&settings_path);
         let (scraper_settings, scraper_settings_problem) =
             match crate::scraper::ScraperSettings::load(&scraper_settings_path) {
@@ -3858,6 +3898,10 @@ impl App {
             left_at: Vec::new(),
             category_system: std::collections::BTreeMap::new(),
             here: Vec::new(),
+            last_played,
+            last_played_problem,
+            last_played_open: false,
+            last_played_rows: HashMap::new(),
             game_list: ListState::new(0, geometry.visible),
             menu_list: ListState::new(0, geometry.visible),
             context_actions: Vec::new(),
@@ -4495,7 +4539,13 @@ impl App {
         let browse::Kind::Play(mut launch) = row.kind.clone() else {
             return Err(DegaussError::unsupported("game information", "not a game"));
         };
-        let id = if self.in_favorites() {
+        let id = if self.last_played_open {
+            let entry = self.selected_last_played().ok_or_else(|| {
+                DegaussError::unsupported("game information", "history entry is unavailable")
+            })?;
+            launch = entry.launch.clone();
+            entry.system.clone()
+        } else if self.in_favorites() {
             let browse::Launch::File(path) = &launch else {
                 return Err(DegaussError::unsupported(
                     "game information",
@@ -5668,6 +5718,8 @@ impl App {
             self.apply_geometry();
         }
         self.opened_config = Some(config.clone());
+        self.last_played_open = false;
+        self.last_played_rows.clear();
         if self.system_cache.is_some() {
             let configured_start = browse::start_for(&config);
             let start = self
@@ -6069,6 +6121,10 @@ impl App {
                 .open_category
                 .as_ref()
                 .map(|category| ViewPlace::Systems(category.clone())),
+            Browsing::Games if self.last_played_open => Some(ViewPlace::Games {
+                system: LAST_PLAYED_SYSTEM.to_string(),
+                place: LAST_PLAYED_PLACE.to_string(),
+            }),
             Browsing::Games => Some(ViewPlace::Games {
                 system: self.open_system.clone()?,
                 place: self.trail.last()?.place.key(),
@@ -7026,6 +7082,128 @@ impl App {
         }
     }
 
+    /// Resolve the bounded mixed-system history from caches already written
+    /// for each originating system. No directory is listed and no index or
+    /// provider is rebuilt here.
+    fn resolve_last_played_rows(&mut self) -> Vec<browse::Row> {
+        let visible = self.settings.last_played.unwrap_or(0).min(10) as usize;
+        let entries: Vec<crate::history::Entry> = self
+            .last_played
+            .entries
+            .iter()
+            .take(visible)
+            .cloned()
+            .collect();
+        self.last_played_rows.clear();
+
+        let mut sources: HashMap<
+            String,
+            (
+                crate::cache::SystemCache,
+                Option<crate::artwork_pack::Provider>,
+            ),
+        > = HashMap::new();
+        let mut ids: Vec<String> = entries.iter().map(|entry| entry.system.clone()).collect();
+        ids.sort();
+        ids.dedup();
+        for id in ids {
+            if self.source_problem(&id).is_some() {
+                continue;
+            }
+            let root = crate::artwork_pack::selected_root(&self.effective_artwork_pack_roots, &id)
+                .map(Path::to_path_buf);
+            let cache = match root.as_ref() {
+                Some(_) => crate::cache::load_artwork_pack_data(&self.cache_dir, &id)
+                    .map(|data| data.cache),
+                None => crate::cache::load_system(&self.cache_dir, &id),
+            };
+            let Some(cache) = cache else {
+                continue;
+            };
+            let provider = match root.as_deref() {
+                Some(root) => match self.provider_from_state(&id, root) {
+                    Ok(provider) => provider,
+                    Err(error) => {
+                        crate::note(&format!("last played  {id}: {error}"));
+                        None
+                    }
+                },
+                None => None,
+            };
+            sources.insert(id, (cache, provider));
+        }
+
+        let mut rows = Vec::with_capacity(entries.len());
+        for entry in entries {
+            let mut row = sources
+                .get(&entry.system)
+                .and_then(|(cache, _)| {
+                    cache
+                        .folders
+                        .values()
+                        .flat_map(|folder| folder.rows.iter())
+                        .find(|row| row.kind == browse::Kind::Play(entry.launch.clone()))
+                        .cloned()
+                })
+                .unwrap_or_else(|| browse::Row {
+                    name: entry.name.clone(),
+                    sort_key: entry.name.to_lowercase(),
+                    kind: browse::Kind::Play(entry.launch.clone()),
+                    cover: None,
+                    genre: None,
+                    favorite: false,
+                    below: None,
+                    details: Default::default(),
+                });
+            if let Some((_, Some(provider))) = sources.get(&entry.system) {
+                provider.apply_prepared(std::slice::from_mut(&mut row));
+            }
+            row.favorite = row_target(&row).is_some_and(|target| self.favorites.holds(&target));
+            let key = crate::history::entry_key(&entry);
+            row.sort_key = format!("{}\0{key}", row.sort_key);
+            self.last_played_rows.insert(row.sort_key.clone(), entry);
+            rows.push(row);
+        }
+        rows
+    }
+
+    fn open_last_played(&mut self) {
+        self.open_category = None;
+        self.open_system = None;
+        self.opened_config = None;
+        self.library = None;
+        self.system_cache = None;
+        self.artwork_provider = None;
+        self.trail.clear();
+        self.filter.clear();
+        self.game_filters.clear();
+        self.game_filter_options = std::array::from_fn(|_| None);
+        self.game_filter_field = None;
+        self.all_here.clear();
+        self.last_played_open = true;
+        self.here = self.resolve_last_played_rows();
+        self.game_list = ListState::new(self.here.len(), self.geometry.visible);
+        self.browsing = Browsing::Games;
+        self.resolve_view();
+        self.apply_geometry();
+        self.touch_selection();
+        if self.here.is_empty() {
+            self.message = Some(match self.last_played_problem.as_ref() {
+                Some(problem) => format!("Last Played could not be read:\n{problem}"),
+                None => "Nothing has been launched from Degauss yet.".to_string(),
+            });
+        }
+        self.dirty = true;
+    }
+
+    fn selected_last_played(&self) -> Option<&crate::history::Entry> {
+        if !self.last_played_open {
+            return None;
+        }
+        let row = self.here.get(self.game_list.selected())?;
+        self.last_played_rows.get(&row.sort_key)
+    }
+
     /// Which system's folders a path sits in, deepest first so a system
     /// inside another system's folder answers for its own.
     fn owner_of(&self, path: &Path) -> Option<String> {
@@ -7125,6 +7303,9 @@ impl App {
     /// at, but from the menu they are one entry: whatever is under the
     /// cursor goes away and comes back the same way.
     fn selected_hidden(&self) -> Option<bool> {
+        if self.last_played_open {
+            return None;
+        }
         match self.browsing {
             Browsing::Games => {
                 let row = self.here.get(self.game_list.selected())?;
@@ -7315,6 +7496,33 @@ impl App {
     /// whatever slid into its place, not send it back to where the folder
     /// was entered.
     fn relist_here(&mut self) {
+        if self.last_played_open {
+            let selected = self
+                .here
+                .get(self.game_list.selected())
+                .and_then(|row| self.last_played_rows.get(&row.sort_key))
+                .map(crate::history::entry_key);
+            self.here = self.resolve_last_played_rows();
+            self.game_list = ListState::new(self.here.len(), self.geometry.visible);
+            if let Some(selected) = selected {
+                if let Some(at) = self.here.iter().position(|row| {
+                    self.last_played_rows
+                        .get(&row.sort_key)
+                        .is_some_and(|entry| crate::history::entry_key(entry) == selected)
+                }) {
+                    self.game_list.select(at);
+                }
+            }
+            if self.filter.is_empty() {
+                self.apply_geometry();
+                self.touch_selection();
+                self.dirty = true;
+            } else {
+                self.all_here = std::mem::take(&mut self.here);
+                self.apply_filter();
+            }
+            return;
+        }
         self.remember_here();
         if let Some(crumb) = self.trail.last_mut() {
             crumb.selected = self.game_list.selected();
@@ -7352,6 +7560,17 @@ impl App {
         self.all_systems.iter().find(|system| system.def.id == id)
     }
 
+    fn selected_origin_system_id(&self) -> Option<String> {
+        self.selected_last_played()
+            .map(|entry| entry.system.clone())
+            .or_else(|| self.open_system.clone())
+    }
+
+    fn selected_origin_system(&self) -> Option<&FoundSystem> {
+        let id = self.selected_origin_system_id()?;
+        self.all_systems.iter().find(|system| system.def.id == id)
+    }
+
     /// Where browsing currently is, for the title bar.
     fn here_label(&self) -> String {
         if self.in_cores_browser() {
@@ -7360,6 +7579,9 @@ impl App {
                 .as_ref()
                 .map(|category| format!("{CORES_CATEGORY} / {category}"))
                 .unwrap_or_else(|| CORES_CATEGORY.to_string());
+        }
+        if self.last_played_open {
+            return LAST_PLAYED_CATEGORY.to_string();
         }
         let system = self
             .open_system_ref()
@@ -7388,6 +7610,39 @@ impl App {
     /// everything underneath, which would mean walking the whole subtree
     /// before answering: it picks a folder, then a game in it.
     fn random_here(&mut self, favorites_only: bool) -> Option<Outcome> {
+        if self.last_played_open {
+            if self.game_filters.is_active() {
+                return self.random_visible_here(favorites_only);
+            }
+            let candidates: Vec<usize> = self
+                .here
+                .iter()
+                .enumerate()
+                .filter(|(_, row)| {
+                    matches!(row.kind, browse::Kind::Play(_)) && (!favorites_only || row.favorite)
+                })
+                .map(|(index, _)| index)
+                .collect();
+            if candidates.is_empty() {
+                self.message = Some(
+                    if favorites_only {
+                        "No favourites in Last Played."
+                    } else {
+                        "Last Played is empty."
+                    }
+                    .to_string(),
+                );
+                self.dirty = true;
+                return None;
+            }
+            let pick = candidates[(next_random(&mut self.seed) as usize) % candidates.len()];
+            self.game_list.select(pick);
+            self.touch_selection();
+            return self
+                .random_launches
+                .then(|| self.confirm_launch())
+                .flatten();
+        }
         if self.game_filters.is_active() {
             return self.random_visible_here(favorites_only);
         }
@@ -7539,7 +7794,26 @@ impl App {
             self.dirty = true;
             return None;
         };
-        let mut config = self.opened_config.clone()?;
+        let mut history_system = if self.in_favorites() {
+            None
+        } else {
+            self.selected_last_played()
+                .map(|entry| entry.system.clone())
+                .or_else(|| self.open_system.clone())
+        };
+        let mut history_launch = game.clone();
+        let mut config = if let Some(id) = self.selected_last_played().map(|entry| &entry.system) {
+            let Some(system) = self.all_systems.iter().find(|system| &system.def.id == id) else {
+                self.message = Some(format!(
+                    "{name}: its original system is no longer available"
+                ));
+                self.dirty = true;
+                return None;
+            };
+            system.to_config()
+        } else {
+            self.opened_config.clone()?
+        };
         if self.in_favorites() {
             if let browse::Launch::File(path) = &game {
                 if let Some(reference) = crate::favorites::reference_of(path, &self.homes()) {
@@ -7557,8 +7831,13 @@ impl App {
                             self.all_systems.iter().find(|system| system.def.id == id)
                         {
                             config = owner.to_config();
+                            history_system = Some(id);
                         }
                     }
+                    history_launch = match crate::launch::amiga_marker(path) {
+                        Some((install, title)) => browse::Launch::AmigaVision { install, title },
+                        None => browse::Launch::File(reference.cache_target.clone()),
+                    };
                     if crate::zip::split_member_path(&reference.owner_target).is_some() {
                         if let Err(error) =
                             crate::zip::validate_member_for_launch(&reference.owner_target)
@@ -7652,10 +7931,24 @@ impl App {
                 crate::launch::plan_amiga_vision(&config, install, title, mgl)
             }
         };
+        let history =
+            if self.settings.last_played.unwrap_or(0) > 0 && self.last_played_problem.is_none() {
+                history_system.map(|system| HistoryUpdate {
+                    path: crate::history::path_beside(&self.settings_path),
+                    entry: crate::history::Entry {
+                        system,
+                        launch: history_launch,
+                        name: name.clone(),
+                    },
+                })
+            } else {
+                None
+            };
         match plan {
             Ok(plan) => Some(Outcome::Launch {
                 plan: Box::new(plan),
                 name,
+                history,
             }),
             Err(e) => {
                 self.message = Some(format!("{e}"));
@@ -8658,6 +8951,9 @@ impl App {
         };
         self.core_category = Some(category.clone());
         self.filter.clear();
+        self.game_filters.clear();
+        self.game_filter_options = std::array::from_fn(|_| None);
+        self.game_filter_field = None;
         self.all_here.clear();
         self.here = self.core_rows(&category);
         self.game_list = ListState::new(self.here.len(), self.geometry.visible);
@@ -8746,7 +9042,7 @@ impl App {
         // MiSTer's own menu uses, and only when something is in them.
         // Favourites last: it is not a machine, it is a shelf of things
         // picked off the others.
-        const ORDER: [&str; 8] = [
+        const ORDER: [&str; 9] = [
             "Arcade",
             "Console",
             HANDHELD_CATEGORY,
@@ -8754,10 +9050,21 @@ impl App {
             "Utility",
             "Other",
             "Unstable",
+            LAST_PLAYED_CATEGORY,
             FAVORITES_ID,
         ];
         let mut categories: Vec<(String, usize)> = Vec::new();
         for name in ORDER {
+            if name == LAST_PLAYED_CATEGORY {
+                let visible = self.settings.last_played.unwrap_or(0).min(10) as usize;
+                if visible > 0 {
+                    categories.push((
+                        LAST_PLAYED_CATEGORY.to_string(),
+                        self.last_played.entries.len().min(visible),
+                    ));
+                }
+                continue;
+            }
             // Other holds the cores that are not games, which is not what
             // anyone opened a game browser for. It is one switch away.
             if name == "Other" && !self.show_other {
@@ -8782,7 +9089,8 @@ impl App {
         if self.show_cores && !self.core_catalogue.entries.is_empty() {
             let at = categories
                 .iter()
-                .position(|(name, _)| name == FAVORITES_ID)
+                .position(|(name, _)| name == LAST_PLAYED_CATEGORY)
+                .or_else(|| categories.iter().position(|(name, _)| name == FAVORITES_ID))
                 .unwrap_or(categories.len());
             categories.insert(
                 at,
@@ -8840,15 +9148,26 @@ impl App {
         let mut seed = self.seed;
         let separate_handheld = self.settings.separate_handheld_category.unwrap_or(false);
         let mut picks = std::collections::BTreeMap::new();
-        for (name, _) in &self.categories {
-            if let Some(explicit) = self.named_logo(name) {
+        let categories = self.categories.clone();
+        for (name, _) in categories {
+            if let Some(explicit) = self.named_logo(&name) {
                 picks.insert(name.clone(), explicit);
+                continue;
+            }
+            if name == LAST_PLAYED_CATEGORY {
+                if let Some(cover) = self
+                    .resolve_last_played_rows()
+                    .into_iter()
+                    .find_map(|row| row.cover)
+                {
+                    picks.insert(name, cover);
+                }
                 continue;
             }
             let logos: Vec<PathBuf> = self
                 .all_systems
                 .iter()
-                .filter(|system| display_category(system, separate_handheld) == name)
+                .filter(|system| display_category(system, separate_handheld) == name.as_str())
                 .filter_map(|system| self.system_logo(system))
                 .collect();
             if logos.is_empty() {
@@ -8872,6 +9191,10 @@ impl App {
             return;
         };
         let name = name.clone();
+        if name == LAST_PLAYED_CATEGORY {
+            self.open_last_played();
+            return;
+        }
         self.open_category = Some(name.clone());
         self.rebuild_system_list();
         if name == CORES_CATEGORY {
@@ -9743,6 +10066,14 @@ impl App {
                 // The folder on screen was ordered by the old answer.
                 self.relist_here_preserving_game_filters();
             }
+            OptionId::LastPlayed => {
+                let current = self.settings.last_played.unwrap_or(0).min(10) as usize;
+                self.settings.last_played = Some(step(current, delta, 11) as u8);
+                if self.last_played_open {
+                    self.relist_here_preserving_game_filters();
+                }
+                self.rebuild_system_list();
+            }
             OptionId::HoldA | OptionId::HoldB | OptionId::HoldX | OptionId::HoldY => {
                 let button = option.hold_button().expect("hold option has a button");
                 let at = button.index();
@@ -9840,6 +10171,10 @@ impl App {
             }
             OptionId::ShowBar => on_off(self.show_bar),
             OptionId::FavoritesFirst => on_off(self.favorites_first),
+            OptionId::LastPlayed => match self.settings.last_played.unwrap_or(0).min(10) {
+                0 => "Off".to_string(),
+                count => count.to_string(),
+            },
             OptionId::HoldA | OptionId::HoldB | OptionId::HoldX | OptionId::HoldY => {
                 let button = option.hold_button().expect("hold option has a button");
                 self.hold_shortcuts[button.index()].label().to_string()
@@ -10094,8 +10429,7 @@ impl App {
             }
             Screen::Browse => match self.browsing {
                 Browsing::Games if self.in_cores_browser() => {
-                    self.filter.clear();
-                    self.all_here.clear();
+                    self.clear_place_filters();
                     self.here.clear();
                     self.core_category = None;
                     self.browsing = Browsing::Systems;
@@ -10104,6 +10438,21 @@ impl App {
                     self.touch_selection();
                 }
                 Browsing::Games => {
+                    if self.last_played_open {
+                        self.last_played_open = false;
+                        self.last_played_rows.clear();
+                        self.open_system = None;
+                        self.opened_config = None;
+                        self.here.clear();
+                        self.clear_place_filters();
+                        self.browsing = Browsing::Categories;
+                        self.open_category = None;
+                        self.rebuild_system_list();
+                        self.resolve_view();
+                        self.apply_geometry();
+                        self.touch_selection();
+                        return None;
+                    }
                     // Out of the folder first; only when there is no folder
                     // left does B leave the system.
                     if self.leave() {
@@ -10417,7 +10766,9 @@ impl App {
     }
 
     fn core_system_id(&self) -> Option<String> {
-        let id = if self.in_favorites() && self.browsing == Browsing::Games {
+        let id = if self.last_played_open {
+            self.selected_last_played()?.system.clone()
+        } else if self.in_favorites() && self.browsing == Browsing::Games {
             let path = self.selected_game()?;
             let reference = crate::favorites::reference_of(&path, &self.homes())?;
             owner_of_favorite(&self.all_systems, &reference)?
@@ -10977,7 +11328,9 @@ impl App {
     }
 
     fn random_shortcut_available(&self) -> bool {
-        self.browse_shortcuts_ready() && self.browsing == Browsing::Games && !self.trail.is_empty()
+        self.browse_shortcuts_ready()
+            && self.browsing == Browsing::Games
+            && (self.last_played_open || !self.trail.is_empty())
     }
 
     fn hold_shortcut_available(&self, shortcut: HoldShortcut) -> bool {
@@ -11075,15 +11428,17 @@ impl App {
         let Some(game) = self.selected_game() else {
             return;
         };
-        let Some(config) = self.opened_config.clone() else {
+        let Some(origin) = self.selected_origin_system() else {
             return;
         };
+        let config = origin.to_config();
+        let origin_id = origin.def.id.clone();
         let name = self
             .here
             .get(self.game_list.selected())
             .map(|row| row.name.clone())
             .unwrap_or_default();
-        let native_arcade_favourite = needs_native_arcade_core_link(self.open_system_ref(), &game);
+        let native_arcade_favourite = needs_native_arcade_core_link(Some(origin), &game);
 
         // A title rather than a file: written as an MGL that starts
         // AmigaVision, carrying the title in an element Main ignores.
@@ -11126,9 +11481,9 @@ impl App {
             Path::new(&self.config.menu_root),
             self.settings.core_preference.unwrap_or_default()
                 == crate::settings::CorePreference::RetroAchievementsFirst,
-            self.open_system
-                .as_ref()
-                .and_then(|id| self.settings.core_choices.get(id))
+            self.settings
+                .core_choices
+                .get(&origin_id)
                 .map(String::as_str),
         ) {
             Ok(Some(mgl)) => {
@@ -13150,12 +13505,16 @@ impl App {
                 scrape_game,
                 image_override,
                 game_data_source,
-                core_version: self.core_system_id().is_some(),
-                core_version_override: self
-                    .core_system_id()
-                    .is_some_and(|id| self.settings.core_choices.contains_key(&id)),
+                core_version: !self.last_played_open && self.core_system_id().is_some(),
+                core_version_override: !self.last_played_open
+                    && self
+                        .core_system_id()
+                        .is_some_and(|id| self.settings.core_choices.contains_key(&id)),
                 favorite_folder,
                 metadata_filters: self.game_filters.is_active(),
+                rebuild_system: self.browsing == Browsing::Games
+                    && !self.last_played_open
+                    && !self.in_cores_browser(),
             },
         );
         if self.context_actions.is_empty() {
@@ -16777,6 +17136,18 @@ impl App {
             saved.selected_row = self.here.get(self.game_list.selected()).map(row_key);
             return saved;
         }
+        if self.last_played_open {
+            let mut saved = crate::state::State::record(
+                LAST_PLAYED_SYSTEM,
+                LAST_PLAYED_CATEGORY,
+                &[],
+                self.game_list.selected(),
+                &self.left_at,
+                &self.category_system,
+            );
+            saved.selected_row = self.selected_last_played().map(crate::history::entry_key);
+            return saved;
+        }
         let system = self.open_system.clone().unwrap_or_default();
         let trail: Vec<(Place, usize)> = self
             .trail
@@ -16835,6 +17206,21 @@ impl App {
                 self.resolve_view();
                 self.apply_geometry();
             }
+            return;
+        }
+        if saved.system == LAST_PLAYED_SYSTEM && self.settings.last_played.unwrap_or(0) > 0 {
+            self.category_system = saved.category_system.clone();
+            self.open_last_played();
+            if let Some(key) = saved.selected_row.as_deref() {
+                if let Some(at) = self.here.iter().position(|row| {
+                    self.last_played_rows
+                        .get(&row.sort_key)
+                        .is_some_and(|entry| crate::history::entry_key(entry) == key)
+                }) {
+                    self.game_list.select(at);
+                }
+            }
+            self.touch_selection();
             return;
         }
         // Each group's own memory first, so backing out of the restored
@@ -17354,6 +17740,13 @@ impl BenchReport {
 
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HistoryUpdate {
+    pub path: PathBuf,
+    pub entry: crate::history::Entry,
+}
+
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Outcome {
     Quit,
     LauncherReplaced,
@@ -17366,6 +17759,7 @@ pub enum Outcome {
     Launch {
         plan: Box<crate::launch::LaunchPlan>,
         name: String,
+        history: Option<HistoryUpdate>,
     },
 }
 
