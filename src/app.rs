@@ -12085,9 +12085,9 @@ impl App {
                 .core_choices
                 .get(&origin_id)
                 .map(String::as_str),
-            self.open_system
-                .as_ref()
-                .and_then(|id| self.settings.launch_cores.get(id))
+            self.settings
+                .launch_cores
+                .get(&origin_id)
                 .map(String::as_str),
         ) {
             Ok(Some(mgl)) => {

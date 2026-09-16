@@ -1830,8 +1830,31 @@ fn run_last_played_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
         information.source,
         crate::information_job::Source::Gamelist
     ));
+    std::fs::create_dir_all(root.join("_Arcade")).unwrap();
+    std::fs::write(root.join("_Arcade/LegacyNES.rbf"), b"alternate core").unwrap();
+    app.all_systems
+        .iter_mut()
+        .find(|system| system.def.id == "NES")
+        .unwrap()
+        .def
+        .compatible_cores
+        .push(crate::config::CoreProfile {
+            id: "legacy-nes".into(),
+            label: "Legacy NES".into(),
+            rbf: "_Arcade/LegacyNES".into(),
+            setname: Some("LegacyNES".into()),
+        });
+    app.settings
+        .launch_cores
+        .insert("NES".into(), "legacy-nes".into());
     app.add_favorite_in(&favorites_root);
     assert!(app.favorites.holds(&first));
+    let favorite = std::fs::read_to_string(favorites_root.join("Current First.mgl")).unwrap();
+    assert!(
+        favorite.contains("<rbf>_Arcade/LegacyNES</rbf>")
+            && favorite.contains("<setname>LegacyNES</setname>"),
+        "a Favourite created from Last Played uses its originating system's Launch Core: {favorite}"
+    );
     assert!(app
         .here
         .iter()
