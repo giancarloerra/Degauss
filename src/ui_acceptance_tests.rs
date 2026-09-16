@@ -566,9 +566,18 @@ fn run_cores_browser_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
     assert!(app.here[0].name.ends_with("[RA]"));
     app.clear_filter();
 
+    app.category_system
+        .insert("Console".to_string(), "NES".to_string());
+    app.left_at.push(crate::state::LeftAt {
+        system: "NES".to_string(),
+        place: "dir:/media/fat/games/NES".to_string(),
+        row: "game:remembered.nes".to_string(),
+    });
     app.game_list.select(1);
     let saved = app.position();
     assert_eq!(saved.system, CORES_SYSTEM_ID);
+    app.category_system.clear();
+    app.left_at.clear();
     app.open_category = None;
     app.core_category = None;
     app.browsing = Browsing::Categories;
@@ -578,6 +587,8 @@ fn run_cores_browser_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
     assert_eq!(app.browsing, Browsing::Games);
     assert_eq!(app.game_list.selected(), 1);
     assert!(app.here[1].name.ends_with("[RA]"));
+    assert_eq!(app.category_system, saved.category_system);
+    assert_eq!(app.left_at, saved.left_at);
 
     let Outcome::Launch { plan, history, .. } = app.handle(Action::Accept).expect("core launch")
     else {
