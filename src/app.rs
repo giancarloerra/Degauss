@@ -9015,7 +9015,9 @@ impl App {
                 self.message = Some(format!("Cores list was not changed.\n{error}"));
             }
         }
-        self.screen = Screen::Browse;
+        if !matches!(self.screen, Screen::Options | Screen::Advanced) {
+            self.screen = Screen::Browse;
+        }
         self.resolve_view();
         self.apply_geometry();
         self.touch_selection();

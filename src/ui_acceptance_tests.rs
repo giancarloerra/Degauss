@@ -488,6 +488,13 @@ fn run_cores_browser_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
 
     select_option(&mut app, OptionsPage::Library, OptionId::ShowCores);
     app.handle(Action::Accept);
+    assert_eq!(app.screen, Screen::Options);
+    assert_eq!(app.options_page, OptionsPage::Library);
+    assert_eq!(
+        app.option_ids()[app.active_list().selected()],
+        OptionId::ShowCores,
+        "the targeted catalogue build keeps the user on the option they changed"
+    );
     assert_eq!(app.core_catalogue.entries.len(), 3);
     assert_eq!(
         crate::cache::load_core_catalogue(&app.cache_dir),
@@ -495,8 +502,13 @@ fn run_cores_browser_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
         "the first opt-in builds and persists the catalogue explicitly"
     );
     app.handle(Action::Quit);
+    assert_eq!(app.screen, Screen::Options);
     app.handle(Action::Quit);
+    assert_eq!(app.screen, Screen::OptionsRoot);
     app.handle(Action::Quit);
+    assert_eq!(app.screen, Screen::Menu);
+    app.handle(Action::Quit);
+    assert_eq!(app.screen, Screen::Browse);
     assert!(app.show_cores);
     let cores = app
         .categories
