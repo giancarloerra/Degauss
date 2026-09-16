@@ -1333,6 +1333,7 @@ mod tests {
             rbf: "_Computer/Test".into(),
             launch: Vec::new(),
             setname: None,
+            compatible_cores: Vec::new(),
             skip_folders: Vec::new(),
             extra_paths: Vec::new(),
         }

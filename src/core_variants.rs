@@ -230,19 +230,21 @@ pub(crate) fn standard(system: &SystemConfig) -> EffectiveCore {
 /// mode. RA's attributed setname selects the Main profile and retains the
 /// original core's game directory; it must not be synthesized from a system ID.
 pub fn resolve(system: &SystemConfig, root: &Path, ra_first: bool) -> Result<EffectiveCore> {
-    if !ra_first && core_present(root, &system.rbf)? {
-        return Ok(standard(system));
-    }
-    if let Some(core) = installed_ra(system, root)? {
-        return Ok(core);
-    }
-    if ra_first && core_present(root, &system.rbf)? {
-        return Ok(standard(system));
+    for family in system.core_family_configs() {
+        if !ra_first && core_present(root, &family.rbf)? {
+            return Ok(standard(&family));
+        }
+        if let Some(core) = installed_ra(&family, root)? {
+            return Ok(core);
+        }
+        if ra_first && core_present(root, &family.rbf)? {
+            return Ok(standard(&family));
+        }
     }
     Err(DegaussError::unsupported(
         "core",
         format!(
-            "neither standard nor RetroAchievements core is installed for {}",
+            "no compatible Standard or RetroAchievements core is installed for {}",
             system.name
         ),
     ))
@@ -391,6 +393,13 @@ pub fn apply(text: &str, path: &Path, core: &EffectiveCore) -> Result<String> {
 pub fn recognized_favorite(path: &Path, system: &SystemConfig) -> Result<bool> {
     let text = read_launcher(path)?;
     let (rbf, setname) = elements(&text, path)?;
+    Ok(system
+        .core_family_configs()
+        .iter()
+        .any(|family| recognized_family(&rbf, setname.as_ref(), family)))
+}
+
+fn recognized_family(rbf: &Element, setname: Option<&Element>, system: &SystemConfig) -> bool {
     let base = Path::new(&system.rbf)
         .file_name()
         .and_then(|s| s.to_str())
@@ -411,7 +420,7 @@ pub fn recognized_favorite(path: &Path, system: &SystemConfig) -> Result<bool> {
         .value
         .eq_ignore_ascii_case(&format!("_RA_Cores/Cores/{base}"))
         && setname.is_some_and(|s| s.value.eq_ignore_ascii_case(&format!("RA_{identity}")));
-    Ok(standard_match || ra_match)
+    standard_match || ra_match
 }
 
 /// Avoid generating a temporary shortcut when its effective core is unchanged.
@@ -452,6 +461,7 @@ mod tests {
             extensions: vec!["nes".into()],
             rbf: "_Console/NES".into(),
             setname: None,
+            compatible_cores: Vec::new(),
             skip_folders: vec![],
             launch: vec![crate::config::LaunchRule {
                 extensions: vec!["nes".into()],

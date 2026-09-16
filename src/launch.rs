@@ -736,8 +736,127 @@ mod tests {
             ],
             skip_folders: Vec::new(),
             setname: None,
+            compatible_cores: Vec::new(),
             extra_paths: Vec::new(),
         }
+    }
+
+    fn shipped_system(id: &str, paths: Vec<PathBuf>) -> SystemConfig {
+        let def = crate::systems::load_table(Path::new("assets/systems.toml"))
+            .unwrap()
+            .into_iter()
+            .find(|system| system.id == id)
+            .unwrap_or_else(|| panic!("missing shipped system {id}"));
+        crate::systems::FoundSystem {
+            def,
+            paths,
+            logo_dir: None,
+            menu_folder: None,
+        }
+        .to_config()
+    }
+
+    #[test]
+    fn current_and_legacy_ngpc_cores_launch_the_same_existing_libraries() {
+        let root = std::env::temp_dir().join(format!("degauss-ngpc-{}", std::process::id()));
+        let ngp_folder = root.join("games/NGP");
+        let ngpc_folder = root.join("games/NGPC");
+        std::fs::create_dir_all(&ngp_folder).unwrap();
+        std::fs::create_dir_all(&ngpc_folder).unwrap();
+        std::fs::create_dir_all(root.join("_Console")).unwrap();
+        std::fs::create_dir_all(root.join("_Arcade")).unwrap();
+        let monochrome_legacy_folder = ngp_folder.join("Mono.ngp");
+        let monochrome_shared_folder = ngpc_folder.join("Mono Shared.ngp");
+        let colour_ngc = ngpc_folder.join("Colour.ngc");
+        let colour_npc = ngpc_folder.join("Colour Alias.npc");
+        for game in [
+            &monochrome_legacy_folder,
+            &monochrome_shared_folder,
+            &colour_ngc,
+            &colour_npc,
+        ] {
+            std::fs::write(game, b"cartridge").unwrap();
+        }
+        let pocket = shipped_system(
+            "NeoGeoPocket",
+            vec![ngp_folder.clone(), ngpc_folder.clone()],
+        );
+        let colour = shipped_system("NeoGeoPocketColor", vec![ngpc_folder.clone()]);
+        assert!(pocket.accepts(&monochrome_legacy_folder));
+        assert!(pocket.accepts(&monochrome_shared_folder));
+        assert!(colour.accepts(&colour_ngc));
+        assert!(colour.accepts(&colour_npc));
+        for (system, game) in [
+            (&pocket, &monochrome_legacy_folder),
+            (&pocket, &monochrome_shared_folder),
+            (&colour, &colour_ngc),
+            (&colour, &colour_npc),
+        ] {
+            let rule = system.rule_for(game).expect("cartridge launch rule");
+            assert_eq!(rule.kind, "f");
+            assert_eq!(rule.index, 1);
+        }
+
+        std::fs::write(root.join("_Console/NGPC_20260916.rbf"), b"core").unwrap();
+        for (system, game) in [
+            (&pocket, &monochrome_legacy_folder),
+            (&pocket, &monochrome_shared_folder),
+            (&colour, &colour_ngc),
+            (&colour, &colour_npc),
+        ] {
+            let planned =
+                plan_with_preference(system, game, &root.join("current.mgl"), &root, false)
+                    .unwrap();
+            assert!(planned.mgl.contains("<rbf>_Console/NGPC</rbf>"));
+            assert!(!planned.mgl.contains("<setname>"));
+            assert!(planned.mgl.contains("type=\"f\" index=\"1\""));
+        }
+        let current_favorite =
+            favorite_mgl_with_preference(&pocket, &monochrome_legacy_folder, &root, false)
+                .unwrap()
+                .unwrap();
+        assert!(current_favorite.contains("<rbf>_Console/NGPC</rbf>"));
+        assert!(!current_favorite.contains("<setname>"));
+
+        std::fs::remove_file(root.join("_Console/NGPC_20260916.rbf")).unwrap();
+        std::fs::write(root.join("_Arcade/JTNGP.rbf"), b"core").unwrap();
+        std::fs::write(root.join("_Arcade/JTNGPC.rbf"), b"core").unwrap();
+        let legacy_ngp = plan_with_preference(
+            &pocket,
+            &monochrome_legacy_folder,
+            &root.join("legacy-ngp.mgl"),
+            &root,
+            false,
+        )
+        .unwrap();
+        assert!(legacy_ngp.mgl.contains("<rbf>_Arcade/JTNGP</rbf>"));
+        assert!(legacy_ngp.mgl.contains("<setname>NeoGeoPocket</setname>"));
+        let legacy_colour = plan_with_preference(
+            &colour,
+            &colour_ngc,
+            &root.join("legacy-ngpc.mgl"),
+            &root,
+            false,
+        )
+        .unwrap();
+        assert!(legacy_colour.mgl.contains("<rbf>_Arcade/JTNGPC</rbf>"));
+        assert!(legacy_colour.mgl.contains("<setname>JTNGPC</setname>"));
+        let legacy_favorite = root.join("Legacy Pocket.mgl");
+        std::fs::write(&legacy_favorite, &legacy_ngp.mgl).unwrap();
+        assert!(crate::core_variants::recognized_favorite(&legacy_favorite, &pocket).unwrap());
+
+        std::fs::write(root.join("_Console/NGPC_20260916.rbf"), b"core").unwrap();
+        let preferred = plan_with_preference(
+            &pocket,
+            &monochrome_legacy_folder,
+            &root.join("preferred.mgl"),
+            &root,
+            false,
+        )
+        .unwrap();
+        assert!(preferred.mgl.contains("<rbf>_Console/NGPC</rbf>"));
+        assert!(!preferred.mgl.contains("<setname>"));
+        std::fs::remove_dir_all(root).ok();
     }
 
     #[test]
@@ -790,6 +909,7 @@ mod tests {
             launch: Vec::new(),
             skip_folders: Vec::new(),
             setname: None,
+            compatible_cores: Vec::new(),
             extra_paths: Vec::new(),
         };
         let plan = plan_amiga_vision(
@@ -819,6 +939,7 @@ mod tests {
             launch: Vec::new(),
             skip_folders: Vec::new(),
             setname: None,
+            compatible_cores: Vec::new(),
             extra_paths: Vec::new(),
         };
         let err = plan_amiga_vision(
@@ -844,6 +965,7 @@ mod tests {
             launch: Vec::new(),
             skip_folders: Vec::new(),
             setname: None,
+            compatible_cores: Vec::new(),
             extra_paths: Vec::new(),
         };
         let plan = plan_amiga_vision(
@@ -878,6 +1000,7 @@ mod tests {
             launch: Vec::new(),
             skip_folders: Vec::new(),
             setname: None,
+            compatible_cores: Vec::new(),
             extra_paths: Vec::new(),
         };
         let plan = plan_amiga_vision(&system, &dir, "Lotus II", &dir.join("degauss.mgl")).unwrap();
@@ -945,6 +1068,7 @@ mod tests {
             launch: vec![rule(&["nes", "fds"], "f", 1, 1)],
             skip_folders: Vec::new(),
             setname: None,
+            compatible_cores: Vec::new(),
         };
         (root, system)
     }
@@ -1371,6 +1495,7 @@ mod tests {
             rbf: "_Computer/Minimig".into(),
             launch: Vec::new(),
             setname: Some("Amiga".into()),
+            compatible_cores: Vec::new(),
             skip_folders: Vec::new(),
             extra_paths: Vec::new(),
         };
@@ -1405,6 +1530,7 @@ mod tests {
             rbf: "_Computer/Minimig".into(),
             launch: Vec::new(),
             setname: Some("Amiga".into()),
+            compatible_cores: Vec::new(),
             skip_folders: Vec::new(),
             extra_paths: Vec::new(),
         };
@@ -1437,6 +1563,7 @@ mod tests {
             rbf: "_Computer/Minimig".into(),
             launch: Vec::new(),
             setname: Some("Amiga".into()),
+            compatible_cores: Vec::new(),
             skip_folders: Vec::new(),
             extra_paths: Vec::new(),
         };
@@ -1469,6 +1596,7 @@ mod tests {
             launch: vec![rule(&["neo", "mgl"], "f", 1, 1)],
             skip_folders: Vec::new(),
             setname: None,
+            compatible_cores: Vec::new(),
             extra_paths: Vec::new(),
         }
     }

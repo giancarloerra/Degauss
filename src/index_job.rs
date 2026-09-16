@@ -461,6 +461,7 @@ mod tests {
                 rbf: "Test".into(),
                 launch: vec![],
                 setname: None,
+                compatible_cores: Vec::new(),
                 skip_folders: vec![],
                 extra_paths: vec![],
             },

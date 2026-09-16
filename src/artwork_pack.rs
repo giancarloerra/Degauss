@@ -3394,6 +3394,7 @@ mod tests {
             rbf: "_Console/TurboGrafx16".to_string(),
             launch: Vec::new(),
             setname: Some("SuperGrafx".to_string()),
+            compatible_cores: Vec::new(),
             skip_folders: Vec::new(),
             extra_paths: Vec::new(),
         };
