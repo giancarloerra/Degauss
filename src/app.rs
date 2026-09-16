@@ -7167,6 +7167,80 @@ impl App {
         rows
     }
 
+    /// Find only the first current cover needed by the Home preview. Unlike
+    /// opening Last Played, rebuilding the category list must not populate
+    /// its row identity map or resolve every retained entry.
+    fn last_played_preview_cover(&mut self) -> Option<PathBuf> {
+        let visible = self.settings.last_played.unwrap_or(0).min(10) as usize;
+        let entries: Vec<crate::history::Entry> = self
+            .last_played
+            .entries
+            .iter()
+            .take(visible)
+            .cloned()
+            .collect();
+        let mut sources: HashMap<
+            String,
+            (
+                crate::cache::SystemCache,
+                Option<crate::artwork_pack::Provider>,
+            ),
+        > = HashMap::new();
+        let mut unavailable = HashSet::new();
+
+        for entry in entries {
+            if unavailable.contains(&entry.system) || self.source_problem(&entry.system).is_some() {
+                continue;
+            }
+            if !sources.contains_key(&entry.system) {
+                let root = crate::artwork_pack::selected_root(
+                    &self.effective_artwork_pack_roots,
+                    &entry.system,
+                )
+                .map(Path::to_path_buf);
+                let cache = match root.as_ref() {
+                    Some(_) => crate::cache::load_artwork_pack_data(&self.cache_dir, &entry.system)
+                        .map(|data| data.cache),
+                    None => crate::cache::load_system(&self.cache_dir, &entry.system),
+                };
+                let Some(cache) = cache else {
+                    unavailable.insert(entry.system.clone());
+                    continue;
+                };
+                let provider = match root.as_deref() {
+                    Some(root) => match self.provider_from_state(&entry.system, root) {
+                        Ok(provider) => provider,
+                        Err(error) => {
+                            crate::note(&format!("last played  {}: {error}", entry.system));
+                            None
+                        }
+                    },
+                    None => None,
+                };
+                sources.insert(entry.system.clone(), (cache, provider));
+            }
+            let Some((cache, provider)) = sources.get(&entry.system) else {
+                continue;
+            };
+            let Some(mut row) = cache
+                .folders
+                .values()
+                .flat_map(|folder| folder.rows.iter())
+                .find(|row| row.kind == browse::Kind::Play(entry.launch.clone()))
+                .cloned()
+            else {
+                continue;
+            };
+            if let Some(provider) = provider {
+                provider.apply_prepared(std::slice::from_mut(&mut row));
+            }
+            if row.cover.is_some() {
+                return row.cover;
+            }
+        }
+        None
+    }
+
     fn open_last_played(&mut self) {
         self.open_category = None;
         self.open_system = None;
@@ -9159,11 +9233,7 @@ impl App {
                 continue;
             }
             if name == LAST_PLAYED_CATEGORY {
-                if let Some(cover) = self
-                    .resolve_last_played_rows()
-                    .into_iter()
-                    .find_map(|row| row.cover)
-                {
+                if let Some(cover) = self.last_played_preview_cover() {
                     picks.insert(name, cover);
                 }
                 continue;

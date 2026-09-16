@@ -1458,6 +1458,10 @@ fn run_last_played_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
     assert_eq!(cores_at + 1, recent_at);
     assert_eq!(recent_at + 1, favorites_at);
     assert_eq!(app.categories[recent_at].1, 2);
+    assert!(
+        app.last_played_rows.is_empty(),
+        "building Home previews does not populate the open collection's row map"
+    );
     assert_eq!(
         app.category_picks.get(LAST_PLAYED_CATEGORY),
         Some(&media.join("second.png")),
