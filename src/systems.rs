@@ -274,6 +274,19 @@ pub fn parse_table(text: &str, origin: &Path) -> Result<Vec<SystemDef>> {
                     ),
                 ));
             }
+            if profile
+                .id
+                .eq_ignore_ascii_case(crate::launch_cores::PRIMARY_PROFILE_ID)
+            {
+                return Err(DegaussError::malformed(
+                    "systems table",
+                    origin,
+                    format!(
+                        "{} uses reserved compatible core id {:?}",
+                        system.id, profile.id
+                    ),
+                ));
+            }
             if !profile_ids.insert(profile.id.as_str()) {
                 return Err(DegaussError::malformed(
                     "systems table",
@@ -1622,6 +1635,7 @@ extensions = ["md", "bin"]
             "[[systems.compatible_cores]]\nid = \"\"\nlabel = \"Legacy\"\nrbf = \"_Arcade/Legacy\"\n",
             "[[systems.compatible_cores]]\nid = \"legacy\"\nlabel = \"\"\nrbf = \"_Arcade/Legacy\"\n",
             "[[systems.compatible_cores]]\nid = \"legacy\"\nlabel = \"Legacy\"\nrbf = \"\"\n",
+            "[[systems.compatible_cores]]\nid = \"PRIMARY\"\nlabel = \"Reserved\"\nrbf = \"_Arcade/Legacy\"\n",
         ] {
             assert!(
                 parse_table(&format!("{base}{profile}"), Path::new("profiles.toml")).is_err(),

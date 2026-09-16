@@ -526,6 +526,7 @@ pub fn favorite_mgl_with_preference(
 /// differs or the favourite carries paths Main would join to the home
 /// directory: those are placed in the system's folders as Main would place
 /// them under `games/<core>`, so the temporary copy names the same file.
+#[cfg(test)]
 pub fn plan_with_choice(
     system: &SystemConfig,
     game: &Path,
@@ -533,6 +534,21 @@ pub fn plan_with_choice(
     menu_root: &Path,
     ra_first: bool,
     selected: Option<&str>,
+) -> Result<LaunchPlan> {
+    plan_with_selections(system, game, mgl_path, menu_root, ra_first, selected, None)
+}
+
+/// Plan a launch after selecting the compatible core family, then the core
+/// version within it. The original system remains the identity used to
+/// recognise existing favourites made with any declared family.
+pub fn plan_with_selections(
+    system: &SystemConfig,
+    game: &Path,
+    mgl_path: &Path,
+    menu_root: &Path,
+    ra_first: bool,
+    selected_version: Option<&str>,
+    selected_family: Option<&str>,
 ) -> Result<LaunchPlan> {
     if game
         .extension()
@@ -542,7 +558,8 @@ pub fn plan_with_choice(
         if !crate::core_variants::recognized_favorite(game, system)? {
             return plan(system, game, mgl_path);
         }
-        let core = crate::core_choices::resolve(system, menu_root, selected, ra_first)?;
+        let family = crate::launch_cores::resolve(system, menu_root, selected_family)?;
+        let core = crate::core_choices::resolve(&family, menu_root, selected_version, ra_first)?;
         if !crate::core_variants::needs_conversion(game, &core)?
             && !crate::favorites::has_home_relative_paths(game)?
         {
@@ -557,14 +574,17 @@ pub fn plan_with_choice(
             boot_file: None,
         });
     }
-    let mut result = plan(system, game, mgl_path)?;
-    if needs_system_core(game) {
-        let core = crate::core_choices::resolve(system, menu_root, selected, ra_first)?;
-        result.mgl = crate::core_variants::apply(&result.mgl, mgl_path, &core)?;
+    if !needs_system_core(game) {
+        return plan(system, game, mgl_path);
     }
+    let family = crate::launch_cores::resolve(system, menu_root, selected_family)?;
+    let mut result = plan(&family, game, mgl_path)?;
+    let core = crate::core_choices::resolve(&family, menu_root, selected_version, ra_first)?;
+    result.mgl = crate::core_variants::apply(&result.mgl, mgl_path, &core)?;
     Ok(result)
 }
 
+#[cfg(test)]
 pub fn favorite_mgl_with_choice(
     system: &SystemConfig,
     game: &Path,
@@ -572,10 +592,22 @@ pub fn favorite_mgl_with_choice(
     ra_first: bool,
     selected: Option<&str>,
 ) -> Result<Option<String>> {
+    favorite_mgl_with_selections(system, game, menu_root, ra_first, selected, None)
+}
+
+pub fn favorite_mgl_with_selections(
+    system: &SystemConfig,
+    game: &Path,
+    menu_root: &Path,
+    ra_first: bool,
+    selected_version: Option<&str>,
+    selected_family: Option<&str>,
+) -> Result<Option<String>> {
     let Some(text) = favorite_mgl(system, game)? else {
         return Ok(None);
     };
-    let core = crate::core_choices::resolve(system, menu_root, selected, ra_first)?;
+    let family = crate::launch_cores::resolve(system, menu_root, selected_family)?;
+    let core = crate::core_choices::resolve(&family, menu_root, selected_version, ra_first)?;
     crate::core_variants::apply(&text, game, &core).map(Some)
 }
 
@@ -856,6 +888,63 @@ mod tests {
         .unwrap();
         assert!(preferred.mgl.contains("<rbf>_Console/NGPC</rbf>"));
         assert!(!preferred.mgl.contains("<setname>"));
+
+        let pinned_legacy = plan_with_selections(
+            &pocket,
+            &monochrome_shared_folder,
+            &root.join("pinned-legacy.mgl"),
+            &root,
+            false,
+            Some("standard"),
+            Some("jtngp"),
+        )
+        .unwrap();
+        assert!(pinned_legacy.mgl.contains("<rbf>_Arcade/JTNGP</rbf>"));
+        assert!(pinned_legacy
+            .mgl
+            .contains("<setname>NeoGeoPocket</setname>"));
+
+        let current_favorite_path = root.join("Current Pocket.mgl");
+        std::fs::write(&current_favorite_path, &current_favorite).unwrap();
+        let converted = plan_with_selections(
+            &pocket,
+            &current_favorite_path,
+            &root.join("converted-favorite.mgl"),
+            &root,
+            false,
+            Some("standard"),
+            Some("jtngp"),
+        )
+        .unwrap();
+        assert!(converted.mgl.contains("<rbf>_Arcade/JTNGP</rbf>"));
+        assert!(converted.mgl.contains("<setname>NeoGeoPocket</setname>"));
+
+        let pinned_favorite = favorite_mgl_with_selections(
+            &pocket,
+            &monochrome_legacy_folder,
+            &root,
+            false,
+            Some("standard"),
+            Some("jtngp"),
+        )
+        .unwrap()
+        .unwrap();
+        assert!(pinned_favorite.contains("<rbf>_Arcade/JTNGP</rbf>"));
+
+        std::fs::remove_file(root.join("_Arcade/JTNGP.rbf")).unwrap();
+        let unavailable = plan_with_selections(
+            &pocket,
+            &monochrome_legacy_folder,
+            &root.join("missing-pinned.mgl"),
+            &root,
+            false,
+            Some("standard"),
+            Some("jtngp"),
+        )
+        .unwrap_err();
+        assert!(unavailable
+            .to_string()
+            .contains("JTNGP (Legacy) is not installed"));
         std::fs::remove_dir_all(root).ok();
     }
 
