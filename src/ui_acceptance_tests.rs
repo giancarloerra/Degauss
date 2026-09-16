@@ -627,6 +627,149 @@ fn run_cores_browser_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
     std::fs::remove_dir_all(root).unwrap();
 }
 
+fn run_misterzine_browser_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
+    let root = root.join("misterzine-browser");
+    std::fs::create_dir_all(root.join("games/NES")).unwrap();
+    for name in ["First Game.nes", "Second Game.nes"] {
+        std::fs::write(root.join("games/NES").join(name), b"fixture").unwrap();
+    }
+    let core = root.join("_Console/NES_20260916.rbf");
+    std::fs::create_dir_all(core.parent().unwrap()).unwrap();
+    std::fs::write(&core, b"fixture").unwrap();
+
+    let mut app = fixture_app(&root, window.clone(), Settings::default());
+    app.open_system = None;
+    app.library = None;
+    app.system_cache = None;
+    app.opened_config = None;
+    app.open_category = None;
+    app.trail.clear();
+    app.here.clear();
+    app.browsing = Browsing::Categories;
+    app.rebuild_system_list();
+    assert_eq!(app.settings.show_misterzine, None);
+    assert!(!app.show_misterzine);
+    assert!(app.misterzine_job.is_none());
+    assert!(!crate::misterzine::cache_path(&app.cache_dir).exists());
+    assert!(!app
+        .categories
+        .iter()
+        .any(|(name, _)| name == MISTERZINE_CATEGORY));
+
+    select_option(&mut app, OptionsPage::Library, OptionId::ShowMisterZine);
+    app.handle(Action::Accept);
+    assert_eq!(app.settings.show_misterzine, Some(true));
+    assert!(app.show_misterzine);
+    assert!(app.misterzine_job.is_none());
+    assert!(!crate::misterzine::cache_path(&app.cache_dir).exists());
+    assert!(app
+        .categories
+        .iter()
+        .any(|(name, _)| name == MISTERZINE_CATEGORY));
+
+    app.screen = Screen::Browse;
+    app.open_category = Some(MISTERZINE_CATEGORY.into());
+    app.browsing = Browsing::Games;
+    app.misterzine_items = vec![
+        crate::misterzine::Item::fixture(
+            "Installed Release",
+            crate::misterzine::LocalState::Current,
+            Some(core.clone()),
+        ),
+        crate::misterzine::Item::fixture(
+            "Missing Release",
+            crate::misterzine::LocalState::NotInstalled,
+            None,
+        ),
+    ];
+    app.rebuild_misterzine_rows();
+    assert_eq!(app.here.len(), 2);
+    app.open_context();
+    assert_eq!(
+        app.context_actions,
+        [REFRESH_MISTERZINE, INSTALLED_ONLY, ABOUT_MISTERZINE]
+            .into_iter()
+            .map(str::to_string)
+            .collect::<Vec<_>>()
+    );
+    let installed_only = app
+        .menu
+        .iter()
+        .position(|entry| entry == INSTALLED_ONLY)
+        .unwrap();
+    app.menu_list.select(installed_only);
+    app.handle(Action::Accept);
+    assert!(app.misterzine_installed_only);
+    assert_eq!(app.here.len(), 1);
+    let Outcome::Launch { plan, .. } = app.handle(Action::Accept).expect("local core launch")
+    else {
+        panic!("unexpected MiSTerZine launch outcome")
+    };
+    assert_eq!(plan.command, format!("load_core {}\n", core.display()));
+
+    std::fs::remove_file(&core).unwrap();
+    assert!(app.handle(Action::Accept).is_none());
+    assert!(app
+        .message
+        .as_deref()
+        .is_some_and(|message| message.contains("no longer installed")));
+    app.message = None;
+    app.open_context();
+    let installed_only = app
+        .menu
+        .iter()
+        .position(|entry| entry == INSTALLED_ONLY)
+        .unwrap();
+    app.menu_list.select(installed_only);
+    app.handle(Action::Accept);
+    assert!(!app.misterzine_installed_only);
+    app.game_list.select(1);
+    assert!(app.handle(Action::Accept).is_none());
+    assert!(app
+        .message
+        .as_deref()
+        .is_some_and(|message| message == "Missing Release is not installed on this MiSTer."));
+    app.message = None;
+
+    app.open_context();
+    let about = app
+        .menu
+        .iter()
+        .position(|entry| entry == ABOUT_MISTERZINE)
+        .unwrap();
+    app.menu_list.select(about);
+    app.handle(Action::Accept);
+    assert!(app
+        .message
+        .as_deref()
+        .is_some_and(|message| message.contains("CC BY 4.0")));
+    assert!(app.save_settings());
+    let settings = Settings::load(&app.settings_path).unwrap();
+    app.ui.hide().unwrap();
+    drop(app);
+
+    let mut app = fixture_app(&root, window, settings);
+    assert!(app.show_misterzine);
+    assert!(
+        !app.misterzine_installed_only,
+        "the view filter is not persisted"
+    );
+    assert!(
+        app.misterzine_job.is_none(),
+        "startup does not contact MiSTerZine"
+    );
+    select_option(&mut app, OptionsPage::Library, OptionId::ShowMisterZine);
+    app.handle(Action::Accept);
+    assert!(!app.show_misterzine);
+    assert!(!app
+        .categories
+        .iter()
+        .any(|(name, _)| name == MISTERZINE_CATEGORY));
+    app.ui.hide().unwrap();
+    drop(app);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
 fn run_handheld_category_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
     let mut app = fixture_app(root, window, Settings::default());
     let mut handheld = app.all_systems[0].clone();
@@ -9632,6 +9775,7 @@ pub(super) fn run_ui_acceptance_flow(window: Rc<MinimalSoftwareWindow>) {
     let gamelist_xml = format!("<gameList><game><path>First Game.nes</path><desc><![CDATA[{complete_description}]]></desc></game><game><path>Second Game.nes</path><desc><![CDATA[{complete_description}]]></desc></game></gameList>");
     std::fs::write(&gamelist_path, &gamelist_xml).unwrap();
     run_cores_browser_flow(&root, window.clone());
+    run_misterzine_browser_flow(&root, window.clone());
     run_browse_bar_settings_flow(&root, window.clone());
     run_game_name_display_flow(&root, window.clone());
     run_details_style_flow(&root, window.clone());

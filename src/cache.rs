@@ -296,7 +296,7 @@ fn read_artwork_pack_cache(dir: &Path, id: &str) -> Result<Option<(Vec<u8>, Artw
     Ok(Some((bytes, data)))
 }
 
-fn write(path: &Path, bytes: &[u8]) -> Result<()> {
+pub(crate) fn write(path: &Path, bytes: &[u8]) -> Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)
             .map_err(|e| DegaussError::io("making the cache folder", parent, e))?;
