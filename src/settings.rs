@@ -273,6 +273,10 @@ pub struct Settings {
     pub show_other: Option<bool>,
     /// Show the Utility group: test patterns and measurement cores.
     pub show_utility: Option<bool>,
+    /// Show the optional top-level browser of installed core launchers.
+    /// Absent is off so existing installations keep their released home.
+    #[serde(default)]
+    pub show_cores: Option<bool>,
     /// Nightly cores are visible unless explicitly switched off.
     pub show_unstable: Option<bool>,
     pub show_scripts: Option<bool>,
@@ -587,6 +591,8 @@ mod tests {
             AutomaticDataSource::GamelistFirst
         );
         assert_eq!(settings.separate_handheld_category, None);
+        assert_eq!(settings.show_cores, None);
+        assert!(!settings.show_cores.unwrap_or(false));
     }
 
     #[test]
@@ -617,6 +623,8 @@ mod tests {
             settings.automatic_data_source.unwrap_or_default(),
             AutomaticDataSource::GamelistFirst
         );
+        assert_eq!(settings.show_cores, None);
+        assert!(!settings.show_cores.unwrap_or(false));
     }
 
     fn temp_path(tag: &str) -> std::path::PathBuf {

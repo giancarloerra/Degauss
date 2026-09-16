@@ -353,6 +353,7 @@ fn unopened_fixture_app_with_systems(
         config,
         settings,
         settings_path: root.join("settings.toml"),
+        core_catalogue: Default::default(),
         systems: defs
             .iter()
             .map(|def| FoundSystem {
@@ -437,6 +438,157 @@ fn run_browse_bar_settings_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) 
         }
         app.ui.hide().unwrap();
     }
+}
+
+fn run_cores_browser_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
+    let root = root.join("cores-browser");
+    std::fs::create_dir_all(root.join("games/NES")).unwrap();
+    for name in ["First Game.nes", "Second Game.nes"] {
+        std::fs::write(root.join("games/NES").join(name), b"fixture").unwrap();
+    }
+    let console = root.join("_Console");
+    let ra = root.join("_RA_Cores");
+    let unstable = root.join("_Unstable");
+    std::fs::create_dir_all(&console).unwrap();
+    std::fs::create_dir_all(&ra).unwrap();
+    std::fs::create_dir_all(&unstable).unwrap();
+    let standard = console.join("NES_20260916.rbf");
+    let ra_launcher = ra.join("RA_NES.mgl");
+    let unstable_launcher = unstable.join("NES_unstable_20260916.rbf");
+    for path in [&standard, &ra_launcher, &unstable_launcher] {
+        std::fs::write(path, b"fixture").unwrap();
+    }
+    let entries = vec![
+        crate::systems::CoreEntry {
+            name: "Nintendo Entertainment System".into(),
+            category: "Console".into(),
+            variant: crate::systems::CoreVariant::Standard,
+            path: standard.clone(),
+            logo_id: Some("NES".into()),
+        },
+        crate::systems::CoreEntry {
+            name: "Nintendo Entertainment System".into(),
+            category: "Console".into(),
+            variant: crate::systems::CoreVariant::RetroAchievements,
+            path: ra_launcher.clone(),
+            logo_id: Some("NES".into()),
+        },
+        crate::systems::CoreEntry {
+            name: "Nintendo Entertainment System".into(),
+            category: "Console".into(),
+            variant: crate::systems::CoreVariant::Unstable("20260916".into()),
+            path: unstable_launcher,
+            logo_id: Some("NES".into()),
+        },
+    ];
+    let catalogue = crate::systems::CoreCatalogue {
+        format: crate::systems::CoreCatalogue::FORMAT,
+        entries,
+    };
+
+    let mut app = fixture_app(&root, window, Settings::default());
+    app.core_catalogue = catalogue;
+    app.open_system = None;
+    app.library = None;
+    app.system_cache = None;
+    app.opened_config = None;
+    app.open_category = None;
+    app.trail.clear();
+    app.here.clear();
+    app.browsing = Browsing::Categories;
+    app.rebuild_system_list();
+    assert!(
+        !app.categories
+            .iter()
+            .any(|(name, _)| name == CORES_CATEGORY),
+        "the backwards-compatible default leaves Cores hidden"
+    );
+
+    select_option(&mut app, OptionsPage::Library, OptionId::ShowCores);
+    app.handle(Action::Accept);
+    app.handle(Action::Quit);
+    app.handle(Action::Quit);
+    app.handle(Action::Quit);
+    assert!(app.show_cores);
+    let cores = app
+        .categories
+        .iter()
+        .position(|(name, _)| name == CORES_CATEGORY)
+        .expect("the enabled Cores category is on Home");
+    app.category_list.select(cores);
+    app.handle(Action::Accept);
+    assert_eq!(app.browsing, Browsing::Systems);
+    assert!(app.in_cores_browser());
+    assert_eq!(app.core_categories(), vec![("Console".into(), 3)]);
+
+    app.handle(Action::Accept);
+    assert_eq!(app.browsing, Browsing::Games);
+    assert_eq!(app.here.len(), 3);
+    assert_eq!(app.here[0].name, "Nintendo Entertainment System [Standard]");
+    assert_eq!(app.here[1].name, "Nintendo Entertainment System [RA]");
+    assert_eq!(
+        app.here[2].name,
+        "Nintendo Entertainment System [Unstable: 20260916]"
+    );
+    app.open_context();
+    assert_eq!(
+        app.context_actions,
+        vec![JUMP, SEARCH, REBUILD_CORES, CHANGE_VIEW]
+            .into_iter()
+            .map(str::to_string)
+            .collect::<Vec<_>>()
+    );
+    app.handle(Action::Quit);
+    app.filter = squashed("[RA]");
+    app.apply_filter();
+    assert_eq!(app.here.len(), 1);
+    assert!(app.here[0].name.ends_with("[RA]"));
+    app.clear_filter();
+
+    app.game_list.select(1);
+    let saved = app.position();
+    assert_eq!(saved.system, CORES_SYSTEM_ID);
+    app.open_category = None;
+    app.core_category = None;
+    app.browsing = Browsing::Categories;
+    app.rebuild_system_list();
+    app.restore_position(&saved);
+    assert!(app.in_cores_browser());
+    assert_eq!(app.browsing, Browsing::Games);
+    assert_eq!(app.game_list.selected(), 1);
+    assert!(app.here[1].name.ends_with("[RA]"));
+
+    let Outcome::Launch { plan, .. } = app.handle(Action::Accept).expect("core launch") else {
+        panic!("unexpected core launch outcome")
+    };
+    assert_eq!(
+        plan.command,
+        format!("load_core {}\n", ra_launcher.display())
+    );
+    std::fs::remove_file(&standard).unwrap();
+    app.game_list.select(0);
+    assert!(app.handle(Action::Accept).is_none());
+    assert!(app
+        .message
+        .as_deref()
+        .is_some_and(|message| message.contains("no longer installed")));
+
+    let previous = app.core_catalogue.clone();
+    let menu_root = app.config.menu_root.clone();
+    app.config.menu_root = root
+        .join("missing-menu-root")
+        .to_string_lossy()
+        .into_owned();
+    app.rebuild_cores_catalogue();
+    assert_eq!(app.core_catalogue, previous);
+    assert!(app
+        .message
+        .as_deref()
+        .is_some_and(|message| message.contains("Cores list was not changed")));
+    app.config.menu_root = menu_root;
+    app.ui.hide().unwrap();
+    drop(app);
+    std::fs::remove_dir_all(root).unwrap();
 }
 
 fn run_handheld_category_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
@@ -7643,6 +7795,7 @@ fn run_neogeo_romset_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
             config,
             settings,
             settings_path: root.join("settings.toml"),
+            core_catalogue: Default::default(),
             systems: vec![FoundSystem {
                 def: def.clone(),
                 paths: vec![games.clone()],
@@ -8514,6 +8667,7 @@ pub(super) fn run_ui_acceptance_flow(window: Rc<MinimalSoftwareWindow>) {
     let gamelist_path = root.join("games/NES/gamelist.xml");
     let gamelist_xml = format!("<gameList><game><path>First Game.nes</path><desc><![CDATA[{complete_description}]]></desc></game><game><path>Second Game.nes</path><desc><![CDATA[{complete_description}]]></desc></game></gameList>");
     std::fs::write(&gamelist_path, &gamelist_xml).unwrap();
+    run_cores_browser_flow(&root, window.clone());
     run_browse_bar_settings_flow(&root, window.clone());
     run_details_style_flow(&root, window.clone());
     run_handheld_category_flow(&root, window.clone());

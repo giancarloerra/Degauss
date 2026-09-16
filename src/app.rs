@@ -48,7 +48,7 @@ use crate::options::{speed_badge, speed_label, OptionId, OptionsPage, ADVANCED};
 use crate::render::{FrameWork, PresentMode, Presenter};
 use crate::settings::{CustomViews, HoldButton, HoldShortcut, SaveOutcome, Settings};
 use crate::surface::Surface;
-use crate::systems::{is_favorites, FoundSystem, SystemDef};
+use crate::systems::{is_favorites, CoreCatalogue, CoreEntry, FoundSystem, SystemDef};
 
 #[cfg(test)]
 #[path = "ui_acceptance_tests.rs"]
@@ -311,6 +311,7 @@ fn option_operation(option: OptionId, input: OptionInput) -> OptionOperation {
         | OptionId::ShowEmpty
         | OptionId::ShowOther
         | OptionId::ShowUtility
+        | OptionId::ShowCores
         | OptionId::ShowUnstable
         | OptionId::ShowScripts
         | OptionId::CorePreference
@@ -1116,6 +1117,8 @@ const CLEAR_SEARCH: &str = "Clear Search";
 
 /// The id the favourites folder is listed under in the table.
 const FAVORITES_ID: &str = "Favorites";
+const CORES_CATEGORY: &str = "Cores";
+const CORES_SYSTEM_ID: &str = "__cores";
 
 /// Take this row out of the list until it is asked for again.
 const HIDE_THIS: &str = "Hide This";
@@ -1123,6 +1126,7 @@ const HIDE_THIS: &str = "Hide This";
 /// Read the system being browsed off the card again, leaving every other
 /// system's listing as it was.
 const REBUILD_SYSTEM: &str = "Rebuild This System List";
+const REBUILD_CORES: &str = "Rebuild Cores List";
 
 /// Put it back.
 const SHOW_THIS: &str = "Show This";
@@ -1897,6 +1901,7 @@ impl ContextPage {
                     | USE_DEFAULT_CORE_VERSION
                     | GAME_DATA_SOURCE
                     | REBUILD_SYSTEM
+                    | REBUILD_CORES
             ),
             Self::Appearance => matches!(
                 action,
@@ -1933,6 +1938,7 @@ fn context_help(action: &str) -> &'static str {
         }
         GAME_DATA_SOURCE => "Choose the image and metadata source for this system.",
         REBUILD_SYSTEM => "Rescan this entire system, including all its folders.",
+        REBUILD_CORES => "Refresh only the installed-core catalogue from MiSTer's menu folders.",
         CHANGE_CATEGORY_IMAGE => "Choose the image shown for the selected category or system.",
         CLEAR_CATEGORY_IMAGE => {
             "Remove this custom image after confirmation and restore the default image."
@@ -3331,6 +3337,11 @@ pub struct App {
     cache_dir: PathBuf,
     /// What is known about every system, read once at startup.
     index: Option<crate::cache::Index>,
+    /// Installed direct core launchers from the same shallow menu walk used
+    /// for system discovery. Browsing this never reads the menu folders.
+    core_catalogue: CoreCatalogue,
+    /// The category open inside the optional Cores browser.
+    core_category: Option<String>,
     /// The open system's folders, when they have been written down.
     system_cache: Option<crate::cache::SystemCache>,
     /// Current read-only Pack snapshot. Present only for a Pack-selected
@@ -3416,6 +3427,8 @@ pub struct App {
     show_other: bool,
     /// Show the group holding test and measurement cores.
     show_utility: bool,
+    /// Show the optional top-level Cores browser.
+    show_cores: bool,
     show_unstable: bool,
     /// Show the strip along the bottom.
     show_bar: bool,
@@ -3467,6 +3480,8 @@ pub struct Loaded {
     pub settings: Settings,
     pub settings_path: PathBuf,
     pub systems: Vec<FoundSystem>,
+    /// Direct core launchers found by the same shallow discovery pass.
+    pub core_catalogue: CoreCatalogue,
     /// The display names the card itself applies to cores and shortcuts.
     pub names: browse::DisplayNames,
     /// The full table of known systems, so a rebuild can ask the card
@@ -3499,6 +3514,7 @@ impl App {
         let show_empty = loaded.settings.show_empty.unwrap_or(false);
         let show_other = loaded.settings.show_other.unwrap_or(false);
         let show_utility = loaded.settings.show_utility.unwrap_or(false);
+        let show_cores = loaded.settings.show_cores.unwrap_or(false);
         let show_unstable = loaded.settings.show_unstable.unwrap_or(true);
         let show_bar = loaded.settings.show_bar.unwrap_or(true);
         let Loaded {
@@ -3506,6 +3522,7 @@ impl App {
             mut settings,
             settings_path,
             systems,
+            core_catalogue,
             names,
             table,
             logo_dir,
@@ -3660,6 +3677,14 @@ impl App {
         );
 
         let system_count = systems.len();
+        let cache_dir = crate::cache::dir_for(&settings_path);
+        if crate::cache::load_core_catalogue(&cache_dir).as_ref() != Some(&core_catalogue) {
+            if let Err(error) = crate::cache::save_core_catalogue(&cache_dir, &core_catalogue) {
+                startup_problems.push(format!(
+                    "Installed cores were found, but their catalogue could not be saved: {error}"
+                ));
+            }
+        }
         // Explicit choices are saved per source group; every member of the
         // group uses that root.
         let effective_artwork_pack_roots = systems
@@ -3712,8 +3737,10 @@ impl App {
             opened_config: None,
             corrected_counts: HashMap::new(),
             total_games: 0,
-            cache_dir: crate::cache::dir_for(&settings_path),
+            cache_dir,
             index: None,
+            core_catalogue,
+            core_category: None,
             system_cache: None,
             artwork_provider: None,
             artwork_provider_cache: HashMap::new(),
@@ -3857,6 +3884,7 @@ impl App {
             show_empty,
             show_other,
             show_utility,
+            show_cores,
             show_unstable,
             show_bar,
             category_picks: std::collections::BTreeMap::new(),
@@ -4594,6 +4622,14 @@ impl App {
     /// A picture for a group: whichever system lent its logo this time, or
     /// a file named after the group if one was put in the logos folder.
     fn category_logo(&self, category: &str) -> Option<PathBuf> {
+        if category == CORES_CATEGORY {
+            return self.named_logo(category).or_else(|| {
+                self.core_catalogue
+                    .entries
+                    .iter()
+                    .find_map(|entry| self.core_logo(entry))
+            });
+        }
         self.category_picks.get(category).cloned()
     }
 
@@ -5913,6 +5949,16 @@ impl App {
     /// a scraper may or may not have filled in.
     /// Identify the exact browse place under any menu currently covering it.
     fn current_view_place(&self) -> Option<ViewPlace> {
+        if self.in_cores_browser() {
+            return match self.browsing {
+                Browsing::Systems => Some(ViewPlace::Systems(CORES_CATEGORY.to_string())),
+                Browsing::Games => Some(ViewPlace::Games {
+                    system: CORES_SYSTEM_ID.to_string(),
+                    place: self.core_category.clone()?,
+                }),
+                Browsing::Categories => Some(ViewPlace::Categories),
+            };
+        }
         match self.browsing {
             Browsing::Categories => Some(ViewPlace::Categories),
             Browsing::Systems => self
@@ -5927,6 +5973,9 @@ impl App {
     }
 
     fn context_system_id(&self) -> Option<&str> {
+        if self.in_cores_browser() {
+            return None;
+        }
         match self.browsing {
             Browsing::Systems => self
                 .systems
@@ -7163,6 +7212,13 @@ impl App {
 
     /// Where browsing currently is, for the title bar.
     fn here_label(&self) -> String {
+        if self.in_cores_browser() {
+            return self
+                .core_category
+                .as_ref()
+                .map(|category| format!("{CORES_CATEGORY} / {category}"))
+                .unwrap_or_else(|| CORES_CATEGORY.to_string());
+        }
         let system = self
             .open_system_ref()
             .map(|system| system.name().to_string())
@@ -7419,6 +7475,24 @@ impl App {
             }),
             Err(e) => {
                 self.message = Some(format!("{e}"));
+                self.dirty = true;
+                None
+            }
+        }
+    }
+
+    fn confirm_core_launch(&mut self) -> Option<Outcome> {
+        let row = self.here.get(self.game_list.selected())?;
+        let browse::Kind::Play(browse::Launch::File(path)) = &row.kind else {
+            return None;
+        };
+        match crate::launch::plan_core(path, Path::new(&self.config.menu_root)) {
+            Ok(plan) => Some(Outcome::Launch {
+                plan: Box::new(plan),
+                name: row.name.clone(),
+            }),
+            Err(error) => {
+                self.message = Some(error.to_string());
                 self.dirty = true;
                 None
             }
@@ -8004,8 +8078,35 @@ impl App {
                 self.message = Some("Indexing cancelled during preparation".to_string());
             }
             Err(error) => self.message = Some(error.to_string()),
-            Ok(Some(found)) => {
-                self.apply_discovered_systems(found);
+            Ok(Some(discovered)) => {
+                if let Err(error) =
+                    crate::cache::save_core_catalogue(&self.cache_dir, &discovered.cores)
+                {
+                    self.message = Some(error.to_string());
+                    let report = format!(
+                        "{}\n{} seconds elapsed\nNo system lists were replaced.",
+                        error,
+                        preparation.started.elapsed().as_secs()
+                    );
+                    self.index_terminal = Some(IndexOverview {
+                        title: "Index All Systems".into(),
+                        state: "Failed".into(),
+                        subject: "Core Catalogue".into(),
+                        elapsed: preparation.started.elapsed().as_secs(),
+                        problem: error.to_string(),
+                        report: report.clone(),
+                        ..IndexOverview::default()
+                    });
+                    if self.index_details {
+                        self.message = Some(report);
+                    }
+                    self.ui.set_index_active(false);
+                    self.last_input = Instant::now();
+                    self.touch_selection();
+                    return;
+                }
+                self.core_catalogue = discovered.cores;
+                self.apply_discovered_systems(discovered.systems);
                 let started = preparation.started;
                 self.build = Some(preparation);
                 self.resolve_artwork_sources(SourceResolutionAction::Rebuild(started));
@@ -8307,6 +8408,138 @@ impl App {
         self.touch_selection();
     }
 
+    fn in_cores_browser(&self) -> bool {
+        self.open_category.as_deref() == Some(CORES_CATEGORY)
+    }
+
+    fn core_categories(&self) -> Vec<(String, usize)> {
+        self.core_catalogue.categories()
+    }
+
+    fn selected_core_category(&self) -> Option<String> {
+        self.core_categories()
+            .get(self.system_list.selected())
+            .map(|(name, _)| name.clone())
+    }
+
+    fn core_logo(&self, entry: &CoreEntry) -> Option<PathBuf> {
+        let id = entry.logo_id.as_deref()?;
+        if let Some(system) = self.all_systems.iter().find(|system| system.def.id == id) {
+            return self.system_logo(system);
+        }
+        let logo_dir = self.logo_dir.as_deref()?;
+        crate::category_images::system_image(logo_dir, id).or_else(|| {
+            self.table
+                .iter()
+                .find(|system| system.id == id)
+                .and_then(|system| system.logo.as_deref())
+                .map(PathBuf::from)
+                .filter(|path| path.is_file())
+                .or_else(|| {
+                    ["png", "jpg"]
+                        .into_iter()
+                        .map(|extension| logo_dir.join(format!("{id}.{extension}")))
+                        .find(|path| path.is_file())
+                })
+        })
+    }
+
+    fn core_category_logo(&self, category: &str) -> Option<PathBuf> {
+        self.named_logo(category).or_else(|| {
+            self.core_catalogue
+                .in_category(category)
+                .find_map(|entry| self.core_logo(entry))
+        })
+    }
+
+    fn core_rows(&self, category: &str) -> Vec<browse::Row> {
+        self.core_catalogue
+            .in_category(category)
+            .map(|entry| browse::Row {
+                name: entry.label(),
+                sort_key: entry.name.to_ascii_lowercase(),
+                kind: browse::Kind::Play(browse::Launch::File(entry.path.clone())),
+                cover: self.core_logo(entry),
+                genre: None,
+                favorite: false,
+                below: None,
+                details: browse::Details::default(),
+            })
+            .collect()
+    }
+
+    fn open_selected_core_category(&mut self) {
+        let Some(category) = self.selected_core_category() else {
+            return;
+        };
+        self.core_category = Some(category.clone());
+        self.filter.clear();
+        self.all_here.clear();
+        self.here = self.core_rows(&category);
+        self.game_list = ListState::new(self.here.len(), self.geometry.visible);
+        self.browsing = Browsing::Games;
+        self.resolve_view();
+        self.apply_geometry();
+        self.touch_selection();
+    }
+
+    fn rebuild_cores_catalogue(&mut self) {
+        let selected = self
+            .here
+            .get(self.game_list.selected())
+            .and_then(|row| match &row.kind {
+                browse::Kind::Play(browse::Launch::File(path)) => Some(path.clone()),
+                _ => None,
+            });
+        let outcome = crate::systems::CoreIndex::read_checked(Path::new(&self.config.menu_root))
+            .map(|index| index.catalogue(&self.table))
+            .and_then(|catalogue| {
+                crate::cache::save_core_catalogue(&self.cache_dir, &catalogue)?;
+                Ok(catalogue)
+            });
+        match outcome {
+            Ok(catalogue) => {
+                let count = catalogue.entries.len();
+                self.core_catalogue = catalogue;
+                self.filter.clear();
+                self.all_here.clear();
+                self.rebuild_system_list();
+                if self.in_cores_browser() && self.browsing == Browsing::Games {
+                    let category = self.core_category.clone().unwrap_or_default();
+                    if self
+                        .core_categories()
+                        .iter()
+                        .any(|(name, _)| name == &category)
+                    {
+                        self.here = self.core_rows(&category);
+                        self.game_list = ListState::new(self.here.len(), self.geometry.visible);
+                        if let Some(selected) = selected {
+                            if let Some(at) = self.here.iter().position(|row| {
+                                matches!(&row.kind, browse::Kind::Play(browse::Launch::File(path)) if path == &selected)
+                            }) {
+                                self.game_list.select(at);
+                            }
+                        }
+                    } else {
+                        self.here.clear();
+                        self.core_category = None;
+                        self.browsing = Browsing::Systems;
+                    }
+                }
+                self.message = Some(format!("Cores list rebuilt: {count} launchers found."));
+            }
+            Err(error) => {
+                crate::note(&format!("cores        rebuild failed: {error}"));
+                self.message = Some(format!("Cores list was not changed.\n{error}"));
+            }
+        }
+        self.screen = Screen::Browse;
+        self.resolve_view();
+        self.apply_geometry();
+        self.touch_selection();
+        self.dirty = true;
+    }
+
     fn rebuild_system_list(&mut self) {
         // Nothing is hidden until the card has been read, which happens
         // once and only when something would be hidden by it.
@@ -8362,6 +8595,19 @@ impl App {
                 categories.push((name.to_string(), count));
             }
         }
+        if self.show_cores && !self.core_catalogue.entries.is_empty() {
+            let at = categories
+                .iter()
+                .position(|(name, _)| name == FAVORITES_ID)
+                .unwrap_or(categories.len());
+            categories.insert(
+                at,
+                (
+                    CORES_CATEGORY.to_string(),
+                    self.core_catalogue.entries.len(),
+                ),
+            );
+        }
         // Anything with a group we did not anticipate still gets shown.
         for system in &visible {
             let name = display_category(system, separate_handheld);
@@ -8375,6 +8621,7 @@ impl App {
         }
 
         self.systems = match self.open_category.as_deref() {
+            Some(CORES_CATEGORY) => Vec::new(),
             Some(open) => visible
                 .into_iter()
                 .filter(|system| display_category(system, separate_handheld) == open)
@@ -8390,7 +8637,11 @@ impl App {
         self.category_list = ListState::new(self.categories.len(), self.geometry.visible);
         self.category_list.select(selected_category);
         self.reroll_category_art();
-        let count = self.systems.len();
+        let count = if self.in_cores_browser() {
+            self.core_categories().len()
+        } else {
+            self.systems.len()
+        };
         let selected = self.system_list.selected().min(count.saturating_sub(1));
         self.system_list = ListState::new(count, self.geometry.visible);
         self.system_list.move_items(selected as isize);
@@ -8439,6 +8690,15 @@ impl App {
         let name = name.clone();
         self.open_category = Some(name.clone());
         self.rebuild_system_list();
+        if name == CORES_CATEGORY {
+            self.core_category = None;
+            self.browsing = Browsing::Systems;
+            self.skipped_systems = false;
+            self.resolve_view();
+            self.apply_geometry();
+            self.touch_selection();
+            return;
+        }
         // Back to the system this group was left on, found by id in the
         // freshly filtered list; a group never left keeps the clamped
         // index the rebuild produced, exactly as before.
@@ -9238,6 +9498,19 @@ impl App {
                 self.settings.show_utility = Some(self.show_utility);
                 self.rebuild_system_list();
             }
+            OptionId::ShowCores => {
+                self.show_cores = !self.show_cores;
+                self.settings.show_cores = Some(self.show_cores);
+                if !self.show_cores && self.in_cores_browser() {
+                    self.core_category = None;
+                    self.open_category = None;
+                    self.browsing = Browsing::Categories;
+                    self.filter.clear();
+                    self.all_here.clear();
+                    self.here.clear();
+                }
+                self.rebuild_system_list();
+            }
             OptionId::ShowBar => {
                 self.show_bar = !self.show_bar;
                 self.settings.show_bar = Some(self.show_bar);
@@ -9343,6 +9616,7 @@ impl App {
             OptionId::ShowEmpty => on_off(self.show_empty),
             OptionId::ShowOther => on_off(self.show_other),
             OptionId::ShowUtility => on_off(self.show_utility),
+            OptionId::ShowCores => on_off(self.show_cores),
             OptionId::ShowUnstable => on_off(self.show_unstable),
             OptionId::ShowScripts => on_off(self.settings.show_scripts.unwrap_or(true)),
             OptionId::CorePreference => self
@@ -9602,6 +9876,16 @@ impl App {
                 self.touch_selection();
             }
             Screen::Browse => match self.browsing {
+                Browsing::Games if self.in_cores_browser() => {
+                    self.filter.clear();
+                    self.all_here.clear();
+                    self.here.clear();
+                    self.core_category = None;
+                    self.browsing = Browsing::Systems;
+                    self.resolve_view();
+                    self.apply_geometry();
+                    self.touch_selection();
+                }
                 Browsing::Games => {
                     // Out of the folder first; only when there is no folder
                     // left does B leave the system.
@@ -9629,6 +9913,15 @@ impl App {
                         return None;
                     }
                     self.browsing = Browsing::Systems;
+                    self.resolve_view();
+                    self.apply_geometry();
+                    self.touch_selection();
+                }
+                Browsing::Systems if self.in_cores_browser() => {
+                    self.core_category = None;
+                    self.browsing = Browsing::Categories;
+                    self.open_category = None;
+                    self.rebuild_system_list();
                     self.resolve_view();
                     self.apply_geometry();
                     self.touch_selection();
@@ -9838,6 +10131,12 @@ impl App {
     }
 
     fn context_scope(&self) -> String {
+        if self.in_cores_browser() {
+            return match self.browsing {
+                Browsing::Games => self.here_label(),
+                _ => CORES_CATEGORY.to_string(),
+            };
+        }
         let action = self
             .menu
             .get(self.menu_list.selected())
@@ -10188,6 +10487,11 @@ impl App {
                 .iter()
                 .map(|row| first_letter(&row.sort_key))
                 .collect(),
+            Browsing::Systems if self.in_cores_browser() => self
+                .core_categories()
+                .iter()
+                .map(|(name, _)| first_letter(&name.to_lowercase()))
+                .collect(),
             Browsing::Systems => self
                 .systems
                 .iter()
@@ -10243,6 +10547,11 @@ impl App {
                 .here
                 .iter()
                 .map(|row| (first_letter(&row.sort_key), row.is_folder(), row.favorite))
+                .collect(),
+            Browsing::Systems if self.in_cores_browser() => self
+                .core_categories()
+                .iter()
+                .map(|(name, _)| (first_letter(&name.to_lowercase()), false, false))
                 .collect(),
             Browsing::Systems => self
                 .systems
@@ -10332,6 +10641,9 @@ impl App {
 
     /// The favourite operation available for the selected row.
     fn favorite_change(&self) -> Option<FavoriteChange> {
+        if self.in_cores_browser() {
+            return None;
+        }
         let selected = self.selected_game();
         let favorite = selected
             .as_deref()
@@ -10376,7 +10688,9 @@ impl App {
                 self.random_shortcut_available()
             }
             HoldShortcut::AddRemoveFavourite => self.favorite_change().is_some(),
-            HoldShortcut::GameInformation => self.selected_game().is_some(),
+            HoldShortcut::GameInformation => {
+                !self.in_cores_browser() && self.selected_game().is_some()
+            }
             HoldShortcut::SearchThisFolder | HoldShortcut::JumpToLetter => {
                 self.browsing != Browsing::Categories
             }
@@ -12454,6 +12768,23 @@ impl App {
     }
 
     fn refresh_context(&mut self) {
+        if self.in_cores_browser() {
+            let mut actions = vec![JUMP.to_string()];
+            if self.browsing == Browsing::Games {
+                actions.push(SEARCH.to_string());
+                if !self.filter.is_empty() {
+                    actions.push(CLEAR_SEARCH.to_string());
+                }
+            }
+            actions.push(REBUILD_CORES.to_string());
+            actions.push(CHANGE_VIEW.to_string());
+            if self.has_custom_view() {
+                actions.push(USE_GLOBAL_VIEW.to_string());
+            }
+            self.context_actions = actions;
+            self.show_context_page(self.context_page);
+            return;
+        }
         // Inside the Favourites shelf the rows ARE the favourite files, so
         // the target-keyed lookup below answers false for every one of
         // them and the menu offered to Add what is already there. On the
@@ -14418,8 +14749,14 @@ impl App {
                 Screen::Screensaver => self.leave_screensaver(),
                 Screen::Browse => match self.browsing {
                     Browsing::Categories => self.open_selected_category(),
+                    Browsing::Systems if self.in_cores_browser() => {
+                        self.open_selected_core_category()
+                    }
                     Browsing::Systems => self.open_selected_system(),
                     Browsing::Games => {
+                        if self.in_cores_browser() {
+                            return self.confirm_core_launch();
+                        }
                         if let Some(row) = self.here.get(self.game_list.selected()) {
                             match &row.kind {
                                 browse::Kind::Enter(place) => {
@@ -14549,6 +14886,8 @@ impl App {
                         }
                     } else if choice == REBUILD_SYSTEM {
                         self.rebuild_open_system();
+                    } else if choice == REBUILD_CORES {
+                        self.rebuild_cores_catalogue();
                     } else if choice == CLEAR_SEARCH {
                         self.clear_filter();
                         self.screen = Screen::Browse;
@@ -14692,6 +15031,14 @@ impl App {
                 }
             }
             (Screen::Browse, Browsing::Systems) => {
+                if self.in_cores_browser() {
+                    return self
+                        .selected_core_category()
+                        .map(|category| {
+                            (self.core_category_logo(&category), category, false, false)
+                        })
+                        .unwrap_or_else(|| (None, String::new(), false, false));
+                }
                 match self.systems.get(self.system_list.selected()) {
                     Some(system) => {
                         let (logo, heart) =
@@ -14948,35 +15295,58 @@ impl App {
                         }
                     }
                     Browsing::Systems => {
-                        for index in range {
-                            let logo = if with_art {
-                                self.system_logo(&self.systems[index])
-                            } else {
-                                None
-                            };
-                            let (cover, has_cover, deferred) =
-                                self.row_cover_for(logo, &mut gallery_budget);
-                            gallery_pending |= deferred;
-                            let name = self.systems[index].name().to_string();
-                            let favorite = browse_row_favorite(
-                                self.layout,
-                                false,
-                                is_favorites(self.systems[index].category()),
-                            );
-                            // How many games are in there, where the card
-                            // has been read for it.
-                            let held = self.games_in(&self.systems[index].def.id);
-                            rows.push(Row {
-                                title: SharedString::from(name.as_str()),
-                                favorite,
-                                cover,
-                                has_cover,
-                                art_scale_x: 1.0,
-                                value: match held {
-                                    Some(games) => SharedString::from(games.to_string()),
-                                    None => SharedString::new(),
-                                },
-                            });
+                        if self.in_cores_browser() {
+                            let categories = self.core_categories();
+                            for index in range {
+                                let (name, count) = &categories[index];
+                                let logo = if with_art {
+                                    self.core_category_logo(name)
+                                } else {
+                                    None
+                                };
+                                let (cover, has_cover, deferred) =
+                                    self.row_cover_for(logo, &mut gallery_budget);
+                                gallery_pending |= deferred;
+                                rows.push(Row {
+                                    title: SharedString::from(name.as_str()),
+                                    favorite: false,
+                                    cover,
+                                    has_cover,
+                                    art_scale_x: 1.0,
+                                    value: SharedString::from(count.to_string()),
+                                });
+                            }
+                        } else {
+                            for index in range {
+                                let logo = if with_art {
+                                    self.system_logo(&self.systems[index])
+                                } else {
+                                    None
+                                };
+                                let (cover, has_cover, deferred) =
+                                    self.row_cover_for(logo, &mut gallery_budget);
+                                gallery_pending |= deferred;
+                                let name = self.systems[index].name().to_string();
+                                let favorite = browse_row_favorite(
+                                    self.layout,
+                                    false,
+                                    is_favorites(self.systems[index].category()),
+                                );
+                                // How many games are in there, where the card
+                                // has been read for it.
+                                let held = self.games_in(&self.systems[index].def.id);
+                                rows.push(Row {
+                                    title: SharedString::from(name.as_str()),
+                                    favorite,
+                                    cover,
+                                    has_cover,
+                                    art_scale_x: 1.0,
+                                    value: match held {
+                                        Some(games) => SharedString::from(games.to_string()),
+                                        None => SharedString::new(),
+                                    },
+                                });
+                            }
                         }
                     }
                     Browsing::Games => {
@@ -15212,7 +15582,11 @@ impl App {
             .here
             .get(self.game_list.selected())
             .filter(|row| !row.is_folder())
-            .filter(|_| self.screen == Screen::Browse && self.browsing == Browsing::Games)
+            .filter(|_| {
+                self.screen == Screen::Browse
+                    && self.browsing == Browsing::Games
+                    && !self.in_cores_browser()
+            })
             .map(|row| &row.details);
         let (summary, publisher) = details.map(compact_detail_text).unwrap_or_default();
         self.ui.set_compact_summary(SharedString::from(summary));
@@ -15241,6 +15615,7 @@ impl App {
         let panel = (wanted + room).min((self.height as f32 * 0.34).floor());
         let over_game = self.screen == Screen::Browse
             && self.browsing == Browsing::Games
+            && !self.in_cores_browser()
             && self
                 .here
                 .get(self.game_list.selected())
@@ -15267,6 +15642,11 @@ impl App {
                     .to_string(),
                 "Browse Systems".to_string(),
             ),
+            (Screen::Browse, Browsing::Systems) if self.in_cores_browser() => self
+                .core_categories()
+                .get(self.system_list.selected())
+                .map(|(category, count)| (category.clone(), format!("{count} Cores")))
+                .unwrap_or_default(),
             (Screen::Browse, Browsing::Systems) => self
                 .systems
                 .get(self.system_list.selected())
@@ -16024,6 +16404,18 @@ impl App {
     /// Where the user is standing, in a form that can be written down.
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     pub fn position(&self) -> crate::state::State {
+        if self.in_cores_browser() && self.browsing == Browsing::Games {
+            let mut saved = crate::state::State::record(
+                CORES_SYSTEM_ID,
+                self.core_category.as_deref().unwrap_or_default(),
+                &[],
+                self.game_list.selected(),
+                &self.left_at,
+                &self.category_system,
+            );
+            saved.selected_row = self.here.get(self.game_list.selected()).map(row_key);
+            return saved;
+        }
         let system = self.open_system.clone().unwrap_or_default();
         let trail: Vec<(Place, usize)> = self
             .trail
@@ -16052,6 +16444,36 @@ impl App {
         if saved.system.is_empty() {
             self.resolve_view();
             self.apply_geometry();
+            return;
+        }
+        if saved.system == CORES_SYSTEM_ID {
+            if !self.show_cores {
+                self.resolve_view();
+                self.apply_geometry();
+                return;
+            }
+            self.open_category = Some(CORES_CATEGORY.to_string());
+            self.core_category = None;
+            self.browsing = Browsing::Systems;
+            self.rebuild_system_list();
+            if let Some(at) = self
+                .core_categories()
+                .iter()
+                .position(|(category, _)| category == &saved.category)
+            {
+                self.system_list.select(at);
+                self.open_selected_core_category();
+                let selected = saved
+                    .selected_row
+                    .as_deref()
+                    .and_then(|key| self.here.iter().position(|row| row_key(row) == key))
+                    .unwrap_or(saved.selected);
+                self.game_list.select(selected);
+                self.touch_selection();
+            } else {
+                self.resolve_view();
+                self.apply_geometry();
+            }
             return;
         }
         // Each group's own memory first, so backing out of the restored
@@ -16638,6 +17060,7 @@ pub(crate) fn test_library_launch_flow(window: Rc<MinimalSoftwareWindow>) {
         config,
         settings: Settings::default(),
         settings_path: root.join("settings.toml"),
+        core_catalogue: Default::default(),
         systems: vec![found],
         table: vec![def],
         names: Default::default(),

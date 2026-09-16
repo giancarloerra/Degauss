@@ -39,6 +39,8 @@ pub enum OptionId {
     ShowOther,
     /// Show the group holding the test and measurement cores.
     ShowUtility,
+    /// Show the cached browser of installed cores.
+    ShowCores,
     /// Show the collection of nightly cores.
     ShowUnstable,
     ShowScripts,
@@ -113,6 +115,7 @@ pub const OPTIONS: &[OptionId] = &[
     OptionId::Spacer,
     OptionId::ShowOther,
     OptionId::ShowUtility,
+    OptionId::ShowCores,
     OptionId::ShowUnstable,
     OptionId::ShowScripts,
     OptionId::ShowEmpty,
@@ -236,6 +239,7 @@ impl OptionsPage {
                 OptionId::SeparateHandheldCategory,
                 OptionId::ShowOther,
                 OptionId::ShowUtility,
+                OptionId::ShowCores,
                 OptionId::ShowUnstable,
                 OptionId::ShowScripts,
                 OptionId::ShowEmpty,
@@ -272,6 +276,7 @@ impl OptionId {
             OptionId::ShowEmpty => "Show Systems with No Games",
             OptionId::ShowOther => "Show Other Folder",
             OptionId::ShowUtility => "Show Utility Folder",
+            OptionId::ShowCores => "Show Cores",
             OptionId::ShowUnstable => "Show Unstable Folder",
             OptionId::ShowScripts => "Show Scripts Folder",
             OptionId::CorePreference => "Core Preference",
@@ -338,6 +343,9 @@ impl OptionId {
             }
             OptionId::ShowOther => "Show the Other category and its installed cores.",
             OptionId::ShowUtility => "Show the Utility category for test patterns and measurement cores.",
+            OptionId::ShowCores => {
+                "Show a cached top-level browser for launching installed Standard, RA and Unstable cores without a game."
+            }
             OptionId::ShowUnstable => "Show the Unstable category for nightly core builds.",
             OptionId::ShowScripts => "Show Scripts in the main menu. Run installed scripts and return to Degauss when they finish.",
             OptionId::CorePreference => "Choose the preferred core when standard and RetroAchievements versions are both installed.",
