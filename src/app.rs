@@ -7386,10 +7386,12 @@ impl App {
         let ra_first = self.settings.core_preference.unwrap_or_default()
             == crate::settings::CorePreference::RetroAchievementsFirst;
         if !self_describing {
-            let checked = crate::launch_cores::resolve(
+            let checked = crate::launch_cores::resolve_for_version(
                 &config,
                 Path::new(&self.config.menu_root),
                 selected_family,
+                selected_core,
+                ra_first,
             )
             .and_then(|family| {
                 crate::core_choices::resolve(
@@ -9999,8 +10001,16 @@ impl App {
             return;
         }
         let selected = self.settings.launch_cores.get(&id).map(String::as_str);
-        self.launch_core_choices =
-            crate::launch_cores::choices(&config, Path::new(&self.config.menu_root), selected);
+        let selected_version = self.settings.core_choices.get(&id).map(String::as_str);
+        let ra_first = self.settings.core_preference.unwrap_or_default()
+            == crate::settings::CorePreference::RetroAchievementsFirst;
+        self.launch_core_choices = crate::launch_cores::choices_for_version(
+            &config,
+            Path::new(&self.config.menu_root),
+            selected,
+            selected_version,
+            ra_first,
+        );
         self.menu = self
             .launch_core_choices
             .iter()
@@ -10069,10 +10079,19 @@ impl App {
             return;
         };
         let config = system.to_config();
-        let family = match crate::launch_cores::resolve(
+        let current = self
+            .settings
+            .core_choices
+            .get(&id)
+            .map(String::as_str)
+            .unwrap_or("");
+        let family = match crate::launch_cores::resolve_for_version(
             &config,
             Path::new(&self.config.menu_root),
             self.settings.launch_cores.get(&id).map(String::as_str),
+            (!current.is_empty()).then_some(current),
+            self.settings.core_preference.unwrap_or_default()
+                == crate::settings::CorePreference::RetroAchievementsFirst,
         ) {
             Ok(family) => family,
             Err(error) => {
@@ -10096,12 +10115,6 @@ impl App {
                 .into_iter()
                 .map(|choice| (choice.key, choice.label)),
         );
-        let current = self
-            .settings
-            .core_choices
-            .get(&id)
-            .map(String::as_str)
-            .unwrap_or("");
         let at = choices
             .iter()
             .position(|(key, _)| key == current)

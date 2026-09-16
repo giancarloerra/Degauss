@@ -83,7 +83,50 @@ fn family_present(system: &SystemConfig, root: &Path) -> Result<bool> {
     crate::core_choices::has_unstable_version(system, root)
 }
 
-fn automatic_family(system: &SystemConfig, root: &Path) -> Result<Family> {
+fn family_for_saved_version(
+    system: &SystemConfig,
+    root: &Path,
+    selected_version: &str,
+    ra_first: bool,
+) -> Result<Family> {
+    let named_variant = matches!(selected_version, "standard" | "ra");
+    let mut missing = None;
+    for family in families(system) {
+        if !named_variant
+            && !crate::core_choices::is_unstable_reference(&family.config, selected_version)
+        {
+            continue;
+        }
+        match crate::core_choices::resolve(&family.config, root, Some(selected_version), ra_first) {
+            Ok(_) => return Ok(family),
+            Err(error @ DegaussError::Unsupported { .. }) if named_variant => missing = Some(error),
+            Err(error) => return Err(error),
+        }
+    }
+    if let Some(error) = missing {
+        return Err(error);
+    }
+    match crate::core_choices::resolve(system, root, Some(selected_version), ra_first) {
+        Ok(_) => Err(DegaussError::unsupported(
+            "selected core version",
+            format!(
+                "saved choice {selected_version:?} does not identify a declared compatible core for {}",
+                system.name
+            ),
+        )),
+        Err(error) => Err(error),
+    }
+}
+
+fn automatic_family(
+    system: &SystemConfig,
+    root: &Path,
+    selected_version: Option<&str>,
+    ra_first: bool,
+) -> Result<Family> {
+    if let Some(selected_version) = selected_version {
+        return family_for_saved_version(system, root, selected_version, ra_first);
+    }
     for family in families(system) {
         if family_present(&family.config, root)? {
             return Ok(family);
@@ -100,9 +143,25 @@ fn automatic_family(system: &SystemConfig, root: &Path) -> Result<Family> {
 
 /// Resolve a saved profile, or the first installed declared family when the
 /// system remains Automatic. Explicit missing and removed profiles fail.
+#[cfg(test)]
 pub fn resolve(system: &SystemConfig, root: &Path, selected: Option<&str>) -> Result<SystemConfig> {
+    resolve_for_version(system, root, selected, None, false)
+}
+
+/// Resolve a Launch Core while retaining an existing Core Version choice.
+/// An explicit Launch Core remains authoritative. Automatic instead chooses
+/// the first declared family that can still satisfy the saved version, which
+/// preserves the behaviour from before compatible families were selectable.
+pub fn resolve_for_version(
+    system: &SystemConfig,
+    root: &Path,
+    selected: Option<&str>,
+    selected_version: Option<&str>,
+    ra_first: bool,
+) -> Result<SystemConfig> {
     let Some(selected) = selected else {
-        return automatic_family(system, root).map(|family| family.config);
+        return automatic_family(system, root, selected_version, ra_first)
+            .map(|family| family.config);
     };
     let family = families(system)
         .into_iter()
@@ -127,8 +186,22 @@ pub fn resolve(system: &SystemConfig, root: &Path, selected: Option<&str>) -> Re
 
 /// Rows for the dedicated chooser. Automatic is always available so a bad or
 /// removed saved profile can always be cleared without successful discovery.
+#[cfg(test)]
 pub fn choices(system: &SystemConfig, root: &Path, selected: Option<&str>) -> Vec<Choice> {
-    let automatic = match automatic_family(system, root) {
+    choices_for_version(system, root, selected, None, false)
+}
+
+/// Rows for the chooser with Automatic labelled from the complete effective
+/// selection, including a saved Core Version that belongs to an alternate
+/// compatible family.
+pub fn choices_for_version(
+    system: &SystemConfig,
+    root: &Path,
+    selected: Option<&str>,
+    selected_version: Option<&str>,
+    ra_first: bool,
+) -> Vec<Choice> {
+    let automatic = match automatic_family(system, root, selected_version, ra_first) {
         Ok(family) => format!("Automatic ({})", family.label),
         Err(error) => {
             crate::note(&format!(
@@ -344,6 +417,62 @@ mod tests {
                 .collect::<Vec<_>>(),
             ["standard", "ra", nightly]
         );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn automatic_keeps_saved_versions_on_the_family_that_provides_them() {
+        let root = directory("saved-version-family");
+        let system = system();
+        write(&root, "_Console/NGPC.rbf");
+        write(&root, "_RA_Cores/Cores/JTNGPC.rbf");
+        let launcher = root.join("_RA_Cores/JTNGPC.mgl");
+        std::fs::write(
+            &launcher,
+            b"<mistergamedescription><rbf>_RA_Cores/Cores/JTNGPC</rbf><setname same_dir=\"1\">RA_JTNGPC</setname></mistergamedescription>",
+        )
+        .unwrap();
+
+        let ra = resolve_for_version(&system, &root, None, Some("ra"), false).unwrap();
+        assert_eq!(ra.rbf, "_Arcade/JTNGPC");
+        assert_eq!(
+            choices_for_version(&system, &root, None, Some("ra"), false)[0].label,
+            "Automatic (JTNGPC (Legacy))"
+        );
+
+        let nightly = "_Unstable/JTNGPC_unstable_20260916_a1.rbf";
+        write(&root, nightly);
+        let unstable = resolve_for_version(&system, &root, None, Some(nightly), false).unwrap();
+        assert_eq!(unstable.rbf, "_Arcade/JTNGPC");
+
+        let explicit_primary = resolve_for_version(
+            &system,
+            &root,
+            Some(PRIMARY_PROFILE_ID),
+            Some(nightly),
+            false,
+        )
+        .unwrap();
+        assert_eq!(explicit_primary.rbf, "_Console/NGPC");
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn automatic_rejects_a_saved_version_that_is_not_a_safe_family_reference() {
+        let root = directory("unsafe-saved-version");
+        let system = system();
+        let filename = "NGPC_unstable_20991231_deadbeef.rbf";
+        let outside = root.parent().unwrap().join(filename);
+        let _ = std::fs::remove_file(&outside);
+        std::fs::write(&outside, b"fixture").unwrap();
+
+        let error =
+            resolve_for_version(&system, &root, None, Some(&format!("../{filename}")), false)
+                .unwrap_err();
+        assert!(error.to_string().contains("selected core version"));
+
+        std::fs::remove_file(outside).unwrap();
         std::fs::remove_dir_all(root).unwrap();
     }
 }
