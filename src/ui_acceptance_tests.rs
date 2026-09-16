@@ -1396,6 +1396,18 @@ fn run_last_played_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
     );
     app.adjust_option_value(OptionId::LastPlayed, 1);
 
+    // Refreshing the collection while a search is active restores the
+    // selected history entry in the filtered rows, not the first match.
+    app.search_for("CURRENT");
+    select_row_named(&mut app, "Current First");
+    app.relist_here();
+    assert_eq!(
+        app.here[app.game_list.selected()].name,
+        "Current First",
+        "the selected filtered history entry survives a refresh"
+    );
+    app.clear_filter();
+
     app.layout = app.layout.next();
     app.remember_view();
     assert_eq!(
