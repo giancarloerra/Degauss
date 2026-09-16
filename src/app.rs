@@ -8599,7 +8599,8 @@ impl App {
         self.apply_index();
         self.correct_system_counts();
         self.rebuild_system_list();
-        if self.open_system.is_some() && self.browsing == Browsing::Games {
+        if (self.open_system.is_some() || self.last_played_open) && self.browsing == Browsing::Games
+        {
             self.relist_here();
         }
         let result = format!(
@@ -12568,6 +12569,9 @@ impl App {
         self.screen = Screen::Browse;
         if let Some(group) = group {
             self.reload_open_pack_group(group);
+        }
+        if self.last_played_open && self.browsing == Browsing::Games {
+            self.relist_here();
         }
 
         match purpose {
