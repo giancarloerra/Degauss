@@ -225,6 +225,7 @@ fn every_existing_action_remains_reachable_without_a_placeholder_submenu() {
         core_version: true,
         core_version_override: true,
         favorite_folder: false,
+        metadata_filters: true,
     };
     let cases = [
         context_entries(Browsing::Games, true, Some(false), Some(false), true, full),
@@ -290,6 +291,8 @@ fn every_existing_action_remains_reachable_without_a_placeholder_submenu() {
         JUMP,
         SEARCH,
         CLEAR_SEARCH,
+        FILTER_GAMES,
+        CLEAR_FILTERS,
         HIDE_THIS,
         SHOW_THIS,
         REBUILD_SYSTEM,
@@ -2304,6 +2307,7 @@ fn capture_every_menu_row(app: &mut App, directory: &Path) {
         core_version: true,
         core_version_override: true,
         favorite_folder: false,
+        metadata_filters: true,
     };
     let scenarios = [
         (
@@ -8504,6 +8508,302 @@ fn run_theme_editor_save_changes_flow(root: &Path, window: Rc<MinimalSoftwareWin
     app.ui.hide().unwrap();
 }
 
+fn metadata_filter_game(
+    name: &str,
+    genre: Option<&str>,
+    released: &str,
+    players: &str,
+    language: &str,
+    developer: &str,
+    favorite: bool,
+) -> browse::Row {
+    browse::Row {
+        name: name.to_string(),
+        sort_key: name.to_lowercase(),
+        kind: browse::Kind::Play(browse::Launch::File(PathBuf::from(format!("{name}.nes")))),
+        cover: None,
+        genre: genre.map(str::to_string),
+        favorite,
+        below: None,
+        details: browse::Details {
+            released: released.to_string(),
+            players: players.to_string(),
+            lang: language.to_string(),
+            developer: developer.to_string(),
+            ..Default::default()
+        },
+    }
+}
+
+fn choose_metadata_filter(app: &mut App, field: GameFilterField, label: &str) {
+    app.show_game_filters(field.index());
+    app.handle(Action::Accept);
+    assert_eq!(app.screen, Screen::GameFilterValues);
+    let selected = app.game_filter_options[field.index()]
+        .as_ref()
+        .unwrap()
+        .iter()
+        .position(|choice| choice.label() == label)
+        .unwrap();
+    app.menu_list.select(selected);
+    app.handle(Action::Accept);
+    assert_eq!(app.screen, Screen::GameFilters);
+}
+
+fn run_metadata_filter_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
+    let root = root.join("metadata-filters");
+    std::fs::create_dir_all(root.join("games/NES")).unwrap();
+    for name in ["First Game.nes", "Second Game.nes"] {
+        std::fs::write(root.join("games/NES").join(name), b"fixture").unwrap();
+    }
+    let mut app = fixture_app(&root, window, Settings::default());
+    app.here = vec![
+        browse::Row {
+            name: "Nested".into(),
+            sort_key: "nested".into(),
+            kind: browse::Kind::Enter(Place::Dir(root.join("games/NES/Nested"))),
+            cover: None,
+            genre: None,
+            favorite: false,
+            below: Some(1),
+            details: Default::default(),
+        },
+        metadata_filter_game(
+            "Alpha",
+            Some(" Action "),
+            "1994-12-03",
+            "1",
+            "English",
+            "Studio A",
+            true,
+        ),
+        metadata_filter_game(
+            "Beta",
+            Some("RPG"),
+            "1995",
+            "2",
+            "French",
+            "Studio B",
+            false,
+        ),
+        metadata_filter_game("Gamma", Some("action"), "", "", "", "", true),
+    ];
+    app.game_list = ListState::new(app.here.len(), app.geometry.visible);
+    app.game_list.select(1);
+    let settings_before = std::fs::read(&app.settings_path).ok();
+    let cache_before = if app.cache_dir.exists() {
+        cache_snapshot(&app.cache_dir)
+    } else {
+        Vec::new()
+    };
+
+    // The feature is reached through Actions / Find and opening it performs
+    // no settings or cache write.
+    app.open_context();
+    app.menu_list.select(
+        app.menu
+            .iter()
+            .position(|entry| entry == ContextPage::Find.label())
+            .unwrap(),
+    );
+    app.handle(Action::Accept);
+    app.menu_list.select(
+        app.menu
+            .iter()
+            .position(|entry| entry == FILTER_GAMES)
+            .unwrap_or_else(|| panic!("Filter Games missing from Find page: {:?}", app.menu)),
+    );
+    app.handle(Action::Accept);
+    assert_eq!(app.screen, Screen::GameFilters);
+    assert_eq!(std::fs::read(&app.settings_path).ok(), settings_before);
+
+    // Both supported framebuffers show every field, and a wholly empty
+    // metadata field is visible but inert rather than offering Unknown alone.
+    for (width, height) in [(352, 240), (640, 480)] {
+        app.width = width;
+        app.height = height;
+        app.window.set_size(slint::PhysicalSize::new(width, height));
+        app.apply_geometry();
+        app.refresh();
+        assert_eq!(app.ui.get_heading(), "Filter Games");
+        assert_eq!(app.rows.row_count(), GameFilterField::ALL.len());
+        assert_eq!(app.rows.row_data(5).unwrap().title, "Publisher");
+        assert_eq!(app.rows.row_data(5).unwrap().value, "Unavailable");
+        if let Some(directory) = std::env::var_os("DEGAUSS_UI_CAPTURE_DIR") {
+            let directory = PathBuf::from(directory);
+            assert!(
+                directory.is_absolute() && directory.is_dir(),
+                "DEGAUSS_UI_CAPTURE_DIR must name an existing absolute directory"
+            );
+            capture_frame(&mut app, &directory, "metadata-filters", width, height);
+        }
+    }
+    app.width = 352;
+    app.height = 240;
+    app.window.set_size(slint::PhysicalSize::new(352, 240));
+    app.apply_geometry();
+    app.menu_list.select(GameFilterField::Publisher.index());
+    app.handle(Action::Accept);
+    assert_eq!(app.screen, Screen::GameFilters);
+
+    choose_metadata_filter(&mut app, GameFilterField::Genre, "Action");
+    assert_eq!(app.game_filters.label(GameFilterField::Genre), "Action");
+    assert_eq!(
+        app.here
+            .iter()
+            .map(|row| row.name.as_str())
+            .collect::<Vec<_>>(),
+        ["Nested", "Alpha", "Gamma"]
+    );
+
+    // Choosers always come from the complete place, and B discards only the
+    // highlighted alternative rather than the applied selection.
+    app.menu_list.select(GameFilterField::Genre.index());
+    app.handle(Action::Accept);
+    let rpg = app.game_filter_options[GameFilterField::Genre.index()]
+        .as_ref()
+        .unwrap()
+        .iter()
+        .position(|choice| choice.label() == "RPG")
+        .unwrap();
+    app.menu_list.select(rpg);
+    app.handle(Action::Quit);
+    assert_eq!(app.game_filters.label(GameFilterField::Genre), "Action");
+    choose_metadata_filter(&mut app, GameFilterField::Year, "1994");
+    assert!(app.game_filter_options[GameFilterField::Year.index()]
+        .as_ref()
+        .unwrap()
+        .iter()
+        .any(|choice| choice.label() == "1995"));
+    assert_eq!(
+        app.here
+            .iter()
+            .map(|row| row.name.as_str())
+            .collect::<Vec<_>>(),
+        ["Nested", "Alpha"]
+    );
+
+    // Title search and metadata use AND. Clearing either one leaves the
+    // other projection active.
+    app.filter = "GAMMA".into();
+    app.apply_filter();
+    assert_eq!(
+        app.here
+            .iter()
+            .map(|row| row.name.as_str())
+            .collect::<Vec<_>>(),
+        ["Nested"]
+    );
+    app.clear_filter();
+    assert_eq!(
+        app.here
+            .iter()
+            .map(|row| row.name.as_str())
+            .collect::<Vec<_>>(),
+        ["Nested", "Alpha"]
+    );
+    app.filter = "ALPHA".into();
+    app.apply_filter();
+    app.clear_game_filters();
+    assert_eq!(
+        app.here
+            .iter()
+            .map(|row| row.name.as_str())
+            .collect::<Vec<_>>(),
+        ["Alpha"]
+    );
+
+    app.filter.clear();
+    app.apply_filter();
+    app.open_game_filters();
+    choose_metadata_filter(&mut app, GameFilterField::Language, "Unknown");
+    app.handle(Action::Quit);
+    assert_eq!(app.screen, Screen::Browse);
+    assert_eq!(app.game_filters.label(GameFilterField::Language), "Unknown");
+    assert_eq!(
+        app.here
+            .iter()
+            .map(|row| row.name.as_str())
+            .collect::<Vec<_>>(),
+        ["Nested", "Gamma"]
+    );
+
+    // Active metadata makes both random actions local to the visible games.
+    app.random_launches = false;
+    app.random_here(false);
+    assert_eq!(app.here[app.game_list.selected()].name, "Gamma");
+    app.random_here(true);
+    assert_eq!(app.here[app.game_list.selected()].name, "Gamma");
+
+    // Clear Filters is independent of Clear Search and is also storage-free.
+    app.filter = "GAMMA".into();
+    app.apply_filter();
+    app.open_context();
+    app.menu_list.select(
+        app.menu
+            .iter()
+            .position(|entry| entry == ContextPage::Find.label())
+            .unwrap(),
+    );
+    app.handle(Action::Accept);
+    app.menu_list.select(
+        app.menu
+            .iter()
+            .position(|entry| entry == CLEAR_FILTERS)
+            .unwrap(),
+    );
+    app.handle(Action::Accept);
+    assert_eq!(app.screen, Screen::Browse);
+    assert!(!app.game_filters.is_active());
+    assert_eq!(app.filter, "GAMMA");
+    assert_eq!(
+        app.here
+            .iter()
+            .map(|row| row.name.as_str())
+            .collect::<Vec<_>>(),
+        ["Gamma"]
+    );
+    assert_eq!(std::fs::read(&app.settings_path).ok(), settings_before);
+    let cache_after = if app.cache_dir.exists() {
+        cache_snapshot(&app.cache_dir)
+    } else {
+        Vec::new()
+    };
+    assert_eq!(cache_after, cache_before);
+
+    // Same-place changes re-read the rows but retain both temporary filter
+    // kinds. The real fixture rows have no language metadata, so both remain
+    // visible through Unknown after the synthetic rows above are replaced.
+    app.filter = "GAME".into();
+    app.game_filters
+        .choose(GameFilterField::Language, &GameFilterChoice::Unknown);
+    app.apply_filter();
+    app.relist_here_preserving_game_filters();
+    assert!(
+        app.filter.is_empty(),
+        "same-place relists retain the established title-search reset"
+    );
+    assert_eq!(app.game_filters.label(GameFilterField::Language), "Unknown");
+    assert_eq!(
+        app.here
+            .iter()
+            .filter(|row| !row.is_folder())
+            .map(|row| row.name.as_str())
+            .collect::<Vec<_>>(),
+        ["First Game.nes", "Second Game.nes"]
+    );
+
+    app.game_filters
+        .choose(GameFilterField::Genre, &GameFilterChoice::Unknown);
+    app.clear_place_filters();
+    assert!(!app.game_filters.is_active());
+    assert!(app.filter.is_empty());
+    let restarted = unopened_fixture_app(&root, app.window.clone(), Settings::default());
+    assert!(!restarted.game_filters.is_active());
+    drop(restarted);
+    app.ui.hide().unwrap();
+}
+
 pub(super) fn run_ui_acceptance_flow(window: Rc<MinimalSoftwareWindow>) {
     let root = fixture_directory();
     std::fs::create_dir_all(root.join("games/NES")).unwrap();
@@ -8530,6 +8830,7 @@ pub(super) fn run_ui_acceptance_flow(window: Rc<MinimalSoftwareWindow>) {
     run_folder_artwork_flow(&root, window.clone());
     run_paged_theme_name_flow(&root, window.clone());
     run_theme_editor_save_changes_flow(&root, window.clone());
+    run_metadata_filter_flow(&root, window.clone());
     let mut app = fixture_app(&root, window.clone(), Settings::default());
     run_selected_controls_flow(&mut app);
     run_artwork_visibility_flow(&mut app);
