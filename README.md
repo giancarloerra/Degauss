@@ -395,6 +395,35 @@ itself over:
 It reports what is present, missing, broken or still waiting in the old
 folder, and says ok when there is nothing to say.
 
+### Showing Degauss on an analog CRT
+
+Degauss is drawn through MiSTer's Linux framebuffer. Seeing the native OSD on
+an analog CRT does not by itself mean that the framebuffer is routed there. If
+Degauss appears over HDMI while the CRT shows MiSTer's `vga_scaler` message,
+add these settings under `[Menu]` in the active `MiSTer.ini`:
+
+```ini
+[Menu]
+fb_terminal=1
+vga_scaler=1
+```
+
+The `[Menu]` section applies these settings to Degauss without changing the
+video configuration used by game cores. The scaler also needs a 15 kHz
+`video_mode` supported by the CRT. A mode already known to work with MiSTer's
+Menu on that display is the best choice. If none is configured, this common
+MiSTer Menu mode is a reasonable starting point:
+
+```ini
+video_mode=640,54,56,106,224,16,0,28,13764
+```
+
+That is a custom timing rather than a universal setting, so some displays may
+need a different compatible mode. When HDMI and CRT are connected together,
+both receive the same scaler timing and both must support it. See MiSTer's
+[INI settings](https://mister-devel.github.io/MkDocs_MiSTer/advanced/ini/)
+for more detail.
+
 ### Returning to Degauss from a running core
 
 The recommended installation uses Degauss's `MiSTer_Degauss` Main binary.
