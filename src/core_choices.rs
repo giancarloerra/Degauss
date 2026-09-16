@@ -206,6 +206,9 @@ fn first_installed_family(system: &SystemConfig, root: &Path) -> Result<SystemCo
             Ok(Some(_)) | Err(_) => return Ok(family.clone()),
             Ok(None) => {}
         }
+        if !nightlies(family, root)?.is_empty() {
+            return Ok(family.clone());
+        }
     }
     Ok(families
         .into_iter()
@@ -523,6 +526,31 @@ mod tests {
             "_RA_Cores/Cores/NES"
         );
         assert!(resolve(&system(), &root, Some("standard"), false).is_err());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn compatible_family_with_only_an_unstable_build_is_available() {
+        let root = directory("compatible-unstable-only");
+        let mut system = system();
+        system.rbf = "_Console/NGPC".into();
+        system.compatible_cores = vec![crate::config::CoreProfile {
+            id: "jtngpc".into(),
+            label: "JTNGPC (Legacy)".into(),
+            rbf: "_Arcade/JTNGPC".into(),
+            setname: Some("JTNGPC".into()),
+        }];
+        let nightly = "_Unstable/JTNGPC_unstable_20260916_a1.rbf";
+        write(&root, nightly, b"fixture");
+
+        let choices = available(&system, &root).unwrap();
+        assert_eq!(choices.len(), 1);
+        assert_eq!(choices[0].key, nightly);
+        assert_eq!(
+            resolve(&system, &root, Some(nightly), false).unwrap().rbf,
+            nightly.trim_end_matches(".rbf")
+        );
+
         std::fs::remove_dir_all(root).unwrap();
     }
 
