@@ -429,6 +429,10 @@ fn run_with_fetch<F>(
             return;
         }
     };
+    if cancelled.load(Ordering::Relaxed) {
+        let _ = events.send(Event::Cancelled);
+        return;
+    }
     if let Err(error) = save_cache(&request.cache_dir, &cache) {
         finish_with_saved_or_error(
             cached_snapshot,
@@ -529,7 +533,27 @@ fn save_cache(cache_dir: &Path, cache: &Cache) -> Result<()> {
     let path = cache_path(cache_dir);
     let bytes = postcard::to_stdvec(cache)
         .map_err(|error| DegaussError::unsupported("MiSTerZine saved data", error.to_string()))?;
-    crate::cache::write(&path, &bytes)
+    if !path.exists() {
+        return crate::cache::write(&path, &bytes);
+    }
+
+    let parent = path.parent().expect("the MiSTerZine cache has a parent");
+    std::fs::create_dir_all(parent)
+        .map_err(|error| DegaussError::io("making the MiSTerZine cache folder", parent, error))?;
+    let temp = path.with_extension("part");
+    std::fs::write(&temp, &bytes)
+        .map_err(|error| DegaussError::io("writing MiSTerZine saved data", &temp, error))?;
+    match std::fs::rename(&temp, &path) {
+        Ok(()) => Ok(()),
+        Err(error) => {
+            let _ = std::fs::remove_file(&temp);
+            Err(DegaussError::io(
+                "replacing MiSTerZine saved data",
+                &path,
+                error,
+            ))
+        }
+    }
 }
 
 fn decode_meta(body: &[u8]) -> std::result::Result<Meta, String> {
@@ -766,6 +790,14 @@ fn arcade_matches(request: &Request) -> BTreeMap<String, (PathBuf, Option<PathBu
 fn core_matches(catalogue: &CoreCatalogue) -> BTreeMap<String, crate::systems::CoreEntry> {
     let mut matches = BTreeMap::new();
     for entry in &catalogue.entries {
+        if !entry
+            .path
+            .extension()
+            .and_then(|extension| extension.to_str())
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("rbf"))
+        {
+            continue;
+        }
         let identity = entry
             .path
             .file_stem()
@@ -1277,6 +1309,49 @@ mod tests {
     }
 
     #[test]
+    fn non_arcade_matching_uses_only_rbf_launchers() {
+        let root = temp_root("rbf-only-match");
+        let mut request = request(&root);
+        let ra = request.menu_root.join("_RA_Cores/NES.mgl");
+        std::fs::create_dir_all(ra.parent().unwrap()).unwrap();
+        std::fs::write(&ra, b"<mistergamedescription/>").unwrap();
+        request.cores.entries.push(CoreEntry {
+            name: "NES".into(),
+            category: "Console".into(),
+            variant: CoreVariant::RetroAchievements,
+            path: ra,
+            logo_id: Some("NES".into()),
+        });
+        let mut row = release("Console");
+        row.core = "NES".into();
+        let body = serde_json::to_vec(&vec![row.clone()]).unwrap();
+        let cache = decode_data(meta(1, &body), &body).unwrap();
+        let (sender, _receiver) = events();
+        let snapshot = match_cache(&cache, &request, &sender, &AtomicBool::new(false)).unwrap();
+        assert_eq!(snapshot.items[0].state, LocalState::NotInstalled);
+        assert!(snapshot.items[0].launch_path.is_none());
+
+        let rbf = request.menu_root.join("_Console/NES_20260916.rbf");
+        std::fs::create_dir_all(rbf.parent().unwrap()).unwrap();
+        std::fs::write(&rbf, b"core").unwrap();
+        request.cores.entries.push(CoreEntry {
+            name: "NES".into(),
+            category: "Console".into(),
+            variant: CoreVariant::Standard,
+            path: rbf.clone(),
+            logo_id: Some("NES".into()),
+        });
+        let body = serde_json::to_vec(&vec![row]).unwrap();
+        let cache = decode_data(meta(1, &body), &body).unwrap();
+        let snapshot = match_cache(&cache, &request, &sender, &AtomicBool::new(false)).unwrap();
+        assert_eq!(
+            snapshot.items[0].launch_path.as_deref(),
+            Some(rbf.as_path())
+        );
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
     fn unchanged_metadata_skips_data_but_explicit_refresh_downloads_it() {
         let root = temp_root("refresh-decision");
         let request = request(&root);
@@ -1439,6 +1514,54 @@ mod tests {
         let (sender, _receiver) = events();
         assert!(match_cache(&cache, &request, &sender, &cancelled).is_none());
         assert_eq!(load_cache(&request.cache_dir).unwrap(), Some(cache));
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn cancellation_after_download_does_not_replace_the_saved_cache() {
+        let root = temp_root("cancel-before-save");
+        let mut request = request(&root);
+        request.force_refresh = true;
+        let original_body = serde_json::to_vec(&vec![release("Console")]).unwrap();
+        let original = decode_data(meta(1, &original_body), &original_body).unwrap();
+        save_cache(&request.cache_dir, &original).unwrap();
+
+        let mut changed = release("Console");
+        changed.title = "Changed release".into();
+        let changed_body = serde_json::to_vec(&vec![changed]).unwrap();
+        let changed_meta = serde_json::to_vec(&meta(1, &changed_body)).unwrap();
+        let cancelled = AtomicBool::new(false);
+        let (sender, receiver) = events();
+        run_with_fetch(request.clone(), &sender, &cancelled, |url, _, _, _| {
+            if url == META_URL {
+                Ok(changed_meta.clone())
+            } else {
+                cancelled.store(true, Ordering::Relaxed);
+                Ok(changed_body.clone())
+            }
+        });
+        assert!(receiver
+            .try_iter()
+            .any(|event| matches!(event, Event::Cancelled)));
+        assert_eq!(load_cache(&request.cache_dir).unwrap(), Some(original));
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn failed_cache_replacement_preserves_the_saved_cache() {
+        let root = temp_root("cache-replacement");
+        let original_body = serde_json::to_vec(&vec![release("Console")]).unwrap();
+        let original = decode_data(meta(1, &original_body), &original_body).unwrap();
+        save_cache(&root, &original).unwrap();
+
+        let temp = cache_path(&root).with_extension("part");
+        std::fs::create_dir_all(&temp).unwrap();
+        let mut changed = release("Console");
+        changed.title = "Changed release".into();
+        let changed_body = serde_json::to_vec(&vec![changed]).unwrap();
+        let changed = decode_data(meta(1, &changed_body), &changed_body).unwrap();
+        assert!(save_cache(&root, &changed).is_err());
+        assert_eq!(load_cache(&root).unwrap(), Some(original));
         std::fs::remove_dir_all(root).ok();
     }
 
