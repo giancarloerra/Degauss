@@ -14,6 +14,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::error::{DegaussError, Result};
+use crate::name_display::GameNameDisplay;
 
 /// Preference applies only when both supported launch variants are installed.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -262,6 +263,14 @@ pub struct Settings {
     /// layout Degauss always drew.
     #[serde(default)]
     pub details_style: Option<String>,
+    /// Runtime-only presentation of the complete effective row name.
+    /// Absent preserves full names from releases before this setting.
+    #[serde(default)]
+    pub game_name_display: Option<GameNameDisplay>,
+    /// Whether folder rows receive Degauss's outer `[ name ]` marker.
+    /// Absent preserves the marker used by earlier releases.
+    #[serde(default)]
+    pub folder_brackets: Option<bool>,
     pub present: Option<String>,
     /// Systems the user has hidden, by id. Hiding is per-system and
     /// reversible; nothing is ever removed from the table.
@@ -566,6 +575,13 @@ mod tests {
             settings.details_style.is_none(),
             "an older settings file must keep the Information layout it was drawn with"
         );
+        assert_eq!(settings.game_name_display, None);
+        assert_eq!(
+            settings.game_name_display.unwrap_or_default(),
+            GameNameDisplay::Full
+        );
+        assert_eq!(settings.folder_brackets, None);
+        assert!(settings.folder_brackets.unwrap_or(true));
         assert_eq!(settings.overscan_x, Some(5));
         assert_eq!(settings.hidden, ["PDP1", "VC4000"]);
         assert_eq!(settings.folder_views.len(), 2);
@@ -604,6 +620,13 @@ mod tests {
         assert!(settings.custom_views.is_empty());
         assert!(settings.artwork_scale.is_none());
         assert!(settings.details_style.is_none());
+        assert_eq!(settings.game_name_display, None);
+        assert_eq!(
+            settings.game_name_display.unwrap_or_default(),
+            GameNameDisplay::Full
+        );
+        assert_eq!(settings.folder_brackets, None);
+        assert!(settings.folder_brackets.unwrap_or(true));
         assert_eq!(settings.hold_x_favorite, None);
         assert_eq!(settings.hold_y_random, None);
         assert_eq!(settings.resolved_hold_shortcuts(), [HoldShortcut::None; 4]);
@@ -643,6 +666,8 @@ mod tests {
             layout: Some("covers".into()),
             artwork_scale: Some("4:3".into()),
             details_style: Some("large-artwork".into()),
+            game_name_display: Some(GameNameDisplay::KeepRegionAndDiscIndex),
+            folder_brackets: Some(false),
             left_right: Some("letter".into()),
             font: Some("pixel".into()),
             theme_font_override: Some(true),

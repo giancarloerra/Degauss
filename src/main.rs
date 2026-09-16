@@ -30,6 +30,7 @@ mod launch;
 mod list_state;
 mod metrics;
 mod mgl;
+mod name_display;
 mod name_keyboard;
 mod neogeo;
 mod options;

@@ -7837,6 +7837,225 @@ fn leave_options_to_browse(app: &mut App) {
     assert_eq!(app.screen, Screen::Browse);
 }
 
+/// Name shortening is a projection of the final effective row name. The
+/// canonical row, target path and cache stay complete while every browse view,
+/// search and jump use the same projected text.
+fn run_game_name_display_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
+    let root = root.join("game-name-display");
+    let games = root.join("games/NES");
+    std::fs::create_dir_all(games.join("[Proto] Folder (Japan)")).unwrap();
+    std::fs::create_dir_all(root.join("_Console")).unwrap();
+    std::fs::write(root.join("_Console/NES.rbf"), b"fixture core").unwrap();
+    for name in [
+        "(USA) Zebra [Rev 1].nes",
+        "Metadata File.nes",
+        "Twin A.nes",
+        "Twin B.nes",
+    ] {
+        std::fs::write(games.join(name), b"fixture game").unwrap();
+    }
+    std::fs::write(
+        games.join("[Proto] Folder (Japan)/Inside.nes"),
+        b"fixture game",
+    )
+    .unwrap();
+    let gamelist = r#"<gameList>
+        <game><path>(USA) Zebra [Rev 1].nes</path><name>(USA) Zebra [Rev 1]</name></game>
+        <game><path>Metadata File.nes</path><name>Metadata Name (Europe) [T+ENG]</name></game>
+        <game><path>Twin A.nes</path><name>Twin (USA)</name></game>
+        <game><path>Twin B.nes</path><name>Twin (Europe)</name></game>
+    </gameList>"#;
+    std::fs::write(games.join("gamelist.xml"), gamelist).unwrap();
+
+    let mut app = unopened_fixture_app(&root, window.clone(), Settings::default());
+    app.open_system_by_index(0);
+    assert!(app.build.is_none(), "fixture indexing must finish");
+    assert!(
+        app.message.is_none(),
+        "fixture startup failed: {:?}",
+        app.message
+    );
+    app.leave_splash();
+    assert_eq!(app.screen, Screen::Browse);
+    app.refresh();
+
+    let canonical = [
+        "[Proto] Folder (Japan)",
+        "(USA) Zebra [Rev 1]",
+        "Metadata Name (Europe) [T+ENG]",
+        "Twin (Europe)",
+        "Twin (USA)",
+    ];
+    assert_eq!(
+        app.here
+            .iter()
+            .map(|row| row.name.as_str())
+            .collect::<Vec<_>>(),
+        canonical,
+        "legacy settings retain complete effective names"
+    );
+    assert_eq!(
+        app.rows.row_data(0).unwrap().title,
+        "[ [Proto] Folder (Japan) ]"
+    );
+    let cache_before = cache_snapshot(&app.cache_dir);
+    let gamelist_before = std::fs::read(games.join("gamelist.xml")).unwrap();
+
+    select_option(&mut app, OptionsPage::Appearance, OptionId::GameNameDisplay);
+    for _ in 0..3 {
+        app.handle(Action::Faster);
+    }
+    assert_eq!(
+        app.game_name_display,
+        GameNameDisplay::RemoveParenthesesAndBrackets
+    );
+    assert!(
+        app.build.is_none(),
+        "a display change must not start indexing"
+    );
+    leave_options_to_browse(&mut app);
+    app.refresh();
+
+    assert_eq!(
+        app.here
+            .iter()
+            .map(|row| row.name.as_str())
+            .collect::<Vec<_>>(),
+        [
+            "[Proto] Folder (Japan)",
+            "Metadata Name (Europe) [T+ENG]",
+            "Twin (Europe)",
+            "Twin (USA)",
+            "(USA) Zebra [Rev 1]",
+        ],
+        "only visible ordering changes; complete names remain on the rows"
+    );
+    assert_eq!(cache_snapshot(&app.cache_dir), cache_before);
+    assert_eq!(
+        std::fs::read(games.join("gamelist.xml")).unwrap(),
+        gamelist_before
+    );
+    let expected = ["[ Folder ]", "Metadata Name", "Twin", "Twin", "Zebra"];
+    for layout in Layout::ALL {
+        app.layout = layout;
+        app.apply_geometry();
+        for (index, expected) in expected.iter().enumerate() {
+            app.game_list.select(index);
+            app.refresh();
+            assert_eq!(
+                app.rows
+                    .row_data(app.ui.get_selected() as usize)
+                    .unwrap()
+                    .title,
+                *expected,
+                "{layout:?} row {index} uses the same display projection"
+            );
+        }
+    }
+    let metadata = app
+        .here
+        .iter()
+        .position(|row| row.name == "Metadata Name (Europe) [T+ENG]")
+        .unwrap();
+    app.game_list.select(metadata);
+    assert_eq!(app.current_art().1, "Metadata Name");
+    assert!(game_information_named(&app.here[metadata], "Metadata Name")
+        .starts_with("Metadata Name\n\n"));
+
+    app.filter = "ZEBRA".into();
+    app.apply_filter();
+    assert_eq!(app.here.len(), 1);
+    assert_eq!(app.here[0].name, "(USA) Zebra [Rev 1]");
+    app.clear_filter();
+    app.jump_to('z');
+    assert_eq!(
+        app.here[app.game_list.selected()].name,
+        "(USA) Zebra [Rev 1]",
+        "jump follows the first visible letter, not the removed prefix"
+    );
+
+    let favourite_folder = root.join("_@Favorites/Name Display");
+    for (name, file) in [
+        ("Twin (USA)", "Twin A.nes"),
+        ("Twin (Europe)", "Twin B.nes"),
+    ] {
+        let at = app.here.iter().position(|row| row.name == name).unwrap();
+        app.game_list.select(at);
+        let Some(Outcome::Launch {
+            plan,
+            name: launched,
+        }) = app.confirm_launch()
+        else {
+            panic!("{name} must produce a launch plan: {:?}", app.message);
+        };
+        assert_eq!(launched, name, "launch identity remains canonical");
+        assert!(
+            plan.mgl.contains(file),
+            "{name} launches {file}: {}",
+            plan.mgl
+        );
+        app.add_favorite_in(&favourite_folder);
+    }
+    for (name, file) in [
+        ("Twin (USA)", "Twin A.nes"),
+        ("Twin (Europe)", "Twin B.nes"),
+    ] {
+        let saved = std::fs::read_to_string(favourite_folder.join(format!("{name}.mgl")))
+            .expect("each visually identical title keeps its own favourite");
+        assert!(saved.contains(file), "{name} keeps its own target: {saved}");
+    }
+
+    select_option(&mut app, OptionsPage::Appearance, OptionId::FolderBrackets);
+    app.handle(Action::Faster);
+    assert!(!app.folder_brackets);
+    leave_options_to_browse(&mut app);
+    app.refresh();
+    assert_eq!(app.rows.row_data(0).unwrap().title, "Folder");
+
+    select_option(&mut app, OptionsPage::Appearance, OptionId::GameNameDisplay);
+    for _ in 0..3 {
+        app.handle(Action::Slower);
+    }
+    assert_eq!(app.game_name_display, GameNameDisplay::Full);
+    leave_options_to_browse(&mut app);
+    app.refresh();
+    let folder = app
+        .here
+        .iter()
+        .position(|row| row.name == "[Proto] Folder (Japan)")
+        .unwrap();
+    assert_eq!(
+        app.rows.row_data(folder).unwrap().title,
+        "[Proto] Folder (Japan)",
+        "Folder Brackets Off removes only Degauss's outer decoration"
+    );
+    assert_eq!(cache_snapshot(&app.cache_dir), cache_before);
+
+    let saved = Settings::load(&app.settings_path).unwrap();
+    assert_eq!(saved.game_name_display, Some(GameNameDisplay::Full));
+    assert_eq!(saved.folder_brackets, Some(false));
+    app.ui.hide().unwrap();
+    drop(app);
+
+    let mut restarted = unopened_fixture_app(&root, window, saved);
+    restarted.open_system_by_index(0);
+    assert!(restarted.build.is_none());
+    restarted.leave_splash();
+    restarted.refresh();
+    assert_eq!(restarted.game_name_display, GameNameDisplay::Full);
+    assert!(!restarted.folder_brackets);
+    let folder = restarted
+        .here
+        .iter()
+        .position(|row| row.name == "[Proto] Folder (Japan)")
+        .unwrap();
+    assert_eq!(
+        restarted.rows.row_data(folder).unwrap().title,
+        "[Proto] Folder (Japan)"
+    );
+    restarted.ui.hide().unwrap();
+}
+
 fn run_details_style_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
     let artwork = Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/logos/NES.png");
     assert!(artwork.is_file());
@@ -8515,6 +8734,7 @@ pub(super) fn run_ui_acceptance_flow(window: Rc<MinimalSoftwareWindow>) {
     let gamelist_xml = format!("<gameList><game><path>First Game.nes</path><desc><![CDATA[{complete_description}]]></desc></game><game><path>Second Game.nes</path><desc><![CDATA[{complete_description}]]></desc></game></gameList>");
     std::fs::write(&gamelist_path, &gamelist_xml).unwrap();
     run_browse_bar_settings_flow(&root, window.clone());
+    run_game_name_display_flow(&root, window.clone());
     run_details_style_flow(&root, window.clone());
     run_handheld_category_flow(&root, window.clone());
     run_scripts_flow(&root, window.clone());

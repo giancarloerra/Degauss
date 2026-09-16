@@ -25,6 +25,10 @@ pub enum OptionId {
     /// How Details shares its width between the list and the picture, and
     /// whether the compact lines sit under the picture.
     DetailsStyle,
+    /// Runtime-only formatting of the final effective game or folder name.
+    GameNameDisplay,
+    /// Whether folder rows receive Degauss's outer square-bracket marker.
+    FolderBrackets,
     /// Which typeface the interface is set in.
     Font,
     /// Which named palette from the themes folder is on, if any.
@@ -100,6 +104,8 @@ pub const OPTIONS: &[OptionId] = &[
     OptionId::Layout,
     OptionId::ResetCustomViews,
     OptionId::DetailsStyle,
+    OptionId::GameNameDisplay,
+    OptionId::FolderBrackets,
     OptionId::Font,
     OptionId::ShowArt,
     OptionId::ArtworkScale,
@@ -222,6 +228,8 @@ impl OptionsPage {
                 OptionId::Layout,
                 OptionId::ResetCustomViews,
                 OptionId::DetailsStyle,
+                OptionId::GameNameDisplay,
+                OptionId::FolderBrackets,
                 OptionId::Font,
                 OptionId::ShowArt,
                 OptionId::ArtworkScale,
@@ -264,6 +272,8 @@ impl OptionId {
             OptionId::Layout => "View",
             OptionId::ResetCustomViews => "Reset All Custom Views",
             OptionId::DetailsStyle => "Details Style",
+            OptionId::GameNameDisplay => "Game Name Display",
+            OptionId::FolderBrackets => "Folder Brackets",
             OptionId::Font => "Text",
             OptionId::Theme => "Theme",
             OptionId::ShowArt => "Artwork",
@@ -319,6 +329,12 @@ impl OptionId {
             }
             OptionId::DetailsStyle => {
                 "Information keeps the summary under the picture. Large Artwork uses the whole column."
+            }
+            OptionId::GameNameDisplay => {
+                "Choose which region, disc, version and translation tags remain visible. Files and saved data are unchanged."
+            }
+            OptionId::FolderBrackets => {
+                "Show or hide Degauss's outer [ name ] marker on folder rows. Brackets inside names are unchanged."
             }
             OptionId::Font => {
                 "Choose Smooth or Pixel text. Smooth 2 and Pixel 2 use bolder lettering."
