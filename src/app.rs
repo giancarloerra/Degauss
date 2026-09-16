@@ -7578,7 +7578,15 @@ impl App {
                 .map(crate::history::entry_key);
             self.all_here.clear();
             self.here = self.resolve_last_played_rows();
-            self.game_list = ListState::new(self.here.len(), self.geometry.visible);
+            if self.filter.is_empty() {
+                self.game_list = ListState::new(self.here.len(), self.geometry.visible);
+                self.apply_geometry();
+                self.touch_selection();
+                self.dirty = true;
+            } else {
+                self.all_here = std::mem::take(&mut self.here);
+                self.apply_filter();
+            }
             if let Some(selected) = selected {
                 if let Some(at) = self.here.iter().position(|row| {
                     self.last_played_rows
@@ -7587,14 +7595,6 @@ impl App {
                 }) {
                     self.game_list.select(at);
                 }
-            }
-            if self.filter.is_empty() {
-                self.apply_geometry();
-                self.touch_selection();
-                self.dirty = true;
-            } else {
-                self.all_here = std::mem::take(&mut self.here);
-                self.apply_filter();
             }
             return;
         }
