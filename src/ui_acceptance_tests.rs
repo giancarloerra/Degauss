@@ -1485,6 +1485,25 @@ fn run_last_played_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
     );
     assert!(app.message.is_none());
 
+    // A background rebuild can replace the current cache while this mixed
+    // collection is open. Its visible rows and launch map must move to the
+    // same completed cache together rather than requiring a leave/re-enter.
+    let original_gamelist = std::fs::read_to_string(games.join("gamelist.xml")).unwrap();
+    std::fs::write(
+        games.join("gamelist.xml"),
+        original_gamelist.replace("Current Second", "Rebuilt Second"),
+    )
+    .unwrap();
+    app.start_build(true);
+    app.finish_background_work_for_headless();
+    assert_eq!(app.here[0].name, "Rebuilt Second");
+    assert!(app.selected_last_played().is_some());
+    std::fs::write(games.join("gamelist.xml"), &original_gamelist).unwrap();
+    app.start_build(true);
+    app.finish_background_work_for_headless();
+    assert_eq!(app.here[0].name, "Current Second");
+    assert!(app.selected_last_played().is_some());
+
     // The collection is one stable place. It has game-list actions, but no
     // action that pretends the mixed collection is a single system.
     let place = app.current_view_place().unwrap();

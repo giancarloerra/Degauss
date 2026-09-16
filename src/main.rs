@@ -1652,9 +1652,9 @@ fn run_on_framebuffer(
             name,
             history,
         } => {
-            // Written before the core is asked for: once the command goes
-            // into the FIFO, MiSTer replaces this process and there is no
-            // later moment to save anything in.
+            // Preserve the browse position before asking Main to replace us.
+            // Last Played deliberately waits until the FIFO write succeeds,
+            // so a failed hand-off is never recorded as a played game.
             if let Err(e) = app.position().save(&state_path) {
                 note(&format!("state        not saved: {e}"));
             }
