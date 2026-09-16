@@ -257,8 +257,8 @@ Degauss shows **Checking MiSTerZine**, **Downloading Releases** when the
 catalogue changed, and **Matching Installed Content** while it compares local
 entries. **B** cancels safely. A valid saved catalogue is reused immediately;
 if a short network check fails, it remains available with its saved date. A
-first-use failure instead shows a concise cause, while `degauss.log` keeps the
-technical detail. **X Actions** provides **Refresh**, **Installed Only** and
+first-use failure instead shows a concise cause, while `/tmp/degauss.log` keeps
+the technical detail. **X Actions** provides **Refresh**, **Installed Only** and
 the catalogue attribution. Installed Only lasts only for the current session
 and does not change the library.
 
