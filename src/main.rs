@@ -23,6 +23,7 @@ mod favorites;
 mod font;
 mod frontend_session;
 mod gamelist;
+mod history;
 mod index_job;
 mod information_job;
 mod input;
@@ -1635,7 +1636,11 @@ fn run_on_framebuffer(
             drop(session);
             return script.exec().map(|never| match never {});
         }
-        Outcome::Launch { plan, name } => {
+        Outcome::Launch {
+            plan,
+            name,
+            history,
+        } => {
             // Written before the core is asked for: once the command goes
             // into the FIFO, MiSTer replaces this process and there is no
             // later moment to save anything in.
@@ -1645,6 +1650,15 @@ fn run_on_framebuffer(
             state::mark_resuming();
             note(&format!("ended        launching {name}"));
             launch::execute(&plan, Path::new(launch::CMD_FIFO))?;
+            if let Some(update) = history {
+                match history::record(&update.path, update.entry) {
+                    Ok(settings::SaveOutcome::Durable) => {}
+                    Ok(settings::SaveOutcome::InstalledWithWarning(error)) => {
+                        note(&format!("last played  saved with warning: {error}"));
+                    }
+                    Err(error) => note(&format!("last played  not saved: {error}")),
+                }
+            }
         }
     }
     Ok(())

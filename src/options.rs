@@ -56,6 +56,8 @@ pub enum OptionId {
     ScrapeAll,
     /// Gather favourites at the top of a folder.
     FavoritesFirst,
+    /// How many retained launches the optional top-level collection shows.
+    LastPlayed,
     /// Browsing action assigned to a one-second face-button hold.
     HoldA,
     HoldB,
@@ -106,6 +108,7 @@ pub const OPTIONS: &[OptionId] = &[
     OptionId::ShowBar,
     OptionId::Spacer,
     OptionId::FavoritesFirst,
+    OptionId::LastPlayed,
     OptionId::FoldersLast,
     OptionId::CorePreference,
     OptionId::AutomaticDataSource,
@@ -230,6 +233,7 @@ impl OptionsPage {
             ],
             Self::Library => &[
                 OptionId::FavoritesFirst,
+                OptionId::LastPlayed,
                 OptionId::FoldersLast,
                 OptionId::CorePreference,
                 OptionId::AutomaticDataSource,
@@ -281,6 +285,7 @@ impl OptionId {
             OptionId::RebuildCache => "Rebuild All System Lists",
             OptionId::ScrapeAll => "Scrape All Systems",
             OptionId::FavoritesFirst => "Favourites First",
+            OptionId::LastPlayed => "Last Played",
             OptionId::HoldA => "Hold A",
             OptionId::HoldB => "Hold B",
             OptionId::HoldX => "Hold X",
@@ -356,6 +361,9 @@ impl OptionId {
             }
             OptionId::FavoritesFirst => {
                 "Show favourites first in each folder, keeping them in alphabetical order."
+            }
+            OptionId::LastPlayed => {
+                "Show up to this many recent successful launches before Favourites, newest first."
             }
             OptionId::HoldA | OptionId::HoldB | OptionId::HoldX | OptionId::HoldY => {
                 "Hold for one second to run this action while browsing. A short press keeps the button's normal action."

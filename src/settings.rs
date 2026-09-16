@@ -215,6 +215,10 @@ pub struct Settings {
     pub theme: Option<String>,
     /// Whether favourites are gathered at the top of a folder.
     pub favorites_first: Option<bool>,
+    /// Maximum visible entries in the optional Last Played collection.
+    /// Absent and zero are Off; retained history remains separate.
+    #[serde(default)]
+    pub last_played: Option<u8>,
     /// Legacy shortcut fields retained for settings written by and read by
     /// releases before configurable hold actions. New explicit bindings win.
     #[serde(default)]
@@ -587,6 +591,7 @@ mod tests {
             AutomaticDataSource::GamelistFirst
         );
         assert_eq!(settings.separate_handheld_category, None);
+        assert_eq!(settings.last_played, None);
     }
 
     #[test]
@@ -604,6 +609,7 @@ mod tests {
         assert!(settings.custom_views.is_empty());
         assert!(settings.artwork_scale.is_none());
         assert!(settings.details_style.is_none());
+        assert_eq!(settings.last_played, None);
         assert_eq!(settings.hold_x_favorite, None);
         assert_eq!(settings.hold_y_random, None);
         assert_eq!(settings.resolved_hold_shortcuts(), [HoldShortcut::None; 4]);

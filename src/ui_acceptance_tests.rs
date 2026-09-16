@@ -225,6 +225,7 @@ fn every_existing_action_remains_reachable_without_a_placeholder_submenu() {
         core_version: true,
         core_version_override: true,
         favorite_folder: false,
+        rebuild_system: true,
     };
     let cases = [
         context_entries(Browsing::Games, true, Some(false), Some(false), true, full),
@@ -1195,6 +1196,344 @@ fn select_row_named(app: &mut App, name: &str) {
         .position(|row| row.name == name)
         .unwrap_or_else(|| panic!("{name} is listed: {:?}", app.here));
     app.game_list.select(index);
+}
+
+fn run_last_played_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
+    let root = root.join("last-played");
+    let games = root.join("games/NES");
+    let favorites_root = root.join("_@Favorites");
+    let media = games.join("media");
+    std::fs::create_dir_all(&media).unwrap();
+    std::fs::create_dir(root.join("_Console")).unwrap();
+    std::fs::write(root.join("_Console/NES.rbf"), b"fixture core").unwrap();
+    let first = games.join("First Game.nes");
+    let second = games.join("Second Game.nes");
+    let missing = games.join("Missing Game.nes");
+    std::fs::write(&first, b"fixture game").unwrap();
+    std::fs::write(&second, b"fixture game").unwrap();
+    std::fs::write(media.join("first.png"), b"fixture image").unwrap();
+    std::fs::write(media.join("second.png"), b"fixture image").unwrap();
+    std::fs::write(
+        games.join("gamelist.xml"),
+        "<gameList>\
+         <game><path>First Game.nes</path><name>Current First</name><image>./media/first.png</image><genre>Puzzle</genre><publisher>Current Publisher</publisher></game>\
+         <game><path>Second Game.nes</path><name>Current Second</name><image>./media/second.png</image></game>\
+         </gameList>",
+    )
+    .unwrap();
+
+    // Existing installations are unchanged: no category and no history
+    // update is attached to a successful launch while the option is absent.
+    let mut app = fixture_app(&root, window.clone(), Settings::default());
+    assert!(app
+        .categories
+        .iter()
+        .all(|(name, _)| name != LAST_PLAYED_CATEGORY));
+    select_row_named(&mut app, "Current First");
+    let Some(Outcome::Launch { history, .. }) = app.confirm_launch() else {
+        panic!("the ordinary fixture game launches: {:?}", app.message);
+    };
+    assert!(history.is_none());
+    assert!(!crate::history::path_beside(&app.settings_path).exists());
+    app.ui.hide().unwrap();
+    drop(app);
+
+    // Retained order is newest first. Recorded names are only fallbacks:
+    // current cache presentation must replace them when a target resolves.
+    let history_path = crate::history::path_beside(&root.join("settings.toml"));
+    let mut history = crate::history::History::default();
+    history.remember(crate::history::Entry {
+        system: "NES".into(),
+        launch: browse::Launch::File(first.clone()),
+        name: "Recorded First".into(),
+    });
+    history.remember(crate::history::Entry {
+        system: "NES".into(),
+        launch: browse::Launch::File(missing.clone()),
+        name: "Recorded Missing".into(),
+    });
+    history.remember(crate::history::Entry {
+        system: "NES".into(),
+        launch: browse::Launch::File(second.clone()),
+        name: "Recorded Second".into(),
+    });
+    history.save(&history_path).unwrap();
+
+    let mut app = unopened_fixture_app(
+        &root,
+        window.clone(),
+        Settings {
+            last_played: Some(2),
+            ..Settings::default()
+        },
+    );
+    app.leave_splash();
+    app.finish_background_work_for_headless();
+    std::fs::create_dir_all(&favorites_root).unwrap();
+    let mut favorites = crate::systems::parse_table(
+        include_str!("../assets/systems.toml"),
+        Path::new("systems.toml"),
+    )
+    .unwrap()
+    .into_iter()
+    .find(|system| system.id == "Favorites")
+    .unwrap();
+    favorites.folders = vec![favorites_root.to_string_lossy().into_owned()];
+    app.all_systems.push(FoundSystem {
+        def: favorites,
+        paths: vec![favorites_root.clone()],
+        logo_dir: None,
+        menu_folder: None,
+    });
+    app.rebuild_system_list();
+    let categories: Vec<&str> = app
+        .categories
+        .iter()
+        .map(|(name, _)| name.as_str())
+        .collect();
+    let recent_at = categories
+        .iter()
+        .position(|name| *name == LAST_PLAYED_CATEGORY)
+        .unwrap();
+    let favorites_at = categories
+        .iter()
+        .position(|name| is_favorites(name))
+        .unwrap();
+    assert_eq!(recent_at + 1, favorites_at);
+    assert_eq!(app.categories[recent_at].1, 2);
+    assert_eq!(
+        app.category_picks.get(LAST_PLAYED_CATEGORY),
+        Some(&media.join("second.png")),
+        "the newest resolvable current cover previews the collection"
+    );
+
+    app.category_list.select(recent_at);
+    app.open_selected_category();
+    assert!(app.last_played_open);
+    assert_eq!(app.here_label(), LAST_PLAYED_CATEGORY);
+    assert_eq!(
+        app.here
+            .iter()
+            .map(|row| row.name.as_str())
+            .collect::<Vec<_>>(),
+        ["Current Second", "Recorded Missing"]
+    );
+    assert_eq!(
+        app.here[0].cover.as_deref(),
+        Some(media.join("second.png").as_path())
+    );
+    assert!(app.message.is_none());
+
+    // The collection is one stable place. It has game-list actions, but no
+    // action that pretends the mixed collection is a single system.
+    let place = app.current_view_place().unwrap();
+    assert_eq!(
+        place,
+        ViewPlace::Games {
+            system: LAST_PLAYED_SYSTEM.into(),
+            place: LAST_PLAYED_PLACE.into(),
+        }
+    );
+    app.open_context();
+    for absent in [
+        REBUILD_SYSTEM,
+        GAME_DATA_SOURCE,
+        CORE_VERSION,
+        SCRAPE_SYSTEM,
+    ] {
+        assert!(
+            !app.context_actions.iter().any(|action| action == absent),
+            "{absent} does not apply to a mixed-system collection"
+        );
+    }
+    for present in [GAME_INFORMATION, ADD_FAVORITE, SEARCH, JUMP, CHANGE_VIEW] {
+        assert!(
+            app.context_actions.iter().any(|action| action == present),
+            "{present} remains useful in Last Played"
+        );
+    }
+    app.handle(Action::Quit);
+
+    // Raising and lowering the visible amount changes the open list at once
+    // without deleting the retained third entry.
+    app.adjust_option_value(OptionId::LastPlayed, 1);
+    assert_eq!(app.option_value(OptionId::LastPlayed), "3");
+    assert_eq!(app.here.len(), 3);
+    assert_eq!(app.here[2].name, "Current First");
+    assert_eq!(app.here[2].genre.as_deref(), Some("Puzzle"));
+    assert_eq!(app.here[2].details.publisher, "Current Publisher");
+    app.adjust_option_value(OptionId::LastPlayed, -1);
+    assert_eq!(app.here.len(), 2);
+    assert_eq!(
+        crate::history::History::load(&history_path)
+            .unwrap()
+            .entries
+            .len(),
+        3
+    );
+    app.adjust_option_value(OptionId::LastPlayed, 1);
+
+    app.layout = app.layout.next();
+    app.remember_view();
+    assert_eq!(
+        place.get(&app.settings.custom_views),
+        Some(app.layout.label())
+    );
+    assert_eq!(app.settings.custom_views.games.len(), 1);
+    assert!(
+        app.settings
+            .custom_views
+            .games
+            .contains_key(LAST_PLAYED_SYSTEM),
+        "the custom view belongs only to Last Played"
+    );
+    app.search_for("FIRST");
+    assert_eq!(app.here.len(), 1);
+    assert_eq!(app.here[0].name, "Current First");
+    app.clear_filter();
+
+    select_row_named(&mut app, "Recorded Missing");
+    let before_failure = std::fs::read(&history_path).unwrap();
+    assert!(app.confirm_launch().is_none());
+    assert!(app
+        .message
+        .as_deref()
+        .is_some_and(|message| message.contains("file is gone")));
+    assert_eq!(std::fs::read(&history_path).unwrap(), before_failure);
+    app.handle(Action::Quit);
+
+    // Launch planning records the originating system and exact target, then
+    // the durable history update moves an existing entry rather than adding
+    // a duplicate. The actual FIFO-before-history boundary is exercised on
+    // MiSTer in the physical test plan.
+    select_row_named(&mut app, "Current First");
+    let Some(Outcome::Launch {
+        history: Some(update),
+        ..
+    }) = app.confirm_launch()
+    else {
+        panic!("a resolved Last Played row launches: {:?}", app.message);
+    };
+    assert_eq!(update.entry.system, "NES");
+    assert_eq!(update.entry.launch, browse::Launch::File(first.clone()));
+    crate::history::record(&update.path, update.entry).unwrap();
+    let moved = crate::history::History::load(&history_path).unwrap();
+    assert_eq!(moved.entries.len(), 3);
+    assert_eq!(moved.entries[0].launch, browse::Launch::File(first.clone()));
+
+    // Favourite state and writes use the original target rather than a
+    // synthetic Last Played path.
+    app.last_played = moved;
+    app.relist_here();
+    select_row_named(&mut app, "Current First");
+    let information = app
+        .information_request(&app.here[app.game_list.selected()])
+        .unwrap();
+    assert_eq!(information.launch, browse::Launch::File(first.clone()));
+    assert!(matches!(
+        information.source,
+        crate::information_job::Source::Gamelist
+    ));
+    app.add_favorite_in(&favorites_root);
+    assert!(app.favorites.holds(&first));
+    assert!(app
+        .here
+        .iter()
+        .any(|row| row.name == "Current First" && row.favorite));
+    app.remove_favorite();
+    assert!(!app.favorites.holds(&first));
+    assert!(app
+        .here
+        .iter()
+        .any(|row| row.name == "Current First" && !row.favorite));
+
+    // The same game launched from the Favourites shelf resolves back to the
+    // originating system and target, so it cannot create a second history
+    // identity for the .mgl file on the shelf.
+    select_row_named(&mut app, "Current First");
+    app.add_favorite_in(&favorites_root);
+    let favorites_at = app
+        .systems
+        .iter()
+        .position(|system| system.def.id == "Favorites")
+        .unwrap();
+    app.open_system_by_index(favorites_at);
+    assert!(app.in_favorites());
+    select_row_named(&mut app, "Current First");
+    let Some(Outcome::Launch {
+        history: Some(from_favorite),
+        ..
+    }) = app.confirm_launch()
+    else {
+        panic!(
+            "the favourite resolves to its original game: {:?}",
+            app.message
+        );
+    };
+    assert_eq!(from_favorite.entry.system, "NES");
+    assert_eq!(
+        from_favorite.entry.launch,
+        browse::Launch::File(first.clone())
+    );
+    crate::history::record(&from_favorite.path, from_favorite.entry).unwrap();
+    let after_favorite = crate::history::History::load(&history_path).unwrap();
+    assert_eq!(after_favorite.entries.len(), 3);
+    assert_eq!(
+        after_favorite.entries[0].launch,
+        browse::Launch::File(first.clone())
+    );
+    app.last_played = after_favorite;
+    app.open_last_played();
+    select_row_named(&mut app, "Current First");
+
+    let saved_position = app.position();
+    select_row_named(&mut app, "Current Second");
+    app.ui.hide().unwrap();
+    drop(app);
+
+    let mut restarted = unopened_fixture_app(
+        &root,
+        window.clone(),
+        Settings {
+            last_played: Some(3),
+            ..Settings::default()
+        },
+    );
+    restarted.leave_splash();
+    restarted.finish_background_work_for_headless();
+    restarted.restore_position(&saved_position);
+    assert!(restarted.last_played_open);
+    assert_eq!(
+        restarted.here[restarted.game_list.selected()].name,
+        "Current First"
+    );
+    assert!(restarted.message.is_none(), "{:?}", restarted.message);
+    restarted.handle(Action::Quit);
+    assert_eq!(restarted.browsing, Browsing::Categories);
+    assert!(!restarted.last_played_open);
+    restarted.ui.hide().unwrap();
+    drop(restarted);
+
+    // A damaged history is reported, left byte-for-byte intact and never
+    // attached to a launch, while ordinary browsing and launch planning work.
+    std::fs::write(&history_path, "not = [valid").unwrap();
+    let malformed = std::fs::read(&history_path).unwrap();
+    let mut restarted = fixture_app(
+        &root,
+        window,
+        Settings {
+            last_played: Some(3),
+            ..Settings::default()
+        },
+    );
+    assert!(restarted.last_played_problem.is_some());
+    select_row_named(&mut restarted, "Current First");
+    let Some(Outcome::Launch { history, .. }) = restarted.confirm_launch() else {
+        panic!("a malformed optional history must not block ordinary launches");
+    };
+    assert!(history.is_none());
+    assert_eq!(std::fs::read(&history_path).unwrap(), malformed);
+    restarted.ui.hide().unwrap();
 }
 
 fn run_main_favourites_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
@@ -2304,6 +2643,7 @@ fn capture_every_menu_row(app: &mut App, directory: &Path) {
         core_version: true,
         core_version_override: true,
         favorite_folder: false,
+        rebuild_system: true,
     };
     let scenarios = [
         (
@@ -7697,7 +8037,7 @@ fn run_neogeo_romset_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
     };
     for (set, title) in sets {
         app.game_list.select(position(&app, title));
-        let Some(Outcome::Launch { plan, name }) = app.confirm_launch() else {
+        let Some(Outcome::Launch { plan, name, .. }) = app.confirm_launch() else {
             panic!("{set} must launch: {:?}", app.message);
         };
         assert_eq!(name, title);
@@ -8530,6 +8870,7 @@ pub(super) fn run_ui_acceptance_flow(window: Rc<MinimalSoftwareWindow>) {
     run_folder_artwork_flow(&root, window.clone());
     run_paged_theme_name_flow(&root, window.clone());
     run_theme_editor_save_changes_flow(&root, window.clone());
+    run_last_played_flow(&root, window.clone());
     let mut app = fixture_app(&root, window.clone(), Settings::default());
     run_selected_controls_flow(&mut app);
     run_artwork_visibility_flow(&mut app);
