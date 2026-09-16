@@ -16446,6 +16446,12 @@ impl App {
             return;
         }
         if saved.system == CORES_SYSTEM_ID {
+            // A Cores launch still saves the ordinary categories and folders
+            // the user left behind. Restore those memories before handling
+            // the virtual Cores location, including when Cores was disabled
+            // while the launched core was running.
+            self.category_system = saved.category_system.clone();
+            self.left_at = saved.left_at.clone();
             if !self.show_cores {
                 self.resolve_view();
                 self.apply_geometry();
