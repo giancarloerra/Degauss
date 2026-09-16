@@ -312,6 +312,7 @@ fn option_operation(option: OptionId, input: OptionInput) -> OptionOperation {
         | OptionId::ShowOther
         | OptionId::ShowUtility
         | OptionId::ShowCores
+        | OptionId::ShowMisterZine
         | OptionId::ShowUnstable
         | OptionId::ShowScripts
         | OptionId::CorePreference
@@ -1119,6 +1120,11 @@ const CLEAR_SEARCH: &str = "Clear Search";
 const FAVORITES_ID: &str = "Favorites";
 const CORES_CATEGORY: &str = "Cores";
 const CORES_SYSTEM_ID: &str = "__cores";
+const MISTERZINE_CATEGORY: &str = "MiSTerZine";
+const MISTERZINE_SYSTEM_ID: &str = "__misterzine";
+const REFRESH_MISTERZINE: &str = "Refresh";
+const INSTALLED_ONLY: &str = "Installed Only";
+const ABOUT_MISTERZINE: &str = "About MiSTerZine";
 
 fn core_category_pick_key(category: &str) -> String {
     format!("{CORES_SYSTEM_ID}:{category}")
@@ -1943,6 +1949,9 @@ fn context_help(action: &str) -> &'static str {
         GAME_DATA_SOURCE => "Choose the image and metadata source for this system.",
         REBUILD_SYSTEM => "Rescan this entire system, including all its folders.",
         REBUILD_CORES => "Refresh only the installed-core catalogue from MiSTer's menu folders.",
+        REFRESH_MISTERZINE => "Check the official MiSTerZine release catalogue now.",
+        INSTALLED_ONLY => "Show only releases that Degauss can launch on this MiSTer.",
+        ABOUT_MISTERZINE => "Read the source and licence for the MiSTerZine release data.",
         CHANGE_CATEGORY_IMAGE => "Choose the image shown for the selected category or system.",
         CLEAR_CATEGORY_IMAGE => {
             "Remove this custom image after confirmation and restore the default image."
@@ -3346,6 +3355,13 @@ pub struct App {
     core_catalogue: CoreCatalogue,
     /// The category open inside the optional Cores browser.
     core_category: Option<String>,
+    /// The optional releases browser uses one independent cache and worker;
+    /// it never becomes part of the game-library index.
+    misterzine_job: Option<crate::misterzine::Job>,
+    misterzine_progress: crate::misterzine::Progress,
+    misterzine_items: Vec<crate::misterzine::Item>,
+    misterzine_visible: Vec<crate::misterzine::Item>,
+    misterzine_installed_only: bool,
     /// The open system's folders, when they have been written down.
     system_cache: Option<crate::cache::SystemCache>,
     /// Current read-only Pack snapshot. Present only for a Pack-selected
@@ -3433,6 +3449,8 @@ pub struct App {
     show_utility: bool,
     /// Show the optional top-level Cores browser.
     show_cores: bool,
+    /// Show the optional top-level MiSTerZine browser.
+    show_misterzine: bool,
     show_unstable: bool,
     /// Show the strip along the bottom.
     show_bar: bool,
@@ -3519,6 +3537,7 @@ impl App {
         let show_other = loaded.settings.show_other.unwrap_or(false);
         let show_utility = loaded.settings.show_utility.unwrap_or(false);
         let show_cores = loaded.settings.show_cores.unwrap_or(false);
+        let show_misterzine = loaded.settings.show_misterzine.unwrap_or(false);
         let show_unstable = loaded.settings.show_unstable.unwrap_or(true);
         let show_bar = loaded.settings.show_bar.unwrap_or(true);
         let Loaded {
@@ -3682,7 +3701,7 @@ impl App {
 
         let system_count = systems.len();
         let cache_dir = crate::cache::dir_for(&settings_path);
-        if show_cores
+        if (show_cores || show_misterzine)
             && crate::cache::load_core_catalogue(&cache_dir).as_ref() != Some(&core_catalogue)
         {
             if let Err(error) = crate::cache::save_core_catalogue(&cache_dir, &core_catalogue) {
@@ -3747,6 +3766,11 @@ impl App {
             index: None,
             core_catalogue,
             core_category: None,
+            misterzine_job: None,
+            misterzine_progress: Default::default(),
+            misterzine_items: Vec::new(),
+            misterzine_visible: Vec::new(),
+            misterzine_installed_only: false,
             system_cache: None,
             artwork_provider: None,
             artwork_provider_cache: HashMap::new(),
@@ -3891,6 +3915,7 @@ impl App {
             show_other,
             show_utility,
             show_cores,
+            show_misterzine,
             show_unstable,
             show_bar,
             category_picks: std::collections::BTreeMap::new(),
@@ -5947,6 +5972,12 @@ impl App {
     /// a scraper may or may not have filled in.
     /// Identify the exact browse place under any menu currently covering it.
     fn current_view_place(&self) -> Option<ViewPlace> {
+        if self.in_misterzine_browser() {
+            return Some(ViewPlace::Games {
+                system: MISTERZINE_SYSTEM_ID.to_string(),
+                place: MISTERZINE_CATEGORY.to_string(),
+            });
+        }
         if self.in_cores_browser() {
             return match self.browsing {
                 Browsing::Systems => Some(ViewPlace::Systems(CORES_CATEGORY.to_string())),
@@ -5971,7 +6002,7 @@ impl App {
     }
 
     fn context_system_id(&self) -> Option<&str> {
-        if self.in_cores_browser() {
+        if self.in_cores_browser() || self.in_misterzine_browser() {
             return None;
         }
         match self.browsing {
@@ -7210,6 +7241,9 @@ impl App {
 
     /// Where browsing currently is, for the title bar.
     fn here_label(&self) -> String {
+        if self.in_misterzine_browser() {
+            return MISTERZINE_CATEGORY.to_string();
+        }
         if self.in_cores_browser() {
             return self
                 .core_category
@@ -7894,6 +7928,78 @@ impl App {
             );
             return;
         }
+        if self.misterzine_job.is_some() {
+            let progress = &self.misterzine_progress;
+            let matching = progress.phase == crate::misterzine::Phase::Matching;
+            let installed = self
+                .misterzine_items
+                .iter()
+                .filter(|item| item.installed())
+                .count();
+            self.ui.set_operation_kind(3);
+            self.ui.set_operation_details(false);
+            self.ui.set_operation_title(MISTERZINE_CATEGORY.into());
+            self.ui.set_operation_state(
+                if progress.cancelling {
+                    "Cancelling"
+                } else {
+                    progress.phase.label()
+                }
+                .into(),
+            );
+            self.ui.set_operation_subject("Official Releases".into());
+            self.ui.set_operation_activity(
+                match progress.phase {
+                    crate::misterzine::Phase::Checking => "Checking for changes",
+                    crate::misterzine::Phase::Downloading => "Reading release data",
+                    crate::misterzine::Phase::Matching => "Comparing with this MiSTer",
+                }
+                .into(),
+            );
+            self.ui
+                .set_operation_determinate(matching && progress.total > 0);
+            self.ui
+                .set_operation_fraction(progress.completed as f32 / progress.total.max(1) as f32);
+            self.ui.set_operation_progress(
+                if matching && progress.total > 0 {
+                    format!("{} / {} Releases", progress.completed, progress.total)
+                } else {
+                    String::new()
+                }
+                .into(),
+            );
+            self.ui.set_operation_note(
+                if progress.cancelling {
+                    "Stopping safely"
+                } else if self.misterzine_items.is_empty() {
+                    "This normally takes only a few seconds"
+                } else {
+                    "Saved releases stay available if this check fails"
+                }
+                .into(),
+            );
+            self.ui
+                .set_operation_counts(ModelRc::new(VecModel::from(vec![
+                    DetailLine {
+                        label: "Installed".into(),
+                        value: installed.to_string().into(),
+                    },
+                    DetailLine {
+                        label: "Releases".into(),
+                        value: self.misterzine_items.len().to_string().into(),
+                    },
+                ])));
+            self.ui.set_operation_problem(SharedString::default());
+            self.ui.set_operation_controls(
+                if progress.cancelling {
+                    "Stopping Safely"
+                } else {
+                    "B Cancel"
+                }
+                .into(),
+            );
+            return;
+        }
         if self.screen != Screen::ScraperProgress {
             return;
         }
@@ -8389,6 +8495,182 @@ impl App {
         self.open_category.as_deref() == Some(CORES_CATEGORY)
     }
 
+    fn in_misterzine_browser(&self) -> bool {
+        self.open_category.as_deref() == Some(MISTERZINE_CATEGORY)
+    }
+
+    fn misterzine_request(&self, force_refresh: bool) -> crate::misterzine::Request {
+        crate::misterzine::Request {
+            cache_dir: self.cache_dir.clone(),
+            menu_root: PathBuf::from(&self.config.menu_root),
+            cores: self.core_catalogue.clone(),
+            arcade_systems: self
+                .all_systems
+                .iter()
+                .filter(|system| system.category() == "Arcade")
+                .map(|system| crate::misterzine::ArcadeSystem {
+                    id: system.def.id.clone(),
+                    artwork_pack: self.pack_selected(&system.def.id),
+                })
+                .collect(),
+            force_refresh,
+        }
+    }
+
+    fn open_misterzine(&mut self, force_refresh: bool) {
+        if self.misterzine_job.is_some() {
+            return;
+        }
+        self.open_category = Some(MISTERZINE_CATEGORY.to_string());
+        self.open_system = None;
+        self.core_category = None;
+        self.browsing = Browsing::Games;
+        self.filter.clear();
+        self.all_here.clear();
+        self.misterzine_progress = Default::default();
+        match crate::misterzine::start(self.misterzine_request(force_refresh)) {
+            Ok(job) => self.misterzine_job = Some(job),
+            Err(error) => {
+                crate::note(&format!("misterzine   could not start: {error}"));
+                self.message = Some("MiSTerZine could not be opened. Try again.".to_string());
+                self.open_category = None;
+                self.browsing = Browsing::Categories;
+                self.rebuild_system_list();
+            }
+        }
+        self.resolve_view();
+        self.apply_geometry();
+        self.touch_selection();
+    }
+
+    fn misterzine_cover(&self, item: &crate::misterzine::Item) -> Option<PathBuf> {
+        item.cover().map(Path::to_path_buf).or_else(|| {
+            let id = item.logo_id()?;
+            self.all_systems
+                .iter()
+                .find(|system| system.def.id == id)
+                .and_then(|system| self.system_logo(system))
+                .or_else(|| {
+                    self.core_catalogue
+                        .entries
+                        .iter()
+                        .find(|entry| entry.logo_id.as_deref() == Some(id))
+                        .and_then(|entry| self.core_logo(entry))
+                })
+        })
+    }
+
+    fn rebuild_misterzine_rows(&mut self) {
+        let selected = self
+            .misterzine_visible
+            .get(self.game_list.selected())
+            .map(|item| (item.title().to_string(), item.summary()));
+        self.misterzine_visible = self
+            .misterzine_items
+            .iter()
+            .filter(|item| !self.misterzine_installed_only || item.installed())
+            .cloned()
+            .collect();
+        let covers: Vec<Option<PathBuf>> = self
+            .misterzine_visible
+            .iter()
+            .map(|item| self.misterzine_cover(item))
+            .collect();
+        self.here = self
+            .misterzine_visible
+            .iter()
+            .zip(covers)
+            .map(|(item, cover)| item.row(cover))
+            .collect();
+        let at = selected
+            .as_ref()
+            .and_then(|selected| {
+                self.misterzine_visible
+                    .iter()
+                    .position(|item| item.title() == selected.0 && item.summary() == selected.1)
+            })
+            .unwrap_or(0);
+        self.game_list = ListState::new(self.here.len(), self.geometry.visible);
+        self.game_list.select(at);
+        self.touch_selection();
+    }
+
+    fn apply_misterzine_snapshot(&mut self, snapshot: crate::misterzine::Snapshot) {
+        self.misterzine_items = snapshot.items;
+        self.rebuild_misterzine_rows();
+        self.rebuild_system_list();
+    }
+
+    fn poll_misterzine(&mut self) {
+        let mut terminal = false;
+        loop {
+            let event = self
+                .misterzine_job
+                .as_mut()
+                .and_then(crate::misterzine::Job::try_recv);
+            let Some(event) = event else {
+                break;
+            };
+            match event {
+                crate::misterzine::Event::Progress(progress) => {
+                    self.misterzine_progress = progress;
+                }
+                crate::misterzine::Event::Snapshot(snapshot) => {
+                    self.apply_misterzine_snapshot(snapshot);
+                }
+                crate::misterzine::Event::Ready { snapshot, notice } => {
+                    self.apply_misterzine_snapshot(snapshot);
+                    self.message = notice;
+                    terminal = true;
+                }
+                crate::misterzine::Event::Cancelled => {
+                    if self.misterzine_items.is_empty() {
+                        self.open_category = None;
+                        self.browsing = Browsing::Categories;
+                        self.rebuild_system_list();
+                    }
+                    terminal = true;
+                }
+                crate::misterzine::Event::Failed { message } => {
+                    self.message = Some(message);
+                    if self.misterzine_items.is_empty() {
+                        self.open_category = None;
+                        self.browsing = Browsing::Categories;
+                        self.rebuild_system_list();
+                    }
+                    terminal = true;
+                }
+            }
+        }
+        if terminal {
+            self.misterzine_job = None;
+        }
+        if terminal || self.misterzine_job.is_some() {
+            self.dirty = true;
+        }
+    }
+
+    fn confirm_misterzine_launch(&mut self) -> Option<Outcome> {
+        let item = self.misterzine_visible.get(self.game_list.selected())?;
+        let name = item.title().to_string();
+        let Some(path) = item.launch_path.as_deref() else {
+            self.message = Some(format!("{name} is not installed on this MiSTer."));
+            self.dirty = true;
+            return None;
+        };
+        match crate::launch::plan_misterzine(path, Path::new(&self.config.menu_root)) {
+            Ok(plan) => Some(Outcome::Launch {
+                plan: Box::new(plan),
+                name,
+            }),
+            Err(error) => {
+                self.message = Some(error.to_string());
+                self.dirty = true;
+                None
+            }
+        }
+    }
+
     fn core_categories(&self) -> Vec<(String, usize)> {
         self.core_catalogue.categories()
     }
@@ -8458,6 +8740,15 @@ impl App {
         self.touch_selection();
     }
 
+    fn read_cores_catalogue(&self) -> crate::error::Result<CoreCatalogue> {
+        crate::systems::CoreIndex::read_checked(Path::new(&self.config.menu_root))
+            .map(|index| index.catalogue(&self.table))
+            .and_then(|catalogue| {
+                crate::cache::save_core_catalogue(&self.cache_dir, &catalogue)?;
+                Ok(catalogue)
+            })
+    }
+
     fn rebuild_cores_catalogue(&mut self) {
         let selected = self
             .here
@@ -8466,12 +8757,7 @@ impl App {
                 browse::Kind::Play(browse::Launch::File(path)) => Some(path.clone()),
                 _ => None,
             });
-        let outcome = crate::systems::CoreIndex::read_checked(Path::new(&self.config.menu_root))
-            .map(|index| index.catalogue(&self.table))
-            .and_then(|catalogue| {
-                crate::cache::save_core_catalogue(&self.cache_dir, &catalogue)?;
-                Ok(catalogue)
-            });
+        let outcome = self.read_cores_catalogue();
         match outcome {
             Ok(catalogue) => {
                 let count = catalogue.entries.len();
@@ -8585,6 +8871,16 @@ impl App {
                 ),
             );
         }
+        if self.show_misterzine {
+            let at = categories
+                .iter()
+                .position(|(name, _)| name == FAVORITES_ID)
+                .unwrap_or(categories.len());
+            categories.insert(
+                at,
+                (MISTERZINE_CATEGORY.to_string(), self.misterzine_items.len()),
+            );
+        }
         // Anything with a group we did not anticipate still gets shown.
         for system in &visible {
             let name = display_category(system, separate_handheld);
@@ -8598,7 +8894,7 @@ impl App {
         }
 
         self.systems = match self.open_category.as_deref() {
-            Some(CORES_CATEGORY) => Vec::new(),
+            Some(CORES_CATEGORY) | Some(MISTERZINE_CATEGORY) => Vec::new(),
             Some(open) => visible
                 .into_iter()
                 .filter(|system| display_category(system, separate_handheld) == open)
@@ -8669,6 +8965,15 @@ impl App {
                 }
             }
         }
+        if self.show_misterzine {
+            if let Some(logo) = self.named_logo(MISTERZINE_CATEGORY).or_else(|| {
+                self.misterzine_items
+                    .iter()
+                    .find_map(|item| self.misterzine_cover(item))
+            }) {
+                picks.insert(MISTERZINE_CATEGORY.to_string(), logo);
+            }
+        }
         self.seed = seed;
         self.category_picks = picks;
     }
@@ -8686,6 +8991,11 @@ impl App {
         let name = name.clone();
         self.open_category = Some(name.clone());
         self.rebuild_system_list();
+        if name == MISTERZINE_CATEGORY {
+            self.skipped_systems = false;
+            self.open_misterzine(false);
+            return;
+        }
         if name == CORES_CATEGORY {
             self.core_category = None;
             self.browsing = Browsing::Systems;
@@ -9510,6 +9820,36 @@ impl App {
                 }
                 self.rebuild_system_list();
             }
+            OptionId::ShowMisterZine => {
+                self.show_misterzine = !self.show_misterzine;
+                self.settings.show_misterzine = Some(self.show_misterzine);
+                if self.show_misterzine && self.core_catalogue.entries.is_empty() {
+                    match self.read_cores_catalogue() {
+                        Ok(catalogue) => self.core_catalogue = catalogue,
+                        Err(error) => {
+                            crate::note(&format!(
+                                "misterzine   installed cores could not be read: {error}"
+                            ));
+                            self.message = Some(
+                                "MiSTerZine is enabled, but installed cores could not be read. Check the card and try again."
+                                    .to_string(),
+                            );
+                        }
+                    }
+                }
+                if !self.show_misterzine && self.in_misterzine_browser() {
+                    if let Some(job) = &self.misterzine_job {
+                        job.cancel();
+                    }
+                    self.misterzine_job = None;
+                    self.open_category = None;
+                    self.browsing = Browsing::Categories;
+                    self.filter.clear();
+                    self.all_here.clear();
+                    self.here.clear();
+                }
+                self.rebuild_system_list();
+            }
             OptionId::ShowBar => {
                 self.show_bar = !self.show_bar;
                 self.settings.show_bar = Some(self.show_bar);
@@ -9616,6 +9956,7 @@ impl App {
             OptionId::ShowOther => on_off(self.show_other),
             OptionId::ShowUtility => on_off(self.show_utility),
             OptionId::ShowCores => on_off(self.show_cores),
+            OptionId::ShowMisterZine => on_off(self.show_misterzine),
             OptionId::ShowUnstable => on_off(self.show_unstable),
             OptionId::ShowScripts => on_off(self.settings.show_scripts.unwrap_or(true)),
             OptionId::CorePreference => self
@@ -9875,6 +10216,17 @@ impl App {
                 self.touch_selection();
             }
             Screen::Browse => match self.browsing {
+                Browsing::Games if self.in_misterzine_browser() => {
+                    self.filter.clear();
+                    self.all_here.clear();
+                    self.here.clear();
+                    self.open_category = None;
+                    self.browsing = Browsing::Categories;
+                    self.rebuild_system_list();
+                    self.resolve_view();
+                    self.apply_geometry();
+                    self.touch_selection();
+                }
                 Browsing::Games if self.in_cores_browser() => {
                     self.filter.clear();
                     self.all_here.clear();
@@ -10088,6 +10440,7 @@ impl App {
             return ">".to_string();
         }
         match self.menu.get(index).map(String::as_str) {
+            Some(INSTALLED_ONLY) => on_off(self.misterzine_installed_only),
             Some(CORE_VERSION) => self
                 .core_system_id()
                 .and_then(|id| self.settings.core_choices.get(&id))
@@ -10130,6 +10483,9 @@ impl App {
     }
 
     fn context_scope(&self) -> String {
+        if self.in_misterzine_browser() {
+            return MISTERZINE_CATEGORY.to_string();
+        }
         if self.in_cores_browser() {
             return match self.browsing {
                 Browsing::Games => self.here_label(),
@@ -10640,7 +10996,7 @@ impl App {
 
     /// The favourite operation available for the selected row.
     fn favorite_change(&self) -> Option<FavoriteChange> {
-        if self.in_cores_browser() {
+        if self.in_cores_browser() || self.in_misterzine_browser() {
             return None;
         }
         let selected = self.selected_game();
@@ -10677,6 +11033,9 @@ impl App {
     }
 
     fn hold_shortcut_available(&self, shortcut: HoldShortcut) -> bool {
+        if self.in_misterzine_browser() {
+            return false;
+        }
         if !self.browse_shortcuts_ready() {
             return false;
         }
@@ -12708,7 +13067,9 @@ impl App {
     }
 
     fn context_is_root(&self) -> bool {
-        self.browsing != Browsing::Categories && self.context_page.is_none()
+        !self.in_misterzine_browser()
+            && self.browsing != Browsing::Categories
+            && self.context_page.is_none()
     }
 
     fn remember_context_selection(&mut self) {
@@ -12721,7 +13082,7 @@ impl App {
 
     fn show_context_page(&mut self, page: Option<ContextPage>) {
         self.context_page = page;
-        self.menu = if self.browsing == Browsing::Categories {
+        self.menu = if self.in_misterzine_browser() || self.browsing == Browsing::Categories {
             self.context_page = None;
             self.context_actions.clone()
         } else if let Some(page) = page {
@@ -12767,6 +13128,15 @@ impl App {
     }
 
     fn refresh_context(&mut self) {
+        if self.in_misterzine_browser() {
+            self.context_actions = vec![
+                REFRESH_MISTERZINE.to_string(),
+                INSTALLED_ONLY.to_string(),
+                ABOUT_MISTERZINE.to_string(),
+            ];
+            self.show_context_page(None);
+            return;
+        }
         if self.in_cores_browser() {
             let mut actions = vec![JUMP.to_string()];
             if self.browsing == Browsing::Games {
@@ -14369,6 +14739,14 @@ impl App {
     }
 
     pub fn handle(&mut self, action: Action) -> Option<Outcome> {
+        if let Some(job) = &self.misterzine_job {
+            if matches!(action, Action::Quit | Action::Context | Action::Menu) {
+                job.cancel();
+                self.misterzine_progress.cancelling = true;
+            }
+            self.dirty = true;
+            return None;
+        }
         if self.source_resolution.is_some() && self.build.is_none() {
             if matches!(action, Action::Quit) {
                 self.source_resolution_cancelled = true;
@@ -14753,6 +15131,9 @@ impl App {
                     }
                     Browsing::Systems => self.open_selected_system(),
                     Browsing::Games => {
+                        if self.in_misterzine_browser() {
+                            return self.confirm_misterzine_launch();
+                        }
                         if self.in_cores_browser() {
                             return self.confirm_core_launch();
                         }
@@ -14822,11 +15203,26 @@ impl App {
                         && choice != CHANGE_VIEW
                         && choice != USE_GLOBAL_VIEW
                         && choice != USE_DEFAULT_CORE_VERSION
+                        && choice != ABOUT_MISTERZINE
                         && !self.save_settings()
                     {
                         return None;
                     }
-                    if choice == CHANGE_VIEW || choice == CORE_VERSION {
+                    if choice == REFRESH_MISTERZINE {
+                        self.screen = Screen::Browse;
+                        self.open_misterzine(true);
+                    } else if choice == INSTALLED_ONLY {
+                        self.misterzine_installed_only = !self.misterzine_installed_only;
+                        self.screen = Screen::Browse;
+                        self.rebuild_misterzine_rows();
+                        self.apply_geometry();
+                    } else if choice == ABOUT_MISTERZINE {
+                        self.screen = Screen::Browse;
+                        self.message = Some(
+                            "MiSTerZine\nOfficial release catalogue: misterzine.fyi\nData licensed CC BY 4.0. Artwork is not downloaded."
+                                .to_string(),
+                        );
+                    } else if choice == CHANGE_VIEW || choice == CORE_VERSION {
                         // Stays open, like a setting: the point is to see
                         // the view while choosing it.
                         self.adjust_context(1);
@@ -15406,11 +15802,18 @@ impl App {
                                 art_scale_x,
                                 // How much is in there, where somebody has
                                 // counted. Folders only: a game is one game.
-                                value: match row.below {
-                                    Some(games) if row.is_folder() => {
-                                        SharedString::from(games.to_string())
+                                value: if self.in_misterzine_browser() {
+                                    self.misterzine_visible
+                                        .get(index)
+                                        .map(|item| SharedString::from(item.summary()))
+                                        .unwrap_or_default()
+                                } else {
+                                    match row.below {
+                                        Some(games) if row.is_folder() => {
+                                            SharedString::from(games.to_string())
+                                        }
+                                        _ => SharedString::new(),
                                     }
-                                    _ => SharedString::new(),
                                 },
                             });
                         }
@@ -15680,7 +16083,12 @@ impl App {
                 && self
                     .here
                     .get(self.game_list.selected())
-                    .is_some_and(|row| matches!(row.kind, browse::Kind::Play(_))),
+                    .is_some_and(|row| matches!(row.kind, browse::Kind::Play(_)))
+                && (!self.in_misterzine_browser()
+                    || self
+                        .misterzine_visible
+                        .get(self.game_list.selected())
+                        .is_some_and(|item| item.installed())),
         );
         self.ui
             .set_plain_scope(SharedString::from(match self.screen {
@@ -16056,6 +16464,7 @@ impl App {
             self.poll_scraper_search();
             self.poll_scraper_preview();
             self.poll_information();
+            self.poll_misterzine();
 
             // A held left or right repeats only where it is a continuous
             // movement: browse scrolling or one RGB channel in the colour
@@ -16620,6 +17029,7 @@ impl App {
             self.poll_provider_job();
             self.start_provider_job_if_ready();
             self.poll_information();
+            self.poll_misterzine();
             // A finished cache recovery reopens its system through another
             // source resolution; that one has to finish as well before the
             // only frame is drawn.
@@ -16629,6 +17039,7 @@ impl App {
                 && self.source_job.is_none()
                 && self.provider_job.is_none()
                 && self.provider_requests.is_empty()
+                && self.misterzine_job.is_none()
             {
                 break;
             }

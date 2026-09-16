@@ -123,6 +123,7 @@ Click the image to watch Degauss 0.4.0 on YouTube.
 
 - [Using it](#using-it)
   - [Running MiSTer scripts](#running-mister-scripts)
+  - [Browsing MiSTerZine updates](#browsing-misterzine-updates)
 - [Why Degauss](#why-degauss)
 - [Installing](#installing)
   - [Installing through Update All (recommended)](#installing-through-update-all-recommended)
@@ -244,6 +245,28 @@ hides this Menu entry without changing any script files; the choice is saved
 with the other Options settings. Missing or unreadable script folders and
 scripts report their underlying error.
 
+### Browsing MiSTerZine updates
+
+**Options → Library → Show MiSTerZine** adds an optional MiSTerZine shelf to
+the home screen. It is Off by default. Opening it shows the official release
+catalogue newest first and compares each entry with content Degauss already
+indexed on this MiSTer. Installed entries can launch their local MRA or core;
+the catalogue never downloads or executes a remote launcher, core or script.
+
+Degauss shows **Checking MiSTerZine**, **Downloading Releases** when the
+catalogue changed, and **Matching Installed Content** while it compares local
+entries. **B** cancels safely. A valid saved catalogue is reused immediately;
+if a short network check fails, it remains available with its saved date. A
+first-use failure instead shows a concise cause, while `degauss.log` keeps the
+technical detail. **X Actions** provides **Refresh**, **Installed Only** and
+the catalogue attribution. Installed Only lasts only for the current session
+and does not change the library.
+
+Release data comes from [MiSTerZine](https://misterzine.fyi) under
+[CC BY 4.0](https://creativecommons.org/licenses/by/4.0/). Degauss uses only
+the documented `meta.json` and `data.json` feed and does not redistribute its
+artwork.
+
 ## Why Degauss
 
 - **Three pillars.** Performance (for large libraries and images), Simplicity (vs overengineering), Adherence to the MiSTer way (standards, scripts, folders).
@@ -256,8 +279,8 @@ scripts report their underlying error.
   process, nothing at boot. One program, running only while you are
   looking at it.
 - **Self-contained.** One program, with no runtime, toolkit or library to
-  install beside it, and small footprint while it runs. The optional scraper
-  uses the `curl` command already included in a normal MiSTer installation.
+  install beside it, and small footprint while it runs. Optional online
+  features use the `curl` command already included in a normal MiSTer installation.
   The index Degauss builds
   costs about 300 bytes a game, so it stays in the low megabytes for an
   ordinary collection and is the only thing that grows with the size of
@@ -760,6 +783,7 @@ require **A** and confirmation, never a sideways press.
 | Library | Show Utility Folder | Show the Utility group, test patterns and measurement cores |
 | Library | Show Unstable Folder | Show installed Unstable cores. On by default |
 | Library | Show Scripts Folder | On by default. Show Scripts in Menu to browse and run installed `.sh` files. Turning this Off hides the entry without changing the files |
+| Library | Show MiSTerZine | Off by default. Add the official MiSTerZine updates browser to the home screen and launch only matching content already installed locally |
 | Library | Show Systems with No Games | Systems and folders holding nothing are left out on their own; this shows them. Off by default |
 | Library | Show What You Hid | Show what you hid yourself with **Hide This** |
 | Library | Unhide Everything | Press A and confirm to put back everything you hid yourself, in every folder and every system. Left and right do nothing |
@@ -1897,6 +1921,11 @@ Degauss is under PolyForm Noncommercial 1.0.0. See [`LICENSE`](LICENSE).
 [MiSTer Main](https://github.com/MiSTer-devel/Main_MiSTer) under GPLv3, with
 its source at
 [giancarloerra/Degauss-Main](https://github.com/giancarloerra/Degauss-Main).
+
+The optional MiSTerZine browser reads release catalogue data from
+[MiSTerZine](https://misterzine.fyi), licensed under
+[CC BY 4.0](https://creativecommons.org/licenses/by/4.0/). MiSTerZine artwork
+retains its owners' rights and is not redistributed by Degauss.
 
 Four typefaces are baked into the binary:
 

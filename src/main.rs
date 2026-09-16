@@ -30,6 +30,7 @@ mod launch;
 mod list_state;
 mod metrics;
 mod mgl;
+mod misterzine;
 mod name_keyboard;
 mod neogeo;
 mod options;
@@ -396,7 +397,7 @@ fn load_everything(args: &Args) -> Result<Loaded> {
     let cores = systems::CoreIndex::read(Path::new(&config.menu_root));
     let core_cache_dir = cache::dir_for(&settings_path);
     let core_catalogue = cache::load_core_catalogue(&core_cache_dir).unwrap_or_else(|| {
-        if settings.show_cores.unwrap_or(false) {
+        if settings.show_cores.unwrap_or(false) || settings.show_misterzine.unwrap_or(false) {
             cores.catalogue(&table)
         } else {
             systems::CoreCatalogue::default()
