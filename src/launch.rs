@@ -358,10 +358,10 @@ fn plan_direct_launcher(core: &Path, menu_root: &Path, kinds: &[&str]) -> Result
             ),
         ));
     }
-    let path = core.to_str().ok_or_else(|| {
+    let path = canonical_core.to_str().ok_or_else(|| {
         DegaussError::unsupported(
             "core launch",
-            format!("{} is not valid UTF-8", core.display()),
+            format!("{} is not valid UTF-8", canonical_core.display()),
         )
     })?;
     Ok(LaunchPlan {
@@ -1641,15 +1641,15 @@ mod tests {
 
         assert_eq!(
             plan_core(&standard, &menu).unwrap().command,
-            format!("load_core {}\n", standard.display())
+            format!("load_core {}\n", standard.canonicalize().unwrap().display())
         );
         assert_eq!(
             plan_core(&ra, &menu).unwrap().command,
-            format!("load_core {}\n", ra.display())
+            format!("load_core {}\n", ra.canonicalize().unwrap().display())
         );
         assert_eq!(
             plan_misterzine(&arcade, &menu).unwrap().command,
-            format!("load_core {}\n", arcade.display())
+            format!("load_core {}\n", arcade.canonicalize().unwrap().display())
         );
         assert!(plan_misterzine(&ra, &menu)
             .unwrap_err()

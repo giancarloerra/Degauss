@@ -591,7 +591,10 @@ fn run_cores_browser_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
     };
     assert_eq!(
         plan.command,
-        format!("load_core {}\n", ra_launcher.display())
+        format!(
+            "load_core {}\n",
+            ra_launcher.canonicalize().unwrap().display()
+        )
     );
     std::fs::remove_file(&standard).unwrap();
     app.game_list.select(0);
@@ -697,7 +700,10 @@ fn run_misterzine_browser_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
     else {
         panic!("unexpected MiSTerZine launch outcome")
     };
-    assert_eq!(plan.command, format!("load_core {}\n", core.display()));
+    assert_eq!(
+        plan.command,
+        format!("load_core {}\n", core.canonicalize().unwrap().display())
+    );
 
     std::fs::remove_file(&core).unwrap();
     assert!(app.handle(Action::Accept).is_none());
