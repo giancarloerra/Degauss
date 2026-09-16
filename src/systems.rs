@@ -572,6 +572,7 @@ impl CoreIndex {
             let path = item.path();
             let metadata = match std::fs::metadata(&path) {
                 Ok(metadata) => metadata,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
                 Err(error) if checked => {
                     return Err(DegaussError::io(
                         "checking a MiSTer menu entry",
@@ -624,6 +625,7 @@ impl CoreIndex {
             let path = item.path();
             let metadata = match std::fs::metadata(&path) {
                 Ok(metadata) => metadata,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
                 Err(error) if checked => {
                     return Err(DegaussError::io("checking a core menu entry", &path, error));
                 }
@@ -1978,6 +1980,20 @@ extensions = ["nes"]
         let error = CoreIndex::read_checked(&root).expect_err("the requested rebuild must fail");
         assert!(error.to_string().contains("reading the MiSTer menu"));
         assert!(error.to_string().contains(&root.display().to_string()));
+    }
+
+    #[test]
+    fn an_explicit_core_catalogue_rebuild_skips_disappeared_entries() {
+        let menu = temp_dir("disappeared-core-entry");
+        let console = menu.join("_Console");
+        std::fs::create_dir_all(&console).unwrap();
+        std::fs::write(console.join("NES.rbf"), b"fixture").unwrap();
+        std::os::unix::fs::symlink(menu.join("missing-folder"), menu.join("_Gone")).unwrap();
+        std::os::unix::fs::symlink(console.join("missing-core"), console.join("Gone.rbf")).unwrap();
+
+        let index = CoreIndex::read_checked(&menu).unwrap();
+        assert_eq!(index.folder_of("_Console/NES"), Some("Console"));
+        std::fs::remove_dir_all(menu).unwrap();
     }
 
     #[test]
