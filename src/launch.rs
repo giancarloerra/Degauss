@@ -1068,6 +1068,8 @@ mod tests {
             .to_string()
             .contains("JTNGP (Legacy) is not installed"));
         std::fs::remove_dir_all(root).ok();
+    }
+
     fn amiga_vision_system(install: &Path) -> SystemConfig {
         SystemConfig {
             preserve_rbf_stem: false,
@@ -1078,6 +1080,7 @@ mod tests {
             launch: Vec::new(),
             skip_folders: Vec::new(),
             setname: Some("Amiga".into()),
+            compatible_cores: Vec::new(),
             extra_paths: Vec::new(),
         }
     }

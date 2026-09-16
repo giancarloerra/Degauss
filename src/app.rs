@@ -1896,6 +1896,7 @@ impl Default for ContextActions {
             scrape_game: false,
             image_override: None,
             game_data_source: false,
+            launch_core: false,
             core_version: false,
             core_version_override: false,
             favorite_folder: false,
@@ -9258,6 +9259,7 @@ impl App {
             Ok(plan) => Some(Outcome::Launch {
                 plan: Box::new(plan),
                 name,
+                history: None,
             }),
             Err(error) => {
                 self.message = Some(error.to_string());
