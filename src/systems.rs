@@ -2147,6 +2147,7 @@ extensions = ["nes"]
         assert!(error.to_string().contains(&root.display().to_string()));
     }
 
+    #[cfg(unix)]
     #[test]
     fn an_explicit_core_catalogue_rebuild_skips_disappeared_entries() {
         let menu = temp_dir("disappeared-core-entry");
