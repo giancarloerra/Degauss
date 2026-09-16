@@ -291,6 +291,64 @@ pub struct LaunchPlan {
     pub boot_file: Option<(PathBuf, Vec<u8>)>,
 }
 
+/// Start one explicit launcher from the cached Cores catalogue.
+///
+/// The catalogue is populated only by the shallow menu-root discovery, but
+/// the file is checked again at the final hand-over boundary: it can have
+/// been removed after discovery, and an arbitrary path must never become a
+/// core command merely because stale cache bytes named it.
+pub fn plan_core(core: &Path, menu_root: &Path) -> Result<LaunchPlan> {
+    let relative = core.strip_prefix(menu_root).map_err(|_| {
+        DegaussError::unsupported(
+            "core launch",
+            format!("{} is outside the configured MiSTer menu", core.display()),
+        )
+    })?;
+    if relative.components().any(|component| {
+        matches!(
+            component,
+            std::path::Component::ParentDir
+                | std::path::Component::RootDir
+                | std::path::Component::Prefix(_)
+        )
+    }) {
+        return Err(DegaussError::unsupported(
+            "core launch",
+            format!("{} is outside the configured MiSTer menu", core.display()),
+        ));
+    }
+    if !core.is_file() {
+        return Err(DegaussError::unsupported(
+            "core launch",
+            format!("{} is no longer installed", core.display()),
+        ));
+    }
+    let supported = core
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| {
+            extension.eq_ignore_ascii_case("rbf") || extension.eq_ignore_ascii_case("mgl")
+        });
+    if !supported {
+        return Err(DegaussError::unsupported(
+            "core launch",
+            format!("{} is not an RBF or MGL launcher", core.display()),
+        ));
+    }
+    let path = core.to_str().ok_or_else(|| {
+        DegaussError::unsupported(
+            "core launch",
+            format!("{} is not valid UTF-8", core.display()),
+        )
+    })?;
+    Ok(LaunchPlan {
+        mgl: String::new(),
+        mgl_path: PathBuf::new(),
+        command: format!("load_core {path}\n"),
+        boot_file: None,
+    })
+}
+
 /// The element a favourite carries when the thing it points at is not a
 /// file.
 ///
@@ -1540,5 +1598,46 @@ mod tests {
             std::fs::remove_file(&favourite).unwrap();
         }
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn an_explicit_cached_core_is_revalidated_at_the_launch_boundary() {
+        let root = std::env::temp_dir().join(format!("degauss-direct-core-{}", std::process::id()));
+        let menu = root.join("menu");
+        std::fs::create_dir_all(menu.join("_Console")).unwrap();
+        let standard = menu.join("_Console/NES_20260916.rbf");
+        let ra = menu.join("_Console/RA_NES.mgl");
+        let text = menu.join("_Console/readme.txt");
+        std::fs::write(&standard, b"core").unwrap();
+        std::fs::write(&ra, b"<mistergamedescription/>").unwrap();
+        std::fs::write(&text, b"not a core").unwrap();
+        std::fs::write(root.join("outside.rbf"), b"outside").unwrap();
+
+        assert_eq!(
+            plan_core(&standard, &menu).unwrap().command,
+            format!("load_core {}\n", standard.display())
+        );
+        assert_eq!(
+            plan_core(&ra, &menu).unwrap().command,
+            format!("load_core {}\n", ra.display())
+        );
+        assert!(plan_core(&text, &menu)
+            .unwrap_err()
+            .to_string()
+            .contains("not an RBF or MGL"));
+        assert!(plan_core(&root.join("outside.rbf"), &menu)
+            .unwrap_err()
+            .to_string()
+            .contains("outside the configured MiSTer menu"));
+        assert!(plan_core(&menu.join("../outside.rbf"), &menu)
+            .unwrap_err()
+            .to_string()
+            .contains("outside the configured MiSTer menu"));
+        std::fs::remove_file(&standard).unwrap();
+        assert!(plan_core(&standard, &menu)
+            .unwrap_err()
+            .to_string()
+            .contains("no longer installed"));
+        std::fs::remove_dir_all(&root).ok();
     }
 }

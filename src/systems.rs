@@ -14,7 +14,7 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::config::LaunchRule;
 use crate::error::{DegaussError, Result};
@@ -407,6 +407,12 @@ pub struct CoreIndex {
     /// Lowercased core name, without its date stamp, to the menu folder
     /// holding it and how deep inside that folder it sits.
     folders: BTreeMap<String, Vec<CoreCandidate>>,
+    /// Launchable files found by the same shallow walk. The catalogue is
+    /// derived from these after the systems table has supplied stable names.
+    launchers: Vec<ScannedCore>,
+    /// RA runtime binaries validate the launchers beside them, but are never
+    /// rows in the Cores browser themselves.
+    ra_support: Vec<String>,
 }
 
 #[derive(Debug)]
@@ -415,6 +421,113 @@ struct CoreCandidate {
     depth: usize,
     relative: Vec<u8>,
     folded: Vec<u8>,
+}
+
+#[derive(Debug)]
+struct ScannedCore {
+    path: PathBuf,
+    folder: String,
+    stem: String,
+    depth: usize,
+    kind: ScannedCoreKind,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ScannedCoreKind {
+    Standard,
+    RetroAchievements,
+    Unstable,
+}
+
+/// One explicit launch target in the cached Cores browser.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+pub struct CoreEntry {
+    pub name: String,
+    pub category: String,
+    pub variant: CoreVariant,
+    pub path: PathBuf,
+    /// Stable system id used only to reuse an installed logo when one exists.
+    pub logo_id: Option<String>,
+}
+
+impl CoreEntry {
+    pub fn label(&self) -> String {
+        format!("{} [{}]", self.name, self.variant.label())
+    }
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+pub enum CoreVariant {
+    Standard,
+    RetroAchievements,
+    Unstable(String),
+}
+
+impl CoreVariant {
+    pub fn label(&self) -> String {
+        match self {
+            Self::Standard => "Standard".into(),
+            Self::RetroAchievements => "RA".into(),
+            Self::Unstable(build) => format!("Unstable: {build}"),
+        }
+    }
+
+    fn order(&self) -> u8 {
+        match self {
+            Self::Standard => 0,
+            Self::RetroAchievements => 1,
+            Self::Unstable(_) => 2,
+        }
+    }
+}
+
+/// Persisted separately from game indexes so older caches remain valid.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+pub struct CoreCatalogue {
+    pub format: u32,
+    pub entries: Vec<CoreEntry>,
+}
+
+impl Default for CoreCatalogue {
+    fn default() -> Self {
+        Self {
+            format: 1,
+            entries: Vec::new(),
+        }
+    }
+}
+
+impl CoreCatalogue {
+    pub const FORMAT: u32 = 1;
+
+    pub fn categories(&self) -> Vec<(String, usize)> {
+        const FIRST: [&str; 4] = ["Console", "Computer", "Utility", "Other"];
+        let mut counts = BTreeMap::<String, usize>::new();
+        for entry in &self.entries {
+            *counts.entry(entry.category.clone()).or_default() += 1;
+        }
+        let mut categories = Vec::new();
+        for name in FIRST {
+            if let Some(count) = counts.remove(name) {
+                categories.push((name.to_string(), count));
+            }
+        }
+        let unmatched = counts.remove("Unmatched Unstable");
+        categories.extend(counts);
+        if let Some(count) = unmatched {
+            categories.push(("Unmatched Unstable".into(), count));
+        }
+        categories
+    }
+
+    pub fn in_category<'a>(
+        &'a self,
+        category: &'a str,
+    ) -> impl Iterator<Item = &'a CoreEntry> + 'a {
+        self.entries
+            .iter()
+            .filter(move |entry| entry.category == category)
+    }
 }
 
 impl CoreCandidate {
@@ -427,80 +540,188 @@ impl CoreIndex {
     /// Read every core on the card. One walk of the menu folders, which
     /// hold a few hundred files between them.
     pub fn read(root: &Path) -> Self {
+        Self::read_with(root, false).unwrap_or_default()
+    }
+
+    /// The same shallow walk for an explicit user-requested rebuild, where
+    /// an unreadable directory is a failure rather than an apparently empty
+    /// catalogue.
+    pub fn read_checked(root: &Path) -> Result<Self> {
+        Self::read_with(root, true)
+    }
+
+    fn read_with(root: &Path, checked: bool) -> Result<Self> {
         let mut index = CoreIndex::default();
-        let Ok(listing) = std::fs::read_dir(root) else {
-            return index;
+        let listing = match std::fs::read_dir(root) {
+            Ok(listing) => listing,
+            Err(error) if checked => {
+                return Err(DegaussError::io("reading the MiSTer menu", root, error));
+            }
+            Err(_) => return Ok(index),
         };
-        for item in listing.flatten() {
+        for item in listing {
+            let item = match item {
+                Ok(item) => item,
+                Err(error) if checked => {
+                    return Err(DegaussError::io("reading a MiSTer menu entry", root, error));
+                }
+                Err(_) => continue,
+            };
             let name = item.file_name().to_string_lossy().into_owned();
-            if !name.starts_with('_')
-                || name.eq_ignore_ascii_case("_Unstable")
-                || !item.path().is_dir()
-            {
+            let path = item.path();
+            let metadata = match std::fs::metadata(&path) {
+                Ok(metadata) => metadata,
+                Err(error) if checked => {
+                    return Err(DegaussError::io(
+                        "checking a MiSTer menu entry",
+                        &path,
+                        error,
+                    ));
+                }
+                Err(_) => continue,
+            };
+            if !name.starts_with('_') || !metadata.is_dir() {
                 continue;
             }
             // What the stock menu prints: the folder without its marker.
             let label = name.trim_start_matches('_').to_string();
-            index.walk(root, &item.path(), &label, 0);
+            index.walk(root, &path, &label, 0, checked)?;
         }
-        index
+        Ok(index)
     }
 
-    fn walk(&mut self, root: &Path, dir: &Path, label: &str, depth: usize) {
+    fn walk(
+        &mut self,
+        root: &Path,
+        dir: &Path,
+        label: &str,
+        depth: usize,
+        checked: bool,
+    ) -> Result<()> {
         // Cores sit at the top of a menu folder, or one level in, in the
         // `*_extra` folders the community ships. Nothing deeper is a core
         // the menu offers, and going further means reading every genre
         // folder of an organised arcade collection to learn nothing.
         if depth > 1 {
-            return;
+            return Ok(());
         }
-        let Ok(listing) = std::fs::read_dir(dir) else {
-            return;
+        let listing = match std::fs::read_dir(dir) {
+            Ok(listing) => listing,
+            Err(error) if checked => {
+                return Err(DegaussError::io("reading a core menu folder", dir, error));
+            }
+            Err(_) => return Ok(()),
         };
-        for item in listing.flatten() {
+        for item in listing {
+            let item = match item {
+                Ok(item) => item,
+                Err(error) if checked => {
+                    return Err(DegaussError::io("reading a core menu entry", dir, error));
+                }
+                Err(_) => continue,
+            };
             let path = item.path();
-            if path.is_dir() {
-                // RA runtime binaries are support files, not menu entries.
-                if label.eq_ignore_ascii_case("RA_Cores")
-                    && item
-                        .file_name()
-                        .to_string_lossy()
-                        .eq_ignore_ascii_case("Cores")
-                {
+            let metadata = match std::fs::metadata(&path) {
+                Ok(metadata) => metadata,
+                Err(error) if checked => {
+                    return Err(DegaussError::io("checking a core menu entry", &path, error));
+                }
+                Err(_) => continue,
+            };
+            if metadata.is_dir() {
+                let child = item.file_name();
+                let child = child.to_string_lossy();
+                // Arcade runtime binaries are support files, not direct core
+                // launchers. They must not become rows or satisfy grouping.
+                if label.eq_ignore_ascii_case("Arcade") && child.eq_ignore_ascii_case("cores") {
                     continue;
                 }
-                self.walk(root, &path, label, depth + 1);
+                self.walk(root, &path, label, depth + 1, checked)?;
                 continue;
             }
-            if !path.is_file() {
+            if !metadata.is_file() {
                 continue;
             }
             let Some(extension) = path.extension().and_then(|ext| ext.to_str()) else {
                 continue;
             };
+            if extension.eq_ignore_ascii_case("mgl")
+                && label.eq_ignore_ascii_case("RA_Cores")
+                && depth == 0
+            {
+                let Some(stem) = path
+                    .file_stem()
+                    .and_then(|stem| stem.to_str())
+                    .map(str::to_string)
+                else {
+                    continue;
+                };
+                self.launchers.push(ScannedCore {
+                    path,
+                    folder: label.to_string(),
+                    stem,
+                    depth,
+                    kind: ScannedCoreKind::RetroAchievements,
+                });
+                continue;
+            }
             if !extension.eq_ignore_ascii_case("rbf") {
                 continue;
             }
-            let Some(stem) = path.file_stem().and_then(|stem| stem.to_str()) else {
+            let Some(stem) = path
+                .file_stem()
+                .and_then(|stem| stem.to_str())
+                .map(str::to_string)
+            else {
                 continue;
             };
-            let relative = path
-                .strip_prefix(root)
-                .expect("walk stays under root")
-                .as_os_str()
-                .as_encoded_bytes()
-                .to_vec();
-            let folded = relative.iter().map(u8::to_ascii_lowercase).collect();
-            self.folders
-                .entry(core_name(stem))
-                .or_default()
-                .push(CoreCandidate {
+            if label.eq_ignore_ascii_case("RA_Cores")
+                && path.parent().is_some_and(|parent| {
+                    parent
+                        .file_name()
+                        .is_some_and(|name| name.eq_ignore_ascii_case("Cores"))
+                })
+            {
+                self.ra_support.push(core_name(&stem));
+                continue;
+            }
+            let kind = if label.eq_ignore_ascii_case("Unstable") {
+                ScannedCoreKind::Unstable
+            } else {
+                ScannedCoreKind::Standard
+            };
+            // Earlier releases did not use _Unstable to classify ordinary
+            // systems. Keep that behaviour while retaining the file as an
+            // explicit Unstable launch target for the optional catalogue.
+            if kind == ScannedCoreKind::Standard {
+                let relative = path
+                    .strip_prefix(root)
+                    .expect("walk stays under root")
+                    .as_os_str()
+                    .as_encoded_bytes()
+                    .to_vec();
+                let folded = relative.iter().map(u8::to_ascii_lowercase).collect();
+                self.folders
+                    .entry(core_name(&stem))
+                    .or_default()
+                    .push(CoreCandidate {
+                        folder: label.to_string(),
+                        depth,
+                        relative,
+                        folded,
+                    });
+            }
+            if !label.eq_ignore_ascii_case("Arcade") && !label.eq_ignore_ascii_case("RA_Cores") {
+                self.launchers.push(ScannedCore {
+                    path,
                     folder: label.to_string(),
+                    stem,
                     depth,
-                    relative,
-                    folded,
+                    kind,
                 });
+            }
         }
+        Ok(())
     }
 
     /// The menu folder holding the core named by an `rbf` field, which is
@@ -523,10 +744,182 @@ impl CoreIndex {
             .map(|candidate| candidate.folder.as_str())
     }
 
+    /// Build the direct-launch catalogue from the files already seen by this
+    /// index. No directory is opened here.
+    pub fn catalogue(&self, table: &[SystemDef]) -> CoreCatalogue {
+        let mut entries = Vec::new();
+        let mut standard_by_identity = BTreeMap::<String, Vec<&ScannedCore>>::new();
+        for scanned in self
+            .launchers
+            .iter()
+            .filter(|entry| entry.kind == ScannedCoreKind::Standard)
+        {
+            standard_by_identity
+                .entry(core_name(&scanned.stem))
+                .or_default()
+                .push(scanned);
+        }
+
+        let mut installed_categories = BTreeMap::<String, String>::new();
+        for (identity, mut candidates) in standard_by_identity {
+            let system = system_for_core(table, &identity);
+            let declared = system
+                .and_then(|system| system.rbf.split_once('/').map(|(folder, _)| folder))
+                .map(|folder| folder.trim_start_matches('_'));
+            candidates.sort_by(|left, right| {
+                let left_preferred = declared.is_some_and(|folder| folder == left.folder);
+                let right_preferred = declared.is_some_and(|folder| folder == right.folder);
+                right_preferred
+                    .cmp(&left_preferred)
+                    .then_with(|| left.depth.cmp(&right.depth))
+                    .then_with(|| right.path.as_os_str().cmp(left.path.as_os_str()))
+            });
+            let Some(chosen) = candidates.first() else {
+                continue;
+            };
+            installed_categories.insert(identity, chosen.folder.clone());
+            entries.push(CoreEntry {
+                name: system
+                    .map(|system| system.name.clone())
+                    .unwrap_or_else(|| undated_core_stem(&chosen.stem).to_string()),
+                category: chosen.folder.clone(),
+                variant: CoreVariant::Standard,
+                path: chosen.path.clone(),
+                logo_id: system.map(|system| system.id.clone()),
+            });
+        }
+
+        let mut ra_seen = BTreeMap::<String, &ScannedCore>::new();
+        for scanned in self
+            .launchers
+            .iter()
+            .filter(|entry| entry.kind == ScannedCoreKind::RetroAchievements)
+        {
+            let Ok(identity) = crate::core_variants::ra_launcher_identity(&scanned.path) else {
+                continue;
+            };
+            if !self.ra_support.iter().any(|support| support == &identity) {
+                continue;
+            }
+            ra_seen
+                .entry(identity)
+                .and_modify(|current| {
+                    if scanned.path.as_os_str() < current.path.as_os_str() {
+                        *current = scanned;
+                    }
+                })
+                .or_insert(scanned);
+        }
+        for (identity, scanned) in ra_seen {
+            let system = system_for_core(table, &identity);
+            let category = installed_categories
+                .get(&identity)
+                .cloned()
+                .or_else(|| system.map(|system| system.category().to_string()))
+                .unwrap_or_else(|| "Other".to_string());
+            entries.push(CoreEntry {
+                name: system
+                    .map(|system| system.name.clone())
+                    .unwrap_or_else(|| scanned.stem.trim_start_matches("RA_").to_string()),
+                category,
+                variant: CoreVariant::RetroAchievements,
+                path: scanned.path.clone(),
+                logo_id: system.map(|system| system.id.clone()),
+            });
+        }
+
+        for scanned in self
+            .launchers
+            .iter()
+            .filter(|entry| entry.kind == ScannedCoreKind::Unstable)
+        {
+            let system = table
+                .iter()
+                .filter(|system| !system.rbf.is_empty())
+                .find(|system| crate::core_choices::nightly_matches(&scanned.stem, &system.rbf));
+            let identity = system.map(|system| {
+                core_name(system.rbf.rsplit('/').next().unwrap_or(system.rbf.as_str()))
+            });
+            entries.push(CoreEntry {
+                name: system
+                    .map(|system| system.name.clone())
+                    .unwrap_or_else(|| unstable_core_name(&scanned.stem)),
+                category: identity
+                    .as_ref()
+                    .and_then(|identity| installed_categories.get(identity))
+                    .cloned()
+                    .or_else(|| system.map(|system| system.category().to_string()))
+                    .unwrap_or_else(|| "Unmatched Unstable".to_string()),
+                variant: CoreVariant::Unstable(unstable_build(&scanned.stem)),
+                path: scanned.path.clone(),
+                logo_id: system.map(|system| system.id.clone()),
+            });
+        }
+
+        entries.sort_by(|left, right| {
+            left.name
+                .to_ascii_lowercase()
+                .cmp(&right.name.to_ascii_lowercase())
+                .then_with(|| left.name.cmp(&right.name))
+                .then_with(|| left.variant.order().cmp(&right.variant.order()))
+                .then_with(|| left.variant.label().cmp(&right.variant.label()))
+                .then_with(|| left.path.as_os_str().cmp(right.path.as_os_str()))
+        });
+        CoreCatalogue {
+            format: CoreCatalogue::FORMAT,
+            entries,
+        }
+    }
+
     #[cfg_attr(not(test), allow(dead_code))]
     pub fn len(&self) -> usize {
         self.folders.len()
     }
+}
+
+fn system_for_core<'a>(table: &'a [SystemDef], identity: &str) -> Option<&'a SystemDef> {
+    table
+        .iter()
+        .find(|system| !system.rbf.is_empty() && core_name(&system.id) == identity)
+        .or_else(|| {
+            table.iter().find(|system| {
+                !system.rbf.is_empty()
+                    && core_name(system.rbf.rsplit('/').next().unwrap_or(system.rbf.as_str()))
+                        == identity
+            })
+        })
+}
+
+fn undated_core_stem(stem: &str) -> &str {
+    match stem.rsplit_once('_') {
+        Some((before, after))
+            if after.len() >= 8 && after.as_bytes()[..8].iter().all(u8::is_ascii_digit) =>
+        {
+            before
+        }
+        _ => stem,
+    }
+}
+
+fn unstable_core_name(stem: &str) -> String {
+    let lower = stem.to_ascii_lowercase();
+    lower
+        .rfind("_unstable_")
+        .map(|at| stem[..at].to_string())
+        .unwrap_or_else(|| undated_core_stem(stem).to_string())
+}
+
+fn unstable_build(stem: &str) -> String {
+    let lower = stem.to_ascii_lowercase();
+    if let Some(at) = lower.rfind("_unstable_") {
+        return stem[at + "_unstable_".len()..].to_string();
+    }
+    stem.rsplit_once('_')
+        .filter(|(_, suffix)| {
+            suffix.len() >= 8 && suffix.as_bytes()[..8].iter().all(u8::is_ascii_digit)
+        })
+        .map(|(_, suffix)| suffix.to_string())
+        .unwrap_or_else(|| stem.to_string())
 }
 
 /// True when the core an MGL naming `rbf` would load is really on the card.
@@ -1413,6 +1806,137 @@ extensions = ["ngp"]
             assert_eq!(CoreIndex::read(&menu).folder_of("NES"), None);
             std::fs::remove_dir_all(menu).unwrap();
         }
+    }
+
+    #[test]
+    fn the_core_catalogue_contains_only_explicit_launch_targets_from_the_shallow_walk() {
+        let menu = temp_dir("core-catalogue");
+        for directory in [
+            "_Console",
+            "_Console/console_extra",
+            "_Console/console_extra/too_deep",
+            "_Utility",
+            "_Custom",
+            "_RA_Cores/Cores",
+            "_Unstable",
+            "_Arcade/cores",
+        ] {
+            std::fs::create_dir_all(menu.join(directory)).unwrap();
+        }
+        for file in [
+            "_Console/NES_20260901.rbf",
+            "_Console/console_extra/MegaDrive.rbf",
+            "_Console/console_extra/too_deep/Hidden.rbf",
+            "_Utility/TapeLoad.rbf",
+            "_Custom/MyCore.rbf",
+            "_RA_Cores/Cores/NES_20260901.rbf",
+            "_RA_Cores/Cores/SNES.rbf",
+            "_Unstable/NES_unstable_20260912_ab12cd.rbf",
+            "_Unstable/Mystery_unstable_20260913_beef.rbf",
+            "_Arcade/cores/NES.rbf",
+            "_Arcade/Game.mra",
+            "_Custom/Arbitrary.mgl",
+        ] {
+            std::fs::write(menu.join(file), b"fixture").unwrap();
+        }
+        let launcher = |core: &str| {
+            format!(
+                "<mistergamedescription><rbf>_RA_Cores/Cores/{core}</rbf><setname same_dir=\"1\">RA_{core}</setname></mistergamedescription>"
+            )
+        };
+        std::fs::write(menu.join("_RA_Cores/NES.mgl"), launcher("NES")).unwrap();
+        std::fs::write(menu.join("_RA_Cores/SNES.mgl"), launcher("SNES")).unwrap();
+        std::fs::write(menu.join("_RA_Cores/GBA.mgl"), launcher("GBA")).unwrap();
+        std::fs::write(menu.join("_RA_Cores/Broken.mgl"), b"not xml").unwrap();
+
+        let table = parse_table(
+            r#"
+[[systems]]
+name = "Nintendo Entertainment System"
+id = "NES"
+folders = ["NES"]
+rbf = "_Console/NES"
+extensions = ["nes"]
+
+[[systems]]
+name = "Super Nintendo"
+id = "SNES"
+folders = ["SNES"]
+rbf = "_Console/SNES"
+extensions = ["sfc"]
+
+[[systems]]
+name = "Mega Drive"
+id = "Genesis"
+folders = ["Genesis"]
+rbf = "_Console/MegaDrive"
+extensions = ["md"]
+"#,
+            Path::new("core catalogue fixture"),
+        )
+        .unwrap();
+        let index = CoreIndex::read(&menu);
+        let catalogue = index.catalogue(&table);
+
+        assert_eq!(
+            catalogue.categories(),
+            vec![
+                ("Console".into(), 5),
+                ("Utility".into(), 1),
+                ("Custom".into(), 1),
+                ("Unmatched Unstable".into(), 1),
+            ]
+        );
+        assert_eq!(
+            catalogue
+                .in_category("Console")
+                .map(CoreEntry::label)
+                .collect::<Vec<_>>(),
+            vec![
+                "Mega Drive [Standard]",
+                "Nintendo Entertainment System [Standard]",
+                "Nintendo Entertainment System [RA]",
+                "Nintendo Entertainment System [Unstable: 20260912_ab12cd]",
+                "Super Nintendo [RA]",
+            ]
+        );
+        let all_paths = catalogue
+            .entries
+            .iter()
+            .map(|entry| entry.path.strip_prefix(&menu).unwrap().to_path_buf())
+            .collect::<Vec<_>>();
+        for excluded in [
+            "_RA_Cores/Cores/NES_20260901.rbf",
+            "_RA_Cores/Cores/SNES.rbf",
+            "_RA_Cores/GBA.mgl",
+            "_RA_Cores/Broken.mgl",
+            "_Arcade/cores/NES.rbf",
+            "_Arcade/Game.mra",
+            "_Custom/Arbitrary.mgl",
+            "_Console/console_extra/too_deep/Hidden.rbf",
+        ] {
+            assert!(
+                !all_paths.contains(&PathBuf::from(excluded)),
+                "{excluded} is not a launchable catalogue row"
+            );
+        }
+        assert_eq!(
+            index.folder_of("_Console/NES"),
+            Some("Console"),
+            "support and Unstable copies do not change existing grouping"
+        );
+        std::fs::remove_dir_all(menu).unwrap();
+    }
+
+    #[test]
+    fn an_explicit_core_catalogue_rebuild_reports_an_unreadable_menu_root() {
+        let root = temp_dir("missing-core-menu");
+        std::fs::remove_dir_all(&root).ok();
+
+        assert!(CoreIndex::read(&root).catalogue(&[]).entries.is_empty());
+        let error = CoreIndex::read_checked(&root).expect_err("the requested rebuild must fail");
+        assert!(error.to_string().contains("reading the MiSTer menu"));
+        assert!(error.to_string().contains(&root.display().to_string()));
     }
 
     #[test]

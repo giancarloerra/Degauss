@@ -396,6 +396,7 @@ fn load_everything(args: &Args) -> Result<Loaded> {
     // Which group each system belongs to comes from where its core
     // actually is on this card, not from what the table guessed.
     let cores = systems::CoreIndex::read(Path::new(&config.menu_root));
+    let core_catalogue = cores.catalogue(&table);
     let systems = systems::discover_checked(&table, &roots, logo_dir.as_deref(), &cores)?;
     // The names the stock menu shows for cores, arcade boards and
     // shortcuts, when the card carries the file that defines them.
@@ -406,6 +407,7 @@ fn load_everything(args: &Args) -> Result<Loaded> {
         settings,
         settings_path,
         systems,
+        core_catalogue,
         names,
         table,
         logo_dir,
@@ -2125,6 +2127,7 @@ category = "Favorites"
             config,
             settings: Settings::default(),
             settings_path: root.join("settings.toml"),
+            core_catalogue: Default::default(),
             systems: diagnostic_test_systems(&root),
             names: browse::DisplayNames::default(),
             table: Vec::new(),

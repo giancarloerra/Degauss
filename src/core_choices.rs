@@ -24,7 +24,7 @@ fn core_stem(reference: &str) -> &str {
     }
 }
 
-fn nightly_matches(stem: &str, reference: &str) -> bool {
+pub(crate) fn nightly_matches(stem: &str, reference: &str) -> bool {
     let wanted = crate::systems::core_name(core_stem(reference));
     if wanted.is_empty() {
         return false;

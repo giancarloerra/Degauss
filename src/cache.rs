@@ -204,6 +204,10 @@ pub fn index_path(dir: &Path) -> PathBuf {
     dir.join("index.bin")
 }
 
+pub fn core_catalogue_path(dir: &Path) -> PathBuf {
+    dir.join("cores.bin")
+}
+
 /// A system's own file. The id comes from the shipped systems table and is
 /// plain, but it decides a filename, so anything surprising is replaced
 /// rather than trusted.
@@ -223,6 +227,12 @@ pub fn load_index(dir: &Path) -> Option<Index> {
     let bytes = std::fs::read(index_path(dir)).ok()?;
     let index: Index = postcard::from_bytes(&bytes).ok()?;
     (index.format == FORMAT).then_some(index)
+}
+
+pub fn load_core_catalogue(dir: &Path) -> Option<crate::systems::CoreCatalogue> {
+    let bytes = std::fs::read(core_catalogue_path(dir)).ok()?;
+    let catalogue: crate::systems::CoreCatalogue = postcard::from_bytes(&bytes).ok()?;
+    (catalogue.format == crate::systems::CoreCatalogue::FORMAT).then_some(catalogue)
 }
 
 pub fn load_system(dir: &Path, id: &str) -> Option<SystemCache> {
@@ -313,6 +323,13 @@ pub fn save_index(dir: &Path, index: &Index) -> Result<()> {
     let bytes = postcard::to_stdvec(index)
         .map_err(|e| DegaussError::unsupported("cache", format!("writing the index: {e}")))?;
     write(&index_path(dir), &bytes)
+}
+
+pub fn save_core_catalogue(dir: &Path, catalogue: &crate::systems::CoreCatalogue) -> Result<()> {
+    let bytes = postcard::to_allocvec(catalogue).map_err(|error| {
+        DegaussError::unsupported("encoding the core catalogue", error.to_string())
+    })?;
+    write(&core_catalogue_path(dir), &bytes)
 }
 
 #[cfg(test)]
@@ -1254,6 +1271,48 @@ mod tests {
         let restored: super::Index = postcard::from_bytes(&bytes).unwrap();
         assert_eq!(restored.format, super::FORMAT);
         assert!(restored.systems.is_empty());
+    }
+
+    #[test]
+    fn the_core_catalogue_is_additive_to_the_existing_index_cache() {
+        let store = temp("core-catalogue");
+        let mut index = Index::new();
+        index.systems.insert(
+            "NES".into(),
+            Summary {
+                games: 12,
+                folders: 1,
+            },
+        );
+        save_index(&store, &index).unwrap();
+        let catalogue = crate::systems::CoreCatalogue {
+            format: crate::systems::CoreCatalogue::FORMAT,
+            entries: vec![crate::systems::CoreEntry {
+                name: "NES".into(),
+                category: "Console".into(),
+                variant: crate::systems::CoreVariant::Standard,
+                path: PathBuf::from("/_Console/NES.rbf"),
+                logo_id: Some("NES".into()),
+            }],
+        };
+        save_core_catalogue(&store, &catalogue).unwrap();
+
+        assert_eq!(load_index(&store).unwrap().systems["NES"].games, 12);
+        assert_eq!(load_core_catalogue(&store), Some(catalogue.clone()));
+        assert_ne!(index_path(&store), core_catalogue_path(&store));
+
+        let stale = crate::systems::CoreCatalogue {
+            format: crate::systems::CoreCatalogue::FORMAT + 1,
+            entries: catalogue.entries,
+        };
+        std::fs::write(
+            core_catalogue_path(&store),
+            postcard::to_stdvec(&stale).unwrap(),
+        )
+        .unwrap();
+        assert!(load_core_catalogue(&store).is_none());
+        assert_eq!(load_index(&store).unwrap().systems["NES"].games, 12);
+        std::fs::remove_dir_all(store).unwrap();
     }
 
     use super::*;

@@ -114,6 +114,46 @@ fn read_launcher(path: &Path) -> Result<String> {
     crate::favorites::read_mgl_text(path, "core launcher")
 }
 
+/// Validate one installer-provided RA launcher without scanning its folder.
+/// The caller already owns the shallow menu walk and separately confirms the
+/// referenced support core was found in `_RA_Cores/Cores` during that pass.
+pub(crate) fn ra_launcher_identity(path: &Path) -> Result<String> {
+    let text = read_launcher(path)?;
+    let (rbf, setname) = elements(&text, path)?;
+    let setname = setname.ok_or_else(|| {
+        DegaussError::malformed("RA launcher", path, "missing setname".to_string())
+    })?;
+    let identity = setname.value.strip_prefix("RA_").ok_or_else(|| {
+        DegaussError::malformed(
+            "RA launcher",
+            path,
+            "setname must begin with RA_".to_string(),
+        )
+    })?;
+    let reference = Path::new(&rbf.value);
+    let parent = reference.parent().and_then(Path::to_str).unwrap_or("");
+    let core = reference
+        .file_stem()
+        .and_then(|name| name.to_str())
+        .unwrap_or("");
+    let launcher = path
+        .file_stem()
+        .and_then(|name| name.to_str())
+        .unwrap_or("");
+    if !parent.eq_ignore_ascii_case("_RA_Cores/Cores")
+        || !same_core_identity(core, identity)
+        || !(launcher.eq_ignore_ascii_case(identity)
+            || launcher.eq_ignore_ascii_case(&format!("RA_{identity}")))
+    {
+        return Err(DegaussError::malformed(
+            "RA launcher",
+            path,
+            format!("launcher identity does not match core {core} and setname RA_{identity}"),
+        ));
+    }
+    Ok(crate::systems::core_name(core))
+}
+
 fn undated_name(stem: &str) -> &str {
     match stem.rsplit_once('_') {
         Some((before, date))
