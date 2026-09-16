@@ -543,9 +543,11 @@ fn run_cores_browser_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
     assert_eq!(app.game_list.selected(), 1);
     assert!(app.here[1].name.ends_with("[RA]"));
 
-    let Outcome::Launch { plan, .. } = app.handle(Action::Accept).expect("core launch") else {
+    let Outcome::Launch { plan, history, .. } = app.handle(Action::Accept).expect("core launch")
+    else {
         panic!("unexpected core launch outcome")
     };
+    assert!(history.is_none(), "launching a core is not game history");
     assert_eq!(
         plan.command,
         format!("load_core {}\n", ra_launcher.display())
@@ -1400,11 +1402,13 @@ fn run_last_played_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
         window.clone(),
         Settings {
             last_played: Some(2),
+            show_cores: Some(true),
             ..Settings::default()
         },
     );
     app.leave_splash();
     app.finish_background_work_for_headless();
+    app.core_catalogue = crate::systems::CoreIndex::read(&root).catalogue(&app.table);
     std::fs::create_dir_all(&favorites_root).unwrap();
     let mut favorites = crate::systems::parse_table(
         include_str!("../assets/systems.toml"),
@@ -1431,10 +1435,15 @@ fn run_last_played_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
         .iter()
         .position(|name| *name == LAST_PLAYED_CATEGORY)
         .unwrap();
+    let cores_at = categories
+        .iter()
+        .position(|name| *name == CORES_CATEGORY)
+        .unwrap();
     let favorites_at = categories
         .iter()
         .position(|name| is_favorites(name))
         .unwrap();
+    assert_eq!(cores_at + 1, recent_at);
     assert_eq!(recent_at + 1, favorites_at);
     assert_eq!(app.categories[recent_at].1, 2);
     assert_eq!(
@@ -1482,7 +1491,14 @@ fn run_last_played_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
             "{absent} does not apply to a mixed-system collection"
         );
     }
-    for present in [GAME_INFORMATION, ADD_FAVORITE, SEARCH, JUMP, CHANGE_VIEW] {
+    for present in [
+        GAME_INFORMATION,
+        ADD_FAVORITE,
+        SEARCH,
+        JUMP,
+        FILTER_GAMES,
+        CHANGE_VIEW,
+    ] {
         assert!(
             app.context_actions.iter().any(|action| action == present),
             "{present} remains useful in Last Played"
@@ -1527,6 +1543,23 @@ fn run_last_played_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
     assert_eq!(app.here.len(), 1);
     assert_eq!(app.here[0].name, "Current First");
     app.clear_filter();
+    app.game_filters.choose(
+        GameFilterField::Genre,
+        &GameFilterChoice::Known {
+            label: "Puzzle".into(),
+            key: "puzzle".into(),
+        },
+    );
+    app.apply_filter();
+    assert_eq!(app.here.len(), 1);
+    assert_eq!(app.here[0].name, "Current First");
+    app.adjust_option_value(OptionId::LastPlayed, -1);
+    assert!(app.here.is_empty());
+    assert!(app.game_filters.is_active());
+    app.adjust_option_value(OptionId::LastPlayed, 1);
+    assert_eq!(app.here.len(), 1);
+    assert_eq!(app.here[0].name, "Current First");
+    app.clear_game_filters();
 
     select_row_named(&mut app, "Recorded Missing");
     let before_failure = std::fs::read(&history_path).unwrap();
@@ -1644,9 +1677,14 @@ fn run_last_played_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
         "Current First"
     );
     assert!(restarted.message.is_none(), "{:?}", restarted.message);
+    restarted
+        .game_filters
+        .choose(GameFilterField::Genre, &GameFilterChoice::Unknown);
+    restarted.apply_filter();
     restarted.handle(Action::Quit);
     assert_eq!(restarted.browsing, Browsing::Categories);
     assert!(!restarted.last_played_open);
+    assert!(!restarted.game_filters.is_active());
     restarted.ui.hide().unwrap();
     drop(restarted);
 
@@ -8462,6 +8500,7 @@ fn run_game_name_display_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
         let Some(Outcome::Launch {
             plan,
             name: launched,
+            ..
         }) = app.confirm_launch()
         else {
             panic!("{name} must produce a launch plan: {:?}", app.message);

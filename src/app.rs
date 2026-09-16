@@ -7502,6 +7502,7 @@ impl App {
                 .get(self.game_list.selected())
                 .and_then(|row| self.last_played_rows.get(&row.sort_key))
                 .map(crate::history::entry_key);
+            self.all_here.clear();
             self.here = self.resolve_last_played_rows();
             self.game_list = ListState::new(self.here.len(), self.geometry.visible);
             if let Some(selected) = selected {
@@ -7967,6 +7968,7 @@ impl App {
             Ok(plan) => Some(Outcome::Launch {
                 plan: Box::new(plan),
                 name: row.name.clone(),
+                history: None,
             }),
             Err(error) => {
                 self.message = Some(error.to_string());
