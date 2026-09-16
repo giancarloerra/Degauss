@@ -290,6 +290,10 @@ pub struct Settings {
     /// Values are standard, ra, or an exact menu-relative Unstable RBF path.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub core_choices: BTreeMap<String, String>,
+    /// Explicit per-system compatible core family. Absence is Automatic.
+    /// Values are stable profile IDs declared by the systems table.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub launch_cores: BTreeMap<String, String>,
     /// The browse strip is visible by default. Both On and Off are explicit
     /// saved choices; only an absent value follows the default.
     pub show_bar: Option<bool>,
@@ -1004,6 +1008,23 @@ mod tests {
         let decoded: Settings = toml::from_str(&encoded).unwrap();
         assert_eq!(decoded.core_choices, settings.core_choices);
         assert_eq!(decoded.core_preference, None);
+    }
+
+    #[test]
+    fn per_system_launch_cores_are_optional_stable_profile_ids() {
+        let old: Settings =
+            toml::from_str(include_str!("../tests/fixtures/v0.2.0-settings.toml")).unwrap();
+        assert!(old.launch_cores.is_empty());
+        assert!(!toml::to_string(&Settings::default())
+            .unwrap()
+            .contains("launch_cores"));
+        let mut settings = Settings::default();
+        settings
+            .launch_cores
+            .insert("NeoGeoPocketColor".into(), "jtngpc".into());
+        let decoded: Settings = toml::from_str(&toml::to_string(&settings).unwrap()).unwrap();
+        assert_eq!(decoded.launch_cores, settings.launch_cores);
+        assert!(decoded.core_choices.is_empty());
     }
 
     #[test]

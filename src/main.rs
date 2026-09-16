@@ -27,6 +27,7 @@ mod index_job;
 mod information_job;
 mod input;
 mod launch;
+mod launch_cores;
 mod list_state;
 mod metrics;
 mod mgl;
@@ -497,7 +498,7 @@ fn diagnostic_launch_plan(
     } else {
         system
     };
-    launch::plan_with_choice(
+    launch::plan_with_selections(
         &owner.to_config(),
         path,
         mgl,
@@ -507,6 +508,11 @@ fn diagnostic_launch_plan(
         loaded
             .settings
             .core_choices
+            .get(&owner.def.id)
+            .map(String::as_str),
+        loaded
+            .settings
+            .launch_cores
             .get(&owner.def.id)
             .map(String::as_str),
     )
@@ -1013,7 +1019,7 @@ fn import_favorites(loaded: &Loaded, list: &Path) -> Result<()> {
                 skipped += 1;
                 continue;
             }
-            let outcome = match launch::favorite_mgl_with_choice(
+            let outcome = match launch::favorite_mgl_with_selections(
                 &config,
                 &path,
                 Path::new(&loaded.config.menu_root),
@@ -1022,6 +1028,11 @@ fn import_favorites(loaded: &Loaded, list: &Path) -> Result<()> {
                 loaded
                     .settings
                     .core_choices
+                    .get(&owner.def.id)
+                    .map(String::as_str),
+                loaded
+                    .settings
+                    .launch_cores
                     .get(&owner.def.id)
                     .map(String::as_str),
             ) {

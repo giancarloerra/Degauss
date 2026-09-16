@@ -85,6 +85,13 @@ fn nightlies(system: &SystemConfig, root: &Path) -> Result<Vec<CoreChoice>> {
     Ok(result)
 }
 
+/// Whether this core family has an installed Unstable build. Launch Core uses
+/// the same exact recognition as Core Version rather than inventing a second
+/// filename rule.
+pub(crate) fn has_unstable_version(system: &SystemConfig, root: &Path) -> Result<bool> {
+    nightlies(system, root).map(|choices| !choices.is_empty())
+}
+
 fn walk_nightlies(
     system: &SystemConfig,
     root: &Path,
