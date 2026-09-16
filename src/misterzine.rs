@@ -433,15 +433,22 @@ fn run_with_fetch<F>(
         let _ = events.send(Event::Cancelled);
         return;
     }
-    if let Err(error) = save_cache(&request.cache_dir, &cache) {
-        finish_with_saved_or_error(
-            cached_snapshot,
-            "MiSTerZine releases could not be saved.",
-            &error.to_string(),
-            cache_problem,
-            events,
-        );
-        return;
+    match save_cache(&request.cache_dir, &cache, cancelled) {
+        Ok(()) => {}
+        Err(SaveCacheError::Cancelled) => {
+            let _ = events.send(Event::Cancelled);
+            return;
+        }
+        Err(SaveCacheError::Failed(error)) => {
+            finish_with_saved_or_error(
+                cached_snapshot,
+                "MiSTerZine releases could not be saved.",
+                &error.to_string(),
+                cache_problem,
+                events,
+            );
+            return;
+        }
     }
     cached = Some(cache);
     let cache = cached.as_ref().expect("new cache retained");
@@ -527,31 +534,52 @@ pub fn load_cache(cache_dir: &Path) -> Result<Option<Cache>> {
     Ok(Some(cache))
 }
 
-fn save_cache(cache_dir: &Path, cache: &Cache) -> Result<()> {
+#[derive(Debug)]
+enum SaveCacheError {
+    Cancelled,
+    Failed(DegaussError),
+}
+
+fn save_cache(
+    cache_dir: &Path,
+    cache: &Cache,
+    cancelled: &AtomicBool,
+) -> std::result::Result<(), SaveCacheError> {
     validate_cache(cache)
-        .map_err(|detail| DegaussError::unsupported("MiSTerZine saved data", detail))?;
+        .map_err(|detail| DegaussError::unsupported("MiSTerZine saved data", detail))
+        .map_err(SaveCacheError::Failed)?;
     let path = cache_path(cache_dir);
     let bytes = postcard::to_stdvec(cache)
-        .map_err(|error| DegaussError::unsupported("MiSTerZine saved data", error.to_string()))?;
+        .map_err(|error| DegaussError::unsupported("MiSTerZine saved data", error.to_string()))
+        .map_err(SaveCacheError::Failed)?;
     if !path.exists() {
-        return crate::cache::write(&path, &bytes);
+        if cancelled.load(Ordering::Relaxed) {
+            return Err(SaveCacheError::Cancelled);
+        }
+        return crate::cache::write(&path, &bytes).map_err(SaveCacheError::Failed);
     }
 
     let parent = path.parent().expect("the MiSTerZine cache has a parent");
     std::fs::create_dir_all(parent)
-        .map_err(|error| DegaussError::io("making the MiSTerZine cache folder", parent, error))?;
+        .map_err(|error| DegaussError::io("making the MiSTerZine cache folder", parent, error))
+        .map_err(SaveCacheError::Failed)?;
     let temp = path.with_extension("part");
     std::fs::write(&temp, &bytes)
-        .map_err(|error| DegaussError::io("writing MiSTerZine saved data", &temp, error))?;
+        .map_err(|error| DegaussError::io("writing MiSTerZine saved data", &temp, error))
+        .map_err(SaveCacheError::Failed)?;
+    if cancelled.load(Ordering::Relaxed) {
+        let _ = std::fs::remove_file(&temp);
+        return Err(SaveCacheError::Cancelled);
+    }
     match std::fs::rename(&temp, &path) {
         Ok(()) => Ok(()),
         Err(error) => {
             let _ = std::fs::remove_file(&temp);
-            Err(DegaussError::io(
+            Err(SaveCacheError::Failed(DegaussError::io(
                 "replacing MiSTerZine saved data",
                 &path,
                 error,
-            ))
+            )))
         }
     }
 }
@@ -1360,6 +1388,7 @@ mod tests {
         save_cache(
             &request.cache_dir,
             &decode_data(meta.clone(), &body).unwrap(),
+            &AtomicBool::new(false),
         )
         .unwrap();
 
@@ -1408,6 +1437,7 @@ mod tests {
         save_cache(
             &cached_request.cache_dir,
             &decode_data(meta(1, &body), &body).unwrap(),
+            &AtomicBool::new(false),
         )
         .unwrap();
         let offline = || FetchError {
@@ -1474,7 +1504,7 @@ mod tests {
         let request = request(&root);
         let original_body = serde_json::to_vec(&vec![release("Console")]).unwrap();
         let original = decode_data(meta(1, &original_body), &original_body).unwrap();
-        save_cache(&request.cache_dir, &original).unwrap();
+        save_cache(&request.cache_dir, &original, &AtomicBool::new(false)).unwrap();
 
         let incompatible = br#"[{"future_identity":"not-a-supported-launch-id"}]"#.to_vec();
         let changed_meta = meta(1, &incompatible);
@@ -1509,7 +1539,7 @@ mod tests {
         let request = request(&root);
         let body = serde_json::to_vec(&vec![release("Console")]).unwrap();
         let cache = decode_data(meta(1, &body), &body).unwrap();
-        save_cache(&request.cache_dir, &cache).unwrap();
+        save_cache(&request.cache_dir, &cache, &AtomicBool::new(false)).unwrap();
         let cancelled = AtomicBool::new(true);
         let (sender, _receiver) = events();
         assert!(match_cache(&cache, &request, &sender, &cancelled).is_none());
@@ -1524,7 +1554,7 @@ mod tests {
         request.force_refresh = true;
         let original_body = serde_json::to_vec(&vec![release("Console")]).unwrap();
         let original = decode_data(meta(1, &original_body), &original_body).unwrap();
-        save_cache(&request.cache_dir, &original).unwrap();
+        save_cache(&request.cache_dir, &original, &AtomicBool::new(false)).unwrap();
 
         let mut changed = release("Console");
         changed.title = "Changed release".into();
@@ -1548,11 +1578,31 @@ mod tests {
     }
 
     #[test]
+    fn cancellation_before_cache_rename_preserves_the_saved_cache() {
+        let root = temp_root("cancel-before-cache-rename");
+        let original_body = serde_json::to_vec(&vec![release("Console")]).unwrap();
+        let original = decode_data(meta(1, &original_body), &original_body).unwrap();
+        save_cache(&root, &original, &AtomicBool::new(false)).unwrap();
+
+        let mut changed = release("Console");
+        changed.title = "Changed release".into();
+        let changed_body = serde_json::to_vec(&vec![changed]).unwrap();
+        let changed = decode_data(meta(1, &changed_body), &changed_body).unwrap();
+        assert!(matches!(
+            save_cache(&root, &changed, &AtomicBool::new(true)),
+            Err(SaveCacheError::Cancelled)
+        ));
+        assert_eq!(load_cache(&root).unwrap(), Some(original));
+        assert!(!cache_path(&root).with_extension("part").exists());
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
     fn failed_cache_replacement_preserves_the_saved_cache() {
         let root = temp_root("cache-replacement");
         let original_body = serde_json::to_vec(&vec![release("Console")]).unwrap();
         let original = decode_data(meta(1, &original_body), &original_body).unwrap();
-        save_cache(&root, &original).unwrap();
+        save_cache(&root, &original, &AtomicBool::new(false)).unwrap();
 
         let temp = cache_path(&root).with_extension("part");
         std::fs::create_dir_all(&temp).unwrap();
@@ -1560,7 +1610,7 @@ mod tests {
         changed.title = "Changed release".into();
         let changed_body = serde_json::to_vec(&vec![changed]).unwrap();
         let changed = decode_data(meta(1, &changed_body), &changed_body).unwrap();
-        assert!(save_cache(&root, &changed).is_err());
+        assert!(save_cache(&root, &changed, &AtomicBool::new(false)).is_err());
         assert_eq!(load_cache(&root).unwrap(), Some(original));
         std::fs::remove_dir_all(root).ok();
     }
@@ -1574,7 +1624,7 @@ mod tests {
         std::fs::write(&unrelated, b"unchanged").unwrap();
         let body = serde_json::to_vec(&vec![release("Console")]).unwrap();
         let cache = decode_data(meta(1, &body), &body).unwrap();
-        save_cache(&root, &cache).unwrap();
+        save_cache(&root, &cache, &AtomicBool::new(false)).unwrap();
         assert_eq!(load_cache(&root).unwrap(), Some(cache));
         assert_eq!(std::fs::read(unrelated).unwrap(), b"unchanged");
         std::fs::remove_dir_all(root).ok();
