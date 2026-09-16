@@ -478,7 +478,7 @@ fn finish_with_saved_or_error(
             ""
         };
         let _ = events.send(Event::Failed {
-            message: format!("{}{suffix}", user.trim_end_matches('.')) + ".",
+            message: format!("{}.{suffix}", user.trim_end_matches('.')),
         });
     }
 }
@@ -1371,8 +1371,26 @@ mod tests {
             Event::Failed { message }
                 if message == "Could not reach MiSTerZine. Check the network connection."
         )));
+
+        let broken = temp_root("offline-broken-cache");
+        let broken_request = request(&broken);
+        std::fs::create_dir_all(&broken_request.cache_dir).unwrap();
+        std::fs::write(cache_path(&broken_request.cache_dir), b"not a cache").unwrap();
+        let (sender, receiver) = events();
+        run_with_fetch(
+            broken_request,
+            &sender,
+            &AtomicBool::new(false),
+            |_, _, _, _| Err(offline()),
+        );
+        assert!(receiver.try_iter().any(|event| matches!(
+            event,
+            Event::Failed { message }
+                if message == "Could not reach MiSTerZine. Check the network connection. Saved MiSTerZine data could not be read."
+        )));
         std::fs::remove_dir_all(root).ok();
         std::fs::remove_dir_all(empty).ok();
+        std::fs::remove_dir_all(broken).ok();
     }
 
     #[test]
