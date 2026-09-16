@@ -36,6 +36,9 @@ use crate::config::{Color as ConfigColor, Colors, Config, SystemConfig};
 use crate::covers::{BudgetedCover, CoverCache, CoverStats};
 use crate::error::{DegaussError, Result};
 use crate::font::Font;
+use crate::game_filter::{
+    Choice as GameFilterChoice, Field as GameFilterField, Filters as GameFilters,
+};
 use crate::input::{
     Action, DuplicateGuard, InputReader, KeyEdge, RepeatConfig, Repeater, SPEED_START, SPEED_STEPS,
 };
@@ -93,6 +96,10 @@ pub enum Screen {
     Screensaver,
     /// A grid of letters, for jumping down a long list or narrowing it.
     Find,
+    /// The metadata criteria applied to games in the current browse place.
+    GameFilters,
+    /// The values available for one metadata criterion.
+    GameFilterValues,
     /// Paged entry for a Favourites directory name.
     NameKeyboard,
     /// Which folder of MiSTer's favourites a game is going into.
@@ -137,7 +144,9 @@ impl Screen {
             | Screen::GameDataSource
             | Screen::ArtworkPackLocation
             | Screen::ArtworkPackDirectory
-            | Screen::SourceProgress => 1,
+            | Screen::SourceProgress
+            | Screen::GameFilters
+            | Screen::GameFilterValues => 1,
             Screen::About | Screen::Splash => 2,
             Screen::Screensaver => 3,
             Screen::Find | Screen::NameKeyboard | Screen::ScraperKeyboard => 4,
@@ -1117,6 +1126,12 @@ const SEARCH: &str = "Search This Folder";
 /// Put back everything the search took away.
 const CLEAR_SEARCH: &str = "Clear Search";
 
+/// Narrow the playable rows using metadata already attached in memory.
+const FILTER_GAMES: &str = "Filter Games";
+
+/// Put back games excluded by temporary metadata criteria.
+const CLEAR_FILTERS: &str = "Clear Filters";
+
 /// The id the favourites folder is listed under in the table.
 const FAVORITES_ID: &str = "Favorites";
 
@@ -1843,6 +1858,7 @@ struct ContextActions {
     core_version: bool,
     core_version_override: bool,
     favorite_folder: bool,
+    metadata_filters: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1890,7 +1906,10 @@ impl ContextPage {
                     | RENAME_FAVORITE_FOLDER
                     | DELETE_FAVORITE_FOLDER
             ),
-            Self::Find => matches!(action, JUMP | SEARCH | CLEAR_SEARCH | HIDE_THIS | SHOW_THIS),
+            Self::Find => matches!(
+                action,
+                JUMP | SEARCH | CLEAR_SEARCH | FILTER_GAMES | CLEAR_FILTERS | HIDE_THIS | SHOW_THIS
+            ),
             Self::Library => matches!(
                 action,
                 SCRAPE_SYSTEM
@@ -1925,6 +1944,8 @@ fn context_help(action: &str) -> &'static str {
         JUMP => "Jump to the first entry beginning with the chosen letter.",
         SEARCH => "Filter this list by name. Back keeps the search until it is cleared.",
         CLEAR_SEARCH => "Clear the search and show the full current list again.",
+        FILTER_GAMES => "Filter games in this folder by their available metadata.",
+        CLEAR_FILTERS => "Clear metadata filters while keeping any title search.",
         HIDE_THIS => "Hide the selected item from browsing without deleting it.",
         SHOW_THIS => "Remove this item's hidden setting so it is normally visible again.",
         SCRAPE_SYSTEM => "Open scraping settings for the entire selected system.",
@@ -2036,6 +2057,12 @@ fn context_entries(
         if searching {
             find.push(CLEAR_SEARCH.to_string());
         }
+        if browsing == Browsing::Games {
+            find.push(FILTER_GAMES.to_string());
+            if actions.metadata_filters {
+                find.push(CLEAR_FILTERS.to_string());
+            }
+        }
         groups.push(find);
     }
     if let Some(hidden) = hidden {
@@ -2098,11 +2125,7 @@ fn shortened_label(value: &str, room: usize) -> String {
 }
 
 fn compact_detail_text(details: &browse::Details) -> (String, String) {
-    let released = details.released.trim();
-    let year = released
-        .get(..4)
-        .filter(|value| value.bytes().all(|byte| byte.is_ascii_digit()))
-        .unwrap_or("");
+    let year = crate::game_filter::presented_year(&details.released).unwrap_or("");
     let players = details.players.trim();
     let players = if players.is_empty() {
         String::new()
@@ -3187,6 +3210,10 @@ pub struct App {
     context_page: Option<ContextPage>,
     context_root_selection: usize,
     context_page_selections: [usize; 4],
+    /// A view preview changes settings in memory, then writes once when
+    /// Context is left. Ordinary actions must not rewrite settings merely
+    /// because they were chosen from the same menu.
+    context_view_changed: bool,
     options_page: OptionsPage,
     options_root_list: ListState,
     option_lists: [ListState; 6],
@@ -3323,6 +3350,12 @@ pub struct App {
     all_here: Vec<browse::Row>,
     /// What is being searched for, in capitals and without spaces.
     filter: String,
+    /// Temporary metadata criteria for this one browse place.
+    game_filters: GameFilters,
+    /// Value lists derived once from the complete rows when the filter screen opens.
+    game_filter_options: [Option<Vec<GameFilterChoice>>; 6],
+    /// The field whose values are currently being chosen.
+    game_filter_field: Option<GameFilterField>,
     find_mode: FindMode,
     find_list: ListState,
     name_keyboard_page: NamePage,
@@ -3730,6 +3763,9 @@ impl App {
             logo_dir,
             all_here: Vec::new(),
             filter: String::new(),
+            game_filters: GameFilters::default(),
+            game_filter_options: std::array::from_fn(|_| None),
+            game_filter_field: None,
             find_mode: FindMode::Jump,
             find_list: ListState::new(FIND_CELLS.chars().count(), FIND_CELLS.chars().count()),
             name_keyboard_page: NamePage::Lower,
@@ -3799,6 +3835,7 @@ impl App {
             context_page: None,
             context_root_selection: 0,
             context_page_selections: [0; 4],
+            context_view_changed: false,
             options_page: OptionsPage::Navigation,
             options_root_list: ListState::new(OptionsPage::ALL.len(), geometry.visible),
             option_lists: OptionsPage::ALL
@@ -3991,6 +4028,8 @@ impl App {
             | Screen::ThemeEditor
             | Screen::Help
             | Screen::Find
+            | Screen::GameFilters
+            | Screen::GameFilterValues
             | Screen::NameKeyboard
             | Screen::FavoriteFolder
             | Screen::Scraper
@@ -4247,7 +4286,10 @@ impl App {
                 Screen::SourceProgress => "B Cancel",
                 Screen::OptionsRoot => "A Open   B Back",
                 Screen::Scripts => "A Open/Run   B Parent",
-                Screen::Menu | Screen::FavoriteFolder => "A Select   B Back",
+                Screen::Menu
+                | Screen::FavoriteFolder
+                | Screen::GameFilters
+                | Screen::GameFilterValues => "A Select   B Back",
                 Screen::Help => "↑↓ Read   B Back",
                 Screen::Information => "↑↓ Read   ←→ Page   B/X Actions",
                 _ => "",
@@ -4287,6 +4329,8 @@ impl App {
             Screen::Find => &self.find_list,
             Screen::NameKeyboard => &self.name_keyboard_list,
             Screen::FavoriteFolder
+            | Screen::GameFilters
+            | Screen::GameFilterValues
             | Screen::CategoryImage
             | Screen::GameDataSource
             | Screen::ArtworkPackLocation
@@ -4318,6 +4362,8 @@ impl App {
             Screen::Find => &mut self.find_list,
             Screen::NameKeyboard => &mut self.name_keyboard_list,
             Screen::FavoriteFolder
+            | Screen::GameFilters
+            | Screen::GameFilterValues
             | Screen::CategoryImage
             | Screen::GameDataSource
             | Screen::ArtworkPackLocation
@@ -7083,7 +7129,7 @@ impl App {
         self.correct_system_counts();
         self.screen = Screen::Browse;
         self.apply_geometry();
-        self.relist_here();
+        self.relist_here_preserving_game_filters();
         self.dirty = true;
     }
 
@@ -7147,6 +7193,7 @@ impl App {
         self.browsing = Browsing::Games;
         self.resolve_view();
         self.apply_geometry();
+        self.clear_place_filters();
         match self.listing(&crumb.place) {
             Ok(mut rows) => {
                 self.enrich_favorites(&mut rows);
@@ -7154,9 +7201,6 @@ impl App {
                 self.drop_hidden(&mut rows);
                 self.derive_folder_covers(&mut rows);
                 self.mark_favorites(&mut rows);
-                // A search belongs to the folder it was typed in.
-                self.filter.clear();
-                self.all_here.clear();
                 self.here = rows;
                 self.game_list = ListState::new(self.here.len(), self.geometry.visible);
                 // The remembered row first, found again by what it is; the
@@ -7196,6 +7240,16 @@ impl App {
         }
     }
 
+    /// A title search and metadata filters never travel to another place or
+    /// survive a rebuild of the current one.
+    fn clear_place_filters(&mut self) {
+        self.filter.clear();
+        self.game_filters.clear();
+        self.game_filter_options = std::array::from_fn(|_| None);
+        self.game_filter_field = None;
+        self.all_here.clear();
+    }
+
     /// List the folder on screen again after something about it changed.
     ///
     /// The live cursor is written down first, because `show_here` restores
@@ -7215,6 +7269,30 @@ impl App {
             crumb.selected = self.game_list.selected();
         }
         self.show_here();
+    }
+
+    /// Re-list the same place after a local presentation or membership change.
+    ///
+    /// Hiding, favouriting or reordering a row does not leave or rebuild the
+    /// place, so its metadata filters remain in force. Title search retains
+    /// its established relist-and-clear behaviour. The rows are read afresh,
+    /// then projected through the same metadata criteria.
+    fn relist_here_preserving_game_filters(&mut self) {
+        let selected = self.here.get(self.game_list.selected()).map(row_key);
+        let fallback = self.game_list.selected();
+        let game_filters = self.game_filters.clone();
+
+        self.relist_here();
+
+        self.game_filters = game_filters;
+        self.game_filter_options = std::array::from_fn(|_| None);
+        self.game_filter_field = None;
+        if self.game_filters.is_active() {
+            self.apply_filter();
+            self.game_list
+                .select(reselect(&self.here, selected.as_deref(), fallback));
+            self.touch_selection();
+        }
     }
 
     /// The system that is open, found by its id.
@@ -7252,6 +7330,9 @@ impl App {
     /// everything underneath, which would mean walking the whole subtree
     /// before answering: it picks a folder, then a game in it.
     fn random_here(&mut self, favorites_only: bool) -> Option<Outcome> {
+        if self.game_filters.is_active() {
+            return self.random_visible_here(favorites_only);
+        }
         let mut place = self.trail.last()?.place.clone();
         let mut seed = self.seed;
         // The row itself, not where it sat. `show_here` hides rows and
@@ -7342,6 +7423,45 @@ impl App {
         self.apply_geometry();
         self.touch_selection();
         outcome
+    }
+
+    /// Pick only from the games left visible by active metadata criteria.
+    ///
+    /// This path is deliberately non-recursive: entering another folder
+    /// clears the current place's criteria, so a hidden descendant cannot be
+    /// said to match them. With no metadata criterion the established
+    /// recursive path above remains byte-for-byte in charge.
+    fn random_visible_here(&mut self, favorites_only: bool) -> Option<Outcome> {
+        let games: Vec<usize> = self
+            .here
+            .iter()
+            .enumerate()
+            .filter(|(_, row)| matches!(row.kind, browse::Kind::Play(_)))
+            .filter(|(_, row)| !favorites_only || row.favorite)
+            .map(|(index, _)| index)
+            .collect();
+        let Some(&selected) =
+            games.get((next_random(&mut self.seed) as usize) % games.len().max(1))
+        else {
+            self.message = Some(if favorites_only {
+                "No matching favourites in this folder.".to_string()
+            } else {
+                "No matching games in this folder.".to_string()
+            });
+            self.screen = Screen::Browse;
+            self.apply_geometry();
+            self.dirty = true;
+            return None;
+        };
+        self.game_list.select(selected);
+        self.screen = Screen::Browse;
+        self.apply_geometry();
+        self.touch_selection();
+        if self.random_launches {
+            self.confirm_launch()
+        } else {
+            None
+        }
     }
 
     /// Start the selected game. No question first: choosing a game in a list
@@ -9332,18 +9452,18 @@ impl App {
                 // The folder on screen and the list of systems were both
                 // filtered by the old answer.
                 self.rebuild_system_list();
-                self.relist_here();
+                self.relist_here_preserving_game_filters();
             }
             OptionId::FoldersLast => {
                 self.folders_last = !self.folders_last;
                 self.settings.folders_last = Some(self.folders_last);
-                self.relist_here();
+                self.relist_here_preserving_game_filters();
             }
             OptionId::FavoritesFirst => {
                 self.favorites_first = !self.favorites_first;
                 self.settings.favorites_first = Some(self.favorites_first);
                 // The folder on screen was ordered by the old answer.
-                self.relist_here();
+                self.relist_here_preserving_game_filters();
             }
             OptionId::HoldA | OptionId::HoldB | OptionId::HoldX | OptionId::HoldY => {
                 let button = option.hold_button().expect("hold option has a button");
@@ -9525,7 +9645,7 @@ impl App {
         let save_message = self.message.take();
         self.corrected_counts.clear();
         self.rebuild_system_list();
-        self.relist_here();
+        self.relist_here_preserving_game_filters();
         if saved {
             self.message = Some(format!("{held} shown again"));
         } else {
@@ -9587,6 +9707,19 @@ impl App {
     fn go_back(&mut self) -> Option<Outcome> {
         match self.screen {
             Screen::Screensaver => self.leave_screensaver(),
+            Screen::GameFilters => {
+                self.screen = Screen::Browse;
+                self.resolve_view();
+                self.apply_geometry();
+                self.touch_selection();
+            }
+            Screen::GameFilterValues => {
+                let selected = self
+                    .game_filter_field
+                    .map(GameFilterField::index)
+                    .unwrap_or(0);
+                self.show_game_filters(selected);
+            }
             Screen::Find | Screen::FavoriteFolder => {
                 // The chooser's rows are done with once it is left.
                 self.favorite_destinations.clear();
@@ -9661,7 +9794,7 @@ impl App {
                     // A contextual change is deliberately saved on close so
                     // stepping through several previews does not write the
                     // card for every press.
-                    if !self.save_settings() {
+                    if !self.save_context_view_if_changed() {
                         return None;
                     }
                     self.remember_context_selection();
@@ -9911,6 +10044,7 @@ impl App {
             self.layout.prev()
         };
         self.remember_view();
+        self.context_view_changed = true;
         self.apply_geometry();
         self.touch_selection();
         self.dirty = true;
@@ -10090,6 +10224,63 @@ impl App {
         self.apply_geometry();
     }
 
+    /// Open the six metadata fields using only rows already held in memory.
+    fn open_game_filters(&mut self) {
+        let rows = if self.filter.is_empty() && !self.game_filters.is_active() {
+            &self.here
+        } else {
+            &self.all_here
+        };
+        self.game_filter_options = std::array::from_fn(|index| {
+            crate::game_filter::choices(rows, GameFilterField::ALL[index])
+        });
+        self.show_game_filters(0);
+    }
+
+    fn show_game_filters(&mut self, selected: usize) {
+        self.game_filter_field = None;
+        self.menu_list = ListState::new(GameFilterField::ALL.len(), self.geometry.visible);
+        self.menu_list.select(selected);
+        self.screen = Screen::GameFilters;
+        self.apply_geometry();
+        self.dirty = true;
+    }
+
+    fn open_game_filter_values(&mut self) {
+        let Some(field) = GameFilterField::ALL.get(self.menu_list.selected()).copied() else {
+            return;
+        };
+        let Some(values) = self.game_filter_options[field.index()].as_ref() else {
+            return;
+        };
+        let selected = values
+            .iter()
+            .position(|choice| self.game_filters.choice_is_selected(field, choice))
+            .unwrap_or(0);
+        self.game_filter_field = Some(field);
+        self.menu_list = ListState::new(values.len(), self.geometry.visible);
+        self.menu_list.select(selected);
+        self.screen = Screen::GameFilterValues;
+        self.apply_geometry();
+        self.dirty = true;
+    }
+
+    fn choose_game_filter_value(&mut self) {
+        let Some(field) = self.game_filter_field else {
+            return;
+        };
+        let Some(choice) = self.game_filter_options[field.index()]
+            .as_ref()
+            .and_then(|values| values.get(self.menu_list.selected()))
+            .cloned()
+        else {
+            return;
+        };
+        self.game_filters.choose(field, &choice);
+        self.apply_filter();
+        self.show_game_filters(field.index());
+    }
+
     fn open_name_keyboard(&mut self, purpose: NamePurpose, draft: String) {
         self.name_keyboard_purpose = purpose;
         self.name_keyboard_page = NamePage::Lower;
@@ -10173,7 +10364,7 @@ impl App {
                 };
                 self.screen = Screen::Browse;
                 self.apply_geometry();
-                self.relist_here();
+                self.relist_here_preserving_game_filters();
                 if let Some(index) = self.here.iter().position(|row| {
                     matches!(&row.kind, browse::Kind::Enter(Place::Dir(path)) if path == &destination)
                 }) {
@@ -10197,7 +10388,7 @@ impl App {
                 });
                 self.screen = Screen::Browse;
                 self.apply_geometry();
-                self.relist_here();
+                self.relist_here_preserving_game_filters();
                 self.report_after_relist(refresh_error);
             }
             Err(error) => self.message = Some(error.to_string()),
@@ -10346,15 +10537,17 @@ impl App {
         }
     }
 
-    /// Narrow the folder on screen to the titles that match.
+    /// Project the complete in-memory rows through title and metadata filters.
     ///
     /// Spaces are dropped from both sides, because the grid has no space
     /// key and typing SUPERM should still find Super Mario.
     fn apply_filter(&mut self) {
-        if self.all_here.is_empty() && !self.filter.is_empty() {
+        let metadata_active = self.game_filters.is_active();
+        let active = !self.filter.is_empty() || metadata_active;
+        if self.all_here.is_empty() && active {
             self.all_here = std::mem::take(&mut self.here);
         }
-        if self.filter.is_empty() {
+        if !active {
             self.here = std::mem::take(&mut self.all_here);
         } else {
             let wanted = self.filter.as_str();
@@ -10362,7 +10555,17 @@ impl App {
             self.here = self
                 .all_here
                 .iter()
-                .filter(|row| squashed(mode.apply(&row.name).as_ref()).contains(wanted))
+                .filter(|row| {
+                    if row.is_folder() {
+                        // Metadata criteria apply to games only. When any is
+                        // active, every subfolder remains reachable.
+                        metadata_active || wanted.is_empty() || squashed(&row.name).contains(wanted)
+                    } else {
+                        (wanted.is_empty()
+                            || squashed(mode.apply(&row.name).as_ref()).contains(wanted))
+                            && self.game_filters.matches(row)
+                    }
+                })
                 .cloned()
                 .collect();
         }
@@ -10378,6 +10581,15 @@ impl App {
             return;
         }
         self.filter.clear();
+        self.apply_filter();
+    }
+
+    /// Clear metadata criteria without changing an active title search.
+    fn clear_game_filters(&mut self) {
+        if !self.game_filters.is_active() {
+            return;
+        }
+        self.game_filters.clear();
         self.apply_filter();
     }
 
@@ -10583,7 +10795,7 @@ impl App {
             }
             self.screen = Screen::Browse;
             self.apply_geometry();
-            self.relist_here();
+            self.relist_here_preserving_game_filters();
             self.report_after_relist(outcome_error.or(refresh_error));
             self.dirty = true;
             return;
@@ -10638,7 +10850,7 @@ impl App {
         }
         self.screen = Screen::Browse;
         self.apply_geometry();
-        self.relist_here();
+        self.relist_here_preserving_game_filters();
         self.report_after_relist(outcome_error.or(refresh_error));
         self.dirty = true;
     }
@@ -10687,7 +10899,7 @@ impl App {
         }
         self.screen = Screen::Browse;
         self.apply_geometry();
-        self.relist_here();
+        self.relist_here_preserving_game_filters();
         self.report_after_relist(outcome_error.or(refresh_error));
         self.dirty = true;
     }
@@ -12476,8 +12688,20 @@ impl App {
 
     /// What can be done with the folder on screen.
     fn open_context(&mut self) {
+        self.context_view_changed = false;
         self.context_page = None;
         self.refresh_context();
+    }
+
+    fn save_context_view_if_changed(&mut self) -> bool {
+        if !self.context_view_changed {
+            return true;
+        }
+        if !self.save_settings() {
+            return false;
+        }
+        self.context_view_changed = false;
+        true
     }
 
     fn context_is_root(&self) -> bool {
@@ -12595,6 +12819,7 @@ impl App {
                     .core_system_id()
                     .is_some_and(|id| self.settings.core_choices.contains_key(&id)),
                 favorite_folder,
+                metadata_filters: self.game_filters.is_active(),
             },
         );
         if self.context_actions.is_empty() {
@@ -14572,7 +14797,7 @@ impl App {
                         && choice != CHANGE_VIEW
                         && choice != USE_GLOBAL_VIEW
                         && choice != USE_DEFAULT_CORE_VERSION
-                        && !self.save_settings()
+                        && !self.save_context_view_if_changed()
                     {
                         return None;
                     }
@@ -14608,6 +14833,8 @@ impl App {
                         self.open_find(FindMode::Jump);
                     } else if choice == SEARCH {
                         self.open_find(FindMode::Search);
+                    } else if choice == FILTER_GAMES {
+                        self.open_game_filters();
                     } else if choice == ADD_FAVORITE {
                         self.open_favorite_folders();
                     } else if choice == REMOVE_FAVORITE {
@@ -14637,6 +14864,10 @@ impl App {
                         self.rebuild_open_system();
                     } else if choice == CLEAR_SEARCH {
                         self.clear_filter();
+                        self.screen = Screen::Browse;
+                        self.apply_geometry();
+                    } else if choice == CLEAR_FILTERS {
+                        self.clear_game_filters();
                         self.screen = Screen::Browse;
                         self.apply_geometry();
                     } else if matches!(choice.as_str(), SCRAPE_SYSTEM | SCRAPE_FOLDER | SCRAPE_GAME)
@@ -14677,6 +14908,8 @@ impl App {
                 Screen::Options | Screen::Advanced => {
                     self.handle_option_input(OptionInput::Activate)
                 }
+                Screen::GameFilters => self.open_game_filter_values(),
+                Screen::GameFilterValues => self.choose_game_filter_value(),
                 Screen::OptionsRoot => {
                     if let Some(page) = OptionsPage::ALL.get(self.options_root_list.selected()) {
                         self.open_options_page(*page);
@@ -15137,6 +15370,27 @@ impl App {
                     }
                 }
             }
+            Screen::GameFilters => {
+                for index in range {
+                    let field = GameFilterField::ALL[index];
+                    let value = if self.game_filter_options[index].is_some() {
+                        self.game_filters.label(field)
+                    } else {
+                        "Unavailable"
+                    };
+                    rows.push(plain_row(field.label(), value));
+                }
+            }
+            Screen::GameFilterValues => {
+                if let Some(values) = self
+                    .game_filter_field
+                    .and_then(|field| self.game_filter_options[field.index()].as_ref())
+                {
+                    for index in range {
+                        rows.push(plain_row(values[index].label(), ""));
+                    }
+                }
+            }
             Screen::Menu
             | Screen::Scripts
             | Screen::FavoriteFolder
@@ -15400,6 +15654,7 @@ impl App {
                 Screen::Context => self.context_scope(),
                 Screen::Scraper => self.scraper_scope_label(),
                 Screen::Information => self.here_label(),
+                Screen::GameFilters | Screen::GameFilterValues => self.here_label(),
                 Screen::GameDataSource | Screen::ArtworkPackLocation => {
                     self.source_system_id.clone().unwrap_or_default()
                 }
@@ -15410,7 +15665,12 @@ impl App {
                 Screen::Browse if self.browsing == Browsing::Categories => {
                     "Game Browser".to_string()
                 }
-                Screen::Browse | Screen::OptionsRoot | Screen::Options | Screen::Advanced => {
+                Screen::Browse
+                | Screen::OptionsRoot
+                | Screen::Options
+                | Screen::Advanced
+                | Screen::GameFilters
+                | Screen::GameFilterValues => {
                     format!(
                         "{}/{}",
                         (self.active_list().selected() + 1).min(self.active_list().count()),
@@ -15478,6 +15738,13 @@ impl App {
                     format!("{} found", self.here.len()),
                 ),
             },
+            Screen::GameFilters => ("Filter Games".to_string(), String::new()),
+            Screen::GameFilterValues => (
+                self.game_filter_field
+                    .map(|field| format!("Filter Games / {}", field.label()))
+                    .unwrap_or_else(|| "Filter Games".to_string()),
+                String::new(),
+            ),
             Screen::NameKeyboard => (
                 match self.name_keyboard_purpose {
                     NamePurpose::NewFavoriteFolder => "New Favourite Folder".to_string(),

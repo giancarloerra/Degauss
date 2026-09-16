@@ -22,6 +22,7 @@ mod error;
 mod favorites;
 mod font;
 mod frontend_session;
+mod game_filter;
 mod gamelist;
 mod index_job;
 mod information_job;

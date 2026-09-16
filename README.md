@@ -163,7 +163,7 @@ Click the image to watch Degauss 0.4.0 on YouTube.
 | **left / right** | scroll speed, 0.5x to 12x, or what **Left and Right Behaviour** says: letter jumps, page jumps, or plain movement. Inside an Options page, left chooses the previous ordered value and right chooses the next; either direction toggles two-choice values |
 | **A** (enter) | open a folder, launch a game; in Options, choose the next value or run an action |
 | **B** (escape) | back, out of the folder |
-| **X** (tab) | **Actions** for the current selection and location: Game Information, random game, random favourite, keep a favourite in Main Favourites or in a folder, drop a favourite, rename or remove an empty Favourites folder, jump to letter, search, hide a row, rebuild this system, change view, etc. |
+| **X** (tab) | **Actions** for the current selection and location: Game Information, random game, random favourite, keep a favourite in Main Favourites or in a folder, drop a favourite, rename or remove an empty Favourites folder, jump to letter, search or filter games, hide a row, rebuild this system, change view, etc. |
 | **Y** (space) | **Menu**: Options, Scripts, Help, About, Exit to MiSTer |
 
 **Options → Shortcuts** can assign an optional one-second hold to A, B, X or Y.
@@ -194,7 +194,7 @@ Games** to make the folder selectable for deletion.
 On a card that had no `_@Favorites` when Degauss started, the first
 favourite makes it, but the Favourites shelf is only listed after **Rebuild
 All System Lists**. Both random choices use the currently open folder and
-**Random Game Behaviour**. **Find** contains jump, search and hiding
+**Random Game Behaviour**. **Find** contains jump, search, metadata filters and hiding
 controls; **Library** contains scraping, core choice, data source and
 rebuilding; **Appearance** contains view and image controls.
 
@@ -715,6 +715,17 @@ use. **Options → Library → Separate Handheld Category** can instead present
 recognised handheld systems in a dedicated **Handheld** category. This changes
 only navigation: system discovery, games, artwork, favourites and launching
 keep their existing system identity.
+
+**Filter Games**, in **Actions → Find**, temporarily narrows the current folder
+by genre, year, players, language, developer or publisher. Values come from the
+complete unfiltered folder; **Unknown** means the field is missing and
+**Unavailable** means no game supplies it. Selected fields combine with each
+other and with Search, while folders remain visible. **B** keeps the selected
+filters. **Clear Filters** leaves any title search in place, and **Clear Search**
+leaves the metadata filters in place. Random Game and Random Favourite use only
+the matching games in the current folder while a metadata filter is active.
+Filters are not saved and clear when the folder is entered or left, its system
+list is rebuilt, or Degauss restarts.
 
 **Hide This**, in **Actions → Find**, takes any row out of the list: a
 game, a folder, or a whole system while you are looking at the system
