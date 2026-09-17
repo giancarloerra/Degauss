@@ -7,11 +7,13 @@
 //! build with organise scripts and favourites folders is the structure they
 //! browse.
 //!
-//! Nothing is flattened or indexed. Opening a folder is one `read_dir`,
+//! Ordinary folders are never flattened. A generic ZIP holding one
+//! launchable member is shown as that member; a ZIP holding several games
+//! keeps its virtual folders. Opening an ordinary folder is one `read_dir`,
 //! which is why entering a system is instant however large the library is,
-//! and why a set of folders holding the same games under different
-//! groupings (what every "organised" collection looks like) cannot produce
-//! duplicates: only one directory is ever on screen.
+//! and why a set of folders holding the same games under different groupings
+//! (what every "organised" collection looks like) cannot produce duplicates:
+//! only one directory is ever on screen.
 //!
 //! Artwork is the EmulationStation overlay, unchanged: an optional
 //! `gamelist.xml` beside the games. Each art directory it points at is read
@@ -518,7 +520,10 @@ impl Library {
                 (rows, stats, Vec::new())
             }
             Place::Dir(dir) => {
-                let (rows, stats) = self.list_dir(dir, show_empty)?;
+                // A reporting walk enters every archive immediately and can
+                // flatten its cached row from that one read. A direct browse
+                // has no such walk, so it identifies a one-game ZIP here.
+                let (rows, stats) = self.list_dir(dir, show_empty, !report)?;
                 (rows, stats, Vec::new())
             }
             Place::Archive(archive) => self.list_archive(archive, "", show_empty, report)?,
@@ -560,7 +565,12 @@ impl Library {
         Ok((rows, stats))
     }
 
-    fn list_dir(&self, dir: &Path, show_empty: bool) -> Result<(Vec<Row>, ListStats)> {
+    fn list_dir(
+        &self,
+        dir: &Path,
+        show_empty: bool,
+        flatten_single_archives: bool,
+    ) -> Result<(Vec<Row>, ListStats)> {
         let listing =
             std::fs::read_dir(dir).map_err(|e| DegaussError::io("reading folder", dir, e))?;
         let root = self.root_for(dir);
@@ -665,8 +675,31 @@ impl Library {
                     }
                 }
             }
-            // An archive opens as a folder unless the core takes it whole.
+            // A direct listing has no index walk behind it, so identify a
+            // sole supported member now. An index/reporting walk leaves the
+            // archive unopened here, reads it once while entering it, and
+            // replaces this folder row with the sole game afterwards.
             if extension == "zip" && !self.config.accepts(&path) {
+                let sole = flatten_single_archives
+                    .then(|| self.archive_cache.borrow_mut().read(&path).ok())
+                    .flatten()
+                    .and_then(|contents| {
+                        let mut supported = contents
+                            .entries
+                            .iter()
+                            .filter(|entry| self.config.accepts(Path::new(&entry.name)));
+                        let first = supported.next()?.clone();
+                        supported.next().is_none().then_some(first)
+                    });
+                if let Some(entry) = sole {
+                    stats.games += 1;
+                    let row = self.game_row_with_metadata(&path.join(entry.name), root, true);
+                    if row.cover.is_some() {
+                        stats.with_art += 1;
+                    }
+                    rows.push(row);
+                    continue;
+                }
                 stats.folders += 1;
                 // Shown without the extension, the way the stock menu shows
                 // an archive it can reach into.
@@ -1933,6 +1966,61 @@ mod tests {
         };
         assert_eq!(path, &archive.join("Metal Slug.neo"));
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn one_supported_zip_member_is_a_game_in_the_containing_folder() {
+        let dir = temp("single-game-zips");
+        let root = dir.join("Root.zip");
+        let nested = dir.join("Nested.zip");
+        let several = dir.join("Several.zip");
+        std::fs::write(
+            &root,
+            crate::zip::tests_archive(&["Root.d64", "README.txt"], false),
+        )
+        .unwrap();
+        std::fs::write(
+            &nested,
+            crate::zip::tests_archive(&["deep/inside/Nested.d64", "manual.pdf"], false),
+        )
+        .unwrap();
+        std::fs::write(
+            &several,
+            crate::zip::tests_archive(&["One.d64", "deep/Two.d64"], false),
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("gamelist.xml"),
+            r#"<gameList>
+            <game><path>./Root.zip/Root.d64</path><name>Exact root title</name></game>
+            <game><path>Nested.zip</path><name>Legacy nested title</name></game>
+            </gameList>"#,
+        )
+        .unwrap();
+
+        let library = Library::open(&system(&dir)).unwrap();
+        let (rows, stats) = library.list(&library.start(), false).unwrap();
+        assert_eq!(
+            names_of(&rows),
+            ["Several", "Exact root title", "Legacy nested title"]
+        );
+        assert_eq!((stats.games, stats.folders), (2, 1));
+        assert_eq!(
+            play_target(&rows[1]),
+            root.join("Root.d64"),
+            "the exact native member target is retained"
+        );
+        assert_eq!(
+            play_target(&rows[2]),
+            nested.join("deep/inside/Nested.d64"),
+            "nested member paths are flattened without being rewritten"
+        );
+        assert_eq!(
+            rows[0].kind,
+            Kind::Enter(Place::Archive(several)),
+            "a multi-game ZIP keeps its virtual folder"
+        );
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

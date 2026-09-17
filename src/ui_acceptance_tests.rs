@@ -2524,14 +2524,23 @@ fn run_scraper_cache_refresh_flow(root: &Path, window: Rc<MinimalSoftwareWindow>
         "the list holding the retained member replaced the previous one"
     );
     let published = crate::cache::load_system(&app.cache_dir, "NES").unwrap();
-    assert_eq!(
-        published.folders[&Place::Archive(outer.clone()).key()]
+    assert!(
+        !published
+            .folders
+            .contains_key(&Place::Archive(outer.clone()).key()),
+        "a ZIP with one supported member has no virtual folder"
+    );
+    assert!(
+        published.folders[&Place::Dir(games.clone()).key()]
             .rows
             .iter()
-            .map(|row| row.name.as_str())
-            .collect::<Vec<_>>(),
-        ["Inner Game.nes"],
-        "the inner archive is not a row"
+            .any(|row| {
+                row.kind
+                    == crate::browse::Kind::Play(crate::browse::Launch::File(
+                        outer.join("Inner Game.nes"),
+                    ))
+            }),
+        "the supported member stays in the published system root"
     );
     std::fs::remove_file(&outer).unwrap();
     begin(&mut app);
@@ -3814,19 +3823,14 @@ fn run_indexing_ui_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
             .iter()
             .map(|row| row.name.as_str())
             .collect::<Vec<_>>(),
-        ["Outer", "First Game.nes", "Second Game.nes"],
-        "the rejected archive is not a row"
+        ["Inner Game.nes", "First Game.nes", "Second Game.nes"],
+        "the rejected member is not a row and the retained sole game is direct"
     );
-    app.enter(Place::Archive(outer.clone()));
     assert_eq!(
-        app.here
-            .iter()
-            .map(|row| row.name.as_str())
-            .collect::<Vec<_>>(),
-        ["Inner Game.nes"],
-        "the inner archive is not a row"
+        app.here[0].kind,
+        crate::browse::Kind::Play(crate::browse::Launch::File(outer.join("Inner Game.nes"))),
+        "the retained member keeps its native archive target"
     );
-    assert!(app.leave());
     std::fs::remove_file(&outer).unwrap();
     std::fs::remove_file(&broken).unwrap();
 
