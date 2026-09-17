@@ -229,6 +229,17 @@ impl Homes {
                     .and_then(|name| name.to_str())
                     .unwrap_or("");
                 crate::core_variants::same_core_identity(configured, stem)
+                    || system
+                        .launch
+                        .iter()
+                        .filter_map(|rule| rule.rbf.as_deref())
+                        .any(|configured| {
+                            let configured = Path::new(configured)
+                                .file_name()
+                                .and_then(|name| name.to_str())
+                                .unwrap_or("");
+                            crate::core_variants::same_core_identity(configured, stem)
+                        })
                     || crate::core_choices::is_unstable_reference(system, rbf)
             })
             .collect();

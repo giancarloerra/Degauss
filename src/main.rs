@@ -111,6 +111,7 @@ degauss - a fast game browser for MiSTer FPGA
   --format <fmt>      rgb565 or xrgb8888, for --render and --bench
   --device <path>     framebuffer device (default /dev/fb0)
   --present <mode>    direct or staged (default depends on framebuffer mapping)
+  --version           print the Degauss version and exit
   --help              this text
 
 With no flags it takes over the framebuffer and browses.
@@ -162,6 +163,7 @@ fn main() -> ExitCode {
 }
 
 struct Args {
+    version: bool,
     config: Option<PathBuf>,
     systems: Option<PathBuf>,
     system: Option<String>,
@@ -192,6 +194,7 @@ struct Args {
 impl Default for Args {
     fn default() -> Self {
         Args {
+            version: false,
             config: None,
             systems: None,
             system: None,
@@ -229,6 +232,7 @@ fn parse_from<I: Iterator<Item = String>>(argv: I) -> std::result::Result<Option
     while let Some(arg) = argv.next() {
         match arg.as_str() {
             "--help" | "-h" => return Ok(None),
+            "--version" | "-V" => args.version = true,
             "--report" => args.report = true,
             "--audit" => args.audit = true,
             "--check-install" => args.check_install = true,
@@ -782,6 +786,11 @@ fn run() -> Result<()> {
             return Err(DegaussError::unsupported("arguments", message));
         }
     };
+
+    if args.version {
+        println!("degauss {}", env!("CARGO_PKG_VERSION"));
+        return Ok(());
+    }
 
     if args.check_install {
         // Deliberately before anything is loaded: this flag exists for
@@ -2693,6 +2702,13 @@ category = "Favorites"
         // layout, startup would overwrite that saved choice on every run
         // and the setting would look like it never saved.
         assert_eq!(parse(&[]).layout, None);
+    }
+
+    #[test]
+    fn version_flag_is_parsed_without_loading_an_installation() {
+        assert!(parse(&["--version"]).version);
+        assert!(parse(&["-V"]).version);
+        assert!(USAGE.contains("--version"));
     }
 
     #[test]

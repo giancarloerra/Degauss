@@ -406,7 +406,23 @@ fn recognized_family(rbf: &Element, setname: Option<&Element>, system: &SystemCo
         .unwrap_or("");
     let base = undated_name(base);
     let identity = base;
+    let rule_match = system
+        .launch
+        .iter()
+        .filter_map(|rule| rule.rbf.as_deref())
+        .any(|configured| {
+            let configured = Path::new(configured)
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or("");
+            let actual = Path::new(&rbf.value)
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or("");
+            same_core_identity(configured, actual)
+        });
     let standard_match = (rbf.value.eq_ignore_ascii_case(&system.rbf)
+        || rule_match
         || crate::core_choices::is_unstable_reference(system, &rbf.value))
         && match (
             &setname,
@@ -465,6 +481,7 @@ mod tests {
             skip_folders: vec![],
             launch: vec![crate::config::LaunchRule {
                 extensions: vec!["nes".into()],
+                rbf: None,
                 delay: 1,
                 kind: "f".into(),
                 index: 0,
