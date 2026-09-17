@@ -111,7 +111,7 @@ degauss - a fast game browser for MiSTer FPGA
   --format <fmt>      rgb565 or xrgb8888, for --render and --bench
   --device <path>     framebuffer device (default /dev/fb0)
   --present <mode>    direct or staged (default depends on framebuffer mapping)
-  --version           print the Degauss version and exit
+  --version, -V       print the Degauss version and exit
   --help              this text
 
 With no flags it takes over the framebuffer and browses.

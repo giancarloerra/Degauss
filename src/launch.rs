@@ -1211,6 +1211,26 @@ mod tests {
         assert!(custom_plan.mgl.is_empty());
         assert_eq!(std::fs::read_to_string(&custom).unwrap(), custom_text);
 
+        let mismatched = root.join("Mismatched.mgl");
+        let mismatched_text = "<mistergamedescription><rbf>_Console/GameAndWatch</rbf><file delay=\"1\" type=\"f\" index=\"1\" path=\"Legacy.bin\"/></mistergamedescription>";
+        std::fs::write(&mismatched, mismatched_text).unwrap();
+        assert!(!crate::core_variants::recognized_favorite(&mismatched, &system).unwrap());
+        let mismatched_plan = plan_with_selections(
+            &system,
+            &mismatched,
+            &root.join("mismatched-output.mgl"),
+            &root,
+            false,
+            None,
+            None,
+        )
+        .unwrap();
+        assert!(mismatched_plan.mgl.is_empty());
+        assert_eq!(
+            std::fs::read_to_string(&mismatched).unwrap(),
+            mismatched_text
+        );
+
         std::fs::remove_dir_all(root).ok();
     }
 

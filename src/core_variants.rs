@@ -393,24 +393,30 @@ pub fn apply(text: &str, path: &Path, core: &EffectiveCore) -> Result<String> {
 pub fn recognized_favorite(path: &Path, system: &SystemConfig) -> Result<bool> {
     let text = read_launcher(path)?;
     let (rbf, setname) = elements(&text, path)?;
+    let descriptor = crate::favorites::descriptor_reference(path, "favourite MGL")?;
+    let game = descriptor.files.last().map(Path::new);
     Ok(system
         .core_family_configs()
         .iter()
-        .any(|family| recognized_family(&rbf, setname.as_ref(), family)))
+        .any(|family| recognized_family(&rbf, setname.as_ref(), family, game)))
 }
 
-fn recognized_family(rbf: &Element, setname: Option<&Element>, system: &SystemConfig) -> bool {
+fn recognized_family(
+    rbf: &Element,
+    setname: Option<&Element>,
+    system: &SystemConfig,
+    game: Option<&Path>,
+) -> bool {
     let base = Path::new(&system.rbf)
         .file_name()
         .and_then(|s| s.to_str())
         .unwrap_or("");
     let base = undated_name(base);
     let identity = base;
-    let rule_match = system
-        .launch
-        .iter()
-        .filter_map(|rule| rule.rbf.as_deref())
-        .any(|configured| {
+    let rule_match = game
+        .and_then(|game| system.rule_for(game))
+        .and_then(|rule| rule.rbf.as_deref())
+        .is_some_and(|configured| {
             let configured = Path::new(configured)
                 .file_name()
                 .and_then(|name| name.to_str())
