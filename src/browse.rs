@@ -689,7 +689,7 @@ impl Library {
                     .and_then(|contents| {
                         let mut supported = contents.entries.iter().filter(|entry| {
                             let member = Path::new(&entry.name);
-                            self.config.accepts(member)
+                            self.accepts_archive_member(member)
                                 && directory_depth.saturating_add(member.components().count())
                                     <= MAX_DEPTH
                         });
@@ -775,7 +775,7 @@ impl Library {
         };
         let supported: Vec<_> = entries
             .iter()
-            .filter(|entry| self.config.accepts(Path::new(&entry.name)))
+            .filter(|entry| self.accepts_archive_member(Path::new(&entry.name)))
             .collect();
         let legacy_metadata = supported.len() == 1;
         let root = self.root_for(archive);
@@ -930,6 +930,16 @@ impl Library {
     /// limit, so the archive-wide member count is not authoritative here.
     pub(crate) fn flattened_archive_row(&self, path: &Path) -> Row {
         self.game_row_with_metadata(path, self.root_for(path), true)
+    }
+
+    /// An archive member is eligible only when the system can launch its
+    /// extension and it is not one of the support files ordinary directory
+    /// browsing already excludes.
+    fn accepts_archive_member(&self, member: &Path) -> bool {
+        self.config.accepts(member)
+            && member
+                .file_name()
+                .is_some_and(|name| !is_not_a_game(&name.to_string_lossy()))
     }
 
     /// A playable row under a name already decided, with whatever the
