@@ -550,7 +550,13 @@ pub fn favorite_mgl(system: &SystemConfig, game: &Path) -> Result<Option<String>
         }
     }
     items.push(MglItem::new(rule, absolute)?);
-    build_mgl_with(&system.rbf, system.setname.as_deref(), &items, "").map(Some)
+    build_mgl_with(
+        rule.rbf.as_deref().unwrap_or(&system.rbf),
+        system.setname.as_deref(),
+        &items,
+        "",
+    )
+    .map(Some)
 }
 
 /// The rule that starts this file: the one the system declares for its
@@ -572,6 +578,38 @@ fn rule_for<'a>(system: &'a SystemConfig, game: &Path) -> Result<&'a LaunchRule>
                 ),
             )
         })
+}
+
+/// The format rule represented by an existing Degauss-compatible favourite.
+/// The final file is the selected game; any earlier files are companions.
+fn favorite_rule<'a>(system: &'a SystemConfig, favorite: &Path) -> Result<Option<&'a LaunchRule>> {
+    let descriptor = crate::favorites::descriptor_reference(favorite, "favourite MGL")?;
+    Ok(descriptor
+        .files
+        .last()
+        .and_then(|path| system.rule_for(Path::new(path))))
+}
+
+/// The fixed core named by a format-specific rule, after confirming MiSTer
+/// can actually load it from the menu root.
+fn rule_core(
+    system: &SystemConfig,
+    rule: &LaunchRule,
+    menu_root: &Path,
+) -> Result<Option<crate::core_variants::EffectiveCore>> {
+    let Some(rbf) = rule.rbf.as_ref() else {
+        return Ok(None);
+    };
+    if !crate::core_variants::core_present(menu_root, rbf)? {
+        return Err(DegaussError::unsupported(
+            "launch core",
+            format!("{rbf} required by {} is not installed", system.name),
+        ));
+    }
+    Ok(Some(crate::core_variants::EffectiveCore {
+        rbf: rbf.clone(),
+        setname_xml: crate::core_variants::standard(system).setname_xml,
+    }))
 }
 
 /// Whether starting this file relies on the system's own core.
@@ -664,14 +702,23 @@ pub fn plan_with_selections(
         if !crate::core_variants::recognized_favorite(game, system)? {
             return plan(system, game, mgl_path);
         }
-        let family = crate::launch_cores::resolve_for_version(
-            system,
-            menu_root,
-            selected_family,
-            selected_version,
-            ra_first,
-        )?;
-        let core = crate::core_choices::resolve(&family, menu_root, selected_version, ra_first)?;
+        let fixed = match favorite_rule(system, game)? {
+            Some(rule) => rule_core(system, rule, menu_root)?,
+            None => None,
+        };
+        let core = match fixed {
+            Some(core) => core,
+            None => {
+                let family = crate::launch_cores::resolve_for_version(
+                    system,
+                    menu_root,
+                    selected_family,
+                    selected_version,
+                    ra_first,
+                )?;
+                crate::core_choices::resolve(&family, menu_root, selected_version, ra_first)?
+            }
+        };
         if !crate::core_variants::needs_conversion(game, &core)?
             && !crate::favorites::has_home_relative_paths(game)?
         {
@@ -687,6 +734,11 @@ pub fn plan_with_selections(
         });
     }
     if !needs_system_core(game) {
+        return plan(system, game, mgl_path);
+    }
+    let rule = rule_for(system, game)?;
+    if rule.rbf.is_some() {
+        rule_core(system, rule, menu_root)?;
         return plan(system, game, mgl_path);
     }
     let family = crate::launch_cores::resolve_for_version(
@@ -724,6 +776,9 @@ pub fn favorite_mgl_with_selections(
     let Some(text) = favorite_mgl(system, game)? else {
         return Ok(None);
     };
+    if rule_for(system, game)?.rbf.is_some() {
+        return Ok(Some(text));
+    }
     let family = crate::launch_cores::resolve_for_version(
         system,
         menu_root,
@@ -793,7 +848,11 @@ pub fn plan(system: &SystemConfig, game: &Path, mgl_path: &Path) -> Result<Launc
         items.push(extra);
     }
     items.push(MglItem::new(rule, absolute)?);
-    let mgl = build_mgl(&system.rbf, system.setname.as_deref(), &items)?;
+    let mgl = build_mgl(
+        rule.rbf.as_deref().unwrap_or(&system.rbf),
+        system.setname.as_deref(),
+        &items,
+    )?;
 
     let mgl_path_str = mgl_path.to_str().ok_or_else(|| {
         DegaussError::unsupported(
@@ -851,6 +910,7 @@ mod tests {
     fn rule(exts: &[&str], kind: &str, index: u8, delay: u8) -> LaunchRule {
         LaunchRule {
             extensions: exts.iter().map(|s| s.to_string()).collect(),
+            rbf: None,
             kind: kind.to_string(),
             index,
             delay,
@@ -1072,6 +1132,145 @@ mod tests {
         assert!(unavailable
             .to_string()
             .contains("JTNGP (Legacy) is not installed"));
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn game_and_watch_uses_the_core_required_by_each_file_format() {
+        let root =
+            std::env::temp_dir().join(format!("degauss-game-and-watch-{}", std::process::id()));
+        std::fs::remove_dir_all(&root).ok();
+        std::fs::create_dir_all(root.join("_Console")).unwrap();
+        std::fs::write(root.join("_Console/GnW.rbf"), b"core").unwrap();
+        std::fs::write(root.join("_Console/GameAndWatch.rbf"), b"core").unwrap();
+        let system = shipped_system("GameNWatch", vec![root.join("games/GameNWatch")]);
+        let legacy = root.join("games/GameNWatch/Legacy.bin");
+        let current = root.join("games/GameNWatch/Current.gnw");
+
+        let legacy_plan = plan(&system, &legacy, &root.join("legacy.mgl")).unwrap();
+        assert!(legacy_plan.mgl.contains("<rbf>_Console/GnW</rbf>"));
+        let current_plan = plan_with_selections(
+            &system,
+            &current,
+            &root.join("current.mgl"),
+            &root,
+            true,
+            Some("ra"),
+            Some("not-installed"),
+        )
+        .unwrap();
+        assert!(current_plan
+            .mgl
+            .contains("<rbf>_Console/GameAndWatch</rbf>"));
+        assert!(!current_plan.mgl.contains("<rbf>_Console/GnW</rbf>"));
+
+        let current_favorite = favorite_mgl_with_selections(
+            &system,
+            &current,
+            &root,
+            true,
+            Some("ra"),
+            Some("not-installed"),
+        )
+        .unwrap()
+        .unwrap();
+        assert!(current_favorite.contains("<rbf>_Console/GameAndWatch</rbf>"));
+
+        let archive = root.join("watches.zip");
+        let zipped_legacy = archive.join("Legacy.bin");
+        let zipped_current = archive.join("Current.gnw");
+        assert!(
+            plan(&system, &zipped_legacy, &root.join("zipped-legacy.mgl"))
+                .unwrap()
+                .mgl
+                .contains("<rbf>_Console/GnW</rbf>")
+        );
+        assert!(
+            plan(&system, &zipped_current, &root.join("zipped-current.mgl"))
+                .unwrap()
+                .mgl
+                .contains("<rbf>_Console/GameAndWatch</rbf>")
+        );
+
+        let existing = root.join("Existing Current.mgl");
+        let old = build_mgl_with(
+            "_Console/GnW",
+            None,
+            &[MglItem {
+                delay: 1,
+                kind: 'f',
+                index: 1,
+                path: current.to_string_lossy().into_owned(),
+                reset: None,
+            }],
+            "",
+        )
+        .unwrap();
+        std::fs::write(&existing, &old).unwrap();
+        let converted = plan_with_selections(
+            &system,
+            &existing,
+            &root.join("converted.mgl"),
+            &root,
+            true,
+            Some("ra"),
+            Some("not-installed"),
+        )
+        .unwrap();
+        assert!(converted.mgl.contains("<rbf>_Console/GameAndWatch</rbf>"));
+
+        let custom = root.join("Custom.mgl");
+        let custom_text = "<mistergamedescription><rbf>_Console/Custom</rbf><file delay=\"1\" type=\"f\" index=\"1\" path=\"Current.gnw\"/></mistergamedescription>";
+        std::fs::write(&custom, custom_text).unwrap();
+        let custom_plan = plan_with_selections(
+            &system,
+            &custom,
+            &root.join("custom-output.mgl"),
+            &root,
+            false,
+            None,
+            None,
+        )
+        .unwrap();
+        assert!(custom_plan.mgl.is_empty());
+        assert_eq!(std::fs::read_to_string(&custom).unwrap(), custom_text);
+
+        let mismatched = root.join("Mismatched.mgl");
+        let mismatched_text = "<mistergamedescription><rbf>_Console/GameAndWatch</rbf><file delay=\"1\" type=\"f\" index=\"1\" path=\"Legacy.bin\"/></mistergamedescription>";
+        std::fs::write(&mismatched, mismatched_text).unwrap();
+        assert!(!crate::core_variants::recognized_favorite(&mismatched, &system).unwrap());
+        let mismatched_plan = plan_with_selections(
+            &system,
+            &mismatched,
+            &root.join("mismatched-output.mgl"),
+            &root,
+            false,
+            None,
+            None,
+        )
+        .unwrap();
+        assert!(mismatched_plan.mgl.is_empty());
+        assert_eq!(
+            std::fs::read_to_string(&mismatched).unwrap(),
+            mismatched_text
+        );
+
+        std::fs::remove_file(root.join("_Console/GameAndWatch.rbf")).unwrap();
+        for game in [&current, &existing] {
+            let error = plan_with_selections(
+                &system,
+                game,
+                &root.join("missing-core.mgl"),
+                &root,
+                false,
+                None,
+                None,
+            )
+            .unwrap_err();
+            assert!(error.to_string().contains("GameAndWatch"), "{error}");
+            assert!(error.to_string().contains("not installed"), "{error}");
+        }
+
         std::fs::remove_dir_all(root).ok();
     }
 
@@ -1557,6 +1756,7 @@ mod tests {
         system.extensions = vec!["vhd".to_string()];
         system.launch = vec![LaunchRule {
             extensions: vec!["vhd".to_string()],
+            rbf: None,
             kind: "s".to_string(),
             index: 2,
             delay: 0,
@@ -1596,6 +1796,7 @@ mod tests {
         system.extensions = vec!["vhd".to_string()];
         system.launch = vec![LaunchRule {
             extensions: vec!["vhd".to_string()],
+            rbf: None,
             kind: "s".to_string(),
             index: 2,
             delay: 0,

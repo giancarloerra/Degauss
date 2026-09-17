@@ -664,6 +664,7 @@ delay = 1
 
 [[systems.launch]]
 extensions = ["gnw"]
+rbf = "_Console/GameAndWatch"
 type = "f"
 index = 1
 delay = 1

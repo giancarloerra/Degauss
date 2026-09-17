@@ -121,6 +121,9 @@ impl Default for Colors {
 pub struct LaunchRule {
     /// Extensions this rule covers, lowercase and without the dot.
     pub extensions: Vec<String>,
+    /// A format-specific core. When absent, the system-level core is used.
+    #[serde(default)]
+    pub rbf: Option<String>,
     #[serde(rename = "type")]
     pub kind: String,
     pub index: u8,
@@ -509,6 +512,7 @@ favorite = "#fe2e1d"
             rbf: "_Computer/C64".into(),
             launch: vec![LaunchRule {
                 extensions: vec!["d64".into()],
+                rbf: None,
                 kind: "s".into(),
                 index: 0,
                 delay: 1,

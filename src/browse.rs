@@ -2788,6 +2788,7 @@ mod tests {
             rbf: "_Console/NeoGeo".to_string(),
             launch: vec![crate::config::LaunchRule {
                 extensions: vec!["neo".to_string(), "mgl".to_string()],
+                rbf: None,
                 kind: "f".to_string(),
                 index: 1,
                 delay: 1,

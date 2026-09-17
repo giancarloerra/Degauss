@@ -1153,6 +1153,7 @@ const MISTERZINE_CATEGORY: &str = "MiSTerZine";
 const MISTERZINE_SYSTEM_ID: &str = "__misterzine";
 const REFRESH_MISTERZINE: &str = "Refresh";
 const INSTALLED_ONLY: &str = "Installed Only";
+const FILTER_RELEASES: &str = "Filter Releases";
 const ABOUT_MISTERZINE: &str = "About MiSTerZine";
 
 fn core_category_pick_key(category: &str) -> String {
@@ -1994,6 +1995,7 @@ fn context_help(action: &str) -> &'static str {
         SEARCH => "Filter this list by name. Back keeps the search until it is cleared.",
         CLEAR_SEARCH => "Clear the search and show the full current list again.",
         FILTER_GAMES => "Filter games in this folder by their available metadata.",
+        FILTER_RELEASES => "Filter MiSTerZine releases by type and source.",
         CLEAR_FILTERS => "Clear metadata filters while keeping any title search.",
         HIDE_THIS => "Hide the selected item from browsing without deleting it.",
         SHOW_THIS => "Remove this item's hidden setting so it is normally visible again.",
@@ -3494,6 +3496,9 @@ pub struct App {
     misterzine_items: Vec<crate::misterzine::Item>,
     misterzine_visible: Vec<crate::misterzine::Item>,
     misterzine_installed_only: bool,
+    misterzine_filters: crate::misterzine::Filters,
+    misterzine_filter_options: [Vec<crate::misterzine::FilterChoice>; 2],
+    misterzine_filter_field: Option<crate::misterzine::FilterField>,
     /// The open system's folders, when they have been written down.
     system_cache: Option<crate::cache::SystemCache>,
     /// Current read-only Pack snapshot. Present only for a Pack-selected
@@ -3921,6 +3926,9 @@ impl App {
             misterzine_items: Vec::new(),
             misterzine_visible: Vec::new(),
             misterzine_installed_only: false,
+            misterzine_filters: Default::default(),
+            misterzine_filter_options: std::array::from_fn(|_| Vec::new()),
+            misterzine_filter_field: None,
             system_cache: None,
             artwork_provider: None,
             artwork_provider_cache: HashMap::new(),
@@ -4577,6 +4585,19 @@ impl App {
     }
 
     fn open_information(&mut self) {
+        if self.in_misterzine_browser() {
+            let Some(item) = self.misterzine_visible.get(self.game_list.selected()) else {
+                return;
+            };
+            self.information = None;
+            self.ui
+                .set_information_text(SharedString::from(item.information()));
+            self.ui.set_information_offset(0.0);
+            self.screen = Screen::Information;
+            self.apply_geometry();
+            self.touch_selection();
+            return;
+        }
         let Some(row) = self.here.get(self.game_list.selected()).filter(|row| {
             self.browsing == Browsing::Games && matches!(row.kind, browse::Kind::Play(_))
         }) else {
@@ -9132,12 +9153,17 @@ impl App {
         }
     }
 
-    fn prepare_misterzine_browser(&mut self) {
+    fn prepare_misterzine_browser(&mut self, reset_filters: bool) {
         self.open_category = Some(MISTERZINE_CATEGORY.to_string());
         self.open_system = None;
         self.core_category = None;
         self.browsing = Browsing::Games;
-        self.filter.clear();
+        if reset_filters {
+            self.filter.clear();
+            self.misterzine_filters.clear();
+            self.misterzine_filter_options = std::array::from_fn(|_| Vec::new());
+            self.misterzine_filter_field = None;
+        }
         self.all_here.clear();
         self.misterzine_progress = Default::default();
         self.resolve_view();
@@ -9152,7 +9178,7 @@ impl App {
         if self.misterzine_job.is_some() {
             return;
         }
-        self.prepare_misterzine_browser();
+        self.prepare_misterzine_browser(!force_refresh);
         match crate::misterzine::start(self.misterzine_request(force_refresh)) {
             Ok(job) => self.misterzine_job = Some(job),
             Err(error) => {
@@ -9194,6 +9220,8 @@ impl App {
             .misterzine_items
             .iter()
             .filter(|item| !self.misterzine_installed_only || item.installed())
+            .filter(|item| self.filter.is_empty() || squashed(item.title()).contains(&self.filter))
+            .filter(|item| self.misterzine_filters.matches(item))
             .cloned()
             .collect();
         let covers: Vec<Option<PathBuf>> = self
@@ -9279,7 +9307,7 @@ impl App {
         let item = self.misterzine_visible.get(self.game_list.selected())?;
         let name = item.title().to_string();
         let Some(path) = item.launch_path.as_deref() else {
-            self.message = Some(format!("{name} is not installed on this MiSTer."));
+            self.message = Some(format!("{name}\n{}", item.state_label()));
             self.dirty = true;
             return None;
         };
@@ -10811,10 +10839,15 @@ impl App {
             }
             Screen::GameFilterValues => {
                 let selected = self
-                    .game_filter_field
-                    .map(GameFilterField::index)
+                    .misterzine_filter_field
+                    .map(crate::misterzine::FilterField::index)
+                    .or_else(|| self.game_filter_field.map(GameFilterField::index))
                     .unwrap_or(0);
-                self.show_game_filters(selected);
+                if self.in_misterzine_browser() {
+                    self.show_misterzine_filters(selected);
+                } else {
+                    self.show_game_filters(selected);
+                }
             }
             Screen::Find | Screen::FavoriteFolder => {
                 // The chooser's rows are done with once it is left.
@@ -10921,6 +10954,9 @@ impl App {
             Screen::Browse => match self.browsing {
                 Browsing::Games if self.in_misterzine_browser() => {
                     self.filter.clear();
+                    self.misterzine_filters.clear();
+                    self.misterzine_filter_options = std::array::from_fn(|_| Vec::new());
+                    self.misterzine_filter_field = None;
                     self.all_here.clear();
                     self.here.clear();
                     self.open_category = None;
@@ -11550,6 +11586,64 @@ impl App {
         self.show_game_filters(field.index());
     }
 
+    /// Open the two MiSTerZine criteria using the complete in-memory catalogue.
+    fn open_misterzine_filters(&mut self) {
+        self.misterzine_filter_options = std::array::from_fn(|index| {
+            crate::misterzine::choices(
+                &self.misterzine_items,
+                crate::misterzine::FilterField::ALL[index],
+            )
+        });
+        self.show_misterzine_filters(0);
+    }
+
+    fn show_misterzine_filters(&mut self, selected: usize) {
+        self.misterzine_filter_field = None;
+        self.menu_list = ListState::new(
+            crate::misterzine::FilterField::ALL.len(),
+            self.geometry.visible,
+        );
+        self.menu_list.select(selected);
+        self.screen = Screen::GameFilters;
+        self.apply_geometry();
+        self.dirty = true;
+    }
+
+    fn open_misterzine_filter_values(&mut self) {
+        let Some(field) = crate::misterzine::FilterField::ALL
+            .get(self.menu_list.selected())
+            .copied()
+        else {
+            return;
+        };
+        let values = &self.misterzine_filter_options[field.index()];
+        let selected = values
+            .iter()
+            .position(|choice| self.misterzine_filters.choice_is_selected(field, choice))
+            .unwrap_or(0);
+        self.misterzine_filter_field = Some(field);
+        self.menu_list = ListState::new(values.len(), self.geometry.visible);
+        self.menu_list.select(selected);
+        self.screen = Screen::GameFilterValues;
+        self.apply_geometry();
+        self.dirty = true;
+    }
+
+    fn choose_misterzine_filter_value(&mut self) {
+        let Some(field) = self.misterzine_filter_field else {
+            return;
+        };
+        let Some(choice) = self.misterzine_filter_options[field.index()]
+            .get(self.menu_list.selected())
+            .cloned()
+        else {
+            return;
+        };
+        self.misterzine_filters.choose(field, &choice);
+        self.rebuild_misterzine_rows();
+        self.show_misterzine_filters(field.index());
+    }
+
     fn open_name_keyboard(&mut self, purpose: NamePurpose, draft: String) {
         self.name_keyboard_purpose = purpose;
         self.name_keyboard_page = NamePage::Lower;
@@ -11821,6 +11915,12 @@ impl App {
     /// Spaces are dropped from both sides, because the grid has no space
     /// key and typing SUPERM should still find Super Mario.
     fn apply_filter(&mut self) {
+        if self.in_misterzine_browser() {
+            self.rebuild_misterzine_rows();
+            self.apply_geometry();
+            self.dirty = true;
+            return;
+        }
         let metadata_active = self.game_filters.is_active();
         let active = !self.filter.is_empty() || metadata_active;
         if self.all_here.is_empty() && active {
@@ -11865,6 +11965,13 @@ impl App {
 
     /// Clear metadata criteria without changing an active title search.
     fn clear_game_filters(&mut self) {
+        if self.in_misterzine_browser() {
+            if self.misterzine_filters.is_active() {
+                self.misterzine_filters.clear();
+                self.rebuild_misterzine_rows();
+            }
+            return;
+        }
         if !self.game_filters.is_active() {
             return;
         }
@@ -14065,11 +14172,24 @@ impl App {
 
     fn refresh_context(&mut self) {
         if self.in_misterzine_browser() {
-            self.context_actions = vec![
-                REFRESH_MISTERZINE.to_string(),
-                INSTALLED_ONLY.to_string(),
-                ABOUT_MISTERZINE.to_string(),
+            let mut actions = vec![
+                GAME_INFORMATION.to_string(),
+                JUMP.to_string(),
+                SEARCH.to_string(),
             ];
+            if !self.filter.is_empty() {
+                actions.push(CLEAR_SEARCH.to_string());
+            }
+            actions.push(FILTER_RELEASES.to_string());
+            if self.misterzine_filters.is_active() {
+                actions.push(CLEAR_FILTERS.to_string());
+            }
+            actions.extend([
+                INSTALLED_ONLY.to_string(),
+                REFRESH_MISTERZINE.to_string(),
+                ABOUT_MISTERZINE.to_string(),
+            ]);
+            self.context_actions = actions;
             self.show_context_page(None);
             return;
         }
@@ -16168,6 +16288,8 @@ impl App {
                             "MiSTerZine\nOfficial release catalogue: misterzine.fyi\nData licensed CC BY 4.0. Artwork is not downloaded."
                                 .to_string(),
                         );
+                    } else if choice == FILTER_RELEASES {
+                        self.open_misterzine_filters();
                     } else if choice == CHANGE_VIEW || choice == CORE_VERSION {
                         // Stays open, like a setting: the point is to see
                         // the view while choosing it.
@@ -16279,8 +16401,20 @@ impl App {
                 Screen::Options | Screen::Advanced => {
                     self.handle_option_input(OptionInput::Activate)
                 }
-                Screen::GameFilters => self.open_game_filter_values(),
-                Screen::GameFilterValues => self.choose_game_filter_value(),
+                Screen::GameFilters => {
+                    if self.in_misterzine_browser() {
+                        self.open_misterzine_filter_values();
+                    } else {
+                        self.open_game_filter_values();
+                    }
+                }
+                Screen::GameFilterValues => {
+                    if self.in_misterzine_browser() {
+                        self.choose_misterzine_filter_value();
+                    } else {
+                        self.choose_game_filter_value();
+                    }
+                }
                 Screen::OptionsRoot => {
                     if let Some(page) = OptionsPage::ALL.get(self.options_root_list.selected()) {
                         self.open_options_page(*page);
@@ -16779,17 +16913,32 @@ impl App {
             }
             Screen::GameFilters => {
                 for index in range {
-                    let field = GameFilterField::ALL[index];
-                    let value = if self.game_filter_options[index].is_some() {
-                        self.game_filters.label(field)
+                    if self.in_misterzine_browser() {
+                        let field = crate::misterzine::FilterField::ALL[index];
+                        let value = self.misterzine_filters.label(field, &self.misterzine_items);
+                        rows.push(plain_row(field.label(), &value));
                     } else {
-                        "Unavailable"
-                    };
-                    rows.push(plain_row(field.label(), value));
+                        let field = GameFilterField::ALL[index];
+                        let value = if self.game_filter_options[index].is_some() {
+                            self.game_filters.label(field)
+                        } else {
+                            "Unavailable"
+                        };
+                        rows.push(plain_row(field.label(), value));
+                    }
                 }
             }
             Screen::GameFilterValues => {
-                if let Some(values) = self
+                if self.in_misterzine_browser() {
+                    if let Some(values) = self
+                        .misterzine_filter_field
+                        .map(|field| &self.misterzine_filter_options[field.index()])
+                    {
+                        for index in range {
+                            rows.push(plain_row(values[index].label(), ""));
+                        }
+                    }
+                } else if let Some(values) = self
                     .game_filter_field
                     .and_then(|field| self.game_filter_options[field.index()].as_ref())
                 {
@@ -16940,6 +17089,22 @@ impl App {
         // never will, and six empty labels beside Arcade say nothing.
         if self.screen != Screen::Browse || self.browsing != Browsing::Games {
             return Vec::new();
+        }
+        if self.in_misterzine_browser() {
+            let Some(item) = self.misterzine_visible.get(self.game_list.selected()) else {
+                return Vec::new();
+            };
+            return [
+                ("Local status", item.state_label().to_string()),
+                ("Type", item.base().to_string()),
+                ("Source", item.source_label()),
+            ]
+            .into_iter()
+            .map(|(label, value)| DetailLine {
+                label: SharedString::from(label),
+                value: SharedString::from(value),
+            })
+            .collect();
         }
         let details = self
             .here
@@ -17188,11 +17353,25 @@ impl App {
                     format!("{} found", self.here.len()),
                 ),
             },
-            Screen::GameFilters => ("Filter Games".to_string(), String::new()),
+            Screen::GameFilters => (
+                if self.in_misterzine_browser() {
+                    "Filter Releases"
+                } else {
+                    "Filter Games"
+                }
+                .to_string(),
+                String::new(),
+            ),
             Screen::GameFilterValues => (
-                self.game_filter_field
-                    .map(|field| format!("Filter Games / {}", field.label()))
-                    .unwrap_or_else(|| "Filter Games".to_string()),
+                if self.in_misterzine_browser() {
+                    self.misterzine_filter_field
+                        .map(|field| format!("Filter Releases / {}", field.label()))
+                        .unwrap_or_else(|| "Filter Releases".to_string())
+                } else {
+                    self.game_filter_field
+                        .map(|field| format!("Filter Games / {}", field.label()))
+                        .unwrap_or_else(|| "Filter Games".to_string())
+                },
                 String::new(),
             ),
             Screen::NameKeyboard => (
@@ -18624,13 +18803,13 @@ pub(crate) fn test_library_launch_flow(window: Rc<MinimalSoftwareWindow>) {
     release.cover = Some(misterzine_cover);
     app.misterzine_items = vec![release];
     app.screen = Screen::Browse;
-    app.prepare_misterzine_browser();
+    app.prepare_misterzine_browser(true);
     assert_eq!(app.layout, Layout::Details, "MiSTerZine has one CRT layout");
     assert_eq!(app.here.len(), 1);
     app.refresh();
     assert_eq!(
         app.ui.get_compact_summary().as_str(),
-        "Console · 2026-09-16"
+        "Console · MiSTer Distribution · 2026-09-16"
     );
     assert_eq!(
         app.ui.get_compact_publisher().as_str(),
@@ -18638,7 +18817,7 @@ pub(crate) fn test_library_launch_flow(window: Rc<MinimalSoftwareWindow>) {
     );
     app.handle(Action::Quit);
     assert!(app.here.is_empty(), "leaving clears the browser rows");
-    app.prepare_misterzine_browser();
+    app.prepare_misterzine_browser(true);
     assert_eq!(
         app.here.len(),
         1,
@@ -18981,7 +19160,7 @@ mod tests {
         assert_eq!(
             super::misterzine_detail_text(&row),
             (
-                "Console · 2026-09-16".to_string(),
+                "Console · MiSTer Distribution · 2026-09-16".to_string(),
                 "Installed · Current".to_string()
             )
         );

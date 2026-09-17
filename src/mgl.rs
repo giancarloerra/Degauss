@@ -151,6 +151,7 @@ impl Homes {
             reference.rbf.as_deref(),
             reference.setname.as_deref(),
             reference.same_dir,
+            reference.files.last().map(Path::new),
         );
         let class = if recognised || reference.rbf.is_none() {
             Class::Game
@@ -211,6 +212,7 @@ impl Homes {
         rbf: Option<&str>,
         setname: Option<&str>,
         same_dir: bool,
+        game: Option<&Path>,
     ) -> (bool, Option<String>, Vec<PathBuf>, Vec<PathBuf>) {
         let Some(rbf) = rbf else {
             return (false, None, Vec::new(), Vec::new());
@@ -229,6 +231,16 @@ impl Homes {
                     .and_then(|name| name.to_str())
                     .unwrap_or("");
                 crate::core_variants::same_core_identity(configured, stem)
+                    || game
+                        .and_then(|game| system.rule_for(game))
+                        .and_then(|rule| rule.rbf.as_deref())
+                        .is_some_and(|configured| {
+                            let configured = Path::new(configured)
+                                .file_name()
+                                .and_then(|name| name.to_str())
+                                .unwrap_or("");
+                            crate::core_variants::same_core_identity(configured, stem)
+                        })
                     || crate::core_choices::is_unstable_reference(system, rbf)
             })
             .collect();
@@ -698,6 +710,71 @@ mod tests {
     }
 
     #[test]
+    fn format_specific_core_only_owns_a_favourite_for_its_file_rule() {
+        let root = temp("format-specific-home");
+        let games_root = root.join("games");
+        let home = games_root.join("GameNWatch");
+        let favourites = root.join("_@Favorites");
+        std::fs::create_dir_all(&home).unwrap();
+        std::fs::create_dir_all(&favourites).unwrap();
+        std::fs::write(home.join("Legacy.bin"), b"legacy").unwrap();
+        std::fs::write(home.join("Current.gnw"), b"current").unwrap();
+        let def = crate::systems::parse_table(
+            "[[systems]]\nname = \"Game & Watch\"\nid = \"GameNWatch\"\nfolders = [\"GameNWatch\"]\nrbf = \"_Console/GnW\"\nextensions = [\"bin\", \"gnw\", \"mgl\"]\n[[systems.launch]]\nextensions = [\"bin\"]\ntype = \"f\"\nindex = 1\ndelay = 1\n[[systems.launch]]\nextensions = [\"gnw\"]\nrbf = \"_Console/GameAndWatch\"\ntype = \"f\"\nindex = 1\ndelay = 1\n",
+            Path::new("Game & Watch fixture"),
+        )
+        .unwrap()
+        .remove(0);
+        let homes = Homes::new(
+            &[games_root.to_string_lossy().into_owned()],
+            &[FoundSystem {
+                def,
+                paths: vec![home.clone()],
+                logo_dir: None,
+                menu_folder: None,
+            }],
+        );
+
+        let current = favourites.join("Current.mgl");
+        std::fs::write(
+            &current,
+            "<mistergamedescription><rbf>_Console/GameAndWatch</rbf><file path=\"Current.gnw\"/></mistergamedescription>",
+        )
+        .unwrap();
+        let current_resolved = homes.resolve(&current).unwrap();
+        assert_eq!(current_resolved.class, Class::Game);
+        assert_eq!(
+            current_resolved.game_target().unwrap(),
+            Some(home.join("Current.gnw"))
+        );
+
+        let legacy = favourites.join("Legacy.mgl");
+        std::fs::write(
+            &legacy,
+            "<mistergamedescription><rbf>_Console/GnW</rbf><file path=\"Legacy.bin\"/></mistergamedescription>",
+        )
+        .unwrap();
+        assert_eq!(homes.resolve(&legacy).unwrap().class, Class::Game);
+
+        let mismatched = favourites.join("Mismatched.mgl");
+        std::fs::write(
+            &mismatched,
+            "<mistergamedescription><rbf>_Console/GameAndWatch</rbf><file path=\"Legacy.bin\"/></mistergamedescription>",
+        )
+        .unwrap();
+        assert_eq!(homes.resolve(&mismatched).unwrap().class, Class::CoreSet);
+        assert_eq!(
+            crate::favorites::reference_of(&mismatched, &homes)
+                .unwrap()
+                .owner_target,
+            mismatched,
+            "a mismatched custom favourite belongs to itself, not the legacy game"
+        );
+
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
     fn absolute_components_are_preserved_exactly() {
         let root = temp("absolute");
         let existing = root.join("games/NES/Rock & Roll.nes");
@@ -898,7 +975,7 @@ mod tests {
         .unwrap();
         let homes = arcade_homes(&root);
         let (recognised, name, found, _) =
-            homes.home_dirs(Some("_RA_Cores/Cores/NES"), Some("RA_NES"), true);
+            homes.home_dirs(Some("_RA_Cores/Cores/NES"), Some("RA_NES"), true, None);
         assert!(recognised, "an RA core is the same system");
         assert_eq!(name.as_deref(), Some("NES"));
         assert_eq!(found, vec![nes.clone()]);
@@ -948,7 +1025,7 @@ mod tests {
         let unknown = homes.resolve(&write("Other")).unwrap();
         assert_eq!(
             homes
-                .home_dirs(Some("_Console/NES"), Some("Other"), false)
+                .home_dirs(Some("_Console/NES"), Some("Other"), false, None)
                 .2,
             vec![other.clone()],
             "a set name outside the table is games/<setname> over the roots, as Main has it"
@@ -1148,21 +1225,22 @@ mod tests {
             Some("_Arcade/cores/Battletoads"),
             Some("Battletoads"),
             false,
+            None,
         );
         assert!(!recognised);
         assert_eq!(name.as_deref(), Some("Battletoads"));
         assert_eq!(found, vec![network.join("Battletoads")]);
-        let (recognised, _, found, _) = homes.home_dirs(Some("_Console/NES"), None, false);
+        let (recognised, _, found, _) = homes.home_dirs(Some("_Console/NES"), None, false, None);
         assert!(recognised);
         assert_eq!(
             found,
             vec![usb.join("NES")],
             "the recognised system was found under the first root and answers with that folder"
         );
-        let (_, name, found, _) = homes.home_dirs(Some("_Other/Elsewhere"), None, false);
+        let (_, name, found, _) = homes.home_dirs(Some("_Other/Elsewhere"), None, false, None);
         assert_eq!(name.as_deref(), Some("Elsewhere"));
         assert_eq!(found, vec![cifs.join("Elsewhere")]);
-        let (_, name, found, _) = homes.home_dirs(Some("_Computer/minimig"), None, false);
+        let (_, name, found, _) = homes.home_dirs(Some("_Computer/minimig"), None, false, None);
         assert_eq!(
             name.as_deref(),
             Some("Amiga"),
@@ -1170,7 +1248,7 @@ mod tests {
         );
         assert!(found.is_empty());
         assert_eq!(
-            homes.home_dirs(None, None, false),
+            homes.home_dirs(None, None, false, None),
             (false, None, Vec::new(), Vec::new())
         );
         std::fs::remove_dir_all(root).ok();

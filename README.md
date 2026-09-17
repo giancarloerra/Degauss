@@ -220,15 +220,20 @@ the home screen. It is Off by default. Opening it shows the official release
 catalogue newest first and compares each entry with content Degauss already
 indexed on this MiSTer. Installed entries can launch their local MRA or core;
 the catalogue never downloads or executes a remote launcher, core or script.
+Each row shows its type, source and exact local installation state. Beta and
+deprecated releases are labelled, and **Game Information** shows the complete
+release and local-status detail.
 
 Degauss shows **Checking MiSTerZine**, **Downloading Releases** when the
 catalogue changed, and **Matching Installed Content** while it compares local
 entries. **B** cancels safely. A valid saved catalogue is reused immediately;
 if a short network check fails, it remains available with its saved date. A
 first-use failure instead shows a concise cause, while `/tmp/degauss.log` keeps
-the technical detail. **X Actions** provides **Refresh**, **Installed Only** and
-the catalogue attribution. Installed Only lasts only for the current session
-and does not change the library.
+the technical detail. **X Actions** provides title search, jump-to-letter,
+**Filter Releases** by type and source, **Refresh**, **Installed Only** and the
+catalogue attribution. Title, type and source filters clear when the catalogue
+is left; Installed Only lasts for the current session. None of these choices
+changes the library.
 
 Release data comes from [MiSTerZine](https://misterzine.fyi) under
 [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/). Degauss uses only
@@ -1804,6 +1809,8 @@ machine.
 ```bash
 /media/fat/Scripts/.config/degauss/degauss --help
 ```
+
+`--version` (or `-V`) prints the installed Degauss version and exits.
 
 `--config` and `--systems` default to `degauss.toml` and `systems.toml`
 beside the binary, which is where they live, so the flags are only needed

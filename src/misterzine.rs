@@ -25,7 +25,8 @@ use crate::systems::{CoreCatalogue, CoreVariant};
 
 const META_URL: &str = "https://misterzine.fyi/releases/meta.json";
 const DATA_URL: &str = "https://misterzine.fyi/releases/data.json";
-const CACHE_FORMAT: u32 = 1;
+const CACHE_FORMAT: u32 = 2;
+const LEGACY_CACHE_FORMAT: u32 = 1;
 const MAX_META_BYTES: u64 = 16 * 1024;
 const MAX_DATA_BYTES: u64 = 2 * 1024 * 1024;
 const MAX_ROWS: usize = 20_000;
@@ -53,19 +54,27 @@ struct Release {
     #[serde(default)]
     base: String,
     #[serde(default)]
+    date: String,
+    #[serde(default)]
+    src: Option<String>,
+    #[serde(default)]
+    beta: bool,
+    #[serde(default)]
+    deprecated: bool,
+    #[serde(default)]
     manufacturer: String,
     #[serde(default)]
     core: String,
     #[serde(default)]
     updated: String,
     #[serde(default)]
-    bd: String,
+    bd: Option<String>,
     #[serde(default)]
     b: i64,
     #[serde(default)]
     k: String,
     #[serde(default)]
-    mra: String,
+    mra: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
@@ -75,9 +84,33 @@ pub struct Cache {
     rows: Vec<Release>,
 }
 
+/// The released 0.8.0 candidate cache shape. Postcard encodes structs by
+/// field order, so it is decoded explicitly and upgraded in memory.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+struct LegacyRelease {
+    title: String,
+    base: String,
+    manufacturer: String,
+    core: String,
+    updated: String,
+    bd: String,
+    b: i64,
+    k: String,
+    mra: String,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+struct LegacyCache {
+    format: u32,
+    meta: Meta,
+    rows: Vec<LegacyRelease>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LocalState {
     NotInstalled,
+    MraNotInstalled,
+    CoreMissing,
     VersionUnknown,
     Current,
     UpdateAvailable,
@@ -87,6 +120,8 @@ impl LocalState {
     pub fn label(self) -> &'static str {
         match self {
             Self::NotInstalled => "Not installed",
+            Self::MraNotInstalled => "MRA not installed",
+            Self::CoreMissing => "MRA installed · Core missing",
             Self::VersionUnknown => "Installed · Version unknown",
             Self::Current => "Installed · Current",
             Self::UpdateAvailable => "Installed · Update available",
@@ -98,6 +133,10 @@ impl LocalState {
 pub struct Item {
     title: String,
     base: String,
+    date: String,
+    source: String,
+    beta: bool,
+    deprecated: bool,
     updated: String,
     batch: i64,
     manufacturer: String,
@@ -110,7 +149,7 @@ pub struct Item {
 
 impl Item {
     pub fn installed(&self) -> bool {
-        self.state != LocalState::NotInstalled
+        self.launch_path.is_some()
     }
 
     pub fn title(&self) -> &str {
@@ -118,7 +157,68 @@ impl Item {
     }
 
     pub fn summary(&self) -> String {
-        format!("{} · {} · {}", self.base, self.updated, self.state.label())
+        format!(
+            "{} · {} · {} · {}",
+            self.base,
+            self.source,
+            self.updated,
+            self.state.label()
+        )
+    }
+
+    pub fn base(&self) -> &str {
+        &self.base
+    }
+
+    fn source(&self) -> &str {
+        &self.source
+    }
+
+    pub fn source_label(&self) -> String {
+        readable_source(&self.source)
+    }
+
+    pub fn state_label(&self) -> &'static str {
+        self.state.label()
+    }
+
+    pub fn status_label(&self) -> String {
+        match (self.beta, self.deprecated) {
+            (true, true) => "Beta · Deprecated".to_string(),
+            (true, false) => "Beta".to_string(),
+            (false, true) => "Deprecated".to_string(),
+            (false, false) => String::new(),
+        }
+    }
+
+    pub fn display_title(&self) -> String {
+        let mut title = self.title.clone();
+        if self.beta {
+            title.push_str(" [Beta]");
+        }
+        if self.deprecated {
+            title.push_str(" [Deprecated]");
+        }
+        title
+    }
+
+    pub fn information(&self) -> String {
+        let mut text = self.display_title();
+        for (label, value) in [
+            ("Local status", self.state.label().to_string()),
+            ("Type", self.base.clone()),
+            ("Source", self.source_label()),
+            ("Release status", self.status_label()),
+            ("Core", self.core.clone()),
+            ("Manufacturer", self.manufacturer.clone()),
+            ("MiSTer debut", self.date.clone()),
+            ("Latest shipped update", self.updated.clone()),
+        ] {
+            if !value.trim().is_empty() {
+                text.push_str(&format!("\n\n{label}: {value}"));
+            }
+        }
+        text
     }
 
     pub fn cover(&self) -> Option<&Path> {
@@ -130,21 +230,30 @@ impl Item {
     }
 
     pub fn row(&self, cover: Option<PathBuf>) -> Row {
+        let mut context = vec![self.base.clone()];
+        let source = self.source_label();
+        if !source.is_empty() {
+            context.push(source);
+        }
+        let status = self.status_label();
+        if !status.is_empty() {
+            context.push(status);
+        }
         Row {
-            name: self.title.clone(),
+            name: self.display_title(),
             sort_key: self.title.to_ascii_lowercase(),
             // An unavailable release is intercepted before launch. Keeping
             // it a non-folder lets every existing layout present it like the
             // neighbouring installed releases.
             kind: Kind::Play(Launch::File(self.launch_path.clone().unwrap_or_default())),
             cover,
-            genre: Some(self.base.clone()),
+            genre: Some(context.join(" · ")),
             favorite: false,
             below: None,
             details: Details {
                 desc: self.state.label().to_string(),
-                publisher: self.manufacturer.clone(),
-                developer: self.core.clone(),
+                publisher: String::new(),
+                developer: String::new(),
                 released: self.updated.clone(),
                 players: String::new(),
                 lang: String::new(),
@@ -154,9 +263,24 @@ impl Item {
 
     #[cfg(test)]
     pub(crate) fn fixture(title: &str, state: LocalState, launch_path: Option<PathBuf>) -> Self {
+        Self::fixture_with(title, "Console", "distribution_mister", state, launch_path)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn fixture_with(
+        title: &str,
+        base: &str,
+        source: &str,
+        state: LocalState,
+        launch_path: Option<PathBuf>,
+    ) -> Self {
         Self {
             title: title.to_string(),
-            base: "Console".to_string(),
+            base: base.to_string(),
+            date: "2026-01-01".to_string(),
+            source: source.to_string(),
+            beta: false,
+            deprecated: false,
             updated: "2026-09-16".to_string(),
             batch: 1,
             manufacturer: "Fixture Publisher".to_string(),
@@ -167,6 +291,154 @@ impl Item {
             logo_id: None,
         }
     }
+}
+
+fn readable_source(source: &str) -> String {
+    match source {
+        "" => "Unknown".to_string(),
+        "distribution_mister" => "MiSTer Distribution".to_string(),
+        "coinop" => "Coin-Op".to_string(),
+        "jtbindb" => "Jotego".to_string(),
+        "meathax" => "MeatHax".to_string(),
+        "rmcores" => "RMCores".to_string(),
+        "theypsilon_unofficial_distribution" => "theypsilon".to_string(),
+        other => other
+            .split(['_', '-'])
+            .filter(|part| !part.is_empty())
+            .map(|part| {
+                let mut chars = part.chars();
+                chars
+                    .next()
+                    .map(|first| {
+                        first
+                            .to_uppercase()
+                            .chain(chars.flat_map(char::to_lowercase))
+                            .collect::<String>()
+                    })
+                    .unwrap_or_default()
+            })
+            .collect::<Vec<_>>()
+            .join(" "),
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FilterField {
+    Type,
+    Source,
+}
+
+impl FilterField {
+    pub const ALL: [Self; 2] = [Self::Type, Self::Source];
+
+    pub fn index(self) -> usize {
+        match self {
+            Self::Type => 0,
+            Self::Source => 1,
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Type => "Type",
+            Self::Source => "Source",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FilterChoice {
+    All,
+    Value { label: String, key: String },
+}
+
+impl FilterChoice {
+    pub fn label(&self) -> &str {
+        match self {
+            Self::All => "All",
+            Self::Value { label, .. } => label,
+        }
+    }
+
+    fn key(&self) -> Option<&str> {
+        match self {
+            Self::All => None,
+            Self::Value { key, .. } => Some(key),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Filters {
+    selected: [Option<String>; 2],
+}
+
+impl Filters {
+    pub fn is_active(&self) -> bool {
+        self.selected.iter().any(Option::is_some)
+    }
+
+    pub fn clear(&mut self) {
+        self.selected = Default::default();
+    }
+
+    pub fn label(&self, field: FilterField, items: &[Item]) -> String {
+        let Some(key) = self.selected[field.index()].as_deref() else {
+            return "All".to_string();
+        };
+        choices(items, field)
+            .into_iter()
+            .find(|choice| choice.key() == Some(key))
+            .map(|choice| choice.label().to_string())
+            .unwrap_or_else(|| key.to_string())
+    }
+
+    pub fn choose(&mut self, field: FilterField, choice: &FilterChoice) {
+        self.selected[field.index()] = choice.key().map(str::to_string);
+    }
+
+    pub fn choice_is_selected(&self, field: FilterField, choice: &FilterChoice) -> bool {
+        self.selected[field.index()].as_deref() == choice.key()
+    }
+
+    pub fn matches(&self, item: &Item) -> bool {
+        FilterField::ALL.into_iter().all(|field| {
+            let Some(wanted) = self.selected[field.index()].as_deref() else {
+                return true;
+            };
+            let actual = match field {
+                FilterField::Type => item.base.as_str(),
+                FilterField::Source => item.source(),
+            };
+            actual.eq_ignore_ascii_case(wanted)
+        })
+    }
+}
+
+pub fn choices(items: &[Item], field: FilterField) -> Vec<FilterChoice> {
+    let mut known = BTreeMap::<String, String>::new();
+    for item in items {
+        let (key, label) = match field {
+            FilterField::Type => (
+                item.base.trim().to_ascii_lowercase(),
+                item.base.trim().to_string(),
+            ),
+            FilterField::Source => (
+                item.source().trim().to_ascii_lowercase(),
+                item.source_label(),
+            ),
+        };
+        if field == FilterField::Source || !key.is_empty() {
+            known.entry(key).or_insert(label);
+        }
+    }
+    let mut values = vec![FilterChoice::All];
+    values.extend(
+        known
+            .into_iter()
+            .map(|(key, label)| FilterChoice::Value { label, key }),
+    );
+    values
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -388,7 +660,7 @@ fn run_with_fetch<F>(
     if !request.force_refresh
         && cached
             .as_ref()
-            .is_some_and(|cache| cache.meta.hash == meta.hash)
+            .is_some_and(|cache| cache.format == CACHE_FORMAT && cache.meta.hash == meta.hash)
     {
         let snapshot = cached_snapshot.expect("a matching cache produced a snapshot");
         let _ = events.send(Event::Ready {
@@ -526,9 +798,48 @@ pub fn load_cache(cache_dir: &Path) -> Result<Option<Cache>> {
             ))
         }
     };
-    let cache: Cache = postcard::from_bytes(&bytes).map_err(|error| {
-        DegaussError::malformed("MiSTerZine saved data", &path, error.to_string())
-    })?;
+    let cache: Cache = match postcard::from_bytes(&bytes) {
+        Ok(cache) => cache,
+        Err(current_error) => {
+            let legacy: LegacyCache = postcard::from_bytes(&bytes).map_err(|legacy_error| {
+                DegaussError::malformed(
+                    "MiSTerZine saved data",
+                    &path,
+                    format!("current cache: {current_error}; previous cache: {legacy_error}"),
+                )
+            })?;
+            if legacy.format != LEGACY_CACHE_FORMAT {
+                return Err(DegaussError::malformed(
+                    "MiSTerZine saved data",
+                    &path,
+                    format!("unsupported cache format {}", legacy.format),
+                ));
+            }
+            Cache {
+                format: LEGACY_CACHE_FORMAT,
+                meta: legacy.meta,
+                rows: legacy
+                    .rows
+                    .into_iter()
+                    .map(|row| Release {
+                        title: row.title,
+                        base: row.base,
+                        date: String::new(),
+                        src: None,
+                        beta: false,
+                        deprecated: false,
+                        manufacturer: row.manufacturer,
+                        core: row.core,
+                        updated: row.updated,
+                        bd: Some(row.bd),
+                        b: row.b,
+                        k: row.k,
+                        mra: Some(row.mra),
+                    })
+                    .collect(),
+            }
+        }
+    };
     validate_cache(&cache)
         .map_err(|detail| DegaussError::malformed("MiSTerZine saved data", &path, detail))?;
     Ok(Some(cache))
@@ -545,6 +856,12 @@ fn save_cache(
     cache: &Cache,
     cancelled: &AtomicBool,
 ) -> std::result::Result<(), SaveCacheError> {
+    if cache.format != CACHE_FORMAT {
+        return Err(SaveCacheError::Failed(DegaussError::unsupported(
+            "MiSTerZine saved data",
+            format!("cannot save cache format {}", cache.format),
+        )));
+    }
     validate_cache(cache)
         .map_err(|detail| DegaussError::unsupported("MiSTerZine saved data", detail))
         .map_err(SaveCacheError::Failed)?;
@@ -643,7 +960,7 @@ fn validate_meta(meta: &Meta) -> std::result::Result<(), String> {
 }
 
 fn validate_cache(cache: &Cache) -> std::result::Result<(), String> {
-    if cache.format != CACHE_FORMAT {
+    if !matches!(cache.format, CACHE_FORMAT | LEGACY_CACHE_FORMAT) {
         return Err(format!("unsupported cache format {}", cache.format));
     }
     validate_meta(&cache.meta)?;
@@ -674,14 +991,17 @@ fn validate_release(row: &Release) -> std::result::Result<(), String> {
     for (name, value) in [
         ("manufacturer", row.manufacturer.as_str()),
         ("core", row.core.as_str()),
-        ("bd", row.bd.as_str()),
+        ("date", row.date.as_str()),
+        ("src", row.src.as_deref().unwrap_or("")),
+        ("bd", row.bd.as_deref().unwrap_or("")),
     ] {
         if value.len() > MAX_SHORT_TEXT {
             return Err(format!("overlong {name}"));
         }
     }
     if row.base == "Arcade" {
-        if row.mra.is_empty() || row.mra.len() > MAX_PATH_TEXT || !safe_relative_mra(&row.mra) {
+        let mra = row.mra.as_deref().unwrap_or("");
+        if mra.is_empty() || mra.len() > MAX_PATH_TEXT || !safe_relative_mra(mra) {
             return Err("missing or invalid mra path".to_string());
         }
     } else if row.core.is_empty() {
@@ -708,6 +1028,7 @@ fn match_cache(
     cancelled: &AtomicBool,
 ) -> Option<Snapshot> {
     let arcade = arcade_matches(request);
+    let arcade_cores = arcade_core_matches(&request.menu_root);
     let cores = core_matches(&request.cores);
     let mut items = Vec::with_capacity(cache.rows.len());
     for (index, row) in cache.rows.iter().enumerate() {
@@ -715,20 +1036,47 @@ fn match_cache(
             return None;
         }
         let item = if row.base == "Arcade" {
-            match arcade.get(&row.mra) {
-                Some((path, cover)) => Item {
-                    title: row.title.clone(),
-                    base: row.base.clone(),
-                    updated: row.updated.clone(),
-                    batch: row.b,
-                    manufacturer: row.manufacturer.clone(),
-                    core: row.core.clone(),
-                    state: LocalState::VersionUnknown,
-                    launch_path: Some(path.clone()),
-                    cover: cover.clone(),
-                    logo_id: None,
-                },
-                None => not_installed(row),
+            let mra = row.mra.as_deref().expect("validated Arcade MRA");
+            let path = request.menu_root.join(mra);
+            let cover = arcade.get(mra).and_then(|(_, cover)| cover.clone());
+            if !path.is_file() {
+                not_installed(row)
+            } else {
+                let identity = crate::systems::core_name(&row.core);
+                match arcade_cores.get(&identity) {
+                    Some(_) => Item {
+                        title: row.title.clone(),
+                        base: row.base.clone(),
+                        date: row.date.clone(),
+                        source: row.src.clone().unwrap_or_default(),
+                        beta: row.beta,
+                        deprecated: row.deprecated,
+                        updated: row.updated.clone(),
+                        batch: row.b,
+                        manufacturer: row.manufacturer.clone(),
+                        core: row.core.clone(),
+                        state: LocalState::VersionUnknown,
+                        launch_path: Some(path),
+                        cover,
+                        logo_id: None,
+                    },
+                    None => Item {
+                        title: row.title.clone(),
+                        base: row.base.clone(),
+                        date: row.date.clone(),
+                        source: row.src.clone().unwrap_or_default(),
+                        beta: row.beta,
+                        deprecated: row.deprecated,
+                        updated: row.updated.clone(),
+                        batch: row.b,
+                        manufacturer: row.manufacturer.clone(),
+                        core: row.core.clone(),
+                        state: LocalState::CoreMissing,
+                        launch_path: None,
+                        cover,
+                        logo_id: None,
+                    },
+                }
             }
         } else {
             let identity = crate::systems::core_name(&row.core);
@@ -736,11 +1084,15 @@ fn match_cache(
                 Some(core) => Item {
                     title: row.title.clone(),
                     base: row.base.clone(),
+                    date: row.date.clone(),
+                    source: row.src.clone().unwrap_or_default(),
+                    beta: row.beta,
+                    deprecated: row.deprecated,
                     updated: row.updated.clone(),
                     batch: row.b,
                     manufacturer: row.manufacturer.clone(),
                     core: row.core.clone(),
-                    state: core_state(core, &row.bd),
+                    state: core_state(core, row.bd.as_deref().unwrap_or("")),
                     launch_path: Some(core.path.clone()),
                     cover: None,
                     logo_id: core.logo_id.clone(),
@@ -779,11 +1131,19 @@ fn not_installed(row: &Release) -> Item {
     Item {
         title: row.title.clone(),
         base: row.base.clone(),
+        date: row.date.clone(),
+        source: row.src.clone().unwrap_or_default(),
+        beta: row.beta,
+        deprecated: row.deprecated,
         updated: row.updated.clone(),
         batch: row.b,
         manufacturer: row.manufacturer.clone(),
         core: row.core.clone(),
-        state: LocalState::NotInstalled,
+        state: if row.base == "Arcade" {
+            LocalState::MraNotInstalled
+        } else {
+            LocalState::NotInstalled
+        },
         launch_path: None,
         cover: None,
         logo_id: None,
@@ -815,6 +1175,55 @@ fn arcade_matches(request: &Request) -> BTreeMap<String, (PathBuf, Option<PathBu
                     .entry(relative)
                     .or_insert_with(|| (path.clone(), row.cover.clone()));
             }
+        }
+    }
+    matches
+}
+
+/// Arcade RBFs are runtime support files rather than direct menu launchers,
+/// so the ordinary Cores catalogue deliberately excludes them. MiSTerZine
+/// needs only this one shallow directory to distinguish a launchable MRA from
+/// an MRA whose required core is absent.
+fn arcade_core_matches(menu_root: &Path) -> BTreeMap<String, PathBuf> {
+    let root = menu_root.join("_Arcade/cores");
+    let listing = match std::fs::read_dir(&root) {
+        Ok(listing) => listing,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return BTreeMap::new(),
+        Err(error) => {
+            crate::note(&format!(
+                "misterzine   could not read Arcade cores at {}: {error}",
+                root.display()
+            ));
+            return BTreeMap::new();
+        }
+    };
+    let mut matches = BTreeMap::new();
+    for entry in listing {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(error) => {
+                crate::note(&format!(
+                    "misterzine   could not read an Arcade core entry: {error}"
+                ));
+                continue;
+            }
+        };
+        let path = entry.path();
+        if !path
+            .extension()
+            .and_then(|extension| extension.to_str())
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("rbf"))
+            || !path.is_file()
+        {
+            continue;
+        }
+        let identity = path
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .map(crate::systems::core_name)
+            .unwrap_or_default();
+        if !identity.is_empty() {
+            matches.entry(identity).or_insert(path);
         }
     }
     matches
@@ -1166,6 +1575,10 @@ mod tests {
         Release {
             title: "Example".to_string(),
             base: base.to_string(),
+            date: "2026-01-01".to_string(),
+            src: Some("distribution_mister".to_string()),
+            beta: false,
+            deprecated: false,
             manufacturer: "Example Co".to_string(),
             core: if base == "Arcade" {
                 "example".to_string()
@@ -1173,14 +1586,14 @@ mod tests {
                 "Example-Core".to_string()
             },
             updated: "2026-09-12".to_string(),
-            bd: "2026-09-12".to_string(),
+            bd: Some("2026-09-12".to_string()),
             b: 1,
             k: "example".to_string(),
-            mra: if base == "Arcade" {
+            mra: Some(if base == "Arcade" {
                 "_Arcade/Example.mra".to_string()
             } else {
                 String::new()
-            },
+            }),
         }
     }
 
@@ -1218,7 +1631,7 @@ mod tests {
             .contains("row count"));
 
         let mut unsafe_row = release("Arcade");
-        unsafe_row.mra = "../Example.mra".to_string();
+        unsafe_row.mra = Some("../Example.mra".to_string());
         let unsafe_body = serde_json::to_vec(&vec![unsafe_row]).unwrap();
         assert!(decode_data(meta(1, &unsafe_body), &unsafe_body)
             .unwrap_err()
@@ -1257,7 +1670,7 @@ mod tests {
     }
 
     #[test]
-    fn exact_arcade_paths_match_only_indexed_local_mras() {
+    fn exact_arcade_path_and_matching_core_are_both_required() {
         let root = temp_root("arcade-match");
         let mut request = request(&root);
         let mra = request.menu_root.join("_Arcade/Example.mra");
@@ -1292,6 +1705,9 @@ mod tests {
             id: "Arcade".into(),
             artwork_pack: false,
         });
+        let core = request.menu_root.join("_Arcade/cores/example_20260912.rbf");
+        std::fs::create_dir_all(core.parent().unwrap()).unwrap();
+        std::fs::write(&core, b"fixture").unwrap();
         let body = serde_json::to_vec(&vec![release("Arcade")]).unwrap();
         let cache = decode_data(meta(1, &body), &body).unwrap();
         let (sender, _receiver) = events();
@@ -1303,11 +1719,18 @@ mod tests {
         assert_eq!(snapshot.items[0].state, LocalState::VersionUnknown);
 
         let mut other = release("Arcade");
-        other.mra = "_Arcade/Other.mra".into();
+        other.mra = Some("_Arcade/Other.mra".into());
         let body = serde_json::to_vec(&vec![other]).unwrap();
         let cache = decode_data(meta(1, &body), &body).unwrap();
         let snapshot = match_cache(&cache, &request, &sender, &AtomicBool::new(false)).unwrap();
-        assert_eq!(snapshot.items[0].state, LocalState::NotInstalled);
+        assert_eq!(snapshot.items[0].state, LocalState::MraNotInstalled);
+        assert!(snapshot.items[0].launch_path.is_none());
+
+        std::fs::remove_file(&core).unwrap();
+        let body = serde_json::to_vec(&vec![release("Arcade")]).unwrap();
+        let cache = decode_data(meta(1, &body), &body).unwrap();
+        let snapshot = match_cache(&cache, &request, &sender, &AtomicBool::new(false)).unwrap();
+        assert_eq!(snapshot.items[0].state, LocalState::CoreMissing);
         assert!(snapshot.items[0].launch_path.is_none());
         std::fs::remove_dir_all(root).ok();
     }
@@ -1328,7 +1751,7 @@ mod tests {
         });
         let mut row = release("Computer");
         row.core = "Minimig".into();
-        row.bd = "2026-09-12".into();
+        row.bd = Some("2026-09-12".into());
         let body = serde_json::to_vec(&vec![row]).unwrap();
         let cache = decode_data(meta(1, &body), &body).unwrap();
         let (sender, _receiver) = events();
@@ -1655,6 +2078,141 @@ mod tests {
         save_cache(&root, &cache, &AtomicBool::new(false)).unwrap();
         assert_eq!(load_cache(&root).unwrap(), Some(cache));
         assert_eq!(std::fs::read(unrelated).unwrap(), b"unchanged");
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn feed_metadata_is_retained_and_presented_with_accurate_labels() {
+        let body = br#"[{"title":"Example","base":"Console","date":"2025-02-03","src":"future_source","beta":true,"deprecated":true,"manufacturer":"Example Co","core":"Example-Core","updated":"2026-09-12","bd":"2026-09-12","b":1,"k":"example","mra":""}]"#;
+        let cache = decode_data(meta(1, body), body).unwrap();
+        let (sender, _receiver) = events();
+        let snapshot = match_cache(
+            &cache,
+            &request(Path::new("/does-not-exist")),
+            &sender,
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+        let item = &snapshot.items[0];
+        assert_eq!(item.display_title(), "Example [Beta] [Deprecated]");
+        assert_eq!(item.source_label(), "Future Source");
+        assert_eq!(
+            item.information(),
+            "Example [Beta] [Deprecated]\n\nLocal status: Not installed\n\nType: Console\n\nSource: Future Source\n\nRelease status: Beta · Deprecated\n\nCore: Example-Core\n\nManufacturer: Example Co\n\nMiSTer debut: 2025-02-03\n\nLatest shipped update: 2026-09-12"
+        );
+        let row = item.row(None);
+        assert!(row.details.publisher.is_empty());
+        assert!(row.details.developer.is_empty());
+    }
+
+    #[test]
+    fn nullable_feed_fields_remain_readable() {
+        let body = br#"[{"title":"Unknown Source","base":"Other","date":"2025-02-03","src":null,"manufacturer":"","core":"Example-Core","updated":"2026-09-12","bd":null,"b":1,"k":"example","mra":null}]"#;
+        let cache = decode_data(meta(1, body), body).unwrap();
+        let (sender, _receiver) = events();
+        let snapshot = match_cache(
+            &cache,
+            &request(Path::new("/does-not-exist")),
+            &sender,
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+        assert_eq!(snapshot.items[0].source_label(), "Unknown");
+        assert!(snapshot.items[0].information().contains("Source: Unknown"));
+    }
+
+    #[test]
+    fn type_and_source_filters_combine_in_memory() {
+        let items = vec![
+            Item::fixture_with(
+                "One",
+                "Console",
+                "distribution_mister",
+                LocalState::Current,
+                None,
+            ),
+            Item::fixture_with("Two", "Arcade", "coinop", LocalState::Current, None),
+            Item::fixture_with("Three", "Console", "coinop", LocalState::Current, None),
+        ];
+        let mut filters = Filters::default();
+        let console = choices(&items, FilterField::Type)
+            .into_iter()
+            .find(|choice| choice.label() == "Console")
+            .unwrap();
+        let coinop = choices(&items, FilterField::Source)
+            .into_iter()
+            .find(|choice| choice.label() == "Coin-Op")
+            .unwrap();
+        filters.choose(FilterField::Type, &console);
+        filters.choose(FilterField::Source, &coinop);
+        assert_eq!(
+            items
+                .iter()
+                .filter(|item| filters.matches(item))
+                .map(Item::title)
+                .collect::<Vec<_>>(),
+            ["Three"]
+        );
+        filters.clear();
+        assert!(items.iter().all(|item| filters.matches(item)));
+    }
+
+    #[test]
+    fn previous_cache_format_is_read_and_refreshed_to_the_current_format() {
+        let root = temp_root("legacy-cache");
+        let request = request(&root);
+        let row = release("Console");
+        let body = serde_json::to_vec(&vec![row.clone()]).unwrap();
+        let current_meta = meta(1, &body);
+        let legacy = LegacyCache {
+            format: LEGACY_CACHE_FORMAT,
+            meta: current_meta.clone(),
+            rows: vec![LegacyRelease {
+                title: row.title,
+                base: row.base,
+                manufacturer: row.manufacturer,
+                core: row.core,
+                updated: row.updated,
+                bd: row.bd.unwrap(),
+                b: row.b,
+                k: row.k,
+                mra: row.mra.unwrap(),
+            }],
+        };
+        std::fs::create_dir_all(&request.cache_dir).unwrap();
+        std::fs::write(
+            cache_path(&request.cache_dir),
+            postcard::to_stdvec(&legacy).unwrap(),
+        )
+        .unwrap();
+        let loaded = load_cache(&request.cache_dir).unwrap().unwrap();
+        assert_eq!(loaded.format, LEGACY_CACHE_FORMAT);
+        assert!(loaded.rows[0].date.is_empty());
+
+        let meta_body = serde_json::to_vec(&current_meta).unwrap();
+        let mut calls = Vec::new();
+        let (sender, receiver) = events();
+        run_with_fetch(
+            request.clone(),
+            &sender,
+            &AtomicBool::new(false),
+            |url, _, _, _| {
+                calls.push(url.to_string());
+                if url == META_URL {
+                    Ok(meta_body.clone())
+                } else {
+                    Ok(body.clone())
+                }
+            },
+        );
+        assert_eq!(calls, [META_URL, DATA_URL]);
+        assert!(receiver
+            .try_iter()
+            .any(|event| matches!(event, Event::Ready { notice: None, .. })));
+        assert_eq!(
+            load_cache(&request.cache_dir).unwrap().unwrap().format,
+            CACHE_FORMAT
+        );
         std::fs::remove_dir_all(root).ok();
     }
 }

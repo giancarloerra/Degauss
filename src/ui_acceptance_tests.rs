@@ -674,13 +674,17 @@ fn run_misterzine_browser_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
     app.open_category = Some(MISTERZINE_CATEGORY.into());
     app.browsing = Browsing::Games;
     app.misterzine_items = vec![
-        crate::misterzine::Item::fixture(
+        crate::misterzine::Item::fixture_with(
             "Installed Release",
+            "Console",
+            "distribution_mister",
             crate::misterzine::LocalState::Current,
             Some(core.clone()),
         ),
-        crate::misterzine::Item::fixture(
+        crate::misterzine::Item::fixture_with(
             "Missing Release",
+            "Arcade",
+            "coinop",
             crate::misterzine::LocalState::NotInstalled,
             None,
         ),
@@ -690,11 +694,70 @@ fn run_misterzine_browser_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
     app.open_context();
     assert_eq!(
         app.context_actions,
-        [REFRESH_MISTERZINE, INSTALLED_ONLY, ABOUT_MISTERZINE]
-            .into_iter()
-            .map(str::to_string)
-            .collect::<Vec<_>>()
+        [
+            GAME_INFORMATION,
+            JUMP,
+            SEARCH,
+            FILTER_RELEASES,
+            INSTALLED_ONLY,
+            REFRESH_MISTERZINE,
+            ABOUT_MISTERZINE,
+        ]
+        .into_iter()
+        .map(str::to_string)
+        .collect::<Vec<_>>()
     );
+
+    let information = app
+        .menu
+        .iter()
+        .position(|entry| entry == GAME_INFORMATION)
+        .unwrap();
+    app.menu_list.select(information);
+    app.handle(Action::Accept);
+    assert_eq!(app.screen, Screen::Information);
+    let information = app.ui.get_information_text().to_string();
+    assert!(information.contains("Local status: Installed · Current"));
+    assert!(information.contains("Type: Console"));
+    assert!(information.contains("Source: MiSTer Distribution"));
+    assert!(!information.contains("Publisher:"));
+    app.screen = Screen::Browse;
+
+    app.open_context();
+    let filters = app
+        .menu
+        .iter()
+        .position(|entry| entry == FILTER_RELEASES)
+        .unwrap();
+    app.menu_list.select(filters);
+    app.handle(Action::Accept);
+    assert_eq!(app.screen, Screen::GameFilters);
+    app.menu_list
+        .select(crate::misterzine::FilterField::Type.index());
+    app.handle(Action::Accept);
+    assert_eq!(app.screen, Screen::GameFilterValues);
+    let arcade = app.misterzine_filter_options[crate::misterzine::FilterField::Type.index()]
+        .iter()
+        .position(|choice| choice.label() == "Arcade")
+        .unwrap();
+    app.menu_list.select(arcade);
+    app.handle(Action::Accept);
+    app.handle(Action::Quit);
+    assert_eq!(app.screen, Screen::Browse);
+    assert_eq!(app.here.len(), 1);
+    assert_eq!(app.here[0].name, "Missing Release");
+
+    app.filter = "MISSING".to_string();
+    app.apply_filter();
+    app.prepare_misterzine_browser(false);
+    assert_eq!(app.here.len(), 1, "refresh keeps current visit filters");
+    app.handle(Action::Quit);
+    assert!(app.filter.is_empty());
+    assert!(!app.misterzine_filters.is_active());
+    app.prepare_misterzine_browser(true);
+    assert_eq!(app.here.len(), 2, "reopening starts unfiltered");
+
+    app.open_context();
     let installed_only = app
         .menu
         .iter()
@@ -734,7 +797,7 @@ fn run_misterzine_browser_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
     assert!(app
         .message
         .as_deref()
-        .is_some_and(|message| message == "Missing Release is not installed on this MiSTer."));
+        .is_some_and(|message| message == "Missing Release\nNot installed"));
     app.message = None;
 
     app.open_context();
