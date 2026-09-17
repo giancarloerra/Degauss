@@ -590,6 +590,28 @@ fn favorite_rule<'a>(system: &'a SystemConfig, favorite: &Path) -> Result<Option
         .and_then(|path| system.rule_for(Path::new(path))))
 }
 
+/// The fixed core named by a format-specific rule, after confirming MiSTer
+/// can actually load it from the menu root.
+fn rule_core(
+    system: &SystemConfig,
+    rule: &LaunchRule,
+    menu_root: &Path,
+) -> Result<Option<crate::core_variants::EffectiveCore>> {
+    let Some(rbf) = rule.rbf.as_ref() else {
+        return Ok(None);
+    };
+    if !crate::core_variants::core_present(menu_root, rbf)? {
+        return Err(DegaussError::unsupported(
+            "launch core",
+            format!("{rbf} required by {} is not installed", system.name),
+        ));
+    }
+    Ok(Some(crate::core_variants::EffectiveCore {
+        rbf: rbf.clone(),
+        setname_xml: crate::core_variants::standard(system).setname_xml,
+    }))
+}
+
 /// Whether starting this file relies on the system's own core.
 ///
 /// A self-describing file names its own core: an `.mra` carries it, a
@@ -680,12 +702,10 @@ pub fn plan_with_selections(
         if !crate::core_variants::recognized_favorite(game, system)? {
             return plan(system, game, mgl_path);
         }
-        let fixed = favorite_rule(system, game)?
-            .and_then(|rule| rule.rbf.as_ref())
-            .map(|rbf| crate::core_variants::EffectiveCore {
-                rbf: rbf.clone(),
-                setname_xml: crate::core_variants::standard(system).setname_xml,
-            });
+        let fixed = match favorite_rule(system, game)? {
+            Some(rule) => rule_core(system, rule, menu_root)?,
+            None => None,
+        };
         let core = match fixed {
             Some(core) => core,
             None => {
@@ -716,7 +736,9 @@ pub fn plan_with_selections(
     if !needs_system_core(game) {
         return plan(system, game, mgl_path);
     }
-    if rule_for(system, game)?.rbf.is_some() {
+    let rule = rule_for(system, game)?;
+    if rule.rbf.is_some() {
+        rule_core(system, rule, menu_root)?;
         return plan(system, game, mgl_path);
     }
     let family = crate::launch_cores::resolve_for_version(
@@ -1118,7 +1140,9 @@ mod tests {
         let root =
             std::env::temp_dir().join(format!("degauss-game-and-watch-{}", std::process::id()));
         std::fs::remove_dir_all(&root).ok();
-        std::fs::create_dir_all(&root).unwrap();
+        std::fs::create_dir_all(root.join("_Console")).unwrap();
+        std::fs::write(root.join("_Console/GnW.rbf"), b"core").unwrap();
+        std::fs::write(root.join("_Console/GameAndWatch.rbf"), b"core").unwrap();
         let system = shipped_system("GameNWatch", vec![root.join("games/GameNWatch")]);
         let legacy = root.join("games/GameNWatch/Legacy.bin");
         let current = root.join("games/GameNWatch/Current.gnw");
@@ -1230,6 +1254,22 @@ mod tests {
             std::fs::read_to_string(&mismatched).unwrap(),
             mismatched_text
         );
+
+        std::fs::remove_file(root.join("_Console/GameAndWatch.rbf")).unwrap();
+        for game in [&current, &existing] {
+            let error = plan_with_selections(
+                &system,
+                game,
+                &root.join("missing-core.mgl"),
+                &root,
+                false,
+                None,
+                None,
+            )
+            .unwrap_err();
+            assert!(error.to_string().contains("GameAndWatch"), "{error}");
+            assert!(error.to_string().contains("not installed"), "{error}");
+        }
 
         std::fs::remove_dir_all(root).ok();
     }
