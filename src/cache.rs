@@ -22,7 +22,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use serde::{Deserialize, Serialize};
 
-use crate::browse::{Kind, Library, Place, Row, MAX_DEPTH};
+use crate::browse::{Kind, Launch, Library, Place, Row, MAX_DEPTH};
 use crate::error::{DegaussError, Result};
 
 /// Bumped when the shape of what is written changes, so an old file is
@@ -204,6 +204,10 @@ pub fn index_path(dir: &Path) -> PathBuf {
     dir.join("index.bin")
 }
 
+pub fn core_catalogue_path(dir: &Path) -> PathBuf {
+    dir.join("cores.bin")
+}
+
 /// A system's own file. The id comes from the shipped systems table and is
 /// plain, but it decides a filename, so anything surprising is replaced
 /// rather than trusted.
@@ -223,6 +227,12 @@ pub fn load_index(dir: &Path) -> Option<Index> {
     let bytes = std::fs::read(index_path(dir)).ok()?;
     let index: Index = postcard::from_bytes(&bytes).ok()?;
     (index.format == FORMAT).then_some(index)
+}
+
+pub fn load_core_catalogue(dir: &Path) -> Option<crate::systems::CoreCatalogue> {
+    let bytes = std::fs::read(core_catalogue_path(dir)).ok()?;
+    let catalogue: crate::systems::CoreCatalogue = postcard::from_bytes(&bytes).ok()?;
+    (catalogue.format == crate::systems::CoreCatalogue::FORMAT).then_some(catalogue)
 }
 
 pub fn load_system(dir: &Path, id: &str) -> Option<SystemCache> {
@@ -286,7 +296,7 @@ fn read_artwork_pack_cache(dir: &Path, id: &str) -> Result<Option<(Vec<u8>, Artw
     Ok(Some((bytes, data)))
 }
 
-fn write(path: &Path, bytes: &[u8]) -> Result<()> {
+pub(crate) fn write(path: &Path, bytes: &[u8]) -> Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)
             .map_err(|e| DegaussError::io("making the cache folder", parent, e))?;
@@ -313,6 +323,13 @@ pub fn save_index(dir: &Path, index: &Index) -> Result<()> {
     let bytes = postcard::to_stdvec(index)
         .map_err(|e| DegaussError::unsupported("cache", format!("writing the index: {e}")))?;
     write(&index_path(dir), &bytes)
+}
+
+pub fn save_core_catalogue(dir: &Path, catalogue: &crate::systems::CoreCatalogue) -> Result<()> {
+    let bytes = postcard::to_allocvec(catalogue).map_err(|error| {
+        DegaussError::unsupported("encoding the core catalogue", error.to_string())
+    })?;
+    write(&core_catalogue_path(dir), &bytes)
 }
 
 #[cfg(test)]
@@ -411,6 +428,26 @@ fn archive_skip_reason(error: &DegaussError, place: &Place) -> Option<String> {
     }
 }
 
+/// The one playable row written while walking a subtree, when there really
+/// is only one. Folder rows do not duplicate their descendants, so exactly
+/// one game below an archive produces exactly one playable cached row here.
+fn sole_written_game(cache: &SystemCache, keys: &[String]) -> Option<Row> {
+    let mut found = None;
+    for row in keys
+        .iter()
+        .filter_map(|key| cache.folders.get(key))
+        .flat_map(|folder| folder.rows.iter())
+    {
+        if matches!(row.kind, Kind::Play(_)) {
+            if found.is_some() {
+                return None;
+            }
+            found = Some(row.clone());
+        }
+    }
+    found
+}
+
 #[allow(clippy::too_many_arguments)]
 fn walk_controlled(
     library: &Library,
@@ -476,8 +513,16 @@ fn walk_controlled(
                 *games_done += 1;
             }
             Kind::Enter(inner) => {
+                // `Place::Roots` is a synthetic chooser, not a directory
+                // below a configured game root. Crossing it therefore does
+                // not consume one of the depth levels direct browsing uses.
+                let next_depth = if matches!(place, Place::Roots) {
+                    depth
+                } else {
+                    depth + 1
+                };
                 if let Place::ArchiveDirectory { archive, prefix } = inner {
-                    if depth + 1 > MAX_DEPTH {
+                    if next_depth > MAX_DEPTH {
                         // A folder inside an archive that would sit past
                         // the depth the walk goes is that folder's
                         // condition, not the archive's and not the
@@ -501,7 +546,7 @@ fn walk_controlled(
                 let below = match walk_controlled(
                     library,
                     &inner.clone(),
-                    depth + 1,
+                    next_depth,
                     cache,
                     seen,
                     cancelled,
@@ -542,7 +587,36 @@ fn walk_controlled(
                         continue;
                     }
                 };
-                row.below = Some(below);
+                if matches!(inner, Place::Archive(_)) && below == 1 {
+                    let sole = sole_written_game(cache, &seen[before.0..]).ok_or_else(|| {
+                        DegaussError::unsupported(
+                            "cache traversal",
+                            format!(
+                                "{} contains one game but no sole playable row was written",
+                                inner.path().display()
+                            ),
+                        )
+                    })?;
+                    let Kind::Play(Launch::File(target)) = &sole.kind else {
+                        return Err(DegaussError::unsupported(
+                            "cache traversal",
+                            format!(
+                                "{} contains one game with an unsupported archive target",
+                                inner.path().display()
+                            ),
+                        ));
+                    };
+                    let sole = library.flattened_archive_row(target);
+                    // The member now lives in its containing folder. Remove
+                    // the virtual archive places so cache folder counts and
+                    // future navigation describe only reachable screens.
+                    for key in seen.drain(before.0..) {
+                        cache.folders.remove(&key);
+                    }
+                    *row = sole;
+                } else {
+                    row.below = Some(below);
+                }
                 games += below;
             }
         }
@@ -1256,6 +1330,48 @@ mod tests {
         assert!(restored.systems.is_empty());
     }
 
+    #[test]
+    fn the_core_catalogue_is_additive_to_the_existing_index_cache() {
+        let store = temp("core-catalogue");
+        let mut index = Index::new();
+        index.systems.insert(
+            "NES".into(),
+            Summary {
+                games: 12,
+                folders: 1,
+            },
+        );
+        save_index(&store, &index).unwrap();
+        let catalogue = crate::systems::CoreCatalogue {
+            format: crate::systems::CoreCatalogue::FORMAT,
+            entries: vec![crate::systems::CoreEntry {
+                name: "NES".into(),
+                category: "Console".into(),
+                variant: crate::systems::CoreVariant::Standard,
+                path: PathBuf::from("/_Console/NES.rbf"),
+                logo_id: Some("NES".into()),
+            }],
+        };
+        save_core_catalogue(&store, &catalogue).unwrap();
+
+        assert_eq!(load_index(&store).unwrap().systems["NES"].games, 12);
+        assert_eq!(load_core_catalogue(&store), Some(catalogue.clone()));
+        assert_ne!(index_path(&store), core_catalogue_path(&store));
+
+        let stale = crate::systems::CoreCatalogue {
+            format: crate::systems::CoreCatalogue::FORMAT + 1,
+            entries: catalogue.entries,
+        };
+        std::fs::write(
+            core_catalogue_path(&store),
+            postcard::to_stdvec(&stale).unwrap(),
+        )
+        .unwrap();
+        assert!(load_core_catalogue(&store).is_none());
+        assert_eq!(load_index(&store).unwrap().systems["NES"].games, 12);
+        std::fs::remove_dir_all(store).unwrap();
+    }
+
     use super::*;
     use crate::config::SystemConfig;
 
@@ -1274,6 +1390,7 @@ mod tests {
             rbf: "_Computer/Test".into(),
             launch: Vec::new(),
             setname: None,
+            compatible_cores: Vec::new(),
             skip_folders: Vec::new(),
             extra_paths: Vec::new(),
         }
@@ -1406,6 +1523,42 @@ mod tests {
         assert_eq!(empty.below, Some(0), "nothing below it at any depth");
 
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn one_game_zip_is_cached_in_its_parent_with_member_warnings_preserved() {
+        let games = temp("single-game-zip");
+        let archive = games.join("Only.zip");
+        std::fs::write(
+            &archive,
+            crate::zip::tests_archive(&["nested/Game.d64", "inner.zip"], false),
+        )
+        .unwrap();
+        let library = Library::open(&system(&games)).unwrap();
+        let mut warnings = Vec::new();
+        let cache = build_system_checked(&library, &mut warnings).unwrap();
+
+        let root = cache.get(&library.start()).expect("system root");
+        assert_eq!(root.games, 1);
+        assert_eq!(root.rows.len(), 1);
+        assert_eq!(
+            root.rows[0].kind,
+            Kind::Play(crate::browse::Launch::File(archive.join("nested/Game.d64")))
+        );
+        assert_eq!(
+            cache.folders.len(),
+            1,
+            "the unreachable archive and member directories are not cached"
+        );
+        assert_eq!(
+            warnings,
+            [format!(
+                "{}: 1 member skipped: nested archive member is unsupported by MiSTer Main",
+                archive.display()
+            )],
+            "flattening must not hide a rejected companion"
+        );
+        std::fs::remove_dir_all(games).unwrap();
     }
 
     #[cfg(unix)]
@@ -2179,7 +2332,7 @@ mod tests {
     /// row. The rows are taken out by position once the folder is walked,
     /// so a folder holding rejected archives before, between and after
     /// the ones it keeps is where a position out of step would drop a
-    /// healthy archive or publish a rejected one.
+    /// healthy archive's sole game or publish a rejected archive.
     #[test]
     fn several_rejected_archives_in_one_folder_each_lose_only_their_own_row() {
         let games = temp("several-rejected-archives");
@@ -2202,7 +2355,7 @@ mod tests {
                 .iter()
                 .map(|row| (row.name.as_str(), row.below))
                 .collect::<Vec<_>>(),
-            [("B-Good", Some(1)), ("N-Good", Some(1)), ("Plain", None)]
+            [("One", None), ("One", None), ("Plain", None)]
         );
         assert_eq!(warnings.len(), 3, "{warnings:?}");
         for name in broken {
@@ -2403,7 +2556,19 @@ mod tests {
         )
         .unwrap();
         std::fs::write(games.join("Beside.d64"), b"x").unwrap();
+        std::fs::write(
+            games.join("gamelist.xml"),
+            r#"<gameList>
+            <game><path>Deep.zip</path><name>Legacy archive title</name></game>
+            </gameList>"#,
+        )
+        .unwrap();
         let library = Library::open(&system(&games)).unwrap();
+        let (direct, _) = library.list(&library.start(), false).unwrap();
+        assert!(
+            direct.iter().any(|row| row.name == "Legacy archive title"),
+            "direct browsing uses the archive-level metadata: {direct:?}"
+        );
         let mut warnings = Vec::new();
         let cache = build_system_checked(&library, &mut warnings).unwrap();
         assert_eq!(cache.summary(&library.start()).games, 2);
@@ -2413,22 +2578,15 @@ mod tests {
                 .iter()
                 .map(|row| (row.name.as_str(), row.below))
                 .collect::<Vec<_>>(),
-            [("Deep", Some(1)), ("Beside", None)],
-            "the archive is published with its shallow member"
+            [("Legacy archive title", None), ("Beside", None)],
+            "the sole retained member is published directly with the same legacy metadata as direct browsing"
         );
-        let inside = cache.get(&Place::Archive(archive.clone())).unwrap();
-        assert_eq!(
-            inside
-                .rows
-                .iter()
-                .map(|row| row.name.as_str())
-                .collect::<Vec<_>>(),
-            ["d", "shallow"]
+        assert!(
+            cache.get(&Place::Archive(archive.clone())).is_none(),
+            "the flattened archive has no reachable virtual folder"
         );
-        // The archive sits one level below the system, so the folder that
-        // would be one level past the limit is the one with MAX_DEPTH
-        // segments: the level above it is written down, empty, and nothing
-        // from there on is.
+        // The over-deep archive directory and everything below it are
+        // omitted even though the shallow retained member is flattened.
         let prefix = |segments: usize| vec!["d"; segments].join("/");
         let folder = |segments: usize| {
             cache.get(&Place::ArchiveDirectory {
@@ -2436,9 +2594,7 @@ mod tests {
                 prefix: prefix(segments),
             })
         };
-        let last = folder(MAX_DEPTH - 1).expect("the folder above the limit");
-        assert!(last.rows.is_empty(), "{:?}", last.rows);
-        assert_eq!(last.games, 0);
+        assert!(folder(MAX_DEPTH - 1).is_none());
         assert!(folder(MAX_DEPTH).is_none());
         assert!(folder(MAX_DEPTH + 1).is_none());
         assert_eq!(
@@ -2468,6 +2624,62 @@ mod tests {
         assert!(warnings.is_empty(), "{warnings:?}");
         std::fs::remove_dir_all(games).unwrap();
         std::fs::remove_dir_all(folders).unwrap();
+    }
+
+    #[test]
+    fn a_multi_root_chooser_does_not_consume_a_real_depth_level() {
+        let empty = temp("multi-root-boundary-empty");
+        let games = temp("multi-root-boundary-games");
+        let member = format!("{}Game.d64", "d/".repeat(MAX_DEPTH - 1));
+        let archive = games.join("Boundary.zip");
+        std::fs::write(
+            &archive,
+            crate::zip::tests_archive(&[member.as_str()], false),
+        )
+        .unwrap();
+        let mut config = system(&empty);
+        config.extra_paths = vec![games.to_string_lossy().into_owned()];
+        let library = Library::open(&config).unwrap();
+
+        let (direct, _) = library.list(&Place::Dir(games.clone()), false).unwrap();
+        assert_eq!(direct.len(), 1);
+        assert!(matches!(direct[0].kind, Kind::Play(_)));
+
+        let cache = build_system(&library);
+        let cached = cache.get(&Place::Dir(games.clone())).unwrap();
+        assert_eq!(cached.games, 1);
+        assert_eq!(cached.rows.len(), 1);
+        assert_eq!(cached.rows[0].kind, direct[0].kind);
+        assert!(
+            cache.get(&Place::Archive(archive)).is_none(),
+            "the archive remains flattened at the direct-browsing boundary"
+        );
+
+        std::fs::remove_dir_all(empty).unwrap();
+        std::fs::remove_dir_all(games).unwrap();
+    }
+
+    #[test]
+    fn an_archive_containing_only_a_boot_rom_contributes_no_game() {
+        let games = temp("archive-only-boot-rom");
+        let archive = games.join("Support.zip");
+        std::fs::write(&archive, crate::zip::tests_archive(&["boot.rom"], false)).unwrap();
+        let mut config = system(&games);
+        config.extensions = vec!["rom".into()];
+        let library = Library::open(&config).unwrap();
+
+        let (direct, _) = library.list(&library.start(), false).unwrap();
+        assert_eq!(direct.len(), 1);
+        assert!(matches!(direct[0].kind, Kind::Enter(Place::Archive(_))));
+
+        let cache = build_system(&library);
+        assert_eq!(cache.summary(&library.start()).games, 0);
+        let root = cache.get(&library.start()).unwrap();
+        assert_eq!(root.rows.len(), 1);
+        assert_eq!(root.rows[0].below, Some(0));
+        assert!(cache.get(&Place::Archive(archive)).is_some());
+
+        std::fs::remove_dir_all(games).unwrap();
     }
 
     #[test]

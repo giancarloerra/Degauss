@@ -36,11 +36,15 @@ use crate::config::{Color as ConfigColor, Colors, Config, SystemConfig};
 use crate::covers::{BudgetedCover, CoverCache, CoverStats};
 use crate::error::{DegaussError, Result};
 use crate::font::Font;
+use crate::game_filter::{
+    Choice as GameFilterChoice, Field as GameFilterField, Filters as GameFilters,
+};
 use crate::input::{
     Action, DuplicateGuard, InputReader, KeyEdge, RepeatConfig, Repeater, SPEED_START, SPEED_STEPS,
 };
 use crate::list_state::ListState;
 use crate::metrics::{FrameTimer, StartupTimings};
+use crate::name_display::GameNameDisplay;
 use crate::name_keyboard::{self, Key as NameKey, Page as NamePage};
 #[cfg(test)]
 use crate::options::OPTIONS;
@@ -48,7 +52,7 @@ use crate::options::{speed_badge, speed_label, OptionId, OptionsPage, ADVANCED};
 use crate::render::{FrameWork, PresentMode, Presenter};
 use crate::settings::{CustomViews, HoldButton, HoldShortcut, SaveOutcome, Settings};
 use crate::surface::Surface;
-use crate::systems::{is_favorites, FoundSystem, SystemDef};
+use crate::systems::{is_favorites, CoreCatalogue, CoreEntry, FoundSystem, SystemDef};
 
 #[cfg(test)]
 #[path = "ui_acceptance_tests.rs"]
@@ -58,6 +62,9 @@ use crate::theme_editor::{EditorEffect, EditorMode, ThemeEditor, EDITOR_ROWS, NA
 use crate::{DegaussWindow, DetailLine, Row};
 
 const HANDHELD_CATEGORY: &str = "Handheld";
+const LAST_PLAYED_CATEGORY: &str = "Last Played";
+const LAST_PLAYED_PLACE: &str = "last-played:";
+const LAST_PLAYED_SYSTEM: &str = "@LastPlayed";
 
 /// The category shown by the frontend. The system's own category remains
 /// unchanged because launch, cache and library ownership follow MiSTer.
@@ -79,6 +86,8 @@ pub enum Screen {
     Scripts,
     /// What can be done with the folder on screen, on its own button.
     Context,
+    /// Compatible declared core family for one logical system.
+    LaunchCore,
     OptionsRoot,
     Options,
     Information,
@@ -92,6 +101,10 @@ pub enum Screen {
     Screensaver,
     /// A grid of letters, for jumping down a long list or narrowing it.
     Find,
+    /// The metadata criteria applied to games in the current browse place.
+    GameFilters,
+    /// The values available for one metadata criterion.
+    GameFilterValues,
     /// Paged entry for a Favourites directory name.
     NameKeyboard,
     /// Which folder of MiSTer's favourites a game is going into.
@@ -125,6 +138,7 @@ impl Screen {
             Screen::Menu
             | Screen::Scripts
             | Screen::Context
+            | Screen::LaunchCore
             | Screen::OptionsRoot
             | Screen::Options
             | Screen::Advanced
@@ -136,7 +150,9 @@ impl Screen {
             | Screen::GameDataSource
             | Screen::ArtworkPackLocation
             | Screen::ArtworkPackDirectory
-            | Screen::SourceProgress => 1,
+            | Screen::SourceProgress
+            | Screen::GameFilters
+            | Screen::GameFilterValues => 1,
             Screen::About | Screen::Splash => 2,
             Screen::Screensaver => 3,
             Screen::Find | Screen::NameKeyboard | Screen::ScraperKeyboard => 4,
@@ -307,10 +323,14 @@ fn option_operation(option: OptionId, input: OptionInput) -> OptionOperation {
         | OptionId::ShowArt
         | OptionId::ArtworkScale
         | OptionId::DetailsStyle
+        | OptionId::GameNameDisplay
+        | OptionId::FolderBrackets
         | OptionId::ShowHidden
         | OptionId::ShowEmpty
         | OptionId::ShowOther
         | OptionId::ShowUtility
+        | OptionId::ShowCores
+        | OptionId::ShowMisterZine
         | OptionId::ShowUnstable
         | OptionId::ShowScripts
         | OptionId::CorePreference
@@ -318,6 +338,7 @@ fn option_operation(option: OptionId, input: OptionInput) -> OptionOperation {
         | OptionId::SeparateHandheldCategory
         | OptionId::ShowBar
         | OptionId::FavoritesFirst
+        | OptionId::LastPlayed
         | OptionId::HoldA
         | OptionId::HoldB
         | OptionId::HoldX
@@ -539,45 +560,49 @@ pub(crate) fn owner_of_favorite(
         let matching: Vec<&FoundSystem> = candidates
             .iter()
             .copied()
-            .filter(|system| system.def.rbf.trim().eq_ignore_ascii_case(rbf.trim()))
+            .filter(|system| {
+                system
+                    .to_config()
+                    .core_family_configs()
+                    .iter()
+                    .any(|family| {
+                        family.rbf.trim().eq_ignore_ascii_case(rbf.trim())
+                            && match reference.setname.as_deref() {
+                                Some(setname) => {
+                                    family.setname.as_deref().is_some_and(|candidate| {
+                                        candidate.eq_ignore_ascii_case(setname.trim())
+                                    })
+                                }
+                                None if reference.mgl => {
+                                    family.setname.as_deref().is_none_or(str::is_empty)
+                                }
+                                None => true,
+                            }
+                    })
+            })
             .collect();
         if !matching.is_empty() {
             candidates = matching;
         }
-    }
-
-    if let Some(setname) = reference.setname.as_deref() {
+    } else if let Some(setname) = reference.setname.as_deref() {
         let matching: Vec<&FoundSystem> = candidates
             .iter()
             .copied()
             .filter(|system| {
                 system
                     .to_config()
-                    .setname
-                    .as_deref()
-                    .is_some_and(|candidate| candidate.eq_ignore_ascii_case(setname.trim()))
+                    .core_family_configs()
+                    .iter()
+                    .any(|family| {
+                        family
+                            .setname
+                            .as_deref()
+                            .is_some_and(|candidate| candidate.eq_ignore_ascii_case(setname.trim()))
+                    })
             })
             .collect();
         if !matching.is_empty() {
             candidates = matching;
-        }
-    } else if reference.mgl && reference.rbf.is_some() {
-        // With a shared core, omission is meaningful: MiSTer starts the
-        // core's default system. A setname-bearing sibling is therefore not
-        // the owner of that MGL.
-        let defaults: Vec<&FoundSystem> = candidates
-            .iter()
-            .copied()
-            .filter(|system| {
-                system
-                    .to_config()
-                    .setname
-                    .as_deref()
-                    .is_none_or(str::is_empty)
-            })
-            .collect();
-        if !defaults.is_empty() {
-            candidates = defaults;
         }
     }
 
@@ -1114,8 +1139,25 @@ const SEARCH: &str = "Search This Folder";
 /// Put back everything the search took away.
 const CLEAR_SEARCH: &str = "Clear Search";
 
+/// Narrow the playable rows using metadata already attached in memory.
+const FILTER_GAMES: &str = "Filter Games";
+
+/// Put back games excluded by temporary metadata criteria.
+const CLEAR_FILTERS: &str = "Clear Filters";
+
 /// The id the favourites folder is listed under in the table.
 const FAVORITES_ID: &str = "Favorites";
+const CORES_CATEGORY: &str = "Cores";
+const CORES_SYSTEM_ID: &str = "__cores";
+const MISTERZINE_CATEGORY: &str = "MiSTerZine";
+const MISTERZINE_SYSTEM_ID: &str = "__misterzine";
+const REFRESH_MISTERZINE: &str = "Refresh";
+const INSTALLED_ONLY: &str = "Installed Only";
+const ABOUT_MISTERZINE: &str = "About MiSTerZine";
+
+fn core_category_pick_key(category: &str) -> String {
+    format!("{CORES_SYSTEM_ID}:{category}")
+}
 
 /// Take this row out of the list until it is asked for again.
 const HIDE_THIS: &str = "Hide This";
@@ -1123,6 +1165,7 @@ const HIDE_THIS: &str = "Hide This";
 /// Read the system being browsed off the card again, leaving every other
 /// system's listing as it was.
 const REBUILD_SYSTEM: &str = "Rebuild This System List";
+const REBUILD_CORES: &str = "Rebuild Cores List";
 
 /// Put it back.
 const SHOW_THIS: &str = "Show This";
@@ -1141,6 +1184,7 @@ const SCRAPE_SYSTEM: &str = "Scrape This System";
 const SCRAPE_FOLDER: &str = "Scrape This Folder";
 const SCRAPE_GAME: &str = "Scrape This Game";
 const GAME_DATA_SOURCE: &str = "Game Data Source";
+const LAUNCH_CORE: &str = "Launch Core";
 const CORE_VERSION: &str = "Core Version";
 const USE_DEFAULT_CORE_VERSION: &str = "Use Default Core Version";
 const SOURCE_GAMELIST: &str = "Gamelist";
@@ -1831,15 +1875,37 @@ fn effective_system_logo(logo_dir: Option<&Path>, system: &FoundSystem) -> Optio
         .or_else(|| system.logo())
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct ContextActions {
     scrape_scope: bool,
     scrape_game: bool,
     image_override: Option<bool>,
     game_data_source: bool,
+    launch_core: bool,
     core_version: bool,
     core_version_override: bool,
     favorite_folder: bool,
+    metadata_filters: bool,
+    rebuild_system: bool,
+}
+
+impl Default for ContextActions {
+    fn default() -> Self {
+        Self {
+            scrape_scope: false,
+            scrape_game: false,
+            image_override: None,
+            game_data_source: false,
+            launch_core: false,
+            core_version: false,
+            core_version_override: false,
+            favorite_folder: false,
+            metadata_filters: false,
+            // Before mixed-system collections existed, every Games context
+            // represented one system and always offered its rebuild action.
+            rebuild_system: true,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1887,16 +1953,21 @@ impl ContextPage {
                     | RENAME_FAVORITE_FOLDER
                     | DELETE_FAVORITE_FOLDER
             ),
-            Self::Find => matches!(action, JUMP | SEARCH | CLEAR_SEARCH | HIDE_THIS | SHOW_THIS),
+            Self::Find => matches!(
+                action,
+                JUMP | SEARCH | CLEAR_SEARCH | FILTER_GAMES | CLEAR_FILTERS | HIDE_THIS | SHOW_THIS
+            ),
             Self::Library => matches!(
                 action,
                 SCRAPE_SYSTEM
                     | SCRAPE_FOLDER
                     | SCRAPE_GAME
+                    | LAUNCH_CORE
                     | CORE_VERSION
                     | USE_DEFAULT_CORE_VERSION
                     | GAME_DATA_SOURCE
                     | REBUILD_SYSTEM
+                    | REBUILD_CORES
             ),
             Self::Appearance => matches!(
                 action,
@@ -1922,17 +1993,24 @@ fn context_help(action: &str) -> &'static str {
         JUMP => "Jump to the first entry beginning with the chosen letter.",
         SEARCH => "Filter this list by name. Back keeps the search until it is cleared.",
         CLEAR_SEARCH => "Clear the search and show the full current list again.",
+        FILTER_GAMES => "Filter games in this folder by their available metadata.",
+        CLEAR_FILTERS => "Clear metadata filters while keeping any title search.",
         HIDE_THIS => "Hide the selected item from browsing without deleting it.",
         SHOW_THIS => "Remove this item's hidden setting so it is normally visible again.",
         SCRAPE_SYSTEM => "Open scraping settings for the entire selected system.",
         SCRAPE_FOLDER => "Open scraping settings for this folder and its contents.",
         SCRAPE_GAME => "Scrape the selected game or search manually for a different match.",
+        LAUNCH_CORE => "Choose among the compatible core families declared for this system.",
         CORE_VERSION => "Choose an installed core version for this system, or use Default.",
         USE_DEFAULT_CORE_VERSION => {
             "Remove this system's core override and use the global core preference."
         }
         GAME_DATA_SOURCE => "Choose the image and metadata source for this system.",
         REBUILD_SYSTEM => "Rescan this entire system, including all its folders.",
+        REBUILD_CORES => "Refresh only the installed-core catalogue from MiSTer's menu folders.",
+        REFRESH_MISTERZINE => "Check the official MiSTerZine release catalogue now.",
+        INSTALLED_ONLY => "Show only releases that Degauss can launch on this MiSTer.",
+        ABOUT_MISTERZINE => "Read the source and licence for the MiSTerZine release data.",
         CHANGE_CATEGORY_IMAGE => "Choose the image shown for the selected category or system.",
         CLEAR_CATEGORY_IMAGE => {
             "Remove this custom image after confirmation and restore the default image."
@@ -2016,8 +2094,14 @@ fn context_entries(
         }
         groups.push(scrape);
     }
-    if actions.core_version {
-        let mut versions = vec![CORE_VERSION.to_string()];
+    if actions.launch_core || actions.core_version {
+        let mut versions = Vec::new();
+        if actions.launch_core {
+            versions.push(LAUNCH_CORE.to_string());
+        }
+        if actions.core_version {
+            versions.push(CORE_VERSION.to_string());
+        }
         if actions.core_version_override {
             versions.push(USE_DEFAULT_CORE_VERSION.to_string());
         }
@@ -2033,6 +2117,12 @@ fn context_entries(
         if searching {
             find.push(CLEAR_SEARCH.to_string());
         }
+        if browsing == Browsing::Games {
+            find.push(FILTER_GAMES.to_string());
+            if actions.metadata_filters {
+                find.push(CLEAR_FILTERS.to_string());
+            }
+        }
         groups.push(find);
     }
     if let Some(hidden) = hidden {
@@ -2044,7 +2134,7 @@ fn context_entries(
     }
     // Only inside a system: at the levels above there is no one system
     // to read again.
-    if browsing == Browsing::Games {
+    if browsing == Browsing::Games && actions.rebuild_system {
         groups.push(vec![REBUILD_SYSTEM.to_string()]);
     }
     if let Some(has_override) = actions.image_override {
@@ -2095,11 +2185,7 @@ fn shortened_label(value: &str, room: usize) -> String {
 }
 
 fn compact_detail_text(details: &browse::Details) -> (String, String) {
-    let released = details.released.trim();
-    let year = released
-        .get(..4)
-        .filter(|value| value.bytes().all(|byte| byte.is_ascii_digit()))
-        .unwrap_or("");
+    let year = crate::game_filter::presented_year(&details.released).unwrap_or("");
     let players = details.players.trim();
     let players = if players.is_empty() {
         String::new()
@@ -2128,8 +2214,27 @@ fn compact_detail_text(details: &browse::Details) -> (String, String) {
     (summary, publisher)
 }
 
+/// MiSTerZine's compact Details panel carries the catalogue information that
+/// used to compete with the title inside each narrow list row.
+fn misterzine_detail_text(row: &browse::Row) -> (String, String) {
+    let heading = [
+        row.genre.as_deref().unwrap_or("").trim(),
+        row.details.released.trim(),
+    ]
+    .into_iter()
+    .filter(|part| !part.is_empty())
+    .collect::<Vec<_>>()
+    .join(" · ");
+    (heading, row.details.desc.trim().to_string())
+}
+
+#[cfg(test)]
 fn game_information(row: &browse::Row) -> String {
-    let mut text = row.name.clone();
+    game_information_named(row, &row.name)
+}
+
+fn game_information_named(row: &browse::Row, shown_name: &str) -> String {
+    let mut text = shown_name.to_string();
     let values = [
         ("Genre", row.genre.as_deref().unwrap_or("")),
         ("Publisher", row.details.publisher.as_str()),
@@ -2148,6 +2253,7 @@ fn game_information(row: &browse::Row) -> String {
 
 struct ReadingInformation {
     row: browse::Row,
+    shown_name: String,
     job: crate::information_job::Job,
     cancelling: bool,
 }
@@ -2514,6 +2620,36 @@ fn reselect(rows: &[browse::Row], remembered: Option<&str>, fallback: usize) -> 
         .unwrap_or(fallback)
 }
 
+/// Order canonical rows by the name the user can currently see, without
+/// changing row identity. Full names retain the cache's established key.
+fn sort_rows_for_display(rows: &mut [browse::Row], mode: GameNameDisplay) {
+    rows.sort_by_cached_key(|row| {
+        let shown = match mode {
+            GameNameDisplay::Full => row.sort_key.clone(),
+            _ => mode.apply(&row.name).to_lowercase(),
+        };
+        (shown, row.sort_key.clone())
+    });
+}
+
+/// Apply the existing folder and favourite groups to an already ordered list.
+fn group_rows(rows: &mut [browse::Row], folders_last: bool, favorites_first: bool) {
+    // Stable, so visible alphabetical order survives inside each group.
+    rows.sort_by_key(|row| {
+        let folder = if folders_last {
+            u8::from(row.is_folder())
+        } else {
+            u8::from(!row.is_folder())
+        };
+        let favorite = if favorites_first {
+            u8::from(!row.favorite)
+        } else {
+            0
+        };
+        (folder, favorite)
+    });
+}
+
 /// The one picture that names the game under a place, from what was
 /// written down: the picture of the one game below it that has one, at
 /// any depth, or the picture every game below it shares. Hidden rows are
@@ -2698,15 +2834,10 @@ fn next_random(seed: &mut u64) -> u64 {
     x.wrapping_mul(0x2545_f491_4f6c_dd1d) >> 16
 }
 
-/// What the menu offers depends on where it was opened from: hiding a
-/// system only makes sense while looking at the list of systems.
-fn menu_entries(browsing: Browsing, system: Option<&str>, show_scripts: bool) -> Vec<String> {
+/// The general menu is deliberately stable. Actions for the selected row,
+/// including hiding it, live in the contextual Actions menu instead.
+fn menu_entries(show_scripts: bool) -> Vec<String> {
     let mut entries = Vec::new();
-    if browsing == Browsing::Systems {
-        if let Some(name) = system {
-            entries.push(format!("Hide {name}"));
-        }
-    }
     entries.push("Options".to_string());
     if show_scripts {
         entries.push("Scripts".to_string());
@@ -3142,12 +3273,24 @@ pub struct App {
     category_system: std::collections::BTreeMap<String, String>,
     /// The rows of the folder being shown.
     here: Vec<browse::Row>,
+    /// The bounded history read at startup. Presentation is resolved from
+    /// current caches only when its optional collection is visible or open.
+    last_played: crate::history::History,
+    last_played_problem: Option<String>,
+    last_played_open: bool,
+    /// Hidden row key to stable origin. The key is kept in `sort_key` after
+    /// the ordinary sort text and never rendered.
+    last_played_rows: HashMap<String, crate::history::Entry>,
     game_list: ListState,
     menu_list: ListState,
     context_actions: Vec<String>,
     context_page: Option<ContextPage>,
     context_root_selection: usize,
     context_page_selections: [usize; 4],
+    /// A view preview changes settings in memory, then writes once when
+    /// Context is left. Ordinary actions must not rewrite settings merely
+    /// because they were chosen from the same menu.
+    context_view_changed: bool,
     options_page: OptionsPage,
     options_root_list: ListState,
     option_lists: [ListState; 6],
@@ -3267,6 +3410,8 @@ pub struct App {
     show_art: bool,
     artwork_scale: ArtworkScale,
     details_style: DetailsStyle,
+    game_name_display: GameNameDisplay,
+    folder_brackets: bool,
     show_stats: bool,
     show_hidden: bool,
     /// Every system found, before hiding is applied. `systems` is the
@@ -3282,6 +3427,12 @@ pub struct App {
     all_here: Vec<browse::Row>,
     /// What is being searched for, in capitals and without spaces.
     filter: String,
+    /// Temporary metadata criteria for this one browse place.
+    game_filters: GameFilters,
+    /// Value lists derived once from the complete rows when the filter screen opens.
+    game_filter_options: [Option<Vec<GameFilterChoice>>; 6],
+    /// The field whose values are currently being chosen.
+    game_filter_field: Option<GameFilterField>,
     find_mode: FindMode,
     find_list: ListState,
     name_keyboard_page: NamePage,
@@ -3331,6 +3482,18 @@ pub struct App {
     cache_dir: PathBuf,
     /// What is known about every system, read once at startup.
     index: Option<crate::cache::Index>,
+    /// Installed direct core launchers from the same shallow menu walk used
+    /// for system discovery. Browsing this never reads the menu folders.
+    core_catalogue: CoreCatalogue,
+    /// The category open inside the optional Cores browser.
+    core_category: Option<String>,
+    /// The optional releases browser uses one independent cache and worker;
+    /// it never becomes part of the game-library index.
+    misterzine_job: Option<crate::misterzine::Job>,
+    misterzine_progress: crate::misterzine::Progress,
+    misterzine_items: Vec<crate::misterzine::Item>,
+    misterzine_visible: Vec<crate::misterzine::Item>,
+    misterzine_installed_only: bool,
     /// The open system's folders, when they have been written down.
     system_cache: Option<crate::cache::SystemCache>,
     /// Current read-only Pack snapshot. Present only for a Pack-selected
@@ -3394,6 +3557,8 @@ pub struct App {
     pending: Option<Pending>,
     information: Option<ReadingInformation>,
     menu: Vec<String>,
+    launch_core_system_id: Option<String>,
+    launch_core_choices: Vec<crate::launch_cores::Choice>,
     scripts_browser: Option<crate::scripts::Browser>,
     scripts_directory: PathBuf,
     scripts_entries: Vec<crate::scripts::Entry>,
@@ -3416,6 +3581,10 @@ pub struct App {
     show_other: bool,
     /// Show the group holding test and measurement cores.
     show_utility: bool,
+    /// Show the optional top-level Cores browser.
+    show_cores: bool,
+    /// Show the optional top-level MiSTerZine browser.
+    show_misterzine: bool,
     show_unstable: bool,
     /// Show the strip along the bottom.
     show_bar: bool,
@@ -3467,6 +3636,8 @@ pub struct Loaded {
     pub settings: Settings,
     pub settings_path: PathBuf,
     pub systems: Vec<FoundSystem>,
+    /// Direct core launchers found by the same shallow discovery pass.
+    pub core_catalogue: CoreCatalogue,
     /// The display names the card itself applies to cores and shortcuts.
     pub names: browse::DisplayNames,
     /// The full table of known systems, so a rebuild can ask the card
@@ -3499,13 +3670,22 @@ impl App {
         let show_empty = loaded.settings.show_empty.unwrap_or(false);
         let show_other = loaded.settings.show_other.unwrap_or(false);
         let show_utility = loaded.settings.show_utility.unwrap_or(false);
+        let show_cores = loaded.settings.show_cores.unwrap_or(false);
+        let show_misterzine = loaded.settings.show_misterzine.unwrap_or(false);
         let show_unstable = loaded.settings.show_unstable.unwrap_or(true);
         let show_bar = loaded.settings.show_bar.unwrap_or(true);
+        let history_path = crate::history::path_beside(&loaded.settings_path);
+        let (last_played, last_played_problem) = match crate::history::History::load(&history_path)
+        {
+            Ok(history) => (history, None),
+            Err(error) => (crate::history::History::default(), Some(error.to_string())),
+        };
         let Loaded {
             config,
             mut settings,
             settings_path,
             systems,
+            core_catalogue,
             names,
             table,
             logo_dir,
@@ -3516,6 +3696,9 @@ impl App {
             themes,
             problems: mut startup_problems,
         } = themes;
+        if let Some(problem) = last_played_problem.as_ref() {
+            startup_problems.push(format!("Last Played could not be read: {problem}"));
+        }
         let scraper_settings_path = crate::scraper::ScraperSettings::path_beside(&settings_path);
         let (scraper_settings, scraper_settings_problem) =
             match crate::scraper::ScraperSettings::load(&scraper_settings_path) {
@@ -3580,6 +3763,8 @@ impl App {
                 DetailsStyle::default()
             }),
         };
+        let game_name_display = settings.game_name_display.unwrap_or_default();
+        let folder_brackets = settings.folder_brackets.unwrap_or(true);
         // Margins are saved when changed and read back here. Without this the
         // Options screen would show the saved figure while the screen kept
         // the one from the config file, and the two would disagree.
@@ -3660,6 +3845,16 @@ impl App {
         );
 
         let system_count = systems.len();
+        let cache_dir = crate::cache::dir_for(&settings_path);
+        if (show_cores || show_misterzine)
+            && crate::cache::load_core_catalogue(&cache_dir).as_ref() != Some(&core_catalogue)
+        {
+            if let Err(error) = crate::cache::save_core_catalogue(&cache_dir, &core_catalogue) {
+                startup_problems.push(format!(
+                    "Installed cores were found, but their catalogue could not be saved: {error}"
+                ));
+            }
+        }
         // Explicit choices are saved per source group; every member of the
         // group uses that root.
         let effective_artwork_pack_roots = systems
@@ -3678,6 +3873,8 @@ impl App {
             show_art: settings.show_art.unwrap_or(true),
             artwork_scale,
             details_style,
+            game_name_display,
+            folder_brackets,
             show_stats: settings.show_stats.unwrap_or(config.app.show_stats),
             show_hidden: settings.show_hidden.unwrap_or(false),
             all_systems: Vec::new(),
@@ -3685,6 +3882,9 @@ impl App {
             logo_dir,
             all_here: Vec::new(),
             filter: String::new(),
+            game_filters: GameFilters::default(),
+            game_filter_options: std::array::from_fn(|_| None),
+            game_filter_field: None,
             find_mode: FindMode::Jump,
             find_list: ListState::new(FIND_CELLS.chars().count(), FIND_CELLS.chars().count()),
             name_keyboard_page: NamePage::Lower,
@@ -3712,8 +3912,15 @@ impl App {
             opened_config: None,
             corrected_counts: HashMap::new(),
             total_games: 0,
-            cache_dir: crate::cache::dir_for(&settings_path),
+            cache_dir,
             index: None,
+            core_catalogue,
+            core_category: None,
+            misterzine_job: None,
+            misterzine_progress: Default::default(),
+            misterzine_items: Vec::new(),
+            misterzine_visible: Vec::new(),
+            misterzine_installed_only: false,
             system_cache: None,
             artwork_provider: None,
             artwork_provider_cache: HashMap::new(),
@@ -3748,12 +3955,17 @@ impl App {
             left_at: Vec::new(),
             category_system: std::collections::BTreeMap::new(),
             here: Vec::new(),
+            last_played,
+            last_played_problem,
+            last_played_open: false,
+            last_played_rows: HashMap::new(),
             game_list: ListState::new(0, geometry.visible),
             menu_list: ListState::new(0, geometry.visible),
             context_actions: Vec::new(),
             context_page: None,
             context_root_selection: 0,
             context_page_selections: [0; 4],
+            context_view_changed: false,
             options_page: OptionsPage::Navigation,
             options_root_list: ListState::new(OptionsPage::ALL.len(), geometry.visible),
             option_lists: OptionsPage::ALL
@@ -3851,12 +4063,16 @@ impl App {
             pending: None,
             information: None,
             menu: Vec::new(),
+            launch_core_system_id: None,
+            launch_core_choices: Vec::new(),
             scripts_browser: None,
             scripts_directory: PathBuf::new(),
             scripts_entries: Vec::new(),
             show_empty,
             show_other,
             show_utility,
+            show_cores,
+            show_misterzine,
             show_unstable,
             show_bar,
             category_picks: std::collections::BTreeMap::new(),
@@ -3939,6 +4155,7 @@ impl App {
             Screen::Menu
             | Screen::Scripts
             | Screen::Context
+            | Screen::LaunchCore
             | Screen::OptionsRoot
             | Screen::Options
             | Screen::Information
@@ -3946,6 +4163,8 @@ impl App {
             | Screen::ThemeEditor
             | Screen::Help
             | Screen::Find
+            | Screen::GameFilters
+            | Screen::GameFilterValues
             | Screen::NameKeyboard
             | Screen::FavoriteFolder
             | Screen::Scraper
@@ -4000,7 +4219,12 @@ impl App {
         {
             // The approved compact preview leaves more room for game titles;
             // Large Artwork gives that room to the picture instead.
-            geometry.art_width *= self.details_style.art_factor();
+            let style = if self.in_misterzine_browser() {
+                DetailsStyle::Information
+            } else {
+                self.details_style
+            };
+            geometry.art_width *= style.art_factor();
         }
         let help_height = if matches!(
             self.screen,
@@ -4008,6 +4232,7 @@ impl App {
                 | Screen::Options
                 | Screen::Advanced
                 | Screen::Context
+                | Screen::LaunchCore
                 | Screen::Scripts
                 | Screen::Scraper
                 | Screen::GameDataSource
@@ -4188,10 +4413,12 @@ impl App {
                 }
                 Screen::ScraperMatches if self.scraper_matches.is_empty() => "B Back   X Search",
                 Screen::ScraperMatches => "A Use   B Back   X Search",
-                Screen::GameDataSource | Screen::ArtworkPackLocation if self.width < 480 => {
+                Screen::LaunchCore | Screen::GameDataSource | Screen::ArtworkPackLocation
+                    if self.width < 480 =>
+                {
                     "↑↓ Choose  A Select  B Back"
                 }
-                Screen::GameDataSource | Screen::ArtworkPackLocation => {
+                Screen::LaunchCore | Screen::GameDataSource | Screen::ArtworkPackLocation => {
                     "Up/Down Choose   A Select   B Back"
                 }
                 Screen::ArtworkPackDirectory if self.width < 480 => "↑↓ Choose  A Use  B Parent",
@@ -4202,7 +4429,10 @@ impl App {
                 Screen::SourceProgress => "B Cancel",
                 Screen::OptionsRoot => "A Open   B Back",
                 Screen::Scripts => "A Open/Run   B Parent",
-                Screen::Menu | Screen::FavoriteFolder => "A Select   B Back",
+                Screen::Menu
+                | Screen::FavoriteFolder
+                | Screen::GameFilters
+                | Screen::GameFilterValues => "A Select   B Back",
                 Screen::Help => "↑↓ Read   B Back",
                 Screen::Information => "↑↓ Read   ←→ Page   B/X Actions",
                 _ => "",
@@ -4231,7 +4461,9 @@ impl App {
                 Browsing::Games => &self.game_list,
             },
             Screen::Splash | Screen::Screensaver => &self.about_list,
-            Screen::Menu | Screen::Context | Screen::Scripts => &self.menu_list,
+            Screen::Menu | Screen::Context | Screen::LaunchCore | Screen::Scripts => {
+                &self.menu_list
+            }
             Screen::OptionsRoot => &self.options_root_list,
             Screen::Options => &self.option_lists[self.options_page.index()],
             Screen::Information => &self.menu_list,
@@ -4242,6 +4474,8 @@ impl App {
             Screen::Find => &self.find_list,
             Screen::NameKeyboard => &self.name_keyboard_list,
             Screen::FavoriteFolder
+            | Screen::GameFilters
+            | Screen::GameFilterValues
             | Screen::CategoryImage
             | Screen::GameDataSource
             | Screen::ArtworkPackLocation
@@ -4262,7 +4496,9 @@ impl App {
                 Browsing::Games => &mut self.game_list,
             },
             Screen::Splash | Screen::Screensaver => &mut self.about_list,
-            Screen::Menu | Screen::Context | Screen::Scripts => &mut self.menu_list,
+            Screen::Menu | Screen::Context | Screen::LaunchCore | Screen::Scripts => {
+                &mut self.menu_list
+            }
             Screen::OptionsRoot => &mut self.options_root_list,
             Screen::Options => &mut self.option_lists[self.options_page.index()],
             Screen::Information => &mut self.menu_list,
@@ -4273,6 +4509,8 @@ impl App {
             Screen::Find => &mut self.find_list,
             Screen::NameKeyboard => &mut self.name_keyboard_list,
             Screen::FavoriteFolder
+            | Screen::GameFilters
+            | Screen::GameFilterValues
             | Screen::CategoryImage
             | Screen::GameDataSource
             | Screen::ArtworkPackLocation
@@ -4345,12 +4583,14 @@ impl App {
             return;
         };
         let mut row = row.clone();
+        let shown_name = self.game_name_display.apply(&row.name).into_owned();
         let request = self.information_request(&row);
         match request.and_then(crate::information_job::start) {
             Ok(job) => {
                 row.details.desc = "Reading full description...".to_string();
                 self.information = Some(ReadingInformation {
                     row: row.clone(),
+                    shown_name: shown_name.clone(),
                     job,
                     cancelling: false,
                 });
@@ -4358,7 +4598,10 @@ impl App {
             Err(error) => row.details.desc = format!("Could not read description: {error}"),
         }
         self.ui
-            .set_information_text(SharedString::from(game_information(&row)));
+            .set_information_text(SharedString::from(game_information_named(
+                &row,
+                &shown_name,
+            )));
         self.ui.set_information_offset(0.0);
         self.screen = Screen::Information;
         self.apply_geometry();
@@ -4369,7 +4612,13 @@ impl App {
         let browse::Kind::Play(mut launch) = row.kind.clone() else {
             return Err(DegaussError::unsupported("game information", "not a game"));
         };
-        let id = if self.in_favorites() {
+        let id = if self.last_played_open {
+            let entry = self.selected_last_played().ok_or_else(|| {
+                DegaussError::unsupported("game information", "history entry is unavailable")
+            })?;
+            launch = entry.launch.clone();
+            entry.system.clone()
+        } else if self.in_favorites() {
             let browse::Launch::File(path) = &launch else {
                 return Err(DegaussError::unsupported(
                     "game information",
@@ -4463,7 +4712,10 @@ impl App {
             crate::information_job::Event::Cancelled => unreachable!(),
         };
         self.ui
-            .set_information_text(SharedString::from(game_information(&reading.row)));
+            .set_information_text(SharedString::from(game_information_named(
+                &reading.row,
+                &reading.shown_name,
+            )));
         self.dirty = true;
     }
 
@@ -4485,7 +4737,10 @@ impl App {
                     reading.cancelling = true;
                     reading.row.details.desc = "Stopping description read...".to_string();
                     self.ui
-                        .set_information_text(SharedString::from(game_information(&reading.row)));
+                        .set_information_text(SharedString::from(game_information_named(
+                            &reading.row,
+                            &reading.shown_name,
+                        )));
                     self.dirty = true;
                     return;
                 }
@@ -5528,6 +5783,8 @@ impl App {
             self.apply_geometry();
         }
         self.opened_config = Some(config.clone());
+        self.last_played_open = false;
+        self.last_played_rows.clear();
         if self.system_cache.is_some() {
             let configured_start = browse::start_for(&config);
             let start = self
@@ -5913,12 +6170,32 @@ impl App {
     /// a scraper may or may not have filled in.
     /// Identify the exact browse place under any menu currently covering it.
     fn current_view_place(&self) -> Option<ViewPlace> {
+        if self.in_misterzine_browser() {
+            return Some(ViewPlace::Games {
+                system: MISTERZINE_SYSTEM_ID.to_string(),
+                place: MISTERZINE_CATEGORY.to_string(),
+            });
+        }
+        if self.in_cores_browser() {
+            return match self.browsing {
+                Browsing::Systems => Some(ViewPlace::Systems(CORES_CATEGORY.to_string())),
+                Browsing::Games => Some(ViewPlace::Games {
+                    system: CORES_SYSTEM_ID.to_string(),
+                    place: self.core_category.clone()?,
+                }),
+                Browsing::Categories => Some(ViewPlace::Categories),
+            };
+        }
         match self.browsing {
             Browsing::Categories => Some(ViewPlace::Categories),
             Browsing::Systems => self
                 .open_category
                 .as_ref()
                 .map(|category| ViewPlace::Systems(category.clone())),
+            Browsing::Games if self.last_played_open => Some(ViewPlace::Games {
+                system: LAST_PLAYED_SYSTEM.to_string(),
+                place: LAST_PLAYED_PLACE.to_string(),
+            }),
             Browsing::Games => Some(ViewPlace::Games {
                 system: self.open_system.clone()?,
                 place: self.trail.last()?.place.key(),
@@ -5927,6 +6204,9 @@ impl App {
     }
 
     fn context_system_id(&self) -> Option<&str> {
+        if self.in_cores_browser() || self.in_misterzine_browser() {
+            return None;
+        }
         match self.browsing {
             Browsing::Systems => self
                 .systems
@@ -6724,6 +7004,10 @@ impl App {
     /// Resolve from scratch. A missing or unrecognised custom value means the
     /// global default, never whatever view the previous place happened to use.
     fn resolve_view(&mut self) {
+        if self.in_misterzine_browser() {
+            self.layout = Layout::Details;
+            return;
+        }
         let custom = self
             .current_view_place()
             .and_then(|place| place.get(&self.settings.custom_views))
@@ -6873,6 +7157,202 @@ impl App {
         }
     }
 
+    /// Resolve the bounded mixed-system history from caches already written
+    /// for each originating system. No directory is listed and no index or
+    /// provider is rebuilt here.
+    fn resolve_last_played_rows(&mut self) -> Vec<browse::Row> {
+        let visible = self.settings.last_played.unwrap_or(0).min(10) as usize;
+        let entries: Vec<crate::history::Entry> = self
+            .last_played
+            .entries
+            .iter()
+            .take(visible)
+            .cloned()
+            .collect();
+        self.last_played_rows.clear();
+
+        let mut sources: HashMap<
+            String,
+            (
+                crate::cache::SystemCache,
+                Option<crate::artwork_pack::Provider>,
+            ),
+        > = HashMap::new();
+        let mut ids: Vec<String> = entries.iter().map(|entry| entry.system.clone()).collect();
+        ids.sort();
+        ids.dedup();
+        for id in ids {
+            if self.source_problem(&id).is_some() {
+                continue;
+            }
+            let root = crate::artwork_pack::selected_root(&self.effective_artwork_pack_roots, &id)
+                .map(Path::to_path_buf);
+            let cache = match root.as_ref() {
+                Some(_) => crate::cache::load_artwork_pack_data(&self.cache_dir, &id)
+                    .map(|data| data.cache),
+                None => crate::cache::load_system(&self.cache_dir, &id),
+            };
+            let Some(cache) = cache else {
+                continue;
+            };
+            let provider = match root.as_deref() {
+                Some(root) => match self.provider_from_state(&id, root) {
+                    Ok(provider) => provider,
+                    Err(error) => {
+                        crate::note(&format!("last played  {id}: {error}"));
+                        None
+                    }
+                },
+                None => None,
+            };
+            sources.insert(id, (cache, provider));
+        }
+
+        let mut rows = Vec::with_capacity(entries.len());
+        for entry in entries {
+            let mut row = sources
+                .get(&entry.system)
+                .and_then(|(cache, _)| {
+                    cache
+                        .folders
+                        .values()
+                        .flat_map(|folder| folder.rows.iter())
+                        .find(|row| row.kind == browse::Kind::Play(entry.launch.clone()))
+                        .cloned()
+                })
+                .unwrap_or_else(|| browse::Row {
+                    name: entry.name.clone(),
+                    sort_key: entry.name.to_lowercase(),
+                    kind: browse::Kind::Play(entry.launch.clone()),
+                    cover: None,
+                    genre: None,
+                    favorite: false,
+                    below: None,
+                    details: Default::default(),
+                });
+            if let Some((_, Some(provider))) = sources.get(&entry.system) {
+                provider.apply_prepared(std::slice::from_mut(&mut row));
+            }
+            row.favorite = row_target(&row).is_some_and(|target| self.favorites.holds(&target));
+            let key = crate::history::entry_key(&entry);
+            row.sort_key = format!("{}\0{key}", row.sort_key);
+            self.last_played_rows.insert(row.sort_key.clone(), entry);
+            rows.push(row);
+        }
+        rows
+    }
+
+    /// Find only the first current cover needed by the Home preview. Unlike
+    /// opening Last Played, rebuilding the category list must not populate
+    /// its row identity map or resolve every retained entry.
+    fn last_played_preview_cover(&mut self) -> Option<PathBuf> {
+        let visible = self.settings.last_played.unwrap_or(0).min(10) as usize;
+        let entries: Vec<crate::history::Entry> = self
+            .last_played
+            .entries
+            .iter()
+            .take(visible)
+            .cloned()
+            .collect();
+        let mut sources: HashMap<
+            String,
+            (
+                crate::cache::SystemCache,
+                Option<crate::artwork_pack::Provider>,
+            ),
+        > = HashMap::new();
+        let mut unavailable = HashSet::new();
+
+        for entry in entries {
+            if unavailable.contains(&entry.system) || self.source_problem(&entry.system).is_some() {
+                continue;
+            }
+            if !sources.contains_key(&entry.system) {
+                let root = crate::artwork_pack::selected_root(
+                    &self.effective_artwork_pack_roots,
+                    &entry.system,
+                )
+                .map(Path::to_path_buf);
+                let cache = match root.as_ref() {
+                    Some(_) => crate::cache::load_artwork_pack_data(&self.cache_dir, &entry.system)
+                        .map(|data| data.cache),
+                    None => crate::cache::load_system(&self.cache_dir, &entry.system),
+                };
+                let Some(cache) = cache else {
+                    unavailable.insert(entry.system.clone());
+                    continue;
+                };
+                let provider = match root.as_deref() {
+                    Some(root) => match self.provider_from_state(&entry.system, root) {
+                        Ok(provider) => provider,
+                        Err(error) => {
+                            crate::note(&format!("last played  {}: {error}", entry.system));
+                            None
+                        }
+                    },
+                    None => None,
+                };
+                sources.insert(entry.system.clone(), (cache, provider));
+            }
+            let Some((cache, provider)) = sources.get(&entry.system) else {
+                continue;
+            };
+            let Some(mut row) = cache
+                .folders
+                .values()
+                .flat_map(|folder| folder.rows.iter())
+                .find(|row| row.kind == browse::Kind::Play(entry.launch.clone()))
+                .cloned()
+            else {
+                continue;
+            };
+            if let Some(provider) = provider {
+                provider.apply_prepared(std::slice::from_mut(&mut row));
+            }
+            if row.cover.is_some() {
+                return row.cover;
+            }
+        }
+        None
+    }
+
+    fn open_last_played(&mut self) {
+        self.open_category = None;
+        self.open_system = None;
+        self.opened_config = None;
+        self.library = None;
+        self.system_cache = None;
+        self.artwork_provider = None;
+        self.trail.clear();
+        self.filter.clear();
+        self.game_filters.clear();
+        self.game_filter_options = std::array::from_fn(|_| None);
+        self.game_filter_field = None;
+        self.all_here.clear();
+        self.last_played_open = true;
+        self.here = self.resolve_last_played_rows();
+        self.game_list = ListState::new(self.here.len(), self.geometry.visible);
+        self.browsing = Browsing::Games;
+        self.resolve_view();
+        self.apply_geometry();
+        self.touch_selection();
+        if self.here.is_empty() {
+            self.message = Some(match self.last_played_problem.as_ref() {
+                Some(problem) => format!("Last Played could not be read:\n{problem}"),
+                None => "Nothing has been launched from Degauss yet.".to_string(),
+            });
+        }
+        self.dirty = true;
+    }
+
+    fn selected_last_played(&self) -> Option<&crate::history::Entry> {
+        if !self.last_played_open {
+            return None;
+        }
+        let row = self.here.get(self.game_list.selected())?;
+        self.last_played_rows.get(&row.sort_key)
+    }
+
     /// Which system's folders a path sits in, deepest first so a system
     /// inside another system's folder answers for its own.
     fn owner_of(&self, path: &Path) -> Option<String> {
@@ -6972,6 +7452,9 @@ impl App {
     /// at, but from the menu they are one entry: whatever is under the
     /// cursor goes away and comes back the same way.
     fn selected_hidden(&self) -> Option<bool> {
+        if self.last_played_open {
+            return None;
+        }
         match self.browsing {
             Browsing::Games => {
                 let row = self.here.get(self.game_list.selected())?;
@@ -7027,7 +7510,7 @@ impl App {
         self.correct_system_counts();
         self.screen = Screen::Browse;
         self.apply_geometry();
-        self.relist_here();
+        self.relist_here_preserving_game_filters();
         self.dirty = true;
     }
 
@@ -7054,25 +7537,31 @@ impl App {
                 }
             }
         }
-        // Stable, so the alphabet inside each group survives. Folders lead
-        // or trail as asked; favourites lead the things that are not
-        // folders. With both left alone this is the order the card was
-        // read in and nothing moves.
-        let folders_last = self.folders_last;
-        let favorites_first = self.favorites_first;
-        rows.sort_by_key(|row| {
-            let folder = if folders_last {
-                u8::from(row.is_folder())
-            } else {
-                u8::from(!row.is_folder())
-            };
-            let favorite = if favorites_first {
-                u8::from(!row.favorite)
-            } else {
-                0
-            };
-            (folder, favorite)
-        });
+        // Library and cache rows already arrive in canonical Full order.
+        // Preserve that exact path and cost for existing configurations.
+        if self.game_name_display != GameNameDisplay::Full {
+            sort_rows_for_display(rows, self.game_name_display);
+        }
+        group_rows(rows, self.folders_last, self.favorites_first);
+    }
+
+    /// Re-project the rows already held in memory after an Appearance change.
+    /// No library, metadata source or cache is opened here.
+    fn refresh_name_presentation(&mut self) {
+        let selected = self.here.get(self.game_list.selected()).map(row_key);
+        if self.filter.is_empty() {
+            sort_rows_for_display(&mut self.here, self.game_name_display);
+            group_rows(&mut self.here, self.folders_last, self.favorites_first);
+            self.game_list = ListState::new(self.here.len(), self.geometry.visible);
+        } else {
+            sort_rows_for_display(&mut self.all_here, self.game_name_display);
+            group_rows(&mut self.all_here, self.folders_last, self.favorites_first);
+            self.apply_filter();
+        }
+        let at = reselect(&self.here, selected.as_deref(), self.game_list.selected());
+        self.game_list.select(at);
+        self.apply_geometry();
+        self.touch_selection();
     }
 
     fn show_here(&mut self) {
@@ -7085,6 +7574,7 @@ impl App {
         self.browsing = Browsing::Games;
         self.resolve_view();
         self.apply_geometry();
+        self.clear_place_filters();
         match self.listing(&crumb.place) {
             Ok(mut rows) => {
                 self.enrich_favorites(&mut rows);
@@ -7092,9 +7582,6 @@ impl App {
                 self.drop_hidden(&mut rows);
                 self.derive_folder_covers(&mut rows);
                 self.mark_favorites(&mut rows);
-                // A search belongs to the folder it was typed in.
-                self.filter.clear();
-                self.all_here.clear();
                 self.here = rows;
                 self.game_list = ListState::new(self.here.len(), self.geometry.visible);
                 // The remembered row first, found again by what it is; the
@@ -7134,6 +7621,16 @@ impl App {
         }
     }
 
+    /// A title search and metadata filters never travel to another place or
+    /// survive a rebuild of the current one.
+    fn clear_place_filters(&mut self) {
+        self.filter.clear();
+        self.game_filters.clear();
+        self.game_filter_options = std::array::from_fn(|_| None);
+        self.game_filter_field = None;
+        self.all_here.clear();
+    }
+
     /// List the folder on screen again after something about it changed.
     ///
     /// The live cursor is written down first, because `show_here` restores
@@ -7148,11 +7645,63 @@ impl App {
     /// whatever slid into its place, not send it back to where the folder
     /// was entered.
     fn relist_here(&mut self) {
+        if self.last_played_open {
+            let selected = self
+                .here
+                .get(self.game_list.selected())
+                .and_then(|row| self.last_played_rows.get(&row.sort_key))
+                .map(crate::history::entry_key);
+            self.all_here.clear();
+            self.here = self.resolve_last_played_rows();
+            if self.filter.is_empty() {
+                self.game_list = ListState::new(self.here.len(), self.geometry.visible);
+                self.apply_geometry();
+                self.touch_selection();
+                self.dirty = true;
+            } else {
+                self.all_here = std::mem::take(&mut self.here);
+                self.apply_filter();
+            }
+            if let Some(selected) = selected {
+                if let Some(at) = self.here.iter().position(|row| {
+                    self.last_played_rows
+                        .get(&row.sort_key)
+                        .is_some_and(|entry| crate::history::entry_key(entry) == selected)
+                }) {
+                    self.game_list.select(at);
+                }
+            }
+            return;
+        }
         self.remember_here();
         if let Some(crumb) = self.trail.last_mut() {
             crumb.selected = self.game_list.selected();
         }
         self.show_here();
+    }
+
+    /// Re-list the same place after a local presentation or membership change.
+    ///
+    /// Hiding, favouriting or reordering a row does not leave or rebuild the
+    /// place, so its metadata filters remain in force. Title search retains
+    /// its established relist-and-clear behaviour. The rows are read afresh,
+    /// then projected through the same metadata criteria.
+    fn relist_here_preserving_game_filters(&mut self) {
+        let selected = self.here.get(self.game_list.selected()).map(row_key);
+        let fallback = self.game_list.selected();
+        let game_filters = self.game_filters.clone();
+
+        self.relist_here();
+
+        self.game_filters = game_filters;
+        self.game_filter_options = std::array::from_fn(|_| None);
+        self.game_filter_field = None;
+        if self.game_filters.is_active() {
+            self.apply_filter();
+            self.game_list
+                .select(reselect(&self.here, selected.as_deref(), fallback));
+            self.touch_selection();
+        }
     }
 
     /// The system that is open, found by its id.
@@ -7161,8 +7710,32 @@ impl App {
         self.all_systems.iter().find(|system| system.def.id == id)
     }
 
+    fn selected_origin_system_id(&self) -> Option<String> {
+        self.selected_last_played()
+            .map(|entry| entry.system.clone())
+            .or_else(|| self.open_system.clone())
+    }
+
+    fn selected_origin_system(&self) -> Option<&FoundSystem> {
+        let id = self.selected_origin_system_id()?;
+        self.all_systems.iter().find(|system| system.def.id == id)
+    }
+
     /// Where browsing currently is, for the title bar.
     fn here_label(&self) -> String {
+        if self.in_misterzine_browser() {
+            return MISTERZINE_CATEGORY.to_string();
+        }
+        if self.in_cores_browser() {
+            return self
+                .core_category
+                .as_ref()
+                .map(|category| format!("{CORES_CATEGORY} / {category}"))
+                .unwrap_or_else(|| CORES_CATEGORY.to_string());
+        }
+        if self.last_played_open {
+            return LAST_PLAYED_CATEGORY.to_string();
+        }
         let system = self
             .open_system_ref()
             .map(|system| system.name().to_string())
@@ -7190,6 +7763,42 @@ impl App {
     /// everything underneath, which would mean walking the whole subtree
     /// before answering: it picks a folder, then a game in it.
     fn random_here(&mut self, favorites_only: bool) -> Option<Outcome> {
+        if self.last_played_open {
+            if self.game_filters.is_active() {
+                return self.random_visible_here(favorites_only);
+            }
+            let candidates: Vec<usize> = self
+                .here
+                .iter()
+                .enumerate()
+                .filter(|(_, row)| {
+                    matches!(row.kind, browse::Kind::Play(_)) && (!favorites_only || row.favorite)
+                })
+                .map(|(index, _)| index)
+                .collect();
+            if candidates.is_empty() {
+                self.message = Some(
+                    if favorites_only {
+                        "No favourites in Last Played."
+                    } else {
+                        "Last Played is empty."
+                    }
+                    .to_string(),
+                );
+                self.dirty = true;
+                return None;
+            }
+            let pick = candidates[(next_random(&mut self.seed) as usize) % candidates.len()];
+            self.game_list.select(pick);
+            self.touch_selection();
+            return self
+                .random_launches
+                .then(|| self.confirm_launch())
+                .flatten();
+        }
+        if self.game_filters.is_active() {
+            return self.random_visible_here(favorites_only);
+        }
         let mut place = self.trail.last()?.place.clone();
         let mut seed = self.seed;
         // The row itself, not where it sat. `show_here` hides rows and
@@ -7282,6 +7891,45 @@ impl App {
         outcome
     }
 
+    /// Pick only from the games left visible by active metadata criteria.
+    ///
+    /// This path is deliberately non-recursive: entering another folder
+    /// clears the current place's criteria, so a hidden descendant cannot be
+    /// said to match them. With no metadata criterion the established
+    /// recursive path above remains byte-for-byte in charge.
+    fn random_visible_here(&mut self, favorites_only: bool) -> Option<Outcome> {
+        let games: Vec<usize> = self
+            .here
+            .iter()
+            .enumerate()
+            .filter(|(_, row)| matches!(row.kind, browse::Kind::Play(_)))
+            .filter(|(_, row)| !favorites_only || row.favorite)
+            .map(|(index, _)| index)
+            .collect();
+        let Some(&selected) =
+            games.get((next_random(&mut self.seed) as usize) % games.len().max(1))
+        else {
+            self.message = Some(if favorites_only {
+                "No matching favourites in this folder.".to_string()
+            } else {
+                "No matching games in this folder.".to_string()
+            });
+            self.screen = Screen::Browse;
+            self.apply_geometry();
+            self.dirty = true;
+            return None;
+        };
+        self.game_list.select(selected);
+        self.screen = Screen::Browse;
+        self.apply_geometry();
+        self.touch_selection();
+        if self.random_launches {
+            self.confirm_launch()
+        } else {
+            None
+        }
+    }
+
     /// Start the selected game. No question first: choosing a game in a list
     /// of games is not ambiguous, and a confirmation on every launch is a
     /// second press for every game anyone ever plays.
@@ -7299,7 +7947,26 @@ impl App {
             self.dirty = true;
             return None;
         };
-        let mut config = self.opened_config.clone()?;
+        let mut history_system = if self.in_favorites() {
+            None
+        } else {
+            self.selected_last_played()
+                .map(|entry| entry.system.clone())
+                .or_else(|| self.open_system.clone())
+        };
+        let mut history_launch = game.clone();
+        let mut config = if let Some(id) = self.selected_last_played().map(|entry| &entry.system) {
+            let Some(system) = self.all_systems.iter().find(|system| &system.def.id == id) else {
+                self.message = Some(format!(
+                    "{name}: its original system is no longer available"
+                ));
+                self.dirty = true;
+                return None;
+            };
+            system.to_config()
+        } else {
+            self.opened_config.clone()?
+        };
         if self.in_favorites() {
             if let browse::Launch::File(path) = &game {
                 if let Some(reference) = crate::favorites::reference_of(path, &self.homes()) {
@@ -7317,8 +7984,13 @@ impl App {
                             self.all_systems.iter().find(|system| system.def.id == id)
                         {
                             config = owner.to_config();
+                            history_system = Some(id);
                         }
                     }
+                    history_launch = match crate::launch::amiga_marker(path) {
+                        Some((install, title)) => browse::Launch::AmigaVision { install, title },
+                        None => browse::Launch::File(reference.cache_target.clone()),
+                    };
                     if crate::zip::split_member_path(&reference.owner_target).is_some() {
                         if let Err(error) =
                             crate::zip::validate_member_for_launch(&reference.owner_target)
@@ -7350,15 +8022,29 @@ impl App {
             .as_ref()
             .and_then(|id| self.settings.core_choices.get(id))
             .map(String::as_str);
+        let selected_family = core_system
+            .as_ref()
+            .and_then(|id| self.settings.launch_cores.get(id))
+            .map(String::as_str);
         let ra_first = self.settings.core_preference.unwrap_or_default()
             == crate::settings::CorePreference::RetroAchievementsFirst;
         if !self_describing {
-            if let Err(error) = crate::core_choices::resolve(
+            let checked = crate::launch_cores::resolve_for_version(
                 &config,
                 Path::new(&self.config.menu_root),
+                selected_family,
                 selected_core,
                 ra_first,
-            ) {
+            )
+            .and_then(|family| {
+                crate::core_choices::resolve(
+                    &family,
+                    Path::new(&self.config.menu_root),
+                    selected_core,
+                    ra_first,
+                )
+            });
+            if let Err(error) = checked {
                 self.message = Some(error.to_string());
                 self.dirty = true;
                 return None;
@@ -7400,25 +8086,59 @@ impl App {
         // cannot be built becomes a message here rather than an exit later.
         let mgl = Path::new("/tmp/degauss.mgl");
         let plan = match &game {
-            browse::Launch::File(path) => crate::launch::plan_with_choice(
+            browse::Launch::File(path) => crate::launch::plan_with_selections(
                 &config,
                 path,
                 mgl,
                 Path::new(&self.config.menu_root),
                 ra_first,
                 selected_core,
+                selected_family,
             ),
             browse::Launch::AmigaVision { install, title } => {
                 crate::launch::plan_amiga_vision(&config, install, title, mgl)
             }
         };
+        let history =
+            if self.settings.last_played.unwrap_or(0) > 0 && self.last_played_problem.is_none() {
+                history_system.map(|system| HistoryUpdate {
+                    path: crate::history::path_beside(&self.settings_path),
+                    entry: crate::history::Entry {
+                        system,
+                        launch: history_launch,
+                        name: name.clone(),
+                    },
+                })
+            } else {
+                None
+            };
         match plan {
             Ok(plan) => Some(Outcome::Launch {
                 plan: Box::new(plan),
                 name,
+                history,
             }),
             Err(e) => {
                 self.message = Some(format!("{e}"));
+                self.dirty = true;
+                None
+            }
+        }
+    }
+
+    fn confirm_core_launch(&mut self) -> Option<Outcome> {
+        let row = self.here.get(self.game_list.selected())?;
+        let browse::Kind::Play(browse::Launch::File(path)) = &row.kind else {
+            return None;
+        };
+        match crate::launch::plan_core(path, Path::new(&self.config.menu_root)) {
+            Ok(plan) => Some(Outcome::Launch {
+                plan: Box::new(plan),
+                name: row.name.clone(),
+                history: None,
+            }),
+            Err(error) => {
+                self.message = Some(error.to_string());
                 self.dirty = true;
                 None
             }
@@ -7822,6 +8542,78 @@ impl App {
             );
             return;
         }
+        if self.misterzine_job.is_some() {
+            let progress = &self.misterzine_progress;
+            let matching = progress.phase == crate::misterzine::Phase::Matching;
+            let installed = self
+                .misterzine_items
+                .iter()
+                .filter(|item| item.installed())
+                .count();
+            self.ui.set_operation_kind(3);
+            self.ui.set_operation_details(false);
+            self.ui.set_operation_title(MISTERZINE_CATEGORY.into());
+            self.ui.set_operation_state(
+                if progress.cancelling {
+                    "Cancelling"
+                } else {
+                    progress.phase.label()
+                }
+                .into(),
+            );
+            self.ui.set_operation_subject("Official Releases".into());
+            self.ui.set_operation_activity(
+                match progress.phase {
+                    crate::misterzine::Phase::Checking => "Checking for changes",
+                    crate::misterzine::Phase::Downloading => "Reading release data",
+                    crate::misterzine::Phase::Matching => "Comparing with this MiSTer",
+                }
+                .into(),
+            );
+            self.ui
+                .set_operation_determinate(matching && progress.total > 0);
+            self.ui
+                .set_operation_fraction(progress.completed as f32 / progress.total.max(1) as f32);
+            self.ui.set_operation_progress(
+                if matching && progress.total > 0 {
+                    format!("{} / {} Releases", progress.completed, progress.total)
+                } else {
+                    String::new()
+                }
+                .into(),
+            );
+            self.ui.set_operation_note(
+                if progress.cancelling {
+                    "Stopping safely"
+                } else if self.misterzine_items.is_empty() {
+                    "This normally takes only a few seconds"
+                } else {
+                    "Saved releases stay available if this check fails"
+                }
+                .into(),
+            );
+            self.ui
+                .set_operation_counts(ModelRc::new(VecModel::from(vec![
+                    DetailLine {
+                        label: "Installed".into(),
+                        value: installed.to_string().into(),
+                    },
+                    DetailLine {
+                        label: "Releases".into(),
+                        value: self.misterzine_items.len().to_string().into(),
+                    },
+                ])));
+            self.ui.set_operation_problem(SharedString::default());
+            self.ui.set_operation_controls(
+                if progress.cancelling {
+                    "Stopping Safely"
+                } else {
+                    "B Cancel"
+                }
+                .into(),
+            );
+            return;
+        }
         if self.screen != Screen::ScraperProgress {
             return;
         }
@@ -8004,8 +8796,14 @@ impl App {
                 self.message = Some("Indexing cancelled during preparation".to_string());
             }
             Err(error) => self.message = Some(error.to_string()),
-            Ok(Some(found)) => {
-                self.apply_discovered_systems(found);
+            Ok(Some(discovered)) => {
+                if let Err(error) =
+                    crate::cache::save_core_catalogue(&self.cache_dir, &discovered.cores)
+                {
+                    self.build_warning(format!("Core catalogue not saved: {error}"));
+                }
+                self.core_catalogue = discovered.cores;
+                self.apply_discovered_systems(discovered.systems);
                 let started = preparation.started;
                 self.build = Some(preparation);
                 self.resolve_artwork_sources(SourceResolutionAction::Rebuild(started));
@@ -8239,7 +9037,8 @@ impl App {
         self.apply_index();
         self.correct_system_counts();
         self.rebuild_system_list();
-        if self.open_system.is_some() && self.browsing == Browsing::Games {
+        if (self.open_system.is_some() || self.last_played_open) && self.browsing == Browsing::Games
+        {
             self.relist_here();
         }
         let result = format!(
@@ -8307,6 +9106,332 @@ impl App {
         self.touch_selection();
     }
 
+    fn in_cores_browser(&self) -> bool {
+        self.open_category.as_deref() == Some(CORES_CATEGORY)
+    }
+
+    fn in_misterzine_browser(&self) -> bool {
+        self.open_category.as_deref() == Some(MISTERZINE_CATEGORY)
+    }
+
+    fn misterzine_request(&self, force_refresh: bool) -> crate::misterzine::Request {
+        crate::misterzine::Request {
+            cache_dir: self.cache_dir.clone(),
+            menu_root: PathBuf::from(&self.config.menu_root),
+            cores: self.core_catalogue.clone(),
+            arcade_systems: self
+                .all_systems
+                .iter()
+                .filter(|system| system.category() == "Arcade")
+                .map(|system| crate::misterzine::ArcadeSystem {
+                    id: system.def.id.clone(),
+                    artwork_pack: self.pack_selected(&system.def.id),
+                })
+                .collect(),
+            force_refresh,
+        }
+    }
+
+    fn prepare_misterzine_browser(&mut self) {
+        self.open_category = Some(MISTERZINE_CATEGORY.to_string());
+        self.open_system = None;
+        self.core_category = None;
+        self.browsing = Browsing::Games;
+        self.filter.clear();
+        self.all_here.clear();
+        self.misterzine_progress = Default::default();
+        self.resolve_view();
+        self.apply_geometry();
+        // Leaving this browser clears the ordinary browse rows but retains
+        // the catalogue and cursor. Restore those rows before the first
+        // repaint, while the background refresh checks for newer data.
+        self.rebuild_misterzine_rows();
+    }
+
+    fn open_misterzine(&mut self, force_refresh: bool) {
+        if self.misterzine_job.is_some() {
+            return;
+        }
+        self.prepare_misterzine_browser();
+        match crate::misterzine::start(self.misterzine_request(force_refresh)) {
+            Ok(job) => self.misterzine_job = Some(job),
+            Err(error) => {
+                crate::note(&format!("misterzine   could not start: {error}"));
+                self.message = Some("MiSTerZine could not be opened. Try again.".to_string());
+                self.open_category = None;
+                self.browsing = Browsing::Categories;
+                self.rebuild_system_list();
+                self.resolve_view();
+                self.apply_geometry();
+                self.touch_selection();
+            }
+        }
+    }
+
+    fn misterzine_cover(&self, item: &crate::misterzine::Item) -> Option<PathBuf> {
+        item.cover().map(Path::to_path_buf).or_else(|| {
+            let id = item.logo_id()?;
+            self.all_systems
+                .iter()
+                .find(|system| system.def.id == id)
+                .and_then(|system| self.system_logo(system))
+                .or_else(|| {
+                    self.core_catalogue
+                        .entries
+                        .iter()
+                        .find(|entry| entry.logo_id.as_deref() == Some(id))
+                        .and_then(|entry| self.core_logo(entry))
+                })
+        })
+    }
+
+    fn rebuild_misterzine_rows(&mut self) {
+        let selected = self
+            .misterzine_visible
+            .get(self.game_list.selected())
+            .map(|item| (item.title().to_string(), item.summary()));
+        self.misterzine_visible = self
+            .misterzine_items
+            .iter()
+            .filter(|item| !self.misterzine_installed_only || item.installed())
+            .cloned()
+            .collect();
+        let covers: Vec<Option<PathBuf>> = self
+            .misterzine_visible
+            .iter()
+            .map(|item| self.misterzine_cover(item))
+            .collect();
+        self.here = self
+            .misterzine_visible
+            .iter()
+            .zip(covers)
+            .map(|(item, cover)| item.row(cover))
+            .collect();
+        let at = selected
+            .as_ref()
+            .and_then(|selected| {
+                self.misterzine_visible
+                    .iter()
+                    .position(|item| item.title() == selected.0 && item.summary() == selected.1)
+            })
+            .unwrap_or(0);
+        self.game_list = ListState::new(self.here.len(), self.geometry.visible);
+        self.game_list.select(at);
+        self.touch_selection();
+    }
+
+    fn apply_misterzine_snapshot(&mut self, snapshot: crate::misterzine::Snapshot) {
+        self.misterzine_items = snapshot.items;
+        self.rebuild_misterzine_rows();
+        self.rebuild_system_list();
+    }
+
+    fn poll_misterzine(&mut self) {
+        let mut terminal = false;
+        loop {
+            let event = self
+                .misterzine_job
+                .as_mut()
+                .and_then(crate::misterzine::Job::try_recv);
+            let Some(event) = event else {
+                break;
+            };
+            match event {
+                crate::misterzine::Event::Progress(progress) => {
+                    self.misterzine_progress = progress;
+                }
+                crate::misterzine::Event::Snapshot(snapshot) => {
+                    self.apply_misterzine_snapshot(snapshot);
+                }
+                crate::misterzine::Event::Ready { snapshot, notice } => {
+                    self.apply_misterzine_snapshot(snapshot);
+                    self.message = notice;
+                    terminal = true;
+                }
+                crate::misterzine::Event::Cancelled => {
+                    if self.misterzine_items.is_empty() {
+                        self.open_category = None;
+                        self.browsing = Browsing::Categories;
+                        self.rebuild_system_list();
+                    }
+                    terminal = true;
+                }
+                crate::misterzine::Event::Failed { message } => {
+                    self.message = Some(message);
+                    if self.misterzine_items.is_empty() {
+                        self.open_category = None;
+                        self.browsing = Browsing::Categories;
+                        self.rebuild_system_list();
+                    }
+                    terminal = true;
+                }
+            }
+        }
+        if terminal {
+            self.misterzine_job = None;
+        }
+        if terminal || self.misterzine_job.is_some() {
+            self.dirty = true;
+        }
+    }
+
+    fn confirm_misterzine_launch(&mut self) -> Option<Outcome> {
+        let item = self.misterzine_visible.get(self.game_list.selected())?;
+        let name = item.title().to_string();
+        let Some(path) = item.launch_path.as_deref() else {
+            self.message = Some(format!("{name} is not installed on this MiSTer."));
+            self.dirty = true;
+            return None;
+        };
+        match crate::launch::plan_misterzine(path, Path::new(&self.config.menu_root)) {
+            Ok(plan) => Some(Outcome::Launch {
+                plan: Box::new(plan),
+                name,
+                history: None,
+            }),
+            Err(error) => {
+                self.message = Some(error.to_string());
+                self.dirty = true;
+                None
+            }
+        }
+    }
+
+    fn core_categories(&self) -> Vec<(String, usize)> {
+        self.core_catalogue.categories()
+    }
+
+    fn selected_core_category(&self) -> Option<String> {
+        self.core_categories()
+            .get(self.system_list.selected())
+            .map(|(name, _)| name.clone())
+    }
+
+    fn core_logo(&self, entry: &CoreEntry) -> Option<PathBuf> {
+        let id = entry.logo_id.as_deref()?;
+        if let Some(system) = self.all_systems.iter().find(|system| system.def.id == id) {
+            return self.system_logo(system);
+        }
+        let logo_dir = self.logo_dir.as_deref()?;
+        crate::category_images::system_image(logo_dir, id).or_else(|| {
+            self.table
+                .iter()
+                .find(|system| system.id == id)
+                .and_then(|system| system.logo.as_deref())
+                .map(PathBuf::from)
+                .filter(|path| path.is_file())
+                .or_else(|| {
+                    ["png", "jpg"]
+                        .into_iter()
+                        .map(|extension| logo_dir.join(format!("{id}.{extension}")))
+                        .find(|path| path.is_file())
+                })
+        })
+    }
+
+    fn core_category_logo(&self, category: &str) -> Option<PathBuf> {
+        self.category_picks
+            .get(&core_category_pick_key(category))
+            .cloned()
+    }
+
+    fn core_rows(&self, category: &str) -> Vec<browse::Row> {
+        self.core_catalogue
+            .in_category(category)
+            .map(|entry| browse::Row {
+                name: entry.label(),
+                sort_key: entry.name.to_ascii_lowercase(),
+                kind: browse::Kind::Play(browse::Launch::File(entry.path.clone())),
+                cover: self.core_logo(entry),
+                genre: None,
+                favorite: false,
+                below: None,
+                details: browse::Details::default(),
+            })
+            .collect()
+    }
+
+    fn open_selected_core_category(&mut self) {
+        let Some(category) = self.selected_core_category() else {
+            return;
+        };
+        self.core_category = Some(category.clone());
+        self.filter.clear();
+        self.game_filters.clear();
+        self.game_filter_options = std::array::from_fn(|_| None);
+        self.game_filter_field = None;
+        self.all_here.clear();
+        self.here = self.core_rows(&category);
+        self.game_list = ListState::new(self.here.len(), self.geometry.visible);
+        self.browsing = Browsing::Games;
+        self.resolve_view();
+        self.apply_geometry();
+        self.touch_selection();
+    }
+
+    fn read_cores_catalogue(&self) -> crate::error::Result<CoreCatalogue> {
+        crate::systems::CoreIndex::read_checked(Path::new(&self.config.menu_root))
+            .map(|index| index.catalogue(&self.table))
+            .and_then(|catalogue| {
+                crate::cache::save_core_catalogue(&self.cache_dir, &catalogue)?;
+                Ok(catalogue)
+            })
+    }
+
+    fn rebuild_cores_catalogue(&mut self) {
+        let selected = self
+            .here
+            .get(self.game_list.selected())
+            .and_then(|row| match &row.kind {
+                browse::Kind::Play(browse::Launch::File(path)) => Some(path.clone()),
+                _ => None,
+            });
+        let outcome = self.read_cores_catalogue();
+        match outcome {
+            Ok(catalogue) => {
+                let count = catalogue.entries.len();
+                self.core_catalogue = catalogue;
+                self.filter.clear();
+                self.all_here.clear();
+                self.rebuild_system_list();
+                if self.in_cores_browser() && self.browsing == Browsing::Games {
+                    let category = self.core_category.clone().unwrap_or_default();
+                    if self
+                        .core_categories()
+                        .iter()
+                        .any(|(name, _)| name == &category)
+                    {
+                        self.here = self.core_rows(&category);
+                        self.game_list = ListState::new(self.here.len(), self.geometry.visible);
+                        if let Some(selected) = selected {
+                            if let Some(at) = self.here.iter().position(|row| {
+                                matches!(&row.kind, browse::Kind::Play(browse::Launch::File(path)) if path == &selected)
+                            }) {
+                                self.game_list.select(at);
+                            }
+                        }
+                    } else {
+                        self.here.clear();
+                        self.core_category = None;
+                        self.browsing = Browsing::Systems;
+                    }
+                }
+                self.message = Some(format!("Cores list rebuilt: {count} launchers found."));
+            }
+            Err(error) => {
+                crate::note(&format!("cores        rebuild failed: {error}"));
+                self.message = Some(format!("Cores list was not changed.\n{error}"));
+            }
+        }
+        if !matches!(self.screen, Screen::Options | Screen::Advanced) {
+            self.screen = Screen::Browse;
+        }
+        self.resolve_view();
+        self.apply_geometry();
+        self.touch_selection();
+        self.dirty = true;
+    }
+
     fn rebuild_system_list(&mut self) {
         // Nothing is hidden until the card has been read, which happens
         // once and only when something would be hidden by it.
@@ -8329,7 +9454,7 @@ impl App {
         // MiSTer's own menu uses, and only when something is in them.
         // Favourites last: it is not a machine, it is a shelf of things
         // picked off the others.
-        const ORDER: [&str; 8] = [
+        const ORDER: [&str; 9] = [
             "Arcade",
             "Console",
             HANDHELD_CATEGORY,
@@ -8337,10 +9462,21 @@ impl App {
             "Utility",
             "Other",
             "Unstable",
+            LAST_PLAYED_CATEGORY,
             FAVORITES_ID,
         ];
         let mut categories: Vec<(String, usize)> = Vec::new();
         for name in ORDER {
+            if name == LAST_PLAYED_CATEGORY {
+                let visible = self.settings.last_played.unwrap_or(0).min(10) as usize;
+                if visible > 0 {
+                    categories.push((
+                        LAST_PLAYED_CATEGORY.to_string(),
+                        self.last_played.entries.len().min(visible),
+                    ));
+                }
+                continue;
+            }
             // Other holds the cores that are not games, which is not what
             // anyone opened a game browser for. It is one switch away.
             if name == "Other" && !self.show_other {
@@ -8362,6 +9498,30 @@ impl App {
                 categories.push((name.to_string(), count));
             }
         }
+        if self.show_cores && !self.core_catalogue.entries.is_empty() {
+            let at = categories
+                .iter()
+                .position(|(name, _)| name == LAST_PLAYED_CATEGORY)
+                .or_else(|| categories.iter().position(|(name, _)| name == FAVORITES_ID))
+                .unwrap_or(categories.len());
+            categories.insert(
+                at,
+                (
+                    CORES_CATEGORY.to_string(),
+                    self.core_catalogue.entries.len(),
+                ),
+            );
+        }
+        if self.show_misterzine {
+            let at = categories
+                .iter()
+                .position(|(name, _)| name == FAVORITES_ID)
+                .unwrap_or(categories.len());
+            categories.insert(
+                at,
+                (MISTERZINE_CATEGORY.to_string(), self.misterzine_items.len()),
+            );
+        }
         // Anything with a group we did not anticipate still gets shown.
         for system in &visible {
             let name = display_category(system, separate_handheld);
@@ -8375,6 +9535,7 @@ impl App {
         }
 
         self.systems = match self.open_category.as_deref() {
+            Some(CORES_CATEGORY) | Some(MISTERZINE_CATEGORY) => Vec::new(),
             Some(open) => visible
                 .into_iter()
                 .filter(|system| display_category(system, separate_handheld) == open)
@@ -8390,7 +9551,11 @@ impl App {
         self.category_list = ListState::new(self.categories.len(), self.geometry.visible);
         self.category_list.select(selected_category);
         self.reroll_category_art();
-        let count = self.systems.len();
+        let count = if self.in_cores_browser() {
+            self.core_categories().len()
+        } else {
+            self.systems.len()
+        };
         let selected = self.system_list.selected().min(count.saturating_sub(1));
         self.system_list = ListState::new(count, self.geometry.visible);
         self.system_list.move_items(selected as isize);
@@ -8405,15 +9570,22 @@ impl App {
         let mut seed = self.seed;
         let separate_handheld = self.settings.separate_handheld_category.unwrap_or(false);
         let mut picks = std::collections::BTreeMap::new();
-        for (name, _) in &self.categories {
-            if let Some(explicit) = self.named_logo(name) {
+        let categories = self.categories.clone();
+        for (name, _) in categories {
+            if let Some(explicit) = self.named_logo(&name) {
                 picks.insert(name.clone(), explicit);
+                continue;
+            }
+            if name == LAST_PLAYED_CATEGORY {
+                if let Some(cover) = self.last_played_preview_cover() {
+                    picks.insert(name, cover);
+                }
                 continue;
             }
             let logos: Vec<PathBuf> = self
                 .all_systems
                 .iter()
-                .filter(|system| display_category(system, separate_handheld) == name)
+                .filter(|system| display_category(system, separate_handheld) == name.as_str())
                 .filter_map(|system| self.system_logo(system))
                 .collect();
             if logos.is_empty() {
@@ -8421,6 +9593,34 @@ impl App {
             }
             let pick = (next_random(&mut seed) as usize) % logos.len();
             picks.insert(name.clone(), logos[pick].clone());
+        }
+        if self.show_cores {
+            if let Some(logo) = self.named_logo(CORES_CATEGORY).or_else(|| {
+                self.core_catalogue
+                    .entries
+                    .iter()
+                    .find_map(|entry| self.core_logo(entry))
+            }) {
+                picks.insert(CORES_CATEGORY.to_string(), logo);
+            }
+            for (category, _) in self.core_categories() {
+                if let Some(logo) = self.named_logo(&category).or_else(|| {
+                    self.core_catalogue
+                        .in_category(&category)
+                        .find_map(|entry| self.core_logo(entry))
+                }) {
+                    picks.insert(core_category_pick_key(&category), logo);
+                }
+            }
+        }
+        if self.show_misterzine {
+            if let Some(logo) = self.named_logo(MISTERZINE_CATEGORY).or_else(|| {
+                self.misterzine_items
+                    .iter()
+                    .find_map(|item| self.misterzine_cover(item))
+            }) {
+                picks.insert(MISTERZINE_CATEGORY.to_string(), logo);
+            }
         }
         self.seed = seed;
         self.category_picks = picks;
@@ -8437,8 +9637,26 @@ impl App {
             return;
         };
         let name = name.clone();
+        if name == LAST_PLAYED_CATEGORY {
+            self.open_last_played();
+            return;
+        }
         self.open_category = Some(name.clone());
         self.rebuild_system_list();
+        if name == MISTERZINE_CATEGORY {
+            self.skipped_systems = false;
+            self.open_misterzine(false);
+            return;
+        }
+        if name == CORES_CATEGORY {
+            self.core_category = None;
+            self.browsing = Browsing::Systems;
+            self.skipped_systems = false;
+            self.resolve_view();
+            self.apply_geometry();
+            self.touch_selection();
+            return;
+        }
         // Back to the system this group was left on, found by id in the
         // freshly filtered list; a group never left keeps the clamped
         // index the rebuild produced, exactly as before.
@@ -9166,6 +10384,21 @@ impl App {
                 self.details_style = DetailsStyle::ALL[at];
                 self.settings.details_style = Some(self.details_style.setting().to_string());
             }
+            OptionId::GameNameDisplay => {
+                let at = step(
+                    self.game_name_display.index(),
+                    delta,
+                    GameNameDisplay::ALL.len(),
+                );
+                self.game_name_display = GameNameDisplay::ALL[at];
+                self.settings.game_name_display = Some(self.game_name_display);
+                self.refresh_name_presentation();
+            }
+            OptionId::FolderBrackets => {
+                self.folder_brackets = !self.folder_brackets;
+                self.settings.folder_brackets = Some(self.folder_brackets);
+                self.touch_selection();
+            }
             OptionId::ShowStats => {
                 self.show_stats = !self.show_stats;
                 self.settings.show_stats = Some(self.show_stats);
@@ -9238,6 +10471,52 @@ impl App {
                 self.settings.show_utility = Some(self.show_utility);
                 self.rebuild_system_list();
             }
+            OptionId::ShowCores => {
+                self.show_cores = !self.show_cores;
+                self.settings.show_cores = Some(self.show_cores);
+                if self.show_cores && self.core_catalogue.entries.is_empty() {
+                    self.rebuild_cores_catalogue();
+                }
+                if !self.show_cores && self.in_cores_browser() {
+                    self.core_category = None;
+                    self.open_category = None;
+                    self.browsing = Browsing::Categories;
+                    self.filter.clear();
+                    self.all_here.clear();
+                    self.here.clear();
+                }
+                self.rebuild_system_list();
+            }
+            OptionId::ShowMisterZine => {
+                self.show_misterzine = !self.show_misterzine;
+                self.settings.show_misterzine = Some(self.show_misterzine);
+                if self.show_misterzine && self.core_catalogue.entries.is_empty() {
+                    match self.read_cores_catalogue() {
+                        Ok(catalogue) => self.core_catalogue = catalogue,
+                        Err(error) => {
+                            crate::note(&format!(
+                                "misterzine   installed cores could not be read: {error}"
+                            ));
+                            self.message = Some(
+                                "MiSTerZine is enabled, but installed cores could not be read. Check the card and try again."
+                                    .to_string(),
+                            );
+                        }
+                    }
+                }
+                if !self.show_misterzine && self.in_misterzine_browser() {
+                    if let Some(job) = &self.misterzine_job {
+                        job.cancel();
+                    }
+                    self.misterzine_job = None;
+                    self.open_category = None;
+                    self.browsing = Browsing::Categories;
+                    self.filter.clear();
+                    self.all_here.clear();
+                    self.here.clear();
+                }
+                self.rebuild_system_list();
+            }
             OptionId::ShowBar => {
                 self.show_bar = !self.show_bar;
                 self.settings.show_bar = Some(self.show_bar);
@@ -9255,18 +10534,26 @@ impl App {
                 // The folder on screen and the list of systems were both
                 // filtered by the old answer.
                 self.rebuild_system_list();
-                self.relist_here();
+                self.relist_here_preserving_game_filters();
             }
             OptionId::FoldersLast => {
                 self.folders_last = !self.folders_last;
                 self.settings.folders_last = Some(self.folders_last);
-                self.relist_here();
+                self.relist_here_preserving_game_filters();
             }
             OptionId::FavoritesFirst => {
                 self.favorites_first = !self.favorites_first;
                 self.settings.favorites_first = Some(self.favorites_first);
                 // The folder on screen was ordered by the old answer.
-                self.relist_here();
+                self.relist_here_preserving_game_filters();
+            }
+            OptionId::LastPlayed => {
+                let current = self.settings.last_played.unwrap_or(0).min(10) as usize;
+                self.settings.last_played = Some(step(current, delta, 11) as u8);
+                if self.last_played_open {
+                    self.relist_here_preserving_game_filters();
+                }
+                self.rebuild_system_list();
             }
             OptionId::HoldA | OptionId::HoldB | OptionId::HoldX | OptionId::HoldY => {
                 let button = option.hold_button().expect("hold option has a button");
@@ -9337,12 +10624,16 @@ impl App {
             OptionId::ShowArt => on_off(self.show_art),
             OptionId::ArtworkScale => self.artwork_scale.shown().to_string(),
             OptionId::DetailsStyle => self.details_style.shown().to_string(),
+            OptionId::GameNameDisplay => self.game_name_display.label().to_string(),
+            OptionId::FolderBrackets => on_off(self.folder_brackets),
             OptionId::ShowStats => on_off(self.show_stats),
             OptionId::Present => capitalised(self.present_label),
             OptionId::ShowHidden => on_off(self.show_hidden),
             OptionId::ShowEmpty => on_off(self.show_empty),
             OptionId::ShowOther => on_off(self.show_other),
             OptionId::ShowUtility => on_off(self.show_utility),
+            OptionId::ShowCores => on_off(self.show_cores),
+            OptionId::ShowMisterZine => on_off(self.show_misterzine),
             OptionId::ShowUnstable => on_off(self.show_unstable),
             OptionId::ShowScripts => on_off(self.settings.show_scripts.unwrap_or(true)),
             OptionId::CorePreference => self
@@ -9362,6 +10653,10 @@ impl App {
             }
             OptionId::ShowBar => on_off(self.show_bar),
             OptionId::FavoritesFirst => on_off(self.favorites_first),
+            OptionId::LastPlayed => match self.settings.last_played.unwrap_or(0).min(10) {
+                0 => "Off".to_string(),
+                count => count.to_string(),
+            },
             OptionId::HoldA | OptionId::HoldB | OptionId::HoldX | OptionId::HoldY => {
                 let button = option.hold_button().expect("hold option has a button");
                 self.hold_shortcuts[button.index()].label().to_string()
@@ -9446,7 +10741,7 @@ impl App {
         let save_message = self.message.take();
         self.corrected_counts.clear();
         self.rebuild_system_list();
-        self.relist_here();
+        self.relist_here_preserving_game_filters();
         if saved {
             self.message = Some(format!("{held} shown again"));
         } else {
@@ -9508,6 +10803,19 @@ impl App {
     fn go_back(&mut self) -> Option<Outcome> {
         match self.screen {
             Screen::Screensaver => self.leave_screensaver(),
+            Screen::GameFilters => {
+                self.screen = Screen::Browse;
+                self.resolve_view();
+                self.apply_geometry();
+                self.touch_selection();
+            }
+            Screen::GameFilterValues => {
+                let selected = self
+                    .game_filter_field
+                    .map(GameFilterField::index)
+                    .unwrap_or(0);
+                self.show_game_filters(selected);
+            }
             Screen::Find | Screen::FavoriteFolder => {
                 // The chooser's rows are done with once it is left.
                 self.favorite_destinations.clear();
@@ -9529,6 +10837,15 @@ impl App {
             }
             Screen::CategoryImage => self.leave_category_image_picker(),
             Screen::ScraperMatches => self.leave_scraper_matches(),
+            Screen::LaunchCore => {
+                self.launch_core_choices.clear();
+                self.launch_core_system_id = None;
+                self.screen = Screen::Browse;
+                self.reopen_context_for(LAUNCH_CORE);
+                if let Some(index) = self.menu.iter().position(|entry| entry == LAUNCH_CORE) {
+                    self.menu_list.select(index);
+                }
+            }
             Screen::GameDataSource => {
                 self.screen = Screen::Browse;
                 self.reopen_context_for(GAME_DATA_SOURCE);
@@ -9582,7 +10899,7 @@ impl App {
                     // A contextual change is deliberately saved on close so
                     // stepping through several previews does not write the
                     // card for every press.
-                    if !self.save_settings() {
+                    if !self.save_context_view_if_changed() {
                         return None;
                     }
                     self.remember_context_selection();
@@ -9602,7 +10919,42 @@ impl App {
                 self.touch_selection();
             }
             Screen::Browse => match self.browsing {
+                Browsing::Games if self.in_misterzine_browser() => {
+                    self.filter.clear();
+                    self.all_here.clear();
+                    self.here.clear();
+                    self.open_category = None;
+                    self.browsing = Browsing::Categories;
+                    self.rebuild_system_list();
+                    self.resolve_view();
+                    self.apply_geometry();
+                    self.touch_selection();
+                }
+                Browsing::Games if self.in_cores_browser() => {
+                    self.clear_place_filters();
+                    self.here.clear();
+                    self.core_category = None;
+                    self.browsing = Browsing::Systems;
+                    self.resolve_view();
+                    self.apply_geometry();
+                    self.touch_selection();
+                }
                 Browsing::Games => {
+                    if self.last_played_open {
+                        self.last_played_open = false;
+                        self.last_played_rows.clear();
+                        self.open_system = None;
+                        self.opened_config = None;
+                        self.here.clear();
+                        self.clear_place_filters();
+                        self.browsing = Browsing::Categories;
+                        self.open_category = None;
+                        self.rebuild_system_list();
+                        self.resolve_view();
+                        self.apply_geometry();
+                        self.touch_selection();
+                        return None;
+                    }
                     // Out of the folder first; only when there is no folder
                     // left does B leave the system.
                     if self.leave() {
@@ -9633,6 +10985,15 @@ impl App {
                     self.apply_geometry();
                     self.touch_selection();
                 }
+                Browsing::Systems if self.in_cores_browser() => {
+                    self.core_category = None;
+                    self.browsing = Browsing::Categories;
+                    self.open_category = None;
+                    self.rebuild_system_list();
+                    self.resolve_view();
+                    self.apply_geometry();
+                    self.touch_selection();
+                }
                 Browsing::Systems => {
                     self.remember_system_here();
                     self.browsing = Browsing::Categories;
@@ -9652,18 +11013,7 @@ impl App {
     }
 
     fn open_menu(&mut self) {
-        let system = if self.browsing == Browsing::Systems {
-            self.systems
-                .get(self.system_list.selected())
-                .map(|s| s.name().to_string())
-        } else {
-            None
-        };
-        self.menu = menu_entries(
-            self.browsing,
-            system.as_deref(),
-            self.settings.show_scripts.unwrap_or(true),
-        );
+        self.menu = menu_entries(self.settings.show_scripts.unwrap_or(true));
         self.menu_list = ListState::new(self.menu.len(), self.geometry.visible);
         self.screen = Screen::Menu;
         self.apply_geometry();
@@ -9796,6 +11146,21 @@ impl App {
             return ">".to_string();
         }
         match self.menu.get(index).map(String::as_str) {
+            Some(LAUNCH_CORE) => self
+                .core_system_id()
+                .and_then(|id| {
+                    self.all_systems
+                        .iter()
+                        .find(|system| system.def.id == id)
+                        .map(|system| {
+                            crate::launch_cores::saved_label(
+                                &system.to_config(),
+                                self.settings.launch_cores.get(&id).map(String::as_str),
+                            )
+                        })
+                })
+                .unwrap_or_default(),
+            Some(INSTALLED_ONLY) => on_off(self.misterzine_installed_only),
             Some(CORE_VERSION) => self
                 .core_system_id()
                 .and_then(|id| self.settings.core_choices.get(&id))
@@ -9832,12 +11197,22 @@ impl App {
             self.layout.prev()
         };
         self.remember_view();
+        self.context_view_changed = true;
         self.apply_geometry();
         self.touch_selection();
         self.dirty = true;
     }
 
     fn context_scope(&self) -> String {
+        if self.in_misterzine_browser() {
+            return MISTERZINE_CATEGORY.to_string();
+        }
+        if self.in_cores_browser() {
+            return match self.browsing {
+                Browsing::Games => self.here_label(),
+                _ => CORES_CATEGORY.to_string(),
+            };
+        }
         let action = self
             .menu
             .get(self.menu_list.selected())
@@ -9850,7 +11225,7 @@ impl App {
             match self.browsing {
                 Browsing::Games => {
                     if let Some(row) = self.here.get(self.game_list.selected()) {
-                        return row.name.clone();
+                        return self.game_name_display.apply(&row.name).into_owned();
                     }
                 }
                 Browsing::Systems => {
@@ -9878,9 +11253,18 @@ impl App {
         }
         if matches!(
             action,
-            CORE_VERSION | USE_DEFAULT_CORE_VERSION | GAME_DATA_SOURCE | REBUILD_SYSTEM
+            LAUNCH_CORE
+                | CORE_VERSION
+                | USE_DEFAULT_CORE_VERSION
+                | GAME_DATA_SOURCE
+                | REBUILD_SYSTEM
         ) {
-            if self.in_favorites() && matches!(action, CORE_VERSION | USE_DEFAULT_CORE_VERSION) {
+            if self.in_favorites()
+                && matches!(
+                    action,
+                    LAUNCH_CORE | CORE_VERSION | USE_DEFAULT_CORE_VERSION
+                )
+            {
                 return "Original Game System".to_string();
             }
             if let Some(id) = self.context_system_id() {
@@ -9900,7 +11284,9 @@ impl App {
     }
 
     fn core_system_id(&self) -> Option<String> {
-        let id = if self.in_favorites() && self.browsing == Browsing::Games {
+        let id = if self.last_played_open {
+            self.selected_last_played()?.system.clone()
+        } else if self.in_favorites() && self.browsing == Browsing::Games {
             let path = self.selected_game()?;
             let reference = crate::favorites::reference_of(&path, &self.homes())?;
             owner_of_favorite(&self.all_systems, &reference)?
@@ -9913,6 +11299,88 @@ impl App {
             .map(|_| id)
     }
 
+    fn open_launch_core(&mut self) {
+        let Some(id) = self.core_system_id() else {
+            return;
+        };
+        let Some(system) = self.all_systems.iter().find(|system| system.def.id == id) else {
+            return;
+        };
+        let config = system.to_config();
+        if !crate::launch_cores::has_alternatives(&config) {
+            return;
+        }
+        let selected = self.settings.launch_cores.get(&id).map(String::as_str);
+        let selected_version = self.settings.core_choices.get(&id).map(String::as_str);
+        let ra_first = self.settings.core_preference.unwrap_or_default()
+            == crate::settings::CorePreference::RetroAchievementsFirst;
+        self.launch_core_choices = crate::launch_cores::choices_for_version(
+            &config,
+            Path::new(&self.config.menu_root),
+            selected,
+            selected_version,
+            ra_first,
+        );
+        self.menu = self
+            .launch_core_choices
+            .iter()
+            .map(|choice| choice.label.clone())
+            .collect();
+        let selected = selected
+            .and_then(|saved| {
+                self.launch_core_choices
+                    .iter()
+                    .position(|choice| choice.id == saved)
+            })
+            .unwrap_or(0);
+        self.menu_list = ListState::new(self.menu.len(), self.geometry.visible);
+        self.menu_list.select(selected);
+        self.launch_core_system_id = Some(id);
+        self.screen = Screen::LaunchCore;
+        self.message = None;
+        self.apply_geometry();
+        self.dirty = true;
+    }
+
+    fn choose_launch_core(&mut self) {
+        let Some(id) = self.launch_core_system_id.clone() else {
+            return;
+        };
+        let Some(choice) = self
+            .launch_core_choices
+            .get(self.menu_list.selected())
+            .cloned()
+        else {
+            return;
+        };
+        let mut settings = self.settings.clone();
+        if choice.id.is_empty() {
+            settings.launch_cores.remove(&id);
+        } else {
+            settings.launch_cores.insert(id, choice.id.clone());
+        }
+        match settings.save(&self.settings_path) {
+            Ok(outcome) => {
+                self.settings = settings;
+                self.launch_core_choices.clear();
+                self.launch_core_system_id = None;
+                self.screen = Screen::Browse;
+                self.reopen_context_for(LAUNCH_CORE);
+                if let Some(index) = self.menu.iter().position(|entry| entry == LAUNCH_CORE) {
+                    self.menu_list.select(index);
+                }
+                self.message = match outcome {
+                    crate::settings::SaveOutcome::Durable => None,
+                    crate::settings::SaveOutcome::InstalledWithWarning(warning) => {
+                        Some(format!("Launch Core: {}\n{warning}", choice.label))
+                    }
+                };
+            }
+            Err(error) => self.message = Some(error.to_string()),
+        }
+        self.dirty = true;
+    }
+
     fn adjust_core_version(&mut self, delta: isize) {
         let Some(id) = self.core_system_id() else {
             return;
@@ -9920,29 +11388,43 @@ impl App {
         let Some(system) = self.all_systems.iter().find(|system| system.def.id == id) else {
             return;
         };
-        let available = match crate::core_choices::available(
-            &system.to_config(),
-            Path::new(&self.config.menu_root),
-        ) {
-            Ok(choices) => choices,
-            Err(error) => {
-                self.message = Some(error.to_string());
-                self.dirty = true;
-                return;
-            }
-        };
-        let mut choices = vec![(String::new(), "Default".to_string())];
-        choices.extend(
-            available
-                .into_iter()
-                .map(|choice| (choice.key, choice.label)),
-        );
+        let config = system.to_config();
         let current = self
             .settings
             .core_choices
             .get(&id)
             .map(String::as_str)
             .unwrap_or("");
+        let family = match crate::launch_cores::resolve_for_version(
+            &config,
+            Path::new(&self.config.menu_root),
+            self.settings.launch_cores.get(&id).map(String::as_str),
+            (!current.is_empty()).then_some(current),
+            self.settings.core_preference.unwrap_or_default()
+                == crate::settings::CorePreference::RetroAchievementsFirst,
+        ) {
+            Ok(family) => family,
+            Err(error) => {
+                self.message = Some(error.to_string());
+                self.dirty = true;
+                return;
+            }
+        };
+        let available =
+            match crate::core_choices::available(&family, Path::new(&self.config.menu_root)) {
+                Ok(choices) => choices,
+                Err(error) => {
+                    self.message = Some(error.to_string());
+                    self.dirty = true;
+                    return;
+                }
+            };
+        let mut choices = vec![(String::new(), "Default".to_string())];
+        choices.extend(
+            available
+                .into_iter()
+                .map(|choice| (choice.key, choice.label)),
+        );
         let at = choices
             .iter()
             .position(|(key, _)| key == current)
@@ -10009,6 +11491,63 @@ impl App {
         self.find_list.reshape(cells, FIND_COLUMNS);
         self.screen = Screen::Find;
         self.apply_geometry();
+    }
+
+    /// Open the six metadata fields using only rows already held in memory.
+    fn open_game_filters(&mut self) {
+        let rows = if self.filter.is_empty() && !self.game_filters.is_active() {
+            &self.here
+        } else {
+            &self.all_here
+        };
+        self.game_filter_options = std::array::from_fn(|index| {
+            crate::game_filter::choices(rows, GameFilterField::ALL[index])
+        });
+        self.show_game_filters(0);
+    }
+
+    fn show_game_filters(&mut self, selected: usize) {
+        self.game_filter_field = None;
+        self.menu_list = ListState::new(GameFilterField::ALL.len(), self.geometry.visible);
+        self.menu_list.select(selected);
+        self.screen = Screen::GameFilters;
+        self.apply_geometry();
+        self.dirty = true;
+    }
+
+    fn open_game_filter_values(&mut self) {
+        let Some(field) = GameFilterField::ALL.get(self.menu_list.selected()).copied() else {
+            return;
+        };
+        let Some(values) = self.game_filter_options[field.index()].as_ref() else {
+            return;
+        };
+        let selected = values
+            .iter()
+            .position(|choice| self.game_filters.choice_is_selected(field, choice))
+            .unwrap_or(0);
+        self.game_filter_field = Some(field);
+        self.menu_list = ListState::new(values.len(), self.geometry.visible);
+        self.menu_list.select(selected);
+        self.screen = Screen::GameFilterValues;
+        self.apply_geometry();
+        self.dirty = true;
+    }
+
+    fn choose_game_filter_value(&mut self) {
+        let Some(field) = self.game_filter_field else {
+            return;
+        };
+        let Some(choice) = self.game_filter_options[field.index()]
+            .as_ref()
+            .and_then(|values| values.get(self.menu_list.selected()))
+            .cloned()
+        else {
+            return;
+        };
+        self.game_filters.choose(field, &choice);
+        self.apply_filter();
+        self.show_game_filters(field.index());
     }
 
     fn open_name_keyboard(&mut self, purpose: NamePurpose, draft: String) {
@@ -10094,7 +11633,7 @@ impl App {
                 };
                 self.screen = Screen::Browse;
                 self.apply_geometry();
-                self.relist_here();
+                self.relist_here_preserving_game_filters();
                 if let Some(index) = self.here.iter().position(|row| {
                     matches!(&row.kind, browse::Kind::Enter(Place::Dir(path)) if path == &destination)
                 }) {
@@ -10118,7 +11657,7 @@ impl App {
                 });
                 self.screen = Screen::Browse;
                 self.apply_geometry();
-                self.relist_here();
+                self.relist_here_preserving_game_filters();
                 self.report_after_relist(refresh_error);
             }
             Err(error) => self.message = Some(error.to_string()),
@@ -10186,7 +11725,12 @@ impl App {
             Browsing::Games => self
                 .here
                 .iter()
-                .map(|row| first_letter(&row.sort_key))
+                .map(|row| first_letter(self.game_name_display.apply(&row.name).as_ref()))
+                .collect(),
+            Browsing::Systems if self.in_cores_browser() => self
+                .core_categories()
+                .iter()
+                .map(|(name, _)| first_letter(&name.to_lowercase()))
                 .collect(),
             Browsing::Systems => self
                 .systems
@@ -10242,7 +11786,18 @@ impl App {
             Browsing::Games => self
                 .here
                 .iter()
-                .map(|row| (first_letter(&row.sort_key), row.is_folder(), row.favorite))
+                .map(|row| {
+                    (
+                        first_letter(self.game_name_display.apply(&row.name).as_ref()),
+                        row.is_folder(),
+                        row.favorite,
+                    )
+                })
+                .collect(),
+            Browsing::Systems if self.in_cores_browser() => self
+                .core_categories()
+                .iter()
+                .map(|(name, _)| (first_letter(&name.to_lowercase()), false, false))
                 .collect(),
             Browsing::Systems => self
                 .systems
@@ -10261,22 +11816,35 @@ impl App {
         }
     }
 
-    /// Narrow the folder on screen to the titles that match.
+    /// Project the complete in-memory rows through title and metadata filters.
     ///
     /// Spaces are dropped from both sides, because the grid has no space
     /// key and typing SUPERM should still find Super Mario.
     fn apply_filter(&mut self) {
-        if self.all_here.is_empty() && !self.filter.is_empty() {
+        let metadata_active = self.game_filters.is_active();
+        let active = !self.filter.is_empty() || metadata_active;
+        if self.all_here.is_empty() && active {
             self.all_here = std::mem::take(&mut self.here);
         }
-        if self.filter.is_empty() {
+        if !active {
             self.here = std::mem::take(&mut self.all_here);
         } else {
             let wanted = self.filter.as_str();
+            let mode = self.game_name_display;
             self.here = self
                 .all_here
                 .iter()
-                .filter(|row| squashed(&row.name).contains(wanted))
+                .filter(|row| {
+                    if row.is_folder() {
+                        // Metadata criteria apply to games only. When any is
+                        // active, every subfolder remains reachable.
+                        metadata_active || wanted.is_empty() || squashed(&row.name).contains(wanted)
+                    } else {
+                        (wanted.is_empty()
+                            || squashed(mode.apply(&row.name).as_ref()).contains(wanted))
+                            && self.game_filters.matches(row)
+                    }
+                })
                 .cloned()
                 .collect();
         }
@@ -10292,6 +11860,15 @@ impl App {
             return;
         }
         self.filter.clear();
+        self.apply_filter();
+    }
+
+    /// Clear metadata criteria without changing an active title search.
+    fn clear_game_filters(&mut self) {
+        if !self.game_filters.is_active() {
+            return;
+        }
+        self.game_filters.clear();
         self.apply_filter();
     }
 
@@ -10332,6 +11909,9 @@ impl App {
 
     /// The favourite operation available for the selected row.
     fn favorite_change(&self) -> Option<FavoriteChange> {
+        if self.in_cores_browser() || self.in_misterzine_browser() {
+            return None;
+        }
         let selected = self.selected_game();
         let favorite = selected
             .as_deref()
@@ -10362,10 +11942,15 @@ impl App {
     }
 
     fn random_shortcut_available(&self) -> bool {
-        self.browse_shortcuts_ready() && self.browsing == Browsing::Games && !self.trail.is_empty()
+        self.browse_shortcuts_ready()
+            && self.browsing == Browsing::Games
+            && (self.last_played_open || !self.trail.is_empty())
     }
 
     fn hold_shortcut_available(&self, shortcut: HoldShortcut) -> bool {
+        if self.in_misterzine_browser() {
+            return false;
+        }
         if !self.browse_shortcuts_ready() {
             return false;
         }
@@ -10376,7 +11961,9 @@ impl App {
                 self.random_shortcut_available()
             }
             HoldShortcut::AddRemoveFavourite => self.favorite_change().is_some(),
-            HoldShortcut::GameInformation => self.selected_game().is_some(),
+            HoldShortcut::GameInformation => {
+                !self.in_cores_browser() && self.selected_game().is_some()
+            }
             HoldShortcut::SearchThisFolder | HoldShortcut::JumpToLetter => {
                 self.browsing != Browsing::Categories
             }
@@ -10458,15 +12045,17 @@ impl App {
         let Some(game) = self.selected_game() else {
             return;
         };
-        let Some(config) = self.opened_config.clone() else {
+        let Some(origin) = self.selected_origin_system() else {
             return;
         };
+        let config = origin.to_config();
+        let origin_id = origin.def.id.clone();
         let name = self
             .here
             .get(self.game_list.selected())
             .map(|row| row.name.clone())
             .unwrap_or_default();
-        let native_arcade_favourite = needs_native_arcade_core_link(self.open_system_ref(), &game);
+        let native_arcade_favourite = needs_native_arcade_core_link(Some(origin), &game);
 
         // A title rather than a file: written as an MGL that starts
         // AmigaVision, carrying the title in an element Main ignores.
@@ -10497,21 +12086,25 @@ impl App {
             }
             self.screen = Screen::Browse;
             self.apply_geometry();
-            self.relist_here();
+            self.relist_here_preserving_game_filters();
             self.report_after_relist(outcome_error.or(refresh_error));
             self.dirty = true;
             return;
         }
 
-        let outcome = match crate::launch::favorite_mgl_with_choice(
+        let outcome = match crate::launch::favorite_mgl_with_selections(
             &config,
             &game,
             Path::new(&self.config.menu_root),
             self.settings.core_preference.unwrap_or_default()
                 == crate::settings::CorePreference::RetroAchievementsFirst,
-            self.open_system
-                .as_ref()
-                .and_then(|id| self.settings.core_choices.get(id))
+            self.settings
+                .core_choices
+                .get(&origin_id)
+                .map(String::as_str),
+            self.settings
+                .launch_cores
+                .get(&origin_id)
                 .map(String::as_str),
         ) {
             Ok(Some(mgl)) => {
@@ -10552,7 +12145,7 @@ impl App {
         }
         self.screen = Screen::Browse;
         self.apply_geometry();
-        self.relist_here();
+        self.relist_here_preserving_game_filters();
         self.report_after_relist(outcome_error.or(refresh_error));
         self.dirty = true;
     }
@@ -10601,7 +12194,7 @@ impl App {
         }
         self.screen = Screen::Browse;
         self.apply_geometry();
-        self.relist_here();
+        self.relist_here_preserving_game_filters();
         self.report_after_relist(outcome_error.or(refresh_error));
         self.dirty = true;
     }
@@ -12153,6 +13746,9 @@ impl App {
         if let Some(group) = group {
             self.reload_open_pack_group(group);
         }
+        if self.last_played_open && self.browsing == Browsing::Games {
+            self.relist_here();
+        }
 
         match purpose {
             SourceRecoveryPurpose::OpenSystem => {
@@ -12390,12 +13986,26 @@ impl App {
 
     /// What can be done with the folder on screen.
     fn open_context(&mut self) {
+        self.context_view_changed = false;
         self.context_page = None;
         self.refresh_context();
     }
 
+    fn save_context_view_if_changed(&mut self) -> bool {
+        if !self.context_view_changed {
+            return true;
+        }
+        if !self.save_settings() {
+            return false;
+        }
+        self.context_view_changed = false;
+        true
+    }
+
     fn context_is_root(&self) -> bool {
-        self.browsing != Browsing::Categories && self.context_page.is_none()
+        !self.in_misterzine_browser()
+            && self.browsing != Browsing::Categories
+            && self.context_page.is_none()
     }
 
     fn remember_context_selection(&mut self) {
@@ -12408,7 +14018,7 @@ impl App {
 
     fn show_context_page(&mut self, page: Option<ContextPage>) {
         self.context_page = page;
-        self.menu = if self.browsing == Browsing::Categories {
+        self.menu = if self.in_misterzine_browser() || self.browsing == Browsing::Categories {
             self.context_page = None;
             self.context_actions.clone()
         } else if let Some(page) = page {
@@ -12454,6 +14064,32 @@ impl App {
     }
 
     fn refresh_context(&mut self) {
+        if self.in_misterzine_browser() {
+            self.context_actions = vec![
+                REFRESH_MISTERZINE.to_string(),
+                INSTALLED_ONLY.to_string(),
+                ABOUT_MISTERZINE.to_string(),
+            ];
+            self.show_context_page(None);
+            return;
+        }
+        if self.in_cores_browser() {
+            let mut actions = vec![JUMP.to_string()];
+            if self.browsing == Browsing::Games {
+                actions.push(SEARCH.to_string());
+                if !self.filter.is_empty() {
+                    actions.push(CLEAR_SEARCH.to_string());
+                }
+            }
+            actions.push(REBUILD_CORES.to_string());
+            actions.push(CHANGE_VIEW.to_string());
+            if self.has_custom_view() {
+                actions.push(USE_GLOBAL_VIEW.to_string());
+            }
+            self.context_actions = actions;
+            self.show_context_page(self.context_page);
+            return;
+        }
         // Inside the Favourites shelf the rows ARE the favourite files, so
         // the target-keyed lookup below answers false for every one of
         // them and the menu offered to Add what is already there. On the
@@ -12493,6 +14129,13 @@ impl App {
             .as_deref()
             .is_some_and(crate::artwork_pack::supports);
         let favorite_folder = self.selected_favorite_folder().is_some();
+        let core_system = self.core_system_id();
+        let launch_core = core_system.as_deref().is_some_and(|id| {
+            self.all_systems
+                .iter()
+                .find(|system| system.def.id == id)
+                .is_some_and(|system| crate::launch_cores::has_alternatives(&system.to_config()))
+        });
         self.context_actions = context_entries(
             self.browsing,
             !self.filter.is_empty(),
@@ -12504,11 +14147,15 @@ impl App {
                 scrape_game,
                 image_override,
                 game_data_source,
-                core_version: self.core_system_id().is_some(),
-                core_version_override: self
-                    .core_system_id()
-                    .is_some_and(|id| self.settings.core_choices.contains_key(&id)),
+                launch_core: !self.last_played_open && launch_core,
+                core_version: !self.last_played_open && core_system.is_some(),
+                core_version_override: !self.last_played_open
+                    && core_system.is_some_and(|id| self.settings.core_choices.contains_key(&id)),
                 favorite_folder,
+                metadata_filters: self.game_filters.is_active(),
+                rebuild_system: self.browsing == Browsing::Games
+                    && !self.last_played_open
+                    && !self.in_cores_browser(),
             },
         );
         if self.context_actions.is_empty() {
@@ -14039,6 +15686,14 @@ impl App {
     }
 
     pub fn handle(&mut self, action: Action) -> Option<Outcome> {
+        if let Some(job) = &self.misterzine_job {
+            if matches!(action, Action::Quit | Action::Context | Action::Menu) {
+                job.cancel();
+                self.misterzine_progress.cancelling = true;
+            }
+            self.dirty = true;
+            return None;
+        }
         if self.source_resolution.is_some() && self.build.is_none() {
             if matches!(action, Action::Quit) {
                 self.source_resolution_cancelled = true;
@@ -14418,8 +16073,17 @@ impl App {
                 Screen::Screensaver => self.leave_screensaver(),
                 Screen::Browse => match self.browsing {
                     Browsing::Categories => self.open_selected_category(),
+                    Browsing::Systems if self.in_cores_browser() => {
+                        self.open_selected_core_category()
+                    }
                     Browsing::Systems => self.open_selected_system(),
                     Browsing::Games => {
+                        if self.in_misterzine_browser() {
+                            return self.confirm_misterzine_launch();
+                        }
+                        if self.in_cores_browser() {
+                            return self.confirm_core_launch();
+                        }
                         if let Some(row) = self.here.get(self.game_list.selected()) {
                             match &row.kind {
                                 browse::Kind::Enter(place) => {
@@ -14486,16 +16150,32 @@ impl App {
                         && choice != CHANGE_VIEW
                         && choice != USE_GLOBAL_VIEW
                         && choice != USE_DEFAULT_CORE_VERSION
-                        && !self.save_settings()
+                        && !self.save_context_view_if_changed()
                     {
                         return None;
                     }
-                    if choice == CHANGE_VIEW || choice == CORE_VERSION {
+                    if choice == REFRESH_MISTERZINE {
+                        self.screen = Screen::Browse;
+                        self.open_misterzine(true);
+                    } else if choice == INSTALLED_ONLY {
+                        self.misterzine_installed_only = !self.misterzine_installed_only;
+                        self.screen = Screen::Browse;
+                        self.rebuild_misterzine_rows();
+                        self.apply_geometry();
+                    } else if choice == ABOUT_MISTERZINE {
+                        self.screen = Screen::Browse;
+                        self.message = Some(
+                            "MiSTerZine\nOfficial release catalogue: misterzine.fyi\nData licensed CC BY 4.0. Artwork is not downloaded."
+                                .to_string(),
+                        );
+                    } else if choice == CHANGE_VIEW || choice == CORE_VERSION {
                         // Stays open, like a setting: the point is to see
                         // the view while choosing it.
                         self.adjust_context(1);
                     } else if choice == USE_DEFAULT_CORE_VERSION {
                         self.use_default_core_version();
+                    } else if choice == LAUNCH_CORE {
+                        self.open_launch_core();
                     } else if choice == USE_GLOBAL_VIEW {
                         self.use_global_view();
                     } else if choice == CHANGE_CATEGORY_IMAGE {
@@ -14522,6 +16202,8 @@ impl App {
                         self.open_find(FindMode::Jump);
                     } else if choice == SEARCH {
                         self.open_find(FindMode::Search);
+                    } else if choice == FILTER_GAMES {
+                        self.open_game_filters();
                     } else if choice == ADD_FAVORITE {
                         self.open_favorite_folders();
                     } else if choice == REMOVE_FAVORITE {
@@ -14549,8 +16231,14 @@ impl App {
                         }
                     } else if choice == REBUILD_SYSTEM {
                         self.rebuild_open_system();
+                    } else if choice == REBUILD_CORES {
+                        self.rebuild_cores_catalogue();
                     } else if choice == CLEAR_SEARCH {
                         self.clear_filter();
+                        self.screen = Screen::Browse;
+                        self.apply_geometry();
+                    } else if choice == CLEAR_FILTERS {
+                        self.clear_game_filters();
                         self.screen = Screen::Browse;
                         self.apply_geometry();
                     } else if matches!(choice.as_str(), SCRAPE_SYSTEM | SCRAPE_FOLDER | SCRAPE_GAME)
@@ -14591,6 +16279,8 @@ impl App {
                 Screen::Options | Screen::Advanced => {
                     self.handle_option_input(OptionInput::Activate)
                 }
+                Screen::GameFilters => self.open_game_filter_values(),
+                Screen::GameFilterValues => self.choose_game_filter_value(),
                 Screen::OptionsRoot => {
                     if let Some(page) = OptionsPage::ALL.get(self.options_root_list.selected()) {
                         self.open_options_page(*page);
@@ -14598,6 +16288,7 @@ impl App {
                 }
                 Screen::Information => {}
                 Screen::Scraper => self.activate_scraper_row(),
+                Screen::LaunchCore => self.choose_launch_core(),
                 Screen::GameDataSource => match self.menu_list.selected() {
                     0 => self.choose_automatic_source(),
                     1 => self.begin_source_switch(crate::source_cache::Target::Gamelist),
@@ -14683,7 +16374,7 @@ impl App {
                                 self.open_system_ref()
                                     .and_then(|system| self.system_logo(system))
                             }),
-                            row.name.clone(),
+                            self.game_name_display.apply(&row.name).into_owned(),
                             heart,
                             game_art,
                         )
@@ -14692,6 +16383,14 @@ impl App {
                 }
             }
             (Screen::Browse, Browsing::Systems) => {
+                if self.in_cores_browser() {
+                    return self
+                        .selected_core_category()
+                        .map(|category| {
+                            (self.core_category_logo(&category), category, false, false)
+                        })
+                        .unwrap_or_else(|| (None, String::new(), false, false));
+                }
                 match self.systems.get(self.system_list.selected()) {
                     Some(system) => {
                         let (logo, heart) =
@@ -14948,35 +16647,58 @@ impl App {
                         }
                     }
                     Browsing::Systems => {
-                        for index in range {
-                            let logo = if with_art {
-                                self.system_logo(&self.systems[index])
-                            } else {
-                                None
-                            };
-                            let (cover, has_cover, deferred) =
-                                self.row_cover_for(logo, &mut gallery_budget);
-                            gallery_pending |= deferred;
-                            let name = self.systems[index].name().to_string();
-                            let favorite = browse_row_favorite(
-                                self.layout,
-                                false,
-                                is_favorites(self.systems[index].category()),
-                            );
-                            // How many games are in there, where the card
-                            // has been read for it.
-                            let held = self.games_in(&self.systems[index].def.id);
-                            rows.push(Row {
-                                title: SharedString::from(name.as_str()),
-                                favorite,
-                                cover,
-                                has_cover,
-                                art_scale_x: 1.0,
-                                value: match held {
-                                    Some(games) => SharedString::from(games.to_string()),
-                                    None => SharedString::new(),
-                                },
-                            });
+                        if self.in_cores_browser() {
+                            let categories = self.core_categories();
+                            for index in range {
+                                let (name, count) = &categories[index];
+                                let logo = if with_art {
+                                    self.core_category_logo(name)
+                                } else {
+                                    None
+                                };
+                                let (cover, has_cover, deferred) =
+                                    self.row_cover_for(logo, &mut gallery_budget);
+                                gallery_pending |= deferred;
+                                rows.push(Row {
+                                    title: SharedString::from(name.as_str()),
+                                    favorite: false,
+                                    cover,
+                                    has_cover,
+                                    art_scale_x: 1.0,
+                                    value: SharedString::from(count.to_string()),
+                                });
+                            }
+                        } else {
+                            for index in range {
+                                let logo = if with_art {
+                                    self.system_logo(&self.systems[index])
+                                } else {
+                                    None
+                                };
+                                let (cover, has_cover, deferred) =
+                                    self.row_cover_for(logo, &mut gallery_budget);
+                                gallery_pending |= deferred;
+                                let name = self.systems[index].name().to_string();
+                                let favorite = browse_row_favorite(
+                                    self.layout,
+                                    false,
+                                    is_favorites(self.systems[index].category()),
+                                );
+                                // How many games are in there, where the card
+                                // has been read for it.
+                                let held = self.games_in(&self.systems[index].def.id);
+                                rows.push(Row {
+                                    title: SharedString::from(name.as_str()),
+                                    favorite,
+                                    cover,
+                                    has_cover,
+                                    art_scale_x: 1.0,
+                                    value: match held {
+                                        Some(games) => SharedString::from(games.to_string()),
+                                        None => SharedString::new(),
+                                    },
+                                });
+                            }
                         }
                     }
                     Browsing::Games => {
@@ -15019,14 +16741,17 @@ impl App {
                                 self.row_cover_for(wanted, &mut gallery_budget);
                             gallery_pending |= deferred;
                             let row = &self.here[index];
+                            let shown_name = self.game_name_display.apply(&row.name);
                             rows.push(Row {
                                 // A folder is marked as one. Nothing else in
                                 // the list says which rows can be entered.
-                                title: SharedString::from(if row.is_folder() {
-                                    format!("[ {} ]", row.name)
-                                } else {
-                                    row.name.clone()
-                                }),
+                                title: SharedString::from(
+                                    if row.is_folder() && self.folder_brackets {
+                                        format!("[ {shown_name} ]")
+                                    } else {
+                                        shown_name.into_owned()
+                                    },
+                                ),
                                 favorite: browse_row_favorite(
                                     self.layout,
                                     row.favorite,
@@ -15037,14 +16762,39 @@ impl App {
                                 art_scale_x,
                                 // How much is in there, where somebody has
                                 // counted. Folders only: a game is one game.
-                                value: match row.below {
-                                    Some(games) if row.is_folder() => {
-                                        SharedString::from(games.to_string())
+                                value: if self.in_misterzine_browser() {
+                                    SharedString::new()
+                                } else {
+                                    match row.below {
+                                        Some(games) if row.is_folder() => {
+                                            SharedString::from(games.to_string())
+                                        }
+                                        _ => SharedString::new(),
                                     }
-                                    _ => SharedString::new(),
                                 },
                             });
                         }
+                    }
+                }
+            }
+            Screen::GameFilters => {
+                for index in range {
+                    let field = GameFilterField::ALL[index];
+                    let value = if self.game_filter_options[index].is_some() {
+                        self.game_filters.label(field)
+                    } else {
+                        "Unavailable"
+                    };
+                    rows.push(plain_row(field.label(), value));
+                }
+            }
+            Screen::GameFilterValues => {
+                if let Some(values) = self
+                    .game_filter_field
+                    .and_then(|field| self.game_filter_options[field.index()].as_ref())
+                {
+                    for index in range {
+                        rows.push(plain_row(values[index].label(), ""));
                     }
                 }
             }
@@ -15052,6 +16802,7 @@ impl App {
             | Screen::Scripts
             | Screen::FavoriteFolder
             | Screen::CategoryImage
+            | Screen::LaunchCore
             | Screen::GameDataSource
             | Screen::ArtworkPackLocation
             | Screen::ArtworkPackDirectory => {
@@ -15208,13 +16959,24 @@ impl App {
     }
 
     fn update_compact_details(&self) {
-        let details = self
+        let row = self
             .here
             .get(self.game_list.selected())
             .filter(|row| !row.is_folder())
-            .filter(|_| self.screen == Screen::Browse && self.browsing == Browsing::Games)
-            .map(|row| &row.details);
-        let (summary, publisher) = details.map(compact_detail_text).unwrap_or_default();
+            .filter(|_| {
+                self.screen == Screen::Browse
+                    && self.browsing == Browsing::Games
+                    && !self.in_cores_browser()
+            });
+        let (summary, publisher) = row
+            .map(|row| {
+                if self.in_misterzine_browser() {
+                    misterzine_detail_text(row)
+                } else {
+                    compact_detail_text(&row.details)
+                }
+            })
+            .unwrap_or_default();
         self.ui.set_compact_summary(SharedString::from(summary));
         self.ui.set_compact_publisher(SharedString::from(publisher));
     }
@@ -15241,6 +17003,7 @@ impl App {
         let panel = (wanted + room).min((self.height as f32 * 0.34).floor());
         let over_game = self.screen == Screen::Browse
             && self.browsing == Browsing::Games
+            && !self.in_cores_browser()
             && self
                 .here
                 .get(self.game_list.selected())
@@ -15251,7 +17014,7 @@ impl App {
         // Information in Actions still carries every line.
         let wants = self.layout == Layout::Details
             && over_game
-            && self.details_style == DetailsStyle::Information;
+            && (self.in_misterzine_browser() || self.details_style == DetailsStyle::Information);
         self.ui.set_detail_line(line);
         self.ui.set_detail_height(if wants { panel } else { 0.0 });
     }
@@ -15267,6 +17030,11 @@ impl App {
                     .to_string(),
                 "Browse Systems".to_string(),
             ),
+            (Screen::Browse, Browsing::Systems) if self.in_cores_browser() => self
+                .core_categories()
+                .get(self.system_list.selected())
+                .map(|(category, count)| (category.clone(), format!("{count} Cores")))
+                .unwrap_or_default(),
             (Screen::Browse, Browsing::Systems) => self
                 .systems
                 .get(self.system_list.selected())
@@ -15301,7 +17069,12 @@ impl App {
                 && self
                     .here
                     .get(self.game_list.selected())
-                    .is_some_and(|row| matches!(row.kind, browse::Kind::Play(_))),
+                    .is_some_and(|row| matches!(row.kind, browse::Kind::Play(_)))
+                && (!self.in_misterzine_browser()
+                    || self
+                        .misterzine_visible
+                        .get(self.game_list.selected())
+                        .is_some_and(|item| item.installed())),
         );
         self.ui
             .set_plain_scope(SharedString::from(match self.screen {
@@ -15311,6 +17084,17 @@ impl App {
                 Screen::Context => self.context_scope(),
                 Screen::Scraper => self.scraper_scope_label(),
                 Screen::Information => self.here_label(),
+                Screen::GameFilters | Screen::GameFilterValues => self.here_label(),
+                Screen::LaunchCore => self
+                    .launch_core_system_id
+                    .as_deref()
+                    .and_then(|id| {
+                        self.all_systems
+                            .iter()
+                            .find(|system| system.def.id == id)
+                            .map(|system| system.name().to_string())
+                    })
+                    .unwrap_or_default(),
                 Screen::GameDataSource | Screen::ArtworkPackLocation => {
                     self.source_system_id.clone().unwrap_or_default()
                 }
@@ -15321,7 +17105,12 @@ impl App {
                 Screen::Browse if self.browsing == Browsing::Categories => {
                     "Game Browser".to_string()
                 }
-                Screen::Browse | Screen::OptionsRoot | Screen::Options | Screen::Advanced => {
+                Screen::Browse
+                | Screen::OptionsRoot
+                | Screen::Options
+                | Screen::Advanced
+                | Screen::GameFilters
+                | Screen::GameFilterValues => {
                     format!(
                         "{}/{}",
                         (self.active_list().selected() + 1).min(self.active_list().count()),
@@ -15342,6 +17131,16 @@ impl App {
                     .theme_editor
                     .as_ref()
                     .map(|editor| editor.source_name().to_string())
+                    .unwrap_or_default(),
+                Screen::LaunchCore => self
+                    .launch_core_system_id
+                    .as_deref()
+                    .and_then(|id| {
+                        self.all_systems
+                            .iter()
+                            .find(|system| system.def.id == id)
+                            .map(|system| system.name().to_string())
+                    })
                     .unwrap_or_default(),
                 Screen::GameDataSource | Screen::ArtworkPackLocation => {
                     self.source_system_id.clone().unwrap_or_default()
@@ -15389,6 +17188,13 @@ impl App {
                     format!("{} found", self.here.len()),
                 ),
             },
+            Screen::GameFilters => ("Filter Games".to_string(), String::new()),
+            Screen::GameFilterValues => (
+                self.game_filter_field
+                    .map(|field| format!("Filter Games / {}", field.label()))
+                    .unwrap_or_else(|| "Filter Games".to_string()),
+                String::new(),
+            ),
             Screen::NameKeyboard => (
                 match self.name_keyboard_purpose {
                     NamePurpose::NewFavoriteFolder => "New Favourite Folder".to_string(),
@@ -15505,6 +17311,22 @@ impl App {
                 ),
                 "A Select, B Back, Left/Right Page".to_string(),
             ),
+            Screen::LaunchCore => {
+                let detail = self
+                    .launch_core_choices
+                    .get(self.menu_list.selected())
+                    .map(|choice| {
+                        if choice.id.is_empty() {
+                            "Use the first installed compatible core."
+                        } else if choice.available {
+                            "Always use this compatible core for the system."
+                        } else {
+                            "This saved core is unavailable. Choose Automatic or an installed core."
+                        }
+                    })
+                    .unwrap_or_default();
+                ("Launch Core".to_string(), detail.to_string())
+            }
             Screen::GameDataSource => (
                 if self.source_choice_is_shared() {
                     "Game Data Source: Neo Geo + MVS".to_string()
@@ -15677,6 +17499,7 @@ impl App {
             self.poll_scraper_search();
             self.poll_scraper_preview();
             self.poll_information();
+            self.poll_misterzine();
 
             // A held left or right repeats only where it is a continuous
             // movement: browse scrolling or one RGB channel in the colour
@@ -16024,6 +17847,30 @@ impl App {
     /// Where the user is standing, in a form that can be written down.
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     pub fn position(&self) -> crate::state::State {
+        if self.in_cores_browser() && self.browsing == Browsing::Games {
+            let mut saved = crate::state::State::record(
+                CORES_SYSTEM_ID,
+                self.core_category.as_deref().unwrap_or_default(),
+                &[],
+                self.game_list.selected(),
+                &self.left_at,
+                &self.category_system,
+            );
+            saved.selected_row = self.here.get(self.game_list.selected()).map(row_key);
+            return saved;
+        }
+        if self.last_played_open {
+            let mut saved = crate::state::State::record(
+                LAST_PLAYED_SYSTEM,
+                LAST_PLAYED_CATEGORY,
+                &[],
+                self.game_list.selected(),
+                &self.left_at,
+                &self.category_system,
+            );
+            saved.selected_row = self.selected_last_played().map(crate::history::entry_key);
+            return saved;
+        }
         let system = self.open_system.clone().unwrap_or_default();
         let trail: Vec<(Place, usize)> = self
             .trail
@@ -16052,6 +17899,57 @@ impl App {
         if saved.system.is_empty() {
             self.resolve_view();
             self.apply_geometry();
+            return;
+        }
+        if saved.system == CORES_SYSTEM_ID {
+            // A Cores launch still saves the ordinary categories and folders
+            // the user left behind. Restore those memories before handling
+            // the virtual Cores location, including when Cores was disabled
+            // while the launched core was running.
+            self.category_system = saved.category_system.clone();
+            self.left_at = saved.left_at.clone();
+            if !self.show_cores {
+                self.resolve_view();
+                self.apply_geometry();
+                return;
+            }
+            self.open_category = Some(CORES_CATEGORY.to_string());
+            self.core_category = None;
+            self.browsing = Browsing::Systems;
+            self.rebuild_system_list();
+            if let Some(at) = self
+                .core_categories()
+                .iter()
+                .position(|(category, _)| category == &saved.category)
+            {
+                self.system_list.select(at);
+                self.open_selected_core_category();
+                let selected = saved
+                    .selected_row
+                    .as_deref()
+                    .and_then(|key| self.here.iter().position(|row| row_key(row) == key))
+                    .unwrap_or(saved.selected);
+                self.game_list.select(selected);
+                self.touch_selection();
+            } else {
+                self.resolve_view();
+                self.apply_geometry();
+            }
+            return;
+        }
+        if saved.system == LAST_PLAYED_SYSTEM && self.settings.last_played.unwrap_or(0) > 0 {
+            self.category_system = saved.category_system.clone();
+            self.open_last_played();
+            if let Some(key) = saved.selected_row.as_deref() {
+                if let Some(at) = self.here.iter().position(|row| {
+                    self.last_played_rows
+                        .get(&row.sort_key)
+                        .is_some_and(|entry| crate::history::entry_key(entry) == key)
+                }) {
+                    self.game_list.select(at);
+                }
+            }
+            self.touch_selection();
             return;
         }
         // Each group's own memory first, so backing out of the restored
@@ -16114,7 +18012,36 @@ impl App {
         let places = saved.places();
         let walked_everything = places.len() == saved.trail.len();
         let resume_at = restore_resume_at(self.trail.first().map(|crumb| &crumb.place), &places);
+        let mut reached_every_saved_place = true;
         for place in places.iter().skip(resume_at).cloned() {
+            // A previous release may have saved a virtual folder for a ZIP
+            // that is now represented by its sole member in this folder.
+            // Enter only places the current listing still exposes. Stopping
+            // here lets the exact selected-row identity find that member in
+            // the containing folder below.
+            let archive_place = matches!(place, Place::Archive(_) | Place::ArchiveDirectory { .. });
+            let reachable = self
+                .trail
+                .last()
+                .and_then(|crumb| {
+                    self.system_cache
+                        .as_ref()
+                        .and_then(|cache| cache.get(&crumb.place))
+                })
+                .map(|folder| {
+                    folder.rows.iter().any(
+                        |row| matches!(&row.kind, browse::Kind::Enter(inner) if inner == &place),
+                    )
+                })
+                .unwrap_or_else(|| {
+                    self.here.iter().any(
+                        |row| matches!(&row.kind, browse::Kind::Enter(inner) if inner == &place),
+                    )
+                });
+            if archive_place && !reachable {
+                reached_every_saved_place = false;
+                break;
+            }
             self.enter(place);
         }
         // Every level keeps the row it was left on. `enter` above wrote the
@@ -16135,7 +18062,7 @@ impl App {
                 .last()
                 .zip(self.trail.last())
                 .is_some_and(|(saved, current)| saved == &current.place);
-        if walked_everything && reached_saved_destination {
+        if walked_everything && reached_every_saved_place && reached_saved_destination {
             self.game_list.select(reselect(
                 &self.here,
                 saved.selected_row.as_deref(),
@@ -16147,6 +18074,11 @@ impl App {
             // not reached. Re-list where the walk DID land, whose own
             // remembered row is the honest answer.
             self.show_here();
+            if let Some(selected) = saved.selected_row.as_deref() {
+                if let Some(index) = self.here.iter().position(|row| row_key(row) == selected) {
+                    self.game_list.select(index);
+                }
+            }
         }
         self.touch_selection();
         self.resolve_view();
@@ -16193,6 +18125,7 @@ impl App {
             self.poll_provider_job();
             self.start_provider_job_if_ready();
             self.poll_information();
+            self.poll_misterzine();
             // A finished cache recovery reopens its system through another
             // source resolution; that one has to finish as well before the
             // only frame is drawn.
@@ -16202,6 +18135,7 @@ impl App {
                 && self.source_job.is_none()
                 && self.provider_job.is_none()
                 && self.provider_requests.is_empty()
+                && self.misterzine_job.is_none()
             {
                 break;
             }
@@ -16256,6 +18190,11 @@ impl App {
             // normal Context action; setting the enum alone would draw an
             // empty list and could not verify the real picker.
             self.open_category_image_picker();
+            return;
+        }
+        if screen == Screen::LaunchCore {
+            self.open_context();
+            self.open_launch_core();
             return;
         }
         if screen == Screen::GameDataSource {
@@ -16571,6 +18510,13 @@ impl BenchReport {
 
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HistoryUpdate {
+    pub path: PathBuf,
+    pub entry: crate::history::Entry,
+}
+
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Outcome {
     Quit,
     LauncherReplaced,
@@ -16583,6 +18529,7 @@ pub enum Outcome {
     Launch {
         plan: Box<crate::launch::LaunchPlan>,
         name: String,
+        history: Option<HistoryUpdate>,
     },
 }
 
@@ -16605,10 +18552,17 @@ pub(crate) fn test_library_launch_flow(window: Rc<MinimalSoftwareWindow>) {
             }
         })
         .expect("fixture directory counter exhausted");
-    for folder in ["games/NES", "_Console", "_RA_Cores/Cores", "_Unstable"] {
+    for folder in [
+        "games/NES",
+        "_Console",
+        "_Arcade",
+        "_RA_Cores/Cores",
+        "_Unstable",
+    ] {
         std::fs::create_dir_all(root.join(folder)).unwrap();
     }
     std::fs::write(root.join("_Console/NES_20260101.rbf"), b"standard").unwrap();
+    std::fs::write(root.join("_Arcade/LegacyNES.rbf"), b"legacy").unwrap();
     std::fs::write(root.join("_RA_Cores/Cores/NES.rbf"), b"ra").unwrap();
     std::fs::write(root.join("_RA_Cores/NES.mgl"), b"<mistergamedescription><rbf>_RA_Cores/Cores/NES</rbf><setname same_dir=\"1\">RA_NES</setname></mistergamedescription>").unwrap();
     let nightly = "_Unstable/NES_unstable_20260101_123456.rbf";
@@ -16627,7 +18581,13 @@ pub(crate) fn test_library_launch_flow(window: Rc<MinimalSoftwareWindow>) {
         Path::new("systems.toml"),
     )
     .unwrap();
-    let def = table.iter().find(|s| s.id == "NES").unwrap().clone();
+    let mut def = table.iter().find(|s| s.id == "NES").unwrap().clone();
+    def.compatible_cores.push(crate::config::CoreProfile {
+        id: "legacy-nes".into(),
+        label: "Legacy NES".into(),
+        rbf: "_Arcade/LegacyNES".into(),
+        setname: Some("LegacyNES".into()),
+    });
     let found = FoundSystem {
         def: def.clone(),
         paths: vec![root.join("games/NES")],
@@ -16638,6 +18598,7 @@ pub(crate) fn test_library_launch_flow(window: Rc<MinimalSoftwareWindow>) {
         config,
         settings: Settings::default(),
         settings_path: root.join("settings.toml"),
+        core_catalogue: Default::default(),
         systems: vec![found],
         table: vec![def],
         names: Default::default(),
@@ -16648,6 +18609,46 @@ pub(crate) fn test_library_launch_flow(window: Rc<MinimalSoftwareWindow>) {
     let ui = DegaussWindow::new().unwrap();
     let mut app = App::new(loaded, window, ui, StartupTimings::default(), 352, 240);
     app.finish_background_work_for_headless();
+
+    let misterzine_cover = root.join("misterzine-cover.png");
+    std::fs::write(
+        &misterzine_cover,
+        include_bytes!("../assets/logos/Arcade.png"),
+    )
+    .unwrap();
+    let mut release = crate::misterzine::Item::fixture(
+        "Fixture Release",
+        crate::misterzine::LocalState::Current,
+        Some(root.join("_Arcade/Fixture.mra")),
+    );
+    release.cover = Some(misterzine_cover);
+    app.misterzine_items = vec![release];
+    app.screen = Screen::Browse;
+    app.prepare_misterzine_browser();
+    assert_eq!(app.layout, Layout::Details, "MiSTerZine has one CRT layout");
+    assert_eq!(app.here.len(), 1);
+    app.refresh();
+    assert_eq!(
+        app.ui.get_compact_summary().as_str(),
+        "Console · 2026-09-16"
+    );
+    assert_eq!(
+        app.ui.get_compact_publisher().as_str(),
+        "Installed · Current"
+    );
+    app.handle(Action::Quit);
+    assert!(app.here.is_empty(), "leaving clears the browser rows");
+    app.prepare_misterzine_browser();
+    assert_eq!(
+        app.here.len(),
+        1,
+        "reopening restores cached rows immediately"
+    );
+    app.refresh();
+    app.handle(Action::Quit);
+    app.misterzine_items.clear();
+    app.misterzine_visible.clear();
+
     app.open_favorite_folders();
     app.menu_list.select(
         app.menu
@@ -16732,6 +18733,66 @@ pub(crate) fn test_library_launch_flow(window: Rc<MinimalSoftwareWindow>) {
         Outcome::Launch { plan, .. } => plan.mgl,
         _ => panic!("expected launch outcome"),
     };
+    assert!(mgl(&mut app).contains("<rbf>_Console/NES</rbf>"));
+    app.reopen_context_for(LAUNCH_CORE);
+    assert_eq!(app.screen, Screen::Context);
+    assert!(app.menu.iter().any(|row| row == LAUNCH_CORE));
+    app.handle(Action::Accept);
+    assert_eq!(app.screen, Screen::LaunchCore);
+    assert_eq!(
+        app.menu,
+        ["Automatic (NES)", "NES", "Legacy NES"],
+        "the chooser shows Automatic first, then only installed declared families"
+    );
+    app.menu_list.select(2);
+    app.handle(Action::Accept);
+    assert_eq!(app.screen, Screen::Context);
+    assert!(
+        app.build.is_none(),
+        "changing Launch Core must not start an index rebuild"
+    );
+    assert_eq!(
+        app.settings.launch_cores.get("NES").map(String::as_str),
+        Some("legacy-nes")
+    );
+    assert_eq!(
+        Settings::load(&app.settings_path)
+            .unwrap()
+            .launch_cores
+            .get("NES")
+            .map(String::as_str),
+        Some("legacy-nes"),
+        "the explicit family survives restart"
+    );
+    let legacy = mgl(&mut app);
+    assert!(legacy.contains("<rbf>_Arcade/LegacyNES</rbf>"));
+    assert!(legacy.contains("<setname>LegacyNES</setname>"));
+    std::fs::remove_file(root.join("_Arcade/LegacyNES.rbf")).unwrap();
+    assert!(
+        app.confirm_launch().is_none(),
+        "a missing explicitly pinned family must stay in the UI"
+    );
+    let unavailable = app.message.as_deref().unwrap_or_default();
+    assert!(
+        unavailable.contains("Legacy NES") && unavailable.contains("not installed"),
+        "the missing explicit family must be named: {unavailable}"
+    );
+    std::fs::write(root.join("_Arcade/LegacyNES.rbf"), b"legacy").unwrap();
+    app.handle(Action::Quit);
+    assert!(app.message.is_none(), "the launch error can be dismissed");
+    app.reopen_context_for(LAUNCH_CORE);
+    app.handle(Action::Accept);
+    assert_eq!(app.screen, Screen::LaunchCore);
+    app.menu_list.select(0);
+    app.handle(Action::Accept);
+    assert!(!app.settings.launch_cores.contains_key("NES"));
+    assert!(
+        !Settings::load(&app.settings_path)
+            .unwrap()
+            .launch_cores
+            .contains_key("NES"),
+        "Automatic removes the saved override"
+    );
     assert!(mgl(&mut app).contains("<rbf>_Console/NES</rbf>"));
     app.reopen_context_for(CORE_VERSION);
     assert!(app.menu.iter().any(|row| row == CORE_VERSION));
@@ -16826,6 +18887,20 @@ pub(crate) fn test_library_launch_flow(window: Rc<MinimalSoftwareWindow>) {
         0,
         "old state files retain numeric selection"
     );
+    let flattened_saved = app.position();
+    std::fs::write(&archive, crate::zip::tests_archive(&["A/First.nes"], false)).unwrap();
+    assert!(app.refresh_system("NES").is_none());
+    app.restore_position(&flattened_saved);
+    assert_eq!(
+        app.trail.last().map(|crumb| &crumb.place),
+        Some(&Place::Dir(root.join("games/NES"))),
+        "a removed virtual ZIP place returns to its containing folder"
+    );
+    assert_eq!(
+        row_key(&app.here[app.game_list.selected()]),
+        format!("f:{}", archive.join("A/First.nes").display()),
+        "the former nested selection finds the same flattened member"
+    );
     std::fs::write(&archive, b"broken").unwrap();
     assert!(
         app.confirm_launch().is_none(),
@@ -16894,6 +18969,24 @@ mod tests {
         };
         assert_eq!(super::compact_detail_text(&ranged_players).0, "1–2 Players");
     }
+
+    #[test]
+    fn misterzine_details_move_catalogue_state_out_of_the_title_row() {
+        let row = crate::misterzine::Item::fixture(
+            "Fixture Release",
+            crate::misterzine::LocalState::Current,
+            Some(PathBuf::from("/media/fat/_Console/Fixture.rbf")),
+        )
+        .row(None);
+        assert_eq!(
+            super::misterzine_detail_text(&row),
+            (
+                "Console · 2026-09-16".to_string(),
+                "Installed · Current".to_string()
+            )
+        );
+    }
+
     use super::*;
 
     #[test]
@@ -17375,6 +19468,7 @@ mod tests {
             rbf: "_Console/Test".to_string(),
             launch: Vec::new(),
             setname: None,
+            compatible_cores: Vec::new(),
             skip_folders: Vec::new(),
             extra_paths: Vec::new(),
         };
@@ -17644,22 +19738,23 @@ mod tests {
     }
 
     #[test]
-    fn the_menu_offers_hiding_only_where_it_makes_sense() {
-        let systems = menu_entries(Browsing::Systems, Some("Commodore 64"), true);
-        assert!(
-            systems.iter().any(|e| e == "Hide Commodore 64"),
-            "hiding belongs on the systems list"
+    fn the_general_menu_is_stable_and_hiding_stays_in_actions() {
+        let menu = menu_entries(true);
+        assert_eq!(
+            menu,
+            ["Options", "Scripts", "Help", "About", "Exit to MiSTer"]
         );
-        let games = menu_entries(Browsing::Games, Some("Commodore 64"), true);
-        assert!(
-            !games.iter().any(|e| e.starts_with("Hide ")),
-            "there is nothing to hide while looking at games"
+        assert!(menu_entries(false).iter().all(|entry| entry != "Scripts"));
+
+        let actions = context_entries(
+            Browsing::Systems,
+            false,
+            None,
+            Some(false),
+            false,
+            ContextActions::default(),
         );
-        for menu in [&systems, &games] {
-            assert!(menu.iter().any(|e| e == "Options"));
-            assert!(menu.iter().any(|e| e.starts_with("Exit")));
-            assert!(!menu.iter().any(|e| e == "Scrape All Systems"));
-        }
+        assert!(actions.iter().any(|entry| entry == HIDE_THIS));
     }
 
     #[test]
@@ -18185,6 +20280,7 @@ mod tests {
             rbf: "_Console/TurboGrafx16".to_string(),
             launch: Vec::new(),
             setname: Some("SuperGrafx".to_string()),
+            compatible_cores: Vec::new(),
             skip_folders: Vec::new(),
             extra_paths: Vec::new(),
         };
@@ -18795,17 +20891,14 @@ mod tests {
         std::fs::remove_dir_all(root).ok();
     }
 
-    /// A folder one level up from the game, an archive opened as a folder,
-    /// and a directory inside an archive are all containers of one game:
-    /// the picture climbs through the folder in between, through the
-    /// archive's own directory, and the archive row stays a row to enter.
-    /// The game inside the archive's directory is named by its exact
-    /// archive path, the only way a nested member is named. An archive of
-    /// several members is read by the same rule as a folder of several
-    /// files: one picture shared by every member is the game's, two
-    /// pictures are two games.
+    /// A folder one level up from the game remains a folder whose picture
+    /// comes from the game below it. A ZIP holding one game instead exposes
+    /// that game directly, with its exact member picture and path. An archive
+    /// of several members is read by the same rule as a folder of several
+    /// files: one picture shared by every member is the game's, two pictures
+    /// are two games.
     #[test]
-    fn a_nested_folder_and_a_one_game_zip_derive_the_same_way() {
+    fn a_nested_folder_derives_while_a_one_game_zip_is_direct() {
         let root = picker_temp("nested-and-zip");
         let games = root.join("games");
         std::fs::create_dir_all(&games).unwrap();
@@ -18856,10 +20949,10 @@ mod tests {
                 .collect::<Vec<_>>(),
             [
                 browse::Kind::Enter(Place::Archive(different.clone())),
-                browse::Kind::Enter(Place::Archive(nested.clone())),
+                browse::Kind::Play(browse::Launch::File(nested.join("Folder/Game.nes"))),
                 browse::Kind::Enter(Place::Dir(games.join("Outer"))),
                 browse::Kind::Enter(Place::Archive(shared.clone())),
-                browse::Kind::Enter(Place::Archive(archive.clone())),
+                browse::Kind::Play(browse::Launch::File(archive.join("Sole Game.nes"))),
             ]
         );
         assert_eq!(
@@ -18868,33 +20961,17 @@ mod tests {
             "the outer folder shows the game two levels down"
         );
         assert_eq!(
-            derived_folder_cover(&cache, &Place::Archive(archive), &[], None).as_deref(),
+            listed[1].cover.as_deref(),
+            Some(games.join("media/nested.png").as_path()),
+            "the direct nested member keeps its exact picture"
+        );
+        assert_eq!(
+            listed[4].cover.as_deref(),
             Some(games.join("media/sole.png").as_path()),
-            "the archive shows the one game inside it"
+            "the direct root member keeps its archive-level picture"
         );
-        let directory = Place::ArchiveDirectory {
-            archive: nested.clone(),
-            prefix: "Folder".into(),
-        };
-        let inside = &cache.get(&Place::Archive(nested.clone())).unwrap().rows;
-        assert_eq!(
-            inside
-                .iter()
-                .map(|row| (row.kind.clone(), row.below))
-                .collect::<Vec<_>>(),
-            [(browse::Kind::Enter(directory.clone()), Some(1))],
-            "the archive lists its directory as a folder to enter"
-        );
-        assert_eq!(
-            derived_folder_cover(&cache, &directory, &[], None).as_deref(),
-            Some(games.join("media/nested.png").as_path()),
-            "the directory inside the archive shows its one game"
-        );
-        assert_eq!(
-            derived_folder_cover(&cache, &Place::Archive(nested), &[], None).as_deref(),
-            Some(games.join("media/nested.png").as_path()),
-            "and so does the archive above it"
-        );
+        assert!(cache.get(&Place::Archive(archive)).is_none());
+        assert!(cache.get(&Place::Archive(nested)).is_none());
         assert_eq!(
             cache
                 .get(&Place::Archive(shared.clone()))
@@ -19836,6 +21913,7 @@ mod tests {
             Screen::Find,
             Screen::NameKeyboard,
             Screen::FavoriteFolder,
+            Screen::LaunchCore,
             Screen::Scraper,
             Screen::ScraperKeyboard,
             Screen::ScraperProgress,
@@ -19944,6 +22022,36 @@ mod tests {
                 override_exists
             );
         }
+    }
+
+    #[test]
+    fn launch_core_is_offered_only_for_declared_alternatives() {
+        let ordinary = context_entries(
+            Browsing::Systems,
+            false,
+            None,
+            None,
+            false,
+            ContextActions {
+                core_version: true,
+                ..ContextActions::default()
+            },
+        );
+        assert!(!ordinary.iter().any(|entry| entry == LAUNCH_CORE));
+        let compatible = context_entries(
+            Browsing::Systems,
+            false,
+            None,
+            None,
+            false,
+            ContextActions {
+                launch_core: true,
+                core_version: true,
+                ..ContextActions::default()
+            },
+        );
+        assert!(compatible.iter().any(|entry| entry == LAUNCH_CORE));
+        assert!(compatible.iter().any(|entry| entry == CORE_VERSION));
     }
 
     #[test]

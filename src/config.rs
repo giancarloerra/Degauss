@@ -148,6 +148,25 @@ pub struct LaunchRule {
     pub companion_index: Option<u8>,
 }
 
+/// An additional core family that is explicitly compatible with a system's
+/// existing file extensions and launch rules.
+///
+/// The system-level `rbf` and `setname` remain the first, preferred family.
+/// These profiles are ordered fallbacks; they do not change library identity.
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct CoreProfile {
+    /// Stable identifier used by settings rather than a path that can move.
+    pub id: String,
+    /// Name shown to the user.
+    pub label: String,
+    /// Core to load, in MiSTer's extensionless RBF-reference form.
+    pub rbf: String,
+    /// Optional set name required by this core family.
+    #[serde(default)]
+    pub setname: Option<String>,
+}
+
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct SystemConfig {
@@ -166,6 +185,10 @@ pub struct SystemConfig {
     /// Set name for a core that presents itself as several systems.
     #[serde(default)]
     pub setname: Option<String>,
+    /// Ordered compatible core families after the preferred system-level
+    /// `rbf` and `setname`.
+    #[serde(default)]
+    pub compatible_cores: Vec<CoreProfile>,
     /// Folder names the scan skips for this system.
     #[serde(default)]
     pub skip_folders: Vec<String>,
@@ -175,6 +198,25 @@ pub struct SystemConfig {
 }
 
 impl SystemConfig {
+    /// One launch configuration per compatible core family, preferred first.
+    ///
+    /// Paths, extensions and launch rules are shared deliberately: a profile
+    /// belongs here only when the same game hand-off is valid for that core.
+    pub fn core_family_configs(&self) -> Vec<Self> {
+        let mut primary = self.clone();
+        primary.compatible_cores.clear();
+        let mut families = Vec::with_capacity(1 + self.compatible_cores.len());
+        families.push(primary);
+        families.extend(self.compatible_cores.iter().map(|profile| {
+            let mut family = self.clone();
+            family.rbf = profile.rbf.clone();
+            family.setname = profile.setname.clone();
+            family.compatible_cores.clear();
+            family
+        }));
+        families
+    }
+
     /// True when a file is one this system lists.
     pub fn accepts(&self, path: &Path) -> bool {
         let Some(ext) = path.extension().and_then(|e| e.to_str()) else {
@@ -448,6 +490,7 @@ favorite = "#fe2e1d"
             launch: Vec::new(),
             skip_folders: Vec::new(),
             setname: None,
+            compatible_cores: Vec::new(),
             extra_paths: Vec::new(),
         };
         assert!(system.accepts(Path::new("/x/Game.D64")));
@@ -476,6 +519,7 @@ favorite = "#fe2e1d"
             }],
             skip_folders: Vec::new(),
             setname: None,
+            compatible_cores: Vec::new(),
             extra_paths: Vec::new(),
         };
         let rule = system.rule_for(Path::new("/x/Game.D64")).expect("d64 rule");

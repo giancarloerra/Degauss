@@ -14,6 +14,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::error::{DegaussError, Result};
+use crate::name_display::GameNameDisplay;
 
 /// Preference applies only when both supported launch variants are installed.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -215,6 +216,10 @@ pub struct Settings {
     pub theme: Option<String>,
     /// Whether favourites are gathered at the top of a folder.
     pub favorites_first: Option<bool>,
+    /// Maximum visible entries in the optional Last Played collection.
+    /// Absent and zero are Off; retained history remains separate.
+    #[serde(default)]
+    pub last_played: Option<u8>,
     /// Legacy shortcut fields retained for settings written by and read by
     /// releases before configurable hold actions. New explicit bindings win.
     #[serde(default)]
@@ -262,6 +267,14 @@ pub struct Settings {
     /// layout Degauss always drew.
     #[serde(default)]
     pub details_style: Option<String>,
+    /// Runtime-only presentation of the complete effective row name.
+    /// Absent preserves full names from releases before this setting.
+    #[serde(default)]
+    pub game_name_display: Option<GameNameDisplay>,
+    /// Whether folder rows receive Degauss's outer `[ name ]` marker.
+    /// Absent preserves the marker used by earlier releases.
+    #[serde(default)]
+    pub folder_brackets: Option<bool>,
     pub present: Option<String>,
     /// Systems the user has hidden, by id. Hiding is per-system and
     /// reversible; nothing is ever removed from the table.
@@ -273,6 +286,14 @@ pub struct Settings {
     pub show_other: Option<bool>,
     /// Show the Utility group: test patterns and measurement cores.
     pub show_utility: Option<bool>,
+    /// Show the optional top-level browser of installed core launchers.
+    /// Absent is off so existing installations keep their released home.
+    #[serde(default)]
+    pub show_cores: Option<bool>,
+    /// Show the optional top-level MiSTerZine releases browser. Absent is
+    /// off so existing installations do no network or matching work.
+    #[serde(default)]
+    pub show_misterzine: Option<bool>,
     /// Nightly cores are visible unless explicitly switched off.
     pub show_unstable: Option<bool>,
     pub show_scripts: Option<bool>,
@@ -290,6 +311,10 @@ pub struct Settings {
     /// Values are standard, ra, or an exact menu-relative Unstable RBF path.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub core_choices: BTreeMap<String, String>,
+    /// Explicit per-system compatible core family. Absence is Automatic.
+    /// Values are stable profile IDs declared by the systems table.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub launch_cores: BTreeMap<String, String>,
     /// The browse strip is visible by default. Both On and Off are explicit
     /// saved choices; only an absent value follows the default.
     pub show_bar: Option<bool>,
@@ -566,6 +591,13 @@ mod tests {
             settings.details_style.is_none(),
             "an older settings file must keep the Information layout it was drawn with"
         );
+        assert_eq!(settings.game_name_display, None);
+        assert_eq!(
+            settings.game_name_display.unwrap_or_default(),
+            GameNameDisplay::Full
+        );
+        assert_eq!(settings.folder_brackets, None);
+        assert!(settings.folder_brackets.unwrap_or(true));
         assert_eq!(settings.overscan_x, Some(5));
         assert_eq!(settings.hidden, ["PDP1", "VC4000"]);
         assert_eq!(settings.folder_views.len(), 2);
@@ -587,6 +619,11 @@ mod tests {
             AutomaticDataSource::GamelistFirst
         );
         assert_eq!(settings.separate_handheld_category, None);
+        assert_eq!(settings.show_cores, None);
+        assert!(!settings.show_cores.unwrap_or(false));
+        assert_eq!(settings.last_played, None);
+        assert_eq!(settings.show_misterzine, None);
+        assert!(!settings.show_misterzine.unwrap_or(false));
     }
 
     #[test]
@@ -604,6 +641,14 @@ mod tests {
         assert!(settings.custom_views.is_empty());
         assert!(settings.artwork_scale.is_none());
         assert!(settings.details_style.is_none());
+        assert_eq!(settings.game_name_display, None);
+        assert_eq!(
+            settings.game_name_display.unwrap_or_default(),
+            GameNameDisplay::Full
+        );
+        assert_eq!(settings.folder_brackets, None);
+        assert!(settings.folder_brackets.unwrap_or(true));
+        assert_eq!(settings.last_played, None);
         assert_eq!(settings.hold_x_favorite, None);
         assert_eq!(settings.hold_y_random, None);
         assert_eq!(settings.resolved_hold_shortcuts(), [HoldShortcut::None; 4]);
@@ -617,6 +662,10 @@ mod tests {
             settings.automatic_data_source.unwrap_or_default(),
             AutomaticDataSource::GamelistFirst
         );
+        assert_eq!(settings.show_cores, None);
+        assert!(!settings.show_cores.unwrap_or(false));
+        assert_eq!(settings.show_misterzine, None);
+        assert!(!settings.show_misterzine.unwrap_or(false));
     }
 
     fn temp_path(tag: &str) -> std::path::PathBuf {
@@ -643,6 +692,8 @@ mod tests {
             layout: Some("covers".into()),
             artwork_scale: Some("4:3".into()),
             details_style: Some("large-artwork".into()),
+            game_name_display: Some(GameNameDisplay::KeepRegionAndDiscIndex),
+            folder_brackets: Some(false),
             left_right: Some("letter".into()),
             font: Some("pixel".into()),
             theme_font_override: Some(true),
@@ -1004,6 +1055,23 @@ mod tests {
         let decoded: Settings = toml::from_str(&encoded).unwrap();
         assert_eq!(decoded.core_choices, settings.core_choices);
         assert_eq!(decoded.core_preference, None);
+    }
+
+    #[test]
+    fn per_system_launch_cores_are_optional_stable_profile_ids() {
+        let old: Settings =
+            toml::from_str(include_str!("../tests/fixtures/v0.2.0-settings.toml")).unwrap();
+        assert!(old.launch_cores.is_empty());
+        assert!(!toml::to_string(&Settings::default())
+            .unwrap()
+            .contains("launch_cores"));
+        let mut settings = Settings::default();
+        settings
+            .launch_cores
+            .insert("NeoGeoPocketColor".into(), "jtngpc".into());
+        let decoded: Settings = toml::from_str(&toml::to_string(&settings).unwrap()).unwrap();
+        assert_eq!(decoded.launch_cores, settings.launch_cores);
+        assert!(decoded.core_choices.is_empty());
     }
 
     #[test]

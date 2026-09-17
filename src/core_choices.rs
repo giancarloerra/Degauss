@@ -24,7 +24,7 @@ fn core_stem(reference: &str) -> &str {
     }
 }
 
-fn nightly_matches(stem: &str, reference: &str) -> bool {
+pub(crate) fn nightly_matches(stem: &str, reference: &str) -> bool {
     let wanted = crate::systems::core_name(core_stem(reference));
     if wanted.is_empty() {
         return false;
@@ -58,7 +58,12 @@ pub fn is_unstable_reference(system: &SystemConfig, reference: &str) -> bool {
         && path
             .file_name()
             .and_then(|name| name.to_str())
-            .is_some_and(|name| nightly_matches(core_stem(name), &system.rbf))
+            .is_some_and(|name| {
+                system
+                    .core_family_configs()
+                    .iter()
+                    .any(|family| nightly_matches(core_stem(name), &family.rbf))
+            })
 }
 
 fn nightlies(system: &SystemConfig, root: &Path) -> Result<Vec<CoreChoice>> {
@@ -78,6 +83,13 @@ fn nightlies(system: &SystemConfig, root: &Path) -> Result<Vec<CoreChoice>> {
             .then_with(|| a.key.as_bytes().cmp(b.key.as_bytes()))
     });
     Ok(result)
+}
+
+/// Whether this core family has an installed Unstable build. Launch Core uses
+/// the same exact recognition as Core Version rather than inventing a second
+/// filename rule.
+pub(crate) fn has_unstable_version(system: &SystemConfig, root: &Path) -> Result<bool> {
+    nightlies(system, root).map(|choices| !choices.is_empty())
 }
 
 fn walk_nightlies(
@@ -191,9 +203,27 @@ fn validate_native_choice(actual: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Installed versions plus a labelled RA error when that installation is
-/// invalid. The UI adds Default; no default is persisted.
-pub fn available(system: &SystemConfig, root: &Path) -> Result<Vec<CoreChoice>> {
+fn first_installed_family(system: &SystemConfig, root: &Path) -> Result<SystemConfig> {
+    let families = system.core_family_configs();
+    for family in &families {
+        if core_variants::core_present(root, &family.rbf)? {
+            return Ok(family.clone());
+        }
+        match core_variants::installed_ra(family, root) {
+            Ok(Some(_)) | Err(_) => return Ok(family.clone()),
+            Ok(None) => {}
+        }
+        if !nightlies(family, root)?.is_empty() {
+            return Ok(family.clone());
+        }
+    }
+    Ok(families
+        .into_iter()
+        .next()
+        .expect("every system has its preferred core family"))
+}
+
+fn available_for_family(system: &SystemConfig, root: &Path) -> Result<Vec<CoreChoice>> {
     if system.rbf.is_empty() {
         return Ok(Vec::new());
     }
@@ -219,6 +249,17 @@ pub fn available(system: &SystemConfig, root: &Path) -> Result<Vec<CoreChoice>> 
     Ok(choices)
 }
 
+/// Installed versions for the first available compatible core family, plus a
+/// labelled RA error when that installation is invalid. The UI adds Default;
+/// no default is persisted.
+pub fn available(system: &SystemConfig, root: &Path) -> Result<Vec<CoreChoice>> {
+    if system.rbf.is_empty() {
+        return Ok(Vec::new());
+    }
+    let family = first_installed_family(system, root)?;
+    available_for_family(&family, root)
+}
+
 /// Explicit choices fail if missing. Default preserves the Standard/RA rule
 /// and never silently selects an Unstable core, even if only one exists.
 pub fn resolve(
@@ -238,24 +279,42 @@ pub fn resolve(
     };
     match selected {
         "standard" => {
-            if !core_variants::core_present(root, &system.rbf)? {
-                return Err(missing());
+            for family in system.core_family_configs() {
+                if core_variants::core_present(root, &family.rbf)? {
+                    return Ok(core_variants::standard(&family));
+                }
             }
-            Ok(core_variants::standard(system))
+            Err(missing())
         }
-        "ra" => core_variants::installed_ra(system, root)?.ok_or_else(missing),
+        "ra" => {
+            for family in system.core_family_configs() {
+                if let Some(core) = core_variants::installed_ra(&family, root)? {
+                    return Ok(core);
+                }
+            }
+            Err(missing())
+        }
         _ => {
             let path = Path::new(selected);
             if !path
                 .extension()
                 .is_some_and(|extension| extension.eq_ignore_ascii_case("rbf"))
-                || !is_unstable_reference(system, selected)
             {
                 return Err(DegaussError::unsupported(
                     "selected core version",
                     format!("invalid Unstable choice {selected}"),
                 ));
             }
+            let Some(family) = system.core_family_configs().into_iter().find(|family| {
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| nightly_matches(core_stem(name), &family.rbf))
+            }) else {
+                return Err(DegaussError::unsupported(
+                    "selected core version",
+                    format!("invalid Unstable choice {selected}"),
+                ));
+            };
             let actual = root.join(path);
             match std::fs::metadata(&actual) {
                 Ok(metadata) if metadata.is_file() => {}
@@ -266,7 +325,7 @@ pub fn resolve(
                 }
             }
             validate_native_choice(&actual)?;
-            let mut core = core_variants::standard(system);
+            let mut core = core_variants::standard(&family);
             // Main appends/matches the extension itself. Keep the complete
             // dated/hash stem so the native lookup retains this exact build.
             core.rbf = selected[..selected.len() - 4].into();
@@ -295,6 +354,7 @@ mod tests {
             rbf: "_Console/NES".into(),
             launch: Vec::new(),
             setname: Some("NES".into()),
+            compatible_cores: Vec::new(),
             skip_folders: Vec::new(),
             extra_paths: Vec::new(),
         }
@@ -438,6 +498,31 @@ mod tests {
     }
 
     #[test]
+    fn malformed_preferred_ra_remains_visible_instead_of_selecting_legacy_family() {
+        let root = directory("malformed-preferred-family");
+        let mut system = system();
+        system.rbf = "_Console/NGPC".into();
+        system.setname = None;
+        system.compatible_cores = vec![crate::config::CoreProfile {
+            id: "jtngpc".into(),
+            label: "JTNGPC (Legacy)".into(),
+            rbf: "_Arcade/JTNGPC".into(),
+            setname: Some("JTNGPC".into()),
+        }];
+        write(&root, "_RA_Cores/NGPC.mgl", b"malformed XML");
+        write(&root, "_Arcade/JTNGPC.rbf", b"fixture");
+
+        let choices = available(&system, &root).unwrap();
+        assert_eq!(choices.len(), 1);
+        assert_eq!(choices[0].key, "ra");
+        assert!(choices[0].label.contains("unavailable"));
+        assert!(resolve(&system, &root, None, false).is_err());
+        assert!(resolve(&system, &root, Some("ra"), false).is_err());
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn ra_only_system_remains_available_without_a_standard_binary() {
         let root = directory("ra-only");
         write(&root, "_RA_Cores/Cores/NES.rbf", b"fixture");
@@ -448,6 +533,31 @@ mod tests {
             "_RA_Cores/Cores/NES"
         );
         assert!(resolve(&system(), &root, Some("standard"), false).is_err());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn compatible_family_with_only_an_unstable_build_is_available() {
+        let root = directory("compatible-unstable-only");
+        let mut system = system();
+        system.rbf = "_Console/NGPC".into();
+        system.compatible_cores = vec![crate::config::CoreProfile {
+            id: "jtngpc".into(),
+            label: "JTNGPC (Legacy)".into(),
+            rbf: "_Arcade/JTNGPC".into(),
+            setname: Some("JTNGPC".into()),
+        }];
+        let nightly = "_Unstable/JTNGPC_unstable_20260916_a1.rbf";
+        write(&root, nightly, b"fixture");
+
+        let choices = available(&system, &root).unwrap();
+        assert_eq!(choices.len(), 1);
+        assert_eq!(choices[0].key, nightly);
+        assert_eq!(
+            resolve(&system, &root, Some(nightly), false).unwrap().rbf,
+            nightly.trim_end_matches(".rbf")
+        );
+
         std::fs::remove_dir_all(root).unwrap();
     }
 

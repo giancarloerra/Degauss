@@ -862,7 +862,7 @@ checksum = "be1e0bca6c3637f992fc1cc7cbc52a78c1ef6db076dbf1059c4323d6a2048376"
 
 [[package]]
 name = "degauss"
-version = "0.7.1"
+version = "0.8.0"
 dependencies = [
  "bytemuck",
  "crc32fast",
@@ -872,7 +872,9 @@ dependencies = [
  "postcard",
  "quick-xml",
  "serde",
+ "serde_json",
  "sha1",
+ "sha2",
  "slint",
  "slint-build",
  "toml",
@@ -4005,6 +4007,17 @@ name = "sha1"
 version = "0.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "aacc4cc499359472b4abe1bf11d0b12e688af9a805fa5e3016f9a386dc2d0214"
+dependencies = [
+ "cfg-if",
+ "cpufeatures",
+ "digest",
+]
+
+[[package]]
+name = "sha2"
+version = "0.11.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "446ba717509524cb3f22f17ecc096f10f4822d76ab5c0b9822c5f9c284e825f4"
 dependencies = [
  "cfg-if",
  "cpufeatures",

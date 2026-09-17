@@ -22,14 +22,19 @@ mod error;
 mod favorites;
 mod font;
 mod frontend_session;
+mod game_filter;
 mod gamelist;
+mod history;
 mod index_job;
 mod information_job;
 mod input;
 mod launch;
+mod launch_cores;
 mod list_state;
 mod metrics;
 mod mgl;
+mod misterzine;
+mod name_display;
 mod name_keyboard;
 mod neogeo;
 mod options;
@@ -394,6 +399,14 @@ fn load_everything(args: &Args) -> Result<Loaded> {
     // Which group each system belongs to comes from where its core
     // actually is on this card, not from what the table guessed.
     let cores = systems::CoreIndex::read(Path::new(&config.menu_root));
+    let core_cache_dir = cache::dir_for(&settings_path);
+    let core_catalogue = cache::load_core_catalogue(&core_cache_dir).unwrap_or_else(|| {
+        if settings.show_cores.unwrap_or(false) || settings.show_misterzine.unwrap_or(false) {
+            cores.catalogue(&table)
+        } else {
+            systems::CoreCatalogue::default()
+        }
+    });
     let systems = systems::discover_checked(&table, &roots, logo_dir.as_deref(), &cores)?;
     // The names the stock menu shows for cores, arcade boards and
     // shortcuts, when the card carries the file that defines them.
@@ -404,6 +417,7 @@ fn load_everything(args: &Args) -> Result<Loaded> {
         settings,
         settings_path,
         systems,
+        core_catalogue,
         names,
         table,
         logo_dir,
@@ -497,7 +511,7 @@ fn diagnostic_launch_plan(
     } else {
         system
     };
-    launch::plan_with_choice(
+    launch::plan_with_selections(
         &owner.to_config(),
         path,
         mgl,
@@ -507,6 +521,11 @@ fn diagnostic_launch_plan(
         loaded
             .settings
             .core_choices
+            .get(&owner.def.id)
+            .map(String::as_str),
+        loaded
+            .settings
+            .launch_cores
             .get(&owner.def.id)
             .map(String::as_str),
     )
@@ -1013,7 +1032,7 @@ fn import_favorites(loaded: &Loaded, list: &Path) -> Result<()> {
                 skipped += 1;
                 continue;
             }
-            let outcome = match launch::favorite_mgl_with_choice(
+            let outcome = match launch::favorite_mgl_with_selections(
                 &config,
                 &path,
                 Path::new(&loaded.config.menu_root),
@@ -1022,6 +1041,11 @@ fn import_favorites(loaded: &Loaded, list: &Path) -> Result<()> {
                 loaded
                     .settings
                     .core_choices
+                    .get(&owner.def.id)
+                    .map(String::as_str),
+                loaded
+                    .settings
+                    .launch_cores
                     .get(&owner.def.id)
                     .map(String::as_str),
             ) {
@@ -1635,16 +1659,29 @@ fn run_on_framebuffer(
             drop(session);
             return script.exec().map(|never| match never {});
         }
-        Outcome::Launch { plan, name } => {
-            // Written before the core is asked for: once the command goes
-            // into the FIFO, MiSTer replaces this process and there is no
-            // later moment to save anything in.
+        Outcome::Launch {
+            plan,
+            name,
+            history,
+        } => {
+            // Preserve the browse position before asking Main to replace us.
+            // Last Played deliberately waits until the FIFO write succeeds,
+            // so a failed hand-off is never recorded as a played game.
             if let Err(e) = app.position().save(&state_path) {
                 note(&format!("state        not saved: {e}"));
             }
             state::mark_resuming();
             note(&format!("ended        launching {name}"));
             launch::execute(&plan, Path::new(launch::CMD_FIFO))?;
+            if let Some(update) = history {
+                match history::record(&update.path, update.entry) {
+                    Ok(settings::SaveOutcome::Durable) => {}
+                    Ok(settings::SaveOutcome::InstalledWithWarning(error)) => {
+                        note(&format!("last played  saved with warning: {error}"));
+                    }
+                    Err(error) => note(&format!("last played  not saved: {error}")),
+                }
+            }
         }
     }
     Ok(())
@@ -2123,6 +2160,7 @@ category = "Favorites"
             config,
             settings: Settings::default(),
             settings_path: root.join("settings.toml"),
+            core_catalogue: Default::default(),
             systems: diagnostic_test_systems(&root),
             names: browse::DisplayNames::default(),
             table: Vec::new(),

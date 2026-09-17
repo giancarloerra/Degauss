@@ -34,11 +34,21 @@
 
 use std::path::{Path, PathBuf};
 
+use sha1::{Digest, Sha1};
+
 use crate::config::{LaunchRule, SystemConfig};
 use crate::error::{DegaussError, Result};
 
 /// Where Main listens for commands.
 pub const CMD_FIFO: &str = "/dev/MiSTer_cmd";
+
+const AMIGAVISION_2026_04_GAMES_BYTES: usize = 38_497;
+const AMIGAVISION_2026_04_GAMES_SHA1: [u8; 20] = [
+    0x7a, 0x84, 0x4c, 0x5b, 0xca, 0x31, 0xa6, 0xf6, 0xc4, 0x9f, 0x16, 0x2a, 0xd5, 0xe3, 0xdd, 0x5f,
+    0x6b, 0x62, 0x01, 0xf6,
+];
+const AMIGAVISION_2026_04_LAUNCHES: &[u8] =
+    include_bytes!("../assets/amigavision-2026-04-launches.txt");
 
 /// One action inside an MGL.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -134,7 +144,7 @@ pub fn plan_amiga_vision(
         command: format!("load_core {mgl_path_str}\n"),
         boot_file: Some((
             install.join("shared").join("ags_boot"),
-            latin1(&format!("{title}\n"))?,
+            amiga_vision_boot_title(install, title)?,
         )),
     })
 }
@@ -203,6 +213,79 @@ fn latin1(text: &str) -> Result<Vec<u8>> {
             })
         })
         .collect()
+}
+
+fn amiga_vision_lines(bytes: &[u8]) -> impl Iterator<Item = &[u8]> {
+    bytes.split(|byte| *byte == b'\n').filter_map(|line| {
+        let line = line.strip_suffix(b"\r").unwrap_or(line);
+        (!line.is_empty()).then_some(line)
+    })
+}
+
+fn amiga_vision_boot_title(install: &Path, title: &str) -> Result<Vec<u8>> {
+    let mut original = latin1(title)?;
+    let games_path = install.join("listings").join("games.txt");
+    let Ok(metadata) = std::fs::metadata(&games_path) else {
+        original.push(b'\n');
+        return Ok(original);
+    };
+    if metadata.len() != AMIGAVISION_2026_04_GAMES_BYTES as u64 {
+        original.push(b'\n');
+        return Ok(original);
+    }
+    let Ok(games) = std::fs::read(&games_path) else {
+        original.push(b'\n');
+        return Ok(original);
+    };
+    if Sha1::digest(&games).as_slice() != AMIGAVISION_2026_04_GAMES_SHA1 {
+        original.push(b'\n');
+        return Ok(original);
+    }
+
+    let Some(index) = amiga_vision_lines(&games).position(|line| line == original) else {
+        original.push(b'\n');
+        return Ok(original);
+    };
+    let Some(mapped) = amiga_vision_lines(AMIGAVISION_2026_04_LAUNCHES).nth(index) else {
+        return Err(DegaussError::malformed(
+            "AmigaVision launch map",
+            games_path,
+            format!("missing entry {} for {title:?}", index + 1),
+        ));
+    };
+    let Some((&kind, canonical)) = mapped.split_first() else {
+        return Err(DegaussError::malformed(
+            "AmigaVision launch map",
+            games_path,
+            format!("empty entry {} for {title:?}", index + 1),
+        ));
+    };
+    let Some(canonical) = canonical.strip_prefix(b"\t") else {
+        return Err(DegaussError::malformed(
+            "AmigaVision launch map",
+            games_path,
+            format!("invalid entry {} for {title:?}", index + 1),
+        ));
+    };
+    if kind == b'I' {
+        return Err(DegaussError::unsupported(
+            "AmigaVision direct launch",
+            format!(
+                "{title:?} is listed by AmigaVision under known issues and must be opened from the AmigaVision menu"
+            ),
+        ));
+    }
+    if kind != b'G' || canonical.is_empty() {
+        return Err(DegaussError::malformed(
+            "AmigaVision launch map",
+            games_path,
+            format!("invalid entry {} for {title:?}", index + 1),
+        ));
+    }
+
+    let mut boot_title = canonical.to_vec();
+    boot_title.push(b'\n');
+    Ok(boot_title)
 }
 
 /// Build the MGL document. `rbf` is MiSTer's own core reference, e.g.
@@ -289,6 +372,87 @@ pub struct LaunchPlan {
     /// and writing UTF-8 there turns every accented title into one the
     /// Amiga side cannot match.
     pub boot_file: Option<(PathBuf, Vec<u8>)>,
+}
+
+/// Start one explicit launcher from the cached Cores catalogue.
+///
+/// The catalogue is populated only by the shallow menu-root discovery, but
+/// the file is checked again at the final hand-over boundary: it can have
+/// been removed after discovery, and an arbitrary path must never become a
+/// core command merely because stale cache bytes named it.
+pub fn plan_core(core: &Path, menu_root: &Path) -> Result<LaunchPlan> {
+    plan_direct_launcher(core, menu_root, &["RBF", "MGL"])
+}
+
+/// Launch a locally installed item selected from MiSTerZine. Arcade rows
+/// point at MRAs; every other row points at RBFs. Matching establishes which
+/// kind applies before this final launch-boundary check.
+pub fn plan_misterzine(item: &Path, menu_root: &Path) -> Result<LaunchPlan> {
+    plan_direct_launcher(item, menu_root, &["RBF", "MRA"])
+}
+
+fn plan_direct_launcher(core: &Path, menu_root: &Path, kinds: &[&str]) -> Result<LaunchPlan> {
+    if !core.is_file() {
+        return Err(DegaussError::unsupported(
+            "core launch",
+            format!("{} is no longer installed", core.display()),
+        ));
+    }
+    let canonical_root = menu_root.canonicalize().map_err(|error| {
+        DegaussError::io("checking the configured MiSTer menu", menu_root, error)
+    })?;
+    let canonical_core = core
+        .canonicalize()
+        .map_err(|error| DegaussError::io("checking the installed launcher", core, error))?;
+    let relative = canonical_core.strip_prefix(&canonical_root).map_err(|_| {
+        DegaussError::unsupported(
+            "core launch",
+            format!("{} is outside the configured MiSTer menu", core.display()),
+        )
+    })?;
+    if relative.components().any(|component| {
+        matches!(
+            component,
+            std::path::Component::ParentDir
+                | std::path::Component::RootDir
+                | std::path::Component::Prefix(_)
+        )
+    }) {
+        return Err(DegaussError::unsupported(
+            "core launch",
+            format!("{} is outside the configured MiSTer menu", core.display()),
+        ));
+    }
+    let supported = canonical_core
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| {
+            kinds
+                .iter()
+                .any(|kind| extension.eq_ignore_ascii_case(kind))
+        });
+    if !supported {
+        return Err(DegaussError::unsupported(
+            "core launch",
+            format!(
+                "{} is not an {} launcher",
+                core.display(),
+                kinds.join(" or ")
+            ),
+        ));
+    }
+    let path = canonical_core.to_str().ok_or_else(|| {
+        DegaussError::unsupported(
+            "core launch",
+            format!("{} is not valid UTF-8", canonical_core.display()),
+        )
+    })?;
+    Ok(LaunchPlan {
+        mgl: String::new(),
+        mgl_path: PathBuf::new(),
+        command: format!("load_core {path}\n"),
+        boot_file: None,
+    })
 }
 
 /// The element a favourite carries when the thing it points at is not a
@@ -468,6 +632,7 @@ pub fn favorite_mgl_with_preference(
 /// differs or the favourite carries paths Main would join to the home
 /// directory: those are placed in the system's folders as Main would place
 /// them under `games/<core>`, so the temporary copy names the same file.
+#[cfg(test)]
 pub fn plan_with_choice(
     system: &SystemConfig,
     game: &Path,
@@ -475,6 +640,21 @@ pub fn plan_with_choice(
     menu_root: &Path,
     ra_first: bool,
     selected: Option<&str>,
+) -> Result<LaunchPlan> {
+    plan_with_selections(system, game, mgl_path, menu_root, ra_first, selected, None)
+}
+
+/// Plan a launch after selecting the compatible core family, then the core
+/// version within it. The original system remains the identity used to
+/// recognise existing favourites made with any declared family.
+pub fn plan_with_selections(
+    system: &SystemConfig,
+    game: &Path,
+    mgl_path: &Path,
+    menu_root: &Path,
+    ra_first: bool,
+    selected_version: Option<&str>,
+    selected_family: Option<&str>,
 ) -> Result<LaunchPlan> {
     if game
         .extension()
@@ -484,7 +664,14 @@ pub fn plan_with_choice(
         if !crate::core_variants::recognized_favorite(game, system)? {
             return plan(system, game, mgl_path);
         }
-        let core = crate::core_choices::resolve(system, menu_root, selected, ra_first)?;
+        let family = crate::launch_cores::resolve_for_version(
+            system,
+            menu_root,
+            selected_family,
+            selected_version,
+            ra_first,
+        )?;
+        let core = crate::core_choices::resolve(&family, menu_root, selected_version, ra_first)?;
         if !crate::core_variants::needs_conversion(game, &core)?
             && !crate::favorites::has_home_relative_paths(game)?
         {
@@ -499,14 +686,23 @@ pub fn plan_with_choice(
             boot_file: None,
         });
     }
-    let mut result = plan(system, game, mgl_path)?;
-    if needs_system_core(game) {
-        let core = crate::core_choices::resolve(system, menu_root, selected, ra_first)?;
-        result.mgl = crate::core_variants::apply(&result.mgl, mgl_path, &core)?;
+    if !needs_system_core(game) {
+        return plan(system, game, mgl_path);
     }
+    let family = crate::launch_cores::resolve_for_version(
+        system,
+        menu_root,
+        selected_family,
+        selected_version,
+        ra_first,
+    )?;
+    let mut result = plan(&family, game, mgl_path)?;
+    let core = crate::core_choices::resolve(&family, menu_root, selected_version, ra_first)?;
+    result.mgl = crate::core_variants::apply(&result.mgl, mgl_path, &core)?;
     Ok(result)
 }
 
+#[cfg(test)]
 pub fn favorite_mgl_with_choice(
     system: &SystemConfig,
     game: &Path,
@@ -514,10 +710,28 @@ pub fn favorite_mgl_with_choice(
     ra_first: bool,
     selected: Option<&str>,
 ) -> Result<Option<String>> {
+    favorite_mgl_with_selections(system, game, menu_root, ra_first, selected, None)
+}
+
+pub fn favorite_mgl_with_selections(
+    system: &SystemConfig,
+    game: &Path,
+    menu_root: &Path,
+    ra_first: bool,
+    selected_version: Option<&str>,
+    selected_family: Option<&str>,
+) -> Result<Option<String>> {
     let Some(text) = favorite_mgl(system, game)? else {
         return Ok(None);
     };
-    let core = crate::core_choices::resolve(system, menu_root, selected, ra_first)?;
+    let family = crate::launch_cores::resolve_for_version(
+        system,
+        menu_root,
+        selected_family,
+        selected_version,
+        ra_first,
+    )?;
+    let core = crate::core_choices::resolve(&family, menu_root, selected_version, ra_first)?;
     crate::core_variants::apply(&text, game, &core).map(Some)
 }
 
@@ -631,6 +845,9 @@ mod tests {
     use super::*;
     use crate::config::LaunchRule;
 
+    const AMIGAVISION_2026_04_GAMES: &[u8] =
+        include_bytes!("../tests/fixtures/amigavision-2026-04-games.txt");
+
     fn rule(exts: &[&str], kind: &str, index: u8, delay: u8) -> LaunchRule {
         LaunchRule {
             extensions: exts.iter().map(|s| s.to_string()).collect(),
@@ -678,8 +895,208 @@ mod tests {
             ],
             skip_folders: Vec::new(),
             setname: None,
+            compatible_cores: Vec::new(),
             extra_paths: Vec::new(),
         }
+    }
+
+    fn shipped_system(id: &str, paths: Vec<PathBuf>) -> SystemConfig {
+        let def = crate::systems::load_table(Path::new("assets/systems.toml"))
+            .unwrap()
+            .into_iter()
+            .find(|system| system.id == id)
+            .unwrap_or_else(|| panic!("missing shipped system {id}"));
+        crate::systems::FoundSystem {
+            def,
+            paths,
+            logo_dir: None,
+            menu_folder: None,
+        }
+        .to_config()
+    }
+
+    #[test]
+    fn current_and_legacy_ngpc_cores_launch_the_same_existing_libraries() {
+        let root = std::env::temp_dir().join(format!("degauss-ngpc-{}", std::process::id()));
+        let ngp_folder = root.join("games/NGP");
+        let ngpc_folder = root.join("games/NGPC");
+        std::fs::create_dir_all(&ngp_folder).unwrap();
+        std::fs::create_dir_all(&ngpc_folder).unwrap();
+        std::fs::create_dir_all(root.join("_Console")).unwrap();
+        std::fs::create_dir_all(root.join("_Arcade")).unwrap();
+        let monochrome_legacy_folder = ngp_folder.join("Mono.ngp");
+        let monochrome_shared_folder = ngpc_folder.join("Mono Shared.ngp");
+        let colour_ngc = ngpc_folder.join("Colour.ngc");
+        let colour_npc = ngpc_folder.join("Colour Alias.npc");
+        for game in [
+            &monochrome_legacy_folder,
+            &monochrome_shared_folder,
+            &colour_ngc,
+            &colour_npc,
+        ] {
+            std::fs::write(game, b"cartridge").unwrap();
+        }
+        let pocket = shipped_system(
+            "NeoGeoPocket",
+            vec![ngp_folder.clone(), ngpc_folder.clone()],
+        );
+        let colour = shipped_system("NeoGeoPocketColor", vec![ngpc_folder.clone()]);
+        assert!(pocket.accepts(&monochrome_legacy_folder));
+        assert!(pocket.accepts(&monochrome_shared_folder));
+        assert!(colour.accepts(&colour_ngc));
+        assert!(colour.accepts(&colour_npc));
+        for (system, game) in [
+            (&pocket, &monochrome_legacy_folder),
+            (&pocket, &monochrome_shared_folder),
+            (&colour, &colour_ngc),
+            (&colour, &colour_npc),
+        ] {
+            let rule = system.rule_for(game).expect("cartridge launch rule");
+            assert_eq!(rule.kind, "f");
+            assert_eq!(rule.index, 1);
+        }
+
+        std::fs::write(root.join("_Console/NGPC_20260916.rbf"), b"core").unwrap();
+        for (system, game) in [
+            (&pocket, &monochrome_legacy_folder),
+            (&pocket, &monochrome_shared_folder),
+            (&colour, &colour_ngc),
+            (&colour, &colour_npc),
+        ] {
+            let planned =
+                plan_with_preference(system, game, &root.join("current.mgl"), &root, false)
+                    .unwrap();
+            assert!(planned.mgl.contains("<rbf>_Console/NGPC</rbf>"));
+            assert!(!planned.mgl.contains("<setname>"));
+            assert!(planned.mgl.contains("type=\"f\" index=\"1\""));
+        }
+        let current_favorite =
+            favorite_mgl_with_preference(&pocket, &monochrome_legacy_folder, &root, false)
+                .unwrap()
+                .unwrap();
+        assert!(current_favorite.contains("<rbf>_Console/NGPC</rbf>"));
+        assert!(!current_favorite.contains("<setname>"));
+
+        std::fs::remove_file(root.join("_Console/NGPC_20260916.rbf")).unwrap();
+        std::fs::write(root.join("_Arcade/JTNGP.rbf"), b"core").unwrap();
+        std::fs::write(root.join("_Arcade/JTNGPC.rbf"), b"core").unwrap();
+        let legacy_ngp = plan_with_preference(
+            &pocket,
+            &monochrome_legacy_folder,
+            &root.join("legacy-ngp.mgl"),
+            &root,
+            false,
+        )
+        .unwrap();
+        assert!(legacy_ngp.mgl.contains("<rbf>_Arcade/JTNGP</rbf>"));
+        assert!(legacy_ngp.mgl.contains("<setname>NeoGeoPocket</setname>"));
+        let legacy_colour = plan_with_preference(
+            &colour,
+            &colour_ngc,
+            &root.join("legacy-ngpc.mgl"),
+            &root,
+            false,
+        )
+        .unwrap();
+        assert!(legacy_colour.mgl.contains("<rbf>_Arcade/JTNGPC</rbf>"));
+        assert!(legacy_colour.mgl.contains("<setname>JTNGPC</setname>"));
+        let legacy_favorite = root.join("Legacy Pocket.mgl");
+        std::fs::write(&legacy_favorite, &legacy_ngp.mgl).unwrap();
+        assert!(crate::core_variants::recognized_favorite(&legacy_favorite, &pocket).unwrap());
+
+        std::fs::write(root.join("_Console/NGPC_20260916.rbf"), b"core").unwrap();
+        let preferred = plan_with_preference(
+            &pocket,
+            &monochrome_legacy_folder,
+            &root.join("preferred.mgl"),
+            &root,
+            false,
+        )
+        .unwrap();
+        assert!(preferred.mgl.contains("<rbf>_Console/NGPC</rbf>"));
+        assert!(!preferred.mgl.contains("<setname>"));
+
+        let pinned_legacy = plan_with_selections(
+            &pocket,
+            &monochrome_shared_folder,
+            &root.join("pinned-legacy.mgl"),
+            &root,
+            false,
+            Some("standard"),
+            Some("jtngp"),
+        )
+        .unwrap();
+        assert!(pinned_legacy.mgl.contains("<rbf>_Arcade/JTNGP</rbf>"));
+        assert!(pinned_legacy
+            .mgl
+            .contains("<setname>NeoGeoPocket</setname>"));
+
+        let current_favorite_path = root.join("Current Pocket.mgl");
+        std::fs::write(&current_favorite_path, &current_favorite).unwrap();
+        let converted = plan_with_selections(
+            &pocket,
+            &current_favorite_path,
+            &root.join("converted-favorite.mgl"),
+            &root,
+            false,
+            Some("standard"),
+            Some("jtngp"),
+        )
+        .unwrap();
+        assert!(converted.mgl.contains("<rbf>_Arcade/JTNGP</rbf>"));
+        assert!(converted.mgl.contains("<setname>NeoGeoPocket</setname>"));
+
+        let pinned_favorite = favorite_mgl_with_selections(
+            &pocket,
+            &monochrome_legacy_folder,
+            &root,
+            false,
+            Some("standard"),
+            Some("jtngp"),
+        )
+        .unwrap()
+        .unwrap();
+        assert!(pinned_favorite.contains("<rbf>_Arcade/JTNGP</rbf>"));
+
+        std::fs::remove_file(root.join("_Arcade/JTNGP.rbf")).unwrap();
+        let unavailable = plan_with_selections(
+            &pocket,
+            &monochrome_legacy_folder,
+            &root.join("missing-pinned.mgl"),
+            &root,
+            false,
+            Some("standard"),
+            Some("jtngp"),
+        )
+        .unwrap_err();
+        assert!(unavailable
+            .to_string()
+            .contains("JTNGP (Legacy) is not installed"));
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    fn amiga_vision_system(install: &Path) -> SystemConfig {
+        SystemConfig {
+            preserve_rbf_stem: false,
+            name: "Amiga".into(),
+            path: install.to_string_lossy().into_owned(),
+            extensions: vec![],
+            rbf: "_Computer/Minimig".into(),
+            launch: Vec::new(),
+            skip_folders: Vec::new(),
+            setname: Some("Amiga".into()),
+            compatible_cores: Vec::new(),
+            extra_paths: Vec::new(),
+        }
+    }
+
+    fn amiga_vision_install(name: &str, games: &[u8]) -> PathBuf {
+        let install =
+            std::env::temp_dir().join(format!("degauss-amigavision-{name}-{}", std::process::id()));
+        std::fs::remove_dir_all(&install).ok();
+        std::fs::create_dir_all(install.join("listings")).unwrap();
+        std::fs::write(install.join("listings/games.txt"), games).unwrap();
+        install
     }
 
     #[test]
@@ -732,6 +1149,7 @@ mod tests {
             launch: Vec::new(),
             skip_folders: Vec::new(),
             setname: None,
+            compatible_cores: Vec::new(),
             extra_paths: Vec::new(),
         };
         let plan = plan_amiga_vision(
@@ -751,6 +1169,103 @@ mod tests {
     }
 
     #[test]
+    fn april_2026_amigavision_friendly_names_use_their_exact_launch_names() {
+        let install = amiga_vision_install("friendly", AMIGAVISION_2026_04_GAMES);
+        let system = amiga_vision_system(&install);
+
+        for (friendly, canonical) in [
+            ("1000 Miglia", b"1000 Miglia (OCS)[en]\n".as_slice()),
+            ("1869", b"1869 (AGA)[en]\n".as_slice()),
+            (
+                "Ast\u{e9}rix Operation Getafix",
+                b"Ast\xe9rix Operation Getafix (OCS)[en]\n".as_slice(),
+            ),
+        ] {
+            let plan = plan_amiga_vision(&system, &install, friendly, Path::new("/tmp/a.mgl"))
+                .expect("planned");
+            assert_eq!(plan.boot_file.expect("boot file").1, canonical);
+        }
+
+        std::fs::remove_dir_all(install).ok();
+    }
+
+    #[test]
+    fn april_2026_amigavision_demos_keep_their_existing_launch_names() {
+        let install = amiga_vision_install("demo", AMIGAVISION_2026_04_GAMES);
+        let system = amiga_vision_system(&install);
+        let title = "1001 Stolen Ideas (Airwalk)(AGA)";
+        let plan =
+            plan_amiga_vision(&system, &install, title, Path::new("/tmp/a.mgl")).expect("planned");
+
+        assert_eq!(
+            plan.boot_file.expect("boot file").1,
+            b"1001 Stolen Ideas (Airwalk)(AGA)\n"
+        );
+        std::fs::remove_dir_all(install).ok();
+    }
+
+    #[test]
+    fn other_amigavision_listings_are_not_remapped() {
+        let mut changed = AMIGAVISION_2026_04_GAMES.to_vec();
+        changed[0] = b'X';
+        let install = amiga_vision_install("changed", &changed);
+        let system = amiga_vision_system(&install);
+        let plan = plan_amiga_vision(&system, &install, "1000 Miglia", Path::new("/tmp/a.mgl"))
+            .expect("planned");
+
+        assert_eq!(plan.boot_file.expect("boot file").1, b"1000 Miglia\n");
+        std::fs::remove_dir_all(install).ok();
+    }
+
+    #[test]
+    fn april_2026_known_issue_titles_report_that_they_cannot_launch_directly() {
+        let install = amiga_vision_install("known-issue", AMIGAVISION_2026_04_GAMES);
+        let system = amiga_vision_system(&install);
+        let error = plan_amiga_vision(
+            &system,
+            &install,
+            "Dynamite D\u{fc}x",
+            Path::new("/tmp/a.mgl"),
+        )
+        .expect_err("known issue titles have no direct launcher");
+
+        assert!(error.to_string().contains("known issues"), "got: {error}");
+        std::fs::remove_dir_all(install).ok();
+    }
+
+    #[test]
+    fn an_existing_short_name_favourite_uses_the_april_2026_launch_name() {
+        let install = amiga_vision_install("favourite", AMIGAVISION_2026_04_GAMES);
+        let system = amiga_vision_system(&install);
+        let favourite_text = favorite_mgl_amiga(&system, &install, "1000 Miglia").unwrap();
+        let favourite = install.join("1000 Miglia.mgl");
+        std::fs::write(&favourite, favourite_text).unwrap();
+
+        let plan = plan(&system, &favourite, Path::new("/tmp/a.mgl")).expect("planned");
+        assert_eq!(
+            plan.boot_file.expect("boot file").1,
+            b"1000 Miglia (OCS)[en]\n"
+        );
+        std::fs::remove_dir_all(install).ok();
+    }
+
+    #[test]
+    fn april_2026_amigavision_launch_map_stays_aligned_with_its_listing() {
+        let games: Vec<_> = amiga_vision_lines(AMIGAVISION_2026_04_GAMES).collect();
+        let launches: Vec<_> = amiga_vision_lines(AMIGAVISION_2026_04_LAUNCHES).collect();
+
+        assert_eq!(games.len(), 2_670);
+        assert_eq!(launches.len(), games.len());
+        assert!(launches.iter().all(|entry| {
+            matches!(entry.first(), Some(b'G' | b'I'))
+                && entry.get(1) == Some(&b'\t')
+                && entry.len() > 2
+        }));
+        let digest: [u8; 20] = Sha1::digest(AMIGAVISION_2026_04_GAMES).into();
+        assert_eq!(digest, AMIGAVISION_2026_04_GAMES_SHA1);
+    }
+
+    #[test]
     fn a_title_that_is_not_latin1_is_refused_rather_than_mangled() {
         let system = SystemConfig {
             preserve_rbf_stem: false,
@@ -761,6 +1276,7 @@ mod tests {
             launch: Vec::new(),
             skip_folders: Vec::new(),
             setname: None,
+            compatible_cores: Vec::new(),
             extra_paths: Vec::new(),
         };
         let err = plan_amiga_vision(
@@ -786,6 +1302,7 @@ mod tests {
             launch: Vec::new(),
             skip_folders: Vec::new(),
             setname: None,
+            compatible_cores: Vec::new(),
             extra_paths: Vec::new(),
         };
         let plan = plan_amiga_vision(
@@ -820,6 +1337,7 @@ mod tests {
             launch: Vec::new(),
             skip_folders: Vec::new(),
             setname: None,
+            compatible_cores: Vec::new(),
             extra_paths: Vec::new(),
         };
         let plan = plan_amiga_vision(&system, &dir, "Lotus II", &dir.join("degauss.mgl")).unwrap();
@@ -887,6 +1405,7 @@ mod tests {
             launch: vec![rule(&["nes", "fds"], "f", 1, 1)],
             skip_folders: Vec::new(),
             setname: None,
+            compatible_cores: Vec::new(),
         };
         (root, system)
     }
@@ -1313,6 +1832,7 @@ mod tests {
             rbf: "_Computer/Minimig".into(),
             launch: Vec::new(),
             setname: Some("Amiga".into()),
+            compatible_cores: Vec::new(),
             skip_folders: Vec::new(),
             extra_paths: Vec::new(),
         };
@@ -1347,6 +1867,7 @@ mod tests {
             rbf: "_Computer/Minimig".into(),
             launch: Vec::new(),
             setname: Some("Amiga".into()),
+            compatible_cores: Vec::new(),
             skip_folders: Vec::new(),
             extra_paths: Vec::new(),
         };
@@ -1379,6 +1900,7 @@ mod tests {
             rbf: "_Computer/Minimig".into(),
             launch: Vec::new(),
             setname: Some("Amiga".into()),
+            compatible_cores: Vec::new(),
             skip_folders: Vec::new(),
             extra_paths: Vec::new(),
         };
@@ -1411,6 +1933,7 @@ mod tests {
             launch: vec![rule(&["neo", "mgl"], "f", 1, 1)],
             skip_folders: Vec::new(),
             setname: None,
+            compatible_cores: Vec::new(),
             extra_paths: Vec::new(),
         }
     }
@@ -1540,5 +2063,70 @@ mod tests {
             std::fs::remove_file(&favourite).unwrap();
         }
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn an_explicit_cached_core_is_revalidated_at_the_launch_boundary() {
+        let root = std::env::temp_dir().join(format!("degauss-direct-core-{}", std::process::id()));
+        let menu = root.join("menu");
+        std::fs::create_dir_all(menu.join("_Console")).unwrap();
+        let standard = menu.join("_Console/NES_20260916.rbf");
+        let ra = menu.join("_Console/RA_NES.mgl");
+        let arcade = menu.join("_Arcade/Example.mra");
+        let text = menu.join("_Console/readme.txt");
+        std::fs::create_dir_all(arcade.parent().unwrap()).unwrap();
+        std::fs::write(&standard, b"core").unwrap();
+        std::fs::write(&ra, b"<mistergamedescription/>").unwrap();
+        std::fs::write(&arcade, b"<misterromdescription/>").unwrap();
+        std::fs::write(&text, b"not a core").unwrap();
+        std::fs::write(root.join("outside.rbf"), b"outside").unwrap();
+
+        assert_eq!(
+            plan_core(&standard, &menu).unwrap().command,
+            format!("load_core {}\n", standard.canonicalize().unwrap().display())
+        );
+        assert_eq!(
+            plan_core(&ra, &menu).unwrap().command,
+            format!("load_core {}\n", ra.canonicalize().unwrap().display())
+        );
+        assert_eq!(
+            plan_misterzine(&arcade, &menu).unwrap().command,
+            format!("load_core {}\n", arcade.canonicalize().unwrap().display())
+        );
+        assert!(plan_misterzine(&ra, &menu)
+            .unwrap_err()
+            .to_string()
+            .contains("not an RBF or MRA launcher"));
+        assert!(plan_core(&arcade, &menu)
+            .unwrap_err()
+            .to_string()
+            .contains("not an RBF or MGL"));
+        assert!(plan_core(&text, &menu)
+            .unwrap_err()
+            .to_string()
+            .contains("not an RBF or MGL"));
+        assert!(plan_core(&root.join("outside.rbf"), &menu)
+            .unwrap_err()
+            .to_string()
+            .contains("outside the configured MiSTer menu"));
+        assert!(plan_core(&menu.join("../outside.rbf"), &menu)
+            .unwrap_err()
+            .to_string()
+            .contains("outside the configured MiSTer menu"));
+        #[cfg(unix)]
+        {
+            let linked = menu.join("_Console/Linked.rbf");
+            std::os::unix::fs::symlink(root.join("outside.rbf"), &linked).unwrap();
+            assert!(plan_misterzine(&linked, &menu)
+                .unwrap_err()
+                .to_string()
+                .contains("outside the configured MiSTer menu"));
+        }
+        std::fs::remove_file(&standard).unwrap();
+        assert!(plan_core(&standard, &menu)
+            .unwrap_err()
+            .to_string()
+            .contains("no longer installed"));
+        std::fs::remove_dir_all(&root).ok();
     }
 }

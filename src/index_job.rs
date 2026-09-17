@@ -23,7 +23,12 @@ pub struct DiscoveryRequest {
     pub logo_dir: Option<PathBuf>,
 }
 
-type DiscoveryResult = Result<Option<Vec<crate::systems::FoundSystem>>>;
+pub struct Discovered {
+    pub systems: Vec<crate::systems::FoundSystem>,
+    pub cores: crate::systems::CoreCatalogue,
+}
+
+type DiscoveryResult = Result<Option<Discovered>>;
 
 pub struct DiscoveryJob {
     result: Option<Receiver<DiscoveryResult>>,
@@ -53,7 +58,13 @@ impl DiscoveryJob {
                         request.logo_dir.as_deref(),
                         &cores,
                     )?;
-                    Ok((!worker_cancelled.load(Ordering::Relaxed)).then_some(found))
+                    let catalogue = cores.catalogue(&request.table);
+                    Ok(
+                        (!worker_cancelled.load(Ordering::Relaxed)).then_some(Discovered {
+                            systems: found,
+                            cores: catalogue,
+                        }),
+                    )
                 }))
                 .unwrap_or_else(|_| {
                     Err(DegaussError::unsupported(
@@ -450,6 +461,7 @@ mod tests {
                 rbf: "Test".into(),
                 launch: vec![],
                 setname: None,
+                compatible_cores: Vec::new(),
                 skip_folders: vec![],
                 extra_paths: vec![],
             },
@@ -475,6 +487,57 @@ mod tests {
             assert!(Instant::now() < deadline, "worker did not finish");
             std::thread::sleep(Duration::from_millis(1));
         }
+    }
+
+    #[test]
+    fn system_discovery_returns_the_core_catalogue_from_the_same_menu_walk() {
+        let (root, _) = fixture();
+        let menu = root.join("menu");
+        let game_root = root.join("library");
+        std::fs::create_dir_all(menu.join("_Console")).unwrap();
+        std::fs::create_dir_all(game_root.join("NES")).unwrap();
+        std::fs::write(menu.join("_Console/NES_20260916.rbf"), b"fixture").unwrap();
+        std::fs::write(game_root.join("NES/Example.nes"), b"fixture").unwrap();
+        let table = crate::systems::parse_table(
+            r#"
+[[systems]]
+name = "Nintendo Entertainment System"
+id = "NES"
+folders = ["NES"]
+rbf = "_Console/NES"
+extensions = ["nes"]
+"#,
+            PathBuf::from("core discovery fixture").as_path(),
+        )
+        .unwrap();
+        let mut job = DiscoveryJob::start(DiscoveryRequest {
+            menu_root: menu.clone(),
+            roots: vec![game_root],
+            table,
+            logo_dir: None,
+        })
+        .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let discovered = loop {
+            if let Some(result) = job.try_recv() {
+                break result.unwrap().expect("discovery was not cancelled");
+            }
+            assert!(Instant::now() < deadline, "discovery worker did not finish");
+            std::thread::sleep(Duration::from_millis(1));
+        };
+
+        assert_eq!(discovered.systems.len(), 1);
+        assert_eq!(discovered.systems[0].def.id, "NES");
+        assert_eq!(discovered.cores.entries.len(), 1);
+        assert_eq!(
+            discovered.cores.entries[0].label(),
+            "Nintendo Entertainment System [Standard]"
+        );
+        assert_eq!(
+            discovered.cores.entries[0].path,
+            menu.join("_Console/NES_20260916.rbf")
+        );
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

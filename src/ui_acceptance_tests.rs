@@ -222,9 +222,12 @@ fn every_existing_action_remains_reachable_without_a_placeholder_submenu() {
         scrape_game: true,
         image_override: None,
         game_data_source: true,
+        launch_core: true,
         core_version: true,
         core_version_override: true,
         favorite_folder: false,
+        metadata_filters: true,
+        rebuild_system: true,
     };
     let cases = [
         context_entries(Browsing::Games, true, Some(false), Some(false), true, full),
@@ -284,12 +287,15 @@ fn every_existing_action_remains_reachable_without_a_placeholder_submenu() {
         SCRAPE_SYSTEM,
         SCRAPE_FOLDER,
         SCRAPE_GAME,
+        LAUNCH_CORE,
         CORE_VERSION,
         USE_DEFAULT_CORE_VERSION,
         GAME_DATA_SOURCE,
         JUMP,
         SEARCH,
         CLEAR_SEARCH,
+        FILTER_GAMES,
+        CLEAR_FILTERS,
         HIDE_THIS,
         SHOW_THIS,
         REBUILD_SYSTEM,
@@ -353,6 +359,7 @@ fn unopened_fixture_app_with_systems(
         config,
         settings,
         settings_path: root.join("settings.toml"),
+        core_catalogue: Default::default(),
         systems: defs
             .iter()
             .map(|def| FoundSystem {
@@ -437,6 +444,336 @@ fn run_browse_bar_settings_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) 
         }
         app.ui.hide().unwrap();
     }
+}
+
+fn run_cores_browser_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
+    let root = root.join("cores-browser");
+    std::fs::create_dir_all(root.join("games/NES")).unwrap();
+    for name in ["First Game.nes", "Second Game.nes"] {
+        std::fs::write(root.join("games/NES").join(name), b"fixture").unwrap();
+    }
+    let console = root.join("_Console");
+    let ra = root.join("_RA_Cores");
+    let unstable = root.join("_Unstable");
+    std::fs::create_dir_all(&console).unwrap();
+    std::fs::create_dir_all(&ra).unwrap();
+    std::fs::create_dir_all(&unstable).unwrap();
+    let standard = console.join("NES_20260916.rbf");
+    let ra_launcher = ra.join("RA_NES.mgl");
+    let unstable_launcher = unstable.join("NES_unstable_20260916_ab12.rbf");
+    std::fs::write(&standard, b"fixture").unwrap();
+    std::fs::write(&unstable_launcher, b"fixture").unwrap();
+    std::fs::write(
+        &ra_launcher,
+        "<mistergamedescription><rbf>_RA_Cores/Cores/NES</rbf><setname same_dir=\"1\">RA_NES</setname></mistergamedescription>",
+    )
+    .unwrap();
+    std::fs::create_dir_all(ra.join("Cores")).unwrap();
+    std::fs::write(ra.join("Cores/NES.rbf"), b"fixture").unwrap();
+
+    let mut app = fixture_app(&root, window, Settings::default());
+    app.open_system = None;
+    app.library = None;
+    app.system_cache = None;
+    app.opened_config = None;
+    app.open_category = None;
+    app.trail.clear();
+    app.here.clear();
+    app.browsing = Browsing::Categories;
+    app.rebuild_system_list();
+    assert!(
+        !app.categories
+            .iter()
+            .any(|(name, _)| name == CORES_CATEGORY),
+        "the backwards-compatible default leaves Cores hidden"
+    );
+
+    select_option(&mut app, OptionsPage::Library, OptionId::ShowCores);
+    app.handle(Action::Accept);
+    assert_eq!(app.screen, Screen::Options);
+    assert_eq!(app.options_page, OptionsPage::Library);
+    assert_eq!(
+        app.option_ids()[app.active_list().selected()],
+        OptionId::ShowCores,
+        "the targeted catalogue build keeps the user on the option they changed"
+    );
+    assert_eq!(app.core_catalogue.entries.len(), 3);
+    assert_eq!(
+        crate::cache::load_core_catalogue(&app.cache_dir),
+        Some(app.core_catalogue.clone()),
+        "the first opt-in builds and persists the catalogue explicitly"
+    );
+
+    // The Cores catalogue is an optional companion to the main index. A
+    // failure to persist it must be reported, but must not discard a complete
+    // system discovery or the newly built system lists.
+    let catalogue_path = crate::cache::core_catalogue_path(&app.cache_dir);
+    std::fs::remove_file(&catalogue_path).unwrap();
+    std::fs::create_dir(&catalogue_path).unwrap();
+    std::fs::write(root.join("games/NES/Third Game.nes"), b"fixture").unwrap();
+    app.rebuild_all_systems();
+    app.finish_background_work_for_headless();
+    assert_eq!(app.index.as_ref().unwrap().systems["NES"].games, 3);
+    assert_eq!(
+        app.index_terminal.as_ref().unwrap().state,
+        "Finished With Problems"
+    );
+    assert!(app
+        .index_terminal
+        .as_ref()
+        .unwrap()
+        .problem
+        .contains("Core catalogue not saved"));
+    std::fs::remove_dir(&catalogue_path).unwrap();
+    crate::cache::save_core_catalogue(&app.cache_dir, &app.core_catalogue).unwrap();
+
+    app.handle(Action::Quit);
+    assert_eq!(app.screen, Screen::Options);
+    app.handle(Action::Quit);
+    assert_eq!(app.screen, Screen::OptionsRoot);
+    app.handle(Action::Quit);
+    assert_eq!(app.screen, Screen::Menu);
+    app.handle(Action::Quit);
+    assert_eq!(app.screen, Screen::Browse);
+    assert!(app.show_cores);
+    let cores = app
+        .categories
+        .iter()
+        .position(|(name, _)| name == CORES_CATEGORY)
+        .expect("the enabled Cores category is on Home");
+    app.category_list.select(cores);
+    app.handle(Action::Accept);
+    assert_eq!(app.browsing, Browsing::Systems);
+    assert!(app.in_cores_browser());
+    assert_eq!(app.core_categories(), vec![("Console".into(), 3)]);
+
+    app.handle(Action::Accept);
+    assert_eq!(app.browsing, Browsing::Games);
+    assert_eq!(app.here.len(), 3);
+    assert_eq!(app.here[0].name, "NES [Standard]");
+    assert_eq!(app.here[1].name, "NES [RA]");
+    assert_eq!(app.here[2].name, "NES [Unstable: 20260916_ab12]");
+    app.open_context();
+    assert_eq!(
+        app.context_actions,
+        vec![JUMP, SEARCH, REBUILD_CORES, CHANGE_VIEW]
+            .into_iter()
+            .map(str::to_string)
+            .collect::<Vec<_>>()
+    );
+    app.handle(Action::Quit);
+    app.filter = squashed("[RA]");
+    app.apply_filter();
+    assert_eq!(app.here.len(), 1);
+    assert!(app.here[0].name.ends_with("[RA]"));
+    app.clear_filter();
+
+    app.category_system
+        .insert("Console".to_string(), "NES".to_string());
+    app.left_at.push(crate::state::LeftAt {
+        system: "NES".to_string(),
+        place: "dir:/media/fat/games/NES".to_string(),
+        row: "game:remembered.nes".to_string(),
+    });
+    app.game_list.select(1);
+    let saved = app.position();
+    assert_eq!(saved.system, CORES_SYSTEM_ID);
+    app.category_system.clear();
+    app.left_at.clear();
+    app.open_category = None;
+    app.core_category = None;
+    app.browsing = Browsing::Categories;
+    app.rebuild_system_list();
+    app.restore_position(&saved);
+    assert!(app.in_cores_browser());
+    assert_eq!(app.browsing, Browsing::Games);
+    assert_eq!(app.game_list.selected(), 1);
+    assert!(app.here[1].name.ends_with("[RA]"));
+    assert_eq!(app.category_system, saved.category_system);
+    assert_eq!(app.left_at, saved.left_at);
+
+    let Outcome::Launch { plan, history, .. } = app.handle(Action::Accept).expect("core launch")
+    else {
+        panic!("unexpected core launch outcome")
+    };
+    assert!(history.is_none(), "launching a core is not game history");
+    assert_eq!(
+        plan.command,
+        format!(
+            "load_core {}\n",
+            ra_launcher.canonicalize().unwrap().display()
+        )
+    );
+    std::fs::remove_file(&standard).unwrap();
+    app.game_list.select(0);
+    assert!(app.handle(Action::Accept).is_none());
+    assert!(app
+        .message
+        .as_deref()
+        .is_some_and(|message| message.contains("no longer installed")));
+
+    let previous = app.core_catalogue.clone();
+    let menu_root = app.config.menu_root.clone();
+    app.config.menu_root = root
+        .join("missing-menu-root")
+        .to_string_lossy()
+        .into_owned();
+    app.rebuild_cores_catalogue();
+    assert_eq!(app.core_catalogue, previous);
+    assert!(app
+        .message
+        .as_deref()
+        .is_some_and(|message| message.contains("Cores list was not changed")));
+    app.config.menu_root = menu_root;
+    app.ui.hide().unwrap();
+    drop(app);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+fn run_misterzine_browser_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
+    let root = root.join("misterzine-browser");
+    std::fs::create_dir_all(root.join("games/NES")).unwrap();
+    for name in ["First Game.nes", "Second Game.nes"] {
+        std::fs::write(root.join("games/NES").join(name), b"fixture").unwrap();
+    }
+    let core = root.join("_Console/NES_20260916.rbf");
+    std::fs::create_dir_all(core.parent().unwrap()).unwrap();
+    std::fs::write(&core, b"fixture").unwrap();
+
+    let mut app = fixture_app(&root, window.clone(), Settings::default());
+    app.open_system = None;
+    app.library = None;
+    app.system_cache = None;
+    app.opened_config = None;
+    app.open_category = None;
+    app.trail.clear();
+    app.here.clear();
+    app.browsing = Browsing::Categories;
+    app.rebuild_system_list();
+    assert_eq!(app.settings.show_misterzine, None);
+    assert!(!app.show_misterzine);
+    assert!(app.misterzine_job.is_none());
+    assert!(!crate::misterzine::cache_path(&app.cache_dir).exists());
+    assert!(!app
+        .categories
+        .iter()
+        .any(|(name, _)| name == MISTERZINE_CATEGORY));
+
+    select_option(&mut app, OptionsPage::Library, OptionId::ShowMisterZine);
+    app.handle(Action::Accept);
+    assert_eq!(app.settings.show_misterzine, Some(true));
+    assert!(app.show_misterzine);
+    assert!(app.misterzine_job.is_none());
+    assert!(!crate::misterzine::cache_path(&app.cache_dir).exists());
+    assert!(app
+        .categories
+        .iter()
+        .any(|(name, _)| name == MISTERZINE_CATEGORY));
+
+    app.screen = Screen::Browse;
+    app.open_category = Some(MISTERZINE_CATEGORY.into());
+    app.browsing = Browsing::Games;
+    app.misterzine_items = vec![
+        crate::misterzine::Item::fixture(
+            "Installed Release",
+            crate::misterzine::LocalState::Current,
+            Some(core.clone()),
+        ),
+        crate::misterzine::Item::fixture(
+            "Missing Release",
+            crate::misterzine::LocalState::NotInstalled,
+            None,
+        ),
+    ];
+    app.rebuild_misterzine_rows();
+    assert_eq!(app.here.len(), 2);
+    app.open_context();
+    assert_eq!(
+        app.context_actions,
+        [REFRESH_MISTERZINE, INSTALLED_ONLY, ABOUT_MISTERZINE]
+            .into_iter()
+            .map(str::to_string)
+            .collect::<Vec<_>>()
+    );
+    let installed_only = app
+        .menu
+        .iter()
+        .position(|entry| entry == INSTALLED_ONLY)
+        .unwrap();
+    app.menu_list.select(installed_only);
+    app.handle(Action::Accept);
+    assert!(app.misterzine_installed_only);
+    assert_eq!(app.here.len(), 1);
+    let Outcome::Launch { plan, .. } = app.handle(Action::Accept).expect("local core launch")
+    else {
+        panic!("unexpected MiSTerZine launch outcome")
+    };
+    assert_eq!(
+        plan.command,
+        format!("load_core {}\n", core.canonicalize().unwrap().display())
+    );
+
+    std::fs::remove_file(&core).unwrap();
+    assert!(app.handle(Action::Accept).is_none());
+    assert!(app
+        .message
+        .as_deref()
+        .is_some_and(|message| message.contains("no longer installed")));
+    app.message = None;
+    app.open_context();
+    let installed_only = app
+        .menu
+        .iter()
+        .position(|entry| entry == INSTALLED_ONLY)
+        .unwrap();
+    app.menu_list.select(installed_only);
+    app.handle(Action::Accept);
+    assert!(!app.misterzine_installed_only);
+    app.game_list.select(1);
+    assert!(app.handle(Action::Accept).is_none());
+    assert!(app
+        .message
+        .as_deref()
+        .is_some_and(|message| message == "Missing Release is not installed on this MiSTer."));
+    app.message = None;
+
+    app.open_context();
+    let about = app
+        .menu
+        .iter()
+        .position(|entry| entry == ABOUT_MISTERZINE)
+        .unwrap();
+    app.menu_list.select(about);
+    app.handle(Action::Accept);
+    assert!(app
+        .message
+        .as_deref()
+        .is_some_and(|message| message.contains("CC BY 4.0")));
+    assert!(app.save_settings());
+    let settings = Settings::load(&app.settings_path).unwrap();
+    app.ui.hide().unwrap();
+    drop(app);
+
+    let mut app = fixture_app(&root, window, settings);
+    assert!(app.show_misterzine);
+    assert!(
+        !app.misterzine_installed_only,
+        "the view filter is not persisted"
+    );
+    assert!(
+        app.misterzine_job.is_none(),
+        "startup does not contact MiSTerZine"
+    );
+    select_option(&mut app, OptionsPage::Library, OptionId::ShowMisterZine);
+    app.handle(Action::Accept);
+    assert!(!app.show_misterzine);
+    assert!(!app
+        .categories
+        .iter()
+        .any(|(name, _)| name == MISTERZINE_CATEGORY));
+    app.ui.hide().unwrap();
+    drop(app);
+    std::fs::remove_dir_all(root).unwrap();
 }
 
 fn run_handheld_category_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
@@ -1197,6 +1534,438 @@ fn select_row_named(app: &mut App, name: &str) {
     app.game_list.select(index);
 }
 
+fn run_last_played_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
+    let root = root.join("last-played");
+    let games = root.join("games/NES");
+    let favorites_root = root.join("_@Favorites");
+    let media = games.join("media");
+    std::fs::create_dir_all(&media).unwrap();
+    std::fs::create_dir(root.join("_Console")).unwrap();
+    std::fs::write(root.join("_Console/NES.rbf"), b"fixture core").unwrap();
+    let first = games.join("First Game.nes");
+    let second = games.join("Second Game.nes");
+    let missing = games.join("Missing Game.nes");
+    std::fs::write(&first, b"fixture game").unwrap();
+    std::fs::write(&second, b"fixture game").unwrap();
+    std::fs::write(media.join("first.png"), b"fixture image").unwrap();
+    std::fs::write(media.join("second.png"), b"fixture image").unwrap();
+    std::fs::write(
+        games.join("gamelist.xml"),
+        "<gameList>\
+         <game><path>First Game.nes</path><name>Current First</name><image>./media/first.png</image><genre>Puzzle</genre><publisher>Current Publisher</publisher></game>\
+         <game><path>Second Game.nes</path><name>Current Second</name><image>./media/second.png</image></game>\
+         </gameList>",
+    )
+    .unwrap();
+
+    // Existing installations are unchanged: no category and no history
+    // update is attached to a successful launch while the option is absent.
+    let mut app = fixture_app(&root, window.clone(), Settings::default());
+    assert!(app
+        .categories
+        .iter()
+        .all(|(name, _)| name != LAST_PLAYED_CATEGORY));
+    select_row_named(&mut app, "Current First");
+    let Some(Outcome::Launch { history, .. }) = app.confirm_launch() else {
+        panic!("the ordinary fixture game launches: {:?}", app.message);
+    };
+    assert!(history.is_none());
+    assert!(!crate::history::path_beside(&app.settings_path).exists());
+    app.ui.hide().unwrap();
+    drop(app);
+
+    // Retained order is newest first. Recorded names are only fallbacks:
+    // current cache presentation must replace them when a target resolves.
+    let history_path = crate::history::path_beside(&root.join("settings.toml"));
+    let mut history = crate::history::History::default();
+    history.remember(crate::history::Entry {
+        system: "NES".into(),
+        launch: browse::Launch::File(first.clone()),
+        name: "Recorded First".into(),
+    });
+    history.remember(crate::history::Entry {
+        system: "NES".into(),
+        launch: browse::Launch::File(missing.clone()),
+        name: "Recorded Missing".into(),
+    });
+    history.remember(crate::history::Entry {
+        system: "NES".into(),
+        launch: browse::Launch::File(second.clone()),
+        name: "Recorded Second".into(),
+    });
+    history.save(&history_path).unwrap();
+
+    let mut app = unopened_fixture_app(
+        &root,
+        window.clone(),
+        Settings {
+            last_played: Some(2),
+            show_cores: Some(true),
+            ..Settings::default()
+        },
+    );
+    app.leave_splash();
+    app.finish_background_work_for_headless();
+    app.core_catalogue = crate::systems::CoreIndex::read(&root).catalogue(&app.table);
+    std::fs::create_dir_all(&favorites_root).unwrap();
+    let mut favorites = crate::systems::parse_table(
+        include_str!("../assets/systems.toml"),
+        Path::new("systems.toml"),
+    )
+    .unwrap()
+    .into_iter()
+    .find(|system| system.id == "Favorites")
+    .unwrap();
+    favorites.folders = vec![favorites_root.to_string_lossy().into_owned()];
+    app.all_systems.push(FoundSystem {
+        def: favorites,
+        paths: vec![favorites_root.clone()],
+        logo_dir: None,
+        menu_folder: None,
+    });
+    app.rebuild_system_list();
+    let categories: Vec<&str> = app
+        .categories
+        .iter()
+        .map(|(name, _)| name.as_str())
+        .collect();
+    let recent_at = categories
+        .iter()
+        .position(|name| *name == LAST_PLAYED_CATEGORY)
+        .unwrap();
+    let cores_at = categories
+        .iter()
+        .position(|name| *name == CORES_CATEGORY)
+        .unwrap();
+    let favorites_at = categories
+        .iter()
+        .position(|name| is_favorites(name))
+        .unwrap();
+    assert_eq!(cores_at + 1, recent_at);
+    assert_eq!(recent_at + 1, favorites_at);
+    assert_eq!(app.categories[recent_at].1, 2);
+    assert!(
+        app.last_played_rows.is_empty(),
+        "building Home previews does not populate the open collection's row map"
+    );
+    assert_eq!(
+        app.category_picks.get(LAST_PLAYED_CATEGORY),
+        Some(&media.join("second.png")),
+        "the newest resolvable current cover previews the collection"
+    );
+
+    app.category_list.select(recent_at);
+    app.open_selected_category();
+    assert!(app.last_played_open);
+    assert_eq!(app.here_label(), LAST_PLAYED_CATEGORY);
+    assert_eq!(
+        app.here
+            .iter()
+            .map(|row| row.name.as_str())
+            .collect::<Vec<_>>(),
+        ["Current Second", "Recorded Missing"]
+    );
+    assert_eq!(
+        app.here[0].cover.as_deref(),
+        Some(media.join("second.png").as_path())
+    );
+    assert!(app.message.is_none());
+
+    // A background rebuild can replace the current cache while this mixed
+    // collection is open. Its visible rows and launch map must move to the
+    // same completed cache together rather than requiring a leave/re-enter.
+    let original_gamelist = std::fs::read_to_string(games.join("gamelist.xml")).unwrap();
+    std::fs::write(
+        games.join("gamelist.xml"),
+        original_gamelist.replace("Current Second", "Rebuilt Second"),
+    )
+    .unwrap();
+    app.start_build(true);
+    app.finish_background_work_for_headless();
+    assert_eq!(app.here[0].name, "Rebuilt Second");
+    assert!(app.selected_last_played().is_some());
+    std::fs::write(games.join("gamelist.xml"), &original_gamelist).unwrap();
+    app.start_build(true);
+    app.finish_background_work_for_headless();
+    assert_eq!(app.here[0].name, "Current Second");
+    assert!(app.selected_last_played().is_some());
+
+    // The collection is one stable place. It has game-list actions, but no
+    // action that pretends the mixed collection is a single system.
+    let place = app.current_view_place().unwrap();
+    assert_eq!(
+        place,
+        ViewPlace::Games {
+            system: LAST_PLAYED_SYSTEM.into(),
+            place: LAST_PLAYED_PLACE.into(),
+        }
+    );
+    app.open_context();
+    for absent in [
+        REBUILD_SYSTEM,
+        GAME_DATA_SOURCE,
+        CORE_VERSION,
+        SCRAPE_SYSTEM,
+    ] {
+        assert!(
+            !app.context_actions.iter().any(|action| action == absent),
+            "{absent} does not apply to a mixed-system collection"
+        );
+    }
+    for present in [
+        GAME_INFORMATION,
+        ADD_FAVORITE,
+        SEARCH,
+        JUMP,
+        FILTER_GAMES,
+        CHANGE_VIEW,
+    ] {
+        assert!(
+            app.context_actions.iter().any(|action| action == present),
+            "{present} remains useful in Last Played"
+        );
+    }
+    app.handle(Action::Quit);
+
+    // Raising and lowering the visible amount changes the open list at once
+    // without deleting the retained third entry.
+    app.adjust_option_value(OptionId::LastPlayed, 1);
+    assert_eq!(app.option_value(OptionId::LastPlayed), "3");
+    assert_eq!(app.here.len(), 3);
+    assert_eq!(app.here[2].name, "Current First");
+    assert_eq!(app.here[2].genre.as_deref(), Some("Puzzle"));
+    assert_eq!(app.here[2].details.publisher, "Current Publisher");
+    app.adjust_option_value(OptionId::LastPlayed, -1);
+    assert_eq!(app.here.len(), 2);
+    assert_eq!(
+        crate::history::History::load(&history_path)
+            .unwrap()
+            .entries
+            .len(),
+        3
+    );
+    app.adjust_option_value(OptionId::LastPlayed, 1);
+
+    // Refreshing the collection while a search is active restores the
+    // selected history entry in the filtered rows, not the first match.
+    app.search_for("CURRENT");
+    select_row_named(&mut app, "Current First");
+    app.relist_here();
+    assert_eq!(
+        app.here[app.game_list.selected()].name,
+        "Current First",
+        "the selected filtered history entry survives a refresh"
+    );
+    app.clear_filter();
+
+    app.layout = app.layout.next();
+    app.remember_view();
+    assert_eq!(
+        place.get(&app.settings.custom_views),
+        Some(app.layout.label())
+    );
+    assert_eq!(app.settings.custom_views.games.len(), 1);
+    assert!(
+        app.settings
+            .custom_views
+            .games
+            .contains_key(LAST_PLAYED_SYSTEM),
+        "the custom view belongs only to Last Played"
+    );
+    app.search_for("FIRST");
+    assert_eq!(app.here.len(), 1);
+    assert_eq!(app.here[0].name, "Current First");
+    app.clear_filter();
+    app.game_filters.choose(
+        GameFilterField::Genre,
+        &GameFilterChoice::Known {
+            label: "Puzzle".into(),
+            key: "puzzle".into(),
+        },
+    );
+    app.apply_filter();
+    assert_eq!(app.here.len(), 1);
+    assert_eq!(app.here[0].name, "Current First");
+    app.adjust_option_value(OptionId::LastPlayed, -1);
+    assert!(app.here.is_empty());
+    assert!(app.game_filters.is_active());
+    app.adjust_option_value(OptionId::LastPlayed, 1);
+    assert_eq!(app.here.len(), 1);
+    assert_eq!(app.here[0].name, "Current First");
+    app.clear_game_filters();
+
+    select_row_named(&mut app, "Recorded Missing");
+    let before_failure = std::fs::read(&history_path).unwrap();
+    assert!(app.confirm_launch().is_none());
+    assert!(app
+        .message
+        .as_deref()
+        .is_some_and(|message| message.contains("file is gone")));
+    assert_eq!(std::fs::read(&history_path).unwrap(), before_failure);
+    app.handle(Action::Quit);
+
+    // Launch planning records the originating system and exact target, then
+    // the durable history update moves an existing entry rather than adding
+    // a duplicate. The actual FIFO-before-history boundary is exercised on
+    // MiSTer in the physical test plan.
+    select_row_named(&mut app, "Current First");
+    let Some(Outcome::Launch {
+        history: Some(update),
+        ..
+    }) = app.confirm_launch()
+    else {
+        panic!("a resolved Last Played row launches: {:?}", app.message);
+    };
+    assert_eq!(update.entry.system, "NES");
+    assert_eq!(update.entry.launch, browse::Launch::File(first.clone()));
+    crate::history::record(&update.path, update.entry).unwrap();
+    let moved = crate::history::History::load(&history_path).unwrap();
+    assert_eq!(moved.entries.len(), 3);
+    assert_eq!(moved.entries[0].launch, browse::Launch::File(first.clone()));
+
+    // Favourite state and writes use the original target rather than a
+    // synthetic Last Played path.
+    app.last_played = moved;
+    app.relist_here();
+    select_row_named(&mut app, "Current First");
+    let information = app
+        .information_request(&app.here[app.game_list.selected()])
+        .unwrap();
+    assert_eq!(information.launch, browse::Launch::File(first.clone()));
+    assert!(matches!(
+        information.source,
+        crate::information_job::Source::Gamelist
+    ));
+    std::fs::create_dir_all(root.join("_Arcade")).unwrap();
+    std::fs::write(root.join("_Arcade/LegacyNES.rbf"), b"alternate core").unwrap();
+    app.all_systems
+        .iter_mut()
+        .find(|system| system.def.id == "NES")
+        .unwrap()
+        .def
+        .compatible_cores
+        .push(crate::config::CoreProfile {
+            id: "legacy-nes".into(),
+            label: "Legacy NES".into(),
+            rbf: "_Arcade/LegacyNES".into(),
+            setname: Some("LegacyNES".into()),
+        });
+    app.settings
+        .launch_cores
+        .insert("NES".into(), "legacy-nes".into());
+    app.add_favorite_in(&favorites_root);
+    assert!(app.favorites.holds(&first));
+    let favorite = std::fs::read_to_string(favorites_root.join("Current First.mgl")).unwrap();
+    assert!(
+        favorite.contains("<rbf>_Arcade/LegacyNES</rbf>")
+            && favorite.contains("<setname>LegacyNES</setname>"),
+        "a Favourite created from Last Played uses its originating system's Launch Core: {favorite}"
+    );
+    assert!(app
+        .here
+        .iter()
+        .any(|row| row.name == "Current First" && row.favorite));
+    app.remove_favorite();
+    assert!(!app.favorites.holds(&first));
+    assert!(app
+        .here
+        .iter()
+        .any(|row| row.name == "Current First" && !row.favorite));
+
+    // The same game launched from the Favourites shelf resolves back to the
+    // originating system and target, so it cannot create a second history
+    // identity for the .mgl file on the shelf.
+    select_row_named(&mut app, "Current First");
+    app.add_favorite_in(&favorites_root);
+    let favorites_at = app
+        .systems
+        .iter()
+        .position(|system| system.def.id == "Favorites")
+        .unwrap();
+    app.open_system_by_index(favorites_at);
+    assert!(app.in_favorites());
+    select_row_named(&mut app, "Current First");
+    let Some(Outcome::Launch {
+        history: Some(from_favorite),
+        ..
+    }) = app.confirm_launch()
+    else {
+        panic!(
+            "the favourite resolves to its original game: {:?}",
+            app.message
+        );
+    };
+    assert_eq!(from_favorite.entry.system, "NES");
+    assert_eq!(
+        from_favorite.entry.launch,
+        browse::Launch::File(first.clone())
+    );
+    crate::history::record(&from_favorite.path, from_favorite.entry).unwrap();
+    let after_favorite = crate::history::History::load(&history_path).unwrap();
+    assert_eq!(after_favorite.entries.len(), 3);
+    assert_eq!(
+        after_favorite.entries[0].launch,
+        browse::Launch::File(first.clone())
+    );
+    app.last_played = after_favorite;
+    app.open_last_played();
+    select_row_named(&mut app, "Current First");
+
+    let saved_position = app.position();
+    select_row_named(&mut app, "Current Second");
+    app.ui.hide().unwrap();
+    drop(app);
+
+    let mut restarted = unopened_fixture_app(
+        &root,
+        window.clone(),
+        Settings {
+            last_played: Some(3),
+            ..Settings::default()
+        },
+    );
+    restarted.leave_splash();
+    restarted.finish_background_work_for_headless();
+    restarted.restore_position(&saved_position);
+    assert!(restarted.last_played_open);
+    assert_eq!(
+        restarted.here[restarted.game_list.selected()].name,
+        "Current First"
+    );
+    assert!(restarted.message.is_none(), "{:?}", restarted.message);
+    restarted
+        .game_filters
+        .choose(GameFilterField::Genre, &GameFilterChoice::Unknown);
+    restarted.apply_filter();
+    restarted.handle(Action::Quit);
+    assert_eq!(restarted.browsing, Browsing::Categories);
+    assert!(!restarted.last_played_open);
+    assert!(!restarted.game_filters.is_active());
+    restarted.ui.hide().unwrap();
+    drop(restarted);
+
+    // A damaged history is reported, left byte-for-byte intact and never
+    // attached to a launch, while ordinary browsing and launch planning work.
+    std::fs::write(&history_path, "not = [valid").unwrap();
+    let malformed = std::fs::read(&history_path).unwrap();
+    let mut restarted = fixture_app(
+        &root,
+        window,
+        Settings {
+            last_played: Some(3),
+            ..Settings::default()
+        },
+    );
+    assert!(restarted.last_played_problem.is_some());
+    select_row_named(&mut restarted, "Current First");
+    let Some(Outcome::Launch { history, .. }) = restarted.confirm_launch() else {
+        panic!("a malformed optional history must not block ordinary launches");
+    };
+    assert!(history.is_none());
+    assert_eq!(std::fs::read(&history_path).unwrap(), malformed);
+    restarted.ui.hide().unwrap();
+}
+
 fn run_main_favourites_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
     let root = root.join("main-favourites");
     std::fs::create_dir_all(root.join("games/NES")).unwrap();
@@ -1755,14 +2524,23 @@ fn run_scraper_cache_refresh_flow(root: &Path, window: Rc<MinimalSoftwareWindow>
         "the list holding the retained member replaced the previous one"
     );
     let published = crate::cache::load_system(&app.cache_dir, "NES").unwrap();
-    assert_eq!(
-        published.folders[&Place::Archive(outer.clone()).key()]
+    assert!(
+        !published
+            .folders
+            .contains_key(&Place::Archive(outer.clone()).key()),
+        "a ZIP with one supported member has no virtual folder"
+    );
+    assert!(
+        published.folders[&Place::Dir(games.clone()).key()]
             .rows
             .iter()
-            .map(|row| row.name.as_str())
-            .collect::<Vec<_>>(),
-        ["Inner Game.nes"],
-        "the inner archive is not a row"
+            .any(|row| {
+                row.kind
+                    == crate::browse::Kind::Play(crate::browse::Launch::File(
+                        outer.join("Inner Game.nes"),
+                    ))
+            }),
+        "the supported member stays in the published system root"
     );
     std::fs::remove_file(&outer).unwrap();
     begin(&mut app);
@@ -2301,9 +3079,12 @@ fn capture_every_menu_row(app: &mut App, directory: &Path) {
         scrape_game: true,
         image_override: None,
         game_data_source: true,
+        launch_core: true,
         core_version: true,
         core_version_override: true,
         favorite_folder: false,
+        metadata_filters: true,
+        rebuild_system: true,
     };
     let scenarios = [
         (
@@ -3042,19 +3823,14 @@ fn run_indexing_ui_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
             .iter()
             .map(|row| row.name.as_str())
             .collect::<Vec<_>>(),
-        ["Outer", "First Game.nes", "Second Game.nes"],
-        "the rejected archive is not a row"
+        ["Inner Game.nes", "First Game.nes", "Second Game.nes"],
+        "the rejected member is not a row and the retained sole game is direct"
     );
-    app.enter(Place::Archive(outer.clone()));
     assert_eq!(
-        app.here
-            .iter()
-            .map(|row| row.name.as_str())
-            .collect::<Vec<_>>(),
-        ["Inner Game.nes"],
-        "the inner archive is not a row"
+        app.here[0].kind,
+        crate::browse::Kind::Play(crate::browse::Launch::File(outer.join("Inner Game.nes"))),
+        "the retained member keeps its native archive target"
     );
-    assert!(app.leave());
     std::fs::remove_file(&outer).unwrap();
     std::fs::remove_file(&broken).unwrap();
 
@@ -7643,6 +8419,7 @@ fn run_neogeo_romset_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
             config,
             settings,
             settings_path: root.join("settings.toml"),
+            core_catalogue: Default::default(),
             systems: vec![FoundSystem {
                 def: def.clone(),
                 paths: vec![games.clone()],
@@ -7697,7 +8474,7 @@ fn run_neogeo_romset_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
     };
     for (set, title) in sets {
         app.game_list.select(position(&app, title));
-        let Some(Outcome::Launch { plan, name }) = app.confirm_launch() else {
+        let Some(Outcome::Launch { plan, name, .. }) = app.confirm_launch() else {
             panic!("{set} must launch: {:?}", app.message);
         };
         assert_eq!(name, title);
@@ -7835,6 +8612,226 @@ fn leave_options_to_browse(app: &mut App) {
     app.handle(Action::Quit);
     app.handle(Action::Quit);
     assert_eq!(app.screen, Screen::Browse);
+}
+
+/// Name shortening is a projection of the final effective row name. The
+/// canonical row, target path and cache stay complete while every browse view,
+/// search and jump use the same projected text.
+fn run_game_name_display_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
+    let root = root.join("game-name-display");
+    let games = root.join("games/NES");
+    std::fs::create_dir_all(games.join("[Proto] Folder (Japan)")).unwrap();
+    std::fs::create_dir_all(root.join("_Console")).unwrap();
+    std::fs::write(root.join("_Console/NES.rbf"), b"fixture core").unwrap();
+    for name in [
+        "(USA) Zebra [Rev 1].nes",
+        "Metadata File.nes",
+        "Twin A.nes",
+        "Twin B.nes",
+    ] {
+        std::fs::write(games.join(name), b"fixture game").unwrap();
+    }
+    std::fs::write(
+        games.join("[Proto] Folder (Japan)/Inside.nes"),
+        b"fixture game",
+    )
+    .unwrap();
+    let gamelist = r#"<gameList>
+        <game><path>(USA) Zebra [Rev 1].nes</path><name>(USA) Zebra [Rev 1]</name></game>
+        <game><path>Metadata File.nes</path><name>Metadata Name (Europe) [T+ENG]</name></game>
+        <game><path>Twin A.nes</path><name>Twin (USA)</name></game>
+        <game><path>Twin B.nes</path><name>Twin (Europe)</name></game>
+    </gameList>"#;
+    std::fs::write(games.join("gamelist.xml"), gamelist).unwrap();
+
+    let mut app = unopened_fixture_app(&root, window.clone(), Settings::default());
+    app.open_system_by_index(0);
+    assert!(app.build.is_none(), "fixture indexing must finish");
+    assert!(
+        app.message.is_none(),
+        "fixture startup failed: {:?}",
+        app.message
+    );
+    app.leave_splash();
+    assert_eq!(app.screen, Screen::Browse);
+    app.refresh();
+
+    let canonical = [
+        "[Proto] Folder (Japan)",
+        "(USA) Zebra [Rev 1]",
+        "Metadata Name (Europe) [T+ENG]",
+        "Twin (Europe)",
+        "Twin (USA)",
+    ];
+    assert_eq!(
+        app.here
+            .iter()
+            .map(|row| row.name.as_str())
+            .collect::<Vec<_>>(),
+        canonical,
+        "legacy settings retain complete effective names"
+    );
+    assert_eq!(
+        app.rows.row_data(0).unwrap().title,
+        "[ [Proto] Folder (Japan) ]"
+    );
+    let cache_before = cache_snapshot(&app.cache_dir);
+    let gamelist_before = std::fs::read(games.join("gamelist.xml")).unwrap();
+
+    select_option(&mut app, OptionsPage::Appearance, OptionId::GameNameDisplay);
+    for _ in 0..3 {
+        app.handle(Action::Faster);
+    }
+    assert_eq!(
+        app.game_name_display,
+        GameNameDisplay::RemoveParenthesesAndBrackets
+    );
+    assert!(
+        app.build.is_none(),
+        "a display change must not start indexing"
+    );
+    leave_options_to_browse(&mut app);
+    app.refresh();
+
+    assert_eq!(
+        app.here
+            .iter()
+            .map(|row| row.name.as_str())
+            .collect::<Vec<_>>(),
+        [
+            "[Proto] Folder (Japan)",
+            "Metadata Name (Europe) [T+ENG]",
+            "Twin (Europe)",
+            "Twin (USA)",
+            "(USA) Zebra [Rev 1]",
+        ],
+        "only visible ordering changes; complete names remain on the rows"
+    );
+    assert_eq!(cache_snapshot(&app.cache_dir), cache_before);
+    assert_eq!(
+        std::fs::read(games.join("gamelist.xml")).unwrap(),
+        gamelist_before
+    );
+    let expected = ["[ Folder ]", "Metadata Name", "Twin", "Twin", "Zebra"];
+    for layout in Layout::ALL {
+        app.layout = layout;
+        app.apply_geometry();
+        for (index, expected) in expected.iter().enumerate() {
+            app.game_list.select(index);
+            app.refresh();
+            assert_eq!(
+                app.rows
+                    .row_data(app.ui.get_selected() as usize)
+                    .unwrap()
+                    .title,
+                *expected,
+                "{layout:?} row {index} uses the same display projection"
+            );
+        }
+    }
+    let metadata = app
+        .here
+        .iter()
+        .position(|row| row.name == "Metadata Name (Europe) [T+ENG]")
+        .unwrap();
+    app.game_list.select(metadata);
+    assert_eq!(app.current_art().1, "Metadata Name");
+    assert!(game_information_named(&app.here[metadata], "Metadata Name")
+        .starts_with("Metadata Name\n\n"));
+
+    app.filter = "ZEBRA".into();
+    app.apply_filter();
+    assert_eq!(app.here.len(), 1);
+    assert_eq!(app.here[0].name, "(USA) Zebra [Rev 1]");
+    app.clear_filter();
+    app.jump_to('z');
+    assert_eq!(
+        app.here[app.game_list.selected()].name,
+        "(USA) Zebra [Rev 1]",
+        "jump follows the first visible letter, not the removed prefix"
+    );
+
+    let favourite_folder = root.join("_@Favorites/Name Display");
+    for (name, file) in [
+        ("Twin (USA)", "Twin A.nes"),
+        ("Twin (Europe)", "Twin B.nes"),
+    ] {
+        let at = app.here.iter().position(|row| row.name == name).unwrap();
+        app.game_list.select(at);
+        let Some(Outcome::Launch {
+            plan,
+            name: launched,
+            ..
+        }) = app.confirm_launch()
+        else {
+            panic!("{name} must produce a launch plan: {:?}", app.message);
+        };
+        assert_eq!(launched, name, "launch identity remains canonical");
+        assert!(
+            plan.mgl.contains(file),
+            "{name} launches {file}: {}",
+            plan.mgl
+        );
+        app.add_favorite_in(&favourite_folder);
+    }
+    for (name, file) in [
+        ("Twin (USA)", "Twin A.nes"),
+        ("Twin (Europe)", "Twin B.nes"),
+    ] {
+        let saved = std::fs::read_to_string(favourite_folder.join(format!("{name}.mgl")))
+            .expect("each visually identical title keeps its own favourite");
+        assert!(saved.contains(file), "{name} keeps its own target: {saved}");
+    }
+
+    select_option(&mut app, OptionsPage::Appearance, OptionId::FolderBrackets);
+    app.handle(Action::Faster);
+    assert!(!app.folder_brackets);
+    leave_options_to_browse(&mut app);
+    app.refresh();
+    assert_eq!(app.rows.row_data(0).unwrap().title, "Folder");
+
+    select_option(&mut app, OptionsPage::Appearance, OptionId::GameNameDisplay);
+    for _ in 0..3 {
+        app.handle(Action::Slower);
+    }
+    assert_eq!(app.game_name_display, GameNameDisplay::Full);
+    leave_options_to_browse(&mut app);
+    app.refresh();
+    let folder = app
+        .here
+        .iter()
+        .position(|row| row.name == "[Proto] Folder (Japan)")
+        .unwrap();
+    assert_eq!(
+        app.rows.row_data(folder).unwrap().title,
+        "[Proto] Folder (Japan)",
+        "Folder Brackets Off removes only Degauss's outer decoration"
+    );
+    assert_eq!(cache_snapshot(&app.cache_dir), cache_before);
+
+    let saved = Settings::load(&app.settings_path).unwrap();
+    assert_eq!(saved.game_name_display, Some(GameNameDisplay::Full));
+    assert_eq!(saved.folder_brackets, Some(false));
+    app.ui.hide().unwrap();
+    drop(app);
+
+    let mut restarted = unopened_fixture_app(&root, window, saved);
+    restarted.open_system_by_index(0);
+    assert!(restarted.build.is_none());
+    restarted.leave_splash();
+    restarted.refresh();
+    assert_eq!(restarted.game_name_display, GameNameDisplay::Full);
+    assert!(!restarted.folder_brackets);
+    let folder = restarted
+        .here
+        .iter()
+        .position(|row| row.name == "[Proto] Folder (Japan)")
+        .unwrap();
+    assert_eq!(
+        restarted.rows.row_data(folder).unwrap().title,
+        "[Proto] Folder (Japan)"
+    );
+    restarted.ui.hide().unwrap();
 }
 
 fn run_details_style_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
@@ -8504,6 +9501,304 @@ fn run_theme_editor_save_changes_flow(root: &Path, window: Rc<MinimalSoftwareWin
     app.ui.hide().unwrap();
 }
 
+fn metadata_filter_game(
+    name: &str,
+    genre: Option<&str>,
+    released: &str,
+    players: &str,
+    language: &str,
+    developer: &str,
+    favorite: bool,
+) -> browse::Row {
+    browse::Row {
+        name: name.to_string(),
+        sort_key: name.to_lowercase(),
+        kind: browse::Kind::Play(browse::Launch::File(PathBuf::from(format!("{name}.nes")))),
+        cover: None,
+        genre: genre.map(str::to_string),
+        favorite,
+        below: None,
+        details: browse::Details {
+            released: released.to_string(),
+            players: players.to_string(),
+            lang: language.to_string(),
+            developer: developer.to_string(),
+            ..Default::default()
+        },
+    }
+}
+
+fn choose_metadata_filter(app: &mut App, field: GameFilterField, label: &str) {
+    app.show_game_filters(field.index());
+    app.handle(Action::Accept);
+    assert_eq!(app.screen, Screen::GameFilterValues);
+    let selected = app.game_filter_options[field.index()]
+        .as_ref()
+        .unwrap()
+        .iter()
+        .position(|choice| choice.label() == label)
+        .unwrap();
+    app.menu_list.select(selected);
+    app.handle(Action::Accept);
+    assert_eq!(app.screen, Screen::GameFilters);
+}
+
+fn run_metadata_filter_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
+    let root = root.join("metadata-filters");
+    std::fs::create_dir_all(root.join("games/NES")).unwrap();
+    for name in ["First Game.nes", "Second Game.nes"] {
+        std::fs::write(root.join("games/NES").join(name), b"fixture").unwrap();
+    }
+    let mut app = fixture_app(&root, window, Settings::default());
+    app.here = vec![
+        browse::Row {
+            name: "Nested".into(),
+            sort_key: "nested".into(),
+            kind: browse::Kind::Enter(Place::Dir(root.join("games/NES/Nested"))),
+            cover: None,
+            genre: None,
+            favorite: false,
+            below: Some(1),
+            details: Default::default(),
+        },
+        metadata_filter_game(
+            "Alpha",
+            Some(" Action "),
+            "1994-12-03",
+            "1",
+            "English",
+            "Studio A",
+            true,
+        ),
+        metadata_filter_game(
+            "Beta",
+            Some("RPG"),
+            "1995",
+            "2",
+            "French",
+            "Studio B",
+            false,
+        ),
+        metadata_filter_game("Gamma", Some("action"), "", "", "", "", true),
+    ];
+    app.game_list = ListState::new(app.here.len(), app.geometry.visible);
+    app.game_list.select(1);
+    let settings_before = std::fs::read(&app.settings_path).ok();
+    let cache_before = if app.cache_dir.exists() {
+        cache_snapshot(&app.cache_dir)
+    } else {
+        Vec::new()
+    };
+
+    // The feature is reached through Actions / Find and opening it performs
+    // no settings or cache write.
+    app.open_context();
+    app.menu_list.select(
+        app.menu
+            .iter()
+            .position(|entry| entry == ContextPage::Find.label())
+            .unwrap(),
+    );
+    app.handle(Action::Accept);
+    app.menu_list.select(
+        app.menu
+            .iter()
+            .position(|entry| entry == FILTER_GAMES)
+            .unwrap_or_else(|| panic!("Filter Games missing from Find page: {:?}", app.menu)),
+    );
+    app.handle(Action::Accept);
+    assert_eq!(app.screen, Screen::GameFilters);
+    assert_eq!(std::fs::read(&app.settings_path).ok(), settings_before);
+
+    // Both supported framebuffers show every field, and a wholly empty
+    // metadata field is visible but inert rather than offering Unknown alone.
+    for (width, height) in [(352, 240), (640, 480)] {
+        app.width = width;
+        app.height = height;
+        app.window.set_size(slint::PhysicalSize::new(width, height));
+        app.apply_geometry();
+        app.refresh();
+        assert_eq!(app.ui.get_heading(), "Filter Games");
+        assert_eq!(app.rows.row_count(), GameFilterField::ALL.len());
+        assert_eq!(app.rows.row_data(5).unwrap().title, "Publisher");
+        assert_eq!(app.rows.row_data(5).unwrap().value, "Unavailable");
+        if let Some(directory) = std::env::var_os("DEGAUSS_UI_CAPTURE_DIR") {
+            let directory = PathBuf::from(directory);
+            assert!(
+                directory.is_absolute() && directory.is_dir(),
+                "DEGAUSS_UI_CAPTURE_DIR must name an existing absolute directory"
+            );
+            capture_frame(&mut app, &directory, "metadata-filters", width, height);
+        }
+    }
+    app.width = 352;
+    app.height = 240;
+    app.window.set_size(slint::PhysicalSize::new(352, 240));
+    app.apply_geometry();
+    app.menu_list.select(GameFilterField::Publisher.index());
+    app.handle(Action::Accept);
+    assert_eq!(app.screen, Screen::GameFilters);
+
+    choose_metadata_filter(&mut app, GameFilterField::Genre, "Action");
+    assert_eq!(app.game_filters.label(GameFilterField::Genre), "Action");
+    assert_eq!(
+        app.here
+            .iter()
+            .map(|row| row.name.as_str())
+            .collect::<Vec<_>>(),
+        ["Nested", "Alpha", "Gamma"]
+    );
+
+    // Choosers always come from the complete place, and B discards only the
+    // highlighted alternative rather than the applied selection.
+    app.menu_list.select(GameFilterField::Genre.index());
+    app.handle(Action::Accept);
+    let rpg = app.game_filter_options[GameFilterField::Genre.index()]
+        .as_ref()
+        .unwrap()
+        .iter()
+        .position(|choice| choice.label() == "RPG")
+        .unwrap();
+    app.menu_list.select(rpg);
+    app.handle(Action::Quit);
+    assert_eq!(app.game_filters.label(GameFilterField::Genre), "Action");
+    choose_metadata_filter(&mut app, GameFilterField::Year, "1994");
+    assert!(app.game_filter_options[GameFilterField::Year.index()]
+        .as_ref()
+        .unwrap()
+        .iter()
+        .any(|choice| choice.label() == "1995"));
+    assert_eq!(
+        app.here
+            .iter()
+            .map(|row| row.name.as_str())
+            .collect::<Vec<_>>(),
+        ["Nested", "Alpha"]
+    );
+
+    // Title search and metadata use AND. Clearing either one leaves the
+    // other projection active.
+    app.filter = "GAMMA".into();
+    app.apply_filter();
+    assert_eq!(
+        app.here
+            .iter()
+            .map(|row| row.name.as_str())
+            .collect::<Vec<_>>(),
+        ["Nested"]
+    );
+    app.clear_filter();
+    assert_eq!(
+        app.here
+            .iter()
+            .map(|row| row.name.as_str())
+            .collect::<Vec<_>>(),
+        ["Nested", "Alpha"]
+    );
+    app.filter = "ALPHA".into();
+    app.apply_filter();
+    app.clear_game_filters();
+    assert_eq!(
+        app.here
+            .iter()
+            .map(|row| row.name.as_str())
+            .collect::<Vec<_>>(),
+        ["Alpha"]
+    );
+
+    app.filter.clear();
+    app.apply_filter();
+    app.open_game_filters();
+    choose_metadata_filter(&mut app, GameFilterField::Language, "Unknown");
+    app.handle(Action::Quit);
+    assert_eq!(app.screen, Screen::Browse);
+    assert_eq!(app.game_filters.label(GameFilterField::Language), "Unknown");
+    assert_eq!(
+        app.here
+            .iter()
+            .map(|row| row.name.as_str())
+            .collect::<Vec<_>>(),
+        ["Nested", "Gamma"]
+    );
+
+    // Active metadata makes both random actions local to the visible games.
+    app.random_launches = false;
+    app.random_here(false);
+    assert_eq!(app.here[app.game_list.selected()].name, "Gamma");
+    app.random_here(true);
+    assert_eq!(app.here[app.game_list.selected()].name, "Gamma");
+
+    // Clear Filters is independent of Clear Search and is also storage-free.
+    app.filter = "GAMMA".into();
+    app.apply_filter();
+    app.open_context();
+    app.menu_list.select(
+        app.menu
+            .iter()
+            .position(|entry| entry == ContextPage::Find.label())
+            .unwrap(),
+    );
+    app.handle(Action::Accept);
+    app.menu_list.select(
+        app.menu
+            .iter()
+            .position(|entry| entry == CLEAR_FILTERS)
+            .unwrap(),
+    );
+    app.handle(Action::Accept);
+    assert_eq!(app.screen, Screen::Browse);
+    assert!(!app.game_filters.is_active());
+    assert_eq!(app.filter, "GAMMA");
+    assert_eq!(
+        app.here
+            .iter()
+            .map(|row| row.name.as_str())
+            .collect::<Vec<_>>(),
+        ["Gamma"]
+    );
+    assert_eq!(std::fs::read(&app.settings_path).ok(), settings_before);
+    let cache_after = if app.cache_dir.exists() {
+        cache_snapshot(&app.cache_dir)
+    } else {
+        Vec::new()
+    };
+    assert_eq!(cache_after, cache_before);
+
+    // Same-place changes re-read the rows but retain both temporary filter
+    // kinds. The real fixture rows have no language metadata, so both remain
+    // visible through Unknown after the synthetic rows above are replaced.
+    app.filter = "GAME".into();
+    app.game_filters
+        .choose(GameFilterField::Language, &GameFilterChoice::Unknown);
+    app.apply_filter();
+    app.relist_here_preserving_game_filters();
+    assert!(
+        app.filter.is_empty(),
+        "same-place relists retain the established title-search reset"
+    );
+    assert_eq!(app.game_filters.label(GameFilterField::Language), "Unknown");
+    assert_eq!(
+        app.here
+            .iter()
+            .filter(|row| !row.is_folder())
+            .map(|row| row.name.as_str())
+            .collect::<Vec<_>>(),
+        ["First Game.nes", "Second Game.nes"]
+    );
+
+    app.game_filters
+        .choose(GameFilterField::Genre, &GameFilterChoice::Unknown);
+    app.clear_place_filters();
+    assert!(!app.game_filters.is_active());
+    assert!(app.filter.is_empty());
+    let window = app.window.clone();
+    app.ui.hide().unwrap();
+    drop(app);
+    let restarted = unopened_fixture_app(&root, window, Settings::default());
+    assert!(!restarted.game_filters.is_active());
+    restarted.ui.hide().unwrap();
+}
+
 pub(super) fn run_ui_acceptance_flow(window: Rc<MinimalSoftwareWindow>) {
     let root = fixture_directory();
     std::fs::create_dir_all(root.join("games/NES")).unwrap();
@@ -8514,7 +9809,10 @@ pub(super) fn run_ui_acceptance_flow(window: Rc<MinimalSoftwareWindow>) {
     let gamelist_path = root.join("games/NES/gamelist.xml");
     let gamelist_xml = format!("<gameList><game><path>First Game.nes</path><desc><![CDATA[{complete_description}]]></desc></game><game><path>Second Game.nes</path><desc><![CDATA[{complete_description}]]></desc></game></gameList>");
     std::fs::write(&gamelist_path, &gamelist_xml).unwrap();
+    run_cores_browser_flow(&root, window.clone());
+    run_misterzine_browser_flow(&root, window.clone());
     run_browse_bar_settings_flow(&root, window.clone());
+    run_game_name_display_flow(&root, window.clone());
     run_details_style_flow(&root, window.clone());
     run_handheld_category_flow(&root, window.clone());
     run_scripts_flow(&root, window.clone());
@@ -8530,6 +9828,8 @@ pub(super) fn run_ui_acceptance_flow(window: Rc<MinimalSoftwareWindow>) {
     run_folder_artwork_flow(&root, window.clone());
     run_paged_theme_name_flow(&root, window.clone());
     run_theme_editor_save_changes_flow(&root, window.clone());
+    run_metadata_filter_flow(&root, window.clone());
+    run_last_played_flow(&root, window.clone());
     let mut app = fixture_app(&root, window.clone(), Settings::default());
     run_selected_controls_flow(&mut app);
     run_artwork_visibility_flow(&mut app);
