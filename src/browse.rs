@@ -574,6 +574,9 @@ impl Library {
         let listing =
             std::fs::read_dir(dir).map_err(|e| DegaussError::io("reading folder", dir, e))?;
         let root = self.root_for(dir);
+        let directory_depth = root
+            .and_then(|index| dir.strip_prefix(&self.roots[index].path).ok())
+            .map_or(0, |relative| relative.components().count());
         // A Neo Geo folder answers to a ROM-set catalogue, under which a
         // ZIP or a folder can be one game rather than something to enter.
         let neogeo = self
@@ -686,7 +689,9 @@ impl Library {
                     .and_then(|contents| {
                         let mut supported = contents.entries.iter().filter(|entry| {
                             let member = Path::new(&entry.name);
-                            self.config.accepts(member) && member.components().count() <= MAX_DEPTH
+                            self.config.accepts(member)
+                                && directory_depth.saturating_add(member.components().count())
+                                    <= MAX_DEPTH
                         });
                         let first = supported.next()?.clone();
                         supported.next().is_none().then_some(first)
@@ -2026,8 +2031,13 @@ mod tests {
     #[test]
     fn a_sole_zip_member_past_the_cache_depth_limit_stays_a_folder() {
         let dir = temp("single-game-zip-past-depth-limit");
-        let archive = dir.join("Too Deep.zip");
-        let member = format!("{}Game.d64", "nested/".repeat(MAX_DEPTH));
+        let folder = dir.join("outer");
+        std::fs::create_dir_all(&folder).unwrap();
+        let archive = folder.join("Too Deep.zip");
+        // This member alone fits the archive-relative limit. Its containing
+        // filesystem folder consumes the remaining level, so the cache walk
+        // cannot reach it and direct listing must not promote it either.
+        let member = format!("{}Game.d64", "nested/".repeat(MAX_DEPTH - 1));
         std::fs::write(
             &archive,
             crate::zip::tests_archive(&[member.as_str()], false),
@@ -2035,7 +2045,7 @@ mod tests {
         .unwrap();
 
         let library = Library::open(&system(&dir)).unwrap();
-        let (rows, stats) = library.list(&library.start(), false).unwrap();
+        let (rows, stats) = library.list(&Place::Dir(folder), false).unwrap();
         assert_eq!(names_of(&rows), ["Too Deep"]);
         assert_eq!((stats.games, stats.folders), (0, 1));
         assert_eq!(
