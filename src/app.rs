@@ -2214,6 +2214,20 @@ fn compact_detail_text(details: &browse::Details) -> (String, String) {
     (summary, publisher)
 }
 
+/// MiSTerZine's compact Details panel carries the catalogue information that
+/// used to compete with the title inside each narrow list row.
+fn misterzine_detail_text(row: &browse::Row) -> (String, String) {
+    let heading = [
+        row.genre.as_deref().unwrap_or("").trim(),
+        row.details.released.trim(),
+    ]
+    .into_iter()
+    .filter(|part| !part.is_empty())
+    .collect::<Vec<_>>()
+    .join(" · ");
+    (heading, row.details.desc.trim().to_string())
+}
+
 #[cfg(test)]
 fn game_information(row: &browse::Row) -> String {
     game_information_named(row, &row.name)
@@ -2820,15 +2834,10 @@ fn next_random(seed: &mut u64) -> u64 {
     x.wrapping_mul(0x2545_f491_4f6c_dd1d) >> 16
 }
 
-/// What the menu offers depends on where it was opened from: hiding a
-/// system only makes sense while looking at the list of systems.
-fn menu_entries(browsing: Browsing, system: Option<&str>, show_scripts: bool) -> Vec<String> {
+/// The general menu is deliberately stable. Actions for the selected row,
+/// including hiding it, live in the contextual Actions menu instead.
+fn menu_entries(show_scripts: bool) -> Vec<String> {
     let mut entries = Vec::new();
-    if browsing == Browsing::Systems {
-        if let Some(name) = system {
-            entries.push(format!("Hide {name}"));
-        }
-    }
     entries.push("Options".to_string());
     if show_scripts {
         entries.push("Scripts".to_string());
@@ -4210,7 +4219,12 @@ impl App {
         {
             // The approved compact preview leaves more room for game titles;
             // Large Artwork gives that room to the picture instead.
-            geometry.art_width *= self.details_style.art_factor();
+            let style = if self.in_misterzine_browser() {
+                DetailsStyle::Information
+            } else {
+                self.details_style
+            };
+            geometry.art_width *= style.art_factor();
         }
         let help_height = if matches!(
             self.screen,
@@ -6990,6 +7004,10 @@ impl App {
     /// Resolve from scratch. A missing or unrecognised custom value means the
     /// global default, never whatever view the previous place happened to use.
     fn resolve_view(&mut self) {
+        if self.in_misterzine_browser() {
+            self.layout = Layout::Details;
+            return;
+        }
         let custom = self
             .current_view_place()
             .and_then(|place| place.get(&self.settings.custom_views))
@@ -9114,10 +9132,7 @@ impl App {
         }
     }
 
-    fn open_misterzine(&mut self, force_refresh: bool) {
-        if self.misterzine_job.is_some() {
-            return;
-        }
+    fn prepare_misterzine_browser(&mut self) {
         self.open_category = Some(MISTERZINE_CATEGORY.to_string());
         self.open_system = None;
         self.core_category = None;
@@ -9125,6 +9140,19 @@ impl App {
         self.filter.clear();
         self.all_here.clear();
         self.misterzine_progress = Default::default();
+        self.resolve_view();
+        self.apply_geometry();
+        // Leaving this browser clears the ordinary browse rows but retains
+        // the catalogue and cursor. Restore those rows before the first
+        // repaint, while the background refresh checks for newer data.
+        self.rebuild_misterzine_rows();
+    }
+
+    fn open_misterzine(&mut self, force_refresh: bool) {
+        if self.misterzine_job.is_some() {
+            return;
+        }
+        self.prepare_misterzine_browser();
         match crate::misterzine::start(self.misterzine_request(force_refresh)) {
             Ok(job) => self.misterzine_job = Some(job),
             Err(error) => {
@@ -9133,11 +9161,11 @@ impl App {
                 self.open_category = None;
                 self.browsing = Browsing::Categories;
                 self.rebuild_system_list();
+                self.resolve_view();
+                self.apply_geometry();
+                self.touch_selection();
             }
         }
-        self.resolve_view();
-        self.apply_geometry();
-        self.touch_selection();
     }
 
     fn misterzine_cover(&self, item: &crate::misterzine::Item) -> Option<PathBuf> {
@@ -10985,18 +11013,7 @@ impl App {
     }
 
     fn open_menu(&mut self) {
-        let system = if self.browsing == Browsing::Systems {
-            self.systems
-                .get(self.system_list.selected())
-                .map(|s| s.name().to_string())
-        } else {
-            None
-        };
-        self.menu = menu_entries(
-            self.browsing,
-            system.as_deref(),
-            self.settings.show_scripts.unwrap_or(true),
-        );
+        self.menu = menu_entries(self.settings.show_scripts.unwrap_or(true));
         self.menu_list = ListState::new(self.menu.len(), self.geometry.visible);
         self.screen = Screen::Menu;
         self.apply_geometry();
@@ -16746,10 +16763,7 @@ impl App {
                                 // How much is in there, where somebody has
                                 // counted. Folders only: a game is one game.
                                 value: if self.in_misterzine_browser() {
-                                    self.misterzine_visible
-                                        .get(index)
-                                        .map(|item| SharedString::from(item.summary()))
-                                        .unwrap_or_default()
+                                    SharedString::new()
                                 } else {
                                     match row.below {
                                         Some(games) if row.is_folder() => {
@@ -16945,7 +16959,7 @@ impl App {
     }
 
     fn update_compact_details(&self) {
-        let details = self
+        let row = self
             .here
             .get(self.game_list.selected())
             .filter(|row| !row.is_folder())
@@ -16953,9 +16967,16 @@ impl App {
                 self.screen == Screen::Browse
                     && self.browsing == Browsing::Games
                     && !self.in_cores_browser()
+            });
+        let (summary, publisher) = row
+            .map(|row| {
+                if self.in_misterzine_browser() {
+                    misterzine_detail_text(row)
+                } else {
+                    compact_detail_text(&row.details)
+                }
             })
-            .map(|row| &row.details);
-        let (summary, publisher) = details.map(compact_detail_text).unwrap_or_default();
+            .unwrap_or_default();
         self.ui.set_compact_summary(SharedString::from(summary));
         self.ui.set_compact_publisher(SharedString::from(publisher));
     }
@@ -16993,7 +17014,7 @@ impl App {
         // Information in Actions still carries every line.
         let wants = self.layout == Layout::Details
             && over_game
-            && self.details_style == DetailsStyle::Information;
+            && (self.in_misterzine_browser() || self.details_style == DetailsStyle::Information);
         self.ui.set_detail_line(line);
         self.ui.set_detail_height(if wants { panel } else { 0.0 });
     }
@@ -18588,6 +18609,46 @@ pub(crate) fn test_library_launch_flow(window: Rc<MinimalSoftwareWindow>) {
     let ui = DegaussWindow::new().unwrap();
     let mut app = App::new(loaded, window, ui, StartupTimings::default(), 352, 240);
     app.finish_background_work_for_headless();
+
+    let misterzine_cover = root.join("misterzine-cover.png");
+    std::fs::write(
+        &misterzine_cover,
+        include_bytes!("../assets/logos/Arcade.png"),
+    )
+    .unwrap();
+    let mut release = crate::misterzine::Item::fixture(
+        "Fixture Release",
+        crate::misterzine::LocalState::Current,
+        Some(root.join("_Arcade/Fixture.mra")),
+    );
+    release.cover = Some(misterzine_cover);
+    app.misterzine_items = vec![release];
+    app.screen = Screen::Browse;
+    app.prepare_misterzine_browser();
+    assert_eq!(app.layout, Layout::Details, "MiSTerZine has one CRT layout");
+    assert_eq!(app.here.len(), 1);
+    app.refresh();
+    assert_eq!(
+        app.ui.get_compact_summary().as_str(),
+        "Console · 2026-09-16"
+    );
+    assert_eq!(
+        app.ui.get_compact_publisher().as_str(),
+        "Installed · Current"
+    );
+    app.handle(Action::Quit);
+    assert!(app.here.is_empty(), "leaving clears the browser rows");
+    app.prepare_misterzine_browser();
+    assert_eq!(
+        app.here.len(),
+        1,
+        "reopening restores cached rows immediately"
+    );
+    app.refresh();
+    app.handle(Action::Quit);
+    app.misterzine_items.clear();
+    app.misterzine_visible.clear();
+
     app.open_favorite_folders();
     app.menu_list.select(
         app.menu
@@ -18908,6 +18969,24 @@ mod tests {
         };
         assert_eq!(super::compact_detail_text(&ranged_players).0, "1–2 Players");
     }
+
+    #[test]
+    fn misterzine_details_move_catalogue_state_out_of_the_title_row() {
+        let row = crate::misterzine::Item::fixture(
+            "Fixture Release",
+            crate::misterzine::LocalState::Current,
+            Some(PathBuf::from("/media/fat/_Console/Fixture.rbf")),
+        )
+        .row(None);
+        assert_eq!(
+            super::misterzine_detail_text(&row),
+            (
+                "Console · 2026-09-16".to_string(),
+                "Installed · Current".to_string()
+            )
+        );
+    }
+
     use super::*;
 
     #[test]
@@ -19659,22 +19738,23 @@ mod tests {
     }
 
     #[test]
-    fn the_menu_offers_hiding_only_where_it_makes_sense() {
-        let systems = menu_entries(Browsing::Systems, Some("Commodore 64"), true);
-        assert!(
-            systems.iter().any(|e| e == "Hide Commodore 64"),
-            "hiding belongs on the systems list"
+    fn the_general_menu_is_stable_and_hiding_stays_in_actions() {
+        let menu = menu_entries(true);
+        assert_eq!(
+            menu,
+            ["Options", "Scripts", "Help", "About", "Exit to MiSTer"]
         );
-        let games = menu_entries(Browsing::Games, Some("Commodore 64"), true);
-        assert!(
-            !games.iter().any(|e| e.starts_with("Hide ")),
-            "there is nothing to hide while looking at games"
+        assert!(menu_entries(false).iter().all(|entry| entry != "Scripts"));
+
+        let actions = context_entries(
+            Browsing::Systems,
+            false,
+            None,
+            Some(false),
+            false,
+            ContextActions::default(),
         );
-        for menu in [&systems, &games] {
-            assert!(menu.iter().any(|e| e == "Options"));
-            assert!(menu.iter().any(|e| e.starts_with("Exit")));
-            assert!(!menu.iter().any(|e| e == "Scrape All Systems"));
-        }
+        assert!(actions.iter().any(|entry| entry == HIDE_THIS));
     }
 
     #[test]
