@@ -411,6 +411,26 @@ fn archive_skip_reason(error: &DegaussError, place: &Place) -> Option<String> {
     }
 }
 
+/// The one playable row written while walking a subtree, when there really
+/// is only one. Folder rows do not duplicate their descendants, so exactly
+/// one game below an archive produces exactly one playable cached row here.
+fn sole_written_game(cache: &SystemCache, keys: &[String]) -> Option<Row> {
+    let mut found = None;
+    for row in keys
+        .iter()
+        .filter_map(|key| cache.folders.get(key))
+        .flat_map(|folder| folder.rows.iter())
+    {
+        if matches!(row.kind, Kind::Play(_)) {
+            if found.is_some() {
+                return None;
+            }
+            found = Some(row.clone());
+        }
+    }
+    found
+}
+
 #[allow(clippy::too_many_arguments)]
 fn walk_controlled(
     library: &Library,
@@ -542,7 +562,26 @@ fn walk_controlled(
                         continue;
                     }
                 };
-                row.below = Some(below);
+                if matches!(inner, Place::Archive(_)) && below == 1 {
+                    let sole = sole_written_game(cache, &seen[before.0..]).ok_or_else(|| {
+                        DegaussError::unsupported(
+                            "cache traversal",
+                            format!(
+                                "{} contains one game but no sole playable row was written",
+                                inner.path().display()
+                            ),
+                        )
+                    })?;
+                    // The member now lives in its containing folder. Remove
+                    // the virtual archive places so cache folder counts and
+                    // future navigation describe only reachable screens.
+                    for key in seen.drain(before.0..) {
+                        cache.folders.remove(&key);
+                    }
+                    *row = sole;
+                } else {
+                    row.below = Some(below);
+                }
                 games += below;
             }
         }
@@ -1408,6 +1447,42 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
+    #[test]
+    fn one_game_zip_is_cached_in_its_parent_with_member_warnings_preserved() {
+        let games = temp("single-game-zip");
+        let archive = games.join("Only.zip");
+        std::fs::write(
+            &archive,
+            crate::zip::tests_archive(&["nested/Game.d64", "inner.zip"], false),
+        )
+        .unwrap();
+        let library = Library::open(&system(&games)).unwrap();
+        let mut warnings = Vec::new();
+        let cache = build_system_checked(&library, &mut warnings).unwrap();
+
+        let root = cache.get(&library.start()).expect("system root");
+        assert_eq!(root.games, 1);
+        assert_eq!(root.rows.len(), 1);
+        assert_eq!(
+            root.rows[0].kind,
+            Kind::Play(crate::browse::Launch::File(archive.join("nested/Game.d64")))
+        );
+        assert_eq!(
+            cache.folders.len(),
+            1,
+            "the unreachable archive and member directories are not cached"
+        );
+        assert_eq!(
+            warnings,
+            [format!(
+                "{}: 1 member skipped: nested archive member is unsupported by MiSTer Main",
+                archive.display()
+            )],
+            "flattening must not hide a rejected companion"
+        );
+        std::fs::remove_dir_all(games).unwrap();
+    }
+
     #[cfg(unix)]
     #[test]
     fn a_favourites_cache_skips_native_cores_links_and_legacy_loops() {
@@ -2179,7 +2254,7 @@ mod tests {
     /// row. The rows are taken out by position once the folder is walked,
     /// so a folder holding rejected archives before, between and after
     /// the ones it keeps is where a position out of step would drop a
-    /// healthy archive or publish a rejected one.
+    /// healthy archive's sole game or publish a rejected archive.
     #[test]
     fn several_rejected_archives_in_one_folder_each_lose_only_their_own_row() {
         let games = temp("several-rejected-archives");
@@ -2202,7 +2277,7 @@ mod tests {
                 .iter()
                 .map(|row| (row.name.as_str(), row.below))
                 .collect::<Vec<_>>(),
-            [("B-Good", Some(1)), ("N-Good", Some(1)), ("Plain", None)]
+            [("One", None), ("One", None), ("Plain", None)]
         );
         assert_eq!(warnings.len(), 3, "{warnings:?}");
         for name in broken {
@@ -2413,22 +2488,15 @@ mod tests {
                 .iter()
                 .map(|row| (row.name.as_str(), row.below))
                 .collect::<Vec<_>>(),
-            [("Deep", Some(1)), ("Beside", None)],
-            "the archive is published with its shallow member"
+            [("shallow", None), ("Beside", None)],
+            "the sole retained member is published directly"
         );
-        let inside = cache.get(&Place::Archive(archive.clone())).unwrap();
-        assert_eq!(
-            inside
-                .rows
-                .iter()
-                .map(|row| row.name.as_str())
-                .collect::<Vec<_>>(),
-            ["d", "shallow"]
+        assert!(
+            cache.get(&Place::Archive(archive.clone())).is_none(),
+            "the flattened archive has no reachable virtual folder"
         );
-        // The archive sits one level below the system, so the folder that
-        // would be one level past the limit is the one with MAX_DEPTH
-        // segments: the level above it is written down, empty, and nothing
-        // from there on is.
+        // The over-deep archive directory and everything below it are
+        // omitted even though the shallow retained member is flattened.
         let prefix = |segments: usize| vec!["d"; segments].join("/");
         let folder = |segments: usize| {
             cache.get(&Place::ArchiveDirectory {
@@ -2436,9 +2504,7 @@ mod tests {
                 prefix: prefix(segments),
             })
         };
-        let last = folder(MAX_DEPTH - 1).expect("the folder above the limit");
-        assert!(last.rows.is_empty(), "{:?}", last.rows);
-        assert_eq!(last.games, 0);
+        assert!(folder(MAX_DEPTH - 1).is_none());
         assert!(folder(MAX_DEPTH).is_none());
         assert!(folder(MAX_DEPTH + 1).is_none());
         assert_eq!(

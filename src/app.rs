@@ -16114,7 +16114,36 @@ impl App {
         let places = saved.places();
         let walked_everything = places.len() == saved.trail.len();
         let resume_at = restore_resume_at(self.trail.first().map(|crumb| &crumb.place), &places);
+        let mut reached_every_saved_place = true;
         for place in places.iter().skip(resume_at).cloned() {
+            // A previous release may have saved a virtual folder for a ZIP
+            // that is now represented by its sole member in this folder.
+            // Enter only places the current listing still exposes. Stopping
+            // here lets the exact selected-row identity find that member in
+            // the containing folder below.
+            let archive_place = matches!(place, Place::Archive(_) | Place::ArchiveDirectory { .. });
+            let reachable = self
+                .trail
+                .last()
+                .and_then(|crumb| {
+                    self.system_cache
+                        .as_ref()
+                        .and_then(|cache| cache.get(&crumb.place))
+                })
+                .map(|folder| {
+                    folder.rows.iter().any(
+                        |row| matches!(&row.kind, browse::Kind::Enter(inner) if inner == &place),
+                    )
+                })
+                .unwrap_or_else(|| {
+                    self.here.iter().any(
+                        |row| matches!(&row.kind, browse::Kind::Enter(inner) if inner == &place),
+                    )
+                });
+            if archive_place && !reachable {
+                reached_every_saved_place = false;
+                break;
+            }
             self.enter(place);
         }
         // Every level keeps the row it was left on. `enter` above wrote the
@@ -16135,7 +16164,7 @@ impl App {
                 .last()
                 .zip(self.trail.last())
                 .is_some_and(|(saved, current)| saved == &current.place);
-        if walked_everything && reached_saved_destination {
+        if walked_everything && reached_every_saved_place && reached_saved_destination {
             self.game_list.select(reselect(
                 &self.here,
                 saved.selected_row.as_deref(),
@@ -16147,6 +16176,11 @@ impl App {
             // not reached. Re-list where the walk DID land, whose own
             // remembered row is the honest answer.
             self.show_here();
+            if let Some(selected) = saved.selected_row.as_deref() {
+                if let Some(index) = self.here.iter().position(|row| row_key(row) == selected) {
+                    self.game_list.select(index);
+                }
+            }
         }
         self.touch_selection();
         self.resolve_view();
@@ -16825,6 +16859,20 @@ pub(crate) fn test_library_launch_flow(window: Rc<MinimalSoftwareWindow>) {
         app.game_list.selected(),
         0,
         "old state files retain numeric selection"
+    );
+    let flattened_saved = app.position();
+    std::fs::write(&archive, crate::zip::tests_archive(&["A/First.nes"], false)).unwrap();
+    assert!(app.refresh_system("NES").is_none());
+    app.restore_position(&flattened_saved);
+    assert_eq!(
+        app.trail.last().map(|crumb| &crumb.place),
+        Some(&Place::Dir(root.join("games/NES"))),
+        "a removed virtual ZIP place returns to its containing folder"
+    );
+    assert_eq!(
+        row_key(&app.here[app.game_list.selected()]),
+        format!("f:{}", archive.join("A/First.nes").display()),
+        "the former nested selection finds the same flattened member"
     );
     std::fs::write(&archive, b"broken").unwrap();
     assert!(
@@ -18795,17 +18843,14 @@ mod tests {
         std::fs::remove_dir_all(root).ok();
     }
 
-    /// A folder one level up from the game, an archive opened as a folder,
-    /// and a directory inside an archive are all containers of one game:
-    /// the picture climbs through the folder in between, through the
-    /// archive's own directory, and the archive row stays a row to enter.
-    /// The game inside the archive's directory is named by its exact
-    /// archive path, the only way a nested member is named. An archive of
-    /// several members is read by the same rule as a folder of several
-    /// files: one picture shared by every member is the game's, two
-    /// pictures are two games.
+    /// A folder one level up from the game remains a folder whose picture
+    /// comes from the game below it. A ZIP holding one game instead exposes
+    /// that game directly, with its exact member picture and path. An archive
+    /// of several members is read by the same rule as a folder of several
+    /// files: one picture shared by every member is the game's, two pictures
+    /// are two games.
     #[test]
-    fn a_nested_folder_and_a_one_game_zip_derive_the_same_way() {
+    fn a_nested_folder_derives_while_a_one_game_zip_is_direct() {
         let root = picker_temp("nested-and-zip");
         let games = root.join("games");
         std::fs::create_dir_all(&games).unwrap();
@@ -18856,10 +18901,10 @@ mod tests {
                 .collect::<Vec<_>>(),
             [
                 browse::Kind::Enter(Place::Archive(different.clone())),
-                browse::Kind::Enter(Place::Archive(nested.clone())),
+                browse::Kind::Play(browse::Launch::File(nested.join("Folder/Game.nes"))),
                 browse::Kind::Enter(Place::Dir(games.join("Outer"))),
                 browse::Kind::Enter(Place::Archive(shared.clone())),
-                browse::Kind::Enter(Place::Archive(archive.clone())),
+                browse::Kind::Play(browse::Launch::File(archive.join("Sole Game.nes"))),
             ]
         );
         assert_eq!(
@@ -18868,33 +18913,17 @@ mod tests {
             "the outer folder shows the game two levels down"
         );
         assert_eq!(
-            derived_folder_cover(&cache, &Place::Archive(archive), &[], None).as_deref(),
+            listed[1].cover.as_deref(),
+            Some(games.join("media/nested.png").as_path()),
+            "the direct nested member keeps its exact picture"
+        );
+        assert_eq!(
+            listed[4].cover.as_deref(),
             Some(games.join("media/sole.png").as_path()),
-            "the archive shows the one game inside it"
+            "the direct root member keeps its archive-level picture"
         );
-        let directory = Place::ArchiveDirectory {
-            archive: nested.clone(),
-            prefix: "Folder".into(),
-        };
-        let inside = &cache.get(&Place::Archive(nested.clone())).unwrap().rows;
-        assert_eq!(
-            inside
-                .iter()
-                .map(|row| (row.kind.clone(), row.below))
-                .collect::<Vec<_>>(),
-            [(browse::Kind::Enter(directory.clone()), Some(1))],
-            "the archive lists its directory as a folder to enter"
-        );
-        assert_eq!(
-            derived_folder_cover(&cache, &directory, &[], None).as_deref(),
-            Some(games.join("media/nested.png").as_path()),
-            "the directory inside the archive shows its one game"
-        );
-        assert_eq!(
-            derived_folder_cover(&cache, &Place::Archive(nested), &[], None).as_deref(),
-            Some(games.join("media/nested.png").as_path()),
-            "and so does the archive above it"
-        );
+        assert!(cache.get(&Place::Archive(archive)).is_none());
+        assert!(cache.get(&Place::Archive(nested)).is_none());
         assert_eq!(
             cache
                 .get(&Place::Archive(shared.clone()))
