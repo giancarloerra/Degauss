@@ -2660,6 +2660,29 @@ mod tests {
     }
 
     #[test]
+    fn an_archive_containing_only_a_boot_rom_contributes_no_game() {
+        let games = temp("archive-only-boot-rom");
+        let archive = games.join("Support.zip");
+        std::fs::write(&archive, crate::zip::tests_archive(&["boot.rom"], false)).unwrap();
+        let mut config = system(&games);
+        config.extensions = vec!["rom".into()];
+        let library = Library::open(&config).unwrap();
+
+        let (direct, _) = library.list(&library.start(), false).unwrap();
+        assert_eq!(direct.len(), 1);
+        assert!(matches!(direct[0].kind, Kind::Enter(Place::Archive(_))));
+
+        let cache = build_system(&library);
+        assert_eq!(cache.summary(&library.start()).games, 0);
+        let root = cache.get(&library.start()).unwrap();
+        assert_eq!(root.rows.len(), 1);
+        assert_eq!(root.rows[0].below, Some(0));
+        assert!(cache.get(&Place::Archive(archive)).is_some());
+
+        std::fs::remove_dir_all(games).unwrap();
+    }
+
+    #[test]
     fn failed_index_install_rolls_back_the_new_rows_and_preserves_the_old_pair() {
         let store = temp("index-install-rollback");
         let old = staged("Test");
