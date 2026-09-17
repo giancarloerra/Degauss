@@ -22,7 +22,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use serde::{Deserialize, Serialize};
 
-use crate::browse::{Kind, Library, Place, Row, MAX_DEPTH};
+use crate::browse::{Kind, Launch, Library, Place, Row, MAX_DEPTH};
 use crate::error::{DegaussError, Result};
 
 /// Bumped when the shape of what is written changes, so an old file is
@@ -513,8 +513,16 @@ fn walk_controlled(
                 *games_done += 1;
             }
             Kind::Enter(inner) => {
+                // `Place::Roots` is a synthetic chooser, not a directory
+                // below a configured game root. Crossing it therefore does
+                // not consume one of the depth levels direct browsing uses.
+                let next_depth = if matches!(place, Place::Roots) {
+                    depth
+                } else {
+                    depth + 1
+                };
                 if let Place::ArchiveDirectory { archive, prefix } = inner {
-                    if depth + 1 > MAX_DEPTH {
+                    if next_depth > MAX_DEPTH {
                         // A folder inside an archive that would sit past
                         // the depth the walk goes is that folder's
                         // condition, not the archive's and not the
@@ -538,7 +546,7 @@ fn walk_controlled(
                 let below = match walk_controlled(
                     library,
                     &inner.clone(),
-                    depth + 1,
+                    next_depth,
                     cache,
                     seen,
                     cancelled,
@@ -589,6 +597,16 @@ fn walk_controlled(
                             ),
                         )
                     })?;
+                    let Kind::Play(Launch::File(target)) = &sole.kind else {
+                        return Err(DegaussError::unsupported(
+                            "cache traversal",
+                            format!(
+                                "{} contains one game with an unsupported archive target",
+                                inner.path().display()
+                            ),
+                        ));
+                    };
+                    let sole = library.flattened_archive_row(target);
                     // The member now lives in its containing folder. Remove
                     // the virtual archive places so cache folder counts and
                     // future navigation describe only reachable screens.
@@ -2538,7 +2556,19 @@ mod tests {
         )
         .unwrap();
         std::fs::write(games.join("Beside.d64"), b"x").unwrap();
+        std::fs::write(
+            games.join("gamelist.xml"),
+            r#"<gameList>
+            <game><path>Deep.zip</path><name>Legacy archive title</name></game>
+            </gameList>"#,
+        )
+        .unwrap();
         let library = Library::open(&system(&games)).unwrap();
+        let (direct, _) = library.list(&library.start(), false).unwrap();
+        assert!(
+            direct.iter().any(|row| row.name == "Legacy archive title"),
+            "direct browsing uses the archive-level metadata: {direct:?}"
+        );
         let mut warnings = Vec::new();
         let cache = build_system_checked(&library, &mut warnings).unwrap();
         assert_eq!(cache.summary(&library.start()).games, 2);
@@ -2548,8 +2578,8 @@ mod tests {
                 .iter()
                 .map(|row| (row.name.as_str(), row.below))
                 .collect::<Vec<_>>(),
-            [("shallow", None), ("Beside", None)],
-            "the sole retained member is published directly"
+            [("Legacy archive title", None), ("Beside", None)],
+            "the sole retained member is published directly with the same legacy metadata as direct browsing"
         );
         assert!(
             cache.get(&Place::Archive(archive.clone())).is_none(),
@@ -2594,6 +2624,39 @@ mod tests {
         assert!(warnings.is_empty(), "{warnings:?}");
         std::fs::remove_dir_all(games).unwrap();
         std::fs::remove_dir_all(folders).unwrap();
+    }
+
+    #[test]
+    fn a_multi_root_chooser_does_not_consume_a_real_depth_level() {
+        let empty = temp("multi-root-boundary-empty");
+        let games = temp("multi-root-boundary-games");
+        let member = format!("{}Game.d64", "d/".repeat(MAX_DEPTH - 1));
+        let archive = games.join("Boundary.zip");
+        std::fs::write(
+            &archive,
+            crate::zip::tests_archive(&[member.as_str()], false),
+        )
+        .unwrap();
+        let mut config = system(&empty);
+        config.extra_paths = vec![games.to_string_lossy().into_owned()];
+        let library = Library::open(&config).unwrap();
+
+        let (direct, _) = library.list(&Place::Dir(games.clone()), false).unwrap();
+        assert_eq!(direct.len(), 1);
+        assert!(matches!(direct[0].kind, Kind::Play(_)));
+
+        let cache = build_system(&library);
+        let cached = cache.get(&Place::Dir(games.clone())).unwrap();
+        assert_eq!(cached.games, 1);
+        assert_eq!(cached.rows.len(), 1);
+        assert_eq!(cached.rows[0].kind, direct[0].kind);
+        assert!(
+            cache.get(&Place::Archive(archive)).is_none(),
+            "the archive remains flattened at the direct-browsing boundary"
+        );
+
+        std::fs::remove_dir_all(empty).unwrap();
+        std::fs::remove_dir_all(games).unwrap();
     }
 
     #[test]
