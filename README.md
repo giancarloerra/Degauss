@@ -34,66 +34,34 @@ Source available, written in Rust and using Slint, and licensed for non-commerci
 
 ## Screenshots
 
-The current interface images below are captured from the actual MiSTer
-framebuffer, mainly using the Blue-Yellow GE custom theme, with Standard-theme
-comparisons labelled separately. The 0.7.0 additions are labelled by their
-release, while unchanged screens retain their 0.6.0 captures. CRT presentation
-is applied for the README. Older examples remain labelled by release.
-
-### Current interface (0.7.1)
+The images below are captured from the actual MiSTer framebuffer, mainly using
+the Blue-Yellow GE custom theme, with Standard-theme comparisons labelled
+separately. CRT presentation is applied for the README.
 
 | | | |
 |---|---|---|
 | <img src="docs/screenshots/0.6.0/01-home.png" alt="Home with its Capcom custom category image" height="200"> | <img src="docs/screenshots/0.7.0/03-handheld.png" alt="Optional Handheld category" height="200"> | <img src="docs/screenshots/0.6.0/02-details.png" alt="Details: DoDonPachi III" height="200"> |
-| Home, with its Capcom custom category image | Optional Handheld Category | Details: DoDonPachi III |
+| Home | Optional Handheld Category | Details View |
 | <img src="docs/screenshots/0.7.0/01-large-artwork.png" alt="Large Artwork Details: DonPachi" height="200"> | <img src="docs/screenshots/0.6.0/03-list.png" alt="List View: Arcade Favourites" height="200"> | <img src="docs/screenshots/0.6.0/04-gallery.png" alt="Gallery View: Arcade Favourites" height="200"> |
 | Large Artwork Details | List View | Gallery View |
 | <img src="docs/screenshots/0.6.0/05-multi-list.png" alt="Multi List View: Arcade Favourites" height="200"> | <img src="docs/screenshots/0.6.0/06-carousel.png" alt="Carousel View: Actraiser" height="200"> | <img src="docs/screenshots/0.6.0/07-tiled.png" alt="Tiled View: Amiga Favourites" height="200"> |
-| Multi List View | Carousel: Actraiser | Tiled: Amiga Favourites |
+| Multi List View | Carousel View | Tiled View |
 | <img src="docs/screenshots/0.6.0/29-core-version-retroachievements.png" alt="RetroAchievements &amp; Unstable Cores" height="200"> | <img src="docs/screenshots/0.6.0/08-options.png" alt="Extensive Options" height="200"> | <img src="docs/screenshots/0.7.0/02-shortcuts.png" alt="Configurable Hold Shortcuts" height="200"> |
 | RetroAchievements &amp; Unstable Cores | Extensive Options | Configurable Hold Shortcuts |
 | <img src="docs/screenshots/0.6.0/10-appearance.png" alt="Appearance" height="200"> | <img src="docs/screenshots/0.6.0/11-library.png" alt="Library: Show Scripts Folder" height="200"> | <img src="docs/screenshots/0.6.0/12-display.png" alt="Display" height="200"> |
-| Appearance | Library | Display |
+| Appearance Settings | Library Visibility | CRT Fit Controls |
 | <img src="docs/screenshots/0.6.0/13-developer.png" alt="Developer" height="200"> | <img src="docs/screenshots/0.6.0/14-actions.png" alt="Grouped Actions" height="200"> | <img src="docs/screenshots/0.6.0/15-random-favourite.png" alt="Random Game and Random Favourite" height="200"> |
-| Developer | Grouped Actions | Random Game and Random Favourite |
-| <img src="docs/screenshots/0.6.0/16-place-view.png" alt="Per-place View" height="200"> | <img src="docs/screenshots/0.6.0/17-information.png" alt="Game Information: Steep Slope Sliders" height="200"> | <img src="docs/screenshots/0.6.0/32-standard-details.png" alt="Standard Theme: Actraiser Details" height="200"> |
-| Per-place View | Game Information: Steep Slope Sliders | Standard Theme: Details |
-| <img src="docs/screenshots/0.6.0/18-index-progress.png" alt="Indexing Progress: Running Rebuild" height="200"> | <img src="docs/screenshots/0.6.0/34-index-details.png" alt="Indexing Details: Running Rebuild" height="200"> | <img src="docs/screenshots/0.6.0/19-index-complete.png" alt="Indexing Complete" height="200"> |
-| Indexing Progress | Indexing Details | Indexing Complete |
-
-**Game Artwork Databases:** choose **Automatic**, **Gamelist** or **Artwork Pack**
-for each supported system. Automatic is the default; **Options → Library →
-Automatic Data Source** chooses whether it tries Gamelist or an installed pack
-first. The backward-compatible default is Gamelist First. Packs remain lazy:
-Degauss checks the relevant pack only when that system is entered and asks
-before preparing it.
-Explicit Gamelist and Artwork Pack choices stay saved until
-Automatic is selected again. [How to install and select a pack](#using-mister-game-artwork-databases).
-
-| | |
-|---|---|
-| <img src="docs/screenshots/0.6.0/28-artwork-source.png" alt="Game Data Source: Automatic, Gamelist or Artwork Pack" height="200"> | <img src="docs/screenshots/0.6.0/36-artwork-pack-location.png" alt="Select an Installed Artwork Pack Location" height="200"> |
-| Automatic, Gamelist or Artwork Pack | Choose an Installed Pack Location |
-
-| | | |
-|---|---|---|
-| <img src="docs/screenshots/0.6.0/20-manual-search.png" alt="Single-game Scraper Controls: Dandy" height="200"> | <img src="docs/screenshots/0.6.0/33-manual-query.png" alt="Manual Search: dandy" height="200"> | <img src="docs/screenshots/0.6.0/24-manual-match.png" alt="Manual Match: 1944 The Loop Master" height="200"> |
-| Single-game Scraper Controls: Dandy | Manual Search: dandy | Manual Match: 1944 |
-
-| | |
-|---|---|
-| <img src="docs/screenshots/0.6.0/21-scraper-progress.png" alt="Scraper Preparation: Arcade" height="200"> | <img src="docs/screenshots/0.6.0/35-scraper-complete.png" alt="Single-game Scrape Complete: 1944" height="200"> |
-| Scraper Preparation: Arcade | Scrape Complete: 1944 |
-| <img src="docs/screenshots/0.6.0/26-scripts.png" alt="Installed MiSTer Scripts" height="200"> | <img src="docs/screenshots/0.6.0/27-script-confirmation.png" alt="Confirmation Before Running a Script" height="200"> |
-| Installed Scripts | Script Confirmation |
-
-### Earlier release examples (0.4.0)
-
-These genuine images retain earlier feature and theme examples. They show the
-0.4.0 interface; the palettes and saved custom themes remain supported.
-
-| | | |
-|---|---|---|
+| Drawing and Performance Controls | Actions for This Place | Random Game or Random Favourite |
+| <img src="docs/screenshots/0.6.0/16-place-view.png" alt="A Different View for Every Place" height="200"> | <img src="docs/screenshots/0.6.0/17-information.png" alt="Full Game Information" height="200"> | <img src="docs/screenshots/0.6.0/18-index-progress.png" alt="Indexing Progress" height="200"> |
+| A Different View for Every Place | Full Game Information | Indexing Progress |
+| <img src="docs/screenshots/0.6.0/34-index-details.png" alt="Indexing Details" height="200"> | <img src="docs/screenshots/0.6.0/19-index-complete.png" alt="Indexing Complete" height="200"> | <img src="docs/screenshots/0.6.0/28-artwork-source.png" alt="Automatic, Gamelist or Artwork Pack" height="200"> |
+| Indexing Details | Indexing Complete | Automatic, Gamelist or Artwork Pack |
+| <img src="docs/screenshots/0.6.0/36-artwork-pack-location.png" alt="Choose an Installed Artwork Pack" height="200"> | <img src="docs/screenshots/0.6.0/20-manual-search.png" alt="Single-game Scraper Controls" height="200"> | <img src="docs/screenshots/0.6.0/33-manual-query.png" alt="Enter a Manual Search" height="200"> |
+| Choose an Installed Artwork Pack | Single-game Scraper Controls | Enter a Manual Search |
+| <img src="docs/screenshots/0.6.0/24-manual-match.png" alt="Choose the Matching Game: 1944" height="200"> | <img src="docs/screenshots/0.6.0/21-scraper-progress.png" alt="Scraper Preparation" height="200"> | <img src="docs/screenshots/0.6.0/35-scraper-complete.png" alt="Single-game Scrape Complete" height="200"> |
+| Choose the Matching Game: 1944 | Scraper Preparation | Single-game Scrape Complete |
+| <img src="docs/screenshots/0.6.0/26-scripts.png" alt="Browse Installed Scripts" height="200"> | <img src="docs/screenshots/0.6.0/27-script-confirmation.png" alt="Confirm Before Running" height="200"> | <img src="docs/screenshots/0.6.0/32-standard-details.png" alt="Standard Theme: Details" height="200"> |
+| Browse Installed Scripts | Confirm Before Running | Standard Theme: Details |
 | <img src="docs/screenshots/0.4.0/07-custom-theme.png" alt="Custom Theme" height="200"> | <img src="docs/screenshots/0.4.0/08-amber-theme.png" alt="Amber Theme" height="200"> | <img src="docs/screenshots/0.4.0/09-blue-orange-theme.png" alt="Blue-Orange Theme" height="200"> |
 | Custom Theme | Amber Theme | Blue-Orange Theme |
 | <img src="docs/screenshots/0.4.0/10-mono-theme.png" alt="Mono Theme" height="200"> | <img src="docs/screenshots/0.4.0/11-green-mono-theme.png" alt="Green Mono Theme" height="200"> | <img src="docs/screenshots/0.4.0/12-modern-theme.png" alt="Modern Theme" height="200"> |
@@ -106,18 +74,16 @@ These genuine images retain earlier feature and theme examples. They show the
 | <img src="docs/screenshots/0.4.0/18-saved-custom-theme.png" alt="A Saved Custom Theme" height="200"> | <img src="docs/screenshots/0.4.0/26-screensaver-artwork-slideshow.png" alt="Screensaver Artwork Slideshow" height="200"> |
 | A Saved Custom Theme | Screensaver Artwork Slideshow |
 
-## Watch Degauss 0.4.0 in action
-
-Earlier design. Same speed.
+## Watch Degauss in action
 
 <p align="center">
   <a href="https://www.youtube.com/watch?v=aFnvkkhbPFY">
     <img src="https://img.youtube.com/vi/aFnvkkhbPFY/maxresdefault.jpg"
-         alt="Degauss 0.4.0 in motion" width="640">
+         alt="Degauss in motion" width="640">
   </a>
 </p>
 
-Click the image to watch Degauss 0.4.0 on YouTube.
+Click the image to watch Degauss on YouTube.
 
 ## Table of contents
 
