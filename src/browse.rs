@@ -684,10 +684,10 @@ impl Library {
                     .then(|| self.archive_cache.borrow_mut().read(&path).ok())
                     .flatten()
                     .and_then(|contents| {
-                        let mut supported = contents
-                            .entries
-                            .iter()
-                            .filter(|entry| self.config.accepts(Path::new(&entry.name)));
+                        let mut supported = contents.entries.iter().filter(|entry| {
+                            let member = Path::new(&entry.name);
+                            self.config.accepts(member) && member.components().count() <= MAX_DEPTH
+                        });
                         let first = supported.next()?.clone();
                         supported.next().is_none().then_some(first)
                     });
@@ -2019,6 +2019,29 @@ mod tests {
             rows[0].kind,
             Kind::Enter(Place::Archive(several)),
             "a multi-game ZIP keeps its virtual folder"
+        );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn a_sole_zip_member_past_the_cache_depth_limit_stays_a_folder() {
+        let dir = temp("single-game-zip-past-depth-limit");
+        let archive = dir.join("Too Deep.zip");
+        let member = format!("{}Game.d64", "nested/".repeat(MAX_DEPTH));
+        std::fs::write(
+            &archive,
+            crate::zip::tests_archive(&[member.as_str()], false),
+        )
+        .unwrap();
+
+        let library = Library::open(&system(&dir)).unwrap();
+        let (rows, stats) = library.list(&library.start(), false).unwrap();
+        assert_eq!(names_of(&rows), ["Too Deep"]);
+        assert_eq!((stats.games, stats.folders), (0, 1));
+        assert_eq!(
+            rows[0].kind,
+            Kind::Enter(Place::Archive(archive)),
+            "a member the cache cannot reach must not appear directly playable"
         );
         std::fs::remove_dir_all(dir).unwrap();
     }
