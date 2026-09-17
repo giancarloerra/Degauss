@@ -924,6 +924,14 @@ impl Library {
         self.row_for(path, self.display_name(path), root, legacy)
     }
 
+    /// Rebuild a sole reachable archive member with the archive-level
+    /// metadata lookup used by direct browsing. Cache traversal may have
+    /// discarded other supported members because they sit past the depth
+    /// limit, so the archive-wide member count is not authoritative here.
+    pub(crate) fn flattened_archive_row(&self, path: &Path) -> Row {
+        self.game_row_with_metadata(path, self.root_for(path), true)
+    }
+
     /// A playable row under a name already decided, with whatever the
     /// metadata overlay adds to it.
     fn row_for(&self, path: &Path, name: String, root: Option<usize>, legacy: bool) -> Row {
