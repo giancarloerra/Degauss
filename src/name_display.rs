@@ -116,6 +116,16 @@ fn recognised(text: &str, choices: &[&str]) -> bool {
         .any(|choice| starts_with_ignoring_ascii_case(text, choice))
 }
 
+fn recognised_disc(text: &str) -> bool {
+    DISC_MARKERS.iter().any(|choice| {
+        starts_with_ignoring_ascii_case(text, choice)
+            && text[choice.len()..]
+                .chars()
+                .next()
+                .is_some_and(|next| next.is_ascii_digit() || next.is_ascii_whitespace())
+    })
+}
+
 fn removes_at(text: &str, remove: Remove) -> bool {
     let Some(first) = text.as_bytes().first().copied() else {
         return false;
@@ -125,11 +135,9 @@ fn removes_at(text: &str, remove: Remove) -> bool {
         Remove::Brackets => first == b'[',
         Remove::Both => matches!(first, b'(' | b'['),
         Remove::ExceptRegion => matches!(first, b'(' | b'[') && !recognised(text, &REGIONS),
-        Remove::ExceptDisc => matches!(first, b'(' | b'[') && !recognised(text, &DISC_MARKERS),
+        Remove::ExceptDisc => matches!(first, b'(' | b'[') && !recognised_disc(text),
         Remove::ExceptRegionOrDisc => {
-            matches!(first, b'(' | b'[')
-                && !recognised(text, &REGIONS)
-                && !recognised(text, &DISC_MARKERS)
+            matches!(first, b'(' | b'[') && !recognised(text, &REGIONS) && !recognised_disc(text)
         }
     }
 }
@@ -208,6 +216,11 @@ mod tests {
             GameNameDisplay::KeepRegionAndDiscIndex.apply("Game (tape 1) (japan)"),
             "Game (tape 1) (japan)",
             "recognition is ASCII case-insensitive"
+        );
+        assert_eq!(
+            GameNameDisplay::KeepDiscIndex.apply("Game (CD1) (Disc 2) (Discipline) (Sideways)"),
+            "Game (CD1) (Disc 2)",
+            "disc markers must be followed by a digit or whitespace"
         );
     }
 

@@ -573,15 +573,20 @@ fn save_cache(
     }
     match std::fs::rename(&temp, &path) {
         Ok(()) => Ok(()),
-        Err(error) => {
-            let _ = std::fs::remove_file(&temp);
-            Err(SaveCacheError::Failed(DegaussError::io(
-                "replacing MiSTerZine saved data",
-                &path,
-                error,
-            )))
-        }
+        Err(_) => replace_cache_directly(&path, &temp, &bytes),
     }
+}
+
+fn replace_cache_directly(
+    path: &Path,
+    temp: &Path,
+    bytes: &[u8],
+) -> std::result::Result<(), SaveCacheError> {
+    let outcome = std::fs::write(path, bytes)
+        .map_err(|error| DegaussError::io("replacing MiSTerZine saved data", path, error))
+        .map_err(SaveCacheError::Failed);
+    let _ = std::fs::remove_file(temp);
+    outcome
 }
 
 fn decode_meta(body: &[u8]) -> std::result::Result<Meta, String> {
@@ -1612,6 +1617,29 @@ mod tests {
         let changed = decode_data(meta(1, &changed_body), &changed_body).unwrap();
         assert!(save_cache(&root, &changed, &AtomicBool::new(false)).is_err());
         assert_eq!(load_cache(&root).unwrap(), Some(original));
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn refused_cache_rename_falls_back_to_a_direct_replacement() {
+        let root = temp_root("cache-direct-replacement");
+        let original_body = serde_json::to_vec(&vec![release("Console")]).unwrap();
+        let original = decode_data(meta(1, &original_body), &original_body).unwrap();
+        save_cache(&root, &original, &AtomicBool::new(false)).unwrap();
+
+        let mut changed = release("Console");
+        changed.title = "Changed release".into();
+        let changed_body = serde_json::to_vec(&vec![changed]).unwrap();
+        let changed = decode_data(meta(1, &changed_body), &changed_body).unwrap();
+        let bytes = postcard::to_stdvec(&changed).unwrap();
+        let path = cache_path(&root);
+        let temp = path.with_extension("part");
+        std::fs::write(&temp, &bytes).unwrap();
+
+        replace_cache_directly(&path, &temp, &bytes).unwrap();
+
+        assert_eq!(load_cache(&root).unwrap(), Some(changed));
+        assert!(!temp.exists());
         std::fs::remove_dir_all(root).ok();
     }
 

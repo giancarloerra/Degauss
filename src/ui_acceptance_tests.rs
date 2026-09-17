@@ -9791,10 +9791,12 @@ fn run_metadata_filter_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
     app.clear_place_filters();
     assert!(!app.game_filters.is_active());
     assert!(app.filter.is_empty());
-    let restarted = unopened_fixture_app(&root, app.window.clone(), Settings::default());
-    assert!(!restarted.game_filters.is_active());
-    drop(restarted);
+    let window = app.window.clone();
     app.ui.hide().unwrap();
+    drop(app);
+    let restarted = unopened_fixture_app(&root, window, Settings::default());
+    assert!(!restarted.game_filters.is_active());
+    restarted.ui.hide().unwrap();
 }
 
 pub(super) fn run_ui_acceptance_flow(window: Rc<MinimalSoftwareWindow>) {
