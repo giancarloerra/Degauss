@@ -8024,20 +8024,6 @@ impl App {
                 }
             }
         }
-        // A self-describing file names its own core, so a favourite or a
-        // core file must not be blocked on the system's. Everything else
-        // ends up in an MGL naming `config.rbf`, and handing MiSTer a core
-        // it does not have replaces this process with nothing.
-        let self_describing = match &game {
-            browse::Launch::File(path) => !crate::launch::needs_system_core(path),
-            browse::Launch::AmigaVision { .. } => false,
-        };
-        // Checked where MiSTer will look, not in the index the menu
-        // grouping keeps. That index matches a core name anywhere at the
-        // top of the card, so a support copy under _Arcade/cores or a
-        // favourite's dangling link would answer for a core whose real
-        // file is gone, and the launch would still end in MiSTer's own
-        // "No rbf found!" with Degauss already gone.
         let core_system = self.core_system_id().or_else(|| self.open_system.clone());
         let selected_core = core_system
             .as_ref()
@@ -8049,7 +8035,11 @@ impl App {
             .map(String::as_str);
         let ra_first = self.settings.core_preference.unwrap_or_default()
             == crate::settings::CorePreference::RetroAchievementsFirst;
-        if !self_describing {
+        // File launches are validated by `plan_with_selections` after its
+        // format rule has chosen the effective core. An AmigaVision title
+        // has no file rule and its planner does not take the menu root, so
+        // retain the same preflight for that title-only launch path.
+        if matches!(&game, browse::Launch::AmigaVision { .. }) {
             let checked = crate::launch_cores::resolve_for_version(
                 &config,
                 Path::new(&self.config.menu_root),
@@ -19084,6 +19074,57 @@ pub(crate) fn test_library_launch_flow(window: Rc<MinimalSoftwareWindow>) {
     assert!(
         app.confirm_launch().is_none(),
         "changed archive must be revalidated at confirmation"
+    );
+
+    let watch_home = root.join("games/GameNWatch");
+    std::fs::create_dir_all(&watch_home).unwrap();
+    std::fs::write(watch_home.join("Current.gnw"), b"game").unwrap();
+    std::fs::write(root.join("_Console/GameAndWatch.rbf"), b"core").unwrap();
+    let watch_def = table
+        .iter()
+        .find(|system| system.id == "GameNWatch")
+        .expect("shipped Game & Watch system")
+        .clone();
+    app.all_systems = vec![FoundSystem {
+        def: watch_def.clone(),
+        paths: vec![watch_home],
+        logo_dir: None,
+        menu_folder: None,
+    }];
+    app.table = vec![watch_def];
+    app.systems = app.all_systems.clone();
+    app.system_cache = None;
+    app.library = None;
+    app.opened_config = None;
+    app.open_system = None;
+    app.trail.clear();
+    app.message = None;
+    app.open_system_by_index(0);
+    let current = app
+        .here
+        .iter()
+        .position(|row| row.name == "Current.gnw")
+        .expect("current Game & Watch package is listed");
+    app.game_list.select(current);
+    let plan = match app
+        .confirm_launch()
+        .expect("the file rule, not the legacy system core, decides the launch")
+    {
+        Outcome::Launch { plan, .. } => plan,
+        _ => panic!("expected Game & Watch launch outcome"),
+    };
+    assert!(plan.mgl.contains("<rbf>_Console/GameAndWatch</rbf>"));
+    assert!(!plan.mgl.contains("<rbf>_Console/GnW</rbf>"));
+    std::fs::remove_file(root.join("_Console/GameAndWatch.rbf")).unwrap();
+    assert!(
+        app.confirm_launch().is_none(),
+        "a missing format-specific core must stay in the UI"
+    );
+    assert!(
+        app.message.as_deref().is_some_and(
+            |message| message.contains("GameAndWatch") && message.contains("not installed")
+        ),
+        "the missing format-specific core is named"
     );
     drop(app);
     std::fs::remove_dir_all(root).unwrap();
