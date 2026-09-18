@@ -612,6 +612,55 @@ fn rule_core(
     }))
 }
 
+/// The standalone AmigaVision CD32 package keeps its title launchers beside
+/// MiSTer's menu, not beside the CHDs they describe. Locate only the one MGL
+/// that can match the selected CHD, on that CHD's own storage root.
+fn amiga_vision_cd32_mgl(system: &SystemConfig, game: &Path) -> Result<Option<PathBuf>> {
+    if !game
+        .extension()
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("chd"))
+        || crate::zip::split_member_path(game).is_some()
+    {
+        return Ok(None);
+    }
+    let home = std::iter::once(&system.path)
+        .chain(system.extra_paths.iter())
+        .map(Path::new)
+        .filter(|home| {
+            home.file_name()
+                .is_some_and(|name| name.eq_ignore_ascii_case("AmigaCD32"))
+                && game.starts_with(home)
+        })
+        .max_by_key(|home| home.components().count());
+    let Some(games) = home.and_then(Path::parent).filter(|games| {
+        games
+            .file_name()
+            .is_some_and(|name| name.eq_ignore_ascii_case("games"))
+    }) else {
+        return Ok(None);
+    };
+    let Some(storage) = games.parent() else {
+        return Ok(None);
+    };
+    let Some(stem) = game.file_stem() else {
+        return Ok(None);
+    };
+    let launcher = storage
+        .join("_Console/_Amiga CD32 Games")
+        .join(stem)
+        .with_extension("mgl");
+    match std::fs::metadata(&launcher) {
+        Ok(metadata) if metadata.is_file() => Ok(Some(launcher)),
+        Ok(_) => Ok(None),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(DegaussError::io(
+            "checking the AmigaVision CD32 launcher",
+            launcher,
+            error,
+        )),
+    }
+}
+
 /// Whether starting this file relies on the system's own core.
 ///
 /// A self-describing file names its own core: an `.mra` carries it, a
@@ -694,6 +743,9 @@ pub fn plan_with_selections(
     selected_version: Option<&str>,
     selected_family: Option<&str>,
 ) -> Result<LaunchPlan> {
+    if let Some(launcher) = amiga_vision_cd32_mgl(system, game)? {
+        return plan(system, &launcher, mgl_path);
+    }
     if game
         .extension()
         .is_some_and(|s| s.eq_ignore_ascii_case("mgl"))
@@ -701,6 +753,19 @@ pub fn plan_with_selections(
     {
         if !crate::core_variants::recognized_favorite(game, system)? {
             return plan(system, game, mgl_path);
+        }
+        let referenced = crate::favorites::descriptor_reference(game, "favourite MGL")?
+            .files
+            .last()
+            .map(PathBuf::from)
+            .filter(|path| path.is_absolute());
+        if let Some(launcher) = referenced
+            .as_deref()
+            .map(|path| amiga_vision_cd32_mgl(system, path))
+            .transpose()?
+            .flatten()
+        {
+            return plan(system, &launcher, mgl_path);
         }
         let fixed = match favorite_rule(system, game)? {
             Some(rule) => rule_core(system, rule, menu_root)?,
@@ -1270,6 +1335,94 @@ mod tests {
             assert!(error.to_string().contains("GameAndWatch"), "{error}");
             assert!(error.to_string().contains("not installed"), "{error}");
         }
+
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn cd32_chds_use_the_matching_amigavision_launcher_on_their_own_storage() {
+        let root = std::env::temp_dir().join(format!("degauss-cd32-{}", std::process::id()));
+        std::fs::remove_dir_all(&root).ok();
+        let sd = root.join("fat");
+        let usb = root.join("usb0");
+        let sd_games = sd.join("games/AmigaCD32");
+        let usb_games = usb.join("games/AmigaCD32");
+        for storage in [&sd, &usb] {
+            std::fs::create_dir_all(storage.join("_Console/_Amiga CD32 Games")).unwrap();
+        }
+        std::fs::create_dir_all(sd.join("_Computer")).unwrap();
+        std::fs::create_dir_all(&sd_games).unwrap();
+        std::fs::create_dir_all(&usb_games).unwrap();
+        std::fs::write(sd.join("_Computer/Minimig.rbf"), b"core").unwrap();
+        let system = shipped_system("AmigaCD32", vec![sd_games.clone(), usb_games.clone()]);
+
+        for (storage, games, title) in [
+            (&sd, &sd_games, "Chaos Engine"),
+            (&usb, &usb_games, "Alien Breed"),
+        ] {
+            let game = games.join(format!("{title}.chd"));
+            let supplied = storage
+                .join("_Console/_Amiga CD32 Games")
+                .join(format!("{title}.mgl"));
+            std::fs::write(&game, b"chd").unwrap();
+            std::fs::write(
+                &supplied,
+                format!(
+                    "<mistergamedescription><setname>{title}</setname></mistergamedescription>"
+                ),
+            )
+            .unwrap();
+
+            let plan =
+                plan_with_preference(&system, &game, &root.join("temporary.mgl"), &sd, false)
+                    .unwrap();
+            assert!(plan.mgl.is_empty(), "the supplied MGL is not rewritten");
+            assert_eq!(plan.command, format!("load_core {}\n", supplied.display()));
+        }
+
+        let usb_game = usb_games.join("Alien Breed.chd");
+        let favourite = sd.join("_@Favorites/Alien Breed.mgl");
+        std::fs::create_dir_all(favourite.parent().unwrap()).unwrap();
+        let favourite_text = favorite_mgl_with_preference(&system, &usb_game, &sd, false)
+            .unwrap()
+            .unwrap();
+        std::fs::write(&favourite, favourite_text).unwrap();
+        let favorite_plan = plan_with_preference(
+            &system,
+            &favourite,
+            &root.join("favorite-output.mgl"),
+            &sd,
+            false,
+        )
+        .unwrap();
+        assert!(favorite_plan.mgl.is_empty());
+        assert_eq!(
+            favorite_plan.command,
+            format!(
+                "load_core {}\n",
+                usb.join("_Console/_Amiga CD32 Games/Alien Breed.mgl")
+                    .display()
+            )
+        );
+
+        let supplied = usb.join("_Console/_Amiga CD32 Games/Alien Breed.mgl");
+        std::fs::remove_file(&supplied).unwrap();
+        let fallback =
+            plan_with_preference(&system, &usb_game, &root.join("fallback.mgl"), &sd, false)
+                .unwrap();
+        assert!(fallback.mgl.contains("<rbf>_Computer/Minimig</rbf>"));
+        assert!(fallback.mgl.contains(usb_game.to_string_lossy().as_ref()));
+
+        std::fs::write(&supplied, b"supplied").unwrap();
+        let cue = usb_games.join("Alien Breed.cue");
+        std::fs::write(&cue, b"cue").unwrap();
+        let cue_plan =
+            plan_with_preference(&system, &cue, &root.join("cue.mgl"), &sd, false).unwrap();
+        assert!(cue_plan.mgl.contains(cue.to_string_lossy().as_ref()));
+        assert_ne!(
+            cue_plan.command,
+            format!("load_core {}\n", supplied.display())
+        );
 
         std::fs::remove_dir_all(root).ok();
     }
