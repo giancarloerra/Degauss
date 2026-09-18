@@ -1332,7 +1332,7 @@ fn save_cache(
     }
     match std::fs::rename(&temp, &path) {
         Ok(()) => Ok(()),
-        Err(_) => replace_cache_directly(&path, &temp, &bytes),
+        Err(_) => replace_cache_directly(&path, &temp, &bytes, "replacing MiSTerZine saved data"),
     }
 }
 
@@ -1371,7 +1371,7 @@ fn save_availability_cache(
     }
     match std::fs::rename(&temp, &path) {
         Ok(()) => Ok(()),
-        Err(_) => replace_cache_directly(&path, &temp, &bytes),
+        Err(_) => replace_cache_directly(&path, &temp, &bytes, "replacing Update All availability"),
     }
 }
 
@@ -1379,9 +1379,10 @@ fn replace_cache_directly(
     path: &Path,
     temp: &Path,
     bytes: &[u8],
+    diagnostic: &'static str,
 ) -> std::result::Result<(), SaveCacheError> {
     let outcome = std::fs::write(path, bytes)
-        .map_err(|error| DegaussError::io("replacing MiSTerZine saved data", path, error))
+        .map_err(|error| DegaussError::io(diagnostic, path, error))
         .map_err(SaveCacheError::Failed);
     let _ = std::fs::remove_file(temp);
     outcome
@@ -2135,12 +2136,13 @@ fn extract_update_all_json(
 
 fn literal_unzip_member_pattern(name: &str) -> String {
     let mut pattern = String::with_capacity(name.len());
-    for character in name.chars() {
-        match character {
-            '*' => pattern.push_str("[*]"),
-            '?' => pattern.push_str("[?]"),
-            '[' => pattern.push_str("[[]"),
-            _ => pattern.push(character),
+    for (position, character) in name.chars().enumerate() {
+        match (position, character) {
+            (0, '-') => pattern.push_str("[-]"),
+            (_, '*') => pattern.push_str("[*]"),
+            (_, '?') => pattern.push_str("[?]"),
+            (_, '[') => pattern.push_str("[[]"),
+            (_, _) => pattern.push(character),
         }
     }
     pattern
@@ -2789,6 +2791,10 @@ mod tests {
             literal_unzip_member_pattern("manifest*[draft]??.json"),
             "manifest[*][[]draft][?][?].json"
         );
+        assert_eq!(
+            literal_unzip_member_pattern("-manifest.json"),
+            "[-]manifest.json"
+        );
     }
 
     #[test]
@@ -3128,9 +3134,35 @@ mod tests {
         let temp = path.with_extension("part");
         std::fs::write(&temp, &bytes).unwrap();
 
-        replace_cache_directly(&path, &temp, &bytes).unwrap();
+        replace_cache_directly(&path, &temp, &bytes, "replacing MiSTerZine saved data").unwrap();
 
         assert_eq!(load_cache(&root).unwrap(), Some(changed));
+        assert!(!temp.exists());
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn direct_cache_replacement_uses_the_requested_diagnostic() {
+        let root = temp_root("cache-direct-replacement-diagnostic");
+        std::fs::create_dir_all(&root).unwrap();
+        let path = root.join("directory");
+        std::fs::create_dir_all(&path).unwrap();
+        let temp = root.join("cache.part");
+        std::fs::write(&temp, b"replacement").unwrap();
+
+        let error = replace_cache_directly(
+            &path,
+            &temp,
+            b"replacement",
+            "replacing Update All availability",
+        )
+        .unwrap_err();
+        let SaveCacheError::Failed(error) = error else {
+            panic!("direct replacement must report an I/O failure");
+        };
+        assert!(error
+            .to_string()
+            .starts_with("replacing Update All availability failed for"));
         assert!(!temp.exists());
         std::fs::remove_dir_all(root).ok();
     }
