@@ -1162,10 +1162,11 @@ const CLEAR_FILTERS: &str = "Clear Filters";
 const FAVORITES_ID: &str = "Favorites";
 const CORES_CATEGORY: &str = "Cores";
 const CORES_SYSTEM_ID: &str = "__cores";
-const MISTERZINE_CATEGORY: &str = "MiSTerZine";
+const MISTERZINE_CATEGORY: &str = "MiSTerZine Updates";
 const MISTERZINE_SYSTEM_ID: &str = "__misterzine";
+/// Keep the pre-rename custom-view key so existing settings remain effective.
+const MISTERZINE_VIEW_PLACE: &str = "MiSTerZine";
 const REFRESH_MISTERZINE: &str = "Refresh";
-const INSTALLED_ONLY: &str = "Installed Only";
 const FILTER_RELEASES: &str = "Filter Releases";
 const ABOUT_MISTERZINE: &str = "About MiSTerZine";
 
@@ -2008,7 +2009,7 @@ fn context_help(action: &str) -> &'static str {
         SEARCH => "Filter this list by name. Back keeps the search until it is cleared.",
         CLEAR_SEARCH => "Clear the search and show the full current list again.",
         FILTER_GAMES => "Filter games in this folder by their available metadata.",
-        FILTER_RELEASES => "Filter MiSTerZine releases by type and source.",
+        FILTER_RELEASES => "Filter MiSTerZine Updates by type and source.",
         CLEAR_FILTERS => "Clear metadata filters while keeping any title search.",
         HIDE_THIS => "Hide the selected item from browsing without deleting it.",
         SHOW_THIS => "Remove this item's hidden setting so it is normally visible again.",
@@ -2024,7 +2025,6 @@ fn context_help(action: &str) -> &'static str {
         REBUILD_SYSTEM => "Rescan this entire system, including all its folders.",
         REBUILD_CORES => "Refresh only the installed-core catalogue from MiSTer's menu folders.",
         REFRESH_MISTERZINE => "Check the official MiSTerZine release catalogue now.",
-        INSTALLED_ONLY => "Show only releases that Degauss can launch on this MiSTer.",
         ABOUT_MISTERZINE => "Read the source and licence for the MiSTerZine release data.",
         CHANGE_CATEGORY_IMAGE => "Choose the image shown for the selected category or system.",
         CLEAR_CATEGORY_IMAGE => {
@@ -3539,7 +3539,6 @@ pub struct App {
     misterzine_progress: crate::misterzine::Progress,
     misterzine_items: Vec<crate::misterzine::Item>,
     misterzine_visible: Vec<crate::misterzine::Item>,
-    misterzine_installed_only: bool,
     misterzine_filters: crate::misterzine::Filters,
     misterzine_filter_options: [Vec<crate::misterzine::FilterChoice>; 2],
     misterzine_filter_field: Option<crate::misterzine::FilterField>,
@@ -3980,7 +3979,6 @@ impl App {
             misterzine_progress: Default::default(),
             misterzine_items: Vec::new(),
             misterzine_visible: Vec::new(),
-            misterzine_installed_only: false,
             misterzine_filters: Default::default(),
             misterzine_filter_options: std::array::from_fn(|_| Vec::new()),
             misterzine_filter_field: None,
@@ -6363,7 +6361,7 @@ impl App {
         if self.in_misterzine_browser() {
             return Some(ViewPlace::Games {
                 system: MISTERZINE_SYSTEM_ID.to_string(),
-                place: MISTERZINE_CATEGORY.to_string(),
+                place: MISTERZINE_VIEW_PLACE.to_string(),
             });
         }
         if self.in_cores_browser() {
@@ -8724,7 +8722,10 @@ impl App {
         }
         if self.misterzine_job.is_some() {
             let progress = &self.misterzine_progress;
-            let matching = progress.phase == crate::misterzine::Phase::Matching;
+            let determinate = matches!(
+                progress.phase,
+                crate::misterzine::Phase::CheckingAvailability | crate::misterzine::Phase::Matching
+            );
             let installed = self
                 .misterzine_items
                 .iter()
@@ -8741,22 +8742,35 @@ impl App {
                 }
                 .into(),
             );
-            self.ui.set_operation_subject("Official Releases".into());
+            self.ui.set_operation_subject(
+                match progress.phase {
+                    crate::misterzine::Phase::CheckingAvailability => "Update All Catalogues",
+                    _ => "Official Releases",
+                }
+                .into(),
+            );
             self.ui.set_operation_activity(
                 match progress.phase {
                     crate::misterzine::Phase::Checking => "Checking for changes",
                     crate::misterzine::Phase::Downloading => "Reading release data",
+                    crate::misterzine::Phase::CheckingAvailability => "Reading availability data",
                     crate::misterzine::Phase::Matching => "Comparing with this MiSTer",
                 }
                 .into(),
             );
             self.ui
-                .set_operation_determinate(matching && progress.total > 0);
+                .set_operation_determinate(determinate && progress.total > 0);
             self.ui
                 .set_operation_fraction(progress.completed as f32 / progress.total.max(1) as f32);
             self.ui.set_operation_progress(
-                if matching && progress.total > 0 {
-                    format!("{} / {} Releases", progress.completed, progress.total)
+                if determinate && progress.total > 0 {
+                    let subject =
+                        if progress.phase == crate::misterzine::Phase::CheckingAvailability {
+                            "Catalogues"
+                        } else {
+                            "Releases"
+                        };
+                    format!("{} / {} {subject}", progress.completed, progress.total)
                 } else {
                     String::new()
                 }
@@ -9309,6 +9323,7 @@ impl App {
                 })
                 .collect(),
             force_refresh,
+            include_available: false,
         }
     }
 
@@ -9378,7 +9393,6 @@ impl App {
         self.misterzine_visible = self
             .misterzine_items
             .iter()
-            .filter(|item| !self.misterzine_installed_only || item.installed())
             .filter(|item| self.filter.is_empty() || squashed(item.title()).contains(&self.filter))
             .filter(|item| self.misterzine_filters.matches(item))
             .cloned()
@@ -9801,11 +9815,15 @@ impl App {
             }
         }
         if self.show_misterzine {
-            if let Some(logo) = self.named_logo(MISTERZINE_CATEGORY).or_else(|| {
-                self.misterzine_items
-                    .iter()
-                    .find_map(|item| self.misterzine_cover(item))
-            }) {
+            if let Some(logo) = self
+                .named_logo(MISTERZINE_CATEGORY)
+                .or_else(|| self.named_logo(MISTERZINE_VIEW_PLACE))
+                .or_else(|| {
+                    self.misterzine_items
+                        .iter()
+                        .find_map(|item| self.misterzine_cover(item))
+                })
+            {
                 picks.insert(MISTERZINE_CATEGORY.to_string(), logo);
             }
         }
@@ -11359,7 +11377,6 @@ impl App {
                         })
                 })
                 .unwrap_or_default(),
-            Some(INSTALLED_ONLY) => on_off(self.misterzine_installed_only),
             Some(CORE_VERSION) => self
                 .core_system_id()
                 .and_then(|id| self.settings.core_choices.get(&id))
@@ -14347,11 +14364,7 @@ impl App {
             if self.misterzine_filters.is_active() {
                 actions.push(CLEAR_FILTERS.to_string());
             }
-            actions.extend([
-                INSTALLED_ONLY.to_string(),
-                REFRESH_MISTERZINE.to_string(),
-                ABOUT_MISTERZINE.to_string(),
-            ]);
+            actions.extend([REFRESH_MISTERZINE.to_string(), ABOUT_MISTERZINE.to_string()]);
             self.context_actions = actions;
             self.show_context_page(None);
             return;
@@ -16456,11 +16469,6 @@ impl App {
                     if choice == REFRESH_MISTERZINE {
                         self.screen = Screen::Browse;
                         self.open_misterzine(true);
-                    } else if choice == INSTALLED_ONLY {
-                        self.misterzine_installed_only = !self.misterzine_installed_only;
-                        self.screen = Screen::Browse;
-                        self.rebuild_misterzine_rows();
-                        self.apply_geometry();
                     } else if choice == ABOUT_MISTERZINE {
                         self.screen = Screen::Browse;
                         self.message = Some(

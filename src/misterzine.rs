@@ -1,11 +1,11 @@
-//! Optional MiSTerZine release browser.
+//! Optional MiSTerZine updates browser for content installed on this MiSTer.
 //!
 //! The official feed is kept in one independent cache. A single cancellable
 //! worker reads that cache, checks the fixed HTTPS endpoint, downloads only
 //! when needed, and matches releases against Degauss's existing catalogues.
 //! It never scans the card and never changes a game or core index.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs::OpenOptions;
 use std::io::{Read, Write};
 use std::path::{Component, Path, PathBuf};
@@ -29,6 +29,10 @@ const CACHE_FORMAT: u32 = 2;
 const LEGACY_CACHE_FORMAT: u32 = 1;
 const MAX_META_BYTES: u64 = 16 * 1024;
 const MAX_DATA_BYTES: u64 = 2 * 1024 * 1024;
+const AVAILABILITY_CACHE_FORMAT: u32 = 1;
+const MAX_UPDATE_ALL_ARCHIVE_BYTES: u64 = 4 * 1024 * 1024;
+const MAX_UPDATE_ALL_JSON_BYTES: u64 = 16 * 1024 * 1024;
+const MAX_UPDATE_ALL_FILES: usize = 100_000;
 const MAX_ROWS: usize = 20_000;
 const MAX_SHORT_TEXT: usize = 256;
 const MAX_PATH_TEXT: usize = 1_024;
@@ -39,6 +43,96 @@ const CA_BUNDLES: [&str; 3] = [
     "/etc/ssl/certs/ca-certificates.crt",
 ];
 static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
+#[derive(Debug, Clone, Copy)]
+struct UpdateAllDatabase {
+    id: &'static str,
+    url: &'static str,
+}
+
+const UPDATE_ALL_DATABASES: [UpdateAllDatabase; 4] = [
+    UpdateAllDatabase {
+        id: "distribution_mister",
+        url: "https://raw.githubusercontent.com/MiSTer-devel/Distribution_MiSTer/main/db.json.zip",
+    },
+    UpdateAllDatabase {
+        id: "jtcores",
+        url: "https://raw.githubusercontent.com/jotego/jtcores_mister/main/jtbindb.json.zip",
+    },
+    UpdateAllDatabase {
+        id: "Coin-OpCollection/Distribution-MiSTerFPGA",
+        url: "https://raw.githubusercontent.com/Coin-OpCollection/Distribution-MiSTerFPGA/db/db.json.zip",
+    },
+    UpdateAllDatabase {
+        id: "theypsilon_unofficial_distribution",
+        url: "https://raw.githubusercontent.com/theypsilon/Distribution_Unofficial_MiSTer/main/unofficialdb.json.zip",
+    },
+];
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+struct AvailabilityCache {
+    format: u32,
+    databases: Vec<AvailabilityDatabase>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+struct AvailabilityDatabase {
+    id: String,
+    timestamp: u64,
+    cores: Vec<String>,
+    mras: Vec<String>,
+}
+
+#[derive(Deserialize)]
+struct UpdateAllManifest {
+    db_id: String,
+    timestamp: u64,
+    files: BTreeMap<String, serde::de::IgnoredAny>,
+}
+
+impl AvailabilityCache {
+    fn contains(&self, release: &Release) -> bool {
+        let core = crate::systems::core_name(&release.core);
+        if core.is_empty() {
+            return false;
+        }
+        if release.base == "Arcade" {
+            let Some(mra) = release.mra.as_deref().and_then(normalize_manifest_mra) else {
+                return false;
+            };
+            self.databases.iter().any(|database| {
+                database.cores.binary_search(&core).is_ok()
+                    && database.mras.binary_search(&mra).is_ok()
+            })
+        } else {
+            self.databases
+                .iter()
+                .any(|database| database.cores.binary_search(&core).is_ok())
+        }
+    }
+}
+
+fn normalize_manifest_mra(path: &str) -> Option<String> {
+    if path.starts_with('/')
+        || path.len() > MAX_PATH_TEXT
+        || path.contains('\\')
+        || path.chars().any(char::is_control)
+    {
+        return None;
+    }
+    let parsed = Path::new(path);
+    if path.is_empty()
+        || parsed
+            .extension()
+            .is_none_or(|extension| !extension.eq_ignore_ascii_case("mra"))
+        || parsed
+            .components()
+            .any(|component| !matches!(component, Component::Normal(_)))
+    {
+        return None;
+    }
+    Some(path.to_ascii_lowercase())
+}
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 pub struct Meta {
@@ -111,6 +205,7 @@ pub enum LocalState {
     NotInstalled,
     MraNotInstalled,
     CoreMissing,
+    AvailableThroughUpdateAll,
     VersionUnknown,
     Current,
     UpdateAvailable,
@@ -122,6 +217,7 @@ impl LocalState {
             Self::NotInstalled => "Not installed",
             Self::MraNotInstalled => "MRA not installed",
             Self::CoreMissing => "MRA installed · Core missing",
+            Self::AvailableThroughUpdateAll => "Available through Update All",
             Self::VersionUnknown => "Installed · Version unknown",
             Self::Current => "Installed · Current",
             Self::UpdateAvailable => "Installed · Update available",
@@ -460,20 +556,25 @@ pub struct Request {
     pub cores: CoreCatalogue,
     pub arcade_systems: Vec<ArcadeSystem>,
     pub force_refresh: bool,
+    /// The matcher and cache support Update All availability, but the current
+    /// browser deliberately shows installed updates only.
+    pub include_available: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Phase {
     Checking,
     Downloading,
+    CheckingAvailability,
     Matching,
 }
 
 impl Phase {
     pub fn label(self) -> &'static str {
         match self {
-            Self::Checking => "Checking MiSTerZine",
+            Self::Checking => "Checking MiSTerZine Updates",
             Self::Downloading => "Downloading Releases",
+            Self::CheckingAvailability => "Checking Update All Availability",
             Self::Matching => "Matching Installed Content",
         }
     }
@@ -585,16 +686,41 @@ pub fn start(request: Request) -> Result<Job> {
 }
 
 fn run(request: Request, events: &SyncSender<Event>, cancelled: &AtomicBool) {
-    run_with_fetch(request, events, cancelled, fetch_json);
+    run_with_fetches(
+        request,
+        events,
+        cancelled,
+        fetch_json,
+        fetch_availability_database,
+    );
 }
 
-fn run_with_fetch<F>(
+#[cfg(test)]
+fn run_with_fetch<F>(request: Request, events: &SyncSender<Event>, cancelled: &AtomicBool, fetch: F)
+where
+    F: FnMut(&str, u64, Duration, &AtomicBool) -> std::result::Result<Vec<u8>, FetchError>,
+{
+    run_with_fetches(request, events, cancelled, fetch, |_, _| {
+        Err(FetchError {
+            user: "Update All availability could not be checked.".to_string(),
+            diagnostic: "no availability fetcher was configured".to_string(),
+            cancelled: false,
+        })
+    });
+}
+
+fn run_with_fetches<F, G>(
     request: Request,
     events: &SyncSender<Event>,
     cancelled: &AtomicBool,
     mut fetch: F,
+    mut fetch_availability: G,
 ) where
     F: FnMut(&str, u64, Duration, &AtomicBool) -> std::result::Result<Vec<u8>, FetchError>,
+    G: FnMut(
+        UpdateAllDatabase,
+        &AtomicBool,
+    ) -> std::result::Result<AvailabilityDatabase, FetchError>,
 {
     let cache_result = load_cache(&request.cache_dir);
     let cache_problem = cache_result.is_err();
@@ -605,10 +731,31 @@ fn run_with_fetch<F>(
             None
         }
     };
+    let availability_result = if request.include_available {
+        load_availability_cache(&request.cache_dir)
+    } else {
+        Ok(None)
+    };
+    let availability_cache_problem = availability_result.is_err();
+    let cached_availability = match availability_result {
+        Ok(cache) => cache,
+        Err(error) => {
+            crate::note(&format!(
+                "misterzine   saved Update All availability rejected: {error}"
+            ));
+            None
+        }
+    };
     let mut cached_snapshot = None;
     if let Some(cache) = cached.as_ref() {
         send_progress(events, Phase::Matching, 0, cache.rows.len(), false);
-        match match_cache(cache, &request, events, cancelled) {
+        match match_cache_with_availability(
+            cache,
+            &request,
+            cached_availability.as_ref(),
+            events,
+            cancelled,
+        ) {
             Some(snapshot) => {
                 cached_snapshot = Some(snapshot.clone());
                 if events.send(Event::Snapshot(snapshot)).is_err() {
@@ -662,11 +809,16 @@ fn run_with_fetch<F>(
             .as_ref()
             .is_some_and(|cache| cache.format == CACHE_FORMAT && cache.meta.hash == meta.hash)
     {
-        let snapshot = cached_snapshot.expect("a matching cache produced a snapshot");
-        let _ = events.send(Event::Ready {
-            snapshot,
-            notice: None,
-        });
+        let cache = cached.as_ref().expect("matching saved release cache");
+        finish_after_release_refresh(
+            cache,
+            &request,
+            cached_availability,
+            availability_cache_problem,
+            events,
+            cancelled,
+            &mut fetch_availability,
+        );
         return;
     }
 
@@ -724,17 +876,149 @@ fn run_with_fetch<F>(
     }
     cached = Some(cache);
     let cache = cached.as_ref().expect("new cache retained");
+    finish_after_release_refresh(
+        cache,
+        &request,
+        cached_availability,
+        availability_cache_problem,
+        events,
+        cancelled,
+        &mut fetch_availability,
+    );
+}
+
+fn finish_after_release_refresh<G>(
+    cache: &Cache,
+    request: &Request,
+    cached_availability: Option<AvailabilityCache>,
+    availability_cache_problem: bool,
+    events: &SyncSender<Event>,
+    cancelled: &AtomicBool,
+    fetch_availability: &mut G,
+) where
+    G: FnMut(
+        UpdateAllDatabase,
+        &AtomicBool,
+    ) -> std::result::Result<AvailabilityDatabase, FetchError>,
+{
+    let (availability, notice) = if request.include_available {
+        refresh_availability(
+            request,
+            cached_availability,
+            availability_cache_problem,
+            events,
+            cancelled,
+            fetch_availability,
+        )
+    } else {
+        (None, None)
+    };
+    if cancelled.load(Ordering::Relaxed) {
+        let _ = events.send(Event::Cancelled);
+        return;
+    }
     send_progress(events, Phase::Matching, 0, cache.rows.len(), false);
-    match match_cache(cache, &request, events, cancelled) {
+    match match_cache_with_availability(cache, request, availability.as_ref(), events, cancelled) {
         Some(snapshot) => {
-            let _ = events.send(Event::Ready {
-                snapshot,
-                notice: None,
-            });
+            let _ = events.send(Event::Ready { snapshot, notice });
         }
         None => {
             let _ = events.send(Event::Cancelled);
         }
+    }
+}
+
+fn refresh_availability<G>(
+    request: &Request,
+    cached: Option<AvailabilityCache>,
+    cache_problem: bool,
+    events: &SyncSender<Event>,
+    cancelled: &AtomicBool,
+    fetch: &mut G,
+) -> (Option<AvailabilityCache>, Option<String>)
+where
+    G: FnMut(
+        UpdateAllDatabase,
+        &AtomicBool,
+    ) -> std::result::Result<AvailabilityDatabase, FetchError>,
+{
+    let mut databases = Vec::with_capacity(UPDATE_ALL_DATABASES.len());
+    send_progress(
+        events,
+        Phase::CheckingAvailability,
+        0,
+        UPDATE_ALL_DATABASES.len(),
+        false,
+    );
+    for (index, expected) in UPDATE_ALL_DATABASES.iter().copied().enumerate() {
+        match fetch(expected, cancelled) {
+            Ok(database) => databases.push(database),
+            Err(error) if error.cancelled => return (None, None),
+            Err(error) => {
+                crate::note(&format!(
+                    "misterzine   Update All availability failed: {}",
+                    error.diagnostic
+                ));
+                return availability_fallback(cached, cache_problem);
+            }
+        }
+        send_progress(
+            events,
+            Phase::CheckingAvailability,
+            index + 1,
+            UPDATE_ALL_DATABASES.len(),
+            false,
+        );
+    }
+    let fresh = AvailabilityCache {
+        format: AVAILABILITY_CACHE_FORMAT,
+        databases,
+    };
+    if let Err(detail) = validate_availability_cache(&fresh) {
+        crate::note(&format!(
+            "misterzine   Update All availability rejected: {detail}"
+        ));
+        return availability_fallback(cached, cache_problem);
+    }
+    match save_availability_cache(&request.cache_dir, &fresh, cancelled) {
+        Ok(()) => (Some(fresh), None),
+        Err(SaveCacheError::Cancelled) => (None, None),
+        Err(SaveCacheError::Failed(error)) => {
+            crate::note(&format!(
+                "misterzine   Update All availability could not be saved: {error}"
+            ));
+            (
+                Some(fresh),
+                Some("Update All availability could not be saved for offline use.".to_string()),
+            )
+        }
+    }
+}
+
+fn availability_fallback(
+    cached: Option<AvailabilityCache>,
+    cache_problem: bool,
+) -> (Option<AvailabilityCache>, Option<String>) {
+    if let Some(cached) = cached {
+        (
+            Some(cached),
+            Some(
+                "Update All availability could not be refreshed. Showing saved availability."
+                    .to_string(),
+            ),
+        )
+    } else {
+        let suffix = if cache_problem {
+            " Saved availability data could not be read."
+        } else {
+            ""
+        };
+        (
+            None,
+            Some(format!(
+                "Update All availability could not be checked. Showing installed content only.{suffix}"
+            )),
+        )
     }
 }
 
@@ -845,6 +1129,134 @@ pub fn load_cache(cache_dir: &Path) -> Result<Option<Cache>> {
     Ok(Some(cache))
 }
 
+fn availability_cache_path(cache_dir: &Path) -> PathBuf {
+    cache_dir.join("misterzine-update-all.bin")
+}
+
+fn load_availability_cache(cache_dir: &Path) -> Result<Option<AvailabilityCache>> {
+    let path = availability_cache_path(cache_dir);
+    let bytes = match std::fs::read(&path) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(DegaussError::io(
+                "reading Update All availability",
+                path,
+                error,
+            ));
+        }
+    };
+    let cache: AvailabilityCache = postcard::from_bytes(&bytes).map_err(|error| {
+        DegaussError::malformed("Update All availability", &path, error.to_string())
+    })?;
+    validate_availability_cache(&cache)
+        .map_err(|detail| DegaussError::malformed("Update All availability", &path, detail))?;
+    Ok(Some(cache))
+}
+
+fn validate_availability_cache(cache: &AvailabilityCache) -> std::result::Result<(), String> {
+    if cache.format != AVAILABILITY_CACHE_FORMAT {
+        return Err(format!(
+            "unsupported availability cache format {}",
+            cache.format
+        ));
+    }
+    if cache.databases.len() != UPDATE_ALL_DATABASES.len() {
+        return Err(format!(
+            "expected {} Update All databases, found {}",
+            UPDATE_ALL_DATABASES.len(),
+            cache.databases.len()
+        ));
+    }
+    let mut ids = BTreeSet::new();
+    for database in &cache.databases {
+        if !UPDATE_ALL_DATABASES
+            .iter()
+            .any(|expected| expected.id == database.id)
+            || !ids.insert(database.id.as_str())
+        {
+            return Err(format!("unexpected or repeated database {}", database.id));
+        }
+        if database.timestamp == 0 {
+            return Err(format!("database {} has no timestamp", database.id));
+        }
+        if database.cores.len().saturating_add(database.mras.len()) > MAX_UPDATE_ALL_FILES {
+            return Err(format!("database {} exceeds the entry limit", database.id));
+        }
+        if !strictly_sorted(&database.cores)
+            || !strictly_sorted(&database.mras)
+            || database
+                .cores
+                .iter()
+                .any(|value| value.is_empty() || value.len() > MAX_SHORT_TEXT)
+            || database
+                .mras
+                .iter()
+                .any(|value| normalize_manifest_mra(value).as_deref() != Some(value.as_str()))
+        {
+            return Err(format!("database {} has invalid identities", database.id));
+        }
+    }
+    Ok(())
+}
+
+fn strictly_sorted(values: &[String]) -> bool {
+    values.windows(2).all(|pair| pair[0] < pair[1])
+}
+
+fn decode_availability_database(
+    expected: UpdateAllDatabase,
+    body: &[u8],
+) -> std::result::Result<AvailabilityDatabase, String> {
+    let manifest: UpdateAllManifest =
+        serde_json::from_slice(body).map_err(|error| error.to_string())?;
+    if manifest.db_id != expected.id {
+        return Err(format!(
+            "expected database {}, received {}",
+            expected.id, manifest.db_id
+        ));
+    }
+    if manifest.timestamp == 0 {
+        return Err(format!("database {} has no timestamp", expected.id));
+    }
+    if manifest.files.len() > MAX_UPDATE_ALL_FILES {
+        return Err(format!("database {} exceeds the file limit", expected.id));
+    }
+    let mut cores = BTreeSet::new();
+    let mut mras = BTreeSet::new();
+    for path in manifest.files.keys() {
+        if path.len() > MAX_PATH_TEXT || path.chars().any(char::is_control) {
+            continue;
+        }
+        let parsed = Path::new(path);
+        if parsed
+            .components()
+            .any(|component| !matches!(component, Component::Normal(_)))
+        {
+            continue;
+        }
+        if parsed
+            .extension()
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("rbf"))
+        {
+            if let Some(stem) = parsed.file_stem().and_then(|stem| stem.to_str()) {
+                let identity = crate::systems::core_name(stem);
+                if !identity.is_empty() {
+                    cores.insert(identity);
+                }
+            }
+        } else if let Some(mra) = normalize_manifest_mra(path) {
+            mras.insert(mra);
+        }
+    }
+    Ok(AvailabilityDatabase {
+        id: manifest.db_id,
+        timestamp: manifest.timestamp,
+        cores: cores.into_iter().collect(),
+        mras: mras.into_iter().collect(),
+    })
+}
+
 #[derive(Debug)]
 enum SaveCacheError {
     Cancelled,
@@ -883,6 +1295,45 @@ fn save_cache(
     let temp = path.with_extension("part");
     std::fs::write(&temp, &bytes)
         .map_err(|error| DegaussError::io("writing MiSTerZine saved data", &temp, error))
+        .map_err(SaveCacheError::Failed)?;
+    if cancelled.load(Ordering::Relaxed) {
+        let _ = std::fs::remove_file(&temp);
+        return Err(SaveCacheError::Cancelled);
+    }
+    match std::fs::rename(&temp, &path) {
+        Ok(()) => Ok(()),
+        Err(_) => replace_cache_directly(&path, &temp, &bytes),
+    }
+}
+
+fn save_availability_cache(
+    cache_dir: &Path,
+    cache: &AvailabilityCache,
+    cancelled: &AtomicBool,
+) -> std::result::Result<(), SaveCacheError> {
+    validate_availability_cache(cache)
+        .map_err(|detail| DegaussError::unsupported("Update All availability", detail))
+        .map_err(SaveCacheError::Failed)?;
+    let path = availability_cache_path(cache_dir);
+    let bytes = postcard::to_stdvec(cache)
+        .map_err(|error| DegaussError::unsupported("Update All availability", error.to_string()))
+        .map_err(SaveCacheError::Failed)?;
+    if !path.exists() {
+        if cancelled.load(Ordering::Relaxed) {
+            return Err(SaveCacheError::Cancelled);
+        }
+        return crate::cache::write(&path, &bytes).map_err(SaveCacheError::Failed);
+    }
+
+    let parent = path
+        .parent()
+        .expect("the Update All availability cache has a parent");
+    std::fs::create_dir_all(parent)
+        .map_err(|error| DegaussError::io("making the availability cache folder", parent, error))
+        .map_err(SaveCacheError::Failed)?;
+    let temp = path.with_extension("part");
+    std::fs::write(&temp, &bytes)
+        .map_err(|error| DegaussError::io("writing Update All availability", &temp, error))
         .map_err(SaveCacheError::Failed)?;
     if cancelled.load(Ordering::Relaxed) {
         let _ = std::fs::remove_file(&temp);
@@ -1021,9 +1472,20 @@ fn safe_relative_mra(value: &str) -> bool {
             .all(|component| matches!(component, Component::Normal(_)))
 }
 
+#[cfg(test)]
 fn match_cache(
     cache: &Cache,
     request: &Request,
+    events: &SyncSender<Event>,
+    cancelled: &AtomicBool,
+) -> Option<Snapshot> {
+    match_cache_with_availability(cache, request, None, events, cancelled)
+}
+
+fn match_cache_with_availability(
+    cache: &Cache,
+    request: &Request,
+    availability: Option<&AvailabilityCache>,
     events: &SyncSender<Event>,
     cancelled: &AtomicBool,
 ) -> Option<Snapshot> {
@@ -1100,7 +1562,17 @@ fn match_cache(
                 None => not_installed(row),
             }
         };
-        items.push(item);
+        if item.installed()
+            || (request.include_available
+                && availability.is_some_and(|available| available.contains(row)))
+        {
+            let item = if item.installed() {
+                item
+            } else {
+                available_through_update_all(row)
+            };
+            items.push(item);
+        }
         if index % 64 == 0 || index + 1 == cache.rows.len() {
             send_progress(events, Phase::Matching, index + 1, cache.rows.len(), false);
         }
@@ -1125,6 +1597,12 @@ fn match_cache(
         updated: cache.meta.updated.clone(),
         items,
     })
+}
+
+fn available_through_update_all(row: &Release) -> Item {
+    let mut item = not_installed(row);
+    item.state = LocalState::AvailableThroughUpdateAll;
+    item
 }
 
 fn not_installed(row: &Release) -> Item {
@@ -1445,6 +1923,185 @@ fn fetch_json(
     })
 }
 
+fn fetch_availability_database(
+    expected: UpdateAllDatabase,
+    cancelled: &AtomicBool,
+) -> std::result::Result<AvailabilityDatabase, FetchError> {
+    let archive_bytes = fetch_json(
+        expected.url,
+        MAX_UPDATE_ALL_ARCHIVE_BYTES,
+        Duration::from_secs(12),
+        cancelled,
+    )
+    .map_err(|mut error| {
+        if !error.cancelled {
+            error.user = "Update All availability could not be checked.".to_string();
+        }
+        error.diagnostic = format!("{}: {}", expected.id, error.diagnostic);
+        error
+    })?;
+    let archive = ResponseFile::create_with_extension("zip").map_err(|diagnostic| FetchError {
+        user: "Update All availability could not be checked.".to_string(),
+        diagnostic: format!("{}: {diagnostic}", expected.id),
+        cancelled: false,
+    })?;
+    archive
+        .write(&archive_bytes)
+        .map_err(|diagnostic| FetchError {
+            user: "Update All availability could not be checked.".to_string(),
+            diagnostic: format!("{}: {diagnostic}", expected.id),
+            cancelled: false,
+        })?;
+    let body = extract_update_all_json(expected, &archive, cancelled)?;
+    decode_availability_database(expected, &body).map_err(|diagnostic| FetchError {
+        user: "Update All returned data Degauss could not read.".to_string(),
+        diagnostic: format!("{}: {diagnostic}", expected.id),
+        cancelled: false,
+    })
+}
+
+fn extract_update_all_json(
+    expected: UpdateAllDatabase,
+    archive: &ResponseFile,
+    cancelled: &AtomicBool,
+) -> std::result::Result<Vec<u8>, FetchError> {
+    if cancelled.load(Ordering::Relaxed) {
+        return Err(FetchError {
+            user: String::new(),
+            diagnostic: format!("{}: cancelled before extraction", expected.id),
+            cancelled: true,
+        });
+    }
+    let entries = crate::zip::entries(archive.path()).map_err(|error| FetchError {
+        user: "Update All returned data Degauss could not read.".to_string(),
+        diagnostic: format!("{}: {error}", expected.id),
+        cancelled: false,
+    })?;
+    let [entry] = entries.as_slice() else {
+        return Err(FetchError {
+            user: "Update All returned data Degauss could not read.".to_string(),
+            diagnostic: format!(
+                "{}: expected one manifest member, found {}",
+                expected.id,
+                entries.len()
+            ),
+            cancelled: false,
+        });
+    };
+    if !entry.name.to_ascii_lowercase().ends_with(".json") || entry.size > MAX_UPDATE_ALL_JSON_BYTES
+    {
+        return Err(FetchError {
+            user: "Update All returned data Degauss could not read.".to_string(),
+            diagnostic: format!(
+                "{}: invalid manifest member {:?} ({} bytes)",
+                expected.id, entry.name, entry.size
+            ),
+            cancelled: false,
+        });
+    }
+
+    let extracted = ResponseFile::create().map_err(|diagnostic| FetchError {
+        user: "Update All returned data Degauss could not read.".to_string(),
+        diagnostic: format!("{}: {diagnostic}", expected.id),
+        cancelled: false,
+    })?;
+    let output = OpenOptions::new()
+        .write(true)
+        .truncate(true)
+        .open(extracted.path())
+        .map_err(|error| FetchError {
+            user: "Update All returned data Degauss could not read.".to_string(),
+            diagnostic: format!("{}: extraction output failed: {error}", expected.id),
+            cancelled: false,
+        })?;
+    let mut child = Command::new("unzip")
+        .args(["-p"])
+        .arg(archive.path())
+        .arg(&entry.name)
+        .stdin(Stdio::null())
+        .stdout(Stdio::from(output))
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|error| FetchError {
+            user: if error.kind() == std::io::ErrorKind::NotFound {
+                "MiSTer cannot check Update All because unzip is missing.".to_string()
+            } else {
+                "Update All returned data Degauss could not read.".to_string()
+            },
+            diagnostic: format!("{}: unzip could not start: {error}", expected.id),
+            cancelled: false,
+        })?;
+    let started = Instant::now();
+    let status = loop {
+        if cancelled.load(Ordering::Relaxed) {
+            stop_child(&mut child);
+            return Err(FetchError {
+                user: String::new(),
+                diagnostic: format!("{}: extraction cancelled", expected.id),
+                cancelled: true,
+            });
+        }
+        if started.elapsed() > Duration::from_secs(10) {
+            stop_child(&mut child);
+            return Err(FetchError {
+                user: "Update All returned data Degauss could not read.".to_string(),
+                diagnostic: format!("{}: unzip timed out", expected.id),
+                cancelled: false,
+            });
+        }
+        if extracted
+            .len()
+            .is_some_and(|size| size > MAX_UPDATE_ALL_JSON_BYTES)
+        {
+            stop_child(&mut child);
+            return Err(FetchError {
+                user: "Update All returned more data than Degauss can safely read.".to_string(),
+                diagnostic: format!("{}: extracted manifest exceeded limit", expected.id),
+                cancelled: false,
+            });
+        }
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) => std::thread::sleep(CURL_POLL),
+            Err(error) => {
+                stop_child(&mut child);
+                return Err(FetchError {
+                    user: "Update All returned data Degauss could not read.".to_string(),
+                    diagnostic: format!("{}: unzip monitoring failed: {error}", expected.id),
+                    cancelled: false,
+                });
+            }
+        }
+    };
+    if !status.success() {
+        return Err(FetchError {
+            user: "Update All returned data Degauss could not read.".to_string(),
+            diagnostic: format!("{}: unzip exit {:?}", expected.id, status.code()),
+            cancelled: false,
+        });
+    }
+    let body = extracted
+        .read(MAX_UPDATE_ALL_JSON_BYTES)
+        .map_err(|diagnostic| FetchError {
+            user: "Update All returned data Degauss could not read.".to_string(),
+            diagnostic: format!("{}: {diagnostic}", expected.id),
+            cancelled: false,
+        })?;
+    if body.len() as u64 != entry.size {
+        return Err(FetchError {
+            user: "Update All returned data Degauss could not read.".to_string(),
+            diagnostic: format!(
+                "{}: extracted {} bytes, expected {}",
+                expected.id,
+                body.len(),
+                entry.size
+            ),
+            cancelled: false,
+        });
+    }
+    Ok(body)
+}
+
 fn curl_config(url: &str, output: &Path, limit: u64, timeout: Duration) -> String {
     let ca = CA_BUNDLES
         .iter()
@@ -1487,11 +2144,15 @@ struct ResponseFile {
 
 impl ResponseFile {
     fn create() -> std::result::Result<Self, String> {
+        Self::create_with_extension("part")
+    }
+
+    fn create_with_extension(extension: &str) -> std::result::Result<Self, String> {
         for _ in 0..100 {
             let sequence = TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed);
             let path = std::env::temp_dir().join(format!(
-                ".degauss-misterzine-{}-{sequence}.part",
-                std::process::id()
+                ".degauss-misterzine-{}-{sequence}.{extension}",
+                std::process::id(),
             ));
             let mut options = OpenOptions::new();
             options.write(true).create_new(true);
@@ -1534,6 +2195,11 @@ impl ResponseFile {
         }
         Ok(bytes)
     }
+
+    fn write(&self, bytes: &[u8]) -> std::result::Result<(), String> {
+        std::fs::write(&self.path, bytes)
+            .map_err(|error| format!("response file could not be written: {error}"))
+    }
 }
 
 impl Drop for ResponseFile {
@@ -1564,6 +2230,39 @@ mod tests {
             cores: CoreCatalogue::default(),
             arcade_systems: Vec::new(),
             force_refresh: false,
+            include_available: false,
+        }
+    }
+
+    fn add_standard_core(request: &mut Request, stem: &str) -> PathBuf {
+        let path = request
+            .menu_root
+            .join("_Console")
+            .join(format!("{stem}_20260916.rbf"));
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, b"core").unwrap();
+        request.cores.entries.push(CoreEntry {
+            name: stem.to_string(),
+            category: "Console".to_string(),
+            variant: CoreVariant::Standard,
+            path: path.clone(),
+            logo_id: Some(stem.to_string()),
+        });
+        path
+    }
+
+    fn empty_availability() -> AvailabilityCache {
+        AvailabilityCache {
+            format: AVAILABILITY_CACHE_FORMAT,
+            databases: UPDATE_ALL_DATABASES
+                .iter()
+                .map(|database| AvailabilityDatabase {
+                    id: database.id.to_string(),
+                    timestamp: 1,
+                    cores: Vec::new(),
+                    mras: Vec::new(),
+                })
+                .collect(),
         }
     }
 
@@ -1636,6 +2335,52 @@ mod tests {
         assert!(decode_data(meta(1, &unsafe_body), &unsafe_body)
             .unwrap_err()
             .contains("invalid mra"));
+    }
+
+    #[test]
+    fn update_all_manifest_keeps_only_core_and_arcade_availability() {
+        let expected = UPDATE_ALL_DATABASES[0];
+        let body = serde_json::to_vec(&serde_json::json!({
+            "db_id": expected.id,
+            "timestamp": 123,
+            "files": {
+                "_Console/NES_20260916.rbf": {"hash": "fixture"},
+                "_Arcade/cores/JTCPS1_20260916.rbf": {"hash": "fixture"},
+                "_Arcade/Street Fighter II.mra": {"hash": "fixture"},
+                "docs/readme.txt": {"hash": "fixture"},
+                "../outside.rbf": {"hash": "fixture"}
+            }
+        }))
+        .unwrap();
+
+        let database = decode_availability_database(expected, &body).unwrap();
+        assert_eq!(database.id, expected.id);
+        assert_eq!(database.timestamp, 123);
+        assert_eq!(database.cores, ["jtcps1", "nes"]);
+        assert_eq!(database.mras, ["_arcade/street fighter ii.mra"]);
+
+        let wrong = serde_json::to_vec(&serde_json::json!({
+            "db_id": "another_database",
+            "timestamp": 123,
+            "files": {}
+        }))
+        .unwrap();
+        assert!(decode_availability_database(expected, &wrong)
+            .unwrap_err()
+            .contains("expected database"));
+    }
+
+    #[test]
+    fn valid_update_all_availability_cache_round_trips() {
+        let root = temp_root("availability-cache");
+        let cache = empty_availability();
+        save_availability_cache(&root, &cache, &AtomicBool::new(false)).unwrap();
+        assert_eq!(load_availability_cache(&root).unwrap(), Some(cache));
+
+        let mut invalid = empty_availability();
+        invalid.databases.pop();
+        assert!(save_availability_cache(&root, &invalid, &AtomicBool::new(false)).is_err());
+        std::fs::remove_dir_all(root).ok();
     }
 
     #[test]
@@ -1723,15 +2468,16 @@ mod tests {
         let body = serde_json::to_vec(&vec![other]).unwrap();
         let cache = decode_data(meta(1, &body), &body).unwrap();
         let snapshot = match_cache(&cache, &request, &sender, &AtomicBool::new(false)).unwrap();
-        assert_eq!(snapshot.items[0].state, LocalState::MraNotInstalled);
-        assert!(snapshot.items[0].launch_path.is_none());
+        assert!(snapshot.items.is_empty(), "a missing MRA is not shown");
 
         std::fs::remove_file(&core).unwrap();
         let body = serde_json::to_vec(&vec![release("Arcade")]).unwrap();
         let cache = decode_data(meta(1, &body), &body).unwrap();
         let snapshot = match_cache(&cache, &request, &sender, &AtomicBool::new(false)).unwrap();
-        assert_eq!(snapshot.items[0].state, LocalState::CoreMissing);
-        assert!(snapshot.items[0].launch_path.is_none());
+        assert!(
+            snapshot.items.is_empty(),
+            "an MRA without its required core is not shown"
+        );
         std::fs::remove_dir_all(root).ok();
     }
 
@@ -1784,8 +2530,10 @@ mod tests {
         let cache = decode_data(meta(1, &body), &body).unwrap();
         let (sender, _receiver) = events();
         let snapshot = match_cache(&cache, &request, &sender, &AtomicBool::new(false)).unwrap();
-        assert_eq!(snapshot.items[0].state, LocalState::NotInstalled);
-        assert!(snapshot.items[0].launch_path.is_none());
+        assert!(
+            snapshot.items.is_empty(),
+            "a non-launchable RA descriptor does not make the core installed"
+        );
 
         let rbf = request.menu_root.join("_Console/NES_20260916.rbf");
         std::fs::create_dir_all(rbf.parent().unwrap()).unwrap();
@@ -1803,6 +2551,214 @@ mod tests {
         assert_eq!(
             snapshot.items[0].launch_path.as_deref(),
             Some(rbf.as_path())
+        );
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn only_launchable_items_are_returned_for_every_source() {
+        let root = temp_root("installed-only-sources");
+        let mut request = request(&root);
+        let installed = add_standard_core(&mut request, "Example-Core");
+        let mut present = release("Console");
+        present.src = Some("future_source".into());
+        let mut missing_known_source = release("Console");
+        missing_known_source.title = "Missing Known Source".into();
+        missing_known_source.src = Some("coinop".into());
+        missing_known_source.core = "Missing-Known".into();
+        let mut missing_future_source = release("Computer");
+        missing_future_source.title = "Missing Future Source".into();
+        missing_future_source.src = Some("future_source".into());
+        missing_future_source.manufacturer = "Future Developer".into();
+        missing_future_source.core = "Missing-Future".into();
+        let rows = vec![present, missing_known_source, missing_future_source];
+        let body = serde_json::to_vec(&rows).unwrap();
+        let cache = decode_data(meta(rows.len(), &body), &body).unwrap();
+        let (sender, _receiver) = events();
+
+        let snapshot = match_cache(&cache, &request, &sender, &AtomicBool::new(false)).unwrap();
+
+        assert_eq!(snapshot.items.len(), 1);
+        assert_eq!(snapshot.items[0].title(), "Example");
+        assert_eq!(
+            snapshot.items[0].launch_path.as_deref(),
+            Some(installed.as_path())
+        );
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn dormant_update_all_matcher_can_include_only_supported_uninstalled_entries() {
+        let root = temp_root("available-uninstalled");
+        let mut request = request(&root);
+        request.include_available = true;
+        let installed = add_standard_core(&mut request, "Outside-Core");
+
+        let mut installed_row = release("Console");
+        installed_row.title = "Installed Outside Update All".into();
+        installed_row.core = "Outside-Core".into();
+        let mut available_core = release("Console");
+        available_core.title = "Available Console".into();
+        available_core.core = "NES".into();
+        let mut unavailable_core = release("Computer");
+        unavailable_core.title = "Unavailable Computer".into();
+        unavailable_core.core = "Missing-Core".into();
+        let mut available_arcade = release("Arcade");
+        available_arcade.title = "Available Arcade".into();
+        available_arcade.core = "JTCPS1".into();
+        available_arcade.mra = Some("_Arcade/Street Fighter II.mra".into());
+        let mut split_arcade = release("Arcade");
+        split_arcade.title = "Split Arcade".into();
+        split_arcade.core = "Split-Core".into();
+        split_arcade.mra = Some("_Arcade/Split.mra".into());
+
+        let rows = vec![
+            installed_row,
+            available_core,
+            unavailable_core,
+            available_arcade,
+            split_arcade,
+        ];
+        let body = serde_json::to_vec(&rows).unwrap();
+        let cache = decode_data(meta(rows.len(), &body), &body).unwrap();
+        let mut availability = empty_availability();
+        availability.databases[0].cores = vec!["jtcps1".into(), "nes".into()];
+        availability.databases[0].mras = vec!["_arcade/street fighter ii.mra".into()];
+        availability.databases[1].cores = vec!["splitcore".into()];
+        availability.databases[2].mras = vec!["_arcade/split.mra".into()];
+        validate_availability_cache(&availability).unwrap();
+        let (sender, _receiver) = events();
+
+        let snapshot = match_cache_with_availability(
+            &cache,
+            &request,
+            Some(&availability),
+            &sender,
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+
+        assert_eq!(snapshot.items.len(), 3);
+        let installed_item = snapshot
+            .items
+            .iter()
+            .find(|item| item.title() == "Installed Outside Update All")
+            .unwrap();
+        assert_eq!(
+            installed_item.launch_path.as_deref(),
+            Some(installed.as_path())
+        );
+        for title in ["Available Console", "Available Arcade"] {
+            let item = snapshot
+                .items
+                .iter()
+                .find(|item| item.title() == title)
+                .unwrap();
+            assert_eq!(item.state, LocalState::AvailableThroughUpdateAll);
+            assert!(item.launch_path.is_none());
+        }
+        assert!(!snapshot
+            .items
+            .iter()
+            .any(|item| item.title() == "Unavailable Computer" || item.title() == "Split Arcade"));
+
+        request.include_available = false;
+        let installed_only = match_cache_with_availability(
+            &cache,
+            &request,
+            Some(&availability),
+            &sender,
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+        assert_eq!(installed_only.items.len(), 1);
+        assert_eq!(
+            installed_only.items[0].title(),
+            "Installed Outside Update All"
+        );
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn availability_refresh_is_cached_and_failed_refresh_reuses_it() {
+        let root = temp_root("availability-refresh");
+        let mut request = request(&root);
+        request.include_available = true;
+        let mut row = release("Console");
+        row.title = "Available Console".into();
+        row.core = "NES".into();
+        let body = serde_json::to_vec(&vec![row]).unwrap();
+        let meta = meta(1, &body);
+        save_cache(
+            &request.cache_dir,
+            &decode_data(meta.clone(), &body).unwrap(),
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+        let meta_body = serde_json::to_vec(&meta).unwrap();
+        let (sender, receiver) = events();
+        run_with_fetches(
+            request.clone(),
+            &sender,
+            &AtomicBool::new(false),
+            |url, _, _, _| {
+                assert_eq!(url, META_URL);
+                Ok(meta_body.clone())
+            },
+            |expected, _| {
+                let mut database = AvailabilityDatabase {
+                    id: expected.id.to_string(),
+                    timestamp: 1,
+                    cores: Vec::new(),
+                    mras: Vec::new(),
+                };
+                if expected.id == UPDATE_ALL_DATABASES[0].id {
+                    database.cores.push("nes".into());
+                }
+                Ok(database)
+            },
+        );
+        let ready = receiver.try_iter().find_map(|event| match event {
+            Event::Ready { snapshot, notice } => Some((snapshot, notice)),
+            _ => None,
+        });
+        let (snapshot, notice) = ready.expect("fresh availability completes");
+        assert!(notice.is_none());
+        assert_eq!(snapshot.items.len(), 1);
+        assert_eq!(
+            snapshot.items[0].state,
+            LocalState::AvailableThroughUpdateAll
+        );
+        assert!(load_availability_cache(&request.cache_dir)
+            .unwrap()
+            .is_some());
+
+        let (sender, receiver) = events();
+        run_with_fetches(
+            request,
+            &sender,
+            &AtomicBool::new(false),
+            |url, _, _, _| {
+                assert_eq!(url, META_URL);
+                Ok(meta_body.clone())
+            },
+            |expected, _| {
+                Err(FetchError {
+                    user: "Update All availability could not be checked.".into(),
+                    diagnostic: format!("{}: synthetic failure", expected.id),
+                    cancelled: false,
+                })
+            },
+        );
+        let ready = receiver.try_iter().find_map(|event| match event {
+            Event::Ready { snapshot, notice } => Some((snapshot, notice)),
+            _ => None,
+        });
+        let (snapshot, notice) = ready.expect("cached availability remains usable");
+        assert_eq!(snapshot.items.len(), 1);
+        assert_eq!(
+            notice.as_deref(),
+            Some("Update All availability could not be refreshed. Showing saved availability.")
         );
         std::fs::remove_dir_all(root).ok();
     }
@@ -1860,7 +2816,8 @@ mod tests {
     #[test]
     fn failed_refresh_keeps_a_valid_dated_cache_and_first_use_reports_failure() {
         let root = temp_root("offline-cache");
-        let cached_request = request(&root);
+        let mut cached_request = request(&root);
+        add_standard_core(&mut cached_request, "Example-Core");
         let body = serde_json::to_vec(&vec![release("Console")]).unwrap();
         save_cache(
             &cached_request.cache_dir,
@@ -2083,42 +3040,38 @@ mod tests {
 
     #[test]
     fn feed_metadata_is_retained_and_presented_with_accurate_labels() {
+        let root = temp_root("feed-metadata");
+        let mut request = request(&root);
+        add_standard_core(&mut request, "Example-Core");
         let body = br#"[{"title":"Example","base":"Console","date":"2025-02-03","src":"future_source","beta":true,"deprecated":true,"manufacturer":"Example Co","core":"Example-Core","updated":"2026-09-12","bd":"2026-09-12","b":1,"k":"example","mra":""}]"#;
         let cache = decode_data(meta(1, body), body).unwrap();
         let (sender, _receiver) = events();
-        let snapshot = match_cache(
-            &cache,
-            &request(Path::new("/does-not-exist")),
-            &sender,
-            &AtomicBool::new(false),
-        )
-        .unwrap();
+        let snapshot = match_cache(&cache, &request, &sender, &AtomicBool::new(false)).unwrap();
         let item = &snapshot.items[0];
         assert_eq!(item.display_title(), "Example [Beta] [Deprecated]");
         assert_eq!(item.source_label(), "Future Source");
         assert_eq!(
             item.information(),
-            "Example [Beta] [Deprecated]\n\nLocal status: Not installed\n\nType: Console\n\nSource: Future Source\n\nRelease status: Beta · Deprecated\n\nCore: Example-Core\n\nManufacturer: Example Co\n\nMiSTer debut: 2025-02-03\n\nLatest shipped update: 2026-09-12"
+            "Example [Beta] [Deprecated]\n\nLocal status: Installed · Current\n\nType: Console\n\nSource: Future Source\n\nRelease status: Beta · Deprecated\n\nCore: Example-Core\n\nManufacturer: Example Co\n\nMiSTer debut: 2025-02-03\n\nLatest shipped update: 2026-09-12"
         );
         let row = item.row(None);
         assert!(row.details.publisher.is_empty());
         assert!(row.details.developer.is_empty());
+        std::fs::remove_dir_all(root).ok();
     }
 
     #[test]
     fn nullable_feed_fields_remain_readable() {
+        let root = temp_root("nullable-feed");
+        let mut request = request(&root);
+        add_standard_core(&mut request, "Example-Core");
         let body = br#"[{"title":"Unknown Source","base":"Other","date":"2025-02-03","src":null,"manufacturer":"","core":"Example-Core","updated":"2026-09-12","bd":null,"b":1,"k":"example","mra":null}]"#;
         let cache = decode_data(meta(1, body), body).unwrap();
         let (sender, _receiver) = events();
-        let snapshot = match_cache(
-            &cache,
-            &request(Path::new("/does-not-exist")),
-            &sender,
-            &AtomicBool::new(false),
-        )
-        .unwrap();
+        let snapshot = match_cache(&cache, &request, &sender, &AtomicBool::new(false)).unwrap();
         assert_eq!(snapshot.items[0].source_label(), "Unknown");
         assert!(snapshot.items[0].information().contains("Source: Unknown"));
+        std::fs::remove_dir_all(root).ok();
     }
 
     #[test]

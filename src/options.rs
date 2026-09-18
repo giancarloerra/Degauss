@@ -299,7 +299,7 @@ impl OptionId {
             OptionId::ShowOther => "Show Other Folder",
             OptionId::ShowUtility => "Show Utility Folder",
             OptionId::ShowCores => "Show Cores",
-            OptionId::ShowMisterZine => "Show MiSTerZine",
+            OptionId::ShowMisterZine => "Show MiSTerZine Updates",
             OptionId::ShowUnstable => "Show Unstable Folder",
             OptionId::ShowScripts => "Show Scripts Folder",
             OptionId::CorePreference => "Core Preference",
@@ -378,7 +378,7 @@ impl OptionId {
                 "Show a cached top-level browser for launching installed Standard, RA and Unstable cores without a game."
             }
             OptionId::ShowMisterZine => {
-                "Show MiSTerZine updates and launch releases already installed on this MiSTer."
+                "Show MiSTerZine Updates and launch releases already installed on this MiSTer."
             }
             OptionId::ShowUnstable => "Show the Unstable category for nightly core builds.",
             OptionId::ShowScripts => "Show Scripts in the main menu. Run installed scripts and return to Degauss when they finish.",
