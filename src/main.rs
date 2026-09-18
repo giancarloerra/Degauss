@@ -111,7 +111,7 @@ degauss - a fast game browser for MiSTer FPGA
   --format <fmt>      rgb565 or xrgb8888, for --render and --bench
   --device <path>     framebuffer device (default /dev/fb0)
   --present <mode>    direct or staged (default depends on framebuffer mapping)
-  --rotation <mode>   off, cw or ccw; temporary override for render and benchmarks
+  --rotation <mode>   off, cw or ccw; temporary override for render, benchmarks and self-tests
   --version, -V       print the Degauss version and exit
   --help              this text
 
@@ -2751,6 +2751,7 @@ category = "Favorites"
 
     #[test]
     fn rotation_override_accepts_only_the_three_documented_values() {
+        assert!(USAGE.contains("render, benchmarks and self-tests"));
         assert_eq!(
             parse(&["--rotation", "off"]).rotation,
             Some(ScreenRotation::Off)
