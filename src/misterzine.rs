@@ -1603,11 +1603,10 @@ fn match_cache_with_availability(
             || (request.include_available
                 && availability.is_some_and(|available| available.contains(row)))
         {
-            let item = if item.installed() {
-                item
-            } else {
-                available_through_update_all(row)
-            };
+            let mut item = item;
+            if !item.installed() {
+                item.state = LocalState::AvailableThroughUpdateAll;
+            }
             items.push(item);
         }
         if index % 64 == 0 || index + 1 == cache.rows.len() {
@@ -1634,12 +1633,6 @@ fn match_cache_with_availability(
         updated: cache.meta.updated.clone(),
         items,
     })
-}
-
-fn available_through_update_all(row: &Release) -> Item {
-    let mut item = not_installed(row);
-    item.state = LocalState::AvailableThroughUpdateAll;
-    item
 }
 
 fn not_installed(row: &Release) -> Item {
@@ -2055,7 +2048,7 @@ fn extract_update_all_json(
     let mut child = Command::new("unzip")
         .args(["-p"])
         .arg(archive.path())
-        .arg(&entry.name)
+        .arg(literal_unzip_member_pattern(&entry.name))
         .stdin(Stdio::null())
         .stdout(Stdio::from(output))
         .stderr(Stdio::null())
@@ -2138,6 +2131,19 @@ fn extract_update_all_json(
         });
     }
     Ok(body)
+}
+
+fn literal_unzip_member_pattern(name: &str) -> String {
+    let mut pattern = String::with_capacity(name.len());
+    for character in name.chars() {
+        match character {
+            '*' => pattern.push_str("[*]"),
+            '?' => pattern.push_str("[?]"),
+            '[' => pattern.push_str("[[]"),
+            _ => pattern.push(character),
+        }
+    }
+    pattern
 }
 
 fn curl_config(url: &str, output: &Path, limit: u64, timeout: Duration) -> String {
@@ -2639,6 +2645,45 @@ mod tests {
         let mut request = request(&root);
         request.include_available = true;
         let installed = add_standard_core(&mut request, "Outside-Core");
+        let arcade_mra = request
+            .menu_root
+            .join("_Arcade")
+            .join("Street Fighter II.mra");
+        std::fs::create_dir_all(arcade_mra.parent().unwrap()).unwrap();
+        std::fs::write(&arcade_mra, b"fixture").unwrap();
+        let arcade_cover = root.join("street-fighter-ii.png");
+        let arcade_place = Place::Dir(request.menu_root.join("_Arcade"));
+        let mut arcade_folders = BTreeMap::new();
+        arcade_folders.insert(
+            arcade_place.key(),
+            Folder {
+                mtime: 0,
+                rows: vec![Row {
+                    name: "Street Fighter II".into(),
+                    sort_key: "street fighter ii".into(),
+                    kind: Kind::Play(Launch::File(arcade_mra)),
+                    cover: Some(arcade_cover.clone()),
+                    genre: None,
+                    favorite: false,
+                    below: None,
+                    details: Details::default(),
+                }],
+                games: 1,
+            },
+        );
+        crate::cache::save_system(
+            &request.cache_dir,
+            "Arcade",
+            &SystemCache {
+                format: 1,
+                folders: arcade_folders,
+            },
+        )
+        .unwrap();
+        request.arcade_systems.push(ArcadeSystem {
+            id: "Arcade".into(),
+            artwork_pack: false,
+        });
 
         let mut installed_row = release("Console");
         installed_row.k = "installed".into();
@@ -2708,6 +2753,14 @@ mod tests {
             assert_eq!(item.state, LocalState::AvailableThroughUpdateAll);
             assert!(item.launch_path.is_none());
         }
+        assert_eq!(
+            snapshot
+                .items
+                .iter()
+                .find(|item| item.title() == "Available Arcade")
+                .and_then(Item::cover),
+            Some(arcade_cover.as_path())
+        );
         assert!(!snapshot
             .items
             .iter()
@@ -2728,6 +2781,14 @@ mod tests {
             "Installed Outside Update All"
         );
         std::fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn unzip_member_pattern_matches_validated_member_names_literally() {
+        assert_eq!(
+            literal_unzip_member_pattern("manifest*[draft]??.json"),
+            "manifest[*][[]draft][?][?].json"
+        );
     }
 
     #[test]
