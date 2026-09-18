@@ -3579,6 +3579,7 @@ pub struct App {
     pending_present_switch: bool,
     pending_rotation_switch: Option<ScreenRotation>,
     rotation_preview_deadline: Option<Instant>,
+    rotation_preview_previous: Option<ScreenRotation>,
     /// A system whose metadata is to be read after the next frame is drawn.
     opening: Option<usize>,
     /// A system whose cache is to be written again after the next frame
@@ -4110,6 +4111,7 @@ impl App {
             pending_present_switch: false,
             pending_rotation_switch: None,
             rotation_preview_deadline: None,
+            rotation_preview_previous: None,
             opening: None,
             refreshing: None,
             message_after_build: None,
@@ -4864,6 +4866,7 @@ impl App {
             previous_setting,
         });
         self.rotation_preview_deadline = Some(Instant::now() + Duration::from_secs(15));
+        self.rotation_preview_previous = Some(previous);
         self.message = Some(format!(
             "Keep {} rotation?\n\nA Keep   B Revert   15 seconds",
             proposed.label()
@@ -4873,6 +4876,7 @@ impl App {
 
     fn cancel_rotation_preview(&mut self, previous: ScreenRotation) {
         self.rotation_preview_deadline = None;
+        self.rotation_preview_previous = None;
         self.apply_screen_rotation(previous);
         self.message = None;
         self.dirty = true;
@@ -4885,6 +4889,7 @@ impl App {
         previous_setting: Option<ScreenRotation>,
     ) {
         self.rotation_preview_deadline = None;
+        self.rotation_preview_previous = None;
         self.settings.screen_rotation = Some(proposed);
         match self.settings.save(&self.settings_path) {
             Ok(SaveOutcome::Durable) => {}
@@ -4911,11 +4916,16 @@ impl App {
         {
             return;
         }
-        if let Some(Pending::KeepRotation { previous, .. }) = self.pending.take() {
-            self.cancel_rotation_preview(previous);
-        } else {
-            self.rotation_preview_deadline = None;
+        self.rotation_preview_deadline = None;
+        let Some(previous) = self.rotation_preview_previous.take() else {
+            return;
+        };
+        if matches!(self.pending, Some(Pending::KeepRotation { .. })) {
+            self.pending = None;
+            self.message = None;
         }
+        self.apply_screen_rotation(previous);
+        self.dirty = true;
     }
 
     /// The fastest scroll speed that still loads a picture for every row.

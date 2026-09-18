@@ -492,18 +492,25 @@ fn run_screen_rotation_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
         "A keeps the preview across restart"
     );
 
-    // The next choice is CCW. Letting its confirmation expire restores the
-    // last confirmed CW state without changing what is on disk.
+    // The next choice is CCW. A background question may replace the prompt,
+    // but letting the preview expire still restores the last confirmed CW
+    // state without losing that unrelated question or changing the disk.
     app.handle(Action::Accept);
     assert_eq!(app.screen_rotation, ScreenRotation::CounterClockwise);
+    app.pending = Some(Pending::ResetHidden);
+    app.message = Some("Unrelated question".to_string());
     app.rotation_preview_deadline = Some(Instant::now() - Duration::from_millis(1));
     app.expire_rotation_preview(Instant::now());
     assert_eq!(app.screen_rotation, ScreenRotation::Clockwise);
-    assert!(app.pending.is_none());
+    assert_eq!(app.pending, Some(Pending::ResetHidden));
+    assert_eq!(app.message.as_deref(), Some("Unrelated question"));
+    assert!(app.rotation_preview_previous.is_none());
     assert_eq!(
         Settings::load(&app.settings_path).unwrap().screen_rotation,
         Some(ScreenRotation::Clockwise)
     );
+    app.pending = None;
+    app.message = None;
 
     let settings_path = app.settings_path.clone();
     app.settings_path = root.join("missing/settings.toml");
