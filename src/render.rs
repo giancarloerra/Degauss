@@ -18,12 +18,13 @@ use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use slint::platform::software_renderer::{
-    LineBufferProvider, MinimalSoftwareWindow, PremultipliedRgbaColor, RepaintBufferType,
-    Rgb565Pixel, SoftwareRenderer,
+    LineBufferProvider, MinimalSoftwareWindow, PremultipliedRgbaColor, RenderingRotation,
+    RepaintBufferType, Rgb565Pixel, SoftwareRenderer,
 };
 use slint::platform::{Platform, PlatformError, WindowAdapter};
 
 use crate::error::{DegaussError, Result};
+use crate::settings::ScreenRotation;
 use crate::surface::{Geometry, PixelFormat, Surface};
 
 /// Slint platform with a single window and no event loop of its own.
@@ -186,6 +187,7 @@ pub struct FrameWork {
 /// Owns the staging buffer and draws frames in the selected mode.
 pub struct Presenter {
     mode: PresentMode,
+    rotation: ScreenRotation,
     staging: Vec<u8>,
     geometry: Geometry,
     /// Set when the next frame must be drawn in full rather than as a
@@ -197,6 +199,7 @@ impl Presenter {
     pub fn new(geometry: Geometry, mode: PresentMode) -> Self {
         Presenter {
             mode,
+            rotation: ScreenRotation::Off,
             staging: vec![0; geometry.frame_bytes()],
             geometry,
             // Whatever is on the screen at startup was not put there by us.
@@ -204,9 +207,24 @@ impl Presenter {
         }
     }
 
+    pub fn with_rotation(geometry: Geometry, mode: PresentMode, rotation: ScreenRotation) -> Self {
+        let mut presenter = Self::new(geometry, mode);
+        presenter.rotation = rotation;
+        presenter
+    }
+
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     pub fn mode(&self) -> PresentMode {
         self.mode
+    }
+
+    pub fn set_rotation(&mut self, rotation: ScreenRotation, window: &MinimalSoftwareWindow) {
+        if rotation != self.rotation {
+            self.rotation = rotation;
+            self.staging.fill(0);
+            self.force_full = true;
+            window.request_redraw();
+        }
     }
 
     /// Switch modes. The next frame is drawn in full: partial rendering
@@ -245,6 +263,7 @@ impl Presenter {
         let mut work = FrameWork::default();
 
         let mode = self.mode;
+        let rotation = self.rotation;
         // Read, not taken. `draw_if_needed` may decide nothing needs
         // redrawing and never run the closure at all; clearing the request
         // here would drop it, and the next frame that does draw would be a
@@ -253,6 +272,11 @@ impl Presenter {
         let staging = &mut self.staging;
 
         let drawn = window.draw_if_needed(|renderer| {
+            renderer.set_rendering_rotation(match rotation {
+                ScreenRotation::Off => RenderingRotation::NoRotation,
+                ScreenRotation::Clockwise => RenderingRotation::Rotate90,
+                ScreenRotation::CounterClockwise => RenderingRotation::Rotate270,
+            });
             // Slint's own snapshot code uses this pair to force a complete
             // repaint: switching to NewBuffer clears the partial-render
             // caches, and the previous setting is put back afterwards.
@@ -346,8 +370,73 @@ fn render_into(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::surface::MemorySurface;
+    use crate::surface::{Geometry as SurfaceGeometry, MemorySurface};
     use slint::{ComponentHandle, PhysicalSize};
+
+    struct PaddedSurface {
+        geometry: SurfaceGeometry,
+        bytes: Vec<u8>,
+    }
+
+    impl PaddedSurface {
+        fn new(width: u32, height: u32, format: PixelFormat) -> Self {
+            let line_length =
+                width as usize * format.bytes_per_pixel() + format.bytes_per_pixel() * 2;
+            let geometry = SurfaceGeometry {
+                width,
+                height,
+                line_length,
+                format,
+            };
+            Self {
+                geometry,
+                bytes: vec![0x5a; geometry.frame_bytes()],
+            }
+        }
+
+        fn red_pixels(&self) -> Vec<(usize, usize)> {
+            let bpp = self.geometry.format.bytes_per_pixel();
+            let mut found = Vec::new();
+            for y in 0..self.geometry.height as usize {
+                for x in 0..self.geometry.width as usize {
+                    let at = y * self.geometry.line_length + x * bpp;
+                    let red = match self.geometry.format {
+                        PixelFormat::Rgb565 => {
+                            u16::from_le_bytes([self.bytes[at], self.bytes[at + 1]]) == 0xf800
+                        }
+                        PixelFormat::Xrgb8888 => self.bytes[at..at + 4] == [0x00, 0x00, 0xff, 0xff],
+                    };
+                    if red {
+                        found.push((x, y));
+                    }
+                }
+            }
+            found
+        }
+
+        fn padding_is_untouched(&self) -> bool {
+            let visible = self.geometry.width as usize * self.geometry.format.bytes_per_pixel();
+            (0..self.geometry.height as usize).all(|y| {
+                let start = y * self.geometry.line_length + visible;
+                let end = (y + 1) * self.geometry.line_length;
+                self.bytes[start..end].iter().all(|byte| *byte == 0x5a)
+            })
+        }
+    }
+
+    impl Surface for PaddedSurface {
+        fn geometry(&self) -> SurfaceGeometry {
+            self.geometry
+        }
+
+        fn back_buffer(&mut self) -> &mut [u8] {
+            &mut self.bytes
+        }
+
+        fn present(&mut self) -> Result<()> {
+            Ok(())
+        }
+    }
 
     /// Slint accepts one platform per process, and this build is configured
     /// single-threaded, so every renderer assertion lives in one test on one
@@ -508,6 +597,80 @@ mod tests {
         assert!(
             visible_pixels(&tinted_half) >= visible_pixels(&original_zero),
             "mixing a colour must not make any part of the logo disappear"
+        );
+
+        // Rotation is done once, around the complete existing component tree.
+        // A horizontal red rule at the top of the logical portrait canvas must
+        // become a vertical rule on opposite physical sides for the two TATE
+        // directions. Exercise every framebuffer format and both drawing paths
+        // with padded scanlines, because those are independent boundaries.
+        ui.set_screen(1);
+        ui.set_heading("".into());
+        ui.set_heading_detail("".into());
+        ui.set_show_bar(false);
+        ui.set_show_brand(false);
+        ui.set_plain_help_height(0.0);
+        ui.set_chrome_height(2.0);
+        ui.set_c_background(slint::Color::from_rgb_u8(0, 0, 0));
+        ui.set_c_panel(slint::Color::from_rgb_u8(0xff, 0, 0));
+        window.set_size(PhysicalSize::new(8, 12));
+        for format in [PixelFormat::Rgb565, PixelFormat::Xrgb8888] {
+            for mode in [PresentMode::Direct, PresentMode::Staged] {
+                for rotation in [ScreenRotation::Clockwise, ScreenRotation::CounterClockwise] {
+                    window.request_redraw();
+                    let mut surface = PaddedSurface::new(12, 8, format);
+                    let mut presenter =
+                        Presenter::with_rotation(surface.geometry(), mode, rotation);
+                    let work = presenter
+                        .draw(&window, &mut surface)
+                        .expect("rotated frame renders")
+                        .expect("rotated frame was requested");
+                    assert_eq!(work.dirty_pixels, 12 * 8);
+                    let red = surface.red_pixels();
+                    assert_eq!(red.len(), 8, "the logical rule must stay one pixel wide");
+                    assert_eq!(
+                        red.iter().map(|(_, y)| *y).min(),
+                        Some(0),
+                        "the rule spans the physical height"
+                    );
+                    assert_eq!(red.iter().map(|(_, y)| *y).max(), Some(7));
+                    let x = red[0].0;
+                    assert!(red.iter().all(|(candidate, _)| *candidate == x));
+                    match rotation {
+                        ScreenRotation::Clockwise => assert!(x >= 6, "CW puts the top at right"),
+                        ScreenRotation::CounterClockwise => {
+                            assert!(x < 6, "CCW puts the top at left")
+                        }
+                        ScreenRotation::Off => unreachable!(),
+                    }
+                    assert!(
+                        surface.padding_is_untouched(),
+                        "rotation must not write framebuffer padding"
+                    );
+                }
+            }
+        }
+        let mut switched_surface = PaddedSurface::new(12, 8, PixelFormat::Xrgb8888);
+        let mut switched = Presenter::with_rotation(
+            switched_surface.geometry(),
+            PresentMode::Staged,
+            ScreenRotation::Clockwise,
+        );
+        window.request_redraw();
+        switched
+            .draw(&window, &mut switched_surface)
+            .expect("initial orientation renders")
+            .expect("initial orientation was requested");
+        let right_x = switched_surface.red_pixels()[0].0;
+        switched.set_rotation(ScreenRotation::CounterClockwise, &window);
+        switched
+            .draw(&window, &mut switched_surface)
+            .expect("changed orientation renders")
+            .expect("a live rotation forces a complete frame");
+        let left_x = switched_surface.red_pixels()[0].0;
+        assert!(
+            left_x < right_x,
+            "live switching moves the logical top edge"
         );
         crate::app::test_library_launch_flow(window.clone());
     }
