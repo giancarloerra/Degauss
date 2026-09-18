@@ -45,8 +45,6 @@ pub enum OptionId {
     ShowUtility,
     /// Show the cached browser of installed cores.
     ShowCores,
-    /// Show the optional MiSTerZine releases browser.
-    ShowMisterZine,
     /// Show the collection of nightly cores.
     ShowUnstable,
     ShowScripts,
@@ -129,7 +127,6 @@ pub const OPTIONS: &[OptionId] = &[
     OptionId::ShowOther,
     OptionId::ShowUtility,
     OptionId::ShowCores,
-    OptionId::ShowMisterZine,
     OptionId::ShowUnstable,
     OptionId::ShowScripts,
     OptionId::ShowEmpty,
@@ -258,7 +255,6 @@ impl OptionsPage {
                 OptionId::ShowOther,
                 OptionId::ShowUtility,
                 OptionId::ShowCores,
-                OptionId::ShowMisterZine,
                 OptionId::ShowUnstable,
                 OptionId::ShowScripts,
                 OptionId::ShowEmpty,
@@ -299,7 +295,6 @@ impl OptionId {
             OptionId::ShowOther => "Show Other Folder",
             OptionId::ShowUtility => "Show Utility Folder",
             OptionId::ShowCores => "Show Cores",
-            OptionId::ShowMisterZine => "Show MiSTerZine",
             OptionId::ShowUnstable => "Show Unstable Folder",
             OptionId::ShowScripts => "Show Scripts Folder",
             OptionId::CorePreference => "Core Preference",
@@ -376,9 +371,6 @@ impl OptionId {
             OptionId::ShowUtility => "Show the Utility category for test patterns and measurement cores.",
             OptionId::ShowCores => {
                 "Show a cached top-level browser for launching installed Standard, RA and Unstable cores without a game."
-            }
-            OptionId::ShowMisterZine => {
-                "Show MiSTerZine updates and launch releases already installed on this MiSTer."
             }
             OptionId::ShowUnstable => "Show the Unstable category for nightly core builds.",
             OptionId::ShowScripts => "Show Scripts in the main menu. Run installed scripts and return to Degauss when they finish.",

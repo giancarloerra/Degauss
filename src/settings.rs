@@ -349,10 +349,6 @@ pub struct Settings {
     /// Absent is off so existing installations keep their released home.
     #[serde(default)]
     pub show_cores: Option<bool>,
-    /// Show the optional top-level MiSTerZine releases browser. Absent is
-    /// off so existing installations do no network or matching work.
-    #[serde(default)]
-    pub show_misterzine: Option<bool>,
     /// Nightly cores are visible unless explicitly switched off.
     pub show_unstable: Option<bool>,
     pub show_scripts: Option<bool>,
@@ -681,8 +677,6 @@ mod tests {
         assert_eq!(settings.show_cores, None);
         assert!(!settings.show_cores.unwrap_or(false));
         assert_eq!(settings.last_played, None);
-        assert_eq!(settings.show_misterzine, None);
-        assert!(!settings.show_misterzine.unwrap_or(false));
         assert_eq!(settings.screen_rotation, None);
         assert_eq!(
             settings.screen_rotation.unwrap_or_default(),
@@ -728,13 +722,21 @@ mod tests {
         );
         assert_eq!(settings.show_cores, None);
         assert!(!settings.show_cores.unwrap_or(false));
-        assert_eq!(settings.show_misterzine, None);
-        assert!(!settings.show_misterzine.unwrap_or(false));
         assert_eq!(settings.screen_rotation, None);
         assert_eq!(
             settings.screen_rotation.unwrap_or_default(),
             ScreenRotation::Off
         );
+    }
+
+    #[test]
+    fn removed_misterzine_setting_is_ignored_by_existing_installations() {
+        let settings: Settings = toml::from_str("show_misterzine = true\nshow_cores = true\n")
+            .expect("settings written while MiSTerZine existed must still load");
+        assert_eq!(settings.show_cores, Some(true));
+        assert!(!toml::to_string(&settings)
+            .expect("remaining settings serialize")
+            .contains("misterzine"));
     }
 
     fn temp_path(tag: &str) -> std::path::PathBuf {
