@@ -9230,7 +9230,13 @@ impl App {
         let selected = self
             .misterzine_visible
             .get(self.game_list.selected())
-            .map(|item| (item.title().to_string(), item.summary()));
+            .map(|item| {
+                (
+                    item.key().to_string(),
+                    item.title().to_string(),
+                    item.summary(),
+                )
+            });
         self.misterzine_visible = self
             .misterzine_items
             .iter()
@@ -9252,9 +9258,11 @@ impl App {
         let at = selected
             .as_ref()
             .and_then(|selected| {
-                self.misterzine_visible
-                    .iter()
-                    .position(|item| item.title() == selected.0 && item.summary() == selected.1)
+                self.misterzine_visible.iter().position(|item| {
+                    item.key() == selected.0
+                        && item.title() == selected.1
+                        && item.summary() == selected.2
+                })
             })
             .unwrap_or(0);
         self.game_list = ListState::new(self.here.len(), self.geometry.visible);
@@ -10553,8 +10561,8 @@ impl App {
                 if !self.show_misterzine && self.in_misterzine_browser() {
                     if let Some(job) = &self.misterzine_job {
                         job.cancel();
+                        self.misterzine_progress.cancelling = true;
                     }
-                    self.misterzine_job = None;
                     self.open_category = None;
                     self.browsing = Browsing::Categories;
                     self.filter.clear();
@@ -18831,8 +18839,50 @@ pub(crate) fn test_library_launch_flow(window: Rc<MinimalSoftwareWindow>) {
         1,
         "reopening restores cached rows immediately"
     );
+    app.misterzine_items = vec![
+        crate::misterzine::Item::fixture_with_key(
+            "first-release",
+            "Duplicate Display",
+            "Console",
+            "distribution_mister",
+            crate::misterzine::LocalState::Current,
+            Some(root.join("_Console/First.rbf")),
+        ),
+        crate::misterzine::Item::fixture_with_key(
+            "second-release",
+            "Duplicate Display",
+            "Console",
+            "distribution_mister",
+            crate::misterzine::LocalState::Current,
+            Some(root.join("_Console/Second.rbf")),
+        ),
+    ];
+    app.rebuild_misterzine_rows();
+    app.game_list.select(1);
+    app.rebuild_misterzine_rows();
+    assert_eq!(
+        app.game_list.selected(),
+        1,
+        "filter rebuilds preserve the exact release when display text is duplicated"
+    );
     app.refresh();
     app.handle(Action::Quit);
+
+    app.show_misterzine = true;
+    app.prepare_misterzine_browser(true);
+    app.misterzine_job = Some(crate::misterzine::Job::pending_fixture());
+    app.adjust_option_value(OptionId::ShowMisterZine, 1);
+    assert!(
+        app.misterzine_job.is_some(),
+        "disabling retains the worker handle until its terminal event"
+    );
+    assert!(
+        app.misterzine_job
+            .as_ref()
+            .is_some_and(crate::misterzine::Job::cancelled_for_test),
+        "disabling requests cancellation"
+    );
+    app.misterzine_job = None;
     app.misterzine_items.clear();
     app.misterzine_visible.clear();
 
