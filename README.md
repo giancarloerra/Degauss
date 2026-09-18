@@ -779,6 +779,7 @@ require **A** and confirmation, never a sideways press.
 | Display | Edge Margin, Top and Bottom | The same, vertically |
 | Display | Screen Position, Sideways | Nudge the picture, for a screen that sits off centre |
 | Display | Screen Position, Up and Down | The same, vertically |
+| Display | Screen Rotation | Off by default. Rotate the complete Degauss interface 90° Clockwise or Counterclockwise for a vertical display. A keeps the preview; B or the 15-second timeout reverts it. This does not change MiSTer video modes or game rotation |
 | Developer | Drawing Path | Draw into the screen directly, or into memory first |
 | Developer | Performance Readout | Replace the key hints with frame timings |
 
