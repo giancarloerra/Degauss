@@ -9389,13 +9389,7 @@ impl App {
         let selected = self
             .misterzine_visible
             .get(self.game_list.selected())
-            .map(|item| {
-                (
-                    item.key().to_string(),
-                    item.title().to_string(),
-                    item.summary(),
-                )
-            });
+            .map(|item| item.key().to_string());
         self.misterzine_visible = self
             .misterzine_items
             .iter()
@@ -9417,11 +9411,9 @@ impl App {
         let at = selected
             .as_ref()
             .and_then(|selected| {
-                self.misterzine_visible.iter().position(|item| {
-                    item.key() == selected.0
-                        && item.title() == selected.1
-                        && item.summary() == selected.2
-                })
+                self.misterzine_visible
+                    .iter()
+                    .position(|item| item.key() == selected)
             })
             .unwrap_or(0);
         self.game_list = ListState::new(self.here.len(), self.geometry.visible);
@@ -19071,6 +19063,20 @@ pub(crate) fn test_library_launch_flow(window: Rc<MinimalSoftwareWindow>) {
         app.game_list.selected(),
         1,
         "filter rebuilds preserve the exact release when display text is duplicated"
+    );
+    app.misterzine_items[1] = crate::misterzine::Item::fixture_with_key(
+        "second-release",
+        "Changed Display",
+        "Console",
+        "future_source",
+        crate::misterzine::LocalState::UpdateAvailable,
+        Some(root.join("_Console/Second.rbf")),
+    );
+    app.rebuild_misterzine_rows();
+    assert_eq!(
+        app.game_list.selected(),
+        1,
+        "refreshes preserve the release when its display metadata changes"
     );
     app.refresh();
     app.handle(Action::Quit);

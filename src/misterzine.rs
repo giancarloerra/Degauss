@@ -257,16 +257,6 @@ impl Item {
         &self.title
     }
 
-    pub fn summary(&self) -> String {
-        format!(
-            "{} · {} · {} · {}",
-            self.base,
-            self.source,
-            self.updated,
-            self.state.label()
-        )
-    }
-
     pub fn base(&self) -> &str {
         &self.base
     }
@@ -1462,8 +1452,12 @@ fn validate_cache(cache: &Cache) -> std::result::Result<(), String> {
             cache.meta.rows
         ));
     }
+    let mut keys = BTreeSet::new();
     for (index, row) in cache.rows.iter().enumerate() {
         validate_release(row).map_err(|detail| format!("row {}: {detail}", index + 1))?;
+        if !keys.insert(row.k.as_str()) {
+            return Err(format!("row {}: repeated k", index + 1));
+        }
     }
     Ok(())
 }
@@ -2359,6 +2353,11 @@ mod tests {
         assert!(decode_data(meta(1, missing), missing)
             .unwrap_err()
             .contains("missing or overlong k"));
+
+        let duplicate = serde_json::to_vec(&vec![release("Console"), release("Computer")]).unwrap();
+        assert!(decode_data(meta(2, &duplicate), &duplicate)
+            .unwrap_err()
+            .contains("repeated k"));
     }
 
     #[test]
@@ -2605,12 +2604,15 @@ mod tests {
         let mut request = request(&root);
         let installed = add_standard_core(&mut request, "Example-Core");
         let mut present = release("Console");
+        present.k = "installed".into();
         present.src = Some("future_source".into());
         let mut missing_known_source = release("Console");
+        missing_known_source.k = "missing-known".into();
         missing_known_source.title = "Missing Known Source".into();
         missing_known_source.src = Some("coinop".into());
         missing_known_source.core = "Missing-Known".into();
         let mut missing_future_source = release("Computer");
+        missing_future_source.k = "missing-future".into();
         missing_future_source.title = "Missing Future Source".into();
         missing_future_source.src = Some("future_source".into());
         missing_future_source.manufacturer = "Future Developer".into();
@@ -2639,19 +2641,24 @@ mod tests {
         let installed = add_standard_core(&mut request, "Outside-Core");
 
         let mut installed_row = release("Console");
+        installed_row.k = "installed".into();
         installed_row.title = "Installed Outside Update All".into();
         installed_row.core = "Outside-Core".into();
         let mut available_core = release("Console");
+        available_core.k = "available-core".into();
         available_core.title = "Available Console".into();
         available_core.core = "NES".into();
         let mut unavailable_core = release("Computer");
+        unavailable_core.k = "unavailable-core".into();
         unavailable_core.title = "Unavailable Computer".into();
         unavailable_core.core = "Missing-Core".into();
         let mut available_arcade = release("Arcade");
+        available_arcade.k = "available-arcade".into();
         available_arcade.title = "Available Arcade".into();
         available_arcade.core = "JTCPS1".into();
         available_arcade.mra = Some("_Arcade/Street Fighter II.mra".into());
         let mut split_arcade = release("Arcade");
+        split_arcade.k = "split-arcade".into();
         split_arcade.title = "Split Arcade".into();
         split_arcade.core = "Split-Core".into();
         split_arcade.mra = Some("_Arcade/Split.mra".into());
