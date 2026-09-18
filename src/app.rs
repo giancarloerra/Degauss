@@ -2905,6 +2905,10 @@ struct Geometry {
     inset_y: f32,
 }
 
+fn portrait_dimensions(width: u32, height: u32) -> bool {
+    height > width
+}
+
 impl Geometry {
     fn compute(
         layout: Layout,
@@ -2915,6 +2919,7 @@ impl Geometry {
         height: u32,
         config: &Config,
     ) -> Self {
+        let portrait = portrait_dimensions(width, height);
         // The safe rectangle first: everything else is measured inside it,
         // because a television crops the edges.
         let inset_x = (width as f32 * config.app.overscan_x as f32 / 100.0).round();
@@ -2938,8 +2943,6 @@ impl Geometry {
             (height - if show_bar { bar } else { 0.0 } - if chrome_shown { chrome } else { 0.0 })
                 .max(16.0);
         let pad = (width / 55.0).round().clamp(3.0, 14.0);
-        let portrait = height > width;
-
         let rows_layout = |rows: f32| {
             let row_height = (body / rows).floor().max(9.0);
             let visible = (body / row_height).floor().max(1.0) as usize;
@@ -4268,6 +4271,7 @@ impl App {
     }
 
     fn apply_geometry(&mut self) {
+        let portrait = portrait_dimensions(self.width, self.height);
         let mut geometry = Geometry::compute(
             self.layout,
             self.plain_screen(),
@@ -4288,7 +4292,7 @@ impl App {
             } else {
                 self.details_style
             };
-            if self.screen_rotation.is_portrait() {
+            if portrait {
                 let body = geometry.art_height
                     + geometry.row_height * geometry.visible as f32
                     + geometry.pad / 2.0;
@@ -4323,9 +4327,7 @@ impl App {
                 .floor()
                 .max(1.0) as usize;
         }
-        if self.screen_rotation.is_portrait()
-            && matches!(self.screen, Screen::CategoryImage | Screen::ScraperMatches)
-        {
+        if portrait && matches!(self.screen, Screen::CategoryImage | Screen::ScraperMatches) {
             geometry.visible = ((geometry.visible as f32 * 0.55).floor() as usize).max(1);
         }
         self.ui.set_plain_help_height(help_height);
@@ -4362,13 +4364,8 @@ impl App {
         }
 
         if self.screen == Screen::ThemeEditor {
-            let body = geometry.row_height
-                * geometry.visible as f32
-                * if self.screen_rotation.is_portrait() {
-                    0.55
-                } else {
-                    1.0
-                };
+            let body =
+                geometry.row_height * geometry.visible as f32 * if portrait { 0.55 } else { 1.0 };
             self.geometry.visible = EDITOR_ROWS;
             self.geometry.row_height = (body / EDITOR_ROWS as f32).floor().max(9.0);
             self.geometry.body_font = (self.geometry.row_height * 0.58).floor().max(7.0);
@@ -4383,7 +4380,7 @@ impl App {
         let geometry = self.geometry;
 
         self.ui.set_screen(self.screen.ui_index());
-        self.ui.set_portrait(self.screen_rotation.is_portrait());
+        self.ui.set_portrait(portrait);
         self.ui.set_layout(self.layout.index());
         self.ui
             .set_category_image_picker(self.screen == Screen::CategoryImage);
@@ -21950,6 +21947,20 @@ mod tests {
             assert_eq!(geometry.stride, 1);
             assert!(geometry.visible > 0);
         }
+    }
+
+    #[test]
+    fn portrait_layout_follows_effective_framebuffer_dimensions() {
+        assert!(!portrait_dimensions(352, 240));
+        assert!(portrait_dimensions(240, 352));
+
+        for rotation in [ScreenRotation::Clockwise, ScreenRotation::CounterClockwise] {
+            let (width, height) = rotation.logical_size(352, 240);
+            assert!(portrait_dimensions(width, height));
+        }
+
+        let (width, height) = ScreenRotation::Off.logical_size(240, 352);
+        assert!(portrait_dimensions(width, height));
     }
 
     #[test]
