@@ -381,6 +381,17 @@ pub struct LaunchPlan {
 /// been removed after discovery, and an arbitrary path must never become a
 /// core command merely because stale cache bytes named it.
 pub fn plan_core(core: &Path, menu_root: &Path) -> Result<LaunchPlan> {
+    plan_direct_launcher(core, menu_root, &["RBF", "MGL"])
+}
+
+/// Launch a locally installed item selected from MiSTerZine. Arcade rows
+/// point at MRAs; every other row points at RBFs. Matching establishes which
+/// kind applies before this final launch-boundary check.
+pub fn plan_misterzine(item: &Path, menu_root: &Path) -> Result<LaunchPlan> {
+    plan_direct_launcher(item, menu_root, &["RBF", "MRA"])
+}
+
+fn plan_direct_launcher(core: &Path, menu_root: &Path, kinds: &[&str]) -> Result<LaunchPlan> {
     if !core.is_file() {
         return Err(DegaussError::unsupported(
             "core launch",
@@ -416,12 +427,18 @@ pub fn plan_core(core: &Path, menu_root: &Path) -> Result<LaunchPlan> {
         .extension()
         .and_then(|extension| extension.to_str())
         .is_some_and(|extension| {
-            extension.eq_ignore_ascii_case("rbf") || extension.eq_ignore_ascii_case("mgl")
+            kinds
+                .iter()
+                .any(|kind| extension.eq_ignore_ascii_case(kind))
         });
     if !supported {
         return Err(DegaussError::unsupported(
             "core launch",
-            format!("{} is not an RBF or MGL launcher", core.display()),
+            format!(
+                "{} is not an {} launcher",
+                core.display(),
+                kinds.join(" or ")
+            ),
         ));
     }
     let path = canonical_core.to_str().ok_or_else(|| {
@@ -2409,9 +2426,12 @@ mod tests {
         std::fs::create_dir_all(menu.join("_Console")).unwrap();
         let standard = menu.join("_Console/NES_20260916.rbf");
         let ra = menu.join("_Console/RA_NES.mgl");
+        let arcade = menu.join("_Arcade/Example.mra");
         let text = menu.join("_Console/readme.txt");
+        std::fs::create_dir_all(arcade.parent().unwrap()).unwrap();
         std::fs::write(&standard, b"core").unwrap();
         std::fs::write(&ra, b"<mistergamedescription/>").unwrap();
+        std::fs::write(&arcade, b"<misterromdescription/>").unwrap();
         std::fs::write(&text, b"not a core").unwrap();
         std::fs::write(root.join("outside.rbf"), b"outside").unwrap();
 
@@ -2423,6 +2443,18 @@ mod tests {
             plan_core(&ra, &menu).unwrap().command,
             format!("load_core {}\n", ra.canonicalize().unwrap().display())
         );
+        assert_eq!(
+            plan_misterzine(&arcade, &menu).unwrap().command,
+            format!("load_core {}\n", arcade.canonicalize().unwrap().display())
+        );
+        assert!(plan_misterzine(&ra, &menu)
+            .unwrap_err()
+            .to_string()
+            .contains("not an RBF or MRA launcher"));
+        assert!(plan_core(&arcade, &menu)
+            .unwrap_err()
+            .to_string()
+            .contains("not an RBF or MGL"));
         assert!(plan_core(&text, &menu)
             .unwrap_err()
             .to_string()
@@ -2439,7 +2471,7 @@ mod tests {
         {
             let linked = menu.join("_Console/Linked.rbf");
             std::os::unix::fs::symlink(root.join("outside.rbf"), &linked).unwrap();
-            assert!(plan_core(&linked, &menu)
+            assert!(plan_misterzine(&linked, &menu)
                 .unwrap_err()
                 .to_string()
                 .contains("outside the configured MiSTer menu"));
