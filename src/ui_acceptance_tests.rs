@@ -682,11 +682,11 @@ fn run_misterzine_browser_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
             Some(core.clone()),
         ),
         crate::misterzine::Item::fixture_with(
-            "Missing Release",
+            "Installed Arcade Release",
             "Arcade",
             "coinop",
-            crate::misterzine::LocalState::NotInstalled,
-            None,
+            crate::misterzine::LocalState::Current,
+            Some(core.clone()),
         ),
     ];
     app.rebuild_misterzine_rows();
@@ -699,7 +699,6 @@ fn run_misterzine_browser_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
             JUMP,
             SEARCH,
             FILTER_RELEASES,
-            INSTALLED_ONLY,
             REFRESH_MISTERZINE,
             ABOUT_MISTERZINE,
         ]
@@ -745,9 +744,9 @@ fn run_misterzine_browser_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
     app.handle(Action::Quit);
     assert_eq!(app.screen, Screen::Browse);
     assert_eq!(app.here.len(), 1);
-    assert_eq!(app.here[0].name, "Missing Release");
+    assert_eq!(app.here[0].name, "Installed Arcade Release");
 
-    app.filter = "MISSING".to_string();
+    app.filter = "ARCADE".to_string();
     app.apply_filter();
     app.prepare_misterzine_browser(false);
     assert_eq!(app.here.len(), 1, "refresh keeps current visit filters");
@@ -757,16 +756,6 @@ fn run_misterzine_browser_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
     app.prepare_misterzine_browser(true);
     assert_eq!(app.here.len(), 2, "reopening starts unfiltered");
 
-    app.open_context();
-    let installed_only = app
-        .menu
-        .iter()
-        .position(|entry| entry == INSTALLED_ONLY)
-        .unwrap();
-    app.menu_list.select(installed_only);
-    app.handle(Action::Accept);
-    assert!(app.misterzine_installed_only);
-    assert_eq!(app.here.len(), 1);
     let Outcome::Launch { plan, .. } = app.handle(Action::Accept).expect("local core launch")
     else {
         panic!("unexpected MiSTerZine launch outcome")
@@ -782,22 +771,6 @@ fn run_misterzine_browser_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
         .message
         .as_deref()
         .is_some_and(|message| message.contains("no longer installed")));
-    app.message = None;
-    app.open_context();
-    let installed_only = app
-        .menu
-        .iter()
-        .position(|entry| entry == INSTALLED_ONLY)
-        .unwrap();
-    app.menu_list.select(installed_only);
-    app.handle(Action::Accept);
-    assert!(!app.misterzine_installed_only);
-    app.game_list.select(1);
-    assert!(app.handle(Action::Accept).is_none());
-    assert!(app
-        .message
-        .as_deref()
-        .is_some_and(|message| message == "Missing Release\nNot installed"));
     app.message = None;
 
     app.open_context();
@@ -819,10 +792,6 @@ fn run_misterzine_browser_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
 
     let mut app = fixture_app(&root, window, settings);
     assert!(app.show_misterzine);
-    assert!(
-        !app.misterzine_installed_only,
-        "the view filter is not persisted"
-    );
     assert!(
         app.misterzine_job.is_none(),
         "startup does not contact MiSTerZine"
