@@ -227,6 +227,7 @@ impl LocalState {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Item {
+    key: String,
     title: String,
     base: String,
     date: String,
@@ -244,6 +245,10 @@ pub struct Item {
 }
 
 impl Item {
+    pub fn key(&self) -> &str {
+        &self.key
+    }
+
     pub fn installed(&self) -> bool {
         self.launch_path.is_some()
     }
@@ -359,7 +364,14 @@ impl Item {
 
     #[cfg(test)]
     pub(crate) fn fixture(title: &str, state: LocalState, launch_path: Option<PathBuf>) -> Self {
-        Self::fixture_with(title, "Console", "distribution_mister", state, launch_path)
+        Self::fixture_with_key(
+            title,
+            title,
+            "Console",
+            "distribution_mister",
+            state,
+            launch_path,
+        )
     }
 
     #[cfg(test)]
@@ -370,7 +382,20 @@ impl Item {
         state: LocalState,
         launch_path: Option<PathBuf>,
     ) -> Self {
+        Self::fixture_with_key(title, title, base, source, state, launch_path)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn fixture_with_key(
+        key: &str,
+        title: &str,
+        base: &str,
+        source: &str,
+        state: LocalState,
+        launch_path: Option<PathBuf>,
+    ) -> Self {
         Self {
+            key: key.to_string(),
             title: title.to_string(),
             base: base.to_string(),
             date: "2026-01-01".to_string(),
@@ -646,6 +671,21 @@ impl Job {
 
     pub fn cancel(&self) {
         self.cancelled.store(true, Ordering::Relaxed);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn pending_fixture() -> Self {
+        let (_sender, events) = mpsc::sync_channel(1);
+        Self {
+            events,
+            cancelled: Arc::new(AtomicBool::new(false)),
+            handle: None,
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn cancelled_for_test(&self) -> bool {
+        self.cancelled.load(Ordering::Relaxed)
     }
 }
 
@@ -1507,6 +1547,7 @@ fn match_cache_with_availability(
                 let identity = crate::systems::core_name(&row.core);
                 match arcade_cores.get(&identity) {
                     Some(_) => Item {
+                        key: row.k.clone(),
                         title: row.title.clone(),
                         base: row.base.clone(),
                         date: row.date.clone(),
@@ -1523,6 +1564,7 @@ fn match_cache_with_availability(
                         logo_id: None,
                     },
                     None => Item {
+                        key: row.k.clone(),
                         title: row.title.clone(),
                         base: row.base.clone(),
                         date: row.date.clone(),
@@ -1544,6 +1586,7 @@ fn match_cache_with_availability(
             let identity = crate::systems::core_name(&row.core);
             match cores.get(&identity) {
                 Some(core) => Item {
+                    key: row.k.clone(),
                     title: row.title.clone(),
                     base: row.base.clone(),
                     date: row.date.clone(),
@@ -1607,6 +1650,7 @@ fn available_through_update_all(row: &Release) -> Item {
 
 fn not_installed(row: &Release) -> Item {
     Item {
+        key: row.k.clone(),
         title: row.title.clone(),
         base: row.base.clone(),
         date: row.date.clone(),
