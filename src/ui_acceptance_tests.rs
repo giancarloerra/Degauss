@@ -382,6 +382,7 @@ fn unopened_fixture_app_with_systems(
         StartupTimings::default(),
         352,
         240,
+        None,
     )
 }
 
@@ -444,6 +445,102 @@ fn run_browse_bar_settings_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) 
         }
         app.ui.hide().unwrap();
     }
+}
+
+fn run_screen_rotation_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
+    let root = root.join("screen-rotation");
+    std::fs::create_dir_all(root.join("games/NES")).unwrap();
+    for name in ["First Game.nes", "Second Game.nes"] {
+        std::fs::write(root.join("games/NES").join(name), b"fixture").unwrap();
+    }
+    let mut app = fixture_app(&root, window.clone(), Settings::default());
+    assert_eq!(app.screen_rotation, ScreenRotation::Off);
+    assert_eq!((app.width, app.height), (352, 240));
+    assert!(!app.ui.get_portrait());
+
+    select_option(&mut app, OptionsPage::Display, OptionId::ScreenRotation);
+    app.handle(Action::Accept);
+    assert_eq!(app.screen_rotation, ScreenRotation::Clockwise);
+    assert_eq!((app.width, app.height), (240, 352));
+    assert!(app.ui.get_portrait());
+    assert!(matches!(app.pending, Some(Pending::KeepRotation { .. })));
+    assert_eq!(
+        app.settings.screen_rotation, None,
+        "a preview is not persisted before A confirms it"
+    );
+    app.handle(Action::Down);
+    assert_eq!(app.screen_rotation, ScreenRotation::Clockwise);
+    assert!(matches!(app.pending, Some(Pending::KeepRotation { .. })));
+
+    app.handle(Action::Quit);
+    assert_eq!(app.screen_rotation, ScreenRotation::Off);
+    assert_eq!((app.width, app.height), (352, 240));
+    assert!(!app.ui.get_portrait());
+    assert!(app.pending.is_none());
+
+    app.handle(Action::Accept);
+    assert_eq!(app.screen_rotation, ScreenRotation::Clockwise);
+    app.handle(Action::Accept);
+    assert!(app.pending.is_none());
+    assert_eq!(
+        app.settings.screen_rotation,
+        Some(ScreenRotation::Clockwise)
+    );
+    assert_eq!(
+        Settings::load(&app.settings_path).unwrap().screen_rotation,
+        Some(ScreenRotation::Clockwise),
+        "A keeps the preview across restart"
+    );
+
+    // The next choice is CCW. A background question may replace the prompt,
+    // but letting the preview expire still restores the last confirmed CW
+    // state without losing that unrelated question or changing the disk.
+    app.handle(Action::Accept);
+    assert_eq!(app.screen_rotation, ScreenRotation::CounterClockwise);
+    app.pending = Some(Pending::ResetHidden);
+    app.message = Some("Unrelated question".to_string());
+    app.rotation_preview_deadline = Some(Instant::now() - Duration::from_millis(1));
+    app.expire_rotation_preview(Instant::now());
+    assert_eq!(app.screen_rotation, ScreenRotation::Clockwise);
+    assert_eq!(app.pending, Some(Pending::ResetHidden));
+    assert_eq!(app.message.as_deref(), Some("Unrelated question"));
+    assert!(app.rotation_preview_previous.is_none());
+    assert_eq!(
+        Settings::load(&app.settings_path).unwrap().screen_rotation,
+        Some(ScreenRotation::Clockwise)
+    );
+    app.pending = None;
+    app.message = None;
+
+    let settings_path = app.settings_path.clone();
+    app.settings_path = root.join("missing/settings.toml");
+    app.handle(Action::Accept);
+    assert_eq!(app.screen_rotation, ScreenRotation::CounterClockwise);
+    app.handle(Action::Accept);
+    assert_eq!(
+        app.screen_rotation,
+        ScreenRotation::Clockwise,
+        "a failed save must restore the last confirmed orientation"
+    );
+    assert_eq!(
+        app.settings.screen_rotation,
+        Some(ScreenRotation::Clockwise)
+    );
+    assert!(app
+        .message
+        .as_deref()
+        .is_some_and(|message| message.contains("not saved") && message.contains("reverted")));
+    app.settings_path = settings_path;
+    app.handle(Action::Accept);
+
+    let saved = Settings::load(&app.settings_path).unwrap();
+    app.ui.hide().unwrap();
+    drop(app);
+    let restarted = fixture_app(&root, window, saved);
+    assert_eq!(restarted.screen_rotation, ScreenRotation::Clockwise);
+    assert_eq!((restarted.width, restarted.height), (240, 352));
+    assert!(restarted.ui.get_portrait());
+    restarted.ui.hide().unwrap();
 }
 
 fn run_cores_browser_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
@@ -682,11 +779,11 @@ fn run_misterzine_browser_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
             Some(core.clone()),
         ),
         crate::misterzine::Item::fixture_with(
-            "Missing Release",
+            "Installed Arcade Release",
             "Arcade",
             "coinop",
-            crate::misterzine::LocalState::NotInstalled,
-            None,
+            crate::misterzine::LocalState::Current,
+            Some(core.clone()),
         ),
     ];
     app.rebuild_misterzine_rows();
@@ -699,7 +796,6 @@ fn run_misterzine_browser_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
             JUMP,
             SEARCH,
             FILTER_RELEASES,
-            INSTALLED_ONLY,
             REFRESH_MISTERZINE,
             ABOUT_MISTERZINE,
         ]
@@ -745,9 +841,9 @@ fn run_misterzine_browser_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
     app.handle(Action::Quit);
     assert_eq!(app.screen, Screen::Browse);
     assert_eq!(app.here.len(), 1);
-    assert_eq!(app.here[0].name, "Missing Release");
+    assert_eq!(app.here[0].name, "Installed Arcade Release");
 
-    app.filter = "MISSING".to_string();
+    app.filter = "ARCADE".to_string();
     app.apply_filter();
     app.prepare_misterzine_browser(false);
     assert_eq!(app.here.len(), 1, "refresh keeps current visit filters");
@@ -757,16 +853,6 @@ fn run_misterzine_browser_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
     app.prepare_misterzine_browser(true);
     assert_eq!(app.here.len(), 2, "reopening starts unfiltered");
 
-    app.open_context();
-    let installed_only = app
-        .menu
-        .iter()
-        .position(|entry| entry == INSTALLED_ONLY)
-        .unwrap();
-    app.menu_list.select(installed_only);
-    app.handle(Action::Accept);
-    assert!(app.misterzine_installed_only);
-    assert_eq!(app.here.len(), 1);
     let Outcome::Launch { plan, .. } = app.handle(Action::Accept).expect("local core launch")
     else {
         panic!("unexpected MiSTerZine launch outcome")
@@ -782,22 +868,6 @@ fn run_misterzine_browser_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
         .message
         .as_deref()
         .is_some_and(|message| message.contains("no longer installed")));
-    app.message = None;
-    app.open_context();
-    let installed_only = app
-        .menu
-        .iter()
-        .position(|entry| entry == INSTALLED_ONLY)
-        .unwrap();
-    app.menu_list.select(installed_only);
-    app.handle(Action::Accept);
-    assert!(!app.misterzine_installed_only);
-    app.game_list.select(1);
-    assert!(app.handle(Action::Accept).is_none());
-    assert!(app
-        .message
-        .as_deref()
-        .is_some_and(|message| message == "Missing Release\nNot installed"));
     app.message = None;
 
     app.open_context();
@@ -819,10 +889,6 @@ fn run_misterzine_browser_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
 
     let mut app = fixture_app(&root, window, settings);
     assert!(app.show_misterzine);
-    assert!(
-        !app.misterzine_installed_only,
-        "the view filter is not persisted"
-    );
     assert!(
         app.misterzine_job.is_none(),
         "startup does not contact MiSTerZine"
@@ -3065,15 +3131,18 @@ fn capture_frame_mode(
         "capture must not overwrite {}",
         path.display()
     );
-    app.width = width;
-    app.height = height;
-    app.window.set_size(slint::PhysicalSize::new(width, height));
+    app.physical_width = width;
+    app.physical_height = height;
+    (app.width, app.height) = app.screen_rotation.logical_size(width, height);
+    app.window
+        .set_size(slint::PhysicalSize::new(app.width, app.height));
     app.apply_geometry();
     app.ui.show().unwrap();
     app.window.request_redraw();
     let mut surface =
         crate::surface::MemorySurface::new(width, height, crate::surface::PixelFormat::Rgb565);
-    let mut presenter = Presenter::new(surface.geometry(), PresentMode::Direct);
+    let mut presenter =
+        Presenter::with_rotation(surface.geometry(), PresentMode::Direct, app.screen_rotation);
     presenter.force_repaint(&app.window);
     if live {
         app.refresh();
@@ -3931,6 +4000,12 @@ fn capture_ui_if_requested(root: &Path, window: Rc<MinimalSoftwareWindow>) {
     );
     let directory = directory.canonicalize().unwrap();
     let mut app = fixture_app(root, window, Settings::default());
+    if let Some(rotation) = std::env::var_os("DEGAUSS_UI_CAPTURE_ROTATION") {
+        let rotation = rotation.to_string_lossy();
+        let rotation = ScreenRotation::parse_cli(&rotation)
+            .unwrap_or_else(|| panic!("DEGAUSS_UI_CAPTURE_ROTATION must be off, cw or ccw"));
+        app.apply_screen_rotation(rotation);
+    }
     let artwork = Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/logos/NES.png");
     assert!(artwork.is_file());
     let mut rows: Vec<_> = (0..32)
@@ -8057,7 +8132,13 @@ fn run_folder_artwork_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
         );
         assert_eq!(
             row.art_scale_x,
-            artwork_horizontal(ArtworkScale::FourThree, app.width, app.height, true),
+            artwork_horizontal(
+                ArtworkScale::FourThree,
+                app.width,
+                app.height,
+                app.screen_rotation,
+                true,
+            ),
             "{}: the picture is corrected as game artwork",
             layout.label()
         );
@@ -8502,6 +8583,7 @@ fn run_neogeo_romset_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
             StartupTimings::default(),
             352,
             240,
+            None,
         );
         app.open_system_by_index(0);
         assert!(app.build.is_none(), "fixture indexing must actually finish");
@@ -8645,14 +8727,32 @@ fn assert_details_split(app: &App, style: DetailsStyle, over_game: bool, context
         DetailsStyle::Information => 0.42,
         DetailsStyle::LargeArtwork => 0.62,
     };
-    let inset = (app.width as f32 * app.config.app.overscan_x as f32 / 100.0).round();
-    let safe = (app.width as f32 - inset * 2.0).max(64.0);
-    let expected = safe * share;
-    assert!(
-        (app.ui.get_art_width() - expected).abs() <= 1.0,
-        "{context}: {style:?} must give the picture {expected} of the width, not {}",
-        app.ui.get_art_width()
-    );
+    if app.screen_rotation.is_portrait() {
+        let base = Geometry::compute(
+            Layout::Details,
+            app.plain_screen(),
+            app.chrome_here(),
+            app.bar_here(),
+            app.width,
+            app.height,
+            &app.config,
+        );
+        let expected = base.art_height * style.art_factor();
+        assert!(
+            (app.ui.get_art_height() - expected).abs() <= 1.0,
+            "{context}: {style:?} must give the picture {expected} of the portrait height, not {}",
+            app.ui.get_art_height()
+        );
+    } else {
+        let inset = (app.width as f32 * app.config.app.overscan_x as f32 / 100.0).round();
+        let safe = (app.width as f32 - inset * 2.0).max(64.0);
+        let expected = safe * share;
+        assert!(
+            (app.ui.get_art_width() - expected).abs() <= 1.0,
+            "{context}: {style:?} must give the picture {expected} of the width, not {}",
+            app.ui.get_art_width()
+        );
+    }
     let panel = app.ui.get_detail_height();
     match style {
         DetailsStyle::Information if over_game => assert!(
@@ -9222,7 +9322,13 @@ fn run_details_style_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
     // its column is the narrow one or the wide one.
     app.game_list.select(1);
     app.artwork_scale = ArtworkScale::FourThree;
-    let corrected = artwork_horizontal(ArtworkScale::FourThree, app.width, app.height, true);
+    let corrected = artwork_horizontal(
+        ArtworkScale::FourThree,
+        app.width,
+        app.height,
+        app.screen_rotation,
+        true,
+    );
     assert!(
         (corrected - 1.0).abs() > 0.01,
         "the fixture screen must need correction for this to prove anything"
@@ -9250,9 +9356,11 @@ fn run_details_style_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
         app.details_style = style;
         app.game_list.select(1);
         for (width, height) in [(352, 240), (640, 480), (1280, 720)] {
-            app.width = width;
-            app.height = height;
-            app.window.set_size(slint::PhysicalSize::new(width, height));
+            app.physical_width = width;
+            app.physical_height = height;
+            (app.width, app.height) = app.screen_rotation.logical_size(width, height);
+            app.window
+                .set_size(slint::PhysicalSize::new(app.width, app.height));
             app.apply_geometry();
             if let Some(directory) = std::env::var_os("DEGAUSS_UI_CAPTURE_DIR") {
                 let name = format!("details-{}", style.setting());
@@ -9263,9 +9371,11 @@ fn run_details_style_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
             assert_details_split(&app, style, true, &format!("{width}x{height}"));
         }
     }
-    app.width = 352;
-    app.height = 240;
-    app.window.set_size(slint::PhysicalSize::new(352, 240));
+    app.physical_width = 352;
+    app.physical_height = 240;
+    (app.width, app.height) = app.screen_rotation.logical_size(352, 240);
+    app.window
+        .set_size(slint::PhysicalSize::new(app.width, app.height));
     app.apply_geometry();
 
     // Only the games level of Details changes shape. The category and
@@ -9299,6 +9409,24 @@ fn run_details_style_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
         app.layout = Layout::Details;
         app.apply_geometry();
     }
+
+    // Portrait reuses the same Details view, stacking its existing artwork
+    // and list panels. Both styles retain the same 42/62 split along the
+    // portrait body's long axis, and returning to Off restores landscape.
+    app.browsing = Browsing::Games;
+    app.layout = Layout::Details;
+    app.game_list.select(1);
+    app.apply_screen_rotation(ScreenRotation::Clockwise);
+    assert_eq!((app.width, app.height), (240, 352));
+    for style in DetailsStyle::ALL {
+        app.details_style = style;
+        app.apply_geometry();
+        app.load_art();
+        app.refresh();
+        assert_details_split(&app, style, true, "portrait Details");
+    }
+    app.apply_screen_rotation(ScreenRotation::Off);
+    assert_eq!((app.width, app.height), (352, 240));
     app.ui.hide().unwrap();
     drop(app);
 
@@ -9676,9 +9804,11 @@ fn run_metadata_filter_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
     // Both supported framebuffers show every field, and a wholly empty
     // metadata field is visible but inert rather than offering Unknown alone.
     for (width, height) in [(352, 240), (640, 480)] {
-        app.width = width;
-        app.height = height;
-        app.window.set_size(slint::PhysicalSize::new(width, height));
+        app.physical_width = width;
+        app.physical_height = height;
+        (app.width, app.height) = app.screen_rotation.logical_size(width, height);
+        app.window
+            .set_size(slint::PhysicalSize::new(app.width, app.height));
         app.apply_geometry();
         app.refresh();
         assert_eq!(app.ui.get_heading(), "Filter Games");
@@ -9694,9 +9824,11 @@ fn run_metadata_filter_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
             capture_frame(&mut app, &directory, "metadata-filters", width, height);
         }
     }
-    app.width = 352;
-    app.height = 240;
-    app.window.set_size(slint::PhysicalSize::new(352, 240));
+    app.physical_width = 352;
+    app.physical_height = 240;
+    (app.width, app.height) = app.screen_rotation.logical_size(352, 240);
+    app.window
+        .set_size(slint::PhysicalSize::new(app.width, app.height));
     app.apply_geometry();
     app.menu_list.select(GameFilterField::Publisher.index());
     app.handle(Action::Accept);
@@ -9875,6 +10007,7 @@ pub(super) fn run_ui_acceptance_flow(window: Rc<MinimalSoftwareWindow>) {
     run_cores_browser_flow(&root, window.clone());
     run_misterzine_browser_flow(&root, window.clone());
     run_browse_bar_settings_flow(&root, window.clone());
+    run_screen_rotation_flow(&root, window.clone());
     run_game_name_display_flow(&root, window.clone());
     run_details_style_flow(&root, window.clone());
     run_handheld_category_flow(&root, window.clone());

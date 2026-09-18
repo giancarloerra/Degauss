@@ -40,7 +40,7 @@ separately. CRT presentation is applied for the README.
 
 | | | |
 |---|---|---|
-| <img src="docs/screenshots/0.8.0/01-home.png" alt="Home with optional Cores, Last Played and MiSTerZine collections" height="200"> | <img src="docs/screenshots/0.7.0/03-handheld.png" alt="Optional Handheld category" height="200"> | <img src="docs/screenshots/0.6.0/02-details.png" alt="Details: DoDonPachi III" height="200"> |
+| <img src="docs/screenshots/0.8.0/01-home.png" alt="Home with optional Cores, Last Played and MiSTerZine Updates collections" height="200"> | <img src="docs/screenshots/0.7.0/03-handheld.png" alt="Optional Handheld category" height="200"> | <img src="docs/screenshots/0.6.0/02-details.png" alt="Details: DoDonPachi III" height="200"> |
 | Home | Optional Handheld Category | Details View |
 | <img src="docs/screenshots/0.7.0/01-large-artwork.png" alt="Large Artwork Details: DonPachi" height="200"> | <img src="docs/screenshots/0.6.0/03-list.png" alt="List View: Arcade Favourites" height="200"> | <img src="docs/screenshots/0.6.0/04-gallery.png" alt="Gallery View: Arcade Favourites" height="200"> |
 | Large Artwork Details | List View | Gallery View |
@@ -48,10 +48,10 @@ separately. CRT presentation is applied for the README.
 | Multi List View | Carousel View | Tiled View |
 | <img src="docs/screenshots/0.8.0/02-core-selection.png" alt="Per-system Core Selection" height="200"> | <img src="docs/screenshots/0.6.0/08-options.png" alt="Extensive Options" height="200"> | <img src="docs/screenshots/0.7.0/02-shortcuts.png" alt="Configurable Hold Shortcuts" height="200"> |
 | Per-system Core Selection | Extensive Options | Configurable Hold Shortcuts |
-| <img src="docs/screenshots/0.6.0/10-appearance.png" alt="Appearance" height="200"> | <img src="docs/screenshots/0.8.0/03-library.png" alt="Library: optional Cores and MiSTerZine browsers" height="200"> | <img src="docs/screenshots/0.6.0/12-display.png" alt="Display" height="200"> |
+| <img src="docs/screenshots/0.6.0/10-appearance.png" alt="Appearance" height="200"> | <img src="docs/screenshots/0.8.0/03-library.png" alt="Library: optional Cores and MiSTerZine Updates browsers" height="200"> | <img src="docs/screenshots/0.6.0/12-display.png" alt="Display" height="200"> |
 | Appearance Settings | Library Visibility | CRT Fit Controls |
-| <img src="docs/screenshots/0.8.0/04-misterzine.png" alt="MiSTerZine Releases" height="200"> | <img src="docs/screenshots/0.8.0/05-cores.png" alt="Installed Cores Browser" height="200"> | <img src="docs/screenshots/0.8.0/06-metadata-filters.png" alt="Metadata Filters" height="200"> |
-| MiSTerZine Releases | Installed Cores Browser | Metadata Filters |
+| <img src="docs/screenshots/0.8.0/04-misterzine.png" alt="MiSTerZine Updates" height="200"> | <img src="docs/screenshots/0.8.0/05-cores.png" alt="Installed Cores Browser" height="200"> | <img src="docs/screenshots/0.8.0/06-metadata-filters.png" alt="Metadata Filters" height="200"> |
+| MiSTerZine Updates | Installed Cores Browser | Metadata Filters |
 | <img src="docs/screenshots/0.6.0/13-developer.png" alt="Developer" height="200"> | <img src="docs/screenshots/0.6.0/14-actions.png" alt="Grouped Actions" height="200"> | <img src="docs/screenshots/0.6.0/15-random-favourite.png" alt="Random Game and Random Favourite" height="200"> |
 | Drawing and Performance Controls | Actions for This Place | Random Game or Random Favourite |
 | <img src="docs/screenshots/0.6.0/16-place-view.png" alt="A Different View for Every Place" height="200"> | <img src="docs/screenshots/0.6.0/17-information.png" alt="Full Game Information" height="200"> | <img src="docs/screenshots/0.6.0/18-index-progress.png" alt="Indexing Progress" height="200"> |
@@ -215,25 +215,25 @@ scripts report their underlying error.
 
 ### Browsing MiSTerZine updates
 
-**Options → Library → Show MiSTerZine** adds an optional MiSTerZine shelf to
-the home screen. It is Off by default. Opening it shows the official release
-catalogue newest first and compares each entry with content Degauss already
-indexed on this MiSTer. Installed entries can launch their local MRA or core;
-the catalogue never downloads or executes a remote launcher, core or script.
+**Options → Library → Show MiSTerZine Updates** adds an optional updates shelf
+to the home screen. It is Off by default. Opening it compares the official
+release catalogue with content already installed on this MiSTer and shows only
+matching entries that Degauss can launch. Missing cores, missing Arcade MRAs
+and entries for uninstalled content are left out for every catalogue source.
+The catalogue never downloads or executes a remote launcher, core or script.
 Each row shows its type, source and exact local installation state. Beta and
 deprecated releases are labelled, and **Game Information** shows the complete
 release and local-status detail.
 
-Degauss shows **Checking MiSTerZine**, **Downloading Releases** when the
+Degauss shows **Checking MiSTerZine Updates**, **Downloading Releases** when the
 catalogue changed, and **Matching Installed Content** while it compares local
 entries. **B** cancels safely. A valid saved catalogue is reused immediately;
 if a short network check fails, it remains available with its saved date. A
 first-use failure instead shows a concise cause, while `/tmp/degauss.log` keeps
 the technical detail. **X Actions** provides title search, jump-to-letter,
-**Filter Releases** by type and source, **Refresh**, **Installed Only** and the
-catalogue attribution. Title, type and source filters clear when the catalogue
-is left; Installed Only lasts for the current session. None of these choices
-changes the library.
+**Filter Releases** by type and source, **Refresh** and the catalogue
+attribution. Title, type and source filters clear when the catalogue is left.
+None of these choices changes the library.
 
 Release data comes from [MiSTerZine](https://misterzine.fyi) under
 [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/). Degauss uses only
@@ -769,7 +769,7 @@ require **A** and confirmation, never a sideways press.
 | Library | Show Utility Folder | Show the Utility group, test patterns and measurement cores |
 | Library | Show Unstable Folder | Show installed Unstable cores. On by default |
 | Library | Show Scripts Folder | On by default. Show Scripts in Menu to browse and run installed `.sh` files. Turning this Off hides the entry without changing the files |
-| Library | Show MiSTerZine | Off by default. Add the official MiSTerZine updates browser to the home screen and launch only matching content already installed locally |
+| Library | Show MiSTerZine Updates | Off by default. Add the official updates browser to the home screen and launch only matching content already installed locally |
 | Library | Show Systems with No Games | Systems and folders holding nothing are left out on their own; this shows them. Off by default |
 | Library | Show What You Hid | Show what you hid yourself with **Hide This** |
 | Library | Unhide Everything | Press A and confirm to put back everything you hid yourself, in every folder and every system. Left and right do nothing |
@@ -779,6 +779,7 @@ require **A** and confirmation, never a sideways press.
 | Display | Edge Margin, Top and Bottom | The same, vertically |
 | Display | Screen Position, Sideways | Nudge the picture, for a screen that sits off centre |
 | Display | Screen Position, Up and Down | The same, vertically |
+| Display | Screen Rotation | Off by default. Rotate the complete Degauss interface 90° Clockwise or Counterclockwise for a vertical display. A keeps the preview; B or the 15-second timeout reverts it. This does not change MiSTer video modes or game rotation |
 | Developer | Drawing Path | Draw into the screen directly, or into memory first |
 | Developer | Performance Readout | Replace the key hints with frame timings |
 

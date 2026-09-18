@@ -50,7 +50,9 @@ use crate::name_keyboard::{self, Key as NameKey, Page as NamePage};
 use crate::options::OPTIONS;
 use crate::options::{speed_badge, speed_label, OptionId, OptionsPage, ADVANCED};
 use crate::render::{FrameWork, PresentMode, Presenter};
-use crate::settings::{CustomViews, HoldButton, HoldShortcut, SaveOutcome, Settings};
+use crate::settings::{
+    CustomViews, HoldButton, HoldShortcut, SaveOutcome, ScreenRotation, Settings,
+};
 use crate::surface::Surface;
 use crate::systems::{is_favorites, CoreCatalogue, CoreEntry, FoundSystem, SystemDef};
 
@@ -228,6 +230,11 @@ enum Pending {
     /// the rows already prepared and remembers the change.
     UpdateArtworkPack(Box<PackOffer>),
     DeleteFavoriteFolder(PathBuf),
+    KeepRotation {
+        previous: ScreenRotation,
+        proposed: ScreenRotation,
+        previous_setting: Option<ScreenRotation>,
+    },
 }
 
 /// What an Artwork Pack question is about: the system, the root and the
@@ -347,6 +354,7 @@ fn option_operation(option: OptionId, input: OptionInput) -> OptionOperation {
         | OptionId::FoldersLast
         | OptionId::ShowStats
         | OptionId::Present
+        | OptionId::ScreenRotation
         | OptionId::OverscanX
         | OptionId::OverscanY
         | OptionId::ShiftX
@@ -881,10 +889,10 @@ impl ArtworkScale {
             .expect("every artwork scale is listed")
     }
 
-    /// Horizontal scale in framebuffer coordinates that makes source
+    /// Horizontal scale in logical interface coordinates that makes source
     /// artwork retain its own aspect ratio on the selected physical display.
-    fn horizontal(self, width: u32, height: u32) -> f32 {
-        let display_aspect = match self {
+    fn horizontal_for_rotation(self, width: u32, height: u32, rotation: ScreenRotation) -> f32 {
+        let landscape_aspect = match self {
             ArtworkScale::Framebuffer => return 1.0,
             ArtworkScale::FourThree => 4.0 / 3.0,
             ArtworkScale::SixteenNine => 16.0 / 9.0,
@@ -893,6 +901,11 @@ impl ArtworkScale {
             width > 0 && height > 0,
             "framebuffer dimensions are non-zero"
         );
+        let display_aspect = if rotation.is_portrait() {
+            1.0 / landscape_aspect
+        } else {
+            landscape_aspect
+        };
         (width as f32 / height as f32) / display_aspect
     }
 }
@@ -1149,10 +1162,11 @@ const CLEAR_FILTERS: &str = "Clear Filters";
 const FAVORITES_ID: &str = "Favorites";
 const CORES_CATEGORY: &str = "Cores";
 const CORES_SYSTEM_ID: &str = "__cores";
-const MISTERZINE_CATEGORY: &str = "MiSTerZine";
+const MISTERZINE_CATEGORY: &str = "MiSTerZine Updates";
 const MISTERZINE_SYSTEM_ID: &str = "__misterzine";
+/// Keep the pre-rename custom-view key so existing settings remain effective.
+const MISTERZINE_VIEW_PLACE: &str = "MiSTerZine";
 const REFRESH_MISTERZINE: &str = "Refresh";
-const INSTALLED_ONLY: &str = "Installed Only";
 const FILTER_RELEASES: &str = "Filter Releases";
 const ABOUT_MISTERZINE: &str = "About MiSTerZine";
 
@@ -1995,7 +2009,7 @@ fn context_help(action: &str) -> &'static str {
         SEARCH => "Filter this list by name. Back keeps the search until it is cleared.",
         CLEAR_SEARCH => "Clear the search and show the full current list again.",
         FILTER_GAMES => "Filter games in this folder by their available metadata.",
-        FILTER_RELEASES => "Filter MiSTerZine releases by type and source.",
+        FILTER_RELEASES => "Filter MiSTerZine Updates by type and source.",
         CLEAR_FILTERS => "Clear metadata filters while keeping any title search.",
         HIDE_THIS => "Hide the selected item from browsing without deleting it.",
         SHOW_THIS => "Remove this item's hidden setting so it is normally visible again.",
@@ -2011,7 +2025,6 @@ fn context_help(action: &str) -> &'static str {
         REBUILD_SYSTEM => "Rescan this entire system, including all its folders.",
         REBUILD_CORES => "Refresh only the installed-core catalogue from MiSTer's menu folders.",
         REFRESH_MISTERZINE => "Check the official MiSTerZine release catalogue now.",
-        INSTALLED_ONLY => "Show only releases that Degauss can launch on this MiSTer.",
         ABOUT_MISTERZINE => "Read the source and licence for the MiSTerZine release data.",
         CHANGE_CATEGORY_IMAGE => "Choose the image shown for the selected category or system.",
         CLEAR_CATEGORY_IMAGE => {
@@ -2882,6 +2895,7 @@ struct Geometry {
     small_font: f32,
     pad: f32,
     art_width: f32,
+    art_height: f32,
     columns: usize,
     tile_width: f32,
     tile_height: f32,
@@ -2889,6 +2903,10 @@ struct Geometry {
     stride: usize,
     inset_x: f32,
     inset_y: f32,
+}
+
+fn portrait_dimensions(width: u32, height: u32) -> bool {
+    height > width
 }
 
 impl Geometry {
@@ -2901,6 +2919,7 @@ impl Geometry {
         height: u32,
         config: &Config,
     ) -> Self {
+        let portrait = portrait_dimensions(width, height);
         // The safe rectangle first: everything else is measured inside it,
         // because a television crops the edges.
         let inset_x = (width as f32 * config.app.overscan_x as f32 / 100.0).round();
@@ -2924,7 +2943,6 @@ impl Geometry {
             (height - if show_bar { bar } else { 0.0 } - if chrome_shown { chrome } else { 0.0 })
                 .max(16.0);
         let pad = (width / 55.0).round().clamp(3.0, 14.0);
-
         let rows_layout = |rows: f32| {
             let row_height = (body / rows).floor().max(9.0);
             let visible = (body / row_height).floor().max(1.0) as usize;
@@ -2941,6 +2959,7 @@ impl Geometry {
                 small_font: (chrome * 0.5).floor().max(7.0),
                 pad,
                 art_width: 0.0,
+                art_height: 0.0,
                 columns: 1,
                 tile_width: 0.0,
                 tile_height: 0.0,
@@ -2953,7 +2972,11 @@ impl Geometry {
 
         match layout {
             Layout::Details => {
-                let (row_height, visible) = rows_layout(8.0);
+                let art_height = if portrait { (body * 0.5).round() } else { 0.0 };
+                let list_body =
+                    (body - art_height - if portrait { pad / 2.0 } else { 0.0 }).max(16.0);
+                let row_height = (list_body / 8.0).floor().max(9.0);
+                let visible = (list_body / row_height).floor().max(1.0) as usize;
                 Geometry {
                     chrome,
                     bar,
@@ -2964,7 +2987,12 @@ impl Geometry {
                     // Half the screen each. The list needs room for a long
                     // title and the picture needs to be big enough to
                     // recognise a game from across a room.
-                    art_width: (width * 0.5).round(),
+                    art_width: if portrait {
+                        width
+                    } else {
+                        (width * 0.5).round()
+                    },
+                    art_height,
                     columns: 1,
                     tile_width: 0.0,
                     tile_height: 0.0,
@@ -2975,13 +3003,15 @@ impl Geometry {
                 }
             }
             Layout::Carousel => {
-                // One row across the whole body. The centre cover takes
-                // half the width, which puts exactly half of each
-                // neighbour on screen: enough to see what is coming
-                // without pretending three things are equally in view.
-                // Wide enough that the middle picture is the screen, narrow
-                // enough that the two either side still show they are there.
-                let tile_width = (width * 0.72).floor().max(48.0);
+                // One row across the whole body. Landscape leaves part of
+                // each neighbour visible. Portrait uses the full narrow
+                // width for the selected cover so no neighbour fragments
+                // compete with it.
+                let tile_width = if portrait {
+                    width
+                } else {
+                    (width * 0.72).floor().max(48.0)
+                };
                 Geometry {
                     chrome,
                     bar,
@@ -2990,11 +3020,13 @@ impl Geometry {
                     small_font: (body * 0.075).floor().clamp(7.0, 16.0 * scale),
                     pad,
                     art_width: 0.0,
+                    art_height: 0.0,
                     columns: 1,
                     tile_width,
                     tile_height: body,
-                    // The one either side, and the one in the middle.
-                    visible: 3,
+                    // A portrait screen has no spare width for meaningful
+                    // neighbour previews. Landscape keeps one either side.
+                    visible: if portrait { 1 } else { 3 },
                     stride: 1,
                     inset_x,
                     inset_y,
@@ -3011,7 +3043,9 @@ impl Geometry {
                 let tile_height = (body / target_rows).floor().max(28.0);
                 // A little wider than tall: four by three artwork with a
                 // caption under it.
-                let columns = ((width / (tile_height * 1.25)).round() as usize).clamp(2, 8);
+                let minimum_columns = if portrait { 1 } else { 2 };
+                let columns =
+                    ((width / (tile_height * 1.25)).round() as usize).clamp(minimum_columns, 8);
                 let tile_width = (width / columns as f32).floor();
                 let grid_rows = (body / tile_height).floor().max(1.0) as usize;
                 Geometry {
@@ -3022,6 +3056,7 @@ impl Geometry {
                     small_font: (tile_height * 0.16).floor().max(7.0),
                     pad,
                     art_width: 0.0,
+                    art_height: 0.0,
                     columns,
                     tile_width,
                     tile_height,
@@ -3034,6 +3069,7 @@ impl Geometry {
             Layout::MultiList => {
                 let target_rows = if body >= 380.0 { 18.0 } else { 12.0 };
                 let (row_height, visual_rows) = rows_layout(target_rows);
+                let columns = if portrait { 1 } else { 2 };
                 Geometry {
                     chrome,
                     bar,
@@ -3042,11 +3078,12 @@ impl Geometry {
                     small_font: (chrome * 0.5).floor().max(7.0),
                     pad,
                     art_width: 0.0,
-                    columns: 2,
-                    tile_width: (width / 2.0).floor(),
+                    art_height: 0.0,
+                    columns,
+                    tile_width: (width / columns as f32).floor(),
                     tile_height: row_height,
-                    visible: visual_rows * 2,
-                    stride: 2,
+                    visible: visual_rows * columns,
+                    stride: columns,
                     inset_x,
                     inset_y,
                 }
@@ -3057,7 +3094,9 @@ impl Geometry {
                 // enough to identify on the 352x240 framebuffer.
                 let target_rows = if body >= 380.0 { 6.0 } else { 4.0 };
                 let tile_height = (body / target_rows).floor().max(24.0);
-                let columns = ((width / (tile_height * 1.15)).round() as usize).clamp(3, 12);
+                let minimum_columns = if portrait { 2 } else { 3 };
+                let columns =
+                    ((width / (tile_height * 1.15)).round() as usize).clamp(minimum_columns, 12);
                 let tile_width = (width / columns as f32).floor();
                 let grid_rows = (body / tile_height).floor().max(1.0) as usize;
                 Geometry {
@@ -3068,6 +3107,7 @@ impl Geometry {
                     small_font: (tile_height * 0.15).floor().max(7.0),
                     pad,
                     art_width: 0.0,
+                    art_height: 0.0,
                     columns,
                     tile_width,
                     tile_height,
@@ -3087,6 +3127,7 @@ impl Geometry {
                     small_font: (chrome * 0.5).floor().max(7.0),
                     pad,
                     art_width: 0.0,
+                    art_height: 0.0,
                     columns: 1,
                     tile_width: 0.0,
                     tile_height: 0.0,
@@ -3394,8 +3435,11 @@ pub struct App {
     /// What left and right do while browsing.
     horizontal: Horizontal,
     geometry: Geometry,
+    physical_width: u32,
+    physical_height: u32,
     width: u32,
     height: u32,
+    screen_rotation: ScreenRotation,
 
     covers: CoverCache,
     /// Group previews sit on the page background rather than the game surface.
@@ -3495,7 +3539,6 @@ pub struct App {
     misterzine_progress: crate::misterzine::Progress,
     misterzine_items: Vec<crate::misterzine::Item>,
     misterzine_visible: Vec<crate::misterzine::Item>,
-    misterzine_installed_only: bool,
     misterzine_filters: crate::misterzine::Filters,
     misterzine_filter_options: [Vec<crate::misterzine::FilterChoice>; 2],
     misterzine_filter_field: Option<crate::misterzine::FilterField>,
@@ -3568,6 +3611,9 @@ pub struct App {
     scripts_directory: PathBuf,
     scripts_entries: Vec<crate::scripts::Entry>,
     pending_present_switch: bool,
+    pending_rotation_switch: Option<ScreenRotation>,
+    rotation_preview_deadline: Option<Instant>,
+    rotation_preview_previous: Option<ScreenRotation>,
     /// A system whose metadata is to be read after the next frame is drawn.
     opening: Option<usize>,
     /// A system whose cache is to be written again after the next frame
@@ -3671,7 +3717,15 @@ impl App {
         startup: StartupTimings,
         width: u32,
         height: u32,
+        rotation_override: Option<ScreenRotation>,
     ) -> Self {
+        let physical_width = width;
+        let physical_height = height;
+        let screen_rotation = rotation_override
+            .or(loaded.settings.screen_rotation)
+            .unwrap_or_default();
+        let (width, height) = screen_rotation.logical_size(physical_width, physical_height);
+        window.set_size(slint::PhysicalSize::new(width, height));
         let show_empty = loaded.settings.show_empty.unwrap_or(false);
         let show_other = loaded.settings.show_other.unwrap_or(false);
         let show_utility = loaded.settings.show_utility.unwrap_or(false);
@@ -3925,7 +3979,6 @@ impl App {
             misterzine_progress: Default::default(),
             misterzine_items: Vec::new(),
             misterzine_visible: Vec::new(),
-            misterzine_installed_only: false,
             misterzine_filters: Default::default(),
             misterzine_filter_options: std::array::from_fn(|_| Vec::new()),
             misterzine_filter_field: None,
@@ -4048,8 +4101,11 @@ impl App {
             layout_override: None,
             horizontal,
             geometry,
+            physical_width,
+            physical_height,
             width,
             height,
+            screen_rotation,
             covers,
             group_covers,
             gallery_covers,
@@ -4098,6 +4154,9 @@ impl App {
             saver_return: Screen::Browse,
             seed: seed_from_clock(),
             pending_present_switch: false,
+            pending_rotation_switch: None,
+            rotation_preview_deadline: None,
+            rotation_preview_previous: None,
             opening: None,
             refreshing: None,
             message_after_build: None,
@@ -4212,6 +4271,7 @@ impl App {
     }
 
     fn apply_geometry(&mut self) {
+        let portrait = portrait_dimensions(self.width, self.height);
         let mut geometry = Geometry::compute(
             self.layout,
             self.plain_screen(),
@@ -4232,7 +4292,18 @@ impl App {
             } else {
                 self.details_style
             };
-            geometry.art_width *= style.art_factor();
+            if portrait {
+                let body = geometry.art_height
+                    + geometry.row_height * geometry.visible as f32
+                    + geometry.pad / 2.0;
+                geometry.art_height *= style.art_factor();
+                geometry.visible = ((body - geometry.art_height - geometry.pad / 2.0)
+                    / geometry.row_height)
+                    .floor()
+                    .max(1.0) as usize;
+            } else {
+                geometry.art_width *= style.art_factor();
+            }
         }
         let help_height = if matches!(
             self.screen,
@@ -4255,6 +4326,9 @@ impl App {
                 / geometry.row_height)
                 .floor()
                 .max(1.0) as usize;
+        }
+        if portrait && matches!(self.screen, Screen::CategoryImage | Screen::ScraperMatches) {
+            geometry.visible = ((geometry.visible as f32 * 0.55).floor() as usize).max(1);
         }
         self.ui.set_plain_help_height(help_height);
         self.geometry = geometry;
@@ -4290,7 +4364,8 @@ impl App {
         }
 
         if self.screen == Screen::ThemeEditor {
-            let body = geometry.row_height * geometry.visible as f32;
+            let body =
+                geometry.row_height * geometry.visible as f32 * if portrait { 0.55 } else { 1.0 };
             self.geometry.visible = EDITOR_ROWS;
             self.geometry.row_height = (body / EDITOR_ROWS as f32).floor().max(9.0);
             self.geometry.body_font = (self.geometry.row_height * 0.58).floor().max(7.0);
@@ -4305,6 +4380,7 @@ impl App {
         let geometry = self.geometry;
 
         self.ui.set_screen(self.screen.ui_index());
+        self.ui.set_portrait(portrait);
         self.ui.set_layout(self.layout.index());
         self.ui
             .set_category_image_picker(self.screen == Screen::CategoryImage);
@@ -4352,6 +4428,7 @@ impl App {
         // The full legend needs room the CRT does not have.
         self.ui.set_wide_bar(self.width >= 480);
         self.ui.set_art_width(geometry.art_width);
+        self.ui.set_art_height(geometry.art_height);
         self.ui.set_columns(geometry.columns as i32);
         self.ui.set_tile_width(geometry.tile_width);
         self.ui.set_tile_height(geometry.tile_height);
@@ -4822,6 +4899,96 @@ impl App {
 
     fn shift_y(&self) -> i32 {
         self.settings.shift_y.unwrap_or(0).clamp(-64, 64)
+    }
+
+    fn apply_screen_rotation(&mut self, rotation: ScreenRotation) {
+        if rotation == self.screen_rotation {
+            return;
+        }
+        self.screen_rotation = rotation;
+        (self.width, self.height) =
+            rotation.logical_size(self.physical_width, self.physical_height);
+        self.window
+            .set_size(slint::PhysicalSize::new(self.width, self.height));
+        self.pending_rotation_switch = Some(rotation);
+        self.apply_geometry();
+        self.touch_selection();
+        invalidate_geometry(&mut self.pending_complete_repaints, &mut self.dirty);
+    }
+
+    fn begin_rotation_preview(&mut self, proposed: ScreenRotation) {
+        let previous = self.screen_rotation;
+        if proposed == previous {
+            return;
+        }
+        let previous_setting = self.settings.screen_rotation;
+        self.apply_screen_rotation(proposed);
+        self.pending = Some(Pending::KeepRotation {
+            previous,
+            proposed,
+            previous_setting,
+        });
+        self.rotation_preview_deadline = Some(Instant::now() + Duration::from_secs(15));
+        self.rotation_preview_previous = Some(previous);
+        self.message = Some(format!(
+            "Keep {} rotation?\n\nA Keep   B Revert   15 seconds",
+            proposed.label()
+        ));
+        self.dirty = true;
+    }
+
+    fn cancel_rotation_preview(&mut self, previous: ScreenRotation) {
+        self.rotation_preview_deadline = None;
+        self.rotation_preview_previous = None;
+        self.apply_screen_rotation(previous);
+        self.message = None;
+        self.dirty = true;
+    }
+
+    fn confirm_rotation_preview(
+        &mut self,
+        previous: ScreenRotation,
+        proposed: ScreenRotation,
+        previous_setting: Option<ScreenRotation>,
+    ) {
+        self.rotation_preview_deadline = None;
+        self.rotation_preview_previous = None;
+        self.settings.screen_rotation = Some(proposed);
+        match self.settings.save(&self.settings_path) {
+            Ok(SaveOutcome::Durable) => {}
+            Ok(SaveOutcome::InstalledWithWarning(warning)) => {
+                self.message = Some(format!(
+                    "Screen rotation was saved, but durability could not be confirmed: {warning}"
+                ));
+            }
+            Err(error) => {
+                self.settings.screen_rotation = previous_setting;
+                self.apply_screen_rotation(previous);
+                self.message = Some(format!(
+                    "Screen rotation was not saved and has been reverted: {error}"
+                ));
+            }
+        }
+        self.dirty = true;
+    }
+
+    fn expire_rotation_preview(&mut self, now: Instant) {
+        if !self
+            .rotation_preview_deadline
+            .is_some_and(|deadline| now >= deadline)
+        {
+            return;
+        }
+        self.rotation_preview_deadline = None;
+        let Some(previous) = self.rotation_preview_previous.take() else {
+            return;
+        };
+        if matches!(self.pending, Some(Pending::KeepRotation { .. })) {
+            self.pending = None;
+            self.message = None;
+        }
+        self.apply_screen_rotation(previous);
+        self.dirty = true;
     }
 
     /// The fastest scroll speed that still loads a picture for every row.
@@ -6194,7 +6361,7 @@ impl App {
         if self.in_misterzine_browser() {
             return Some(ViewPlace::Games {
                 system: MISTERZINE_SYSTEM_ID.to_string(),
-                place: MISTERZINE_CATEGORY.to_string(),
+                place: MISTERZINE_VIEW_PLACE.to_string(),
             });
         }
         if self.in_cores_browser() {
@@ -8024,20 +8191,6 @@ impl App {
                 }
             }
         }
-        // A self-describing file names its own core, so a favourite or a
-        // core file must not be blocked on the system's. Everything else
-        // ends up in an MGL naming `config.rbf`, and handing MiSTer a core
-        // it does not have replaces this process with nothing.
-        let self_describing = match &game {
-            browse::Launch::File(path) => !crate::launch::needs_system_core(path),
-            browse::Launch::AmigaVision { .. } => false,
-        };
-        // Checked where MiSTer will look, not in the index the menu
-        // grouping keeps. That index matches a core name anywhere at the
-        // top of the card, so a support copy under _Arcade/cores or a
-        // favourite's dangling link would answer for a core whose real
-        // file is gone, and the launch would still end in MiSTer's own
-        // "No rbf found!" with Degauss already gone.
         let core_system = self.core_system_id().or_else(|| self.open_system.clone());
         let selected_core = core_system
             .as_ref()
@@ -8049,7 +8202,11 @@ impl App {
             .map(String::as_str);
         let ra_first = self.settings.core_preference.unwrap_or_default()
             == crate::settings::CorePreference::RetroAchievementsFirst;
-        if !self_describing {
+        // File launches are validated by `plan_with_selections` after its
+        // format rule has chosen the effective core. An AmigaVision title
+        // has no file rule and its planner does not take the menu root, so
+        // retain the same preflight for that title-only launch path.
+        if matches!(&game, browse::Launch::AmigaVision { .. }) {
             let checked = crate::launch_cores::resolve_for_version(
                 &config,
                 Path::new(&self.config.menu_root),
@@ -8565,7 +8722,10 @@ impl App {
         }
         if self.misterzine_job.is_some() {
             let progress = &self.misterzine_progress;
-            let matching = progress.phase == crate::misterzine::Phase::Matching;
+            let determinate = matches!(
+                progress.phase,
+                crate::misterzine::Phase::CheckingAvailability | crate::misterzine::Phase::Matching
+            );
             let installed = self
                 .misterzine_items
                 .iter()
@@ -8582,22 +8742,35 @@ impl App {
                 }
                 .into(),
             );
-            self.ui.set_operation_subject("Official Releases".into());
+            self.ui.set_operation_subject(
+                match progress.phase {
+                    crate::misterzine::Phase::CheckingAvailability => "Update All Catalogues",
+                    _ => "Official Releases",
+                }
+                .into(),
+            );
             self.ui.set_operation_activity(
                 match progress.phase {
                     crate::misterzine::Phase::Checking => "Checking for changes",
                     crate::misterzine::Phase::Downloading => "Reading release data",
+                    crate::misterzine::Phase::CheckingAvailability => "Reading availability data",
                     crate::misterzine::Phase::Matching => "Comparing with this MiSTer",
                 }
                 .into(),
             );
             self.ui
-                .set_operation_determinate(matching && progress.total > 0);
+                .set_operation_determinate(determinate && progress.total > 0);
             self.ui
                 .set_operation_fraction(progress.completed as f32 / progress.total.max(1) as f32);
             self.ui.set_operation_progress(
-                if matching && progress.total > 0 {
-                    format!("{} / {} Releases", progress.completed, progress.total)
+                if determinate && progress.total > 0 {
+                    let subject =
+                        if progress.phase == crate::misterzine::Phase::CheckingAvailability {
+                            "Catalogues"
+                        } else {
+                            "Releases"
+                        };
+                    format!("{} / {} {subject}", progress.completed, progress.total)
                 } else {
                     String::new()
                 }
@@ -9150,6 +9323,7 @@ impl App {
                 })
                 .collect(),
             force_refresh,
+            include_available: false,
         }
     }
 
@@ -9215,11 +9389,10 @@ impl App {
         let selected = self
             .misterzine_visible
             .get(self.game_list.selected())
-            .map(|item| (item.title().to_string(), item.summary()));
+            .map(|item| item.key().to_string());
         self.misterzine_visible = self
             .misterzine_items
             .iter()
-            .filter(|item| !self.misterzine_installed_only || item.installed())
             .filter(|item| self.filter.is_empty() || squashed(item.title()).contains(&self.filter))
             .filter(|item| self.misterzine_filters.matches(item))
             .cloned()
@@ -9240,7 +9413,7 @@ impl App {
             .and_then(|selected| {
                 self.misterzine_visible
                     .iter()
-                    .position(|item| item.title() == selected.0 && item.summary() == selected.1)
+                    .position(|item| item.key() == selected)
             })
             .unwrap_or(0);
         self.game_list = ListState::new(self.here.len(), self.geometry.visible);
@@ -9642,11 +9815,15 @@ impl App {
             }
         }
         if self.show_misterzine {
-            if let Some(logo) = self.named_logo(MISTERZINE_CATEGORY).or_else(|| {
-                self.misterzine_items
-                    .iter()
-                    .find_map(|item| self.misterzine_cover(item))
-            }) {
+            if let Some(logo) = self
+                .named_logo(MISTERZINE_CATEGORY)
+                .or_else(|| self.named_logo(MISTERZINE_VIEW_PLACE))
+                .or_else(|| {
+                    self.misterzine_items
+                        .iter()
+                        .find_map(|item| self.misterzine_cover(item))
+                })
+            {
                 picks.insert(MISTERZINE_CATEGORY.to_string(), logo);
             }
         }
@@ -10437,6 +10614,9 @@ impl App {
             OptionId::Present => {
                 self.pending_present_switch = true;
             }
+            OptionId::ScreenRotation => {
+                self.begin_rotation_preview(self.screen_rotation.step(delta));
+            }
             OptionId::ShowHidden => {
                 self.show_hidden = !self.show_hidden;
                 self.settings.show_hidden = Some(self.show_hidden);
@@ -10535,8 +10715,8 @@ impl App {
                 if !self.show_misterzine && self.in_misterzine_browser() {
                     if let Some(job) = &self.misterzine_job {
                         job.cancel();
+                        self.misterzine_progress.cancelling = true;
                     }
-                    self.misterzine_job = None;
                     self.open_category = None;
                     self.browsing = Browsing::Categories;
                     self.filter.clear();
@@ -10656,6 +10836,7 @@ impl App {
             OptionId::FolderBrackets => on_off(self.folder_brackets),
             OptionId::ShowStats => on_off(self.show_stats),
             OptionId::Present => capitalised(self.present_label),
+            OptionId::ScreenRotation => self.screen_rotation.label().to_string(),
             OptionId::ShowHidden => on_off(self.show_hidden),
             OptionId::ShowEmpty => on_off(self.show_empty),
             OptionId::ShowOther => on_off(self.show_other),
@@ -11196,7 +11377,6 @@ impl App {
                         })
                 })
                 .unwrap_or_default(),
-            Some(INSTALLED_ONLY) => on_off(self.misterzine_installed_only),
             Some(CORE_VERSION) => self
                 .core_system_id()
                 .and_then(|id| self.settings.core_choices.get(&id))
@@ -14184,11 +14364,7 @@ impl App {
             if self.misterzine_filters.is_active() {
                 actions.push(CLEAR_FILTERS.to_string());
             }
-            actions.extend([
-                INSTALLED_ONLY.to_string(),
-                REFRESH_MISTERZINE.to_string(),
-                ABOUT_MISTERZINE.to_string(),
-            ]);
+            actions.extend([REFRESH_MISTERZINE.to_string(), ABOUT_MISTERZINE.to_string()]);
             self.context_actions = actions;
             self.show_context_page(None);
             return;
@@ -15960,6 +16136,18 @@ impl App {
                         Pending::DeleteFavoriteFolder(path) => {
                             self.delete_favorite_folder(&path);
                         }
+                        Pending::KeepRotation {
+                            previous,
+                            proposed,
+                            previous_setting,
+                        } => self.confirm_rotation_preview(previous, proposed, previous_setting),
+                    }
+                    return None;
+                }
+                Action::Quit if matches!(pending, Pending::KeepRotation { .. }) => {
+                    if let Pending::KeepRotation { previous, .. } = pending {
+                        self.pending = None;
+                        self.cancel_rotation_preview(previous);
                     }
                     return None;
                 }
@@ -15982,6 +16170,10 @@ impl App {
                     }
                     return None;
                 }
+                // The rotation prompt advertises exactly A Keep and B Revert.
+                // Ignore unrelated presses so a stray direction cannot undo
+                // the preview while the display is being turned.
+                _ if matches!(pending, Pending::KeepRotation { .. }) => return None,
                 // Anything else cancels: a question left on screen after an
                 // unrelated press would be worse than asking again.
                 _ => {
@@ -16277,11 +16469,6 @@ impl App {
                     if choice == REFRESH_MISTERZINE {
                         self.screen = Screen::Browse;
                         self.open_misterzine(true);
-                    } else if choice == INSTALLED_ONLY {
-                        self.misterzine_installed_only = !self.misterzine_installed_only;
-                        self.screen = Screen::Browse;
-                        self.rebuild_misterzine_rows();
-                        self.apply_geometry();
                     } else if choice == ABOUT_MISTERZINE {
                         self.screen = Screen::Browse;
                         self.message = Some(
@@ -16655,6 +16842,7 @@ impl App {
             self.artwork_scale,
             self.width,
             self.height,
+            self.screen_rotation,
             game_art,
         ));
         let group_preview = self.screen == Screen::Browse
@@ -16853,6 +17041,7 @@ impl App {
                                 self.artwork_scale,
                                 self.width,
                                 self.height,
+                                self.screen_rotation,
                                 game_art,
                             );
                             let wanted = if with_art {
@@ -17632,6 +17821,10 @@ impl App {
         PresentMode::parse(self.present_label).unwrap_or(PresentMode::Direct)
     }
 
+    pub fn screen_rotation(&self) -> ScreenRotation {
+        self.screen_rotation
+    }
+
     /// Resolve startup presentation without persisting an implicit device default.
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     pub fn initialize_presentation(
@@ -17679,6 +17872,8 @@ impl App {
             self.poll_scraper_preview();
             self.poll_information();
             self.poll_misterzine();
+
+            self.expire_rotation_preview(now);
 
             // A held left or right repeats only where it is a continuous
             // movement: browse scrolling or one RGB channel in the colour
@@ -17786,6 +17981,12 @@ impl App {
                 presenter.set_mode(next, &self.window);
                 self.present_label = next.label();
                 self.settings.present = Some(next.label().to_string());
+                self.timer = FrameTimer::new();
+                self.dirty = true;
+            }
+
+            if let Some(rotation) = self.pending_rotation_switch.take() {
+                presenter.set_rotation(rotation, &self.window);
                 self.timer = FrameTimer::new();
                 self.dirty = true;
             }
@@ -18543,9 +18744,15 @@ fn on_off(value: bool) -> String {
 /// Apply display correction only to real game artwork. System and category
 /// logos, folder stand-ins and screensaver pictures retain their existing
 /// framebuffer geometry.
-fn artwork_horizontal(scale: ArtworkScale, width: u32, height: u32, is_game_art: bool) -> f32 {
+fn artwork_horizontal(
+    scale: ArtworkScale,
+    width: u32,
+    height: u32,
+    rotation: ScreenRotation,
+    is_game_art: bool,
+) -> f32 {
     if is_game_art {
-        scale.horizontal(width, height)
+        scale.horizontal_for_rotation(width, height, rotation)
     } else {
         1.0
     }
@@ -18786,7 +18993,15 @@ pub(crate) fn test_library_launch_flow(window: Rc<MinimalSoftwareWindow>) {
         themes: Default::default(),
     };
     let ui = DegaussWindow::new().unwrap();
-    let mut app = App::new(loaded, window, ui, StartupTimings::default(), 352, 240);
+    let mut app = App::new(
+        loaded,
+        window,
+        ui,
+        StartupTimings::default(),
+        352,
+        240,
+        None,
+    );
     app.finish_background_work_for_headless();
 
     let misterzine_cover = root.join("misterzine-cover.png");
@@ -18823,8 +19038,64 @@ pub(crate) fn test_library_launch_flow(window: Rc<MinimalSoftwareWindow>) {
         1,
         "reopening restores cached rows immediately"
     );
+    app.misterzine_items = vec![
+        crate::misterzine::Item::fixture_with_key(
+            "first-release",
+            "Duplicate Display",
+            "Console",
+            "distribution_mister",
+            crate::misterzine::LocalState::Current,
+            Some(root.join("_Console/First.rbf")),
+        ),
+        crate::misterzine::Item::fixture_with_key(
+            "second-release",
+            "Duplicate Display",
+            "Console",
+            "distribution_mister",
+            crate::misterzine::LocalState::Current,
+            Some(root.join("_Console/Second.rbf")),
+        ),
+    ];
+    app.rebuild_misterzine_rows();
+    app.game_list.select(1);
+    app.rebuild_misterzine_rows();
+    assert_eq!(
+        app.game_list.selected(),
+        1,
+        "filter rebuilds preserve the exact release when display text is duplicated"
+    );
+    app.misterzine_items[1] = crate::misterzine::Item::fixture_with_key(
+        "second-release",
+        "Changed Display",
+        "Console",
+        "future_source",
+        crate::misterzine::LocalState::UpdateAvailable,
+        Some(root.join("_Console/Second.rbf")),
+    );
+    app.rebuild_misterzine_rows();
+    assert_eq!(
+        app.game_list.selected(),
+        1,
+        "refreshes preserve the release when its display metadata changes"
+    );
     app.refresh();
     app.handle(Action::Quit);
+
+    app.show_misterzine = true;
+    app.prepare_misterzine_browser(true);
+    app.misterzine_job = Some(crate::misterzine::Job::pending_fixture());
+    app.adjust_option_value(OptionId::ShowMisterZine, 1);
+    assert!(
+        app.misterzine_job.is_some(),
+        "disabling retains the worker handle until its terminal event"
+    );
+    assert!(
+        app.misterzine_job
+            .as_ref()
+            .is_some_and(crate::misterzine::Job::cancelled_for_test),
+        "disabling requests cancellation"
+    );
+    app.misterzine_job = None;
     app.misterzine_items.clear();
     app.misterzine_visible.clear();
 
@@ -19084,6 +19355,57 @@ pub(crate) fn test_library_launch_flow(window: Rc<MinimalSoftwareWindow>) {
     assert!(
         app.confirm_launch().is_none(),
         "changed archive must be revalidated at confirmation"
+    );
+
+    let watch_home = root.join("games/GameNWatch");
+    std::fs::create_dir_all(&watch_home).unwrap();
+    std::fs::write(watch_home.join("Current.gnw"), b"game").unwrap();
+    std::fs::write(root.join("_Console/GameAndWatch.rbf"), b"core").unwrap();
+    let watch_def = table
+        .iter()
+        .find(|system| system.id == "GameNWatch")
+        .expect("shipped Game & Watch system")
+        .clone();
+    app.all_systems = vec![FoundSystem {
+        def: watch_def.clone(),
+        paths: vec![watch_home],
+        logo_dir: None,
+        menu_folder: None,
+    }];
+    app.table = vec![watch_def];
+    app.systems = app.all_systems.clone();
+    app.system_cache = None;
+    app.library = None;
+    app.opened_config = None;
+    app.open_system = None;
+    app.trail.clear();
+    app.message = None;
+    app.open_system_by_index(0);
+    let current = app
+        .here
+        .iter()
+        .position(|row| row.name == "Current.gnw")
+        .expect("current Game & Watch package is listed");
+    app.game_list.select(current);
+    let plan = match app
+        .confirm_launch()
+        .expect("the file rule, not the legacy system core, decides the launch")
+    {
+        Outcome::Launch { plan, .. } => plan,
+        _ => panic!("expected Game & Watch launch outcome"),
+    };
+    assert!(plan.mgl.contains("<rbf>_Console/GameAndWatch</rbf>"));
+    assert!(!plan.mgl.contains("<rbf>_Console/GnW</rbf>"));
+    std::fs::remove_file(root.join("_Console/GameAndWatch.rbf")).unwrap();
+    assert!(
+        app.confirm_launch().is_none(),
+        "a missing format-specific core must stay in the UI"
+    );
+    assert!(
+        app.message.as_deref().is_some_and(
+            |message| message.contains("GameAndWatch") && message.contains("not installed")
+        ),
+        "the missing format-specific core is named"
     );
     drop(app);
     std::fs::remove_dir_all(root).unwrap();
@@ -21710,7 +22032,7 @@ mod tests {
     }
 
     #[test]
-    fn multi_list_is_always_two_complete_columns() {
+    fn multi_list_keeps_two_landscape_columns_and_uses_one_in_portrait() {
         let config = Config::parse("[app]\n", std::path::Path::new("test")).expect("defaults");
         for (width, height) in [(352, 240), (640, 480), (1280, 720)] {
             let geometry = Geometry::compute(
@@ -21726,6 +22048,34 @@ mod tests {
             assert_eq!(geometry.stride, 2);
             assert_eq!(geometry.visible % 2, 0);
         }
+        for (width, height) in [(240, 352), (480, 640), (720, 1280)] {
+            let geometry = Geometry::compute(
+                Layout::MultiList,
+                false,
+                false,
+                false,
+                width,
+                height,
+                &config,
+            );
+            assert_eq!(geometry.columns, 1);
+            assert_eq!(geometry.stride, 1);
+            assert!(geometry.visible > 0);
+        }
+    }
+
+    #[test]
+    fn portrait_layout_follows_effective_framebuffer_dimensions() {
+        assert!(!portrait_dimensions(352, 240));
+        assert!(portrait_dimensions(240, 352));
+
+        for rotation in [ScreenRotation::Clockwise, ScreenRotation::CounterClockwise] {
+            let (width, height) = rotation.logical_size(352, 240);
+            assert!(portrait_dimensions(width, height));
+        }
+
+        let (width, height) = ScreenRotation::Off.logical_size(240, 352);
+        assert!(portrait_dimensions(width, height));
     }
 
     #[test]
@@ -21866,12 +22216,51 @@ mod tests {
             (ArtworkScale::FourThree, 4.0 / 3.0),
             (ArtworkScale::SixteenNine, 16.0 / 9.0),
         ] {
-            let raw_aspect = source_aspect * scale.horizontal(400, 200);
+            let raw_aspect =
+                source_aspect * scale.horizontal_for_rotation(400, 200, ScreenRotation::Off);
             let physical_aspect = raw_aspect * display_aspect / 2.0;
             assert!((physical_aspect - source_aspect).abs() < 0.0001);
         }
-        assert!((ArtworkScale::FourThree.horizontal(400, 200) - 1.5).abs() < 0.0001);
-        assert!((ArtworkScale::SixteenNine.horizontal(400, 200) - 1.125).abs() < 0.0001);
+        assert!(
+            (ArtworkScale::FourThree.horizontal_for_rotation(400, 200, ScreenRotation::Off,) - 1.5)
+                .abs()
+                < 0.0001
+        );
+        assert!(
+            (ArtworkScale::SixteenNine.horizontal_for_rotation(400, 200, ScreenRotation::Off,)
+                - 1.125)
+                .abs()
+                < 0.0001
+        );
+    }
+
+    #[test]
+    fn rotated_artwork_correction_uses_the_physical_display_axes() {
+        let source_aspect = 4.0 / 3.0;
+        let logical_width = 240;
+        let logical_height = 352;
+        let correction = ArtworkScale::FourThree.horizontal_for_rotation(
+            logical_width,
+            logical_height,
+            ScreenRotation::Clockwise,
+        );
+        let logical_raw_aspect = source_aspect * correction;
+        let logical_display_aspect = 3.0 / 4.0;
+        let logical_grid_aspect = logical_width as f32 / logical_height as f32;
+        let logical_pixel_stretch = logical_display_aspect / logical_grid_aspect;
+        assert!(
+            (logical_raw_aspect * logical_pixel_stretch - source_aspect).abs() < 0.0001,
+            "quarter-turned 4:3 artwork must still appear as physical 4:3"
+        );
+        assert_eq!(
+            correction,
+            ArtworkScale::FourThree.horizontal_for_rotation(
+                logical_width,
+                logical_height,
+                ScreenRotation::CounterClockwise,
+            ),
+            "both quarter turns use the same physical display aspect"
+        );
     }
 
     #[test]
@@ -21880,10 +22269,13 @@ mod tests {
         // logo, folder stand-in and screensaver picture passes false and
         // keeps the same one-to-one framebuffer geometry in every mode.
         for scale in ArtworkScale::ALL {
-            assert_eq!(artwork_horizontal(scale, 400, 200, false), 1.0);
+            assert_eq!(
+                artwork_horizontal(scale, 400, 200, ScreenRotation::Off, false),
+                1.0
+            );
         }
         assert_eq!(
-            artwork_horizontal(ArtworkScale::FourThree, 400, 200, true),
+            artwork_horizontal(ArtworkScale::FourThree, 400, 200, ScreenRotation::Off, true,),
             1.5
         );
     }

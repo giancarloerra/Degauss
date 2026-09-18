@@ -125,6 +125,61 @@ pub enum AutomaticDataSource {
     ArtworkPackFirst,
 }
 
+/// How the complete frontend is turned on the physical framebuffer.
+///
+/// The framebuffer mode itself is left alone. Quarter turns only swap the
+/// logical dimensions handed to the existing UI and rotate the finished
+/// scene in Slint's software renderer.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ScreenRotation {
+    #[default]
+    Off,
+    Clockwise,
+    CounterClockwise,
+}
+
+impl ScreenRotation {
+    pub const ALL: [Self; 3] = [Self::Off, Self::Clockwise, Self::CounterClockwise];
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Off => "Off",
+            Self::Clockwise => "90° Clockwise",
+            Self::CounterClockwise => "90° Counterclockwise",
+        }
+    }
+
+    pub fn parse_cli(text: &str) -> Option<Self> {
+        match text {
+            "off" => Some(Self::Off),
+            "cw" => Some(Self::Clockwise),
+            "ccw" => Some(Self::CounterClockwise),
+            _ => None,
+        }
+    }
+
+    pub fn step(self, delta: isize) -> Self {
+        let current = Self::ALL
+            .iter()
+            .position(|candidate| *candidate == self)
+            .unwrap_or_default() as isize;
+        Self::ALL[(current + delta).rem_euclid(Self::ALL.len() as isize) as usize]
+    }
+
+    pub const fn is_portrait(self) -> bool {
+        !matches!(self, Self::Off)
+    }
+
+    pub const fn logical_size(self, physical_width: u32, physical_height: u32) -> (u32, u32) {
+        if self.is_portrait() {
+            (physical_height, physical_width)
+        } else {
+            (physical_width, physical_height)
+        }
+    }
+}
+
 impl AutomaticDataSource {
     pub fn next(self) -> Self {
         match self {
@@ -276,6 +331,10 @@ pub struct Settings {
     #[serde(default)]
     pub folder_brackets: Option<bool>,
     pub present: Option<String>,
+    /// Optional full-interface quarter turn. Absent preserves the landscape
+    /// orientation used by every release before TATE support.
+    #[serde(default)]
+    pub screen_rotation: Option<ScreenRotation>,
     /// Systems the user has hidden, by id. Hiding is per-system and
     /// reversible; nothing is ever removed from the table.
     #[serde(default)]
@@ -622,6 +681,11 @@ mod tests {
         assert_eq!(settings.show_cores, None);
         assert!(!settings.show_cores.unwrap_or(false));
         assert_eq!(settings.last_played, None);
+        assert_eq!(settings.screen_rotation, None);
+        assert_eq!(
+            settings.screen_rotation.unwrap_or_default(),
+            ScreenRotation::Off
+        );
         assert_eq!(settings.show_misterzine, None);
         assert!(!settings.show_misterzine.unwrap_or(false));
     }
@@ -664,6 +728,11 @@ mod tests {
         );
         assert_eq!(settings.show_cores, None);
         assert!(!settings.show_cores.unwrap_or(false));
+        assert_eq!(settings.screen_rotation, None);
+        assert_eq!(
+            settings.screen_rotation.unwrap_or_default(),
+            ScreenRotation::Off
+        );
         assert_eq!(settings.show_misterzine, None);
         assert!(!settings.show_misterzine.unwrap_or(false));
     }
@@ -723,6 +792,7 @@ mod tests {
             artwork_pack_roots: [("SuperGrafx".into(), "/media/fat/docs".into())].into(),
             gamelist_sources: ["NES".into()].into(),
             automatic_data_source: Some(AutomaticDataSource::ArtworkPackFirst),
+            screen_rotation: Some(ScreenRotation::CounterClockwise),
             ..Default::default()
         };
         settings.save(&path).expect("saved");
@@ -733,6 +803,42 @@ mod tests {
         // applying rather than being frozen at whatever they were today.
         assert!(read.present.is_none());
         std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn screen_rotation_is_explicit_and_rejects_unknown_values() {
+        let absent: Settings = toml::from_str("").unwrap();
+        assert_eq!(
+            absent.screen_rotation.unwrap_or_default(),
+            ScreenRotation::Off
+        );
+
+        let clockwise: Settings = toml::from_str("screen_rotation = \"clockwise\"\n").unwrap();
+        assert_eq!(clockwise.screen_rotation, Some(ScreenRotation::Clockwise));
+        assert!(toml::from_str::<Settings>("screen_rotation = \"sideways\"\n").is_err());
+    }
+
+    #[test]
+    fn screen_rotation_cycles_both_ways_and_swaps_only_quarter_turn_dimensions() {
+        assert_eq!(ScreenRotation::Off.step(1), ScreenRotation::Clockwise);
+        assert_eq!(
+            ScreenRotation::Clockwise.step(1),
+            ScreenRotation::CounterClockwise
+        );
+        assert_eq!(
+            ScreenRotation::CounterClockwise.step(1),
+            ScreenRotation::Off
+        );
+        assert_eq!(
+            ScreenRotation::Off.step(-1),
+            ScreenRotation::CounterClockwise
+        );
+        assert_eq!(ScreenRotation::Off.logical_size(352, 240), (352, 240));
+        assert_eq!(ScreenRotation::Clockwise.logical_size(352, 240), (240, 352));
+        assert_eq!(
+            ScreenRotation::CounterClockwise.logical_size(352, 240),
+            (240, 352)
+        );
     }
 
     #[test]

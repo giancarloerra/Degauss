@@ -357,6 +357,7 @@ export component DegaussWindow inherits Window {
     in property <length> inset-bottom;
 
     // Geometry, computed from the framebuffer size.
+    in property <bool> portrait: false;
     in property <length> row-height: 20px;
     // Context-menu groups stay visually distinct without spending a full
     // text row on an intentionally empty separator.
@@ -410,6 +411,7 @@ export component DegaussWindow inherits Window {
     in property <bool> has-art;
     in property <float> art-scale-x: 1.0;
     in property <length> art-width;
+    in property <length> art-height;
     // Drawn in the artwork panel when there is no picture for this row and
     // no logo in the logos folder: the system or game name, set large.
     in property <string> art-caption;
@@ -719,14 +721,16 @@ export component DegaussWindow inherits Window {
                 }
             }
 
-            // Browse, multi list: two text columns in reading order.
+            // Browse, multi list: two text columns in landscape, one full
+            // width column on the narrower portrait canvas.
             if root.screen == 0 && root.layout == 4: Rectangle {
                 background: root.c-background;
                 for row[index] in root.rows: MenuRow {
                     property <length> column-gap: root.pad / 2;
-                    property <length> cell-width: (parent.width - self.column-gap) / 2;
-                    x: mod(index, 2) * (self.cell-width + self.column-gap);
-                    y: floor(index / 2) * root.row-height;
+                    property <length> cell-width: (parent.width
+                        - self.column-gap * (root.columns - 1)) / root.columns;
+                    x: mod(index, root.columns) * (self.cell-width + self.column-gap);
+                    y: floor(index / root.columns) * root.row-height;
                     width: self.cell-width;
                     height: root.row-height;
                     item: row;
@@ -749,11 +753,13 @@ export component DegaussWindow inherits Window {
             // on the left and show the highlighted file on the right. The
             // preview is the selection itself, so it changes while moving
             // through the list rather than only after A installs the file.
-            if root.screen == 1 && root.category-image-picker: HorizontalLayout {
-                spacing: 0px;
+            if root.screen == 1 && root.category-image-picker: Rectangle {
 
                 Rectangle {
-                    width: parent.width * 56%;
+                    x: 0px;
+                    y: root.portrait ? parent.height * 45% : 0px;
+                    width: root.portrait ? parent.width : parent.width * 56%;
+                    height: root.portrait ? parent.height * 55% : parent.height;
                     background: root.c-background;
                     clip: true;
                     VerticalLayout {
@@ -779,6 +785,10 @@ export component DegaussWindow inherits Window {
                 }
 
                 Rectangle {
+                    x: root.portrait ? 0px : parent.width * 56%;
+                    y: 0px;
+                    width: root.portrait ? parent.width : parent.width * 44%;
+                    height: root.portrait ? parent.height * 45% : parent.height;
                     background: root.c-surface;
                     ArtworkImage {
                         source: root.art;
@@ -809,11 +819,13 @@ export component DegaussWindow inherits Window {
             // Manual matching is intentionally a one-game screen. Candidate
             // names remain scrollable on the left; the highlighted result's
             // screenshot is previewed on the right before it can be applied.
-            if root.screen == 1 && root.scraper-match-picker: HorizontalLayout {
-                spacing: 0px;
+            if root.screen == 1 && root.scraper-match-picker: Rectangle {
 
                 Rectangle {
-                    width: parent.width * 58%;
+                    x: 0px;
+                    y: root.portrait ? parent.height * 45% : 0px;
+                    width: root.portrait ? parent.width : parent.width * 58%;
+                    height: root.portrait ? parent.height * 55% : parent.height;
                     background: root.c-background;
                     clip: true;
                     VerticalLayout {
@@ -851,6 +863,10 @@ export component DegaussWindow inherits Window {
                 }
 
                 Rectangle {
+                    x: root.portrait ? 0px : parent.width * 58%;
+                    y: 0px;
+                    width: root.portrait ? parent.width : parent.width * 42%;
+                    height: root.portrait ? parent.height * 45% : parent.height;
                     background: root.c-surface;
                     ArtworkImage {
                         source: root.art;
@@ -953,8 +969,8 @@ export component DegaussWindow inherits Window {
                 editor-side := Rectangle {
                     x: 0px;
                     y: 0px;
-                    width: theme-screen.width * 55%;
-                    height: theme-screen.height;
+                    width: root.portrait ? theme-screen.width : theme-screen.width * 55%;
+                    height: root.portrait ? theme-screen.height * 55% : theme-screen.height;
                     background: root.c-panel;
                     clip: true;
 
@@ -1280,10 +1296,10 @@ export component DegaussWindow inherits Window {
                 }
 
                 preview := Rectangle {
-                    x: theme-screen.width * 56%;
-                    y: 0px;
-                    width: theme-screen.width * 44%;
-                    height: theme-screen.height;
+                    x: root.portrait ? 0px : theme-screen.width * 56%;
+                    y: root.portrait ? theme-screen.height * 56% : 0px;
+                    width: root.portrait ? theme-screen.width : theme-screen.width * 44%;
+                    height: root.portrait ? theme-screen.height * 44% : theme-screen.height;
                     background: root.c-background;
                     border-width: root.theme-selected-role == 0 ? 2px : 0px;
                     border-color: root.c-accent;
@@ -1420,11 +1436,20 @@ export component DegaussWindow inherits Window {
                 }
             }
 
-            // Browse, preview: titles on the left, a big picture on the right.
-            if root.screen == 0 && root.layout == 0: HorizontalLayout {
-                spacing: root.pad / 2;
+            // Browse, preview: titles beside artwork in landscape, below it
+            // on a vertical display. These are the same two components, not
+            // a second portrait-only screen.
+            if root.screen == 0 && root.layout == 0: Rectangle {
 
                 Rectangle {
+                    x: 0px;
+                    y: root.portrait ? root.art-height + root.pad / 2 : 0px;
+                    width: root.portrait
+                        ? parent.width
+                        : parent.width - root.art-width - root.pad / 2;
+                    height: root.portrait
+                        ? parent.height - root.art-height - root.pad / 2
+                        : parent.height;
                     background: root.c-background;
                     clip: true;
 
@@ -1451,7 +1476,10 @@ export component DegaussWindow inherits Window {
                 }
 
                 Rectangle {
-                    width: root.art-width;
+                    x: root.portrait ? 0px : parent.width - root.art-width;
+                    y: 0px;
+                    width: root.portrait ? parent.width : root.art-width;
+                    height: root.portrait ? root.art-height : parent.height;
                     background: root.group-title != "" ? root.c-background : root.c-surface;
                     property <length> panel: root.detail-height;
                     property <bool> group: root.group-title != "";

@@ -78,6 +78,8 @@ pub enum OptionId {
     ResetHidden,
     ShowStats,
     Present,
+    /// Turn the complete frontend while leaving the MiSTer video mode alone.
+    ScreenRotation,
     OverscanX,
     OverscanY,
     /// Move the whole picture sideways, for a screen that is not centred.
@@ -134,6 +136,7 @@ pub const OPTIONS: &[OptionId] = &[
     OptionId::ShowHidden,
     OptionId::ResetHidden,
     OptionId::Spacer,
+    OptionId::ScreenRotation,
     OptionId::OverscanX,
     OptionId::OverscanY,
     OptionId::ShiftX,
@@ -265,6 +268,7 @@ impl OptionsPage {
                 OptionId::ScrapeAll,
             ],
             Self::Display => &[
+                OptionId::ScreenRotation,
                 OptionId::OverscanX,
                 OptionId::OverscanY,
                 OptionId::ShiftX,
@@ -295,7 +299,7 @@ impl OptionId {
             OptionId::ShowOther => "Show Other Folder",
             OptionId::ShowUtility => "Show Utility Folder",
             OptionId::ShowCores => "Show Cores",
-            OptionId::ShowMisterZine => "Show MiSTerZine",
+            OptionId::ShowMisterZine => "Show MiSTerZine Updates",
             OptionId::ShowUnstable => "Show Unstable Folder",
             OptionId::ShowScripts => "Show Scripts Folder",
             OptionId::CorePreference => "Core Preference",
@@ -315,6 +319,7 @@ impl OptionId {
             OptionId::ResetHidden => "Unhide Everything",
             OptionId::ShowStats => "Performance Readout",
             OptionId::Present => "Drawing Path",
+            OptionId::ScreenRotation => "Screen Rotation",
             OptionId::OverscanX => "Edge Margin, Sides",
             OptionId::OverscanY => "Edge Margin, Top and Bottom",
             OptionId::ShiftX => "Screen Position, Sideways",
@@ -373,7 +378,7 @@ impl OptionId {
                 "Show a cached top-level browser for launching installed Standard, RA and Unstable cores without a game."
             }
             OptionId::ShowMisterZine => {
-                "Show MiSTerZine updates and launch releases already installed on this MiSTer."
+                "Show MiSTerZine Updates and launch releases already installed on this MiSTer."
             }
             OptionId::ShowUnstable => "Show the Unstable category for nightly core builds.",
             OptionId::ShowScripts => "Show Scripts in the main menu. Run installed scripts and return to Degauss when they finish.",
@@ -411,6 +416,9 @@ impl OptionId {
             }
             OptionId::ShowStats => "Replace button hints with rendering and frame-time measurements.",
             OptionId::Present => "Direct draws into the framebuffer. Staged draws into memory before copying the frame.",
+            OptionId::ScreenRotation => {
+                "Rotate the complete frontend for a vertical CRT. This does not change MiSTer video modes or game rotation."
+            }
             OptionId::OverscanX => "Leave side margins so the display does not crop the interface.",
             OptionId::OverscanY => "Leave top and bottom margins so the display does not crop the interface.",
             OptionId::ShiftX => {
