@@ -1910,10 +1910,8 @@ Degauss is under PolyForm Noncommercial 1.0.0. See [`LICENSE`](LICENSE).
 its source at
 [giancarloerra/Degauss-Main](https://github.com/giancarloerra/Degauss-Main).
 
-The optional MiSTerZine browser reads release catalogue data from
-[MiSTerZine](https://misterzine.fyi), licensed under
-[CC BY 4.0](https://creativecommons.org/licenses/by/4.0/). MiSTerZine artwork
-retains its owners' rights and is not redistributed by Degauss.
+[MiSTerZine by Matija Erceg](https://misterzine.fyi), under the
+[MiSTerZine Catalogue Licence](https://github.com/matijaerceg/misterzine/blob/main/LICENSE-CATALOGUE).
 
 Four typefaces are baked into the binary:
 
