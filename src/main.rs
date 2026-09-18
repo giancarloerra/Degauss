@@ -67,7 +67,7 @@ use crate::config::Config;
 use crate::error::{DegaussError, Result};
 use crate::metrics::StartupTimings;
 use crate::render::{PresentMode, Presenter};
-use crate::settings::Settings;
+use crate::settings::{ScreenRotation, Settings};
 use crate::surface::{MemorySurface, PixelFormat, Surface};
 use crate::systems::FoundSystem;
 
@@ -111,6 +111,7 @@ degauss - a fast game browser for MiSTer FPGA
   --format <fmt>      rgb565 or xrgb8888, for --render and --bench
   --device <path>     framebuffer device (default /dev/fb0)
   --present <mode>    direct or staged (default depends on framebuffer mapping)
+  --rotation <mode>   off, cw or ccw; temporary override for render and benchmarks
   --version, -V       print the Degauss version and exit
   --help              this text
 
@@ -180,6 +181,8 @@ struct Args {
     device: PathBuf,
     /// Only set by `--present`. Absent means the saved setting stands.
     present: Option<PresentMode>,
+    /// Temporary renderer orientation. Absent uses the saved setting.
+    rotation: Option<ScreenRotation>,
     /// A list of favourites to write, one per line.
     import_favorites: Option<PathBuf>,
     /// Only set by `--layout`. Absent means the user's saved view stands.
@@ -210,6 +213,7 @@ impl Default for Args {
             format: PixelFormat::Rgb565,
             device: PathBuf::from("/dev/fb0"),
             present: None,
+            rotation: None,
             import_favorites: None,
             layout: None,
             screen: Screen::Browse,
@@ -320,6 +324,13 @@ fn parse_from<I: Iterator<Item = String>>(argv: I) -> std::result::Result<Option
                     "staged" => Some(PresentMode::Staged),
                     other => return Err(format!("unknown drawing path {other:?}")),
                 }
+            }
+            "--rotation" => {
+                let value = next(&mut argv, "--rotation")?;
+                args.rotation = Some(
+                    ScreenRotation::parse_cli(&value)
+                        .ok_or_else(|| format!("unknown screen rotation {value:?}"))?,
+                );
             }
             "--geometry" => {
                 let value = next(&mut argv, "--geometry")?;
@@ -897,11 +908,21 @@ fn run() -> Result<()> {
     run_on_framebuffer(loaded, args, chosen, started)
 }
 
-fn build_app(loaded: Loaded, width: u32, height: u32, repaint: RepaintBufferType) -> Result<App> {
+fn build_app(
+    loaded: Loaded,
+    width: u32,
+    height: u32,
+    repaint: RepaintBufferType,
+    rotation_override: Option<ScreenRotation>,
+) -> Result<App> {
     let window = render::install_platform(repaint)?;
     let ui = DegaussWindow::new()
         .map_err(|e| DegaussError::unsupported("building the interface", e.to_string()))?;
-    window.set_size(PhysicalSize::new(width, height));
+    let rotation = rotation_override
+        .or(loaded.settings.screen_rotation)
+        .unwrap_or_default();
+    let (logical_width, logical_height) = rotation.logical_size(width, height);
+    window.set_size(PhysicalSize::new(logical_width, logical_height));
     ui.show()
         .map_err(|e| DegaussError::unsupported("showing the window", e.to_string()))?;
 
@@ -912,6 +933,7 @@ fn build_app(loaded: Loaded, width: u32, height: u32, repaint: RepaintBufferType
         StartupTimings::default(),
         width,
         height,
+        rotation_override,
     ))
 }
 
@@ -1279,7 +1301,13 @@ fn render_once(loaded: Loaded, args: Args, chosen: usize, path: &Path) -> Result
     // MemorySurface retains the previous frame, exactly like the framebuffer.
     // ReusedBuffer lets the second pass update chrome without discarding the
     // complete first pass from the image that is written below.
-    let mut app = build_app(loaded, width, height, RepaintBufferType::ReusedBuffer)?;
+    let mut app = build_app(
+        loaded,
+        width,
+        height,
+        RepaintBufferType::ReusedBuffer,
+        args.rotation,
+    )?;
     app.set_layout(args.layout.unwrap_or(Layout::Details));
     if args.system.is_some() {
         app.open_system_by_index(chosen);
@@ -1329,9 +1357,10 @@ fn render_once(loaded: Loaded, args: Args, chosen: usize, path: &Path) -> Result
     }
 
     let mut surface = MemorySurface::new(width, height, args.format);
-    let mut presenter = Presenter::new(
+    let mut presenter = Presenter::with_rotation(
         surface.geometry(),
         args.present.unwrap_or(PresentMode::Direct),
+        app.screen_rotation(),
     );
     app.render_once(&mut surface, &mut presenter)?;
     surface.write_bmp(path)?;
@@ -1341,13 +1370,20 @@ fn render_once(loaded: Loaded, args: Args, chosen: usize, path: &Path) -> Result
 
 fn bench(loaded: Loaded, args: Args, chosen: usize, frames: u32) -> Result<()> {
     let (width, height) = args.geometry;
-    let mut app = build_app(loaded, width, height, RepaintBufferType::ReusedBuffer)?;
+    let mut app = build_app(
+        loaded,
+        width,
+        height,
+        RepaintBufferType::ReusedBuffer,
+        args.rotation,
+    )?;
     app.set_layout(args.layout.unwrap_or(Layout::Details));
     app.open_system_by_index(chosen);
 
     for mode in [PresentMode::Direct, PresentMode::Staged] {
         let mut surface = MemorySurface::new(width, height, args.format);
-        let mut presenter = Presenter::new(surface.geometry(), mode);
+        let mut presenter =
+            Presenter::with_rotation(surface.geometry(), mode, app.screen_rotation());
         let report = app.bench(&mut surface, &mut presenter, frames)?;
         report.print(&format!(
             "{} / {} {}x{} {:?}",
@@ -1398,6 +1434,7 @@ fn selftest(loaded: Loaded, args: Args, chosen: usize, frames: u32) -> Result<()
         geometry.width,
         geometry.height,
         RepaintBufferType::ReusedBuffer,
+        args.rotation,
     )?;
     app.set_layout(args.layout.unwrap_or(Layout::Details));
     app.open_system_by_index(chosen);
@@ -1428,7 +1465,7 @@ fn selftest(loaded: Loaded, args: Args, chosen: usize, frames: u32) -> Result<()
 
     let mut totals = Vec::new();
     for mode in [PresentMode::Staged, PresentMode::Direct] {
-        let mut presenter = Presenter::new(geometry, mode);
+        let mut presenter = Presenter::with_rotation(geometry, mode, app.screen_rotation());
         let report = app.bench(&mut framebuffer, &mut presenter, frames)?;
         let draw = per_frame_ms(report.render_total, report.frames_drawn);
         let copy = per_frame_ms(report.blit_total, report.frames_drawn);
@@ -1533,6 +1570,7 @@ fn run_on_framebuffer(
         geometry.width,
         geometry.height,
         RepaintBufferType::ReusedBuffer,
+        args.rotation,
     )?;
     // Only when asked: without the flag the view saved in settings.toml,
     // which App::new already chose, is the one the user wants.
@@ -1613,7 +1651,7 @@ fn run_on_framebuffer(
     // still win, and this runtime default never changes the saved settings.
     let default = default_present_mode(framebuffer.mapping_source());
     let mode = app.initialize_presentation(default, args.present);
-    let mut presenter = Presenter::new(geometry, mode);
+    let mut presenter = Presenter::with_rotation(geometry, mode, app.screen_rotation());
     let outcome = app.run(&mut framebuffer, &mut input, &mut presenter, || {
         session.owner_alive()
     });
@@ -2712,6 +2750,23 @@ category = "Favorites"
     }
 
     #[test]
+    fn rotation_override_accepts_only_the_three_documented_values() {
+        assert_eq!(
+            parse(&["--rotation", "off"]).rotation,
+            Some(ScreenRotation::Off)
+        );
+        assert_eq!(
+            parse(&["--rotation", "cw"]).rotation,
+            Some(ScreenRotation::Clockwise)
+        );
+        assert_eq!(
+            parse(&["--rotation", "ccw"]).rotation,
+            Some(ScreenRotation::CounterClockwise)
+        );
+        assert!(parse_from(["--rotation", "sideways"].map(str::to_string).into_iter()).is_err());
+    }
+
+    #[test]
     fn the_flag_forces_exactly_the_view_named() {
         assert_eq!(
             parse(&["--layout", "carousel"]).layout,
@@ -2876,10 +2931,20 @@ category = "Favorites"
             ..Default::default()
         };
         let loaded = load_everything(&args).expect("visual fixture configuration loads");
-        let mut app = build_app(loaded, width, height, RepaintBufferType::ReusedBuffer)
-            .expect("visual fixture interface builds");
+        let mut app = build_app(
+            loaded,
+            width,
+            height,
+            RepaintBufferType::ReusedBuffer,
+            args.rotation,
+        )
+        .expect("visual fixture interface builds");
         let mut surface = MemorySurface::new(width, height, PixelFormat::Rgb565);
-        let mut presenter = Presenter::new(surface.geometry(), PresentMode::Direct);
+        let mut presenter = Presenter::with_rotation(
+            surface.geometry(),
+            PresentMode::Direct,
+            app.screen_rotation(),
+        );
         let scope = "Adventure Island (USA, Europe) [Rev A]";
         let candidates = vec![
             visual_match("101", "Adventure Island", "1986"),
