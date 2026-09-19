@@ -349,7 +349,7 @@ pub struct Settings {
     /// Absent is off so existing installations keep their released home.
     #[serde(default)]
     pub show_cores: Option<bool>,
-    /// Show the optional top-level MiSTerZine releases browser. Absent is
+    /// Show the optional top-level Core Updates browser. Absent is
     /// off so existing installations do no network or matching work.
     #[serde(default)]
     pub show_misterzine: Option<bool>,

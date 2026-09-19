@@ -855,7 +855,7 @@ fn run_misterzine_browser_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
 
     let Outcome::Launch { plan, .. } = app.handle(Action::Accept).expect("local core launch")
     else {
-        panic!("unexpected MiSTerZine launch outcome")
+        panic!("unexpected Core Updates launch outcome")
     };
     assert_eq!(
         plan.command,
@@ -881,7 +881,8 @@ fn run_misterzine_browser_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
     assert!(app
         .message
         .as_deref()
-        .is_some_and(|message| message.contains("CC BY 4.0")));
+        .is_some_and(|message| message.contains("configured in Downloader")
+            && message.contains("Installed local cores remain visible")));
     assert!(app.save_settings());
     let settings = Settings::load(&app.settings_path).unwrap();
     app.ui.hide().unwrap();
@@ -891,7 +892,7 @@ fn run_misterzine_browser_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
     assert!(app.show_misterzine);
     assert!(
         app.misterzine_job.is_none(),
-        "startup does not contact MiSTerZine"
+        "startup does not contact Core Updates sources"
     );
     select_option(&mut app, OptionsPage::Library, OptionId::ShowMisterZine);
     app.handle(Action::Accept);

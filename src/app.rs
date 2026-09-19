@@ -1162,13 +1162,13 @@ const CLEAR_FILTERS: &str = "Clear Filters";
 const FAVORITES_ID: &str = "Favorites";
 const CORES_CATEGORY: &str = "Cores";
 const CORES_SYSTEM_ID: &str = "__cores";
-const MISTERZINE_CATEGORY: &str = "MiSTerZine Updates";
+const MISTERZINE_CATEGORY: &str = "Core Updates";
 const MISTERZINE_SYSTEM_ID: &str = "__misterzine";
 /// Keep the pre-rename custom-view key so existing settings remain effective.
 const MISTERZINE_VIEW_PLACE: &str = "MiSTerZine";
 const REFRESH_MISTERZINE: &str = "Refresh";
-const FILTER_RELEASES: &str = "Filter Releases";
-const ABOUT_MISTERZINE: &str = "About MiSTerZine";
+const FILTER_RELEASES: &str = "Filter Core Updates";
+const ABOUT_MISTERZINE: &str = "About Core Updates";
 
 fn core_category_pick_key(category: &str) -> String {
     format!("{CORES_SYSTEM_ID}:{category}")
@@ -2009,7 +2009,7 @@ fn context_help(action: &str) -> &'static str {
         SEARCH => "Filter this list by name. Back keeps the search until it is cleared.",
         CLEAR_SEARCH => "Clear the search and show the full current list again.",
         FILTER_GAMES => "Filter games in this folder by their available metadata.",
-        FILTER_RELEASES => "Filter MiSTerZine Updates by type and source.",
+        FILTER_RELEASES => "Filter Core Updates by type and source.",
         CLEAR_FILTERS => "Clear metadata filters while keeping any title search.",
         HIDE_THIS => "Hide the selected item from browsing without deleting it.",
         SHOW_THIS => "Remove this item's hidden setting so it is normally visible again.",
@@ -2024,8 +2024,8 @@ fn context_help(action: &str) -> &'static str {
         GAME_DATA_SOURCE => "Choose the image and metadata source for this system.",
         REBUILD_SYSTEM => "Rescan this entire system, including all its folders.",
         REBUILD_CORES => "Refresh only the installed-core catalogue from MiSTer's menu folders.",
-        REFRESH_MISTERZINE => "Check the official MiSTerZine release catalogue now.",
-        ABOUT_MISTERZINE => "Read the source and licence for the MiSTerZine release data.",
+        REFRESH_MISTERZINE => "Read the configured Downloader databases now.",
+        ABOUT_MISTERZINE => "Read how Core Updates uses this MiSTer's Downloader settings.",
         CHANGE_CATEGORY_IMAGE => "Choose the image shown for the selected category or system.",
         CLEAR_CATEGORY_IMAGE => {
             "Remove this custom image after confirmation and restore the default image."
@@ -2229,7 +2229,7 @@ fn compact_detail_text(details: &browse::Details) -> (String, String) {
     (summary, publisher)
 }
 
-/// MiSTerZine's compact Details panel carries the catalogue information that
+/// Core Updates' compact Details panel carries the catalogue information that
 /// used to compete with the title inside each narrow list row.
 fn misterzine_detail_text(row: &browse::Row) -> (String, String) {
     let heading = [
@@ -3634,7 +3634,7 @@ pub struct App {
     show_utility: bool,
     /// Show the optional top-level Cores browser.
     show_cores: bool,
-    /// Show the optional top-level MiSTerZine browser.
+    /// Show the optional top-level Core Updates browser.
     show_misterzine: bool,
     show_unstable: bool,
     /// Show the strip along the bottom.
@@ -8722,10 +8722,7 @@ impl App {
         }
         if self.misterzine_job.is_some() {
             let progress = &self.misterzine_progress;
-            let determinate = matches!(
-                progress.phase,
-                crate::misterzine::Phase::CheckingAvailability | crate::misterzine::Phase::Matching
-            );
+            let determinate = !matches!(progress.phase, crate::misterzine::Phase::Checking);
             let installed = self
                 .misterzine_items
                 .iter()
@@ -8744,17 +8741,19 @@ impl App {
             );
             self.ui.set_operation_subject(
                 match progress.phase {
-                    crate::misterzine::Phase::CheckingAvailability => "Update All Catalogues",
-                    _ => "Official Releases",
+                    crate::misterzine::Phase::Checking => "Downloader Settings",
+                    crate::misterzine::Phase::Downloading => "Configured Databases",
+                    crate::misterzine::Phase::CheckingAvailability => "Archive Summaries",
+                    crate::misterzine::Phase::Matching => "Installed Cores",
                 }
                 .into(),
             );
             self.ui.set_operation_activity(
                 match progress.phase {
-                    crate::misterzine::Phase::Checking => "Checking for changes",
-                    crate::misterzine::Phase::Downloading => "Reading release data",
-                    crate::misterzine::Phase::CheckingAvailability => "Reading availability data",
-                    crate::misterzine::Phase::Matching => "Comparing with this MiSTer",
+                    crate::misterzine::Phase::Checking => "Reading Downloader settings",
+                    crate::misterzine::Phase::Downloading => "Reading database manifests",
+                    crate::misterzine::Phase::CheckingAvailability => "Reading archive summaries",
+                    crate::misterzine::Phase::Matching => "Comparing installed cores",
                 }
                 .into(),
             );
@@ -8764,12 +8763,12 @@ impl App {
                 .set_operation_fraction(progress.completed as f32 / progress.total.max(1) as f32);
             self.ui.set_operation_progress(
                 if determinate && progress.total > 0 {
-                    let subject =
-                        if progress.phase == crate::misterzine::Phase::CheckingAvailability {
-                            "Catalogues"
-                        } else {
-                            "Releases"
-                        };
+                    let subject = match progress.phase {
+                        crate::misterzine::Phase::Downloading => "Databases",
+                        crate::misterzine::Phase::CheckingAvailability => "Summaries",
+                        crate::misterzine::Phase::Matching => "Cores",
+                        crate::misterzine::Phase::Checking => "Items",
+                    };
                     format!("{} / {} {subject}", progress.completed, progress.total)
                 } else {
                     String::new()
@@ -8782,7 +8781,7 @@ impl App {
                 } else if self.misterzine_items.is_empty() {
                     "This normally takes only a few seconds"
                 } else {
-                    "Saved releases stay available if this check fails"
+                    "Saved database results stay available if this check fails"
                 }
                 .into(),
             );
@@ -8793,7 +8792,7 @@ impl App {
                         value: installed.to_string().into(),
                     },
                     DetailLine {
-                        label: "Releases".into(),
+                        label: "Cores".into(),
                         value: self.misterzine_items.len().to_string().into(),
                     },
                 ])));
@@ -9313,17 +9312,7 @@ impl App {
             cache_dir: self.cache_dir.clone(),
             menu_root: PathBuf::from(&self.config.menu_root),
             cores: self.core_catalogue.clone(),
-            arcade_systems: self
-                .all_systems
-                .iter()
-                .filter(|system| system.category() == "Arcade")
-                .map(|system| crate::misterzine::ArcadeSystem {
-                    id: system.def.id.clone(),
-                    artwork_pack: self.pack_selected(&system.def.id),
-                })
-                .collect(),
             force_refresh,
-            include_available: false,
         }
     }
 
@@ -9356,8 +9345,8 @@ impl App {
         match crate::misterzine::start(self.misterzine_request(force_refresh)) {
             Ok(job) => self.misterzine_job = Some(job),
             Err(error) => {
-                crate::note(&format!("misterzine   could not start: {error}"));
-                self.message = Some("MiSTerZine could not be opened. Try again.".to_string());
+                crate::note(&format!("core updates  could not start: {error}"));
+                self.message = Some("Core Updates could not be opened. Try again.".to_string());
                 self.open_category = None;
                 self.browsing = Browsing::Categories;
                 self.rebuild_system_list();
@@ -10703,10 +10692,10 @@ impl App {
                         Ok(catalogue) => self.core_catalogue = catalogue,
                         Err(error) => {
                             crate::note(&format!(
-                                "misterzine   installed cores could not be read: {error}"
+                                "core updates  installed cores could not be read: {error}"
                             ));
                             self.message = Some(
-                                "MiSTerZine is enabled, but installed cores could not be read. Check the card and try again."
+                                "Core Updates is enabled, but installed cores could not be read. Check the card and try again."
                                     .to_string(),
                             );
                         }
@@ -11766,7 +11755,7 @@ impl App {
         self.show_game_filters(field.index());
     }
 
-    /// Open the two MiSTerZine criteria using the complete in-memory catalogue.
+    /// Open the two Core Updates criteria using the complete in-memory catalogue.
     fn open_misterzine_filters(&mut self) {
         self.misterzine_filter_options = std::array::from_fn(|index| {
             crate::misterzine::choices(
@@ -16472,7 +16461,7 @@ impl App {
                     } else if choice == ABOUT_MISTERZINE {
                         self.screen = Screen::Browse;
                         self.message = Some(
-                            "MiSTerZine\nOfficial release catalogue: misterzine.fyi\nData licensed CC BY 4.0. Artwork is not downloaded."
+                            "Core Updates\nReads only databases configured in Downloader.\nInstalled local cores remain visible without a configured source."
                                 .to_string(),
                         );
                     } else if choice == FILTER_RELEASES {
@@ -17544,7 +17533,7 @@ impl App {
             },
             Screen::GameFilters => (
                 if self.in_misterzine_browser() {
-                    "Filter Releases"
+                    "Filter Core Updates"
                 } else {
                     "Filter Games"
                 }
@@ -17554,8 +17543,8 @@ impl App {
             Screen::GameFilterValues => (
                 if self.in_misterzine_browser() {
                     self.misterzine_filter_field
-                        .map(|field| format!("Filter Releases / {}", field.label()))
-                        .unwrap_or_else(|| "Filter Releases".to_string())
+                        .map(|field| format!("Filter Core Updates / {}", field.label()))
+                        .unwrap_or_else(|| "Filter Core Updates".to_string())
                 } else {
                     self.game_filter_field
                         .map(|field| format!("Filter Games / {}", field.label()))
@@ -19019,7 +19008,11 @@ pub(crate) fn test_library_launch_flow(window: Rc<MinimalSoftwareWindow>) {
     app.misterzine_items = vec![release];
     app.screen = Screen::Browse;
     app.prepare_misterzine_browser(true);
-    assert_eq!(app.layout, Layout::Details, "MiSTerZine has one CRT layout");
+    assert_eq!(
+        app.layout,
+        Layout::Details,
+        "Core Updates has one CRT layout"
+    );
     assert_eq!(app.here.len(), 1);
     app.refresh();
     assert_eq!(
