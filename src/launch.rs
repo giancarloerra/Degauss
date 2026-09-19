@@ -384,11 +384,12 @@ pub fn plan_core(core: &Path, menu_root: &Path) -> Result<LaunchPlan> {
     plan_direct_launcher(core, menu_root, &["RBF", "MGL"])
 }
 
-/// Launch a locally installed item selected from MiSTerZine. Arcade rows
-/// point at MRAs; every other row points at RBFs. Matching establishes which
-/// kind applies before this final launch-boundary check.
+/// Launch a locally installed item selected from Core Updates. Standard and
+/// Unstable rows use RBFs, while RetroAchievements rows use their MGL
+/// launchers. MRA remains accepted for settings written by the earlier
+/// catalogue implementation.
 pub fn plan_misterzine(item: &Path, menu_root: &Path) -> Result<LaunchPlan> {
-    plan_direct_launcher(item, menu_root, &["RBF", "MRA"])
+    plan_direct_launcher(item, menu_root, &["RBF", "MGL", "MRA"])
 }
 
 fn plan_direct_launcher(core: &Path, menu_root: &Path, kinds: &[&str]) -> Result<LaunchPlan> {
@@ -2447,10 +2448,10 @@ mod tests {
             plan_misterzine(&arcade, &menu).unwrap().command,
             format!("load_core {}\n", arcade.canonicalize().unwrap().display())
         );
-        assert!(plan_misterzine(&ra, &menu)
-            .unwrap_err()
-            .to_string()
-            .contains("not an RBF or MRA launcher"));
+        assert_eq!(
+            plan_misterzine(&ra, &menu).unwrap().command,
+            format!("load_core {}\n", ra.canonicalize().unwrap().display())
+        );
         assert!(plan_core(&arcade, &menu)
             .unwrap_err()
             .to_string()

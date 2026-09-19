@@ -45,7 +45,7 @@ pub enum OptionId {
     ShowUtility,
     /// Show the cached browser of installed cores.
     ShowCores,
-    /// Show the optional MiSTerZine releases browser.
+    /// Show the optional Core Updates browser.
     ShowMisterZine,
     /// Show the collection of nightly cores.
     ShowUnstable,
@@ -299,7 +299,7 @@ impl OptionId {
             OptionId::ShowOther => "Show Other Folder",
             OptionId::ShowUtility => "Show Utility Folder",
             OptionId::ShowCores => "Show Cores",
-            OptionId::ShowMisterZine => "Show MiSTerZine Updates",
+            OptionId::ShowMisterZine => "Show Core Updates",
             OptionId::ShowUnstable => "Show Unstable Folder",
             OptionId::ShowScripts => "Show Scripts Folder",
             OptionId::CorePreference => "Core Preference",
@@ -378,7 +378,7 @@ impl OptionId {
                 "Show a cached top-level browser for launching installed Standard, RA and Unstable cores without a game."
             }
             OptionId::ShowMisterZine => {
-                "Show MiSTerZine Updates and launch releases already installed on this MiSTer."
+                "Show installed core versions and updates available through this MiSTer's configured Downloader databases."
             }
             OptionId::ShowUnstable => "Show the Unstable category for nightly core builds.",
             OptionId::ShowScripts => "Show Scripts in the main menu. Run installed scripts and return to Degauss when they finish.",

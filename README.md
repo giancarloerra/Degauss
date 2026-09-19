@@ -21,7 +21,7 @@ artwork and metadata when you explicitly start it. It reads the same folders the
 reads, so it agrees with the rest of your setup and scripts by construction.
 
 It runs without background processes and without replacing the stock system. It is optimised for
-speed and for CRTs, with several views, custom theming, different fonts, many features for favourites, browsing, lists, random discovery, a screensaver and a full set of options: it works out of the box, and can be tuned to your liking.
+speed and for CRTs, and works as well on HDMI, with several views, custom theming, different fonts, many features for favourites, browsing, lists, random discovery, a screensaver and a full set of options: it works out of the box, and can be tuned to your liking.
 
 Source available, written in Rust and using Slint, and licensed for non-commercial use.
 
@@ -40,7 +40,7 @@ separately. CRT presentation is applied for the README.
 
 | | | |
 |---|---|---|
-| <img src="docs/screenshots/0.8.0/01-home.png" alt="Home with optional Cores, Last Played and MiSTerZine Updates collections" height="200"> | <img src="docs/screenshots/0.7.0/03-handheld.png" alt="Optional Handheld category" height="200"> | <img src="docs/screenshots/0.6.0/02-details.png" alt="Details: DoDonPachi III" height="200"> |
+| <img src="docs/screenshots/0.8.1/01-home.png" alt="Home with optional Cores, Last Played and Core Updates collections" height="200"> | <img src="docs/screenshots/0.7.0/03-handheld.png" alt="Optional Handheld category" height="200"> | <img src="docs/screenshots/0.6.0/02-details.png" alt="Details: DoDonPachi III" height="200"> |
 | Home | Optional Handheld Category | Details View |
 | <img src="docs/screenshots/0.7.0/01-large-artwork.png" alt="Large Artwork Details: DonPachi" height="200"> | <img src="docs/screenshots/0.6.0/03-list.png" alt="List View: Arcade Favourites" height="200"> | <img src="docs/screenshots/0.6.0/04-gallery.png" alt="Gallery View: Arcade Favourites" height="200"> |
 | Large Artwork Details | List View | Gallery View |
@@ -48,10 +48,10 @@ separately. CRT presentation is applied for the README.
 | Multi List View | Carousel View | Tiled View |
 | <img src="docs/screenshots/0.8.0/02-core-selection.png" alt="Per-system Core Selection" height="200"> | <img src="docs/screenshots/0.6.0/08-options.png" alt="Extensive Options" height="200"> | <img src="docs/screenshots/0.7.0/02-shortcuts.png" alt="Configurable Hold Shortcuts" height="200"> |
 | Per-system Core Selection | Extensive Options | Configurable Hold Shortcuts |
-| <img src="docs/screenshots/0.6.0/10-appearance.png" alt="Appearance" height="200"> | <img src="docs/screenshots/0.8.0/03-library.png" alt="Library: optional Cores and MiSTerZine Updates browsers" height="200"> | <img src="docs/screenshots/0.6.0/12-display.png" alt="Display" height="200"> |
-| Appearance Settings | Library Visibility | CRT Fit Controls |
-| <img src="docs/screenshots/0.8.0/04-misterzine.png" alt="MiSTerZine Updates" height="200"> | <img src="docs/screenshots/0.8.0/05-cores.png" alt="Installed Cores Browser" height="200"> | <img src="docs/screenshots/0.8.0/06-metadata-filters.png" alt="Metadata Filters" height="200"> |
-| MiSTerZine Updates | Installed Cores Browser | Metadata Filters |
+| <img src="docs/screenshots/0.6.0/10-appearance.png" alt="Appearance" height="200"> | <img src="docs/screenshots/0.8.1/02-library.png" alt="Library: optional Cores and Core Updates browsers" height="200"> | <img src="docs/screenshots/0.8.1/04-screen-rotation.png" alt="Complete interface rotated clockwise for a vertical display" height="200"> |
+| Appearance Settings | Library Visibility | 90° Screen Rotation |
+| <img src="docs/screenshots/0.8.1/03-core-updates.png" alt="Core Updates" height="200"> | <img src="docs/screenshots/0.8.0/05-cores.png" alt="Installed Cores Browser" height="200"> | <img src="docs/screenshots/0.8.0/06-metadata-filters.png" alt="Metadata Filters" height="200"> |
+| Core Updates | Installed Cores Browser | Metadata Filters |
 | <img src="docs/screenshots/0.6.0/13-developer.png" alt="Developer" height="200"> | <img src="docs/screenshots/0.6.0/14-actions.png" alt="Grouped Actions" height="200"> | <img src="docs/screenshots/0.6.0/15-random-favourite.png" alt="Random Game and Random Favourite" height="200"> |
 | Drawing and Performance Controls | Actions for This Place | Random Game or Random Favourite |
 | <img src="docs/screenshots/0.6.0/16-place-view.png" alt="A Different View for Every Place" height="200"> | <img src="docs/screenshots/0.6.0/17-information.png" alt="Full Game Information" height="200"> | <img src="docs/screenshots/0.6.0/18-index-progress.png" alt="Indexing Progress" height="200"> |
@@ -91,7 +91,7 @@ Click the image to watch Degauss on YouTube.
 
 - [Using it](#using-it)
   - [Running MiSTer scripts](#running-mister-scripts)
-  - [Browsing MiSTerZine updates](#browsing-misterzine-updates)
+  - [Browsing core updates](#browsing-core-updates)
 - [Why Degauss](#why-degauss)
 - [Installing](#installing)
   - [Installing through Update All (recommended)](#installing-through-update-all-recommended)
@@ -213,32 +213,32 @@ hides this Menu entry without changing any script files; the choice is saved
 with the other Options settings. Missing or unreadable script folders and
 scripts report their underlying error.
 
-### Browsing MiSTerZine updates
+### Browsing core updates
 
-**Options → Library → Show MiSTerZine Updates** adds an optional updates shelf
-to the home screen. It is Off by default. Opening it compares the official
-release catalogue with content already installed on this MiSTer and shows only
-matching entries that Degauss can launch. Missing cores, missing Arcade MRAs
-and entries for uninstalled content are left out for every catalogue source.
-The catalogue never downloads or executes a remote launcher, core or script.
-Each row shows its type, source and exact local installation state. Beta and
-deprecated releases are labelled, and **Game Information** shows the complete
-release and local-status detail.
+**Options → Library → Show Core Updates** adds an optional shelf to the home
+screen. It is Off by default. Degauss reads the same databases and filters that
+are configured for MiSTer's Downloader in `downloader.ini`, `downloader/*.ini`
+and `downloader_*.ini`.
 
-Degauss shows **Checking MiSTerZine Updates**, **Downloading Releases** when the
-catalogue changed, and **Matching Installed Content** while it compares local
-entries. **B** cancels safely. A valid saved catalogue is reused immediately;
-if a short network check fails, it remains available with its saved date. A
-first-use failure instead shows a concise cause, while `/tmp/degauss.log` keeps
-the technical detail. **X Actions** provides title search, jump-to-letter,
-**Filter Releases** by type and source, **Refresh** and the catalogue
-attribution. Title, type and source filters clear when the catalogue is left.
-None of these choices changes the library.
+Every installed core remains visible, including one that has no configured
+database source. An uninstalled core appears only when one of this MiSTer's
+configured databases selects it, so it is content the next Downloader run can
+provide. Degauss does not classify databases as official or unofficial and
+does not download, install or execute a remote core. It reads only their
+database manifests and the archive summaries needed to find core files.
 
-Release data comes from [MiSTerZine](https://misterzine.fyi) under
-[CC BY 4.0](https://creativecommons.org/licenses/by/4.0/). Degauss uses only
-the documented `meta.json` and `data.json` feed and does not redistribute its
-artwork.
+Each row shows the core type, configured source and local state. Dated core
+filenames are compared by build date; undated cores are checked by the MD5
+recorded in the database. **X Actions** provides title search,
+jump-to-letter, **Filter Core Updates** by type and source, **Refresh** and a
+short explanation of the data source. These temporary filters clear when the
+shelf is left.
+
+The first open reads the configured databases and saves the result. Later
+opens use that saved result without a network request. **Refresh** reads the
+databases again; if it cannot reach them, the last valid result remains
+available. **B** cancels safely. A first-use failure shows a concise cause,
+while `/tmp/degauss.log` keeps the technical detail.
 
 ## Why Degauss
 
@@ -260,7 +260,8 @@ artwork.
   yours.
 - **CRT-optimised.** 352×240 with 1:1 pixel mapping to a 15 kHz analog output.
   Overscan margins and screen position are settings. Larger
-  framebuffers are laid out from their own size, so HDMI works too.
+  framebuffers are laid out from their own size, so HDMI works too. The complete
+  interface can rotate 90° clockwise or counterclockwise for a vertical display.
 - **The card is the truth.** Reorganise, rename or move files with any
   tool and the browser follows: nothing has to be re-imported or re-tagged.
   The index it keeps is only a copy of what the card already says, and
@@ -279,7 +280,8 @@ artwork.
   is kept, reported in `/tmp/degauss.log` and Game Information, and
   refused at launch with the same line, rather than pointed at one of them
   by folder order.
-- **Awkward systems handled** without hassle: AmigaVision, DOS,
+- **Awkward systems handled** without hassle: AmigaVision and its standalone
+  Amiga CD32 package, DOS,
   Neo Geo, Arcade, X68000, and cores that are several machines.
 
 Measured on the DE10-Nano's own hardware, with a large multi-system
@@ -769,7 +771,7 @@ require **A** and confirmation, never a sideways press.
 | Library | Show Utility Folder | Show the Utility group, test patterns and measurement cores |
 | Library | Show Unstable Folder | Show installed Unstable cores. On by default |
 | Library | Show Scripts Folder | On by default. Show Scripts in Menu to browse and run installed `.sh` files. Turning this Off hides the entry without changing the files |
-| Library | Show MiSTerZine Updates | Off by default. Add the official updates browser to the home screen and launch only matching content already installed locally |
+| Library | Show Core Updates | Off by default. Show every installed core and uninstalled cores selected by this MiSTer's configured Downloader databases |
 | Library | Show Systems with No Games | Systems and folders holding nothing are left out on their own; this shows them. Off by default |
 | Library | Show What You Hid | Show what you hid yourself with **Hide This** |
 | Library | Unhide Everything | Press A and confirm to put back everything you hid yourself, in every folder and every system. Left and right do nothing |
@@ -1910,9 +1912,6 @@ Degauss is under PolyForm Noncommercial 1.0.0. See [`LICENSE`](LICENSE).
 [MiSTer Main](https://github.com/MiSTer-devel/Main_MiSTer) under GPLv3, with
 its source at
 [giancarloerra/Degauss-Main](https://github.com/giancarloerra/Degauss-Main).
-
-[MiSTerZine by Matija Erceg](https://misterzine.fyi), under the
-[MiSTerZine Catalogue Licence](https://github.com/matijaerceg/misterzine/blob/main/LICENSE-CATALOGUE).
 
 Four typefaces are baked into the binary:
 
