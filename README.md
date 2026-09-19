@@ -21,7 +21,7 @@ artwork and metadata when you explicitly start it. It reads the same folders the
 reads, so it agrees with the rest of your setup and scripts by construction.
 
 It runs without background processes and without replacing the stock system. It is optimised for
-speed and for CRTs, with several views, custom theming, different fonts, many features for favourites, browsing, lists, random discovery, a screensaver and a full set of options: it works out of the box, and can be tuned to your liking.
+speed and for CRTs, and works as well on HDMI, with several views, custom theming, different fonts, many features for favourites, browsing, lists, random discovery, a screensaver and a full set of options: it works out of the box, and can be tuned to your liking.
 
 Source available, written in Rust and using Slint, and licensed for non-commercial use.
 
