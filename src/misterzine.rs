@@ -93,6 +93,9 @@ pub struct Item {
     remote_path: String,
     state: LocalState,
     installed: bool,
+    core_identity: Option<String>,
+    game_count: Option<usize>,
+    game: Option<Row>,
     pub launch_path: Option<PathBuf>,
     pub cover: Option<PathBuf>,
     pub logo_id: Option<String>,
@@ -131,6 +134,16 @@ impl Item {
         self.title.clone()
     }
 
+    pub fn core_identity(&self) -> Option<&str> {
+        self.core_identity.as_deref()
+    }
+
+    pub fn set_game_match(&mut self, count: usize, game: Option<Row>) {
+        self.game_count = Some(count);
+        self.cover = game.as_ref().and_then(|row| row.cover.clone());
+        self.game = game;
+    }
+
     pub fn information(&self) -> String {
         let mut text = self.title.clone();
         for (label, value) in [
@@ -144,6 +157,27 @@ impl Item {
             if !value.trim().is_empty() {
                 text.push_str(&format!("\n\n{label}: {value}"));
             }
+        }
+        if let Some(game) = &self.game {
+            text.push_str(&format!("\n\nMatched game: {}", game.name));
+            for (label, value) in [
+                ("Genre", game.genre.as_deref().unwrap_or("")),
+                ("Publisher", game.details.publisher.as_str()),
+                ("Developer", game.details.developer.as_str()),
+                ("Released", game.details.released.as_str()),
+                ("Players", game.details.players.as_str()),
+                ("Language", game.details.lang.as_str()),
+            ] {
+                if !value.trim().is_empty() {
+                    text.push_str(&format!("\n\n{label}: {value}"));
+                }
+            }
+            if !game.details.desc.trim().is_empty() {
+                text.push_str("\n\nDescription\n");
+                text.push_str(&game.details.desc);
+            }
+        } else if let Some(count) = self.game_count.filter(|count| *count > 0) {
+            text.push_str(&format!("\n\nGames using this core: {count}"));
         }
         text
     }
@@ -223,6 +257,9 @@ impl Item {
             remote_path: format!("_{base}/{title}_20260916.rbf"),
             state,
             installed: launch_path.is_some(),
+            core_identity: None,
+            game_count: None,
+            game: None,
             launch_path,
             cover: None,
             logo_id: None,
@@ -2311,6 +2348,9 @@ fn match_cache(
                 remote_path: remote.path.clone(),
                 state,
                 installed: true,
+                core_identity: Some(local.identity.clone()),
+                game_count: None,
+                game: None,
                 launch_path: local.launch_path.clone(),
                 cover: None,
                 logo_id: local.logo_id.clone(),
@@ -2327,6 +2367,9 @@ fn match_cache(
                 remote_path: remote.path.clone(),
                 state: LocalState::AvailableThroughDownloader,
                 installed: false,
+                core_identity: Some(remote.identity.clone()),
+                game_count: None,
+                game: None,
                 launch_path: None,
                 cover: None,
                 logo_id: None,
@@ -2352,6 +2395,9 @@ fn match_cache(
             remote_path: String::new(),
             state: LocalState::LocalOnly,
             installed: true,
+            core_identity: Some(local.identity),
+            game_count: None,
+            game: None,
             launch_path: local.launch_path,
             cover: None,
             logo_id: local.logo_id,
@@ -2807,6 +2853,49 @@ mod tests {
                 _ => None,
             })
             .expect("worker should finish with saved results")
+    }
+
+    #[test]
+    fn game_match_uses_unique_game_artwork_and_keeps_multi_game_cores_generic() {
+        let mut item = Item::fixture(
+            "Fixture Core",
+            LocalState::Current,
+            Some(PathBuf::from("/_Console/Fixture.rbf")),
+        );
+        let cover = PathBuf::from("/media/fat/docs/Fixture/Artwork/game.jpg");
+        let game = Row {
+            name: "Fixture Game".into(),
+            sort_key: String::new(),
+            kind: Kind::Play(Launch::File(PathBuf::from(
+                "/media/fat/games/Fixture/game.rom",
+            ))),
+            cover: Some(cover.clone()),
+            genre: Some("Action".into()),
+            favorite: false,
+            below: None,
+            details: Details {
+                desc: "A uniquely matched game.".into(),
+                publisher: "Fixture Publisher".into(),
+                developer: String::new(),
+                released: "2026".into(),
+                players: "1".into(),
+                lang: String::new(),
+            },
+        };
+
+        item.set_game_match(1, Some(game));
+        assert_eq!(item.cover(), Some(cover.as_path()));
+        let information = item.information();
+        assert!(information.contains("Matched game: Fixture Game"));
+        assert!(information.contains("Genre: Action"));
+        assert!(information.contains("Publisher: Fixture Publisher"));
+        assert!(information.contains("Description\nA uniquely matched game."));
+
+        item.set_game_match(2, None);
+        assert!(item.cover().is_none());
+        let information = item.information();
+        assert!(information.contains("Games using this core: 2"));
+        assert!(!information.contains("Matched game:"));
     }
 
     #[test]

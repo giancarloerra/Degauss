@@ -2243,6 +2243,38 @@ fn misterzine_detail_text(row: &browse::Row) -> (String, String) {
     (heading, row.details.desc.trim().to_string())
 }
 
+/// The one distinct playable row in a system cache. A repeated reference to
+/// the same launch target is still one game; two different targets make the
+/// core ambiguous and keep its normal logo.
+fn sole_cached_game(cache: &crate::cache::SystemCache) -> Option<browse::Row> {
+    let mut found: Option<browse::Row> = None;
+    for row in cache
+        .folders
+        .values()
+        .flat_map(|folder| folder.rows.iter())
+        .filter(|row| matches!(row.kind, browse::Kind::Play(_)))
+    {
+        if let Some(previous) = &found {
+            if previous.kind != row.kind {
+                return None;
+            }
+        } else {
+            found = Some(row.clone());
+        }
+    }
+    found
+}
+
+fn cached_game_for_path(cache: &crate::cache::SystemCache, path: &Path) -> Option<browse::Row> {
+    let wanted = browse::Kind::Play(browse::Launch::File(path.to_path_buf()));
+    cache
+        .folders
+        .values()
+        .flat_map(|folder| folder.rows.iter())
+        .find(|row| row.kind == wanted)
+        .cloned()
+}
+
 #[cfg(test)]
 fn game_information(row: &browse::Row) -> String {
     game_information_named(row, &row.name)
@@ -9374,6 +9406,134 @@ impl App {
         })
     }
 
+    /// Load the source already selected for a system without probing or
+    /// preparing anything. A selected Pack that is unavailable never borrows
+    /// Gamelist presentation as a fallback.
+    fn core_updates_source(
+        &mut self,
+        system_id: &str,
+    ) -> Option<(
+        crate::cache::SystemCache,
+        Option<crate::artwork_pack::Provider>,
+    )> {
+        if self.source_problem(system_id).is_some() {
+            return None;
+        }
+        let pack_root =
+            crate::artwork_pack::selected_root(&self.effective_artwork_pack_roots, system_id)
+                .map(Path::to_path_buf);
+        let cache = self.load_selected_system_cache(system_id)?;
+        let provider = match pack_root.as_deref() {
+            Some(root) => match self.provider_from_state(system_id, root) {
+                Ok(Some(provider)) => Some(provider),
+                Ok(None) => return None,
+                Err(error) => {
+                    crate::note(&format!(
+                        "core updates  {system_id} artwork unavailable: {error}"
+                    ));
+                    return None;
+                }
+            },
+            None => None,
+        };
+        Some((cache, provider))
+    }
+
+    /// Attach presentation only when one game can be identified without a
+    /// choice. Multi-game cores retain their normal logo and expose only the
+    /// count in Information.
+    fn enrich_misterzine_games(&mut self, items: &mut [crate::misterzine::Item]) {
+        let installed_systems: HashSet<String> = self
+            .all_systems
+            .iter()
+            .map(|system| system.def.id.clone())
+            .collect();
+        let counts: HashMap<String, usize> = self
+            .index
+            .as_ref()
+            .map(|index| {
+                index
+                    .systems
+                    .iter()
+                    .map(|(id, summary)| (id.clone(), summary.games))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let unique_systems: HashSet<String> = items
+            .iter()
+            .filter(|item| item.installed())
+            .filter_map(|item| item.logo_id().map(str::to_string))
+            .filter(|id| installed_systems.contains(id) && counts.get(id) == Some(&1))
+            .collect();
+        let mut unique_rows = HashMap::<String, browse::Row>::new();
+        for id in unique_systems {
+            let Some((cache, provider)) = self.core_updates_source(&id) else {
+                continue;
+            };
+            let Some(mut row) = sole_cached_game(&cache) else {
+                continue;
+            };
+            if let Some(provider) = provider.as_ref() {
+                provider.apply_prepared(std::slice::from_mut(&mut row));
+            }
+            unique_rows.insert(id, row);
+        }
+        for item in items.iter_mut().filter(|item| item.installed()) {
+            let Some(id) = item.logo_id().filter(|id| installed_systems.contains(*id)) else {
+                continue;
+            };
+            let Some(count) = counts.get(id).copied() else {
+                continue;
+            };
+            item.set_game_match(count, unique_rows.get(id).cloned());
+        }
+
+        if !self
+            .index
+            .as_ref()
+            .is_some_and(|index| index.systems.contains_key("Arcade"))
+        {
+            return;
+        }
+        let Some(map) = crate::cache::load_core_game_map(&self.cache_dir) else {
+            return;
+        };
+        let arcade_matches: Vec<(usize, Vec<PathBuf>)> = items
+            .iter()
+            .enumerate()
+            .filter(|(_, item)| item.installed() && item.base().eq_ignore_ascii_case("Arcade"))
+            .filter_map(|(at, item)| {
+                let paths = map.paths(item.core_identity()?).to_vec();
+                (!paths.is_empty()).then_some((at, paths))
+            })
+            .collect();
+        let wanted: HashSet<PathBuf> = arcade_matches
+            .iter()
+            .filter(|(_, paths)| paths.len() == 1)
+            .map(|(_, paths)| paths[0].clone())
+            .collect();
+        let mut arcade_rows = HashMap::<PathBuf, browse::Row>::new();
+        if !wanted.is_empty() {
+            if let Some((cache, provider)) = self.core_updates_source("Arcade") {
+                for path in &wanted {
+                    let Some(mut row) = cached_game_for_path(&cache, path) else {
+                        continue;
+                    };
+                    if let Some(provider) = provider.as_ref() {
+                        provider.apply_prepared(std::slice::from_mut(&mut row));
+                    }
+                    arcade_rows.insert(path.clone(), row);
+                }
+            }
+        }
+        for (at, paths) in arcade_matches {
+            let game = (paths.len() == 1)
+                .then(|| arcade_rows.get(&paths[0]).cloned())
+                .flatten();
+            items[at].set_game_match(paths.len(), game);
+        }
+    }
+
     fn rebuild_misterzine_rows(&mut self) {
         let selected = self
             .misterzine_visible
@@ -9410,7 +9570,8 @@ impl App {
         self.touch_selection();
     }
 
-    fn apply_misterzine_snapshot(&mut self, snapshot: crate::misterzine::Snapshot) {
+    fn apply_misterzine_snapshot(&mut self, mut snapshot: crate::misterzine::Snapshot) {
+        self.enrich_misterzine_games(&mut snapshot.items);
         self.misterzine_items = snapshot.items;
         self.rebuild_misterzine_rows();
         self.rebuild_system_list();
@@ -16464,6 +16625,12 @@ impl App {
                             "Core Updates\nReads only databases configured in Downloader.\nInstalled local cores remain visible without a configured source."
                                 .to_string(),
                         );
+                        self.apply_geometry();
+                        // Context clears the preview while its plain list is
+                        // open. Returning underneath the modal must schedule
+                        // the selected Core Updates artwork again, otherwise
+                        // dismissing About leaves an empty Details panel.
+                        self.touch_selection();
                     } else if choice == FILTER_RELEASES {
                         self.open_misterzine_filters();
                     } else if choice == CHANGE_VIEW || choice == CORE_VERSION {

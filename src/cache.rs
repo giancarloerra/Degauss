@@ -29,6 +29,7 @@ use crate::error::{DegaussError, Result};
 /// ignored rather than misread.
 const FORMAT: u32 = 1;
 const ARTWORK_PACK_FORMAT: u32 = 3;
+const CORE_GAME_MAP_FORMAT: u32 = 1;
 
 /// What is known about every system, small enough to read at startup.
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -51,6 +52,26 @@ pub struct SystemCache {
     pub format: u32,
     /// Keyed by [`Place::key`].
     pub folders: BTreeMap<String, Folder>,
+}
+
+/// Canonical Arcade descriptors grouped by the core they load.
+///
+/// This is independent of the selected metadata source: both Gamelist and
+/// Artwork Pack caches contain the same launch paths. It is kept beside those
+/// caches so Core Updates never has to open thousands of MRA files itself.
+#[derive(Serialize, Deserialize, Default, Debug, Clone, PartialEq, Eq)]
+pub struct CoreGameMap {
+    format: u32,
+    by_identity: BTreeMap<String, Vec<PathBuf>>,
+}
+
+impl CoreGameMap {
+    pub fn paths(&self, identity: &str) -> &[PathBuf] {
+        self.by_identity
+            .get(identity)
+            .map(Vec::as_slice)
+            .unwrap_or_default()
+    }
 }
 
 /// Independent envelope for source-neutral rows. Keeping it under its own
@@ -208,6 +229,10 @@ pub fn core_catalogue_path(dir: &Path) -> PathBuf {
     dir.join("cores.bin")
 }
 
+pub fn core_game_map_path(dir: &Path) -> PathBuf {
+    dir.join("core-games.bin")
+}
+
 /// A system's own file. The id comes from the shipped systems table and is
 /// plain, but it decides a filename, so anything surprising is replaced
 /// rather than trusted.
@@ -233,6 +258,12 @@ pub fn load_core_catalogue(dir: &Path) -> Option<crate::systems::CoreCatalogue> 
     let bytes = std::fs::read(core_catalogue_path(dir)).ok()?;
     let catalogue: crate::systems::CoreCatalogue = postcard::from_bytes(&bytes).ok()?;
     (catalogue.format == crate::systems::CoreCatalogue::FORMAT).then_some(catalogue)
+}
+
+pub fn load_core_game_map(dir: &Path) -> Option<CoreGameMap> {
+    let bytes = std::fs::read(core_game_map_path(dir)).ok()?;
+    let map: CoreGameMap = postcard::from_bytes(&bytes).ok()?;
+    (map.format == CORE_GAME_MAP_FORMAT).then_some(map)
 }
 
 pub fn load_system(dir: &Path, id: &str) -> Option<SystemCache> {
@@ -688,6 +719,59 @@ fn validate_encoded(kind: CacheKind, bytes: &[u8]) -> bool {
     }
 }
 
+/// Read only canonical top-level Arcade descriptors already represented by a
+/// completed Arcade cache. Organised and alternative subfolders may contain
+/// many links to the same game; they must not turn one core into an arbitrary
+/// many-game match.
+fn build_core_game_map(cache: &SystemCache, cancelled: &AtomicBool) -> Option<CoreGameMap> {
+    let mut by_identity = BTreeMap::<String, Vec<PathBuf>>::new();
+    for row in cache.folders.values().flat_map(|folder| folder.rows.iter()) {
+        if cancelled.load(Ordering::Relaxed) {
+            return None;
+        }
+        let Kind::Play(Launch::File(path)) = &row.kind else {
+            continue;
+        };
+        let canonical = path
+            .extension()
+            .and_then(|extension| extension.to_str())
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("mra"))
+            && path
+                .parent()
+                .and_then(Path::file_name)
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.eq_ignore_ascii_case("_Arcade"));
+        if !canonical {
+            continue;
+        }
+        let Ok(descriptor) =
+            crate::favorites::descriptor_reference(path, "Arcade core artwork mapping")
+        else {
+            continue;
+        };
+        let Some(stem) = descriptor
+            .rbf
+            .as_deref()
+            .and_then(|rbf| Path::new(rbf.trim()).file_stem())
+            .and_then(|stem| stem.to_str())
+        else {
+            continue;
+        };
+        let identity = crate::systems::core_name(stem);
+        if !identity.is_empty() {
+            by_identity.entry(identity).or_default().push(path.clone());
+        }
+    }
+    for paths in by_identity.values_mut() {
+        paths.sort();
+        paths.dedup();
+    }
+    Some(CoreGameMap {
+        format: CORE_GAME_MAP_FORMAT,
+        by_identity,
+    })
+}
+
 #[derive(Debug)]
 struct StagedCacheFile {
     final_path: PathBuf,
@@ -1064,6 +1148,23 @@ fn stage_transactional_with_tag(
             ));
         }
     }
+    let arcade_map = prepared
+        .caches
+        .iter()
+        .find(|cache| cache.id.eq_ignore_ascii_case("Arcade"))
+        .and_then(|cache| build_core_game_map(&cache.cache, cancelled));
+    if cancelled.load(Ordering::Relaxed) {
+        return Ok(None);
+    }
+    if let Some(map) = arcade_map {
+        let bytes = postcard::to_stdvec(&map).map_err(|error| {
+            DegaussError::unsupported("core game map", format!("writing the map: {error}"))
+        })?;
+        prepared.stage_extra_file(core_game_map_path(dir), &bytes, "core-games", |written| {
+            postcard::from_bytes::<CoreGameMap>(written)
+                .is_ok_and(|decoded| decoded.format == CORE_GAME_MAP_FORMAT)
+        })?;
+    }
     Ok(Some(prepared))
 }
 
@@ -1370,6 +1471,91 @@ mod tests {
         assert!(load_core_catalogue(&store).is_none());
         assert_eq!(load_index(&store).unwrap().systems["NES"].games, 12);
         std::fs::remove_dir_all(store).unwrap();
+    }
+
+    #[test]
+    fn arcade_cache_publishes_only_canonical_core_game_matches() {
+        let root = temp("core-game-map");
+        let arcade = root.join("_Arcade");
+        let alternatives = arcade.join("_alternatives");
+        std::fs::create_dir_all(&alternatives).unwrap();
+        let one = arcade.join("One.mra");
+        let two = arcade.join("Two.mra");
+        let other = arcade.join("Other.mra");
+        let duplicate = alternatives.join("Duplicate.mra");
+        let broken = arcade.join("Broken.mra");
+        for (path, core) in [
+            (&one, "OnlyCore"),
+            (&two, "SharedCore"),
+            (&other, "SharedCore"),
+            (&duplicate, "OnlyCore"),
+        ] {
+            std::fs::write(
+                path,
+                format!("<mistergamedescription><rbf>_Arcade/cores/{core}</rbf></mistergamedescription>"),
+            )
+            .unwrap();
+        }
+        std::fs::write(&broken, b"<not-xml").unwrap();
+        let row = |path: &Path| Row {
+            name: path.file_stem().unwrap().to_string_lossy().into_owned(),
+            sort_key: String::new(),
+            kind: Kind::Play(Launch::File(path.to_path_buf())),
+            cover: None,
+            genre: None,
+            favorite: false,
+            below: None,
+            details: Default::default(),
+        };
+        let cache = SystemCache {
+            format: FORMAT,
+            folders: BTreeMap::from([
+                (
+                    Place::Dir(arcade.clone()).key(),
+                    Folder {
+                        mtime: 0,
+                        rows: [&one, &two, &other, &broken]
+                            .into_iter()
+                            .map(|path| row(path))
+                            .collect(),
+                        games: 4,
+                    },
+                ),
+                (
+                    Place::Dir(alternatives).key(),
+                    Folder {
+                        mtime: 0,
+                        rows: vec![row(&duplicate)],
+                        games: 1,
+                    },
+                ),
+            ]),
+        };
+        let store = root.join("cache");
+        let (_, warnings) = stage_transactional(
+            &store,
+            CacheKind::Gamelist,
+            vec![StagedSystemCache {
+                id: "Arcade".into(),
+                cache,
+                fingerprints: Default::default(),
+                fingerprints_complete: false,
+            }],
+            &AtomicBool::new(false),
+        )
+        .unwrap()
+        .unwrap()
+        .install()
+        .unwrap();
+        let map = load_core_game_map(&store).unwrap();
+        assert_eq!(map.paths("onlycore"), [one]);
+        assert_eq!(map.paths("sharedcore"), [other, two]);
+        assert!(map.paths("missing").is_empty());
+        assert!(
+            warnings.is_empty(),
+            "the optional map does not change normal indexing warnings"
+        );
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     use super::*;

@@ -870,6 +870,7 @@ fn run_misterzine_browser_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
         .is_some_and(|message| message.contains("no longer installed")));
     app.message = None;
 
+    let details_art_width = app.ui.get_art_width();
     app.open_context();
     let about = app
         .menu
@@ -877,12 +878,35 @@ fn run_misterzine_browser_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
         .position(|entry| entry == ABOUT_MISTERZINE)
         .unwrap();
     app.menu_list.select(about);
+    app.art_pending = false;
     app.handle(Action::Accept);
+    assert_eq!(app.screen, Screen::Browse);
+    assert_eq!(
+        app.ui.get_art_width(),
+        details_art_width,
+        "About returns to the Core Updates Details geometry before its modal is drawn"
+    );
+    assert!(
+        app.art_pending,
+        "About schedules the selected Core Updates preview after Context cleared it"
+    );
     assert!(app
         .message
         .as_deref()
         .is_some_and(|message| message.contains("configured in Downloader")
             && message.contains("Installed local cores remain visible")));
+    app.handle(Action::Quit);
+    assert!(app.message.is_none());
+    assert_eq!(app.screen, Screen::Browse);
+    assert!(
+        app.art_pending,
+        "dismissing About keeps the selected Core Updates preview pending"
+    );
+    assert_eq!(
+        app.ui.get_art_width(),
+        details_art_width,
+        "dismissing About leaves the Core Updates Details geometry intact"
+    );
     assert!(app.save_settings());
     let settings = Settings::load(&app.settings_path).unwrap();
     app.ui.hide().unwrap();
