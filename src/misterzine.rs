@@ -1932,6 +1932,7 @@ fn scan_local_cores(request: &Request) -> Result<Vec<LocalCore>> {
         &by_identity,
         &mut cores,
     )?;
+    scan_unlisted_local_cores(&request.menu_root, &by_identity, &mut cores)?;
     if cores.len() > MAX_LOCAL_CORES {
         return Err(DegaussError::unsupported(
             "installed core inventory",
@@ -1940,6 +1941,113 @@ fn scan_local_cores(request: &Request) -> Result<Vec<LocalCore>> {
     }
     cores.sort_by(|left, right| left.relative.cmp(&right.relative));
     Ok(cores)
+}
+
+/// The Cores browser deliberately keeps one preferred Standard launcher for
+/// each core identity. Core Updates instead reports every installed file, so
+/// retain alternate Standard builds that live beside that preferred launcher.
+fn scan_unlisted_local_cores(
+    menu_root: &Path,
+    by_identity: &BTreeMap<String, Vec<&CoreEntry>>,
+    cores: &mut Vec<LocalCore>,
+) -> Result<()> {
+    let mut seen = cores
+        .iter()
+        .map(|core| core.relative.to_ascii_lowercase())
+        .collect::<BTreeSet<_>>();
+    let entries = std::fs::read_dir(menu_root)
+        .map_err(|error| DegaussError::io("reading installed cores", menu_root, error))?;
+    for entry in entries {
+        let entry = entry
+            .map_err(|error| DegaussError::io("reading an installed core", menu_root, error))?;
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if !name.starts_with('_') {
+            continue;
+        }
+        let path = entry.path();
+        let metadata = std::fs::metadata(&path)
+            .map_err(|error| DegaussError::io("checking an installed core", &path, error))?;
+        if !metadata.is_dir() {
+            continue;
+        }
+        let label = name.trim_start_matches('_');
+        if label.eq_ignore_ascii_case("Arcade")
+            || label.eq_ignore_ascii_case("RA_Cores")
+            || crate::systems::is_favorites(label.trim_start_matches('@'))
+        {
+            continue;
+        }
+        scan_unlisted_local_core_folder(menu_root, &path, label, 0, by_identity, &mut seen, cores)?;
+    }
+    Ok(())
+}
+
+fn scan_unlisted_local_core_folder(
+    menu_root: &Path,
+    folder: &Path,
+    menu_folder: &str,
+    depth: usize,
+    by_identity: &BTreeMap<String, Vec<&CoreEntry>>,
+    seen: &mut BTreeSet<String>,
+    cores: &mut Vec<LocalCore>,
+) -> Result<()> {
+    if depth > 1 {
+        return Ok(());
+    }
+    let entries = std::fs::read_dir(folder)
+        .map_err(|error| DegaussError::io("reading installed cores", folder, error))?;
+    for entry in entries {
+        let entry =
+            entry.map_err(|error| DegaussError::io("reading an installed core", folder, error))?;
+        let path = entry.path();
+        let metadata = std::fs::metadata(&path)
+            .map_err(|error| DegaussError::io("checking an installed core", &path, error))?;
+        if metadata.is_dir() {
+            scan_unlisted_local_core_folder(
+                menu_root,
+                &path,
+                menu_folder,
+                depth + 1,
+                by_identity,
+                seen,
+                cores,
+            )?;
+            continue;
+        }
+        if !metadata.is_file()
+            || !path
+                .extension()
+                .and_then(|extension| extension.to_str())
+                .is_some_and(|extension| extension.eq_ignore_ascii_case("rbf"))
+        {
+            continue;
+        }
+        let Some(stem) = path.file_stem().and_then(|stem| stem.to_str()) else {
+            continue;
+        };
+        let identity = crate::systems::core_name(stem);
+        if identity.is_empty() {
+            continue;
+        }
+        let relative = local_relative_path(menu_root, &path)?;
+        if !seen.insert(relative.to_ascii_lowercase()) {
+            continue;
+        }
+        let logo_id = by_identity
+            .get(&identity)
+            .and_then(|entries| entries.iter().find_map(|entry| entry.logo_id.clone()));
+        cores.push(LocalCore {
+            relative,
+            identity,
+            title: title_from_stem(stem),
+            category: menu_folder.replace('_', " "),
+            build: build_date(stem).unwrap_or_default(),
+            file_path: path.clone(),
+            launch_path: Some(path),
+            logo_id,
+        });
+    }
+    Ok(())
 }
 
 fn local_relative_path(menu_root: &Path, path: &Path) -> Result<String> {
@@ -2028,34 +2136,53 @@ fn scan_support_core_folder(
     Ok(())
 }
 
-fn local_match_rank(remote: &RemoteCore, local: &LocalCore) -> Option<u8> {
-    if local.identity != remote.identity {
-        return None;
-    }
-    let remote_path = remote.path.to_ascii_lowercase();
+fn path_match_rank(remote_path: &str, local_path: &str) -> u8 {
     let remote_folder = remote_path.split('/').next().unwrap_or_default();
-    let local_path = local.relative.to_ascii_lowercase();
     let local_folder = local_path.split('/').next().unwrap_or_default();
-    Some(if local_path == remote_path {
+    if local_path == remote_path {
         0
     } else if local_folder == remote_folder {
         1
     } else {
         2
-    })
+    }
 }
 
 fn assign_local_cores(remotes: &[RemoteCore], locals: &[LocalCore]) -> Vec<Option<usize>> {
     let mut assignments = vec![None; remotes.len()];
     let mut matched = vec![false; locals.len()];
+    let local_paths = locals
+        .iter()
+        .map(|local| local.relative.to_ascii_lowercase())
+        .collect::<Vec<_>>();
+    let mut locals_by_identity = BTreeMap::<&str, Vec<usize>>::new();
+    for (index, local) in locals.iter().enumerate() {
+        locals_by_identity
+            .entry(local.identity.as_str())
+            .or_default()
+            .push(index);
+    }
+    let remote_paths = remotes
+        .iter()
+        .map(|remote| remote.path.to_ascii_lowercase())
+        .collect::<Vec<_>>();
     for rank in 0..=2 {
         for (remote_index, remote) in remotes.iter().enumerate() {
             if assignments[remote_index].is_some() {
                 continue;
             }
-            let candidate = locals.iter().enumerate().position(|(local_index, local)| {
-                !matched[local_index] && local_match_rank(remote, local) == Some(rank)
-            });
+            let candidate =
+                locals_by_identity
+                    .get(remote.identity.as_str())
+                    .and_then(|candidates| {
+                        candidates.iter().copied().find(|&local_index| {
+                            !matched[local_index]
+                                && path_match_rank(
+                                    &remote_paths[remote_index],
+                                    &local_paths[local_index],
+                                ) == rank
+                        })
+                    });
             if let Some(local_index) = candidate {
                 assignments[remote_index] = Some(local_index);
                 matched[local_index] = true;
@@ -2877,6 +3004,63 @@ db_url = https://example.test/two.json
             logo_id: None,
         }];
         assert_eq!(assign_local_cores(&remotes, &locals), vec![None, Some(0)]);
+    }
+
+    #[test]
+    fn alternate_standard_builds_are_kept_and_matched_by_exact_path() {
+        const URL: &str = "https://example.test/distribution.json";
+        let root = TestRoot::new("alternate-standard-builds");
+        root.write(
+            "downloader.ini",
+            format!("[MiSTer]\nfilter = all\n\n[distribution_mister]\ndb_url = {URL}\n"),
+        );
+        let standard = root.write("_Console/console_extra/N64_94MHz_20260131.rbf", b"standard");
+        let alternate = root.write(
+            "_Console/console_extra/N64_94MHz+_20260809.rbf",
+            b"alternate",
+        );
+        root.write("_@Favorites/cores/Hidden_20260809.rbf", b"hidden");
+        let database = manifest(
+            "distribution_mister",
+            &[
+                (
+                    "_Console/console_extra/N64_94MHz_20260131.rbf",
+                    b"standard",
+                    &[],
+                    true,
+                ),
+                (
+                    "_Console/console_extra/N64_94MHz+_20260809.rbf",
+                    b"alternate",
+                    &[],
+                    true,
+                ),
+            ],
+        );
+        let (snapshot, notice) = ready(run_events(
+            request(
+                &root,
+                vec![core(standard.clone(), "N64 94MHz", "Console")],
+                false,
+            ),
+            |url, _, _, _| {
+                assert_eq!(url, URL);
+                Ok(database.clone())
+            },
+        ));
+        assert!(notice.is_none());
+        let find = |title: &str| {
+            snapshot
+                .items
+                .iter()
+                .find(|item| item.title() == title)
+                .unwrap()
+        };
+        assert_eq!(find("N64 94MHz").state, LocalState::Current);
+        assert_eq!(find("N64 94MHz").launch_path, Some(standard));
+        assert_eq!(find("N64 94MHz+").state, LocalState::Current);
+        assert_eq!(find("N64 94MHz+").launch_path, Some(alternate));
+        assert!(snapshot.items.iter().all(|item| item.title() != "Hidden"));
     }
 
     #[test]
