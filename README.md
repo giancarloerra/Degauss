@@ -40,7 +40,7 @@ separately. CRT presentation is applied for the README.
 
 | | | |
 |---|---|---|
-| <img src="docs/screenshots/0.8.0/01-home.png" alt="Home with optional Cores, Last Played and Core Updates collections" height="200"> | <img src="docs/screenshots/0.7.0/03-handheld.png" alt="Optional Handheld category" height="200"> | <img src="docs/screenshots/0.6.0/02-details.png" alt="Details: DoDonPachi III" height="200"> |
+| <img src="docs/screenshots/0.8.1/01-home.png" alt="Home with optional Cores, Last Played and Core Updates collections" height="200"> | <img src="docs/screenshots/0.7.0/03-handheld.png" alt="Optional Handheld category" height="200"> | <img src="docs/screenshots/0.6.0/02-details.png" alt="Details: DoDonPachi III" height="200"> |
 | Home | Optional Handheld Category | Details View |
 | <img src="docs/screenshots/0.7.0/01-large-artwork.png" alt="Large Artwork Details: DonPachi" height="200"> | <img src="docs/screenshots/0.6.0/03-list.png" alt="List View: Arcade Favourites" height="200"> | <img src="docs/screenshots/0.6.0/04-gallery.png" alt="Gallery View: Arcade Favourites" height="200"> |
 | Large Artwork Details | List View | Gallery View |
@@ -48,9 +48,9 @@ separately. CRT presentation is applied for the README.
 | Multi List View | Carousel View | Tiled View |
 | <img src="docs/screenshots/0.8.0/02-core-selection.png" alt="Per-system Core Selection" height="200"> | <img src="docs/screenshots/0.6.0/08-options.png" alt="Extensive Options" height="200"> | <img src="docs/screenshots/0.7.0/02-shortcuts.png" alt="Configurable Hold Shortcuts" height="200"> |
 | Per-system Core Selection | Extensive Options | Configurable Hold Shortcuts |
-| <img src="docs/screenshots/0.6.0/10-appearance.png" alt="Appearance" height="200"> | <img src="docs/screenshots/0.8.0/03-library.png" alt="Library: optional Cores and Core Updates browsers" height="200"> | <img src="docs/screenshots/0.6.0/12-display.png" alt="Display" height="200"> |
-| Appearance Settings | Library Visibility | CRT Fit Controls |
-| <img src="docs/screenshots/0.8.0/04-misterzine.png" alt="Core Updates" height="200"> | <img src="docs/screenshots/0.8.0/05-cores.png" alt="Installed Cores Browser" height="200"> | <img src="docs/screenshots/0.8.0/06-metadata-filters.png" alt="Metadata Filters" height="200"> |
+| <img src="docs/screenshots/0.6.0/10-appearance.png" alt="Appearance" height="200"> | <img src="docs/screenshots/0.8.1/02-library.png" alt="Library: optional Cores and Core Updates browsers" height="200"> | <img src="docs/screenshots/0.8.1/04-screen-rotation.png" alt="Complete interface rotated clockwise for a vertical display" height="200"> |
+| Appearance Settings | Library Visibility | 90° Screen Rotation |
+| <img src="docs/screenshots/0.8.1/03-core-updates.png" alt="Core Updates" height="200"> | <img src="docs/screenshots/0.8.0/05-cores.png" alt="Installed Cores Browser" height="200"> | <img src="docs/screenshots/0.8.0/06-metadata-filters.png" alt="Metadata Filters" height="200"> |
 | Core Updates | Installed Cores Browser | Metadata Filters |
 | <img src="docs/screenshots/0.6.0/13-developer.png" alt="Developer" height="200"> | <img src="docs/screenshots/0.6.0/14-actions.png" alt="Grouped Actions" height="200"> | <img src="docs/screenshots/0.6.0/15-random-favourite.png" alt="Random Game and Random Favourite" height="200"> |
 | Drawing and Performance Controls | Actions for This Place | Random Game or Random Favourite |
@@ -260,7 +260,8 @@ while `/tmp/degauss.log` keeps the technical detail.
   yours.
 - **CRT-optimised.** 352×240 with 1:1 pixel mapping to a 15 kHz analog output.
   Overscan margins and screen position are settings. Larger
-  framebuffers are laid out from their own size, so HDMI works too.
+  framebuffers are laid out from their own size, so HDMI works too. The complete
+  interface can rotate 90° clockwise or counterclockwise for a vertical display.
 - **The card is the truth.** Reorganise, rename or move files with any
   tool and the browser follows: nothing has to be re-imported or re-tagged.
   The index it keeps is only a copy of what the card already says, and
@@ -279,7 +280,8 @@ while `/tmp/degauss.log` keeps the technical detail.
   is kept, reported in `/tmp/degauss.log` and Game Information, and
   refused at launch with the same line, rather than pointed at one of them
   by folder order.
-- **Awkward systems handled** without hassle: AmigaVision, DOS,
+- **Awkward systems handled** without hassle: AmigaVision and its standalone
+  Amiga CD32 package, DOS,
   Neo Geo, Arcade, X68000, and cores that are several machines.
 
 Measured on the DE10-Nano's own hardware, with a large multi-system
