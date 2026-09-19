@@ -47,6 +47,12 @@ fi
 # documents before being carried into the encoded form.
 degauss_cargo_root="$(cd "$(dirname "$(command -v cargo)")/.." && pwd -P)"
 degauss_rust_root="$(rustc --print sysroot)"
+degauss_target_root="${CARGO_TARGET_DIR:-${HERE}/target}"
+if [[ "${degauss_target_root}" != /* ]]; then
+    degauss_target_root="${HERE}/${degauss_target_root}"
+fi
+mkdir -p "${degauss_target_root}"
+degauss_target_root="$(cd "${degauss_target_root}" && pwd -P)"
 degauss_encoded_rustflags="${CARGO_ENCODED_RUSTFLAGS:-}"
 if [[ -z "${degauss_encoded_rustflags}" && -n "${RUSTFLAGS:-}" ]]; then
     read -r -a degauss_existing_rustflags <<< "${RUSTFLAGS}"
@@ -61,6 +67,7 @@ for degauss_rustflag in \
     "-C" \
     "linker-flavor=ld.lld" \
     "--remap-path-prefix=${HERE}=." \
+    "--remap-path-prefix=${degauss_target_root}=/target" \
     "--remap-path-prefix=${degauss_cargo_root}=/cargo" \
     "--remap-path-prefix=${degauss_rust_root}=/rust"
 do
@@ -75,13 +82,14 @@ unset RUSTFLAGS
 echo "building"
 cargo build --release --target "${TARGET}"
 
-degauss_binary="target/${TARGET}/release/degauss"
+degauss_binary="${degauss_target_root}/${TARGET}/release/degauss"
 if ! LC_ALL=C grep -aFq -f <(printf '%s\n' "${degauss_developer_id}") "${degauss_binary}" \
     || ! LC_ALL=C grep -aFq -f <(printf '%s\n' "${degauss_developer_password}") "${degauss_binary}"; then
     echo "The release binary did not retain both ScreenScraper credential fields." >&2
     exit 1
 fi
 if LC_ALL=C grep -aFq "${HERE}" "${degauss_binary}" \
+    || LC_ALL=C grep -aFq "${degauss_target_root}" "${degauss_binary}" \
     || LC_ALL=C grep -aFq "${degauss_cargo_root}" "${degauss_binary}" \
     || LC_ALL=C grep -aFq "${degauss_rust_root}" "${degauss_binary}"; then
     echo "The release binary retained a private build-machine path." >&2
@@ -116,7 +124,7 @@ cp assets/fonts/DejaVuSans-LICENSE.txt assets/fonts/Px437-LICENSE.txt \
 
 unset degauss_developer_id degauss_developer_password
 unset DEGAUSS_SCREENSCRAPER_DEVID DEGAUSS_SCREENSCRAPER_DEVPASSWORD
-unset degauss_cargo_root degauss_rust_root degauss_encoded_rustflags
+unset degauss_cargo_root degauss_rust_root degauss_target_root degauss_encoded_rustflags
 unset degauss_existing_rustflags degauss_rustflag CARGO_ENCODED_RUSTFLAGS
 
 echo
