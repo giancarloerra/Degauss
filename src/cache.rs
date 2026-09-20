@@ -769,7 +769,9 @@ fn build_core_game_map_observed(
             continue;
         }
         checked += 1;
-        progress(checked);
+        if checked % 32 == 0 {
+            progress(checked);
+        }
         let Ok(descriptor) =
             crate::favorites::descriptor_reference(path, "Arcade core artwork mapping")
         else {
@@ -787,6 +789,9 @@ fn build_core_game_map_observed(
         if !identity.is_empty() {
             by_identity.entry(identity).or_default().push(path.clone());
         }
+    }
+    if checked % 32 != 0 {
+        progress(checked);
     }
     for paths in by_identity.values_mut() {
         paths.sort();
@@ -1661,7 +1666,7 @@ mod tests {
         assert_eq!(map.paths("onlycore"), std::slice::from_ref(&one));
         assert_eq!(map.paths("sharedcore"), [other.clone(), two.clone()]);
         assert!(map.paths("missing").is_empty());
-        assert_eq!(progress, [0, 1, 2, 3, 4]);
+        assert_eq!(progress, [0, 4]);
         assert!(
             warnings.is_empty(),
             "the optional map does not change normal indexing warnings"
