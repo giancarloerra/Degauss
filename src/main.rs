@@ -23,6 +23,7 @@ mod favorites;
 mod font;
 mod frontend_session;
 mod game_filter;
+mod game_launch_cores;
 mod gamelist;
 mod history;
 mod index_job;
@@ -515,7 +516,8 @@ fn diagnostic_launch_plan(
     }
     let owner = if systems::is_favorites(system.category()) {
         reference
-            .and_then(|reference| app::owner_of_favorite(&loaded.systems, &reference))
+            .as_ref()
+            .and_then(|reference| app::owner_of_favorite(&loaded.systems, reference))
             .and_then(|id| {
                 loaded
                     .systems
@@ -526,6 +528,14 @@ fn diagnostic_launch_plan(
     } else {
         system
     };
+    let identity = crate::launch::amiga_marker(path)
+        .map(|(install, title)| browse::Launch::AmigaVision { install, title })
+        .or_else(|| {
+            reference
+                .as_ref()
+                .map(|reference| browse::Launch::File(reference.owner_target.clone()))
+        })
+        .unwrap_or_else(|| browse::Launch::File(path.to_path_buf()));
     launch::plan_with_selections(
         &owner.to_config(),
         path,
@@ -538,11 +548,7 @@ fn diagnostic_launch_plan(
             .core_choices
             .get(&owner.def.id)
             .map(String::as_str),
-        loaded
-            .settings
-            .launch_cores
-            .get(&owner.def.id)
-            .map(String::as_str),
+        crate::game_launch_cores::effective(&loaded.settings, &owner.def.id, &identity),
     )
 }
 
@@ -869,7 +875,28 @@ fn run() -> Result<()> {
                     diagnostic_launch_plan(&loaded, system, path, mgl)?
                 }
                 browse::Kind::Play(browse::Launch::AmigaVision { install, title }) => {
-                    launch::plan_amiga_vision(&system.to_config(), install, title, mgl)?
+                    launch::plan_amiga_vision_with_selections(
+                        &system.to_config(),
+                        install,
+                        title,
+                        mgl,
+                        Path::new(&loaded.config.menu_root),
+                        loaded.settings.core_preference.unwrap_or_default()
+                            == settings::CorePreference::RetroAchievementsFirst,
+                        loaded
+                            .settings
+                            .core_choices
+                            .get(&system.def.id)
+                            .map(String::as_str),
+                        crate::game_launch_cores::effective(
+                            &loaded.settings,
+                            &system.def.id,
+                            &browse::Launch::AmigaVision {
+                                install: install.clone(),
+                                title: title.clone(),
+                            },
+                        ),
+                    )?
                 }
                 browse::Kind::Enter(_) => {
                     return Err(DegaussError::unsupported(
@@ -1044,7 +1071,8 @@ fn import_favorites(loaded: &Loaded, list: &Path) -> Result<()> {
         }
         let owner_id = if title.is_empty() {
             reference
-                .and_then(|reference| app::owner_of_favorite(&loaded.systems, &reference))
+                .as_ref()
+                .and_then(|reference| app::owner_of_favorite(&loaded.systems, reference))
                 .or_else(|| app::owner_of_path(&loaded.systems, &path))
         } else {
             app::owner_of_path(&loaded.systems, &favorites::amiga_key(&path, title))
@@ -1057,6 +1085,30 @@ fn import_favorites(loaded: &Loaded, list: &Path) -> Result<()> {
             continue;
         };
         let config = owner.to_config();
+        let identity = if title.is_empty() {
+            crate::launch::amiga_marker(&path)
+                .map(|(install, title)| browse::Launch::AmigaVision { install, title })
+                .or_else(|| {
+                    reference
+                        .as_ref()
+                        .map(|reference| browse::Launch::File(reference.owner_target.clone()))
+                })
+                .unwrap_or_else(|| browse::Launch::File(path.clone()))
+        } else {
+            browse::Launch::AmigaVision {
+                install: path.clone(),
+                title: title.to_string(),
+            }
+        };
+        let selected_family =
+            crate::game_launch_cores::effective(&loaded.settings, &owner.def.id, &identity);
+        let selected_core = loaded
+            .settings
+            .core_choices
+            .get(&owner.def.id)
+            .map(String::as_str);
+        let ra_first = loaded.settings.core_preference.unwrap_or_default()
+            == settings::CorePreference::RetroAchievementsFirst;
 
         if title.is_empty() {
             if already.holds(&path) {
@@ -1067,18 +1119,9 @@ fn import_favorites(loaded: &Loaded, list: &Path) -> Result<()> {
                 &config,
                 &path,
                 Path::new(&loaded.config.menu_root),
-                loaded.settings.core_preference.unwrap_or_default()
-                    == settings::CorePreference::RetroAchievementsFirst,
-                loaded
-                    .settings
-                    .core_choices
-                    .get(&owner.def.id)
-                    .map(String::as_str),
-                loaded
-                    .settings
-                    .launch_cores
-                    .get(&owner.def.id)
-                    .map(String::as_str),
+                ra_first,
+                selected_core,
+                selected_family,
             ) {
                 Ok(Some(mgl)) => {
                     let stem = path.file_stem().unwrap_or_default().to_string_lossy();
@@ -1117,8 +1160,16 @@ fn import_favorites(loaded: &Loaded, list: &Path) -> Result<()> {
                 }
             })
             .collect();
-        match launch::favorite_mgl_amiga(&config, &path, title)
-            .and_then(|mgl| favorites::add_game(&into, &safe, &mgl))
+        match launch::favorite_mgl_amiga_with_selections(
+            &config,
+            &path,
+            title,
+            Path::new(&loaded.config.menu_root),
+            ra_first,
+            selected_core,
+            selected_family,
+        )
+        .and_then(|mgl| favorites::add_game(&into, &safe, &mgl))
         {
             Ok(_) => written += 1,
             Err(e) => {

@@ -383,6 +383,10 @@ pub struct Settings {
     /// Values are stable profile IDs declared by the systems table.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub launch_cores: BTreeMap<String, String>,
+    /// Explicit per-game compatible core family, grouped by owning system.
+    /// Missing systems and games inherit the per-system Launch Core setting.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub game_launch_cores: BTreeMap<String, BTreeMap<String, String>>,
     /// The browse strip is visible by default. Both On and Off are explicit
     /// saved choices; only an absent value follows the default.
     pub show_bar: Option<bool>,
@@ -1195,6 +1199,25 @@ mod tests {
         let decoded: Settings = toml::from_str(&toml::to_string(&settings).unwrap()).unwrap();
         assert_eq!(decoded.launch_cores, settings.launch_cores);
         assert!(decoded.core_choices.is_empty());
+    }
+
+    #[test]
+    fn per_game_launch_cores_are_sparse_and_backward_compatible() {
+        let old: Settings =
+            toml::from_str(include_str!("../tests/fixtures/v0.2.0-settings.toml")).unwrap();
+        assert!(old.game_launch_cores.is_empty());
+        assert!(!toml::to_string(&Settings::default())
+            .unwrap()
+            .contains("game_launch_cores"));
+
+        let mut settings = Settings::default();
+        settings.game_launch_cores.insert(
+            "N64".into(),
+            [("f:/media/fat/games/N64/Game.z64".into(), "n64-80mhz".into())].into(),
+        );
+        let decoded: Settings = toml::from_str(&toml::to_string(&settings).unwrap()).unwrap();
+        assert_eq!(decoded.game_launch_cores, settings.game_launch_cores);
+        assert!(decoded.launch_cores.is_empty());
     }
 
     #[test]

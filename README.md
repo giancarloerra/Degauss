@@ -637,6 +637,14 @@ saved for that system and applies to its games and recognized favourites.
 and never automatically chooses an Unstable build. A missing explicitly selected
 version produces an error; it does not launch another version.
 
+When a system declares more than one compatible core family,
+**X Actions → Library → System Launch Core** chooses the family for that system.
+On a playable game, **X Actions → Game → Launch Core** can override that family
+for only that game. **Use System Setting** removes the game override. The choice
+also applies when the same game is opened through Last Played or a Degauss
+Favourite; self-describing MGL, MRA and RBF launches and formats with a fixed
+core do not offer it.
+
 The **Unstable** group browses installed `_Unstable` cores by their full build names.
 RetroAchievements requires a compatible RA installation, including its Main profile.
 Degauss releases include a separate RA Main that retains Frontend and the saved
