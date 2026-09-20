@@ -1829,6 +1829,7 @@ Degauss has been reported working on:
 - the original DE10-Nano
 - QMTech
 - Multisystem2
+- SS1
 
 ### I installed an Artwork Pack, but its artwork is not showing
 
