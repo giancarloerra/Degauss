@@ -614,9 +614,13 @@ fn rule_core(
 }
 
 /// The standalone AmigaVision CD32 package keeps its title launchers beside
-/// MiSTer's menu, not beside the CHDs they describe. Locate only the one MGL
-/// that can match the selected CHD, on that CHD's own storage root.
-fn amiga_vision_cd32_mgl(system: &SystemConfig, game: &Path) -> Result<Option<PathBuf>> {
+/// MiSTer's menu, not beside the CHDs they describe. Prefer a launcher on the
+/// CHD's own storage, then try the configured MiSTer menu root.
+fn amiga_vision_cd32_mgl(
+    system: &SystemConfig,
+    game: &Path,
+    menu_root: &Path,
+) -> Result<Option<PathBuf>> {
     if !game
         .extension()
         .is_some_and(|extension| extension.eq_ignore_ascii_case("chd"))
@@ -633,33 +637,48 @@ fn amiga_vision_cd32_mgl(system: &SystemConfig, game: &Path) -> Result<Option<Pa
                 && game.starts_with(home)
         })
         .max_by_key(|home| home.components().count());
-    let Some(games) = home.and_then(Path::parent).filter(|games| {
-        games
-            .file_name()
-            .is_some_and(|name| name.eq_ignore_ascii_case("games"))
-    }) else {
-        return Ok(None);
-    };
-    let Some(storage) = games.parent() else {
+    let Some(home) = home else {
         return Ok(None);
     };
     let Some(stem) = game.file_stem() else {
         return Ok(None);
     };
-    let launcher = storage
-        .join("_Console/_Amiga CD32 Games")
+
+    let relative = Path::new("_Console/_Amiga CD32 Games")
         .join(stem)
         .with_extension("mgl");
-    match std::fs::metadata(&launcher) {
-        Ok(metadata) if metadata.is_file() => Ok(Some(launcher)),
-        Ok(_) => Ok(None),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(error) => Err(DegaussError::io(
-            "checking the AmigaVision CD32 launcher",
-            launcher,
-            error,
-        )),
+    let mut launchers = Vec::with_capacity(2);
+    if let Some(storage) = home
+        .parent()
+        .filter(|games| {
+            games
+                .file_name()
+                .is_some_and(|name| name.eq_ignore_ascii_case("games"))
+        })
+        .and_then(Path::parent)
+    {
+        launchers.push(storage.join(&relative));
     }
+    let menu_launcher = menu_root.join(relative);
+    if launchers.last() != Some(&menu_launcher) {
+        launchers.push(menu_launcher);
+    }
+
+    for launcher in launchers {
+        match std::fs::metadata(&launcher) {
+            Ok(metadata) if metadata.is_file() => return Ok(Some(launcher)),
+            Ok(_) => (),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => (),
+            Err(error) => {
+                return Err(DegaussError::io(
+                    "checking the AmigaVision CD32 launcher",
+                    launcher,
+                    error,
+                ));
+            }
+        }
+    }
+    Ok(None)
 }
 
 /// Whether starting this file relies on the system's own core.
@@ -744,7 +763,7 @@ pub fn plan_with_selections(
     selected_version: Option<&str>,
     selected_family: Option<&str>,
 ) -> Result<LaunchPlan> {
-    if let Some(launcher) = amiga_vision_cd32_mgl(system, game)? {
+    if let Some(launcher) = amiga_vision_cd32_mgl(system, game, menu_root)? {
         return plan(system, &launcher, mgl_path);
     }
     if game
@@ -762,7 +781,7 @@ pub fn plan_with_selections(
             .filter(|path| path.is_absolute());
         if let Some(launcher) = referenced
             .as_deref()
-            .map(|path| amiga_vision_cd32_mgl(system, path))
+            .map(|path| amiga_vision_cd32_mgl(system, path, menu_root))
             .transpose()?
             .flatten()
         {
@@ -1341,7 +1360,7 @@ mod tests {
     }
 
     #[test]
-    fn cd32_chds_use_the_matching_amigavision_launcher_on_their_own_storage() {
+    fn cd32_chds_use_matching_amigavision_launchers_across_storage() {
         let root = std::env::temp_dir().join(format!("degauss-cd32-{}", std::process::id()));
         std::fs::remove_dir_all(&root).ok();
         let sd = root.join("fat");
@@ -1406,15 +1425,53 @@ mod tests {
             )
         );
 
-        let supplied = usb.join("_Console/_Amiga CD32 Games/Alien Breed.mgl");
-        std::fs::remove_file(&supplied).unwrap();
+        let same_storage = usb.join("_Console/_Amiga CD32 Games/Alien Breed.mgl");
+        let menu_root_launcher = sd.join("_Console/_Amiga CD32 Games/Alien Breed.mgl");
+        std::fs::remove_file(&same_storage).unwrap();
+        std::fs::write(&menu_root_launcher, b"menu-root supplied").unwrap();
+        let cross_storage =
+            plan_with_preference(&system, &usb_game, &root.join("cross.mgl"), &sd, false).unwrap();
+        assert!(
+            cross_storage.mgl.is_empty(),
+            "the supplied MGL is not rewritten"
+        );
+        assert_eq!(
+            cross_storage.command,
+            format!("load_core {}\n", menu_root_launcher.display())
+        );
+        let favorite_cross_storage = plan_with_preference(
+            &system,
+            &favourite,
+            &root.join("favorite-cross.mgl"),
+            &sd,
+            false,
+        )
+        .unwrap();
+        assert_eq!(
+            favorite_cross_storage.command,
+            format!("load_core {}\n", menu_root_launcher.display())
+        );
+
+        std::fs::write(&same_storage, b"same-storage supplied").unwrap();
+        let preferred =
+            plan_with_preference(&system, &usb_game, &root.join("preferred.mgl"), &sd, false)
+                .unwrap();
+        assert_eq!(
+            preferred.command,
+            format!("load_core {}\n", same_storage.display()),
+            "the CHD storage keeps precedence when both launchers exist"
+        );
+
+        std::fs::remove_file(&same_storage).unwrap();
+        std::fs::remove_file(&menu_root_launcher).unwrap();
         let fallback =
             plan_with_preference(&system, &usb_game, &root.join("fallback.mgl"), &sd, false)
                 .unwrap();
         assert!(fallback.mgl.contains("<rbf>_Computer/Minimig</rbf>"));
         assert!(fallback.mgl.contains(usb_game.to_string_lossy().as_ref()));
 
-        std::fs::write(&supplied, b"supplied").unwrap();
+        std::fs::write(&same_storage, b"supplied").unwrap();
+        std::fs::write(&menu_root_launcher, b"menu supplied").unwrap();
         let cue = usb_games.join("Alien Breed.cue");
         std::fs::write(&cue, b"cue").unwrap();
         let cue_plan =
@@ -1422,7 +1479,45 @@ mod tests {
         assert!(cue_plan.mgl.contains(cue.to_string_lossy().as_ref()));
         assert_ne!(
             cue_plan.command,
-            format!("load_core {}\n", supplied.display())
+            format!("load_core {}\n", same_storage.display())
+        );
+
+        let direct_mgl = usb_games.join("Custom.mgl");
+        std::fs::write(
+            &direct_mgl,
+            "<mistergamedescription><rbf>_Other/Custom</rbf></mistergamedescription>",
+        )
+        .unwrap();
+        let direct_plan = plan_with_preference(
+            &system,
+            &direct_mgl,
+            &root.join("direct-output.mgl"),
+            &sd,
+            false,
+        )
+        .unwrap();
+        assert!(direct_plan.mgl.is_empty());
+        assert_eq!(
+            direct_plan.command,
+            format!("load_core {}\n", direct_mgl.display())
+        );
+
+        let other_games = usb.join("games/Other");
+        std::fs::create_dir_all(&other_games).unwrap();
+        let other_game = other_games.join("Alien Breed.chd");
+        std::fs::write(&other_game, b"chd").unwrap();
+        let mut other = system.clone();
+        other.name = "Other CD system".into();
+        other.path = other_games.to_string_lossy().into_owned();
+        other.extra_paths.clear();
+        let other_plan =
+            plan_with_preference(&other, &other_game, &root.join("other.mgl"), &sd, false).unwrap();
+        assert!(other_plan
+            .mgl
+            .contains(other_game.to_string_lossy().as_ref()));
+        assert_eq!(
+            other_plan.command,
+            format!("load_core {}\n", root.join("other.mgl").display())
         );
 
         std::fs::remove_dir_all(root).ok();

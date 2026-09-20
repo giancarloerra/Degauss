@@ -117,6 +117,14 @@ Click the image to watch Degauss on YouTube.
     - [The one thing that catches everyone](#the-one-thing-that-catches-everyone)
     - [After any change](#after-any-change)
   - [Keeping the card in order (additional bonus!)](#keeping-the-card-in-order-additional-bonus)
+- [Troubleshooting and FAQ](#troubleshooting-and-faq)
+  - [What MiSTer hardware has Degauss been reported working on?](#what-mister-hardware-has-degauss-been-reported-working-on)
+  - [I installed an Artwork Pack, but its artwork is not showing](#i-installed-an-artwork-pack-but-its-artwork-is-not-showing)
+  - [Degauss stays on “Starting Degauss frontend...”](#degauss-stays-on-starting-degauss-frontend)
+  - [I am switching an SS1 from Console Mode to Degauss](#i-am-switching-an-ss1-from-console-mode-to-degauss)
+  - [Degauss appears over HDMI but not on an analog CRT](#degauss-appears-over-hdmi-but-not-on-an-analog-crt)
+  - [Update All enabled Degauss, but its files are missing](#update-all-enabled-degauss-but-its-files-are-missing)
+  - [My problem is not listed here](#my-problem-is-not-listed-here)
 - [The command line (CLI)](#the-command-line-cli)
   - [Checking a card](#checking-a-card)
   - [Seeing it without the screen](#seeing-it-without-the-screen)
@@ -760,10 +768,12 @@ require **A** and confirmation, never a sideways press.
 | Shortcuts | Hold A / Hold B / Hold X / Hold Y | Off by default. Assign None, Cycle View, Random Game, Random Favourite, Add/Remove Favourite, Game Information, Search This Folder or Jump to Letter to each one-second hold. Short presses retain their normal action. Holds work only while browsing and only where the chosen Actions command is available; otherwise the normal press is immediate |
 | Appearance | Theme | Left and right choose a palette. Press A to open the editor. Standard uses the colours in `degauss.toml`. See [Themes and colours](#themes-and-colours) |
 | Appearance | View | The global default for places without a custom view: Details, Tiled, Carousel, List, Multi List or Gallery |
+| Appearance | Start Folder | Home by default, or any currently available top-level folder. If the saved folder is no longer present, Degauss safely starts at Home without replacing the choice |
 | Appearance | Reset All Custom Views | With A and confirmation, remove every place-specific view without changing the global View setting |
 | Appearance | Details Style | How Details shares the screen while browsing games. Information (default) keeps the list beside a picture of about 42% of the width, with the compact summary under it; Large Artwork gives the picture about 62% and the whole column height, with no lines under it |
 | Appearance | Game Name Display | Full (default), remove parenthesised tags, remove square-bracketed tags, remove both, or retain only recognised region and/or disc-index tags. This changes presentation, sorting and search only; names stored in files and caches are unchanged |
 | Appearance | Folder Brackets | On by default. Turn off only Degauss's outer `[ name ]` marker for folders; square brackets that are part of the underlying name still follow Game Name Display |
+| Appearance | Game Total/Position | On by default. Turn off the selected-position and total counter while browsing games |
 | Appearance | Text | The typeface: Smooth, Pixel (a DOS font on whole pixels), and the bolder Smooth 2 and Pixel 2 |
 | Appearance | Artwork | Turn pictures off entirely |
 | Appearance | Artwork Scale Factor | Framebuffer keeps the original square-pixel fit and is the default. 4:3 and 16:9 correct game artwork for that physical display shape in Details, Tiled, Carousel and Gallery, including a folder showing its game's artwork. Category logos, system logos and the screensaver are unchanged |
@@ -1808,6 +1818,109 @@ agent go over it and tell me what it found: cores that arrived or vanished,
 games with no artwork, artwork with no game, folders that ended up in the
 wrong place, gamelists that no longer match what is on the card, and
 anything a core needs that is missing. It reports; I decide; it executes.
+
+## Troubleshooting and FAQ
+
+### What MiSTer hardware has Degauss been reported working on?
+
+Degauss has been reported working on:
+
+- MiSTer Pi
+- the original DE10-Nano
+- QMTech
+- Multisystem2
+- SS1
+
+### I installed an Artwork Pack, but its artwork is not showing
+
+Degauss checks an installed Artwork Pack when its system is opened, not by scanning every pack at startup.
+
+1. Check that **Options → Appearance → Artwork** is **On**.
+2. Enter the affected system. If Degauss finds an unprepared pack, choose **Prepare** when asked.
+3. **Options → Library → Automatic Data Source → Artwork Pack First** makes Artwork Packs the global preference for systems still set to **Automatic**. **Gamelist First** is the default and uses a root `gamelist.xml` when one is present.
+4. To select a pack for only one system, highlight that system or open it, press **X**, then choose **Library → Game Data Source → Artwork Pack** and select the detected location.
+
+An explicit per-system **Gamelist** or **Artwork Pack** choice always overrides the global Automatic preference. Packs installed normally through Update All are found below `docs/<System>/Artwork` on the SD card or USB storage.
+
+### Degauss stays on “Starting Degauss frontend...”
+
+The first start reads the game library and creates its index, so it can take longer than later starts. If the indexing screen appears, let it finish.
+
+If Degauss never reaches that screen:
+
+1. For the normal automatic installation, check that the active `/media/fat/MiSTer.ini` contains this under `[MiSTer]`:
+
+   ```ini
+   main=degauss/MiSTer_Degauss
+   ```
+
+2. Run this from a terminal or SSH:
+
+   ```bash
+   /media/fat/Scripts/.config/degauss/degauss --check-install
+   ```
+
+   It reports missing, incomplete or invalid installation files.
+
+If Degauss is intentionally launched from **Scripts** instead of replacing the stock frontend, the `main=` line is not required. That mode requires `fb_terminal=1` under `[Menu]` in `MiSTer.ini`.
+
+### I am switching an SS1 from Console Mode to Degauss
+
+Console Mode uses its own `main=` setting in the SS1's main and alternate video profiles. Degauss's Update All option changes `/media/fat/MiSTer.ini`, so use the **Main** profile for Degauss:
+
+1. In Console Mode, open **Settings → System → System Config** and select **Main**. The same selection is available from **OSD → Video / INI → Select INI**.
+2. Back up `/media/fat/MiSTer.ini`.
+3. If you normally use an SS1 profile such as `MiSTer_RGHV.ini`, `MiSTer_RGsB.ini`, `MiSTer_SVID.ini` or `MiSTer_YPbP.ini`, copy that profile over `/media/fat/MiSTer.ini`. This keeps its output settings while using the Main profile.
+4. In Update All, turn **Degauss** **On**, choose **SAVE**, then **EXIT and RUN UPDATE ALL**.
+5. Check that `/media/fat/MiSTer.ini` now contains this under `[MiSTer]`:
+
+   ```ini
+   main=degauss/MiSTer_Degauss
+   ```
+
+Current Update All replaces Console Mode's existing `main=` value, so it does not need to be removed first. For a manual Degauss installation, replace that value yourself instead of adding a second `main=` line.
+
+### Degauss appears over HDMI but not on an analog CRT
+
+Seeing MiSTer's OSD on a CRT does not necessarily mean that its Linux framebuffer is routed there. This is especially relevant when using an SS1's analog output.
+
+Inside the active `[Menu]` section of `MiSTer.ini`, enable the framebuffer terminal and VGA scaler:
+
+```ini
+[Menu]
+fb_terminal=1
+vga_scaler=1
+```
+
+The scaler also needs a 15 kHz `video_mode` supported by that CRT. A mode already known to work with MiSTer's Menu on the same display is the best choice. This common mode can be used as a starting point:
+
+```ini
+video_mode=640,54,56,106,224,16,0,28,13764
+```
+
+That timing is not universal. If HDMI and CRT are connected together, both receive the same scaler timing and both must support it.
+
+### Update All enabled Degauss, but its files are missing
+
+Turning Degauss **On** and downloading its files are separate steps. In Update All, choose **SAVE**, then **EXIT and RUN UPDATE ALL**, and let the update complete.
+
+Afterwards, run:
+
+```bash
+/media/fat/Scripts/.config/degauss/degauss --check-install
+```
+
+If that command is missing or reports an incomplete installation, run Update All again. If it still fails, keep `update_all.log` and `/media/fat/Scripts/.config/downloader/downloader.log` for support.
+
+### My problem is not listed here
+
+Reproduce the problem once, then save Degauss's log before restarting Degauss or rebooting MiSTer:
+
+```bash
+cp /tmp/degauss.log /media/fat/degauss.log
+```
+
+Degauss starts a fresh `/tmp/degauss.log` on every launch, and `/tmp` is cleared when MiSTer is power-cycled. Join the [Degauss Discord channel](https://discord.com/channels/647909397477195803/1547377865983660072) and send the saved log to me in a DM, together with the Degauss version, the steps that caused the problem and a photo of any message shown on screen.
 
 ## The command line (CLI)
 

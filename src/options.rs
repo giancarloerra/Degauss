@@ -20,6 +20,8 @@ pub enum OptionId {
     /// The scroll speed above which artwork stops being loaded per row.
     ArtLimit,
     Layout,
+    /// Which available top-level folder opens after the splash screen.
+    StartFolder,
     /// Remove every place-specific view after confirmation.
     ResetCustomViews,
     /// How Details shares its width between the list and the picture, and
@@ -29,6 +31,8 @@ pub enum OptionId {
     GameNameDisplay,
     /// Whether folder rows receive Degauss's outer square-bracket marker.
     FolderBrackets,
+    /// Whether game browsing shows the selected row position and total.
+    ShowGamePosition,
     /// Which typeface the interface is set in.
     Font,
     /// Which named palette from the themes folder is on, if any.
@@ -110,10 +114,12 @@ pub const OPTIONS: &[OptionId] = &[
     OptionId::Spacer,
     OptionId::Theme,
     OptionId::Layout,
+    OptionId::StartFolder,
     OptionId::ResetCustomViews,
     OptionId::DetailsStyle,
     OptionId::GameNameDisplay,
     OptionId::FolderBrackets,
+    OptionId::ShowGamePosition,
     OptionId::Font,
     OptionId::ShowArt,
     OptionId::ArtworkScale,
@@ -238,10 +244,12 @@ impl OptionsPage {
             Self::Appearance => &[
                 OptionId::Theme,
                 OptionId::Layout,
+                OptionId::StartFolder,
                 OptionId::ResetCustomViews,
                 OptionId::DetailsStyle,
                 OptionId::GameNameDisplay,
                 OptionId::FolderBrackets,
+                OptionId::ShowGamePosition,
                 OptionId::Font,
                 OptionId::ShowArt,
                 OptionId::ArtworkScale,
@@ -286,10 +294,12 @@ impl OptionId {
             OptionId::LeftRight => "Left and Right Behaviour",
             OptionId::ArtLimit => "Skip Artwork Faster Than",
             OptionId::Layout => "View",
+            OptionId::StartFolder => "Start Folder",
             OptionId::ResetCustomViews => "Reset All Custom Views",
             OptionId::DetailsStyle => "Details Style",
             OptionId::GameNameDisplay => "Game Name Display",
             OptionId::FolderBrackets => "Folder Brackets",
+            OptionId::ShowGamePosition => "Game Total/Position",
             OptionId::Font => "Text",
             OptionId::Theme => "Theme",
             OptionId::ShowArt => "Artwork",
@@ -344,6 +354,9 @@ impl OptionId {
             OptionId::Layout => {
                 "Default view for places without a custom view. Actions changes only the current place."
             }
+            OptionId::StartFolder => {
+                "Choose Home or an available top-level folder to open when Degauss starts. A missing folder safely opens Home."
+            }
             OptionId::ResetCustomViews => {
                 "Remove all custom views after confirmation. Every place will use the global view."
             }
@@ -355,6 +368,9 @@ impl OptionId {
             }
             OptionId::FolderBrackets => {
                 "Show or hide Degauss's outer [ name ] marker on folder rows. Brackets inside names are unchanged."
+            }
+            OptionId::ShowGamePosition => {
+                "Show or hide the selected position and total in game-folder title bars."
             }
             OptionId::Font => {
                 "Choose Smooth or Pixel text. Smooth 2 and Pixel 2 use bolder lettering."
