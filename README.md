@@ -118,6 +118,7 @@ Click the image to watch Degauss on YouTube.
     - [After any change](#after-any-change)
   - [Keeping the card in order (additional bonus!)](#keeping-the-card-in-order-additional-bonus)
 - [Troubleshooting and FAQ](#troubleshooting-and-faq)
+  - [What MiSTer hardware has Degauss been reported working on?](#what-mister-hardware-has-degauss-been-reported-working-on)
   - [I installed an Artwork Pack, but its artwork is not showing](#i-installed-an-artwork-pack-but-its-artwork-is-not-showing)
   - [Degauss stays on “Starting Degauss frontend...”](#degauss-stays-on-starting-degauss-frontend)
   - [I am switching an SS1 from Console Mode to Degauss](#i-am-switching-an-ss1-from-console-mode-to-degauss)
@@ -1819,6 +1820,15 @@ wrong place, gamelists that no longer match what is on the card, and
 anything a core needs that is missing. It reports; I decide; it executes.
 
 ## Troubleshooting and FAQ
+
+### What MiSTer hardware has Degauss been reported working on?
+
+Degauss has been reported working on:
+
+- MiSTer Pi
+- the original DE10-Nano
+- QMTech
+- Multisystem2
 
 ### I installed an Artwork Pack, but its artwork is not showing
 
