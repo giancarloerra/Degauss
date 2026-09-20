@@ -121,7 +121,7 @@ Click the image to watch Degauss on YouTube.
   - [What MiSTer hardware has Degauss been reported working on?](#what-mister-hardware-has-degauss-been-reported-working-on)
   - [I installed an Artwork Pack, but its artwork is not showing](#i-installed-an-artwork-pack-but-its-artwork-is-not-showing)
   - [Degauss stays on “Starting Degauss frontend...”](#degauss-stays-on-starting-degauss-frontend)
-  - [I am switching an SS1 from Console Mode to Degauss](#i-am-switching-an-ss1-from-console-mode-to-degauss)
+  - [How do I install Degauss on an SS1 currently using Console Mode?](#how-do-i-install-degauss-on-an-ss1-currently-using-console-mode)
   - [Degauss appears over HDMI but not on an analog CRT](#degauss-appears-over-hdmi-but-not-on-an-analog-crt)
   - [Update All enabled Degauss, but its files are missing](#update-all-enabled-degauss-but-its-files-are-missing)
   - [My problem is not listed here](#my-problem-is-not-listed-here)
@@ -335,6 +335,10 @@ Update All downloads the Degauss files, sets
 `main=degauss/MiSTer_Degauss` in `MiSTer.ini`, and keeps the installation
 current on later runs. MiSTer can use only one `main=` frontend, so selecting
 Degauss switches any other frontend off.
+
+Using an SS1 with Console Mode? Follow the
+[SS1 installation steps](#how-do-i-install-degauss-on-an-ss1-currently-using-console-mode)
+before rebooting so Degauss uses the **Main** INI profile.
 
 To remove an installation managed by Update All, return to **Settings →
 Frontends**, highlight **Degauss**, and choose **Uninstall**.
@@ -1864,7 +1868,7 @@ If Degauss never reaches that screen:
 
 If Degauss is intentionally launched from **Scripts** instead of replacing the stock frontend, the `main=` line is not required. That mode requires `fb_terminal=1` under `[Menu]` in `MiSTer.ini`.
 
-### I am switching an SS1 from Console Mode to Degauss
+### How do I install Degauss on an SS1 currently using Console Mode?
 
 Console Mode uses its own `main=` setting in the SS1's main and alternate video profiles. Degauss's Update All option changes `/media/fat/MiSTer.ini`, so use the **Main** profile for Degauss:
 
