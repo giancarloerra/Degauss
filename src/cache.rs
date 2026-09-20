@@ -19,6 +19,7 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Mutex, MutexGuard};
 
 use serde::{Deserialize, Serialize};
 
@@ -30,6 +31,7 @@ use crate::error::{DegaussError, Result};
 const FORMAT: u32 = 1;
 const ARTWORK_PACK_FORMAT: u32 = 3;
 const CORE_GAME_MAP_FORMAT: u32 = 1;
+static CORE_GAME_MAP_WRITE: Mutex<()> = Mutex::new(());
 
 /// What is known about every system, small enough to read at startup.
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -825,14 +827,27 @@ pub fn ensure_core_game_map(
     if cancelled.load(Ordering::Relaxed) {
         return Ok(None);
     }
-    let bytes = postcard::to_stdvec(&map).map_err(|error| {
+    save_core_game_map_if_missing(dir, &map).map(Some)
+}
+
+fn lock_core_game_map_writer() -> Result<MutexGuard<'static, ()>> {
+    CORE_GAME_MAP_WRITE.lock().map_err(|_| {
+        DegaussError::unsupported("core game map", "the cache writer lock was poisoned")
+    })
+}
+
+fn save_core_game_map_if_missing(dir: &Path, map: &CoreGameMap) -> Result<CoreGameMap> {
+    let _writer = lock_core_game_map_writer()?;
+    if let Some(saved) = load_core_game_map(dir) {
+        return Ok(saved);
+    }
+    let bytes = postcard::to_stdvec(map).map_err(|error| {
         DegaussError::unsupported("core game map", format!("writing the map: {error}"))
     })?;
     write(&core_game_map_path(dir), &bytes)?;
-    let saved = load_core_game_map(dir).ok_or_else(|| {
+    load_core_game_map(dir).ok_or_else(|| {
         DegaussError::unsupported("core game map", "the written map could not be decoded")
-    })?;
-    Ok(Some(saved))
+    })
 }
 
 #[derive(Debug)]
@@ -841,6 +856,7 @@ struct StagedCacheFile {
     new_path: PathBuf,
     backup_path: PathBuf,
     had_old: bool,
+    replace_if_appeared: bool,
     backup_moved: bool,
     installed: bool,
 }
@@ -883,7 +899,7 @@ impl PreparedCacheGroup {
     pub fn with_index(mut self, dir: &Path, index: &Index) -> Result<Self> {
         let bytes = postcard::to_stdvec(index)
             .map_err(|e| DegaussError::unsupported("cache index", e.to_string()))?;
-        self.stage_extra_file(index_path(dir), &bytes, "index", |written| {
+        self.stage_extra_file(index_path(dir), &bytes, "index", false, |written| {
             postcard::from_bytes::<Index>(written).is_ok_and(|decoded| decoded.format == FORMAT)
         })?;
         Ok(self)
@@ -904,12 +920,14 @@ impl PreparedCacheGroup {
             artwork_pack_prepared_path(dir, id),
             prepared,
             "prepared",
+            false,
             |written| matches!(decode_pack_prepared(written), Ok(Some(_))),
         )?;
         self.stage_extra_file(
             artwork_pack_source_path(dir, id),
             source,
             "state",
+            false,
             |written| matches!(decode_pack_source(written), Ok(Some(_))),
         )?;
         Ok(self)
@@ -924,6 +942,7 @@ impl PreparedCacheGroup {
         final_path: PathBuf,
         bytes: &[u8],
         what: &str,
+        replace_if_appeared: bool,
         valid: impl FnOnce(&[u8]) -> bool,
     ) -> Result<()> {
         if self
@@ -958,6 +977,7 @@ impl PreparedCacheGroup {
             final_path,
             new_path: new_path.clone(),
             backup_path,
+            replace_if_appeared,
             backup_moved: false,
             installed: false,
         });
@@ -983,14 +1003,22 @@ impl PreparedCacheGroup {
     /// loss between renames: no filesystem provides one atomic rename for
     /// this group, and no restart-recovery journal is written here.
     pub fn install(mut self) -> Result<(Vec<StagedSystemCache>, Vec<String>)> {
+        let _core_game_writer = self
+            .files
+            .iter()
+            .any(|entry| entry.replace_if_appeared)
+            .then(lock_core_game_map_writer)
+            .transpose()?;
         let install = (|| -> Result<()> {
             for entry in &mut self.files {
-                if entry.had_old {
+                let appeared = !entry.had_old && path_exists(&entry.final_path)?;
+                if entry.had_old || (entry.replace_if_appeared && appeared) {
                     std::fs::rename(&entry.final_path, &entry.backup_path).map_err(|error| {
                         DegaussError::io("backing up the previous cache", &entry.final_path, error)
                     })?;
+                    entry.had_old = true;
                     entry.backup_moved = true;
-                } else if path_exists(&entry.final_path)? {
+                } else if appeared {
                     return Err(DegaussError::unsupported(
                         "cache transaction",
                         format!(
@@ -1234,6 +1262,7 @@ fn stage_transactional_with_tag_observed(
             final_path,
             new_path: new_path.clone(),
             backup_path,
+            replace_if_appeared: false,
             installed: false,
             backup_moved: false,
         });
@@ -1273,10 +1302,16 @@ fn stage_transactional_with_tag_observed(
         let bytes = postcard::to_stdvec(&map).map_err(|error| {
             DegaussError::unsupported("core game map", format!("writing the map: {error}"))
         })?;
-        prepared.stage_extra_file(core_game_map_path(dir), &bytes, "core-games", |written| {
-            postcard::from_bytes::<CoreGameMap>(written)
-                .is_ok_and(|decoded| decoded.format == CORE_GAME_MAP_FORMAT)
-        })?;
+        prepared.stage_extra_file(
+            core_game_map_path(dir),
+            &bytes,
+            "core-games",
+            true,
+            |written| {
+                postcard::from_bytes::<CoreGameMap>(written)
+                    .is_ok_and(|decoded| decoded.format == CORE_GAME_MAP_FORMAT)
+            },
+        )?;
     }
     Ok(Some(prepared))
 }
@@ -1680,6 +1715,102 @@ mod tests {
         assert_eq!(restored.paths("sharedcore"), [other, two]);
         assert!(core_game_map_path(&store).is_file());
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn arcade_sidecar_that_appears_after_staging_is_replaced_transactionally() {
+        let root = temp("core-game-map-race");
+        let arcade = root.join("_Arcade");
+        std::fs::create_dir_all(&arcade).unwrap();
+        let game = arcade.join("Current.mra");
+        std::fs::write(
+            &game,
+            b"<mistergamedescription><rbf>_Arcade/cores/CurrentCore</rbf></mistergamedescription>",
+        )
+        .unwrap();
+        let cache = SystemCache {
+            format: FORMAT,
+            folders: BTreeMap::from([(
+                Place::Dir(arcade).key(),
+                Folder {
+                    mtime: 0,
+                    rows: vec![Row {
+                        name: "Current".into(),
+                        sort_key: String::new(),
+                        kind: Kind::Play(Launch::File(game.clone())),
+                        cover: None,
+                        genre: None,
+                        favorite: false,
+                        below: None,
+                        details: Default::default(),
+                    }],
+                    games: 1,
+                },
+            )]),
+        };
+        let store = root.join("cache");
+        let prepared = stage_transactional(
+            &store,
+            CacheKind::Gamelist,
+            vec![StagedSystemCache {
+                id: "Arcade".into(),
+                cache,
+                fingerprints: Default::default(),
+                fingerprints_complete: false,
+            }],
+            &AtomicBool::new(false),
+        )
+        .unwrap()
+        .unwrap();
+
+        let lazy_map = CoreGameMap {
+            format: CORE_GAME_MAP_FORMAT,
+            by_identity: BTreeMap::from([(
+                "stale".into(),
+                vec![PathBuf::from("/_Arcade/Stale.mra")],
+            )]),
+        };
+        write(
+            &core_game_map_path(&store),
+            &postcard::to_stdvec(&lazy_map).unwrap(),
+        )
+        .unwrap();
+
+        let (_, warnings) = prepared.install().unwrap();
+        let installed = load_core_game_map(&store).unwrap();
+        assert_eq!(installed.paths("currentcore"), [game]);
+        assert!(installed.paths("stale").is_empty());
+        assert!(warnings.is_empty());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn lazy_arcade_sidecar_save_preserves_a_map_that_won_the_write_race() {
+        let store = temp("core-game-map-lazy-race");
+        let installed = CoreGameMap {
+            format: CORE_GAME_MAP_FORMAT,
+            by_identity: BTreeMap::from([(
+                "current".into(),
+                vec![PathBuf::from("/_Arcade/Current.mra")],
+            )]),
+        };
+        write(
+            &core_game_map_path(&store),
+            &postcard::to_stdvec(&installed).unwrap(),
+        )
+        .unwrap();
+        let stale = CoreGameMap {
+            format: CORE_GAME_MAP_FORMAT,
+            by_identity: BTreeMap::from([(
+                "stale".into(),
+                vec![PathBuf::from("/_Arcade/Stale.mra")],
+            )]),
+        };
+
+        let saved = save_core_game_map_if_missing(&store, &stale).unwrap();
+        assert_eq!(saved, installed);
+        assert_eq!(load_core_game_map(&store), Some(installed));
+        std::fs::remove_dir_all(store).unwrap();
     }
 
     use super::*;
