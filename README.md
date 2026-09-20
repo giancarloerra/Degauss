@@ -1868,7 +1868,7 @@ If Degauss is intentionally launched from **Scripts** instead of replacing the s
 
 Console Mode uses its own `main=` setting in the SS1's main and alternate video profiles. Degauss's Update All option changes `/media/fat/MiSTer.ini`, so use the **Main** profile for Degauss:
 
-1. In Console Mode, open **Settings → System → System Config** and select **Main**. The same selection is available from **OSD → Video / INI → Select INI**.
+1. In Console Mode, open **Settings → System → System Config**, select **Main**, and leave it selected for Degauss. The same selection is available from **OSD → Video / INI → Select INI**.
 2. Back up `/media/fat/MiSTer.ini`.
 3. If you normally use an SS1 profile such as `MiSTer_RGHV.ini`, `MiSTer_RGsB.ini`, `MiSTer_SVID.ini` or `MiSTer_YPbP.ini`, copy that profile over `/media/fat/MiSTer.ini`. This keeps its output settings while using the Main profile.
 4. In Update All, turn **Degauss** **On**, choose **SAVE**, then **EXIT and RUN UPDATE ALL**.
@@ -1877,6 +1877,7 @@ Console Mode uses its own `main=` setting in the SS1's main and alternate video 
    ```ini
    main=degauss/MiSTer_Degauss
    ```
+6. Before rebooting, confirm **OSD → Video / INI → Select INI** still shows **Main**.
 
 Current Update All replaces Console Mode's existing `main=` value, so it does not need to be removed first. For a manual Degauss installation, replace that value yourself instead of adding a second `main=` line.
 
