@@ -786,8 +786,37 @@ fn run_misterzine_browser_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
             Some(core.clone()),
         ),
     ];
+    app.misterzine_items[0].set_game_match(2, None);
     app.rebuild_misterzine_rows();
     assert_eq!(app.here.len(), 2);
+    let first_cover = root.join("first.jpg");
+    let second_cover = root.join("second.jpg");
+    std::fs::write(&first_cover, crate::covers::JPEG_16).unwrap();
+    std::fs::write(&second_cover, crate::covers::JPEG_16).unwrap();
+    let game = |name: &str, cover: PathBuf| browse::Row {
+        name: name.into(),
+        sort_key: name.to_ascii_lowercase(),
+        kind: browse::Kind::Play(browse::Launch::File(root.join(format!("{name}.rom")))),
+        cover: Some(cover),
+        genre: None,
+        favorite: false,
+        below: None,
+        details: Default::default(),
+    };
+    let slideshow_started = Instant::now();
+    app.misterzine_games = Some(CoreUpdateGames::new(
+        app.misterzine_items[0].key().to_string(),
+        vec![
+            game("First Game", first_cover.clone()),
+            game("Second Game", second_cover.clone()),
+        ],
+        slideshow_started,
+    ));
+    app.refresh();
+    assert_eq!(app.ui.get_compact_info().as_str(), "2 Games");
+    assert_eq!(app.current_art().0.as_deref(), Some(first_cover.as_path()));
+    app.maintain_misterzine_games(slideshow_started + Duration::from_secs(CORE_UPDATE_ART_SECONDS));
+    assert_eq!(app.current_art().0.as_deref(), Some(second_cover.as_path()));
     app.open_context();
     assert_eq!(
         app.context_actions,
@@ -816,6 +845,7 @@ fn run_misterzine_browser_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
     assert!(information.contains("Local status: Installed · Current"));
     assert!(information.contains("Type: Console"));
     assert!(information.contains("Source: MiSTer Distribution"));
+    assert!(information.contains("Game titles\nFirst Game\nSecond Game"));
     assert!(!information.contains("Publisher:"));
     app.screen = Screen::Browse;
 

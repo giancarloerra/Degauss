@@ -267,9 +267,23 @@ pub fn load_core_game_map(dir: &Path) -> Option<CoreGameMap> {
 }
 
 pub fn load_system(dir: &Path, id: &str) -> Option<SystemCache> {
-    let bytes = std::fs::read(system_path(dir, id)).ok()?;
-    let cache: SystemCache = postcard::from_bytes(&bytes).ok()?;
-    (cache.format == FORMAT).then_some(cache)
+    load_system_checked(dir, id).ok().flatten()
+}
+
+/// Read a system cache without reducing storage or current-format damage to
+/// an ordinary missing cache. Browsing retains the established optional
+/// wrapper above; background features use this form so their log keeps the
+/// failing layer visible.
+pub fn load_system_checked(dir: &Path, id: &str) -> Result<Option<SystemCache>> {
+    let path = system_path(dir, id);
+    let bytes = match std::fs::read(&path) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(DegaussError::io("reading the system cache", &path, error)),
+    };
+    let cache: SystemCache = postcard::from_bytes(&bytes)
+        .map_err(|error| DegaussError::malformed("system cache", &path, error.to_string()))?;
+    Ok((cache.format == FORMAT).then_some(cache))
 }
 
 pub fn load_artwork_pack_system(dir: &Path, id: &str) -> Option<SystemCache> {
@@ -770,6 +784,38 @@ fn build_core_game_map(cache: &SystemCache, cancelled: &AtomicBool) -> Option<Co
         format: CORE_GAME_MAP_FORMAT,
         by_identity,
     })
+}
+
+/// Restore the small Arcade core-to-game lookup introduced after the main
+/// system-cache format. Existing installations can therefore use Core
+/// Updates artwork without rebuilding their library. The one-time descriptor
+/// reads stay in the caller's cancellable worker; subsequent selections read
+/// only this sidecar.
+pub fn ensure_core_game_map(
+    dir: &Path,
+    arcade_cache: &SystemCache,
+    cancelled: &AtomicBool,
+) -> Result<Option<CoreGameMap>> {
+    if let Some(map) = load_core_game_map(dir) {
+        return Ok(Some(map));
+    }
+    if cancelled.load(Ordering::Relaxed) {
+        return Ok(None);
+    }
+    let Some(map) = build_core_game_map(arcade_cache, cancelled) else {
+        return Ok(None);
+    };
+    if cancelled.load(Ordering::Relaxed) {
+        return Ok(None);
+    }
+    let bytes = postcard::to_stdvec(&map).map_err(|error| {
+        DegaussError::unsupported("core game map", format!("writing the map: {error}"))
+    })?;
+    write(&core_game_map_path(dir), &bytes)?;
+    let saved = load_core_game_map(dir).ok_or_else(|| {
+        DegaussError::unsupported("core game map", "the written map could not be decoded")
+    })?;
+    Ok(Some(saved))
 }
 
 #[derive(Debug)]
@@ -1548,13 +1594,21 @@ mod tests {
         .install()
         .unwrap();
         let map = load_core_game_map(&store).unwrap();
-        assert_eq!(map.paths("onlycore"), [one]);
-        assert_eq!(map.paths("sharedcore"), [other, two]);
+        assert_eq!(map.paths("onlycore"), std::slice::from_ref(&one));
+        assert_eq!(map.paths("sharedcore"), [other.clone(), two.clone()]);
         assert!(map.paths("missing").is_empty());
         assert!(
             warnings.is_empty(),
             "the optional map does not change normal indexing warnings"
         );
+        std::fs::remove_file(core_game_map_path(&store)).unwrap();
+        let arcade_cache = load_system(&store, "Arcade").unwrap();
+        let restored = ensure_core_game_map(&store, &arcade_cache, &AtomicBool::new(false))
+            .unwrap()
+            .unwrap();
+        assert_eq!(restored.paths("onlycore"), [one]);
+        assert_eq!(restored.paths("sharedcore"), [other, two]);
+        assert!(core_game_map_path(&store).is_file());
         std::fs::remove_dir_all(root).unwrap();
     }
 

@@ -234,6 +234,13 @@ jump-to-letter, **Filter Core Updates** by type and source, **Refresh** and a
 short explanation of the data source. These temporary filters clear when the
 shelf is left.
 
+In Details view, the final line shows how many games use the selected core.
+**Game Information** lists their titles. When matching game artwork is
+available from that system's selected Gamelist or Artwork Pack, the preview
+cycles through the images once per second. Game data is read on demand for the
+selected core and then reused; Core Updates does not preload another copy of
+the library.
+
 The first open reads the configured databases and saves the result. Later
 opens use that saved result without a network request. **Refresh** reads the
 databases again; if it cannot reach them, the last valid result remains

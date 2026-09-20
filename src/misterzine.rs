@@ -6,7 +6,7 @@
 //! cores may appear, while every installed core remains visible even when no
 //! configured database owns it.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::fs::OpenOptions;
 use std::io::{Read, Write};
 use std::path::{Component, Path, PathBuf};
@@ -144,7 +144,15 @@ impl Item {
         self.game = game;
     }
 
-    pub fn information(&self) -> String {
+    pub fn game_count(&self) -> Option<usize> {
+        self.game_count
+    }
+
+    pub fn has_game_match(&self) -> bool {
+        self.game.is_some()
+    }
+
+    pub fn information_with_games(&self, games: &[Row]) -> String {
         let mut text = self.title.clone();
         for (label, value) in [
             ("Local status", self.state.label().to_string()),
@@ -158,7 +166,19 @@ impl Item {
                 text.push_str(&format!("\n\n{label}: {value}"));
             }
         }
-        if let Some(game) = &self.game {
+        let game = if games.len() == 1 {
+            games.first()
+        } else {
+            self.game.as_ref()
+        };
+        if games.len() > 1 {
+            text.push_str(&format!("\n\nGames using this core: {}", games.len()));
+            text.push_str("\n\nGame titles");
+            for game in games {
+                text.push('\n');
+                text.push_str(&game.name);
+            }
+        } else if let Some(game) = game {
             text.push_str(&format!("\n\nMatched game: {}", game.name));
             for (label, value) in [
                 ("Genre", game.genre.as_deref().unwrap_or("")),
@@ -533,6 +553,242 @@ impl Drop for Job {
     fn drop(&mut self) {
         self.cancel();
     }
+}
+
+#[derive(Debug, Clone)]
+pub enum GameSource {
+    Gamelist,
+    ArtworkPack {
+        docs_root: PathBuf,
+        language: Option<String>,
+    },
+}
+
+#[derive(Debug, Clone)]
+pub enum GameTarget {
+    System { id: String },
+    Arcade { core_identity: String },
+}
+
+impl GameTarget {
+    fn system_id(&self) -> &str {
+        match self {
+            Self::System { id } => id,
+            Self::Arcade { .. } => "Arcade",
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct GameRequest {
+    pub key: String,
+    pub cache_dir: PathBuf,
+    pub source: GameSource,
+    pub target: GameTarget,
+}
+
+#[derive(Debug)]
+pub enum GameEvent {
+    Ready { key: String, games: Vec<Row> },
+    Cancelled,
+    Failed { key: String, error: DegaussError },
+}
+
+pub struct GameJob {
+    key: String,
+    event: Receiver<GameEvent>,
+    cancelled: Arc<AtomicBool>,
+    handle: Option<JoinHandle<()>>,
+}
+
+impl GameJob {
+    pub fn try_recv(&mut self) -> Option<GameEvent> {
+        let event = match self.event.try_recv() {
+            Ok(event) => event,
+            Err(TryRecvError::Empty) => return None,
+            Err(TryRecvError::Disconnected) if self.handle.is_some() => GameEvent::Failed {
+                key: self.key.clone(),
+                error: DegaussError::unsupported(
+                    "core update games",
+                    "game-list worker stopped without a result",
+                ),
+            },
+            Err(TryRecvError::Disconnected) => return None,
+        };
+        if let Some(handle) = self.handle.take() {
+            let _ = handle.join();
+        }
+        Some(event)
+    }
+
+    pub fn cancel(&self) {
+        self.cancelled.store(true, Ordering::Relaxed);
+    }
+}
+
+impl Drop for GameJob {
+    fn drop(&mut self) {
+        self.cancel();
+    }
+}
+
+pub fn start_game_job(request: GameRequest) -> Result<GameJob> {
+    let (sender, event) = mpsc::channel();
+    let cancelled = Arc::new(AtomicBool::new(false));
+    let worker_cancelled = Arc::clone(&cancelled);
+    let key = request.key.clone();
+    let job_key = key.clone();
+    let handle = std::thread::Builder::new()
+        .name("degauss-core-games".into())
+        .spawn(move || {
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                read_core_games(&request, &worker_cancelled)
+            }))
+            .unwrap_or_else(|_| {
+                Err(DegaussError::unsupported(
+                    "core update games",
+                    "game-list worker panicked",
+                ))
+            });
+            let message = if worker_cancelled.load(Ordering::Relaxed) {
+                GameEvent::Cancelled
+            } else {
+                match result {
+                    Ok(games) => GameEvent::Ready { key, games },
+                    Err(error) => GameEvent::Failed { key, error },
+                }
+            };
+            let _ = sender.send(message);
+        })
+        .map_err(|error| {
+            DegaussError::unsupported(
+                "core update games",
+                format!("starting game-list worker: {error}"),
+            )
+        })?;
+    Ok(GameJob {
+        key: job_key,
+        event,
+        cancelled,
+        handle: Some(handle),
+    })
+}
+
+fn read_core_games(request: &GameRequest, cancelled: &AtomicBool) -> Result<Vec<Row>> {
+    if cancelled.load(Ordering::Relaxed) {
+        return Ok(Vec::new());
+    }
+    let system_id = request.target.system_id();
+    let cache = match &request.source {
+        GameSource::Gamelist => crate::cache::load_system_checked(&request.cache_dir, system_id)?,
+        GameSource::ArtworkPack { .. } => {
+            crate::cache::load_artwork_pack_data_checked(&request.cache_dir, system_id)?
+                .map(|data| data.cache)
+        }
+    }
+    .ok_or_else(|| {
+        DegaussError::unsupported(
+            "core update games",
+            format!("the {system_id} library cache is unavailable"),
+        )
+    })?;
+
+    let wanted = match &request.target {
+        GameTarget::System { .. } => None,
+        GameTarget::Arcade { core_identity } => {
+            let Some(map) =
+                crate::cache::ensure_core_game_map(&request.cache_dir, &cache, cancelled)?
+            else {
+                return Ok(Vec::new());
+            };
+            Some(
+                map.paths(core_identity)
+                    .iter()
+                    .cloned()
+                    .map(Launch::File)
+                    .collect::<HashSet<_>>(),
+            )
+        }
+    };
+    let mut seen = HashSet::<Launch>::new();
+    let mut games = Vec::new();
+    for row in cache.folders.values().flat_map(|folder| folder.rows.iter()) {
+        if cancelled.load(Ordering::Relaxed) {
+            return Ok(Vec::new());
+        }
+        let Kind::Play(launch) = &row.kind else {
+            continue;
+        };
+        if wanted
+            .as_ref()
+            .is_some_and(|wanted| !wanted.contains(launch))
+            || !seen.insert(launch.clone())
+        {
+            continue;
+        }
+        games.push(row.clone());
+    }
+
+    if let GameSource::ArtworkPack {
+        docs_root,
+        language,
+    } = &request.source
+    {
+        let state = crate::cache::load_pack_source_state(&request.cache_dir, system_id)?
+            .ok_or_else(|| {
+                DegaussError::unsupported(
+                    "core update games",
+                    format!("the {system_id} Artwork Pack state is unavailable"),
+                )
+            })?;
+        let accepted = state
+            .accepted
+            .as_ref()
+            .filter(|accepted| Path::new(&accepted.docs_root) == docs_root)
+            .ok_or_else(|| {
+                DegaussError::unsupported(
+                    "core update games",
+                    format!("the {system_id} Artwork Pack selection is not prepared"),
+                )
+            })?;
+        let kept = state.declined.as_ref().filter(|declined| {
+            Path::new(&declined.docs_root) == docs_root && declined.signature.is_some()
+        });
+        let current = crate::artwork_pack::normalized_language(language.as_deref());
+        let prepared_language = if kept.is_some_and(|kept| kept.language == current) {
+            current
+        } else {
+            accepted.language.clone()
+        };
+        let prepared = crate::cache::load_pack_prepared_map(&request.cache_dir, system_id)?
+            .ok_or_else(|| {
+                DegaussError::unsupported(
+                    "core update games",
+                    format!("the {system_id} Artwork Pack mapping is unavailable"),
+                )
+            })?;
+        let provider = crate::artwork_pack::Provider::from_prepared_state(
+            system_id,
+            docs_root,
+            prepared_language.as_deref(),
+            accepted.health,
+            accepted.diagnostics.clone(),
+            accepted.signature.clone(),
+            prepared,
+        );
+        provider.apply_prepared(&mut games);
+    }
+    games.sort_by(|left, right| {
+        left.sort_key
+            .to_ascii_lowercase()
+            .cmp(&right.sort_key.to_ascii_lowercase())
+            .then_with(|| {
+                left.name
+                    .to_ascii_lowercase()
+                    .cmp(&right.name.to_ascii_lowercase())
+            })
+    });
+    Ok(games)
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
@@ -2883,9 +3139,9 @@ mod tests {
             },
         };
 
-        item.set_game_match(1, Some(game));
+        item.set_game_match(1, Some(game.clone()));
         assert_eq!(item.cover(), Some(cover.as_path()));
-        let information = item.information();
+        let information = item.information_with_games(&[]);
         assert!(information.contains("Matched game: Fixture Game"));
         assert!(information.contains("Genre: Action"));
         assert!(information.contains("Publisher: Fixture Publisher"));
@@ -2893,9 +3149,94 @@ mod tests {
 
         item.set_game_match(2, None);
         assert!(item.cover().is_none());
-        let information = item.information();
+        let second = Row {
+            name: "Second Game".into(),
+            sort_key: "second".into(),
+            kind: Kind::Play(Launch::File(PathBuf::from(
+                "/media/fat/games/Fixture/second.rom",
+            ))),
+            cover: None,
+            genre: None,
+            favorite: false,
+            below: None,
+            details: Details::default(),
+        };
+        let information = item.information_with_games(&[
+            Row {
+                name: "Fixture Game".into(),
+                ..game
+            },
+            second,
+        ]);
         assert!(information.contains("Games using this core: 2"));
+        assert!(information.contains("Game titles\nFixture Game\nSecond Game"));
         assert!(!information.contains("Matched game:"));
+    }
+
+    #[test]
+    fn selected_system_game_worker_reads_titles_and_artwork_only_from_its_cache() {
+        let root = TestRoot::new("selected-games");
+        let games_dir = root.path().join("games/Fixture");
+        std::fs::create_dir_all(games_dir.join("images")).unwrap();
+        root.write("games/Fixture/Alpha.rom", b"alpha");
+        root.write("games/Fixture/Beta.rom", b"beta");
+        root.write("games/Fixture/images/alpha.jpg", b"picture");
+        root.write("games/Fixture/images/beta.jpg", b"picture");
+        root.write(
+            "games/Fixture/gamelist.xml",
+            br#"<gameList>
+<game><path>Alpha.rom</path><name>Alpha Title</name><image>images/alpha.jpg</image></game>
+<game><path>Beta.rom</path><name>Beta Title</name><image>images/beta.jpg</image></game>
+</gameList>"#,
+        );
+        let config = crate::config::SystemConfig {
+            name: "Fixture".into(),
+            path: games_dir.to_string_lossy().into_owned(),
+            extensions: vec!["rom".into()],
+            rbf: "_Console/Fixture".into(),
+            launch: Vec::new(),
+            setname: None,
+            compatible_cores: Vec::new(),
+            skip_folders: Vec::new(),
+            extra_paths: Vec::new(),
+            preserve_rbf_stem: false,
+        };
+        let library = crate::browse::Library::open(&config).unwrap();
+        let cache = crate::cache::build_system(&library);
+        let cache_dir = root.path().join("cache");
+        crate::cache::save_system(&cache_dir, "Fixture", &cache).unwrap();
+        let request = GameRequest {
+            key: "fixture".into(),
+            cache_dir,
+            source: GameSource::Gamelist,
+            target: GameTarget::System {
+                id: "Fixture".into(),
+            },
+        };
+        let games = read_core_games(&request, &AtomicBool::new(false)).unwrap();
+        assert_eq!(
+            games
+                .iter()
+                .map(|game| game.name.as_str())
+                .collect::<Vec<_>>(),
+            ["Alpha Title", "Beta Title"]
+        );
+        assert!(games.iter().all(|game| game.cover.is_some()));
+    }
+
+    #[test]
+    fn selected_game_worker_honours_cancellation_before_reading() {
+        let request = GameRequest {
+            key: "fixture".into(),
+            cache_dir: PathBuf::from("/cache-that-must-not-be-read"),
+            source: GameSource::Gamelist,
+            target: GameTarget::System {
+                id: "Fixture".into(),
+            },
+        };
+        assert!(read_core_games(&request, &AtomicBool::new(true))
+            .unwrap()
+            .is_empty());
     }
 
     #[test]

@@ -1169,6 +1169,8 @@ const MISTERZINE_VIEW_PLACE: &str = "MiSTerZine";
 const REFRESH_MISTERZINE: &str = "Refresh";
 const FILTER_RELEASES: &str = "Filter Core Updates";
 const ABOUT_MISTERZINE: &str = "About Core Updates";
+const CORE_UPDATE_GAMES_AFTER_SCROLL_MS: u64 = 180;
+const CORE_UPDATE_ART_SECONDS: u64 = 1;
 
 fn core_category_pick_key(category: &str) -> String {
     format!("{CORES_SYSTEM_ID}:{category}")
@@ -3311,6 +3313,45 @@ fn to_image(image: &crate::covers::RgbImage) -> slint::Image {
     slint::Image::from_rgb8(buffer)
 }
 
+struct CoreUpdateGames {
+    key: String,
+    games: Vec<browse::Row>,
+    covers: Vec<PathBuf>,
+    cover_at: usize,
+    cover_changed: Instant,
+    loaded: bool,
+}
+
+impl CoreUpdateGames {
+    fn new(key: String, games: Vec<browse::Row>, now: Instant) -> Self {
+        let mut covers = Vec::new();
+        let mut known = HashSet::new();
+        for cover in games.iter().filter_map(|game| game.cover.clone()) {
+            if known.insert(cover.clone()) {
+                covers.push(cover);
+            }
+        }
+        Self {
+            key,
+            games,
+            covers,
+            cover_at: 0,
+            cover_changed: now,
+            loaded: true,
+        }
+    }
+
+    fn failed(key: String, now: Instant) -> Self {
+        let mut selection = Self::new(key, Vec::new(), now);
+        selection.loaded = false;
+        selection
+    }
+
+    fn cover(&self) -> Option<&Path> {
+        self.covers.get(self.cover_at).map(PathBuf::as_path)
+    }
+}
+
 pub struct App {
     config: Config,
     settings: Settings,
@@ -3574,6 +3615,12 @@ pub struct App {
     misterzine_filters: crate::misterzine::Filters,
     misterzine_filter_options: [Vec<crate::misterzine::FilterChoice>; 2],
     misterzine_filter_field: Option<crate::misterzine::FilterField>,
+    /// Game rows for only the highlighted Core Updates entry. Reading them
+    /// happens off the render loop; changing selection cancels and drops the
+    /// previous set instead of turning Core Updates into a second library.
+    misterzine_game_job: Option<crate::misterzine::GameJob>,
+    misterzine_game_job_key: Option<String>,
+    misterzine_games: Option<CoreUpdateGames>,
     /// The open system's folders, when they have been written down.
     system_cache: Option<crate::cache::SystemCache>,
     /// Current read-only Pack snapshot. Present only for a Pack-selected
@@ -4014,6 +4061,9 @@ impl App {
             misterzine_filters: Default::default(),
             misterzine_filter_options: std::array::from_fn(|_| Vec::new()),
             misterzine_filter_field: None,
+            misterzine_game_job: None,
+            misterzine_game_job_key: None,
+            misterzine_games: None,
             system_cache: None,
             artwork_provider: None,
             artwork_provider_cache: HashMap::new(),
@@ -4695,12 +4745,15 @@ impl App {
 
     fn open_information(&mut self) {
         if self.in_misterzine_browser() {
-            let Some(item) = self.misterzine_visible.get(self.game_list.selected()) else {
+            if self.selected_misterzine_item().is_none() {
+                return;
+            }
+            self.start_selected_misterzine_game_job();
+            let Some(text) = self.misterzine_information_text() else {
                 return;
             };
             self.information = None;
-            self.ui
-                .set_information_text(SharedString::from(item.information()));
+            self.ui.set_information_text(SharedString::from(text));
             self.ui.set_information_offset(0.0);
             self.screen = Screen::Information;
             self.apply_geometry();
@@ -9406,6 +9459,194 @@ impl App {
         })
     }
 
+    fn selected_misterzine_item(&self) -> Option<&crate::misterzine::Item> {
+        self.in_misterzine_browser()
+            .then(|| self.misterzine_visible.get(self.game_list.selected()))
+            .flatten()
+    }
+
+    fn selected_misterzine_games(&self) -> Option<&[browse::Row]> {
+        let key = self.selected_misterzine_item()?.key();
+        self.misterzine_games
+            .as_ref()
+            .filter(|selection| selection.key == key && selection.loaded)
+            .map(|selection| selection.games.as_slice())
+    }
+
+    fn selected_misterzine_game_count(&self) -> Option<usize> {
+        let item = self.selected_misterzine_item()?;
+        self.selected_misterzine_games()
+            .map(<[browse::Row]>::len)
+            .or_else(|| item.game_count())
+    }
+
+    fn misterzine_information_text(&self) -> Option<String> {
+        let item = self.selected_misterzine_item()?;
+        let games = self.selected_misterzine_games().unwrap_or_default();
+        let mut text = item.information_with_games(games);
+        if self.misterzine_game_job_key.as_deref() == Some(item.key()) {
+            text.push_str("\n\nReading game titles...");
+        }
+        Some(text)
+    }
+
+    fn clear_misterzine_games(&mut self) {
+        if let Some(job) = &self.misterzine_game_job {
+            job.cancel();
+        }
+        self.misterzine_game_job = None;
+        self.misterzine_game_job_key = None;
+        self.misterzine_games = None;
+    }
+
+    fn misterzine_game_request(
+        &self,
+        item: &crate::misterzine::Item,
+    ) -> Option<crate::misterzine::GameRequest> {
+        if !item.installed() {
+            return None;
+        }
+        let target = if item.base().eq_ignore_ascii_case("Arcade") {
+            crate::misterzine::GameTarget::Arcade {
+                core_identity: item.core_identity()?.to_string(),
+            }
+        } else {
+            let id = item.logo_id()?.to_string();
+            if !self.all_systems.iter().any(|system| system.def.id == id) {
+                return None;
+            }
+            crate::misterzine::GameTarget::System { id }
+        };
+        let system_id = match &target {
+            crate::misterzine::GameTarget::System { id } => id.as_str(),
+            crate::misterzine::GameTarget::Arcade { .. } => "Arcade",
+        };
+        if self.source_problem(system_id).is_some() {
+            return None;
+        }
+        let source =
+            match crate::artwork_pack::selected_root(&self.effective_artwork_pack_roots, system_id)
+            {
+                Some(root) => crate::misterzine::GameSource::ArtworkPack {
+                    docs_root: root.to_path_buf(),
+                    language: self.scraper_settings.language.clone(),
+                },
+                None => crate::misterzine::GameSource::Gamelist,
+            };
+        Some(crate::misterzine::GameRequest {
+            key: item.key().to_string(),
+            cache_dir: self.cache_dir.clone(),
+            source,
+            target,
+        })
+    }
+
+    fn start_selected_misterzine_game_job(&mut self) {
+        if self.misterzine_game_job.is_some() || self.misterzine_games.is_some() {
+            return;
+        }
+        let Some(item) = self.selected_misterzine_item().cloned() else {
+            return;
+        };
+        // The snapshot already contains the complete unique match. The
+        // selection worker is for multi-game cores and upgrade-time Arcade
+        // entries whose lookup sidecar did not exist when the snapshot ran.
+        if item.game_count() == Some(1) && item.has_game_match() {
+            return;
+        }
+        let Some(request) = self.misterzine_game_request(&item) else {
+            return;
+        };
+        let key = request.key.clone();
+        match crate::misterzine::start_game_job(request) {
+            Ok(job) => {
+                self.misterzine_game_job = Some(job);
+                self.misterzine_game_job_key = Some(key);
+            }
+            Err(error) => {
+                crate::note(&format!("core updates game titles unavailable: {error}"));
+                self.misterzine_games = Some(CoreUpdateGames::failed(key, Instant::now()));
+            }
+        }
+    }
+
+    fn maintain_misterzine_games(&mut self, now: Instant) {
+        let current = self
+            .selected_misterzine_item()
+            .map(|item| item.key().to_string());
+        let stale_result = self
+            .misterzine_games
+            .as_ref()
+            .is_some_and(|selection| Some(selection.key.as_str()) != current.as_deref());
+        let stale_job = self
+            .misterzine_game_job_key
+            .as_deref()
+            .is_some_and(|key| Some(key) != current.as_deref());
+        if current.is_none() || stale_result || stale_job {
+            self.clear_misterzine_games();
+        }
+
+        let event = self
+            .misterzine_game_job
+            .as_mut()
+            .and_then(crate::misterzine::GameJob::try_recv);
+        if let Some(event) = event {
+            self.misterzine_game_job = None;
+            self.misterzine_game_job_key = None;
+            match event {
+                crate::misterzine::GameEvent::Ready { key, mut games }
+                    if current.as_deref() == Some(key.as_str()) =>
+                {
+                    for game in &mut games {
+                        game.name = self.game_name_display.apply(&game.name).into_owned();
+                    }
+                    self.misterzine_games = Some(CoreUpdateGames::new(key, games, now));
+                    self.art_pending = true;
+                    self.dirty = true;
+                }
+                crate::misterzine::GameEvent::Failed { key, error }
+                    if current.as_deref() == Some(key.as_str()) =>
+                {
+                    crate::note(&format!("core updates game titles unavailable: {error}"));
+                    self.misterzine_games = Some(CoreUpdateGames::failed(key, now));
+                    self.dirty = true;
+                }
+                crate::misterzine::GameEvent::Ready { .. }
+                | crate::misterzine::GameEvent::Cancelled
+                | crate::misterzine::GameEvent::Failed { .. } => {}
+            }
+            if self.screen == Screen::Information {
+                if let Some(text) = self.misterzine_information_text() {
+                    self.ui.set_information_text(SharedString::from(text));
+                    self.ui.set_information_offset(0.0);
+                }
+            }
+        }
+
+        let ready_to_start = matches!(self.screen, Screen::Browse | Screen::Information)
+            && self.settled_since.is_some_and(|at| {
+                now.duration_since(at) >= Duration::from_millis(CORE_UPDATE_GAMES_AFTER_SCROLL_MS)
+            });
+        if ready_to_start {
+            self.start_selected_misterzine_game_job();
+        }
+
+        if matches!(self.screen, Screen::Browse | Screen::Information) {
+            if let Some(selection) = self.misterzine_games.as_mut().filter(|selection| {
+                Some(selection.key.as_str()) == current.as_deref() && selection.covers.len() > 1
+            }) {
+                if now.duration_since(selection.cover_changed)
+                    >= Duration::from_secs(CORE_UPDATE_ART_SECONDS)
+                {
+                    selection.cover_at = (selection.cover_at + 1) % selection.covers.len();
+                    selection.cover_changed = now;
+                    self.art_pending = true;
+                    self.dirty = true;
+                }
+            }
+        }
+    }
+
     /// Load the source already selected for a system without probing or
     /// preparing anything. A selected Pack that is unavailable never borrows
     /// Gamelist presentation as a fallback.
@@ -9439,9 +9680,9 @@ impl App {
         Some((cache, provider))
     }
 
-    /// Attach presentation only when one game can be identified without a
-    /// choice. Multi-game cores retain their normal logo and expose only the
-    /// count in Information.
+    /// Attach the count and, where one game can be identified without a
+    /// choice, its presentation. Multi-game rows are read only after their
+    /// Core Updates selection settles.
     fn enrich_misterzine_games(&mut self, items: &mut [crate::misterzine::Item]) {
         let installed_systems: HashSet<String> = self
             .all_systems
@@ -9571,6 +9812,7 @@ impl App {
     }
 
     fn apply_misterzine_snapshot(&mut self, mut snapshot: crate::misterzine::Snapshot) {
+        self.clear_misterzine_games();
         self.enrich_misterzine_games(&mut snapshot.items);
         self.misterzine_items = snapshot.items;
         self.rebuild_misterzine_rows();
@@ -16833,6 +17075,19 @@ impl App {
             (Screen::Browse | Screen::Information, Browsing::Games) => {
                 match self.here.get(self.game_list.selected()) {
                     Some(row) => {
+                        if self.in_misterzine_browser() {
+                            if let Some(cover) = self
+                                .misterzine_games
+                                .as_ref()
+                                .filter(|selection| {
+                                    self.selected_misterzine_item()
+                                        .is_some_and(|item| item.key() == selection.key)
+                                })
+                                .and_then(CoreUpdateGames::cover)
+                            {
+                                return (Some(cover.to_path_buf()), row.name.clone(), false, true);
+                            }
+                        }
                         // Inside favourites a folder is a shelf the user
                         // made. It has no artwork and never will, and its
                         // name is already the row: the mark says more.
@@ -17489,6 +17744,14 @@ impl App {
             .unwrap_or_default();
         self.ui.set_compact_summary(SharedString::from(summary));
         self.ui.set_compact_publisher(SharedString::from(publisher));
+        let info = if self.in_misterzine_browser() {
+            self.selected_misterzine_game_count()
+                .map(|count| format!("{count} {}", if count == 1 { "Game" } else { "Games" }))
+                .unwrap_or_default()
+        } else {
+            "X Actions for Info".to_string()
+        };
+        self.ui.set_compact_info(SharedString::from(info));
     }
 
     /// How much room the lines under the picture take, if any.
@@ -18028,6 +18291,7 @@ impl App {
             self.poll_scraper_preview();
             self.poll_information();
             self.poll_misterzine();
+            self.maintain_misterzine_games(now);
 
             self.expire_rotation_preview(now);
 
@@ -18662,6 +18926,7 @@ impl App {
             self.start_provider_job_if_ready();
             self.poll_information();
             self.poll_misterzine();
+            self.maintain_misterzine_games(Instant::now());
             // A finished cache recovery reopens its system through another
             // source resolution; that one has to finish as well before the
             // only frame is drawn.
@@ -18672,6 +18937,7 @@ impl App {
                 && self.provider_job.is_none()
                 && self.provider_requests.is_empty()
                 && self.misterzine_job.is_none()
+                && self.misterzine_game_job.is_none()
             {
                 break;
             }
