@@ -299,7 +299,7 @@ impl OptionId {
             OptionId::DetailsStyle => "Details Style",
             OptionId::GameNameDisplay => "Game Name Display",
             OptionId::FolderBrackets => "Folder Brackets",
-            OptionId::ShowGamePosition => "Game Position",
+            OptionId::ShowGamePosition => "Game Total/Position",
             OptionId::Font => "Text",
             OptionId::Theme => "Theme",
             OptionId::ShowArt => "Artwork",
