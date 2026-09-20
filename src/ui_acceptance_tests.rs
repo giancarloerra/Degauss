@@ -466,6 +466,12 @@ fn run_start_folder_and_game_position_flow(root: &Path, window: Rc<MinimalSoftwa
     );
     app.finish_background_work_for_headless();
     app.leave_splash();
+    app.message = Some("Startup warning".into());
+    app.refresh();
+    assert_eq!(app.message.as_deref(), Some("Startup warning"));
+    assert_eq!(app.browsing, Browsing::Categories);
+    assert!(app.start_folder_pending);
+    app.message = None;
     app.refresh();
     assert_eq!(app.open_category.as_deref(), Some("Computer"));
     assert!(

@@ -10188,6 +10188,7 @@ impl App {
         if !self.start_folder_pending
             || self.screen != Screen::Browse
             || self.browsing != Browsing::Categories
+            || self.message.is_some()
             || self.source_resolution.is_some()
             || self.source_job.is_some()
             || self.provider_job.is_some()
