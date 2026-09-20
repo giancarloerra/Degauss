@@ -251,6 +251,11 @@ pub struct Settings {
     /// into the speed ladder.
     pub art_limit: Option<usize>,
     pub layout: Option<String>,
+    /// Optional top-level category opened after startup. Absent means Home.
+    /// If the saved category is unavailable, startup remains at Home without
+    /// replacing the saved choice.
+    #[serde(default)]
+    pub start_folder: Option<String>,
     /// What left and right do while browsing: "speed", "letter", "page"
     /// or "direction". Absent means speed, which is how Degauss always
     /// behaved.
@@ -330,6 +335,10 @@ pub struct Settings {
     /// Absent preserves the marker used by earlier releases.
     #[serde(default)]
     pub folder_brackets: Option<bool>,
+    /// Show the selected position and total while browsing games. Absent
+    /// preserves the visible counter used by earlier releases.
+    #[serde(default)]
+    pub show_game_position: Option<bool>,
     pub present: Option<String>,
     /// Optional full-interface quarter turn. Absent preserves the landscape
     /// orientation used by every release before TATE support.
@@ -643,6 +652,9 @@ mod tests {
         let text = include_str!("../tests/fixtures/v0.2.0-settings.toml");
         let settings: Settings = toml::from_str(text).expect("v0.2.0 settings must keep parsing");
         assert_eq!(settings.font.as_deref(), Some("pixel"));
+        assert_eq!(settings.start_folder, None);
+        assert_eq!(settings.show_game_position, None);
+        assert!(settings.show_game_position.unwrap_or(true));
         assert_eq!(settings.theme_font_override, None);
         assert_eq!(settings.layout.as_deref(), Some("details"));
         assert!(settings.artwork_scale.is_none());
@@ -695,6 +707,9 @@ mod tests {
         let text = include_str!("../tests/fixtures/v0.3.0-settings.toml");
         let settings: Settings = toml::from_str(text).expect("v0.3.0 settings must keep parsing");
         assert_eq!(settings.font.as_deref(), Some("pixel 2"));
+        assert_eq!(settings.start_folder, None);
+        assert_eq!(settings.show_game_position, None);
+        assert!(settings.show_game_position.unwrap_or(true));
         assert_eq!(settings.theme_font_override, None);
         assert_eq!(settings.theme.as_deref(), Some("Blue-Orange"));
         assert_eq!(settings.left_right.as_deref(), Some("page"));
@@ -759,10 +774,12 @@ mod tests {
             hidden: vec!["PSX".to_string()],
             art_limit: Some(0),
             layout: Some("covers".into()),
+            start_folder: Some("Computer".into()),
             artwork_scale: Some("4:3".into()),
             details_style: Some("large-artwork".into()),
             game_name_display: Some(GameNameDisplay::KeepRegionAndDiscIndex),
             folder_brackets: Some(false),
+            show_game_position: Some(false),
             left_right: Some("letter".into()),
             font: Some("pixel".into()),
             theme_font_override: Some(true),

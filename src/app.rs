@@ -326,12 +326,14 @@ fn option_operation(option: OptionId, input: OptionInput) -> OptionOperation {
         | OptionId::LeftRight
         | OptionId::ArtLimit
         | OptionId::Layout
+        | OptionId::StartFolder
         | OptionId::Font
         | OptionId::ShowArt
         | OptionId::ArtworkScale
         | OptionId::DetailsStyle
         | OptionId::GameNameDisplay
         | OptionId::FolderBrackets
+        | OptionId::ShowGamePosition
         | OptionId::ShowHidden
         | OptionId::ShowEmpty
         | OptionId::ShowOther
@@ -3497,6 +3499,9 @@ pub struct App {
 
     screen: Screen,
     browsing: Browsing,
+    /// The saved top-level folder is opened once normal startup work has
+    /// released the browser. A missing folder consumes the request at Home.
+    start_folder_pending: bool,
     /// The default selected in Options. It is independent of the effective
     /// view of the place currently on screen.
     global_layout: Layout,
@@ -4003,6 +4008,7 @@ impl App {
                 Some((system.def.id.clone(), root.clone()))
             })
             .collect();
+        let start_folder_pending = settings.start_folder.is_some();
         let mut app = App {
             speed: settings
                 .speed_step
@@ -4178,6 +4184,7 @@ impl App {
             provider_cancelling: false,
             screen: Screen::Splash,
             browsing: Browsing::Categories,
+            start_folder_pending,
             global_layout,
             layout,
             layout_override: None,
@@ -10166,6 +10173,44 @@ impl App {
         self.dirty = true;
     }
 
+    /// Home followed by the top-level folders that exist in the current
+    /// library. The saved value is a name rather than an index because
+    /// visibility settings and installed cores can change the list order.
+    fn start_folder_choices(&self) -> Vec<Option<String>> {
+        std::iter::once(None)
+            .chain(self.categories.iter().map(|(name, _)| Some(name.clone())))
+            .collect()
+    }
+
+    /// Open the saved top-level folder once startup workers have released
+    /// the browser. If it is no longer present, consume the request at Home.
+    fn apply_start_folder_if_ready(&mut self) {
+        if !self.start_folder_pending
+            || self.screen != Screen::Browse
+            || self.browsing != Browsing::Categories
+            || self.source_resolution.is_some()
+            || self.source_job.is_some()
+            || self.provider_job.is_some()
+            || self.build.is_some()
+            || self.index_terminal.is_some()
+        {
+            return;
+        }
+        self.start_folder_pending = false;
+        let Some(saved) = self.settings.start_folder.as_deref() else {
+            return;
+        };
+        let Some(index) = self
+            .categories
+            .iter()
+            .position(|(name, _)| name.eq_ignore_ascii_case(saved))
+        else {
+            return;
+        };
+        self.category_list.select(index);
+        self.open_selected_category();
+    }
+
     /// Choose which system lends its logo to each group, this time round.
     ///
     /// A different one on each visit. A group is not one machine, and always
@@ -10938,6 +10983,22 @@ impl App {
                 self.resolve_view();
                 self.apply_geometry();
             }
+            OptionId::StartFolder => {
+                let choices = self.start_folder_choices();
+                let current = self
+                    .settings
+                    .start_folder
+                    .as_deref()
+                    .and_then(|saved| {
+                        choices.iter().position(|choice| {
+                            choice
+                                .as_deref()
+                                .is_some_and(|name| name.eq_ignore_ascii_case(saved))
+                        })
+                    })
+                    .unwrap_or(0);
+                self.settings.start_folder = choices[step(current, delta, choices.len())].clone();
+            }
             OptionId::LeftRight => {
                 let at = step(self.horizontal.index(), delta, Horizontal::ALL.len());
                 self.horizontal = Horizontal::ALL[at];
@@ -11006,6 +11067,10 @@ impl App {
                 self.folder_brackets = !self.folder_brackets;
                 self.settings.folder_brackets = Some(self.folder_brackets);
                 self.touch_selection();
+            }
+            OptionId::ShowGamePosition => {
+                self.settings.show_game_position =
+                    Some(!self.settings.show_game_position.unwrap_or(true));
             }
             OptionId::ShowStats => {
                 self.show_stats = !self.show_stats;
@@ -11220,6 +11285,11 @@ impl App {
                 }
             }
             OptionId::Layout => self.global_layout.shown().to_string(),
+            OptionId::StartFolder => self
+                .settings
+                .start_folder
+                .clone()
+                .unwrap_or_else(|| "Home".to_string()),
             OptionId::ResetCustomViews => match self.settings.custom_views.len() {
                 0 => "None".to_string(),
                 count => format!("{count} set"),
@@ -11237,6 +11307,7 @@ impl App {
             OptionId::DetailsStyle => self.details_style.shown().to_string(),
             OptionId::GameNameDisplay => self.game_name_display.label().to_string(),
             OptionId::FolderBrackets => on_off(self.folder_brackets),
+            OptionId::ShowGamePosition => on_off(self.settings.show_game_position.unwrap_or(true)),
             OptionId::ShowStats => on_off(self.show_stats),
             OptionId::Present => capitalised(self.present_label),
             OptionId::ScreenRotation => self.screen_rotation.label().to_string(),
@@ -17292,6 +17363,7 @@ impl App {
     }
 
     fn refresh(&mut self) {
+        self.apply_start_folder_if_ready();
         let (range, selected_in_window) = if self.screen == Screen::Context {
             context_window(&self.menu, &self.menu_list, self.geometry.visible)
         } else {
@@ -17888,6 +17960,14 @@ impl App {
             .set_heading_detail(SharedString::from(match self.screen {
                 Screen::Browse if self.browsing == Browsing::Categories => {
                     "Game Browser".to_string()
+                }
+                Screen::Browse
+                    if self.browsing == Browsing::Games
+                        && !self.in_cores_browser()
+                        && !self.in_misterzine_browser()
+                        && !self.settings.show_game_position.unwrap_or(true) =>
+                {
+                    String::new()
                 }
                 Screen::Browse
                 | Screen::OptionsRoot

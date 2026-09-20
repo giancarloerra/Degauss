@@ -447,6 +447,120 @@ fn run_browse_bar_settings_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) 
     }
 }
 
+fn run_start_folder_and_game_position_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
+    let start_root = root.join("start-folder");
+    let games = start_root.join("games/shared");
+    std::fs::create_dir_all(&games).unwrap();
+    std::fs::write(games.join("Console Game.nes"), b"fixture").unwrap();
+    std::fs::write(games.join("Computer Game.adf"), b"fixture").unwrap();
+
+    let mut app = unopened_fixture_app_with_systems(
+        &start_root,
+        window.clone(),
+        Settings {
+            start_folder: Some("Computer".into()),
+            ..Default::default()
+        },
+        &["NES", "Amiga"],
+        "games/shared",
+    );
+    app.finish_background_work_for_headless();
+    app.leave_splash();
+    app.refresh();
+    assert_eq!(app.open_category.as_deref(), Some("Computer"));
+    assert!(
+        app.skipped_systems,
+        "the ordinary one-system shortcut is kept"
+    );
+    assert!(
+        app.opening.is_some(),
+        "startup uses the normal system-entry path"
+    );
+    assert_eq!(app.option_value(OptionId::StartFolder), "Computer");
+    assert!(app.opening.take().is_some());
+    app.open_system_now();
+    assert_eq!(app.open_system.as_deref(), Some("Amiga"));
+    assert_eq!(app.browsing, Browsing::Games);
+    assert_eq!(app.settings.start_folder.as_deref(), Some("Computer"));
+
+    let choices = app.start_folder_choices();
+    let current = choices
+        .iter()
+        .position(|choice| choice.as_deref() == Some("Computer"))
+        .unwrap();
+    let expected = choices[(current + 1) % choices.len()].clone();
+    select_option(&mut app, OptionsPage::Appearance, OptionId::StartFolder);
+    app.handle(Action::Accept);
+    app.handle(Action::Quit);
+    app.handle(Action::Quit);
+    assert_eq!(app.settings.start_folder, expected);
+    assert_eq!(
+        Settings::load(&app.settings_path).unwrap().start_folder,
+        expected
+    );
+    app.ui.hide().unwrap();
+    drop(app);
+
+    let missing_root = root.join("missing-start-folder");
+    std::fs::create_dir_all(missing_root.join("games/NES")).unwrap();
+    std::fs::write(missing_root.join("games/NES/Game.nes"), b"fixture").unwrap();
+    let mut app = unopened_fixture_app(
+        &missing_root,
+        window.clone(),
+        Settings {
+            start_folder: Some("Computer".into()),
+            ..Default::default()
+        },
+    );
+    app.finish_background_work_for_headless();
+    app.leave_splash();
+    app.refresh();
+    assert_eq!(app.browsing, Browsing::Categories);
+    assert!(app.open_category.is_none());
+    assert_eq!(app.settings.start_folder.as_deref(), Some("Computer"));
+    assert!(!app.start_folder_pending);
+    app.ui.hide().unwrap();
+    drop(app);
+
+    let counter_root = root.join("game-position");
+    std::fs::create_dir_all(counter_root.join("games/NES")).unwrap();
+    for name in ["First Game.nes", "Second Game.nes"] {
+        std::fs::write(counter_root.join("games/NES").join(name), b"fixture").unwrap();
+    }
+    let mut app = fixture_app(&counter_root, window.clone(), Settings::default());
+    app.refresh();
+    assert_eq!(app.ui.get_heading_detail().as_str(), "1/2");
+    select_option(
+        &mut app,
+        OptionsPage::Appearance,
+        OptionId::ShowGamePosition,
+    );
+    app.handle(Action::Accept);
+    assert_eq!(app.settings.show_game_position, Some(false));
+    app.handle(Action::Quit);
+    assert_eq!(
+        Settings::load(&app.settings_path)
+            .unwrap()
+            .show_game_position,
+        Some(false)
+    );
+    app.screen = Screen::Browse;
+    app.refresh();
+    assert!(app.ui.get_heading_detail().is_empty());
+
+    app.open_system = None;
+    app.open_category = Some("Console".into());
+    app.browsing = Browsing::Systems;
+    app.rebuild_system_list();
+    app.refresh();
+    assert_eq!(
+        app.ui.get_heading_detail().as_str(),
+        "1/1",
+        "the setting hides only game-list position"
+    );
+    app.ui.hide().unwrap();
+}
+
 fn run_screen_rotation_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
     let root = root.join("screen-rotation");
     std::fs::create_dir_all(root.join("games/NES")).unwrap();
@@ -10062,6 +10176,7 @@ pub(super) fn run_ui_acceptance_flow(window: Rc<MinimalSoftwareWindow>) {
     run_cores_browser_flow(&root, window.clone());
     run_misterzine_browser_flow(&root, window.clone());
     run_browse_bar_settings_flow(&root, window.clone());
+    run_start_folder_and_game_position_flow(&root, window.clone());
     run_screen_rotation_flow(&root, window.clone());
     run_game_name_display_flow(&root, window.clone());
     run_details_style_flow(&root, window.clone());
