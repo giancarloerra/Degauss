@@ -14,7 +14,8 @@ pub fn key(launch: &Launch) -> String {
     match launch {
         Launch::File(path) => format!("f:{}", normalized_path(path)),
         Launch::AmigaVision { install, title } => {
-            format!("a:{}|{title}", normalized_path(install))
+            let install = normalized_path(install);
+            format!("a:{}:{install}{title}", install.len())
         }
     }
 }
@@ -107,8 +108,18 @@ mod tests {
                 install: PathBuf::from("/media/fat/games/AmigaVision"),
                 title: "The Settlers".into(),
             }),
-            "a:/media/fat/games/AmigaVision|The Settlers"
+            "a:28:/media/fat/games/AmigaVisionThe Settlers"
         );
+
+        let title_delimiter = Launch::AmigaVision {
+            install: PathBuf::from("/games/A"),
+            title: "B|C".into(),
+        };
+        let path_delimiter = Launch::AmigaVision {
+            install: PathBuf::from("/games/A|B"),
+            title: "C".into(),
+        };
+        assert_ne!(key(&title_delimiter), key(&path_delimiter));
     }
 
     #[test]
