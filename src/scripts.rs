@@ -1023,8 +1023,13 @@ mod tests {
             }
             let status = child.wait().unwrap();
             let recorded_pid = |marker: &str| {
-                text.lines()
-                    .find_map(|line| line.strip_prefix(marker)?.trim().parse::<i32>().ok())
+                text.lines().find_map(|line| {
+                    let value = line.strip_prefix(marker)?.trim_start();
+                    let end = value
+                        .find(|character: char| !character.is_ascii_digit())
+                        .unwrap_or(value.len());
+                    value[..end].parse::<i32>().ok()
+                })
             };
             let nested_alive =
                 recorded_pid("NESTED_PID=").is_some_and(|pid| unsafe { libc::kill(pid, 0) == 0 });
