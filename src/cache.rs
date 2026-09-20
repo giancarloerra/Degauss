@@ -738,7 +738,17 @@ fn validate_encoded(kind: CacheKind, bytes: &[u8]) -> bool {
 /// many links to the same game; they must not turn one core into an arbitrary
 /// many-game match.
 fn build_core_game_map(cache: &SystemCache, cancelled: &AtomicBool) -> Option<CoreGameMap> {
+    build_core_game_map_observed(cache, cancelled, &mut |_| {})
+}
+
+fn build_core_game_map_observed(
+    cache: &SystemCache,
+    cancelled: &AtomicBool,
+    progress: &mut dyn FnMut(usize),
+) -> Option<CoreGameMap> {
     let mut by_identity = BTreeMap::<String, Vec<PathBuf>>::new();
+    let mut checked = 0;
+    progress(checked);
     for row in cache.folders.values().flat_map(|folder| folder.rows.iter()) {
         if cancelled.load(Ordering::Relaxed) {
             return None;
@@ -758,6 +768,8 @@ fn build_core_game_map(cache: &SystemCache, cancelled: &AtomicBool) -> Option<Co
         if !canonical {
             continue;
         }
+        checked += 1;
+        progress(checked);
         let Ok(descriptor) =
             crate::favorites::descriptor_reference(path, "Arcade core artwork mapping")
         else {
@@ -1074,18 +1086,56 @@ pub fn stage_transactional(
     caches: Vec<StagedSystemCache>,
     cancelled: &AtomicBool,
 ) -> Result<Option<PreparedCacheGroup>> {
-    stage_transactional_with_tag_source(dir, kind, caches, cancelled, || {
-        let serial = NEXT_CACHE_TRANSACTION.fetch_add(1, Ordering::Relaxed);
-        format!("degauss-{}-{serial}", std::process::id())
-    })
+    stage_transactional_observed(dir, kind, caches, cancelled, &mut |_| {})
 }
 
+/// Stage a cache group while reporting the number of canonical Arcade
+/// descriptors inspected for the optional core-to-game lookup.
+pub fn stage_transactional_observed(
+    dir: &Path,
+    kind: CacheKind,
+    caches: Vec<StagedSystemCache>,
+    cancelled: &AtomicBool,
+    arcade_progress: &mut dyn FnMut(usize),
+) -> Result<Option<PreparedCacheGroup>> {
+    stage_transactional_with_tag_source_observed(
+        dir,
+        kind,
+        caches,
+        cancelled,
+        || {
+            let serial = NEXT_CACHE_TRANSACTION.fetch_add(1, Ordering::Relaxed);
+            format!("degauss-{}-{serial}", std::process::id())
+        },
+        arcade_progress,
+    )
+}
+
+#[cfg(test)]
 fn stage_transactional_with_tag_source(
     dir: &Path,
     kind: CacheKind,
     caches: Vec<StagedSystemCache>,
     cancelled: &AtomicBool,
+    next_tag: impl FnMut() -> String,
+) -> Result<Option<PreparedCacheGroup>> {
+    stage_transactional_with_tag_source_observed(
+        dir,
+        kind,
+        caches,
+        cancelled,
+        next_tag,
+        &mut |_| {},
+    )
+}
+
+fn stage_transactional_with_tag_source_observed(
+    dir: &Path,
+    kind: CacheKind,
+    caches: Vec<StagedSystemCache>,
+    cancelled: &AtomicBool,
     mut next_tag: impl FnMut() -> String,
+    arcade_progress: &mut dyn FnMut(usize),
 ) -> Result<Option<PreparedCacheGroup>> {
     let tag = loop {
         let tag = next_tag();
@@ -1093,7 +1143,7 @@ fn stage_transactional_with_tag_source(
             break tag;
         }
     };
-    stage_transactional_with_tag(dir, kind, caches, cancelled, &tag)
+    stage_transactional_with_tag_observed(dir, kind, caches, cancelled, &tag, arcade_progress)
 }
 
 fn transaction_tag_is_available(
@@ -1124,12 +1174,24 @@ fn transaction_tag_is_available(
     Ok(true)
 }
 
+#[cfg(test)]
 fn stage_transactional_with_tag(
     dir: &Path,
     kind: CacheKind,
     caches: Vec<StagedSystemCache>,
     cancelled: &AtomicBool,
     tag: &str,
+) -> Result<Option<PreparedCacheGroup>> {
+    stage_transactional_with_tag_observed(dir, kind, caches, cancelled, tag, &mut |_| {})
+}
+
+fn stage_transactional_with_tag_observed(
+    dir: &Path,
+    kind: CacheKind,
+    caches: Vec<StagedSystemCache>,
+    cancelled: &AtomicBool,
+    tag: &str,
+    arcade_progress: &mut dyn FnMut(usize),
 ) -> Result<Option<PreparedCacheGroup>> {
     if caches.is_empty() {
         return Err(DegaussError::unsupported(
@@ -1198,7 +1260,7 @@ fn stage_transactional_with_tag(
         .caches
         .iter()
         .find(|cache| cache.id.eq_ignore_ascii_case("Arcade"))
-        .and_then(|cache| build_core_game_map(&cache.cache, cancelled));
+        .and_then(|cache| build_core_game_map_observed(&cache.cache, cancelled, arcade_progress));
     if cancelled.load(Ordering::Relaxed) {
         return Ok(None);
     }
@@ -1578,7 +1640,8 @@ mod tests {
             ]),
         };
         let store = root.join("cache");
-        let (_, warnings) = stage_transactional(
+        let mut progress = Vec::new();
+        let (_, warnings) = stage_transactional_observed(
             &store,
             CacheKind::Gamelist,
             vec![StagedSystemCache {
@@ -1588,6 +1651,7 @@ mod tests {
                 fingerprints_complete: false,
             }],
             &AtomicBool::new(false),
+            &mut |checked| progress.push(checked),
         )
         .unwrap()
         .unwrap()
@@ -1597,6 +1661,7 @@ mod tests {
         assert_eq!(map.paths("onlycore"), std::slice::from_ref(&one));
         assert_eq!(map.paths("sharedcore"), [other.clone(), two.clone()]);
         assert!(map.paths("missing").is_empty());
+        assert_eq!(progress, [0, 1, 2, 3, 4]);
         assert!(
             warnings.is_empty(),
             "the optional map does not change normal indexing warnings"

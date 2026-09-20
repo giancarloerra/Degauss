@@ -152,7 +152,7 @@ impl Item {
         self.game.is_some()
     }
 
-    pub fn information_with_games(&self, games: &[Row]) -> String {
+    pub fn information_with_games(&self, matches: Option<&GameMatches>) -> String {
         let mut text = self.title.clone();
         for (label, value) in [
             ("Local status", self.state.label().to_string()),
@@ -166,11 +166,12 @@ impl Item {
                 text.push_str(&format!("\n\n{label}: {value}"));
             }
         }
-        let game = if games.len() == 1 {
-            games.first()
-        } else {
-            self.game.as_ref()
-        };
+        let games = matches
+            .map(|matches| matches.games.as_slice())
+            .unwrap_or_default();
+        let game = matches
+            .and_then(|matches| matches.single.as_ref())
+            .or(self.game.as_ref());
         if games.len() > 1 {
             text.push_str(&format!("\n\nGames using this core: {}", games.len()));
             text.push_str("\n\nGame titles");
@@ -587,9 +588,60 @@ pub struct GameRequest {
     pub target: GameTarget,
 }
 
+#[derive(Debug, Clone)]
+pub struct GamePreview {
+    pub name: String,
+    sort_key: String,
+    pub cover: Option<PathBuf>,
+}
+
+#[derive(Debug, Default)]
+pub struct GameMatches {
+    pub games: Vec<GamePreview>,
+    pub single: Option<Row>,
+}
+
+impl GameMatches {
+    #[cfg(test)]
+    pub fn from_rows(rows: Vec<Row>) -> Self {
+        let mut matches = Self::default();
+        for row in rows {
+            matches.push(row);
+        }
+        matches.sort();
+        matches
+    }
+
+    fn push(&mut self, row: Row) {
+        if self.games.is_empty() {
+            self.single = Some(row.clone());
+        } else {
+            self.single = None;
+        }
+        self.games.push(GamePreview {
+            name: row.name,
+            sort_key: row.sort_key,
+            cover: row.cover,
+        });
+    }
+
+    fn sort(&mut self) {
+        self.games.sort_by(|left, right| {
+            left.sort_key
+                .to_ascii_lowercase()
+                .cmp(&right.sort_key.to_ascii_lowercase())
+                .then_with(|| {
+                    left.name
+                        .to_ascii_lowercase()
+                        .cmp(&right.name.to_ascii_lowercase())
+                })
+        });
+    }
+}
+
 #[derive(Debug)]
 pub enum GameEvent {
-    Ready { key: String, games: Vec<Row> },
+    Ready { key: String, matches: GameMatches },
     Cancelled,
     Failed { key: String, error: DegaussError },
 }
@@ -654,7 +706,7 @@ pub fn start_game_job(request: GameRequest) -> Result<GameJob> {
                 GameEvent::Cancelled
             } else {
                 match result {
-                    Ok(games) => GameEvent::Ready { key, games },
+                    Ok(matches) => GameEvent::Ready { key, matches },
                     Err(error) => GameEvent::Failed { key, error },
                 }
             };
@@ -674,9 +726,9 @@ pub fn start_game_job(request: GameRequest) -> Result<GameJob> {
     })
 }
 
-fn read_core_games(request: &GameRequest, cancelled: &AtomicBool) -> Result<Vec<Row>> {
+fn read_core_games(request: &GameRequest, cancelled: &AtomicBool) -> Result<GameMatches> {
     if cancelled.load(Ordering::Relaxed) {
-        return Ok(Vec::new());
+        return Ok(GameMatches::default());
     }
     let system_id = request.target.system_id();
     let cache = match &request.source {
@@ -699,7 +751,7 @@ fn read_core_games(request: &GameRequest, cancelled: &AtomicBool) -> Result<Vec<
             let Some(map) =
                 crate::cache::ensure_core_game_map(&request.cache_dir, &cache, cancelled)?
             else {
-                return Ok(Vec::new());
+                return Ok(GameMatches::default());
             };
             Some(
                 map.paths(core_identity)
@@ -710,11 +762,12 @@ fn read_core_games(request: &GameRequest, cancelled: &AtomicBool) -> Result<Vec<
             )
         }
     };
+    let provider = prepared_game_provider(request, system_id)?;
     let mut seen = HashSet::<Launch>::new();
-    let mut games = Vec::new();
+    let mut matches = GameMatches::default();
     for row in cache.folders.values().flat_map(|folder| folder.rows.iter()) {
         if cancelled.load(Ordering::Relaxed) {
-            return Ok(Vec::new());
+            return Ok(GameMatches::default());
         }
         let Kind::Play(launch) = &row.kind else {
             continue;
@@ -726,69 +779,69 @@ fn read_core_games(request: &GameRequest, cancelled: &AtomicBool) -> Result<Vec<
         {
             continue;
         }
-        games.push(row.clone());
+        let mut row = row.clone();
+        if let Some(provider) = provider.as_ref() {
+            provider.apply_prepared(std::slice::from_mut(&mut row));
+        }
+        matches.push(row);
     }
+    matches.sort();
+    Ok(matches)
+}
 
-    if let GameSource::ArtworkPack {
+fn prepared_game_provider(
+    request: &GameRequest,
+    system_id: &str,
+) -> Result<Option<crate::artwork_pack::Provider>> {
+    let GameSource::ArtworkPack {
         docs_root,
         language,
     } = &request.source
-    {
-        let state = crate::cache::load_pack_source_state(&request.cache_dir, system_id)?
-            .ok_or_else(|| {
-                DegaussError::unsupported(
-                    "core update games",
-                    format!("the {system_id} Artwork Pack state is unavailable"),
-                )
-            })?;
-        let accepted = state
-            .accepted
-            .as_ref()
-            .filter(|accepted| Path::new(&accepted.docs_root) == docs_root)
-            .ok_or_else(|| {
-                DegaussError::unsupported(
-                    "core update games",
-                    format!("the {system_id} Artwork Pack selection is not prepared"),
-                )
-            })?;
-        let kept = state.declined.as_ref().filter(|declined| {
-            Path::new(&declined.docs_root) == docs_root && declined.signature.is_some()
-        });
-        let current = crate::artwork_pack::normalized_language(language.as_deref());
-        let prepared_language = if kept.is_some_and(|kept| kept.language == current) {
-            current
-        } else {
-            accepted.language.clone()
-        };
-        let prepared = crate::cache::load_pack_prepared_map(&request.cache_dir, system_id)?
-            .ok_or_else(|| {
-                DegaussError::unsupported(
-                    "core update games",
-                    format!("the {system_id} Artwork Pack mapping is unavailable"),
-                )
-            })?;
-        let provider = crate::artwork_pack::Provider::from_prepared_state(
-            system_id,
-            docs_root,
-            prepared_language.as_deref(),
-            accepted.health,
-            accepted.diagnostics.clone(),
-            accepted.signature.clone(),
-            prepared,
-        );
-        provider.apply_prepared(&mut games);
-    }
-    games.sort_by(|left, right| {
-        left.sort_key
-            .to_ascii_lowercase()
-            .cmp(&right.sort_key.to_ascii_lowercase())
-            .then_with(|| {
-                left.name
-                    .to_ascii_lowercase()
-                    .cmp(&right.name.to_ascii_lowercase())
-            })
+    else {
+        return Ok(None);
+    };
+    let state =
+        crate::cache::load_pack_source_state(&request.cache_dir, system_id)?.ok_or_else(|| {
+            DegaussError::unsupported(
+                "core update games",
+                format!("the {system_id} Artwork Pack state is unavailable"),
+            )
+        })?;
+    let accepted = state
+        .accepted
+        .as_ref()
+        .filter(|accepted| Path::new(&accepted.docs_root) == docs_root)
+        .ok_or_else(|| {
+            DegaussError::unsupported(
+                "core update games",
+                format!("the {system_id} Artwork Pack selection is not prepared"),
+            )
+        })?;
+    let kept = state.declined.as_ref().filter(|declined| {
+        Path::new(&declined.docs_root) == docs_root && declined.signature.is_some()
     });
-    Ok(games)
+    let current = crate::artwork_pack::normalized_language(language.as_deref());
+    let prepared_language = if kept.is_some_and(|kept| kept.language == current) {
+        current
+    } else {
+        accepted.language.clone()
+    };
+    let prepared = crate::cache::load_pack_prepared_map(&request.cache_dir, system_id)?
+        .ok_or_else(|| {
+            DegaussError::unsupported(
+                "core update games",
+                format!("the {system_id} Artwork Pack mapping is unavailable"),
+            )
+        })?;
+    Ok(Some(crate::artwork_pack::Provider::from_prepared_state(
+        system_id,
+        docs_root,
+        prepared_language.as_deref(),
+        accepted.health,
+        accepted.diagnostics.clone(),
+        accepted.signature.clone(),
+        prepared,
+    )))
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
@@ -3141,7 +3194,7 @@ mod tests {
 
         item.set_game_match(1, Some(game.clone()));
         assert_eq!(item.cover(), Some(cover.as_path()));
-        let information = item.information_with_games(&[]);
+        let information = item.information_with_games(None);
         assert!(information.contains("Matched game: Fixture Game"));
         assert!(information.contains("Genre: Action"));
         assert!(information.contains("Publisher: Fixture Publisher"));
@@ -3161,13 +3214,14 @@ mod tests {
             below: None,
             details: Details::default(),
         };
-        let information = item.information_with_games(&[
+        let matches = GameMatches::from_rows(vec![
             Row {
                 name: "Fixture Game".into(),
                 ..game
             },
             second,
         ]);
+        let information = item.information_with_games(Some(&matches));
         assert!(information.contains("Games using this core: 2"));
         assert!(information.contains("Game titles\nFixture Game\nSecond Game"));
         assert!(!information.contains("Matched game:"));
@@ -3213,15 +3267,20 @@ mod tests {
                 id: "Fixture".into(),
             },
         };
-        let games = read_core_games(&request, &AtomicBool::new(false)).unwrap();
+        let matches = read_core_games(&request, &AtomicBool::new(false)).unwrap();
         assert_eq!(
-            games
+            matches
+                .games
                 .iter()
                 .map(|game| game.name.as_str())
                 .collect::<Vec<_>>(),
             ["Alpha Title", "Beta Title"]
         );
-        assert!(games.iter().all(|game| game.cover.is_some()));
+        assert!(matches.games.iter().all(|game| game.cover.is_some()));
+        assert!(
+            matches.single.is_none(),
+            "multi-game details are not retained"
+        );
     }
 
     #[test]
@@ -3236,6 +3295,7 @@ mod tests {
         };
         assert!(read_core_games(&request, &AtomicBool::new(true))
             .unwrap()
+            .games
             .is_empty());
     }
 

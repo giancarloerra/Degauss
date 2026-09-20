@@ -3315,7 +3315,7 @@ fn to_image(image: &crate::covers::RgbImage) -> slint::Image {
 
 struct CoreUpdateGames {
     key: String,
-    games: Vec<browse::Row>,
+    matches: crate::misterzine::GameMatches,
     covers: Vec<PathBuf>,
     cover_at: usize,
     cover_changed: Instant,
@@ -3323,17 +3323,17 @@ struct CoreUpdateGames {
 }
 
 impl CoreUpdateGames {
-    fn new(key: String, games: Vec<browse::Row>, now: Instant) -> Self {
+    fn new(key: String, matches: crate::misterzine::GameMatches, now: Instant) -> Self {
         let mut covers = Vec::new();
         let mut known = HashSet::new();
-        for cover in games.iter().filter_map(|game| game.cover.clone()) {
+        for cover in matches.games.iter().filter_map(|game| game.cover.clone()) {
             if known.insert(cover.clone()) {
                 covers.push(cover);
             }
         }
         Self {
             key,
-            games,
+            matches,
             covers,
             cover_at: 0,
             cover_changed: now,
@@ -3342,7 +3342,7 @@ impl CoreUpdateGames {
     }
 
     fn failed(key: String, now: Instant) -> Self {
-        let mut selection = Self::new(key, Vec::new(), now);
+        let mut selection = Self::new(key, Default::default(), now);
         selection.loaded = false;
         selection
     }
@@ -9465,25 +9465,24 @@ impl App {
             .flatten()
     }
 
-    fn selected_misterzine_games(&self) -> Option<&[browse::Row]> {
+    fn selected_misterzine_games(&self) -> Option<&crate::misterzine::GameMatches> {
         let key = self.selected_misterzine_item()?.key();
         self.misterzine_games
             .as_ref()
             .filter(|selection| selection.key == key && selection.loaded)
-            .map(|selection| selection.games.as_slice())
+            .map(|selection| &selection.matches)
     }
 
     fn selected_misterzine_game_count(&self) -> Option<usize> {
         let item = self.selected_misterzine_item()?;
         self.selected_misterzine_games()
-            .map(<[browse::Row]>::len)
+            .map(|matches| matches.games.len())
             .or_else(|| item.game_count())
     }
 
     fn misterzine_information_text(&self) -> Option<String> {
         let item = self.selected_misterzine_item()?;
-        let games = self.selected_misterzine_games().unwrap_or_default();
-        let mut text = item.information_with_games(games);
+        let mut text = item.information_with_games(self.selected_misterzine_games());
         if self.misterzine_game_job_key.as_deref() == Some(item.key()) {
             text.push_str("\n\nReading game titles...");
         }
@@ -9594,13 +9593,25 @@ impl App {
             self.misterzine_game_job = None;
             self.misterzine_game_job_key = None;
             match event {
-                crate::misterzine::GameEvent::Ready { key, mut games }
+                crate::misterzine::GameEvent::Ready { key, mut matches }
                     if current.as_deref() == Some(key.as_str()) =>
                 {
-                    for game in &mut games {
+                    for game in &mut matches.games {
                         game.name = self.game_name_display.apply(&game.name).into_owned();
                     }
-                    self.misterzine_games = Some(CoreUpdateGames::new(key, games, now));
+                    if let Some(game) = matches.single.as_mut() {
+                        game.name = self.game_name_display.apply(&game.name).into_owned();
+                    }
+                    let refresh_arcade = self.selected_misterzine_item().is_some_and(|item| {
+                        item.base().eq_ignore_ascii_case("Arcade") && item.game_count().is_none()
+                    });
+                    self.misterzine_games = Some(CoreUpdateGames::new(key, matches, now));
+                    if refresh_arcade {
+                        let mut items = std::mem::take(&mut self.misterzine_items);
+                        self.enrich_misterzine_games(&mut items);
+                        self.misterzine_items = items;
+                        self.rebuild_misterzine_rows();
+                    }
                     self.art_pending = true;
                     self.dirty = true;
                 }

@@ -806,10 +806,10 @@ fn run_misterzine_browser_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
     let slideshow_started = Instant::now();
     app.misterzine_games = Some(CoreUpdateGames::new(
         app.misterzine_items[0].key().to_string(),
-        vec![
+        crate::misterzine::GameMatches::from_rows(vec![
             game("First Game", first_cover.clone()),
             game("Second Game", second_cover.clone()),
-        ],
+        ]),
         slideshow_started,
     ));
     app.refresh();
