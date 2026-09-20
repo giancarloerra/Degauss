@@ -149,6 +149,32 @@ pub fn plan_amiga_vision(
     })
 }
 
+/// Start an AmigaVision title after applying the same family and version
+/// selections used by ordinary file launches.
+#[allow(clippy::too_many_arguments)]
+pub fn plan_amiga_vision_with_selections(
+    system: &SystemConfig,
+    install: &Path,
+    title: &str,
+    mgl_path: &Path,
+    menu_root: &Path,
+    ra_first: bool,
+    selected_version: Option<&str>,
+    selected_family: Option<&str>,
+) -> Result<LaunchPlan> {
+    let family = crate::launch_cores::resolve_for_version(
+        system,
+        menu_root,
+        selected_family,
+        selected_version,
+        ra_first,
+    )?;
+    let mut plan = plan_amiga_vision(&family, install, title, mgl_path)?;
+    let core = crate::core_choices::resolve(&family, menu_root, selected_version, ra_first)?;
+    plan.mgl = crate::core_variants::apply(&plan.mgl, mgl_path, &core)?;
+    Ok(plan)
+}
+
 /// A second file to mount beside this one, if the rule asks for one and the
 /// folder holds it.
 ///
@@ -491,6 +517,29 @@ pub fn favorite_mgl_amiga(system: &SystemConfig, install: &Path, title: &str) ->
     ))
 }
 
+/// Build an AmigaVision favourite with the effective family and version
+/// embedded for MiSTer's native Favourites menu.
+pub fn favorite_mgl_amiga_with_selections(
+    system: &SystemConfig,
+    install: &Path,
+    title: &str,
+    menu_root: &Path,
+    ra_first: bool,
+    selected_version: Option<&str>,
+    selected_family: Option<&str>,
+) -> Result<String> {
+    let family = crate::launch_cores::resolve_for_version(
+        system,
+        menu_root,
+        selected_family,
+        selected_version,
+        ra_first,
+    )?;
+    let text = favorite_mgl_amiga(&family, install, title)?;
+    let core = crate::core_choices::resolve(&family, menu_root, selected_version, ra_first)?;
+    crate::core_variants::apply(&text, install, &core)
+}
+
 /// The AmigaVision title an MGL carries, where it carries one.
 pub fn amiga_marker(mgl: &Path) -> Option<(PathBuf, String)> {
     let text = crate::favorites::read_mgl_text(mgl, "AmigaVision MGL marker").ok()?;
@@ -707,6 +756,18 @@ pub fn needs_system_core(game: &Path) -> bool {
     }
 }
 
+/// Whether a game's core is selected by Degauss rather than fixed by the
+/// launch format itself. Unsupported files simply do not offer the action.
+pub fn game_core_selectable(system: &SystemConfig, launch: &crate::browse::Launch) -> bool {
+    match launch {
+        crate::browse::Launch::AmigaVision { .. } => true,
+        crate::browse::Launch::File(game) if needs_system_core(game) => {
+            rule_for(system, game).is_ok_and(|rule| rule.rbf.is_none())
+        }
+        crate::browse::Launch::File(_) => false,
+    }
+}
+
 /// Build a launch using the current preference without persisting variant data.
 /// Self-describing custom launchers remain untouched. Recognized Favorites are
 /// converted only into the temporary output, preserving the saved Favorite.
@@ -765,6 +826,18 @@ pub fn plan_with_selections(
 ) -> Result<LaunchPlan> {
     if let Some(launcher) = amiga_vision_cd32_mgl(system, game, menu_root)? {
         return plan(system, &launcher, mgl_path);
+    }
+    if let Some((install, title)) = amiga_marker(game) {
+        return plan_amiga_vision_with_selections(
+            system,
+            &install,
+            &title,
+            mgl_path,
+            menu_root,
+            ra_first,
+            selected_version,
+            selected_family,
+        );
     }
     if game
         .extension()
@@ -1548,6 +1621,56 @@ mod tests {
     }
 
     #[test]
+    fn amigavision_titles_and_new_favourites_apply_the_selected_family() {
+        let install = amiga_vision_install("game-core", b"Zool 2\n");
+        let root = install
+            .parent()
+            .unwrap()
+            .join(format!("degauss-amigavision-cores-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("_Computer")).unwrap();
+        std::fs::write(root.join("_Computer/Minimig.rbf"), b"primary").unwrap();
+        std::fs::write(root.join("_Computer/MinimigLegacy.rbf"), b"legacy").unwrap();
+        let mut system = amiga_vision_system(&install);
+        system.compatible_cores.push(crate::config::CoreProfile {
+            id: "legacy".into(),
+            label: "Legacy Minimig".into(),
+            rbf: "_Computer/MinimigLegacy".into(),
+            setname: Some("Amiga".into()),
+        });
+
+        let plan = plan_amiga_vision_with_selections(
+            &system,
+            &install,
+            "Zool 2",
+            &root.join("degauss.mgl"),
+            &root,
+            false,
+            None,
+            Some("legacy"),
+        )
+        .unwrap();
+        assert!(plan.mgl.contains("<rbf>_Computer/MinimigLegacy</rbf>"));
+        assert_eq!(plan.boot_file.unwrap().1, b"Zool 2\n");
+
+        let favorite = favorite_mgl_amiga_with_selections(
+            &system,
+            &install,
+            "Zool 2",
+            &root,
+            false,
+            None,
+            Some("legacy"),
+        )
+        .unwrap();
+        assert!(favorite.contains("<rbf>_Computer/MinimigLegacy</rbf>"));
+        assert!(favorite.contains("kind=\"amigavision\""));
+
+        std::fs::remove_dir_all(root).unwrap();
+        std::fs::remove_dir_all(install).unwrap();
+    }
+
+    #[test]
     fn a_prg_produces_the_documented_c64_mgl() {
         let plan = plan(
             &c64(),
@@ -2158,6 +2281,36 @@ mod tests {
         assert!(needs_system_core(Path::new("/games/Game.neo")));
         assert!(needs_system_core(Path::new("/games/Game.bin")));
         assert!(needs_system_core(Path::new("/games/Game")));
+
+        let system = c64();
+        assert!(game_core_selectable(
+            &system,
+            &crate::browse::Launch::File(PathBuf::from("/games/C64/Game.prg"))
+        ));
+        for path in ["/fav/Game.mra", "/fav/Game.mgl", "/fav/core.rbf"] {
+            assert!(!game_core_selectable(
+                &system,
+                &crate::browse::Launch::File(PathBuf::from(path))
+            ));
+        }
+        let mut fixed = system.clone();
+        fixed
+            .launch
+            .iter_mut()
+            .find(|rule| rule.extensions.iter().any(|extension| extension == "prg"))
+            .unwrap()
+            .rbf = Some("_Computer/Fixed".into());
+        assert!(!game_core_selectable(
+            &fixed,
+            &crate::browse::Launch::File(PathBuf::from("/games/C64/Game.prg"))
+        ));
+        assert!(game_core_selectable(
+            &system,
+            &crate::browse::Launch::AmigaVision {
+                install: PathBuf::from("/games/AmigaVision"),
+                title: "Zool 2".into(),
+            }
+        ));
     }
 
     #[test]

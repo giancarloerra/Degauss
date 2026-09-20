@@ -222,6 +222,7 @@ fn every_existing_action_remains_reachable_without_a_placeholder_submenu() {
         scrape_game: true,
         image_override: None,
         game_data_source: true,
+        game_launch_core: true,
         launch_core: true,
         core_version: true,
         core_version_override: true,
@@ -287,7 +288,8 @@ fn every_existing_action_remains_reachable_without_a_placeholder_submenu() {
         SCRAPE_SYSTEM,
         SCRAPE_FOLDER,
         SCRAPE_GAME,
-        LAUNCH_CORE,
+        GAME_LAUNCH_CORE,
+        SYSTEM_LAUNCH_CORE,
         CORE_VERSION,
         USE_DEFAULT_CORE_VERSION,
         GAME_DATA_SOURCE,
@@ -2009,6 +2011,7 @@ fn run_last_played_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
         REBUILD_SYSTEM,
         GAME_DATA_SOURCE,
         CORE_VERSION,
+        GAME_LAUNCH_CORE,
         SCRAPE_SYSTEM,
     ] {
         assert!(
@@ -2157,13 +2160,31 @@ fn run_last_played_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
     app.settings
         .launch_cores
         .insert("NES".into(), "legacy-nes".into());
+    app.reopen_context_for(GAME_LAUNCH_CORE);
+    app.handle(Action::Accept);
+    assert_eq!(app.screen, Screen::LaunchCore);
+    assert_eq!(
+        app.menu,
+        ["Use System Setting (Legacy NES)", "NES", "Legacy NES"]
+    );
+    app.menu_list.select(1);
+    app.handle(Action::Accept);
+    let first_key = crate::game_launch_cores::key(&browse::Launch::File(first.clone()));
+    assert_eq!(
+        app.settings
+            .game_launch_cores
+            .get("NES")
+            .and_then(|games| games.get(&first_key))
+            .map(String::as_str),
+        Some(crate::launch_cores::PRIMARY_PROFILE_ID),
+        "Last Played writes the original game's override"
+    );
     app.add_favorite_in(&favorites_root);
     assert!(app.favorites.holds(&first));
     let favorite = std::fs::read_to_string(favorites_root.join("Current First.mgl")).unwrap();
     assert!(
-        favorite.contains("<rbf>_Arcade/LegacyNES</rbf>")
-            && favorite.contains("<setname>LegacyNES</setname>"),
-        "a Favourite created from Last Played uses its originating system's Launch Core: {favorite}"
+        favorite.contains("<rbf>_Console/NES</rbf>"),
+        "a Favourite created from Last Played embeds its effective game override: {favorite}"
     );
     assert!(app
         .here
@@ -2189,7 +2210,12 @@ fn run_last_played_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
     app.open_system_by_index(favorites_at);
     assert!(app.in_favorites());
     select_row_named(&mut app, "Current First");
+    app.reopen_context_for(GAME_LAUNCH_CORE);
+    app.handle(Action::Accept);
+    app.menu_list.select(2);
+    app.handle(Action::Accept);
     let Some(Outcome::Launch {
+        plan,
         history: Some(from_favorite),
         ..
     }) = app.confirm_launch()
@@ -2199,6 +2225,11 @@ fn run_last_played_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
             app.message
         );
     };
+    assert!(
+        plan.mgl.contains("<rbf>_Arcade/LegacyNES</rbf>"),
+        "a Degauss Favourite resolves the original game's current override: {}",
+        plan.mgl
+    );
     assert_eq!(from_favorite.entry.system, "NES");
     assert_eq!(
         from_favorite.entry.launch,
@@ -2210,6 +2241,14 @@ fn run_last_played_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
     assert_eq!(
         after_favorite.entries[0].launch,
         browse::Launch::File(first.clone())
+    );
+    app.reopen_context_for(GAME_LAUNCH_CORE);
+    app.handle(Action::Accept);
+    app.menu_list.select(0);
+    app.handle(Action::Accept);
+    assert!(
+        !app.settings.game_launch_cores.contains_key("NES"),
+        "Use System Setting clears the last per-game override"
     );
     app.last_played = after_favorite;
     app.open_last_played();
@@ -3386,6 +3425,7 @@ fn capture_every_menu_row(app: &mut App, directory: &Path) {
         scrape_game: true,
         image_override: None,
         game_data_source: true,
+        game_launch_core: true,
         launch_core: true,
         core_version: true,
         core_version_override: true,

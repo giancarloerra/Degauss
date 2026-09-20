@@ -110,13 +110,11 @@ pub fn record(path: &Path, entry: Entry) -> Result<SaveOutcome> {
 /// Stable within the persisted identity contract and suitable for locating a
 /// row again after a search or a return from a game. It is not shown.
 pub fn entry_key(entry: &Entry) -> String {
-    let target = match &entry.launch {
-        Launch::File(path) => format!("f:{}", path.display()),
-        Launch::AmigaVision { install, title } => {
-            format!("a:{}|{title}", install.display())
-        }
-    };
-    format!("{}|{target}", entry.system)
+    format!(
+        "{}|{}",
+        entry.system,
+        crate::game_launch_cores::key(&entry.launch)
+    )
 }
 
 #[cfg(test)]

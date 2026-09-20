@@ -256,6 +256,33 @@ pub fn choices_for_version(
     result
 }
 
+/// Rows for one game's chooser. The first row removes the game override and
+/// names the effective system choice it will inherit.
+pub fn game_choices_for_version(
+    system: &SystemConfig,
+    root: &Path,
+    system_selected: Option<&str>,
+    game_selected: Option<&str>,
+    selected_version: Option<&str>,
+    ra_first: bool,
+) -> Vec<Choice> {
+    let inherited = match system_selected {
+        Some(selected) => saved_label(system, Some(selected)),
+        None => match automatic_family(system, root, selected_version, ra_first) {
+            Ok(family) => format!("Automatic ({})", family.label),
+            Err(error) => {
+                crate::note(&format!(
+                    "game core    inherited resolution failed: {error}"
+                ));
+                "Automatic (Unavailable)".to_string()
+            }
+        },
+    };
+    let mut result = choices_for_version(system, root, game_selected, selected_version, ra_first);
+    result[0].label = format!("Use System Setting ({inherited})");
+    result
+}
+
 /// Context-row value without touching the filesystem on every redraw.
 pub fn saved_label(system: &SystemConfig, selected: Option<&str>) -> String {
     match selected {
@@ -268,6 +295,13 @@ pub fn saved_label(system: &SystemConfig, selected: Option<&str>) -> String {
             .map(|profile| profile.label.clone())
             .unwrap_or_else(|| format!("{selected} (Unavailable)")),
     }
+}
+
+/// Context-row value for a game without touching the filesystem.
+pub fn saved_game_label(system: &SystemConfig, selected: Option<&str>) -> String {
+    selected
+        .map(|selected| saved_label(system, Some(selected)))
+        .unwrap_or_else(|| "System Setting".to_string())
 }
 
 #[cfg(test)]
@@ -359,6 +393,29 @@ mod tests {
                 && !choice.available
         }));
         assert!(resolve(&system, &root, Some("removed-profile")).is_err());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn game_chooser_inherits_the_system_and_keeps_missing_game_choices_clearable() {
+        let root = directory("game-choice");
+        let system = system();
+        write(&root, "_Console/NGPC.rbf");
+        write(&root, "_Arcade/JTNGPC.rbf");
+
+        let inherited = game_choices_for_version(&system, &root, Some("jtngpc"), None, None, false);
+        assert_eq!(inherited[0].label, "Use System Setting (JTNGPC (Legacy))");
+        assert!(inherited
+            .iter()
+            .any(|choice| choice.id == PRIMARY_PROFILE_ID));
+
+        let missing =
+            game_choices_for_version(&system, &root, None, Some("removed-profile"), None, false);
+        assert!(missing.iter().any(|choice| {
+            choice.id == "removed-profile"
+                && choice.label == "removed-profile (Unavailable)"
+                && !choice.available
+        }));
         std::fs::remove_dir_all(root).unwrap();
     }
 
