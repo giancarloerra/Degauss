@@ -50,7 +50,7 @@ separately. CRT presentation is applied for the README.
 | Per-system Core Selection | Extensive Options | Configurable Hold Shortcuts |
 | <img src="docs/screenshots/0.6.0/10-appearance.png" alt="Appearance" height="200"> | <img src="docs/screenshots/0.8.1/02-library.png" alt="Library: optional Cores and Core Updates browsers" height="200"> | <img src="docs/screenshots/0.8.1/04-screen-rotation.png" alt="Complete interface rotated clockwise for a vertical display" height="200"> |
 | Appearance Settings | Library Visibility | 90° Screen Rotation |
-| <img src="docs/screenshots/0.8.1/03-core-updates.png" alt="Core Updates" height="200"> | <img src="docs/screenshots/0.8.0/05-cores.png" alt="Installed Cores Browser" height="200"> | <img src="docs/screenshots/0.8.0/06-metadata-filters.png" alt="Metadata Filters" height="200"> |
+| <img src="docs/screenshots/0.8.2/03-core-updates.png" alt="Core Updates" height="200"> | <img src="docs/screenshots/0.8.0/05-cores.png" alt="Installed Cores Browser" height="200"> | <img src="docs/screenshots/0.8.0/06-metadata-filters.png" alt="Metadata Filters" height="200"> |
 | Core Updates | Installed Cores Browser | Metadata Filters |
 | <img src="docs/screenshots/0.6.0/13-developer.png" alt="Developer" height="200"> | <img src="docs/screenshots/0.6.0/14-actions.png" alt="Grouped Actions" height="200"> | <img src="docs/screenshots/0.6.0/15-random-favourite.png" alt="Random Game and Random Favourite" height="200"> |
 | Drawing and Performance Controls | Actions for This Place | Random Game or Random Favourite |
@@ -233,6 +233,13 @@ recorded in the database. **X Actions** provides title search,
 jump-to-letter, **Filter Core Updates** by type and source, **Refresh** and a
 short explanation of the data source. These temporary filters clear when the
 shelf is left.
+
+In Details view, the final line shows how many games use the selected core.
+**Game Information** lists their titles. When matching game artwork is
+available from that system's selected Gamelist or Artwork Pack, the preview
+cycles through the images once per second. Game data is read on demand for the
+selected core and then reused; Core Updates does not preload another copy of
+the library.
 
 The first open reads the configured databases and saves the result. Later
 opens use that saved result without a network request. **Refresh** reads the

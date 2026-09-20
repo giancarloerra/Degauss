@@ -468,6 +468,7 @@ export component DegaussWindow inherits Window {
     in property <length> detail-height;
     in property <string> compact-summary;
     in property <string> compact-publisher;
+    in property <string> compact-info: "X Actions for Info";
     in property <int> operation-kind: 0;
     in property <bool> operation-details: false;
     in property <string> operation-title;
@@ -1557,7 +1558,7 @@ export component DegaussWindow inherits Window {
                         width: parent.width - root.pad * 2;
                         height: parent.panel;
                         visible: parent.panel > 0px;
-                        for line[index] in [root.compact-summary, root.compact-publisher, "X Actions for Info"] : Text {
+                        for line[index] in [root.compact-summary, root.compact-publisher, root.compact-info] : Text {
                             text: line;
                             color: root.c-text;
                             font-size: root.small-glyph;

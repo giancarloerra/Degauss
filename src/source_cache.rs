@@ -337,7 +337,22 @@ fn run(request: Request, events: &SyncSender<Event>, cancelled: &Arc<AtomicBool>
         Target::Gamelist => CacheKind::Gamelist,
         Target::ArtworkPack { .. } => CacheKind::ArtworkPack,
     };
-    let staged = crate::cache::stage_transactional(&request.cache_dir, kind, caches, cancelled)
+    let staged = {
+        let mut report_arcade = |checked: usize| {
+            progress.current = if checked == 0 {
+                "Preparing Arcade game matches".into()
+            } else {
+                format!("Preparing Arcade game matches: {checked}")
+            };
+            let _ = events.try_send(Event::Progress(progress.clone()));
+        };
+        crate::cache::stage_transactional_observed(
+            &request.cache_dir,
+            kind,
+            caches,
+            cancelled,
+            &mut report_arcade,
+        )
         .and_then(|prepared| match prepared {
             Some(prepared) => stage_pack_state(
                 prepared,
@@ -348,7 +363,8 @@ fn run(request: Request, events: &SyncSender<Event>, cancelled: &Arc<AtomicBool>
             )
             .map(Some),
             None => Ok(None),
-        });
+        })
+    };
     match staged {
         Ok(Some(prepared)) if !cancelled.load(Ordering::Relaxed) => {
             let _ = events.send(Event::Staged {
