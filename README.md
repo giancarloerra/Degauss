@@ -369,6 +369,8 @@ so the files land here:
 
 ```
 /media/fat/degauss/MiSTer_Degauss
+/media/fat/degauss/menu.rbf
+/media/fat/degauss/Degauss_Menu.SOURCE.txt
 /media/fat/Scripts/degauss.sh
 /media/fat/Scripts/.config/degauss/degauss
 /media/fat/Scripts/.config/degauss/degauss.toml
@@ -440,6 +442,12 @@ need a different compatible mode. When HDMI and CRT are connected together,
 both receive the same scaler timing and both must support it. See MiSTer's
 [INI settings](https://mister-devel.github.io/MkDocs_MiSTer/advanced/ini/)
 for more detail.
+
+The recommended installation also uses Degauss's private
+`/media/fat/degauss/menu.rbf` while the frontend is open. This preserves colour
+for framebuffer output over an already configured S-Video or composite setup
+without replacing MiSTer's `/media/fat/menu.rbf`. The stock-menu on-demand mode
+does not use this private core.
 
 ### Returning to Degauss from a running core
 

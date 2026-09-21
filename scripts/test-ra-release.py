@@ -18,6 +18,12 @@ spec.loader.exec_module(package_ra)
 
 
 class ReleaseTests(unittest.TestCase):
+    def test_degauss_menu_binary_matches_recorded_checksum(self):
+        menu_dir = ROOT / 'support/menu-core'
+        expected = (menu_dir / 'menu.rbf.sha256').read_text().split()[0]
+        actual = hashlib.sha256((menu_dir / 'menu.rbf').read_bytes()).hexdigest()
+        self.assertEqual(actual, expected)
+
     def test_workflow_rejects_upstream_ra_at_any_card_path(self):
         workflow = (ROOT / '.github/workflows/release.yml').read_text()
         start = workflow.index('          import posixpath\n')
@@ -40,7 +46,20 @@ class ReleaseTests(unittest.TestCase):
             command = [sys.executable, str(ROOT / 'scripts/make-db.py'), 'v1.2.3', str(root / 'deploy'), str(normal), str(out)]
             subprocess.run(command, cwd=ROOT, check=True, capture_output=True)
             legacy = json.loads(out.read_text())
-            self.assertEqual(set(legacy['files']), {'Scripts/.config/degauss/degauss', 'degauss/MiSTer_Degauss'})
+            self.assertEqual(set(legacy['files']), {
+                'Scripts/.config/degauss/degauss',
+                'degauss/MiSTer_Degauss',
+                'degauss/menu.rbf',
+                'degauss/Degauss_Menu.SOURCE.txt',
+            })
+            menu = legacy['files']['degauss/menu.rbf']
+            menu_bytes = (ROOT / 'support/menu-core/menu.rbf').read_bytes()
+            self.assertEqual(menu['hash'], hashlib.md5(menu_bytes).hexdigest())
+            self.assertEqual(menu['size'], len(menu_bytes))
+            self.assertEqual(
+                menu['url'],
+                'https://raw.githubusercontent.com/giancarloerra/Degauss/v1.2.3/support/menu-core/menu.rbf',
+            )
             ra = root / 'ra'
             ra.mkdir()
             names = ('MiSTer_RA_Degauss', 'MiSTer_RA_Degauss.cacert.pem', 'MiSTer_RA_Degauss.SOURCE.txt')

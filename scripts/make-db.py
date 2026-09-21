@@ -73,6 +73,8 @@ def url_for(card_path, tag):
 # but nothing enforces that, and a database whose hash does not match what the
 # URL serves makes Downloader fetch the same file forever.
 REPO_SOURCED = {
+    "degauss/menu.rbf": "support/menu-core/menu.rbf",
+    "degauss/Degauss_Menu.SOURCE.txt": "support/menu-core/Degauss_Menu.SOURCE.txt",
     "Scripts/degauss.sh": "deploy/Scripts/degauss.sh",
     "Scripts/.config/degauss/degauss.toml": "degauss.toml",
     "Scripts/.config/degauss/systems.toml": "assets/systems.toml",
@@ -122,6 +124,8 @@ def main():
             add(card, real)
 
     add("degauss/MiSTer_Degauss", fork_binary)
+    add("degauss/menu.rbf", "support/menu-core/menu.rbf")
+    add("degauss/Degauss_Menu.SOURCE.txt", "support/menu-core/Degauss_Menu.SOURCE.txt")
     if args.ra_dir:
         for name in RA_ASSETS:
             add("degauss/" + name, os.path.join(args.ra_dir, name))
