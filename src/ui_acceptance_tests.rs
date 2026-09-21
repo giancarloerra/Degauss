@@ -376,6 +376,7 @@ fn unopened_fixture_app_with_systems(
         logo_dir: None,
         themes_dir: root.join("themes"),
         themes: crate::theme::load_available(&root.join("themes")),
+        network_boot: None,
     };
     App::new(
         loaded,
@@ -8904,6 +8905,7 @@ fn run_neogeo_romset_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
             logo_dir: None,
             themes_dir: root.join("themes"),
             themes: Default::default(),
+            network_boot: None,
         };
         let mut app = App::new(
             loaded,

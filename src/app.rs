@@ -67,6 +67,7 @@ const HANDHELD_CATEGORY: &str = "Handheld";
 const LAST_PLAYED_CATEGORY: &str = "Last Played";
 const LAST_PLAYED_PLACE: &str = "last-played:";
 const LAST_PLAYED_SYSTEM: &str = "@LastPlayed";
+const NETWORK_CACHE_PRESERVED: &str = "The network library is unavailable, so its complete cache was preserved. Restart Degauss after the mount is ready to rebuild system lists.";
 
 /// The category shown by the frontend. The system's own category remains
 /// unchanged because launch, cache and library ownership follow MiSTer.
@@ -3581,6 +3582,18 @@ pub struct App {
     table: Vec<SystemDef>,
     /// Where system logos live, for the same second look.
     logo_dir: Option<PathBuf>,
+    /// A boot-managed CIFS library which must become ready before the first
+    /// discovery. The previous complete cache is not opened or changed while
+    /// this is present.
+    network_plan: Option<crate::network_wait::Plan>,
+    network_job: Option<crate::network_wait::Job>,
+    network_progress: Option<crate::network_wait::Progress>,
+    network_problem: Option<String>,
+    network_local_only: bool,
+    network_no_local: bool,
+    /// A command-line system waits for boot-mounted storage discovery before
+    /// it can be resolved against the systems that actually exist.
+    network_startup_system: Option<String>,
     /// The folder on screen before a search narrowed it. Empty while
     /// nothing is being searched for, so the usual case pays nothing.
     all_here: Vec<browse::Row>,
@@ -3822,6 +3835,9 @@ pub struct Loaded {
     /// What the themes folder held, with a line for each file that did
     /// not load.
     pub themes: ThemeSet,
+    /// A relevant boot-managed CIFS library that has not mounted yet.
+    /// Ordinary startup leaves this absent and retains the released path.
+    pub network_boot: Option<crate::network_wait::Plan>,
 }
 
 fn needs_native_arcade_core_link(system: Option<&FoundSystem>, game: &Path) -> bool {
@@ -3871,6 +3887,7 @@ impl App {
             logo_dir,
             themes_dir,
             themes,
+            network_boot,
         } = loaded;
         let ThemeSet {
             themes,
@@ -3888,7 +3905,9 @@ impl App {
                     Some(error.to_string()),
                 ),
             };
-        migrate_legacy_views(&mut settings, &systems);
+        if network_boot.is_none() {
+            migrate_legacy_views(&mut settings, &systems);
+        }
         // The saved theme is looked up by name. A name the folder no longer
         // answers to, whatever the reason, falls back to the standard
         // palette with a line saying so: silently picking another theme
@@ -4061,6 +4080,13 @@ impl App {
             all_systems: Vec::new(),
             table,
             logo_dir,
+            network_plan: network_boot,
+            network_job: None,
+            network_progress: None,
+            network_problem: None,
+            network_local_only: false,
+            network_no_local: false,
+            network_startup_system: None,
             all_here: Vec::new(),
             filter: String::new(),
             game_filters: GameFilters::default(),
@@ -4294,32 +4320,10 @@ impl App {
         };
         app.all_systems = std::mem::take(&mut app.systems);
         app.rebuild_system_list();
-        // What was written down last time, if anything. Reading it is a
-        // few milliseconds against the seconds walking the card costs,
-        // which is the whole reason it exists.
-        app.reread_favorites();
-        app.index = crate::cache::load_index(&app.cache_dir);
-        app.correct_system_counts();
-        match app.index.is_some() {
-            true => app.apply_index(),
-            // Nothing written down yet: read the card once, with the
-            // wordmark and a line saying so on screen while it happens.
-            false => app.start_build(false),
-        }
-        app.rebuild_system_list();
         app.ui.set_about_version(SharedString::from(format!(
             "version {}",
             env!("CARGO_PKG_VERSION")
         )));
-        // What it can say without walking the card: how many systems have a
-        // folder here. A total game count would mean reading every folder on
-        // the machine before the first frame, which is the thing this does
-        // not do.
-        app.ui
-            .set_about_line(SharedString::from(match app.total_games {
-                0 => format!("{} systems on this card", app.all_systems.len()),
-                games => format!("{} systems, {games} games", app.all_systems.len()),
-            }));
         app.ui.set_about_copyright(SharedString::from(COPYRIGHT));
         app.ui.set_about_licence(SharedString::from(LICENCE));
         // A theme file that did not load, a saved theme that is gone, or a
@@ -4333,9 +4337,173 @@ impl App {
             app.message = Some(startup_problems.join("\n"));
             app.startup_problems = app.message.clone();
         }
-        app.resolve_artwork_sources(SourceResolutionAction::Startup);
+        if app.network_plan.is_some() {
+            app.start_network_startup(false);
+        } else {
+            app.finish_startup_library(false);
+        }
         app.apply_geometry();
         app
+    }
+
+    /// Open the complete cache only after startup discovery is known to have
+    /// seen the intended storage. An explicit local-only continuation leaves
+    /// it unopened and never starts an automatic partial rebuild merely
+    /// because the network mount was late.
+    fn finish_startup_library(&mut self, local_only: bool) {
+        self.reread_favorites();
+        if local_only {
+            // A complete cache may describe the unavailable remote copy of a
+            // system which also exists locally. Do not open or replace it in
+            // this temporary session; systems fall back to their live local
+            // folders when entered.
+            self.index = Some(crate::cache::Index::default());
+        } else {
+            self.index = crate::cache::load_index(&self.cache_dir);
+        }
+        self.correct_system_counts();
+        match self.index.is_some() {
+            true => self.apply_index(),
+            // Nothing written down yet: read the card once, with the
+            // wordmark and a line saying so on screen while it happens.
+            false => self.start_build(false),
+        }
+        self.rebuild_system_list();
+        self.ui
+            .set_about_line(SharedString::from(match self.total_games {
+                0 => format!("{} systems on this card", self.all_systems.len()),
+                games => format!("{} systems, {games} games", self.all_systems.len()),
+            }));
+        if !local_only {
+            self.resolve_artwork_sources(SourceResolutionAction::Startup);
+        }
+    }
+
+    fn network_discovery_request(&self) -> crate::index_job::DiscoveryRequest {
+        crate::index_job::DiscoveryRequest {
+            menu_root: PathBuf::from(&self.config.menu_root),
+            roots: self.config.game_roots.iter().map(PathBuf::from).collect(),
+            table: self.table.clone(),
+            logo_dir: self.logo_dir.clone(),
+        }
+    }
+
+    fn start_network_startup(&mut self, local_only: bool) {
+        let Some(plan) = self.network_plan.clone() else {
+            return;
+        };
+        self.network_problem = None;
+        self.network_no_local = false;
+        self.network_local_only = local_only;
+        match crate::network_wait::Job::start(plan, self.network_discovery_request(), local_only) {
+            Ok(job) => {
+                self.network_progress = Some(job.progress());
+                self.network_job = Some(job);
+            }
+            Err(error) => {
+                self.network_problem = Some(error.to_string());
+                self.network_progress = None;
+            }
+        }
+        self.dirty = true;
+    }
+
+    fn poll_network_startup(&mut self) {
+        let Some(job) = self.network_job.as_mut() else {
+            return;
+        };
+        let progress = job.progress();
+        if self.network_progress.as_ref() != Some(&progress) {
+            self.network_progress = Some(progress);
+            self.dirty = true;
+        }
+        let Some(result) = job.try_recv() else {
+            return;
+        };
+        self.network_job = None;
+        self.network_progress = None;
+        match result {
+            Ok(None) => {
+                self.network_problem = Some("Network library wait cancelled.".into());
+            }
+            Err(error) => {
+                crate::note(&format!("network      {error}"));
+                self.network_problem = Some(error.to_string());
+            }
+            Ok(Some(discovered)) if discovered.systems.is_empty() => {
+                self.network_no_local = self.network_local_only;
+                self.network_problem = Some(if self.network_local_only {
+                    "No local game folders are available. Retry the network mount or exit.".into()
+                } else {
+                    "Network storage is ready, but no configured game folders were found.".into()
+                });
+            }
+            Ok(Some(discovered)) => {
+                if let Err(error) =
+                    crate::cache::save_core_catalogue(&self.cache_dir, &discovered.cores)
+                {
+                    crate::note(&format!("cores        catalogue not saved: {error}"));
+                }
+                self.core_catalogue = discovered.cores;
+                self.apply_discovered_systems(discovered.systems);
+                self.restore_configured_pack_roots();
+                migrate_legacy_views(&mut self.settings, &self.all_systems);
+                let local_only = self.network_local_only;
+                self.network_plan = None;
+                self.network_problem = None;
+                self.finish_startup_library(local_only);
+            }
+        }
+        self.last_input = Instant::now();
+        self.touch_selection();
+        self.dirty = true;
+    }
+
+    /// Preserve `--system` while boot-mounted storage is still being found.
+    /// Resolution happens only after the same discovery and cache work as an
+    /// ordinary interactive startup, keeping aliases and ambiguity errors
+    /// identical to the immediate command-line path.
+    pub fn defer_system_until_network_startup(&mut self, system: String) {
+        self.network_startup_system = Some(system);
+    }
+
+    fn open_deferred_network_system(&mut self) {
+        if self.network_plan.is_some()
+            || self.build.is_some()
+            || self.source_resolution.is_some()
+            || self.source_job.is_some()
+        {
+            return;
+        }
+        let Some(system) = self.network_startup_system.take() else {
+            return;
+        };
+        match crate::select_system(&self.all_systems, &system) {
+            Ok(index) => {
+                self.open_category = None;
+                self.systems = self.all_systems.clone();
+                self.system_list = ListState::new(self.systems.len(), self.geometry.visible);
+                self.system_list.select(index);
+                self.browsing = Browsing::Systems;
+                self.open_selected_system();
+            }
+            Err(error) => {
+                self.message = Some(error.to_string());
+                self.dirty = true;
+            }
+        }
+    }
+
+    fn restore_configured_pack_roots(&mut self) {
+        self.effective_artwork_pack_roots = self
+            .all_systems
+            .iter()
+            .filter_map(|system| {
+                let group = crate::artwork_pack::source_group(&system.def.id)?;
+                let root = self.settings.artwork_pack_roots.get(group)?;
+                Some((system.def.id.clone(), root.clone()))
+            })
+            .collect();
     }
 
     /// Whether the strip along the bottom is drawn on the screen showing
@@ -5569,6 +5737,9 @@ impl App {
     /// the rebuild is the retry, and the question is put again. Nothing
     /// is written for that: the file changes only when an answer is given.
     fn entry_check(&mut self, id: &str, then: OfferFollowUp) -> Entry {
+        if self.network_local_only {
+            return Entry::Proceed(None, None, None);
+        }
         let mode = crate::artwork_source::mode(&self.settings, id);
         if !crate::artwork_pack::supports(id) || mode == crate::artwork_source::Mode::Gamelist {
             self.effective_artwork_pack_roots.remove(id);
@@ -6367,6 +6538,9 @@ impl App {
     /// field, so a message set here would be wiped before it was drawn.
     /// The caller shows it after its redraw.
     fn refresh_system(&mut self, id: &str) -> Option<String> {
+        if self.network_local_only {
+            return Some(NETWORK_CACHE_PRESERVED.to_string());
+        }
         // A system is in the table only when its folder existed at
         // discovery. With no folder there is no cache to refresh and
         // nothing is listed, so doing nothing is correct.
@@ -6790,6 +6964,9 @@ impl App {
     }
 
     fn load_selected_system_cache(&self, system_id: &str) -> Option<crate::cache::SystemCache> {
+        if self.network_local_only {
+            return None;
+        }
         if self.pack_selected(system_id) {
             crate::cache::load_artwork_pack_system(&self.cache_dir, system_id)
         } else {
@@ -8597,6 +8774,11 @@ impl App {
         if self.build.is_some() || self.source_job.is_some() || self.refreshing.is_some() {
             return;
         }
+        if self.network_local_only {
+            self.message = Some(NETWORK_CACHE_PRESERVED.to_string());
+            self.dirty = true;
+            return;
+        }
         if self.provider_job.is_some() {
             self.message = Some("Wait for the current Artwork Pack read to finish.".to_string());
             self.dirty = true;
@@ -8778,6 +8960,75 @@ impl App {
     fn update_operation_ui(&self) {
         self.ui.set_operation_kind(0);
         self.ui.set_operation_percent(SharedString::default());
+        if self.network_plan.is_some() {
+            let active = self.network_job.is_some();
+            let progress = self.network_progress.as_ref();
+            let cancelling = progress.is_some_and(|progress| progress.cancelling);
+            let local_only = progress
+                .map(|progress| progress.local_only)
+                .unwrap_or(self.network_local_only);
+            self.ui.set_operation_kind(4);
+            self.ui.set_operation_details(false);
+            self.ui
+                .set_operation_title("Waiting for Network Game Library".into());
+            self.ui.set_operation_state(
+                if cancelling {
+                    "Cancelling"
+                } else if !active {
+                    "Needs Attention"
+                } else if progress.is_some_and(|progress| {
+                    progress.phase == crate::network_wait::Phase::Discovering
+                }) {
+                    "Discovering"
+                } else {
+                    "Waiting"
+                }
+                .into(),
+            );
+            self.ui.set_operation_subject(
+                if local_only {
+                    "Available Local Storage"
+                } else {
+                    "CIFS Boot Mount"
+                }
+                .into(),
+            );
+            self.ui.set_operation_activity(
+                progress
+                    .map(|progress| progress.activity.as_str())
+                    .unwrap_or_default()
+                    .into(),
+            );
+            self.ui.set_operation_determinate(false);
+            self.ui.set_operation_fraction(0.0);
+            self.ui.set_operation_progress(
+                progress
+                    .map(|progress| format!("{} Seconds Elapsed", progress.elapsed.as_secs()))
+                    .unwrap_or_default()
+                    .into(),
+            );
+            self.ui
+                .set_operation_note("The existing library cache has not been changed".into());
+            self.ui
+                .set_operation_counts(ModelRc::new(VecModel::from(Vec::<DetailLine>::new())));
+            self.ui
+                .set_operation_problem(self.network_problem.as_deref().unwrap_or_default().into());
+            self.ui.set_operation_controls(
+                if active {
+                    if cancelling {
+                        "Stopping Safely"
+                    } else {
+                        "B Cancel"
+                    }
+                } else if self.network_no_local {
+                    "A Retry   B Exit"
+                } else {
+                    "A Retry   B Continue Local"
+                }
+                .into(),
+            );
+            return;
+        }
         if let Some(view) = self.index_overview() {
             let active = self.build.is_some();
             self.ui.set_operation_kind(1);
@@ -11470,6 +11721,11 @@ impl App {
     }
 
     fn rebuild_all_systems(&mut self) {
+        if self.network_local_only {
+            self.message = Some(NETWORK_CACHE_PRESERVED.to_string());
+            self.dirty = true;
+            return;
+        }
         // One rebuild at a time: a second ask would swap the system list from
         // under the running build. Its progress message already answers A.
         if self.build.is_some() || self.source_job.is_some() || self.refreshing.is_some() {
@@ -16555,6 +16811,11 @@ impl App {
     /// Pack it declined, or was never asked about, the question first:
     /// Prepare prepares it, Not Now rebuilds the ordinary list.
     fn rebuild_open_system_resolved(&mut self) {
+        if self.network_local_only {
+            self.message = Some(NETWORK_CACHE_PRESERVED.to_string());
+            self.dirty = true;
+            return;
+        }
         if let Some(problem) = self
             .open_system
             .as_deref()
@@ -16602,6 +16863,11 @@ impl App {
 
     /// The ordinary single-system rebuild: read its folders again.
     fn rebuild_ordinary_system(&mut self, id: &str) {
+        if self.network_local_only {
+            self.message = Some(NETWORK_CACHE_PRESERVED.to_string());
+            self.dirty = true;
+            return;
+        }
         let Some(at) = self
             .all_systems
             .iter()
@@ -16654,6 +16920,24 @@ impl App {
     }
 
     pub fn handle(&mut self, action: Action) -> Option<Outcome> {
+        if self.network_plan.is_some() {
+            if let Some(job) = &self.network_job {
+                if matches!(action, Action::Quit | Action::Context | Action::Menu) {
+                    job.cancel();
+                    self.network_progress = Some(job.progress());
+                }
+            } else {
+                match action {
+                    Action::Accept => self.start_network_startup(false),
+                    Action::Quit if self.network_no_local => return Some(Outcome::Quit),
+                    Action::Quit => self.start_network_startup(true),
+                    _ => {}
+                }
+            }
+            self.last_input = Instant::now();
+            self.dirty = true;
+            return None;
+        }
         if let Some(job) = &self.misterzine_job {
             if matches!(action, Action::Quit | Action::Context | Action::Menu) {
                 job.cancel();
@@ -18603,6 +18887,7 @@ impl App {
             let now = Instant::now();
 
             slint::platform::update_timers_and_animations();
+            self.poll_network_startup();
             self.poll_artwork_sources();
             self.poll_source_cache();
             self.poll_provider_job();
@@ -18613,6 +18898,7 @@ impl App {
             self.poll_information();
             self.poll_misterzine();
             self.maintain_misterzine_games(now);
+            self.open_deferred_network_system();
 
             self.expire_rotation_preview(now);
 
@@ -18693,6 +18979,7 @@ impl App {
             // Left alone for long enough, show pictures instead.
             let idle = self.screensaver_after();
             if idle > 0
+                && self.network_plan.is_none()
                 && self.source_resolution.is_none()
                 && self.build.is_none()
                 && self.index_terminal.is_none()
@@ -19665,6 +19952,7 @@ pub enum Outcome {
 /// Runs within the renderer's single installed Slint platform.
 #[cfg(test)]
 pub(crate) fn test_library_launch_flow(window: Rc<MinimalSoftwareWindow>) {
+    test_network_startup_flow(window.clone());
     ui_acceptance_tests::run_ui_acceptance_flow(window.clone());
     // Atomically claim a fresh directory; a previous interrupted run may have
     // left a fixture behind, and its contents are not ours to remove.
@@ -19734,6 +20022,7 @@ pub(crate) fn test_library_launch_flow(window: Rc<MinimalSoftwareWindow>) {
         logo_dir: None,
         themes_dir: root.join("themes"),
         themes: Default::default(),
+        network_boot: None,
     };
     let ui = DegaussWindow::new().unwrap();
     let mut app = App::new(
@@ -20223,6 +20512,172 @@ pub(crate) fn test_library_launch_flow(window: Rc<MinimalSoftwareWindow>) {
         ),
         "the missing format-specific core is named"
     );
+    drop(app);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[cfg(test)]
+fn test_network_startup_flow(window: Rc<MinimalSoftwareWindow>) {
+    let root = (0_u64..)
+        .find_map(|attempt| {
+            let candidate = std::env::temp_dir().join(format!(
+                "degauss-network-ui-{}-{attempt}",
+                std::process::id()
+            ));
+            match std::fs::create_dir(&candidate) {
+                Ok(()) => Some(candidate),
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => None,
+                Err(error) => panic!("creating isolated network fixture: {error}"),
+            }
+        })
+        .expect("network fixture directory counter exhausted");
+    let network = root.join("network");
+    let local = root.join("local");
+    for folder in [
+        network.join("games/NES"),
+        local.join("NES"),
+        root.join("_Console"),
+    ] {
+        std::fs::create_dir_all(folder).unwrap();
+    }
+    std::fs::write(root.join("_Console/NES.rbf"), b"fixture").unwrap();
+    std::fs::write(local.join("NES/Local.nes"), b"fixture").unwrap();
+    let mountinfo = root.join("mountinfo");
+    let log = root.join("cifs.log");
+    std::fs::write(&mountinfo, "").unwrap();
+
+    let mut config = Config::parse("[app]", &root.join("degauss.toml")).unwrap();
+    config.menu_root = root.to_string_lossy().into_owned();
+    config.game_roots = vec![
+        network.join("games").to_string_lossy().into_owned(),
+        local.to_string_lossy().into_owned(),
+    ];
+    let table = crate::systems::parse_table(
+        "[[systems]]\nname = \"NES\"\nid = \"NES\"\nfolders = [\"NES\"]\nrbf = \"_Console/NES\"\nextensions = [\"nes\"]\ncategory = \"Console\"\n",
+        Path::new("network fixture"),
+    )
+    .unwrap();
+    let settings_path = root.join("settings.toml");
+    let cache_dir = crate::cache::dir_for(&settings_path);
+    let mut complete = crate::cache::Index::default();
+    complete.systems.insert(
+        "NES".into(),
+        crate::cache::Summary {
+            games: 99,
+            folders: 4,
+        },
+    );
+    crate::cache::save_index(&cache_dir, &complete).unwrap();
+    let original_index = std::fs::read(crate::cache::index_path(&cache_dir)).unwrap();
+    let plan = crate::network_wait::Plan::fixture(
+        vec![network.clone()],
+        root.clone(),
+        log,
+        mountinfo,
+        Duration::from_secs(2),
+    );
+    let loaded = Loaded {
+        config,
+        settings: Settings::default(),
+        settings_path,
+        core_catalogue: Default::default(),
+        systems: Vec::new(),
+        table,
+        names: Default::default(),
+        logo_dir: None,
+        themes_dir: root.join("themes"),
+        themes: Default::default(),
+        network_boot: Some(plan),
+    };
+    let ui = DegaussWindow::new().unwrap();
+    let mut app = App::new(
+        loaded,
+        window,
+        ui,
+        StartupTimings::default(),
+        352,
+        240,
+        None,
+    );
+    app.defer_system_until_network_startup("NES".into());
+
+    assert!(app.network_job.is_some());
+    assert!(app.index.is_none());
+    assert!(app.build.is_none());
+    app.update_operation_ui();
+    assert_eq!(app.ui.get_operation_kind(), 4);
+    assert_eq!(
+        app.ui.get_operation_title().as_str(),
+        "Waiting for Network Game Library"
+    );
+    assert_eq!(
+        app.ui.get_operation_note().as_str(),
+        "The existing library cache has not been changed"
+    );
+
+    app.handle(Action::Quit);
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while app.network_job.is_some() && Instant::now() < deadline {
+        app.poll_network_startup();
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert!(app.network_job.is_none(), "network cancellation finishes");
+    assert!(app
+        .network_problem
+        .as_deref()
+        .is_some_and(|problem| problem.contains("cancelled")));
+
+    app.handle(Action::Quit);
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while app.network_job.is_some() && Instant::now() < deadline {
+        app.poll_network_startup();
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert!(app.network_plan.is_none(), "local-only discovery completes");
+    assert!(app.network_local_only);
+    assert_eq!(app.all_systems.len(), 1);
+    assert_eq!(app.all_systems[0].paths, vec![local.join("NES")]);
+    assert!(app.index.as_ref().unwrap().systems.is_empty());
+    assert!(app.load_selected_system_cache("NES").is_none());
+    app.start_build(true);
+    assert!(
+        app.build.is_none(),
+        "local-only mode cannot replace the complete cache"
+    );
+    assert_eq!(
+        app.refresh_system("NES").as_deref(),
+        Some(NETWORK_CACHE_PRESERVED),
+        "a targeted refresh cannot replace the complete cache either"
+    );
+    app.rebuild_all_systems();
+    assert!(
+        app.build.is_none(),
+        "the menu's full rebuild cannot replace the complete cache"
+    );
+    assert_eq!(app.message.as_deref(), Some(NETWORK_CACHE_PRESERVED));
+    app.open_system = Some("NES".into());
+    app.effective_artwork_pack_roots.insert(
+        "NES".into(),
+        root.join("docs").to_string_lossy().into_owned(),
+    );
+    app.rebuild_open_system_resolved();
+    assert!(
+        app.source_job.is_none(),
+        "an explicit Artwork Pack refresh cannot replace its complete cache"
+    );
+    assert_eq!(app.message.as_deref(), Some(NETWORK_CACHE_PRESERVED));
+    assert_eq!(
+        std::fs::read(crate::cache::index_path(&cache_dir)).unwrap(),
+        original_index,
+        "the complete cache remains byte-for-byte unchanged"
+    );
+
+    app.open_deferred_network_system();
+    assert!(
+        app.opening.is_some(),
+        "deferred --system is queued after discovery"
+    );
+
     drop(app);
     std::fs::remove_dir_all(root).unwrap();
 }

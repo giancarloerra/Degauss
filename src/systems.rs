@@ -413,9 +413,24 @@ pub fn discover_checked(
     logo_dir: Option<&Path>,
     cores: &CoreIndex,
 ) -> Result<Vec<FoundSystem>> {
+    discover_checked_excluding(table, roots, logo_dir, cores, &[])
+}
+
+/// Discover systems while ignoring game folders below unavailable storage.
+///
+/// Startup uses this only after the user explicitly chooses to continue
+/// without a boot-managed network library. The usual discovery path keeps
+/// its existing root priority unchanged.
+pub(crate) fn discover_checked_excluding(
+    table: &[SystemDef],
+    roots: &[PathBuf],
+    logo_dir: Option<&Path>,
+    cores: &CoreIndex,
+    excluded: &[PathBuf],
+) -> Result<Vec<FoundSystem>> {
     let mut found = Vec::new();
     for def in table {
-        let paths = existing_folders_checked(def, roots)?;
+        let paths = existing_folders_checked_excluding(def, roots, excluded)?;
         if paths.is_empty() {
             continue;
         }
@@ -1068,6 +1083,14 @@ pub(crate) fn core_name(stem: &str) -> String {
 /// `discover` asks this for every system; the single-system rebuild asks
 /// it again for one, because a folder can appear or go after discovery.
 pub fn existing_folders_checked(def: &SystemDef, roots: &[PathBuf]) -> Result<Vec<PathBuf>> {
+    existing_folders_checked_excluding(def, roots, &[])
+}
+
+fn existing_folders_checked_excluding(
+    def: &SystemDef,
+    roots: &[PathBuf],
+    excluded: &[PathBuf],
+) -> Result<Vec<PathBuf>> {
     fn directory(path: &Path) -> Result<bool> {
         match std::fs::metadata(path) {
             Ok(meta) => Ok(meta.is_dir()),
@@ -1079,12 +1102,15 @@ pub fn existing_folders_checked(def: &SystemDef, roots: &[PathBuf]) -> Result<Ve
     for folder in &def.folders {
         let path = Path::new(folder);
         if path.is_absolute() {
-            if directory(path)? && !found.contains(&path.to_path_buf()) {
+            if !below_any(path, excluded)
+                && directory(path)?
+                && !found.contains(&path.to_path_buf())
+            {
                 found.push(path.to_path_buf());
             }
             continue;
         }
-        if let Some(candidate) = existing_folder(folder, roots) {
+        if let Some(candidate) = existing_folder_excluding(folder, roots, excluded) {
             if !found.contains(&candidate) {
                 found.push(candidate);
             }
@@ -1100,11 +1126,24 @@ pub fn existing_folders_checked(def: &SystemDef, roots: &[PathBuf]) -> Result<Ve
 /// Also how an MGL's home directory is found for a name the systems table
 /// does not carry, so a descriptor and a system agree on where a folder is.
 pub fn existing_folder(name: &str, roots: &[PathBuf]) -> Option<PathBuf> {
+    existing_folder_excluding(name, roots, &[])
+}
+
+fn existing_folder_excluding(
+    name: &str,
+    roots: &[PathBuf],
+    excluded: &[PathBuf],
+) -> Option<PathBuf> {
     roots
         .iter()
         .filter(|root| root.is_dir())
         .map(|root| root.join(name))
+        .filter(|candidate| !below_any(candidate, excluded))
         .find(|candidate| candidate.is_dir())
+}
+
+fn below_any(path: &Path, roots: &[PathBuf]) -> bool {
+    roots.iter().any(|root| path.starts_with(root))
 }
 
 #[cfg(test)]
@@ -1201,6 +1240,26 @@ extensions = ["md", "bin"]
         let roots = [base.join("usb0/games"), base.join("fat/games")];
         let found = existing_folders(&one_system(&["SNES"]), &roots);
         assert_eq!(found, vec![base.join("fat/games/SNES")]);
+        std::fs::remove_dir_all(&base).ok();
+    }
+
+    #[test]
+    fn an_excluded_network_folder_falls_back_to_the_later_local_root() {
+        let base = temp_dir("excluded-root-fallback");
+        let network = base.join("fat/cifs/games");
+        let local = base.join("fat/games");
+        std::fs::create_dir_all(network.join("SNES")).unwrap();
+        std::fs::create_dir_all(local.join("SNES")).unwrap();
+        let roots = [network.clone(), local.clone()];
+
+        let found = existing_folders_checked_excluding(
+            &one_system(&["SNES"]),
+            &roots,
+            &[base.join("fat/cifs")],
+        )
+        .unwrap();
+
+        assert_eq!(found, vec![local.join("SNES")]);
         std::fs::remove_dir_all(&base).ok();
     }
 
