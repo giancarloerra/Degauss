@@ -67,6 +67,7 @@ const HANDHELD_CATEGORY: &str = "Handheld";
 const LAST_PLAYED_CATEGORY: &str = "Last Played";
 const LAST_PLAYED_PLACE: &str = "last-played:";
 const LAST_PLAYED_SYSTEM: &str = "@LastPlayed";
+const NETWORK_CACHE_PRESERVED: &str = "The network library is unavailable, so its complete cache was preserved. Restart Degauss after the mount is ready to rebuild system lists.";
 
 /// The category shown by the frontend. The system's own category remains
 /// unchanged because launch, cache and library ownership follow MiSTer.
@@ -3590,6 +3591,9 @@ pub struct App {
     network_problem: Option<String>,
     network_local_only: bool,
     network_no_local: bool,
+    /// A command-line system waits for boot-mounted storage discovery before
+    /// it can be resolved against the systems that actually exist.
+    network_startup_system: Option<String>,
     /// The folder on screen before a search narrowed it. Empty while
     /// nothing is being searched for, so the usual case pays nothing.
     all_here: Vec<browse::Row>,
@@ -4082,6 +4086,7 @@ impl App {
             network_problem: None,
             network_local_only: false,
             network_no_local: false,
+            network_startup_system: None,
             all_here: Vec::new(),
             filter: String::new(),
             game_filters: GameFilters::default(),
@@ -4452,6 +4457,41 @@ impl App {
         self.last_input = Instant::now();
         self.touch_selection();
         self.dirty = true;
+    }
+
+    /// Preserve `--system` while boot-mounted storage is still being found.
+    /// Resolution happens only after the same discovery and cache work as an
+    /// ordinary interactive startup, keeping aliases and ambiguity errors
+    /// identical to the immediate command-line path.
+    pub fn defer_system_until_network_startup(&mut self, system: String) {
+        self.network_startup_system = Some(system);
+    }
+
+    fn open_deferred_network_system(&mut self) {
+        if self.network_plan.is_some()
+            || self.build.is_some()
+            || self.source_resolution.is_some()
+            || self.source_job.is_some()
+        {
+            return;
+        }
+        let Some(system) = self.network_startup_system.take() else {
+            return;
+        };
+        match crate::select_system(&self.all_systems, &system) {
+            Ok(index) => {
+                self.open_category = None;
+                self.systems = self.all_systems.clone();
+                self.system_list = ListState::new(self.systems.len(), self.geometry.visible);
+                self.system_list.select(index);
+                self.browsing = Browsing::Systems;
+                self.open_selected_system();
+            }
+            Err(error) => {
+                self.message = Some(error.to_string());
+                self.dirty = true;
+            }
+        }
     }
 
     fn restore_configured_pack_roots(&mut self) {
@@ -6498,6 +6538,9 @@ impl App {
     /// field, so a message set here would be wiped before it was drawn.
     /// The caller shows it after its redraw.
     fn refresh_system(&mut self, id: &str) -> Option<String> {
+        if self.network_local_only {
+            return Some(NETWORK_CACHE_PRESERVED.to_string());
+        }
         // A system is in the table only when its folder existed at
         // discovery. With no folder there is no cache to refresh and
         // nothing is listed, so doing nothing is correct.
@@ -8732,10 +8775,7 @@ impl App {
             return;
         }
         if self.network_local_only {
-            self.message = Some(
-                "The network library is unavailable, so its complete cache was preserved. Restart Degauss after the mount is ready to rebuild system lists."
-                    .to_string(),
-            );
+            self.message = Some(NETWORK_CACHE_PRESERVED.to_string());
             self.dirty = true;
             return;
         }
@@ -16814,10 +16854,7 @@ impl App {
     /// The ordinary single-system rebuild: read its folders again.
     fn rebuild_ordinary_system(&mut self, id: &str) {
         if self.network_local_only {
-            self.message = Some(
-                "The network library is unavailable, so its complete cache was preserved. Restart Degauss after the mount is ready to rebuild this system."
-                    .to_string(),
-            );
+            self.message = Some(NETWORK_CACHE_PRESERVED.to_string());
             self.dirty = true;
             return;
         }
@@ -18851,6 +18888,7 @@ impl App {
             self.poll_information();
             self.poll_misterzine();
             self.maintain_misterzine_games(now);
+            self.open_deferred_network_system();
 
             self.expire_rotation_preview(now);
 
@@ -20551,6 +20589,7 @@ fn test_network_startup_flow(window: Rc<MinimalSoftwareWindow>) {
         240,
         None,
     );
+    app.defer_system_until_network_startup("NES".into());
 
     assert!(app.network_job.is_some());
     assert!(app.index.is_none());
@@ -20596,9 +20635,20 @@ fn test_network_startup_flow(window: Rc<MinimalSoftwareWindow>) {
         "local-only mode cannot replace the complete cache"
     );
     assert_eq!(
+        app.refresh_system("NES").as_deref(),
+        Some(NETWORK_CACHE_PRESERVED),
+        "a targeted refresh cannot replace the complete cache either"
+    );
+    assert_eq!(
         std::fs::read(crate::cache::index_path(&cache_dir)).unwrap(),
         original_index,
         "the complete cache remains byte-for-byte unchanged"
+    );
+
+    app.open_deferred_network_system();
+    assert!(
+        app.opening.is_some(),
+        "deferred --system is queued after discovery"
     );
 
     drop(app);

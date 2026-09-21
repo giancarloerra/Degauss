@@ -877,9 +877,10 @@ fn run() -> Result<()> {
 
     // Which system was asked for, if any. `None` is not the same as the
     // first one: without the flag the browser opens where it always would.
-    let chosen: Option<usize> = match &args.system {
-        Some(id) => Some(select_system(&loaded.systems, id)?),
-        None => None,
+    let chosen: Option<usize> = match (&args.system, loaded.network_boot.is_some()) {
+        (Some(_), true) => None,
+        (Some(id), false) => Some(select_system(&loaded.systems, id)?),
+        (None, _) => None,
     };
 
     if args.audit {
@@ -1611,6 +1612,10 @@ fn run_on_framebuffer(
     chosen: Option<usize>,
     started: Instant,
 ) -> Result<()> {
+    let deferred_system = loaded
+        .network_boot
+        .as_ref()
+        .and_then(|_| args.system.clone());
     let Some(session) = frontend_session::UiSession::acquire(&args.device)? else {
         return Ok(());
     };
@@ -1688,6 +1693,10 @@ fn run_on_framebuffer(
         app.open_system_by_index(index);
         app.skip_splash();
         note("system       opened from the command line");
+    } else if let Some(system) = deferred_system {
+        app.defer_system_until_network_startup(system);
+        app.skip_splash();
+        note("system       waiting for network discovery");
     }
 
     if let Some(script) = script_return {

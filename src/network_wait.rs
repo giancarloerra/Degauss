@@ -253,17 +253,7 @@ fn detect_with_mountinfo(
         }
         Targets::Explicit(targets)
     };
-    let configured_seconds = [
-        ("BOOT_START_DELAY_SECONDS", 8),
-        ("NETWORK_READY_TIMEOUT_SECONDS", 45),
-        ("DEFAULT_ROUTE_READY_TIMEOUT_SECONDS", 30),
-        ("DUAL_INTERFACE_SETTLE_SECONDS", 5),
-        ("SERVER_WAIT_TIMEOUT_SECONDS", 60),
-    ]
-    .into_iter()
-    .map(|(key, default)| positive_seconds(&values, key, default))
-    .sum::<u64>();
-    let timeout = Duration::from_secs((configured_seconds + 30).clamp(30, 300));
+    let timeout = configured_timeout(&values);
     let log_path = PathBuf::from(
         values
             .get("BOOT_LOG_PATH")
@@ -285,6 +275,21 @@ fn detect_with_mountinfo(
         return Ok(None);
     }
     Ok(Some(plan))
+}
+
+fn configured_timeout(values: &BTreeMap<String, String>) -> Duration {
+    let configured_seconds = [
+        ("BOOT_START_DELAY_SECONDS", 8),
+        ("NETWORK_READY_TIMEOUT_SECONDS", 45),
+        ("DEFAULT_ROUTE_READY_TIMEOUT_SECONDS", 30),
+        ("DUAL_INTERFACE_SETTLE_SECONDS", 5),
+        ("SERVER_WAIT_TIMEOUT_SECONDS", 60),
+    ]
+    .into_iter()
+    .fold(0_u64, |total, (key, default)| {
+        total.saturating_add(positive_seconds(values, key, default))
+    });
+    Duration::from_secs(configured_seconds.saturating_add(30).clamp(30, 300))
 }
 
 fn run(
@@ -702,6 +707,21 @@ mod tests {
         assert_eq!(values.get("LOCAL_DIR").map(String::as_str), Some("cifs"));
         assert!(!values.contains_key("USERNAME"));
         assert!(!values.contains_key("PASSWORD"));
+    }
+
+    #[test]
+    fn configured_timeout_is_bounded_even_for_extreme_values() {
+        let mut values = BTreeMap::new();
+        for key in [
+            "BOOT_START_DELAY_SECONDS",
+            "NETWORK_READY_TIMEOUT_SECONDS",
+            "DEFAULT_ROUTE_READY_TIMEOUT_SECONDS",
+            "DUAL_INTERFACE_SETTLE_SECONDS",
+            "SERVER_WAIT_TIMEOUT_SECONDS",
+        ] {
+            values.insert(key.into(), u64::MAX.to_string());
+        }
+        assert_eq!(configured_timeout(&values), Duration::from_secs(300));
     }
 
     #[test]
