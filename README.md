@@ -506,10 +506,14 @@ When only one configured folder actually contains games for that system,
 Degauss opens it directly. The folder chooser appears only when two or more
 real locations contribute compatible games.
 
-Two things to know. Storage is looked for when Degauss starts, so plug
-the stick in first (or restart after); and moving a system between
-storages changes its paths, so its listing is stale until **Rebuild this
-system** or a full rebuild. A layout the defaults do not cover is one
+USB storage is looked for when Degauss starts, so plug the stick in first
+(or restart after). When the official CIFS script is configured to mount a
+relevant game library at boot, Degauss waits for the actual mount before
+discovering systems. A failed wait can be retried or explicitly continued
+with the available local library; the existing complete index is not replaced
+by a partial one. An already-mounted share starts immediately. Moving a system
+between storages changes its paths, so its listing is stale until **Rebuild
+this system** or a full rebuild. A layout the defaults do not cover is one
 `game_roots` edit in `degauss.toml` away.
 
 The first run reads the card and writes an index, about a minute for a

@@ -38,6 +38,7 @@ mod misterzine;
 mod name_display;
 mod name_keyboard;
 mod neogeo;
+mod network_wait;
 mod options;
 mod pack_health;
 mod provider_job;
@@ -222,6 +223,24 @@ impl Default for Args {
             select: 0,
             find: None,
         }
+    }
+}
+
+impl Args {
+    /// Only the real interactive launcher waits for a boot mount. Diagnostic,
+    /// render and import commands keep their existing immediate snapshot of
+    /// the filesystem and never take over the screen to ask a question.
+    fn interactive_startup(&self) -> bool {
+        !self.version
+            && !self.check_install
+            && !self.list_systems
+            && !self.report
+            && !self.audit
+            && !self.dry_run_launch
+            && self.render.is_none()
+            && self.bench.is_none()
+            && self.selftest.is_none()
+            && self.import_favorites.is_none()
     }
 }
 
@@ -423,7 +442,16 @@ fn load_everything(args: &Args) -> Result<Loaded> {
             systems::CoreCatalogue::default()
         }
     });
-    let systems = systems::discover_checked(&table, &roots, logo_dir.as_deref(), &cores)?;
+    let network_boot = if args.interactive_startup() {
+        network_wait::detect(Path::new(&config.menu_root), &roots, &table)?
+    } else {
+        None
+    };
+    let systems = if network_boot.is_some() {
+        Vec::new()
+    } else {
+        systems::discover_checked(&table, &roots, logo_dir.as_deref(), &cores)?
+    };
     // The names the stock menu shows for cores, arcade boards and
     // shortcuts, when the card carries the file that defines them.
     let names = browse::DisplayNames::read(&Path::new(&config.menu_root).join("names.txt"));
@@ -439,6 +467,7 @@ fn load_everything(args: &Args) -> Result<Loaded> {
         logo_dir,
         themes_dir,
         themes,
+        network_boot,
     })
 }
 
@@ -823,7 +852,7 @@ fn run() -> Result<()> {
     let started = Instant::now();
     let loaded = load_everything(&args)?;
 
-    if loaded.systems.is_empty() {
+    if loaded.systems.is_empty() && loaded.network_boot.is_none() {
         return Err(DegaussError::unsupported(
             "systems",
             format!(
@@ -2153,6 +2182,25 @@ mod tests {
             .expect("not --help")
     }
 
+    #[test]
+    fn only_the_interactive_launcher_waits_for_a_boot_network_library() {
+        assert!(Args::default().interactive_startup());
+        for args in [
+            parse(&["--version"]),
+            parse(&["--check-install"]),
+            parse(&["--list-systems"]),
+            parse(&["--report"]),
+            parse(&["--audit"]),
+            parse(&["--dry-run-launch"]),
+            parse(&["--render", "/tmp/render.png"]),
+            parse(&["--bench", "1"]),
+            parse(&["--selftest"]),
+            parse(&["--import-favorites", "/tmp/favorites.txt"]),
+        ] {
+            assert!(!args.interactive_startup());
+        }
+    }
+
     fn diagnostic_test_systems(root: &Path) -> Vec<FoundSystem> {
         let definitions = systems::parse_table(
             r#"
@@ -2265,6 +2313,7 @@ category = "Favorites"
             logo_dir: None,
             themes_dir: root.join("themes"),
             themes: theme::ThemeSet::default(),
+            network_boot: None,
         };
         (root, loaded)
     }

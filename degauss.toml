@@ -13,9 +13,9 @@
 # USB sticks first, then the network share, then the CIFS mount, then the
 # card. For each folder name the first root that has it wins; a root that
 # is not mounted is skipped. /media/fat is listed too because Arcade lives
-# at /media/fat/_Arcade rather than under games. Storage must be mounted
-# before Degauss starts: what appears later is picked up on the next
-# start, or by Rebuild this system list.
+# at /media/fat/_Arcade rather than under games. Degauss waits for a relevant
+# boot mount managed by the official CIFS script. Other storage that appears
+# later is picked up on the next start, or by Rebuild this system list.
 game_roots = [
     "/media/usb0/games",
     "/media/usb1/games",
