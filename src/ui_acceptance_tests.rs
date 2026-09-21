@@ -1854,7 +1854,11 @@ fn run_last_played_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
     std::fs::write(&first, b"fixture game").unwrap();
     std::fs::write(&second, b"fixture game").unwrap();
     std::fs::write(media.join("first.png"), b"fixture image").unwrap();
-    std::fs::write(media.join("second.png"), b"fixture image").unwrap();
+    std::fs::copy(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/logos/NES.png"),
+        media.join("second.png"),
+    )
+    .unwrap();
     std::fs::write(
         games.join("gamelist.xml"),
         "<gameList>\
@@ -1959,6 +1963,116 @@ fn run_last_played_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
         Some(&media.join("second.png")),
         "the newest resolvable current cover previews the collection"
     );
+
+    // The Home picture retains where it came from. A borrowed game cover
+    // receives the same display correction in Details and every image-row
+    // layout, while Framebuffer keeps the existing square-pixel geometry.
+    app.category_list.select(recent_at);
+    app.artwork_scale = ArtworkScale::FourThree;
+    let corrected = artwork_horizontal(
+        ArtworkScale::FourThree,
+        app.width,
+        app.height,
+        app.screen_rotation,
+        true,
+    );
+    assert!((corrected - 1.0).abs() > 0.01);
+    app.set_layout(Layout::Details);
+    app.load_art();
+    assert_eq!(
+        app.current_art(),
+        (
+            Some(media.join("second.png")),
+            LAST_PLAYED_CATEGORY.to_string(),
+            false,
+            true,
+        )
+    );
+    assert_eq!(app.ui.get_art_scale_x(), corrected);
+    for layout in [Layout::Tiled, Layout::Carousel, Layout::Gallery] {
+        app.set_layout(layout);
+        app.load_art();
+        app.refresh();
+        let (range, _) = app.category_list.window();
+        let row = app.rows.row_data(recent_at - range.start).unwrap();
+        assert!(row.has_cover, "{layout:?}: the borrowed cover is drawn");
+        assert_eq!(
+            row.art_scale_x, corrected,
+            "{layout:?}: the borrowed cover is corrected as game artwork"
+        );
+    }
+    app.artwork_scale = ArtworkScale::Framebuffer;
+    app.set_layout(Layout::Details);
+    app.load_art();
+    assert_eq!(app.ui.get_art_scale_x(), 1.0);
+    for layout in [Layout::Tiled, Layout::Carousel, Layout::Gallery] {
+        app.set_layout(layout);
+        app.load_art();
+        app.refresh();
+        let (range, _) = app.category_list.window();
+        let row = app.rows.row_data(recent_at - range.start).unwrap();
+        assert_eq!(row.art_scale_x, 1.0, "{layout:?}: Framebuffer is unchanged");
+    }
+
+    // An ordinary category logo remains uncorrected. An explicit Last Played
+    // image has the same precedence and logo treatment, then clearing it
+    // restores the borrowed-cover classification without stale state.
+    app.artwork_scale = ArtworkScale::FourThree;
+    app.category_list.select(cores_at);
+    app.set_layout(Layout::Details);
+    app.load_art();
+    assert!(!app.current_art().3);
+    assert_eq!(app.ui.get_art_scale_x(), 1.0);
+    let logos = root.join("logos");
+    std::fs::create_dir_all(&logos).unwrap();
+    let explicit_source = logos.join("custom.png");
+    std::fs::copy(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/logos/NES.png"),
+        &explicit_source,
+    )
+    .unwrap();
+    app.logo_dir = Some(logos.clone());
+    let explicit =
+        crate::category_images::install(&logos, LAST_PLAYED_CATEGORY, &explicit_source).unwrap();
+    app.reroll_category_art();
+    assert_eq!(
+        app.category_picks.get(LAST_PLAYED_CATEGORY),
+        Some(&explicit)
+    );
+    app.category_list.select(recent_at);
+    app.load_art();
+    assert!(!app.current_art().3);
+    assert_eq!(app.ui.get_art_scale_x(), 1.0);
+    app.set_layout(Layout::Gallery);
+    app.load_art();
+    app.refresh();
+    let (range, _) = app.category_list.window();
+    assert_eq!(
+        app.rows
+            .row_data(recent_at - range.start)
+            .unwrap()
+            .art_scale_x,
+        1.0
+    );
+    assert!(crate::category_images::clear(&logos, LAST_PLAYED_CATEGORY).unwrap());
+    app.reroll_category_art();
+    assert!(app.current_art().3);
+
+    // No usable retained cover clears both the picture and its classification;
+    // restoring history chooses the same current cover again.
+    let retained = app.last_played.entries.clone();
+    app.last_played.entries = vec![retained[1].clone()];
+    app.reroll_category_art();
+    assert!(!app.category_picks.contains_key(LAST_PLAYED_CATEGORY));
+    assert!(!app.current_art().3);
+    app.last_played.entries = retained;
+    app.reroll_category_art();
+    assert_eq!(
+        app.category_picks.get(LAST_PLAYED_CATEGORY),
+        Some(&media.join("second.png"))
+    );
+    assert!(app.current_art().3);
+    app.set_layout(Layout::Details);
 
     app.category_list.select(recent_at);
     app.open_selected_category();
