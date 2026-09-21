@@ -104,6 +104,13 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
+      - name: Check out the Menu core source
+        uses: actions/checkout@v5
+        with:
+          repository: MiSTer-devel/Menu_MiSTer
+          ref: 81f657c557da769d615f91af7da04a06a5732460
+          path: menu-source
+
       # The About screen reports the version compiled into the binary, and
       # the archive and the database are named after the tag. Nothing else
       # ties the two together, so a tag that does not match the crate ships
@@ -145,11 +152,14 @@ jobs:
       - name: Package
         id: package
         run: |
+          (cd support/menu-core && sha256sum -c menu.rbf.sha256)
           VERSION="${GITHUB_REF_NAME#v}"
           NAME="degauss-${VERSION}-mister"
           mkdir -p "dist/${NAME}/degauss"
           cp -R deploy/Scripts "dist/${NAME}/Scripts"
           install -m 0755 fork/MiSTer_Degauss "dist/${NAME}/degauss/MiSTer_Degauss"
+          install -m 0644 support/menu-core/menu.rbf "dist/${NAME}/degauss/menu.rbf"
+          install -m 0644 support/menu-core/Degauss_Menu.SOURCE.txt "dist/${NAME}/degauss/Degauss_Menu.SOURCE.txt"
           install -m 0755 ra/MiSTer_RA_Degauss "dist/${NAME}/degauss/MiSTer_RA_Degauss"
           cp ra/MiSTer_RA_Degauss.cacert.pem ra/MiSTer_RA_Degauss.SOURCE.txt "dist/${NAME}/degauss/"
           cp ra/MiSTer_RA_Degauss-source.tar.gz ra/MiSTer_RA_Degauss-source.tar.gz.sha256 dist/
@@ -168,6 +178,12 @@ jobs:
           Degauss itself is a separate program under the PolyForm Noncommercial
           License 1.0.0. See LICENSE beside this file.
           EOF
+          git -C menu-source apply "$GITHUB_WORKSPACE/support/menu-core/yc-framebuffer.patch"
+          git -C menu-source ls-files | sed '/^releases\//d' > "$RUNNER_TEMP/menu-source-files.txt"
+          tar --sort=name --mtime='UTC 1970-01-01' --owner=0 --group=0 \
+            --numeric-owner -C menu-source -T "$RUNNER_TEMP/menu-source-files.txt" -cf - \
+            | gzip -n > dist/Degauss_Menu-source.tar.gz
+          (cd dist && sha256sum Degauss_Menu-source.tar.gz > Degauss_Menu-source.tar.gz.sha256)
           # Both from inside dist, so the checksum file names the archive
           # and nothing else. Hashing it from up here would record
           # "dist/degauss-x.y.z-mister.zip", and `sha256sum -c` next to a
@@ -181,11 +197,14 @@ jobs:
       - name: Check the archive holds all binaries and the RA bundle
         run: |
           unzip -l dist/*.zip | grep -q "degauss/MiSTer_Degauss"
+          unzip -l dist/degauss-*-mister.zip | grep -q "degauss/menu.rbf"
+          unzip -l dist/degauss-*-mister.zip | grep -q "degauss/Degauss_Menu.SOURCE.txt"
           unzip -l dist/*.zip | grep -q "Scripts/.config/degauss/degauss"
           unzip -l dist/*.zip | grep -q "degauss/MiSTer_RA_Degauss.cacert.pem"
           unzip -l dist/*.zip | grep -q "degauss/MiSTer_RA_Degauss.SOURCE.txt"
           unzip -l dist/*.zip | grep -q "degauss/MiSTer_RA_Degauss$"
           (cd dist && sha256sum -c MiSTer_RA_Degauss-source.tar.gz.sha256)
+          (cd dist && sha256sum -c Degauss_Menu-source.tar.gz.sha256)
 
       # Where somebody who downloaded the two files stands, which is the only
       # place the checksum is ever used.
@@ -219,6 +238,8 @@ jobs:
           assert db["db_id"] == "degauss", db["db_id"]
           assert db["files"], "no files"
           for name in ("MiSTer_RA_Degauss", "MiSTer_RA_Degauss.cacert.pem", "MiSTer_RA_Degauss.SOURCE.txt"):
+              assert "degauss/" + name in db["files"], name
+          for name in ("menu.rbf", "Degauss_Menu.SOURCE.txt"):
               assert "degauss/" + name in db["files"], name
           import posixpath
           upstream = [p for p in db["files"] if posixpath.basename(p) == "MiSTer_RA"]
