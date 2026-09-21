@@ -11721,6 +11721,11 @@ impl App {
     }
 
     fn rebuild_all_systems(&mut self) {
+        if self.network_local_only {
+            self.message = Some(NETWORK_CACHE_PRESERVED.to_string());
+            self.dirty = true;
+            return;
+        }
         // One rebuild at a time: a second ask would swap the system list from
         // under the running build. Its progress message already answers A.
         if self.build.is_some() || self.source_job.is_some() || self.refreshing.is_some() {
@@ -16806,6 +16811,11 @@ impl App {
     /// Pack it declined, or was never asked about, the question first:
     /// Prepare prepares it, Not Now rebuilds the ordinary list.
     fn rebuild_open_system_resolved(&mut self) {
+        if self.network_local_only {
+            self.message = Some(NETWORK_CACHE_PRESERVED.to_string());
+            self.dirty = true;
+            return;
+        }
         if let Some(problem) = self
             .open_system
             .as_deref()
@@ -20639,6 +20649,23 @@ fn test_network_startup_flow(window: Rc<MinimalSoftwareWindow>) {
         Some(NETWORK_CACHE_PRESERVED),
         "a targeted refresh cannot replace the complete cache either"
     );
+    app.rebuild_all_systems();
+    assert!(
+        app.build.is_none(),
+        "the menu's full rebuild cannot replace the complete cache"
+    );
+    assert_eq!(app.message.as_deref(), Some(NETWORK_CACHE_PRESERVED));
+    app.open_system = Some("NES".into());
+    app.effective_artwork_pack_roots.insert(
+        "NES".into(),
+        root.join("docs").to_string_lossy().into_owned(),
+    );
+    app.rebuild_open_system_resolved();
+    assert!(
+        app.source_job.is_none(),
+        "an explicit Artwork Pack refresh cannot replace its complete cache"
+    );
+    assert_eq!(app.message.as_deref(), Some(NETWORK_CACHE_PRESERVED));
     assert_eq!(
         std::fs::read(crate::cache::index_path(&cache_dir)).unwrap(),
         original_index,
