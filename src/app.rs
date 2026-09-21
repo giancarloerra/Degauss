@@ -3760,6 +3760,8 @@ pub struct App {
     show_bar: bool,
     /// Which logo each group is wearing at the moment.
     category_picks: std::collections::BTreeMap<String, PathBuf>,
+    /// The Last Played Home picture came from a game rather than a category logo.
+    last_played_pick_is_game_art: bool,
     /// The files offered by the category/system image picker while it is open.
     category_image_choices: Vec<crate::category_images::Choice>,
     /// The category or system whose image is being chosen.
@@ -4264,6 +4266,7 @@ impl App {
             show_unstable,
             show_bar,
             category_picks: std::collections::BTreeMap::new(),
+            last_played_pick_is_game_art: false,
             category_image_choices: Vec::new(),
             category_image_target: None,
             favorite_destinations: Vec::new(),
@@ -5165,6 +5168,10 @@ impl App {
     /// a file named after the group if one was put in the logos folder.
     fn category_logo(&self, category: &str) -> Option<PathBuf> {
         self.category_picks.get(category).cloned()
+    }
+
+    fn category_art_is_game_art(&self, category: &str) -> bool {
+        category == LAST_PLAYED_CATEGORY && self.last_played_pick_is_game_art
     }
 
     /// A picker-managed system image wins over the long-standing explicit
@@ -10245,6 +10252,7 @@ impl App {
         let mut seed = self.seed;
         let separate_handheld = self.settings.separate_handheld_category.unwrap_or(false);
         let mut picks = std::collections::BTreeMap::new();
+        let mut last_played_pick_is_game_art = false;
         let categories = self.categories.clone();
         for (name, _) in categories {
             if let Some(explicit) = self.named_logo(&name) {
@@ -10253,6 +10261,7 @@ impl App {
             }
             if name == LAST_PLAYED_CATEGORY {
                 if let Some(cover) = self.last_played_preview_cover() {
+                    last_played_pick_is_game_art = true;
                     picks.insert(name, cover);
                 }
                 continue;
@@ -10303,6 +10312,7 @@ impl App {
         }
         self.seed = seed;
         self.category_picks = picks;
+        self.last_played_pick_is_game_art = last_played_pick_is_game_art;
     }
 
     /// A picture named after the group itself, if the user put one there.
@@ -17408,7 +17418,12 @@ impl App {
                 match self.categories.get(self.category_list.selected()) {
                     Some((name, _)) => {
                         let (logo, heart) = logo_or_favorite_heart(name, self.category_logo(name));
-                        (logo, name.clone(), heart, false)
+                        (
+                            logo,
+                            name.clone(),
+                            heart,
+                            self.category_art_is_game_art(name),
+                        )
                     }
                     None => (None, String::new(), false, false),
                 }
@@ -17635,6 +17650,7 @@ impl App {
                             } else {
                                 None
                             };
+                            let game_art = with_art && self.category_art_is_game_art(name);
                             let (cover, has_cover, deferred) =
                                 self.row_cover_for(logo, &mut gallery_budget);
                             gallery_pending |= deferred;
@@ -17647,7 +17663,13 @@ impl App {
                                 ),
                                 cover,
                                 has_cover,
-                                art_scale_x: 1.0,
+                                art_scale_x: artwork_horizontal(
+                                    self.artwork_scale,
+                                    self.width,
+                                    self.height,
+                                    self.screen_rotation,
+                                    game_art,
+                                ),
                                 value: SharedString::new(),
                             });
                         }
