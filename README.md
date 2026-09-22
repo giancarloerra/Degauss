@@ -1365,6 +1365,10 @@ artwork. Press **A** to confirm one, **X** to edit the pre-filled search title
 and try again, or **B** to leave the game untouched. A search with no suitable
 result stays editable so a shorter or alternative title can be tried.
 
+An exact hash match uses the matched ROM's region for its regional title,
+release date and artwork when ScreenScraper supplies them. The configured or
+account region remains the fallback and continues to control title searches.
+
 For a direct title search without first running automatic matching, open
 **Scrape This Game** and select **Search Manually**, immediately below
 **Start Scraping**. It searches the selected game's system using its pre-filled

@@ -647,7 +647,7 @@ impl Client {
             }
             return Err(error);
         }
-        let parsed = parse(
+        let parsed = parse_hash_response(
             &response.body,
             self.region.as_deref(),
             self.language.as_deref(),
@@ -1290,6 +1290,7 @@ struct RawGame {
     rom_developer: Option<String>,
     rom_publisher: Option<String>,
     rom_players: Option<String>,
+    rom_regions: Vec<String>,
     languages: Option<String>,
     media: Vec<RawMedia>,
     rom_crc32: Option<String>,
@@ -1316,6 +1317,25 @@ fn parse(
     region: Option<&str>,
     language: Option<&str>,
     media_type: &str,
+) -> Result<Parsed> {
+    parse_response(bytes, region, language, media_type, false)
+}
+
+fn parse_hash_response(
+    bytes: &[u8],
+    region: Option<&str>,
+    language: Option<&str>,
+    media_type: &str,
+) -> Result<Parsed> {
+    parse_response(bytes, region, language, media_type, true)
+}
+
+fn parse_response(
+    bytes: &[u8],
+    region: Option<&str>,
+    language: Option<&str>,
+    media_type: &str,
+    prefer_matched_rom_region: bool,
 ) -> Result<Parsed> {
     let text = std::str::from_utf8(bytes).map_err(|_| {
         Error::new(
@@ -1408,6 +1428,7 @@ fn parse(
                             "romcrc"
                                 | "rommd5"
                                 | "romsha1"
+                                | "romregions"
                                 | "romlangues"
                                 | "developpeur"
                                 | "editeur"
@@ -1511,7 +1532,13 @@ fn parse(
                 }
                 if tag == "jeu" {
                     if let Some(game) = game.take() {
-                        if let Some(game) = finish_game(game, region, language, media_type)? {
+                        if let Some(game) = finish_game(
+                            game,
+                            region,
+                            language,
+                            media_type,
+                            prefer_matched_rom_region,
+                        )? {
                             parsed.games.push(game);
                         }
                     }
@@ -1699,6 +1726,18 @@ fn apply_capture(
                 "romcrc" => game.rom_crc32 = Some(value),
                 "rommd5" => game.rom_md5 = Some(value),
                 "romsha1" => game.rom_sha1 = Some(value),
+                "romregions" => {
+                    for region in value
+                        .split(',')
+                        .map(str::trim)
+                        .filter(|region| !region.is_empty())
+                        .map(str::to_ascii_lowercase)
+                    {
+                        if !game.rom_regions.contains(&region) {
+                            game.rom_regions.push(region);
+                        }
+                    }
+                }
                 "media" => game.media.push(RawMedia {
                     kind: media_kind.to_string(),
                     region: attribute,
@@ -1717,6 +1756,7 @@ fn finish_game(
     region: Option<&str>,
     language: Option<&str>,
     media_type: &str,
+    prefer_matched_rom_region: bool,
 ) -> Result<Option<Match>> {
     if game.not_game || game.names.iter().any(|(_, name)| is_non_game_name(name)) {
         return Ok(None);
@@ -1729,7 +1769,12 @@ fn finish_game(
     }
     let name = pick(
         &game.names,
-        fallbacks(region, &["wor", "us", "ss", "eu", "jp"]),
+        regional_fallbacks(
+            &game.rom_regions,
+            prefer_matched_rom_region,
+            region,
+            &["wor", "us", "ss", "eu", "jp"],
+        ),
     )
     .ok_or_else(|| {
         Error::new(
@@ -1741,17 +1786,36 @@ fn finish_game(
         .or_else(|| pick(&game.descriptions, fallbacks(language, &["en", "wor"])));
     let date = pick(
         &game.rom_dates,
-        fallbacks(region, &["wor", "us", "ss", "eu", "jp"]),
+        regional_fallbacks(
+            &game.rom_regions,
+            prefer_matched_rom_region,
+            region,
+            &["wor", "us", "ss", "eu", "jp"],
+        ),
     )
     .or_else(|| {
         pick(
             &game.dates,
-            fallbacks(region, &["wor", "us", "ss", "eu", "jp"]),
+            regional_fallbacks(
+                &game.rom_regions,
+                prefer_matched_rom_region,
+                region,
+                &["wor", "us", "ss", "eu", "jp"],
+            ),
         )
     })
     .and_then(date_for_gamelist);
     let genre = pick(&game.genres, fallbacks(language, &["en"]));
-    let media = pick_media(&game.media, media_type, region);
+    let media = pick_media(
+        &game.media,
+        media_type,
+        regional_fallbacks(
+            &game.rom_regions,
+            prefer_matched_rom_region,
+            region,
+            &["wor", "us", "eu", "jp", "cus", "ss"],
+        ),
+    );
     let names = game.names.into_iter().map(|(_, name)| name).collect();
     Ok(Some(Match {
         id: game.id,
@@ -1816,6 +1880,28 @@ fn fallbacks<'a>(chosen: Option<&'a str>, rest: &'a [&'a str]) -> Vec<&'a str> {
         })
 }
 
+fn regional_fallbacks<'a>(
+    matched_rom_regions: &'a [String],
+    prefer_matched_rom_region: bool,
+    chosen: Option<&'a str>,
+    rest: &'a [&'a str],
+) -> Vec<&'a str> {
+    let mut values = Vec::new();
+    if prefer_matched_rom_region {
+        for value in matched_rom_regions {
+            if !value.is_empty() && !values.contains(&value.as_str()) {
+                values.push(value.as_str());
+            }
+        }
+    }
+    for value in fallbacks(chosen, rest) {
+        if !values.contains(&value) {
+            values.push(value);
+        }
+    }
+    values
+}
+
 fn pick(values: &[(String, String)], priorities: Vec<&str>) -> Option<String> {
     for priority in priorities {
         if let Some((_, value)) = values
@@ -1828,12 +1914,11 @@ fn pick(values: &[(String, String)], priorities: Vec<&str>) -> Option<String> {
     values.first().map(|(_, value)| value.clone())
 }
 
-fn pick_media(media: &[RawMedia], kind: &str, region: Option<&str>) -> Option<Media> {
+fn pick_media(media: &[RawMedia], kind: &str, regions: Vec<&str>) -> Option<Media> {
     let candidates: Vec<&RawMedia> = media
         .iter()
         .filter(|media| media.kind.eq_ignore_ascii_case(kind))
         .collect();
-    let regions = fallbacks(region, &["wor", "us", "eu", "jp", "cus", "ss"]);
     let chosen = regions
         .into_iter()
         .find_map(|region| {
@@ -1942,6 +2027,63 @@ mod tests {
         assert_eq!(metadata.publisher.as_deref(), Some("Matched ROM publisher"));
         assert_eq!(metadata.players.as_deref(), Some("2"));
         assert_eq!(metadata.lang.as_deref(), Some("en,fr"));
+    }
+
+    #[test]
+    fn hash_parser_prefers_the_matched_rom_region_and_keeps_existing_fallbacks() {
+        let response = |rom_regions: &str, european_content: bool| {
+            let (european_name, european_date, european_media) = if european_content {
+                (
+                    "<nom region='eu'>European name</nom>",
+                    "<date region='eu'>1991-02-03</date>",
+                    "<media type='ss' region='eu' format='png'>https://media.screenscraper.fr/eu.png</media>",
+                )
+            } else {
+                ("", "", "")
+            };
+            format!(
+                "<Data><jeux><jeu id='42'>\
+                   <noms>{european_name}<nom region='us'>US name</nom></noms>\
+                   <dates>{european_date}<date region='us'>1992-03-04</date></dates>\
+                   <rom><romregions>{rom_regions}</romregions></rom>\
+                   <medias>{european_media}<media type='ss' region='us' format='png'>https://media.screenscraper.fr/us.png</media></medias>\
+                 </jeu></jeux></Data>"
+            )
+        };
+
+        let regional = response(" EU , eu ", true);
+        let hash = parse_hash_response(regional.as_bytes(), Some("us"), None, "ss").unwrap();
+        let game = &hash.games[0];
+        assert_eq!(game.name, "European name");
+        assert_eq!(
+            game.metadata.releasedate.as_deref(),
+            Some("19910203T000000")
+        );
+        assert_eq!(
+            game.media.as_ref().unwrap().url,
+            "https://media.screenscraper.fr/eu.png"
+        );
+
+        let title = parse(regional.as_bytes(), Some("us"), None, "ss").unwrap();
+        assert_eq!(title.games[0].name, "US name");
+        assert_eq!(
+            title.games[0].media.as_ref().unwrap().url,
+            "https://media.screenscraper.fr/us.png"
+        );
+
+        for fallback in [response("", true), response("eu", false)] {
+            let parsed = parse_hash_response(fallback.as_bytes(), Some("us"), None, "ss").unwrap();
+            let game = &parsed.games[0];
+            assert_eq!(game.name, "US name");
+            assert_eq!(
+                game.metadata.releasedate.as_deref(),
+                Some("19920304T000000")
+            );
+            assert_eq!(
+                game.media.as_ref().unwrap().url,
+                "https://media.screenscraper.fr/us.png"
+            );
+        }
     }
 
     #[test]
@@ -2530,6 +2672,71 @@ mod tests {
         };
         assert_eq!(found.name, "Les Schtroumpfs");
         assert_eq!(found.names, ["Les Schtroumpfs", "The Smurfs"]);
+    }
+
+    #[test]
+    fn hash_lookup_prefers_the_matched_rom_region_but_title_lookup_does_not() {
+        let response = HttpResponse {
+            status: 200,
+            content_type: Some("application/xml".into()),
+            body: b"<Data><jeux><jeu id='42'>\
+                <noms><nom region='eu'>European name</nom><nom region='us'>US name</nom></noms>\
+                <dates><date region='eu'>1991-02-03</date><date region='us'>1992-03-04</date></dates>\
+                <rom><romregions>eu</romregions><rommd5>900150983CD24FB0D6963F7D28E17F72</rommd5></rom>\
+                <medias><media type='ss' region='eu' format='png'>https://media.screenscraper.fr/eu.png</media>\
+                <media type='ss' region='us' format='png'>https://media.screenscraper.fr/us.png</media></medias>\
+                </jeu></jeux></Data>".to_vec(),
+        };
+        let make_client = || {
+            Client::new(
+                Arc::new(Mock {
+                    response: response.clone(),
+                }),
+                DeveloperCredentials {
+                    developer_id: "developer".into(),
+                    developer_password: "private".into(),
+                },
+                &ScraperSettings {
+                    username: "user".into(),
+                    password: "password".into(),
+                    region: Some("us".into()),
+                    ..Default::default()
+                },
+            )
+            .unwrap()
+        };
+        let hashes = Hashes {
+            size: 3,
+            crc32: "352441C2".into(),
+            md5: "900150983CD24FB0D6963F7D28E17F72".into(),
+            sha1: "A9993E364706816ABA3E25717850C26C9CD0D89D".into(),
+        };
+
+        let Lookup::Found(hash) = make_client()
+            .by_hash(3, "Game.rom", &hashes)
+            .unwrap()
+            .lookup
+        else {
+            panic!("hash response was not selected");
+        };
+        assert_eq!(hash.name, "European name");
+        assert_eq!(
+            hash.metadata.releasedate.as_deref(),
+            Some("19910203T000000")
+        );
+        assert_eq!(
+            hash.media.as_ref().unwrap().url,
+            "https://media.screenscraper.fr/eu.png"
+        );
+
+        let Lookup::Found(title) = make_client().by_name(3, "US name").unwrap().lookup else {
+            panic!("title response was not selected");
+        };
+        assert_eq!(title.name, "US name");
+        assert_eq!(
+            title.media.as_ref().unwrap().url,
+            "https://media.screenscraper.fr/us.png"
+        );
     }
 
     #[test]
