@@ -9074,13 +9074,14 @@ fn assert_details_split(app: &App, style: DetailsStyle, over_game: bool, context
     assert_eq!(app.details_style, style, "{context}");
     assert_eq!(app.layout, Layout::Details, "{context}");
     // The picture's share of the safe width while browsing games, 42% for
-    // Information and 62% for Large Artwork, measured from the safe width
+    // Information, Large Artwork and Compact, measured from the safe width
     // itself rather than from the Details half, so a drift in either the
     // base split or the factor fails here. The half is rounded to a pixel
     // before the factor, hence the tolerance.
     let share = match style {
         DetailsStyle::Information => 0.42,
         DetailsStyle::LargeArtwork => 0.62,
+        DetailsStyle::Compact => 0.33,
     };
     if app.screen_rotation.is_portrait() {
         let base = Geometry::compute(
@@ -9117,9 +9118,9 @@ fn assert_details_split(app: &App, style: DetailsStyle, over_game: bool, context
         DetailsStyle::Information => {
             assert_eq!(panel, 0.0, "{context}: a folder has no compact lines")
         }
-        DetailsStyle::LargeArtwork => assert_eq!(
+        DetailsStyle::LargeArtwork | DetailsStyle::Compact => assert_eq!(
             panel, 0.0,
-            "{context}: Large Artwork gives the whole column height to the picture"
+            "{context}: this style gives the whole column height to the picture"
         ),
     }
 }
@@ -9420,7 +9421,9 @@ fn run_details_style_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
             ),
         };
         assert!(
-            logged.contains("Details Style large_artwork is not information or large-artwork"),
+            logged.contains(
+                "Details Style large_artwork is not information, large-artwork or compact"
+            ),
             "the unreadable token is logged: {logged}"
         );
         app.finish_background_work_for_headless();
@@ -9528,12 +9531,13 @@ fn run_details_style_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
         app.ui.hide().unwrap();
     }
 
-    // Both styles persist: the choice is written when the page is left and
+    // All styles persist: the choice is written when the page is left and
     // survives a fresh App from the reloaded file, in both directions.
     let mut app = fixture_app(root, window.clone(), Settings::default());
     let cache_before = cache_snapshot(&app.cache_dir);
     for (style, saved) in [
         (DetailsStyle::LargeArtwork, "large-artwork"),
+        (DetailsStyle::Compact, "compact"),
         (DetailsStyle::Information, "information"),
     ] {
         select_option(&mut app, OptionsPage::Appearance, OptionId::DetailsStyle);
@@ -9571,8 +9575,10 @@ fn run_details_style_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
         assert_details_split(&app, style, true, "the saved style survives restart");
         assert_eq!(app.settings.details_style.as_deref(), Some(saved));
     }
-    // Left steps back through the same two values, so neither is a dead end.
+    // Left steps back through every value, so none is a dead end.
     select_option(&mut app, OptionsPage::Appearance, OptionId::DetailsStyle);
+    app.handle(Action::Slower);
+    assert_eq!(app.details_style, DetailsStyle::Compact);
     app.handle(Action::Slower);
     assert_eq!(app.details_style, DetailsStyle::LargeArtwork);
     app.handle(Action::Slower);
@@ -9596,7 +9602,7 @@ fn run_details_style_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
         row.cover = cover;
         row
     };
-    let rows = vec![
+    let mut rows = vec![
         browse::Row {
             name: "Fixture Folder".into(),
             sort_key: "FIXTURE FOLDER".into(),
@@ -9611,6 +9617,9 @@ fn run_details_style_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
         game("Fixture Game Without Picture", None),
         game(&long_title, Some(artwork.clone())),
     ];
+    for index in 4..24 {
+        rows.push(game(&format!("Fixture Game {index}"), None));
+    }
     app.here = rows.clone();
     app.all_here = rows;
     app.game_list = ListState::new(app.here.len(), app.geometry.visible);
@@ -9672,33 +9681,28 @@ fn run_details_style_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
         assert!(app.ui.get_has_art());
     }
 
-    // The display correction belongs to the picture, not to the style:
-    // 4:3 artwork on a 4:3 tube needs the same horizontal stretch whether
-    // its column is the narrow one or the wide one.
+    // Display correction belongs to the picture, not to the style: changing
+    // its column width must preserve the configured physical aspect ratio.
     app.game_list.select(1);
-    app.artwork_scale = ArtworkScale::FourThree;
-    let corrected = artwork_horizontal(
-        ArtworkScale::FourThree,
-        app.width,
-        app.height,
-        app.screen_rotation,
-        true,
-    );
-    assert!(
-        (corrected - 1.0).abs() > 0.01,
-        "the fixture screen must need correction for this to prove anything"
-    );
-    for style in DetailsStyle::ALL {
-        app.details_style = style;
-        app.apply_geometry();
-        app.load_art();
-        app.refresh();
-        assert!(app.ui.get_has_art());
-        assert_eq!(
-            app.ui.get_art_scale_x(),
-            corrected,
-            "{style:?} must keep the artwork aspect correction"
+    for scale in [ArtworkScale::FourThree, ArtworkScale::SixteenNine] {
+        app.artwork_scale = scale;
+        let corrected = artwork_horizontal(scale, app.width, app.height, app.screen_rotation, true);
+        assert!(
+            (corrected - 1.0).abs() > 0.01,
+            "the fixture screen must need correction for this to prove anything"
         );
+        for style in DetailsStyle::ALL {
+            app.details_style = style;
+            app.apply_geometry();
+            app.load_art();
+            app.refresh();
+            assert!(app.ui.get_has_art());
+            assert_eq!(
+                app.ui.get_art_scale_x(),
+                corrected,
+                "{style:?} must keep the artwork aspect correction"
+            );
+        }
     }
     app.artwork_scale = ArtworkScale::Framebuffer;
     app.load_art();
@@ -9710,7 +9714,7 @@ fn run_details_style_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
     for style in DetailsStyle::ALL {
         app.details_style = style;
         app.game_list.select(1);
-        for (width, height) in [(352, 240), (640, 480), (1280, 720)] {
+        for (width, height) in [(352, 240), (640, 480), (1280, 720), (1920, 1080)] {
             app.physical_width = width;
             app.physical_height = height;
             (app.width, app.height) = app.screen_rotation.logical_size(width, height);
@@ -9724,6 +9728,40 @@ fn run_details_style_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
             app.load_art();
             app.refresh();
             assert_details_split(&app, style, true, &format!("{width}x{height}"));
+            if style == DetailsStyle::Compact {
+                let base = Geometry::compute(
+                    Layout::Details,
+                    app.plain_screen(),
+                    app.chrome_here(),
+                    app.bar_here(),
+                    app.width,
+                    app.height,
+                    &app.config,
+                );
+                if height == 240 {
+                    assert_eq!(app.geometry.row_height, base.row_height);
+                    assert_eq!(app.geometry.visible, base.visible);
+                    assert_eq!(app.geometry.body_font, base.body_font);
+                } else if height >= 720 {
+                    assert!(app.geometry.visible > 8, "{width}x{height}");
+                    assert!(app.geometry.body_font < base.body_font);
+                    assert_eq!(app.rows.row_count(), app.geometry.visible);
+                    app.game_list.select(20);
+                    app.refresh();
+                    let (window, selected) = app.game_list.window();
+                    assert!(window.start > 0, "the list must scroll to later games");
+                    assert!(
+                        app.rows
+                            .row_data(selected)
+                            .unwrap()
+                            .title
+                            .contains("Fixture Game 20"),
+                        "the selected game must stay visible"
+                    );
+                    app.game_list.select(1);
+                    app.refresh();
+                }
+            }
         }
     }
     app.physical_width = 352;
@@ -9791,6 +9829,7 @@ fn run_details_style_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
     for (style, saved) in [
         (DetailsStyle::Information, "information"),
         (DetailsStyle::LargeArtwork, "large-artwork"),
+        (DetailsStyle::Compact, "compact"),
     ] {
         let mut custom_views = CustomViews::default();
         games_place.set(&mut custom_views, "details".into());

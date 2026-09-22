@@ -361,7 +361,7 @@ impl OptionId {
                 "Remove all custom views after confirmation. Every place will use the global view."
             }
             OptionId::DetailsStyle => {
-                "Information keeps the summary under the picture. Large Artwork uses the whole column."
+                "Information shows a summary, Large Artwork fills the column, Compact shows more titles."
             }
             OptionId::GameNameDisplay => {
                 "Choose which region, disc, version and translation tags remain visible. Files and saved data are unchanged."

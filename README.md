@@ -682,8 +682,9 @@ running under Degauss Main already have the Frontend menu and shortcut.
   **Information**, the default, keeps the list wider with a compact
   year/players and publisher summary under the picture; **Large Artwork**
   gives the picture most of the width and the whole height of its column,
-  with no lines under it. Game Information in Actions opens the complete
-  metadata in either style.
+  with no lines under it; **Compact** gives about one third of the width to
+  the picture and shows more game rows on higher-resolution screens. Game
+  Information in Actions opens the complete metadata in every style.
 - **Tiled**: a grid of pictures with their titles underneath.
 - **Carousel**: one large cover with its neighbours either side.
 - **Multi list**: two text columns in reading order, showing twice as many entries
@@ -696,7 +697,8 @@ The Details Style changes only the games level of Details: the Home,
 category and system screens and the other views keep their proportions, and
 switching it does not rebuild the library or the artwork cache. It is saved
 as `details_style` in `settings.toml`; a saved value that is neither
-`information` nor `large-artwork` draws Information and is left in the file
+`information`, `large-artwork` nor `compact` draws Information and is left
+in the file
 for you to correct. That substitution is reported on the first screen,
 unless a library read starts at the same time and takes the screen first,
 and always in `/tmp/degauss.log`, which is the copy that survives such a
@@ -730,8 +732,8 @@ inspect long values and the full description; left/right moves by a page.
 without launching it or changing the view. Information comes from the system's
 selected Gamelist or Artwork Pack source, including for favourites. Missing
 fields remain empty. Details in its Information style keeps the compact
-summary and Large Artwork drops it; Game Information is where all available
-fields and the complete description can be read.
+summary; Large Artwork and Compact leave it to Game Information, where all
+available fields and the complete description can be read.
 
 Complete descriptions are read only when Game Information opens, with a visible
 loading or error state. Existing compact caches remain valid; no library rebuild
@@ -803,7 +805,7 @@ require **A** and confirmation, never a sideways press.
 | Appearance | View | The global default for places without a custom view: Details, Tiled, Carousel, List, Multi List or Gallery |
 | Appearance | Start Folder | Home by default, or any currently available top-level folder. If the saved folder is no longer present, Degauss safely starts at Home without replacing the choice |
 | Appearance | Reset All Custom Views | With A and confirmation, remove every place-specific view without changing the global View setting |
-| Appearance | Details Style | How Details shares the screen while browsing games. Information (default) keeps the list beside a picture of about 42% of the width, with the compact summary under it; Large Artwork gives the picture about 62% and the whole column height, with no lines under it |
+| Appearance | Details Style | How Details shares the screen while browsing games. Information (default) keeps the list beside a picture of about 42% of the width, with the summary under it; Large Artwork gives the picture about 62% and the whole column height; Compact uses about 33% for the picture and shows more rows on higher-resolution screens |
 | Appearance | Game Name Display | Full (default), remove parenthesised tags, remove square-bracketed tags, remove both, or retain only recognised region and/or disc-index tags. This changes presentation, sorting and search only; names stored in files and caches are unchanged |
 | Appearance | Folder Brackets | On by default. Turn off only Degauss's outer `[ name ]` marker for folders; square brackets that are part of the underlying name still follow Game Name Display |
 | Appearance | Game Total/Position | On by default. Turn off the selected-position and total counter while browsing games |
