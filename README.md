@@ -124,6 +124,7 @@ Click the image to watch Degauss on YouTube.
   - [How do I install Degauss on an SS1 currently using Console Mode?](#how-do-i-install-degauss-on-an-ss1-currently-using-console-mode)
   - [Degauss appears over HDMI but not on an analog CRT](#degauss-appears-over-hdmi-but-not-on-an-analog-crt)
   - [Update All enabled Degauss, but its files are missing](#update-all-enabled-degauss-but-its-files-are-missing)
+  - [Can Degauss reuse artwork from Zaparoo Frontend or Console Mode?](#can-degauss-reuse-artwork-from-zaparoo-frontend-or-console-mode)
   - [My problem is not listed here](#my-problem-is-not-listed-here)
 - [The command line (CLI)](#the-command-line-cli)
   - [Checking a card](#checking-a-card)
@@ -1941,6 +1942,18 @@ Afterwards, run:
 ```
 
 If that command is missing or reports an incomplete installation, run Update All again. If it still fails, keep `update_all.log` and `/media/fat/Scripts/.config/downloader/downloader.log` for support.
+
+### Can Degauss reuse artwork from Zaparoo Frontend or Console Mode?
+
+Usually, yes. Degauss can reuse the same pictures when each system's game folder contains a `gamelist.xml` that points to them. It reads artwork listed as `<image>`, `<screenshot>` or `<thumbnail>`, so there is no need to download it again.
+
+Leave **Game Data Source** on **Automatic**, or select it manually:
+
+1. Highlight the system and press **X**.
+2. Open **Library → Game Data Source**.
+3. Choose **Gamelist**.
+
+Artwork stored only inside Zaparoo's database or Console Mode's central image folder is not automatically shared. If there is no usable `gamelist.xml`, keep or restore one beside the games; otherwise use Degauss's scraper or a MiSTer Artwork Pack.
 
 ### My problem is not listed here
 
