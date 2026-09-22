@@ -740,7 +740,10 @@ mod tests {
         .unwrap();
         let mountinfo = root.join("mountinfo");
         std::fs::write(&mountinfo, "").unwrap();
-        let roots = vec![PathBuf::from("/media/fat/cifs/games")];
+        let roots = vec![
+            PathBuf::from("/media/fat/cifs"),
+            PathBuf::from("/media/fat/cifs/games"),
+        ];
         let table = vec![system("NES", "NES")];
 
         assert!(

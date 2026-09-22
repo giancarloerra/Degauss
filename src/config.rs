@@ -357,6 +357,7 @@ fn default_roots() -> Vec<String> {
     // failed stat and nothing else.
     let mut roots: Vec<String> = (0..6).map(|n| format!("/media/usb{n}/games")).collect();
     roots.push("/media/network/games".to_string());
+    roots.push("/media/fat/cifs".to_string());
     roots.push("/media/fat/cifs/games".to_string());
     roots.push("/media/fat/games".to_string());
     // Arcade lives at /media/fat/_Arcade, outside the games folder.
@@ -465,6 +466,23 @@ favorite = "#fe2e1d"
             config.game_roots.iter().any(|r| r == "/media/fat/games"),
             "the usual games root applies without being written out"
         );
+        let direct = config
+            .game_roots
+            .iter()
+            .position(|root| root == "/media/fat/cifs")
+            .unwrap();
+        let nested = config
+            .game_roots
+            .iter()
+            .position(|root| root == "/media/fat/cifs/games")
+            .unwrap();
+        assert_eq!(nested, direct + 1, "direct CIFS folders take priority");
+    }
+
+    #[test]
+    fn explicit_game_roots_are_not_changed_by_new_defaults() {
+        let text = format!("game_roots = [\"/custom/games\"]\n{SAMPLE}");
+        assert_eq!(parse(&text).unwrap().game_roots, ["/custom/games"]);
     }
 
     #[test]
