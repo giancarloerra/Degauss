@@ -679,9 +679,15 @@ fn run_cores_browser_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
     std::fs::create_dir_all(&ra).unwrap();
     std::fs::create_dir_all(&unstable).unwrap();
     let standard = console.join("NES_20260916.rbf");
+    let console_launcher = console.join("SFC.mgl");
     let ra_launcher = ra.join("RA_NES.mgl");
     let unstable_launcher = unstable.join("NES_unstable_20260916_ab12.rbf");
     std::fs::write(&standard, b"fixture").unwrap();
+    std::fs::write(
+        &console_launcher,
+        "<mistergamedescription><rbf>_Console/SNES</rbf><setname>SFC</setname></mistergamedescription>",
+    )
+    .unwrap();
     std::fs::write(&unstable_launcher, b"fixture").unwrap();
     std::fs::write(
         &ra_launcher,
@@ -717,7 +723,7 @@ fn run_cores_browser_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
         OptionId::ShowCores,
         "the targeted catalogue build keeps the user on the option they changed"
     );
-    assert_eq!(app.core_catalogue.entries.len(), 3);
+    assert_eq!(app.core_catalogue.entries.len(), 4);
     assert_eq!(
         crate::cache::load_core_catalogue(&app.cache_dir),
         Some(app.core_catalogue.clone()),
@@ -765,14 +771,15 @@ fn run_cores_browser_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
     app.handle(Action::Accept);
     assert_eq!(app.browsing, Browsing::Systems);
     assert!(app.in_cores_browser());
-    assert_eq!(app.core_categories(), vec![("Console".into(), 3)]);
+    assert_eq!(app.core_categories(), vec![("Console".into(), 4)]);
 
     app.handle(Action::Accept);
     assert_eq!(app.browsing, Browsing::Games);
-    assert_eq!(app.here.len(), 3);
+    assert_eq!(app.here.len(), 4);
     assert_eq!(app.here[0].name, "NES [Standard]");
     assert_eq!(app.here[1].name, "NES [RA]");
     assert_eq!(app.here[2].name, "NES [Unstable: 20260916_ab12]");
+    assert_eq!(app.here[3].name, "SFC [Launcher]");
     app.open_context();
     assert_eq!(
         app.context_actions,
@@ -823,6 +830,23 @@ fn run_cores_browser_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
             "load_core {}\n",
             ra_launcher.canonicalize().unwrap().display()
         )
+    );
+    app.game_list.select(3);
+    let Outcome::Launch { plan, history, .. } = app.handle(Action::Accept).expect("MGL launch")
+    else {
+        panic!("unexpected MGL launch outcome")
+    };
+    assert!(
+        history.is_none(),
+        "launching a menu profile is not game history"
+    );
+    assert_eq!(
+        plan.command,
+        format!(
+            "load_core {}\n",
+            console_launcher.canonicalize().unwrap().display()
+        ),
+        "the original MGL is handed to Main so its setname remains effective"
     );
     std::fs::remove_file(&standard).unwrap();
     app.game_list.select(0);
