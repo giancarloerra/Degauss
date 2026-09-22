@@ -506,6 +506,7 @@ struct ScannedCore {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ScannedCoreKind {
     Standard,
+    MenuLauncher,
     RetroAchievements,
     Unstable,
 }
@@ -530,6 +531,7 @@ impl CoreEntry {
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 pub enum CoreVariant {
     Standard,
+    Launcher,
     RetroAchievements,
     Unstable(String),
 }
@@ -538,6 +540,7 @@ impl CoreVariant {
     pub fn label(&self) -> String {
         match self {
             Self::Standard => "Standard".into(),
+            Self::Launcher => "Launcher".into(),
             Self::RetroAchievements => "RA".into(),
             Self::Unstable(build) if build.is_empty() => "Unstable".into(),
             Self::Unstable(build) => format!("Unstable: {build}"),
@@ -547,8 +550,9 @@ impl CoreVariant {
     fn order(&self) -> u8 {
         match self {
             Self::Standard => 0,
-            Self::RetroAchievements => 1,
-            Self::Unstable(_) => 2,
+            Self::Launcher => 1,
+            Self::RetroAchievements => 2,
+            Self::Unstable(_) => 3,
         }
     }
 }
@@ -563,14 +567,14 @@ pub struct CoreCatalogue {
 impl Default for CoreCatalogue {
     fn default() -> Self {
         Self {
-            format: 1,
+            format: Self::FORMAT,
             entries: Vec::new(),
         }
     }
 }
 
 impl CoreCatalogue {
-    pub const FORMAT: u32 = 1;
+    pub const FORMAT: u32 = 2;
 
     pub fn categories(&self) -> Vec<(String, usize)> {
         const FIRST: [&str; 4] = ["Console", "Computer", "Utility", "Other"];
@@ -719,6 +723,26 @@ impl CoreIndex {
             let Some(extension) = path.extension().and_then(|ext| ext.to_str()) else {
                 continue;
             };
+            if extension.eq_ignore_ascii_case("mgl")
+                && label.eq_ignore_ascii_case("Console")
+                && depth == 0
+            {
+                let Some(stem) = path
+                    .file_stem()
+                    .and_then(|stem| stem.to_str())
+                    .map(str::to_string)
+                else {
+                    continue;
+                };
+                self.launchers.push(ScannedCore {
+                    path,
+                    folder: label.to_string(),
+                    stem,
+                    depth,
+                    kind: ScannedCoreKind::MenuLauncher,
+                });
+                continue;
+            }
             if extension.eq_ignore_ascii_case("mgl")
                 && label.eq_ignore_ascii_case("RA_Cores")
                 && depth == 0
@@ -899,6 +923,20 @@ impl CoreIndex {
                 variant: CoreVariant::RetroAchievements,
                 path: scanned.path.clone(),
                 logo_id: system.map(|system| system.id.clone()),
+            });
+        }
+
+        for scanned in self
+            .launchers
+            .iter()
+            .filter(|entry| entry.kind == ScannedCoreKind::MenuLauncher)
+        {
+            entries.push(CoreEntry {
+                name: scanned.stem.clone(),
+                category: scanned.folder.clone(),
+                variant: CoreVariant::Launcher,
+                path: scanned.path.clone(),
+                logo_id: None,
             });
         }
 
@@ -2052,7 +2090,10 @@ extensions = ["ngp"]
         }
         for file in [
             "_Console/NES_20260901.rbf",
+            "_Console/BSX.mgl",
+            "_Console/SFC.mgl",
             "_Console/console_extra/MegaDrive.rbf",
+            "_Console/console_extra/Nested.mgl",
             "_Console/console_extra/too_deep/Hidden.rbf",
             "_Utility/TapeLoad.rbf",
             "_Custom/MyCore.rbf",
@@ -2109,7 +2150,7 @@ extensions = ["md"]
         assert_eq!(
             catalogue.categories(),
             vec![
-                ("Console".into(), 5),
+                ("Console".into(), 7),
                 ("Utility".into(), 1),
                 ("Custom".into(), 1),
                 ("Unmatched Unstable".into(), 2),
@@ -2121,10 +2162,12 @@ extensions = ["md"]
                 .map(CoreEntry::label)
                 .collect::<Vec<_>>(),
             vec![
+                "BSX [Launcher]",
                 "Mega Drive [Standard]",
                 "Nintendo Entertainment System [Standard]",
                 "Nintendo Entertainment System [RA]",
                 "Nintendo Entertainment System [Unstable: 20260912_ab12cd]",
+                "SFC [Launcher]",
                 "Super Nintendo [RA]",
             ]
         );
@@ -2141,6 +2184,7 @@ extensions = ["md"]
             "_Arcade/cores/NES.rbf",
             "_Arcade/Game.mra",
             "_Custom/Arbitrary.mgl",
+            "_Console/console_extra/Nested.mgl",
             "_Console/console_extra/too_deep/Hidden.rbf",
         ] {
             assert!(
@@ -2152,6 +2196,25 @@ extensions = ["md"]
             index.folder_of("_Console/NES"),
             Some("Console"),
             "support and Unstable copies do not change existing grouping"
+        );
+        let console_launchers = catalogue
+            .entries
+            .iter()
+            .filter(|entry| entry.variant == CoreVariant::Launcher)
+            .map(|entry| {
+                (
+                    entry.name.as_str(),
+                    entry.path.strip_prefix(&menu).unwrap().to_path_buf(),
+                )
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            console_launchers,
+            vec![
+                ("BSX", PathBuf::from("_Console/BSX.mgl")),
+                ("SFC", PathBuf::from("_Console/SFC.mgl")),
+            ],
+            "direct Console MGL profiles keep their own filename identity and exact launch path"
         );
         assert_eq!(
             catalogue

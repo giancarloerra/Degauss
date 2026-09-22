@@ -636,11 +636,16 @@ of Neo Geo and of Neo Geo MVS once each (or run one full rebuild) to pick the
 sets up: the two keep separate caches even when they share the folder.
 Nothing else needs resetting.
 
-### RetroAchievements and Unstable cores
+### Installed core launchers, RetroAchievements and Unstable cores
 
 Installed RetroAchievements and Unstable cores can be browsed even when there is
 no standard version of that core. Degauss discovers these installations; it does
 not install the cores or configure a RetroAchievements account.
+
+The optional **Cores** browser also lists direct `.mgl` profiles from `_Console`,
+such as separate SFC and BSX launchers that share the SNES core. Degauss launches
+the original profile unchanged, preserving its MiSTer `setname`. Nested per-game
+MGL collections are not added to the Cores browser.
 
 **X Actions → Library → Core Version** chooses
 Default, Standard, RetroAchievements, or a matching Unstable build. The choice is

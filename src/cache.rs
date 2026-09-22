@@ -1608,8 +1608,8 @@ mod tests {
         assert_ne!(index_path(&store), core_catalogue_path(&store));
 
         let stale = crate::systems::CoreCatalogue {
-            format: crate::systems::CoreCatalogue::FORMAT + 1,
-            entries: catalogue.entries,
+            format: crate::systems::CoreCatalogue::FORMAT - 1,
+            entries: catalogue.entries.clone(),
         };
         std::fs::write(
             core_catalogue_path(&store),
@@ -1618,6 +1618,17 @@ mod tests {
         .unwrap();
         assert!(load_core_catalogue(&store).is_none());
         assert_eq!(load_index(&store).unwrap().systems["NES"].games, 12);
+
+        let future = crate::systems::CoreCatalogue {
+            format: crate::systems::CoreCatalogue::FORMAT + 1,
+            entries: catalogue.entries,
+        };
+        std::fs::write(
+            core_catalogue_path(&store),
+            postcard::to_stdvec(&future).unwrap(),
+        )
+        .unwrap();
+        assert!(load_core_catalogue(&store).is_none());
         std::fs::remove_dir_all(store).unwrap();
     }
 
