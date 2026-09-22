@@ -2554,6 +2554,94 @@ mod tests {
         }
     }
 
+    struct RegionalHashMock {
+        media_url: std::sync::Mutex<Option<String>>,
+    }
+
+    impl Transport for RegionalHashMock {
+        fn get(
+            &self,
+            endpoint: &str,
+            params: &[(String, String)],
+            _limit: u64,
+        ) -> Result<HttpResponse> {
+            let body = match endpoint {
+                "ssuserInfos.php" => "<Data><ssuser><niveau>1</niveau><maxthreads>1</maxthreads><maxdownloadspeed>256</maxdownloadspeed><requeststoday>0</requeststoday><requestskotoday>0</requestskotoday><maxrequestspermin>60</maxrequestspermin><maxrequestsperday>10</maxrequestsperday><maxrequestskoperday>10</maxrequestskoperday><favregion>usa</favregion></ssuser></Data>".to_string(),
+                "jeuInfos.php" => {
+                    let md5 = params
+                        .iter()
+                        .find(|(key, _)| key == "md5")
+                        .map(|(_, value)| value.as_str())
+                        .unwrap_or_default();
+                    format!(
+                        "<Data><jeux><jeu id='42'>\
+                           <noms><nom region='eu'>European name</nom><nom region='us'>US name</nom></noms>\
+                           <dates><date region='eu'>1991-02-03</date><date region='us'>1992-03-04</date></dates>\
+                           <rom><romregions>eu</romregions><rommd5>{md5}</rommd5></rom>\
+                           <medias><media type='ss' region='eu' format='png'>https://media.screenscraper.fr/eu.png</media>\
+                           <media type='ss' region='us' format='png'>https://media.screenscraper.fr/us.png</media></medias>\
+                         </jeu></jeux></Data>"
+                    )
+                }
+                other => panic!("unexpected endpoint {other}"),
+            };
+            Ok(HttpResponse {
+                status: 200,
+                content_type: Some("application/xml".into()),
+                body: body.into_bytes(),
+            })
+        }
+
+        fn get_media(
+            &self,
+            url: &str,
+            _limit: u64,
+            _max_kib_per_second: Option<u64>,
+        ) -> Result<HttpResponse> {
+            *self.media_url.lock().unwrap() = Some(url.to_string());
+            Ok(HttpResponse {
+                status: 200,
+                content_type: Some("image/png".into()),
+                body: PNG.to_vec(),
+            })
+        }
+    }
+
+    #[test]
+    fn matched_rom_region_reaches_the_written_gamelist_and_media_download() {
+        let root = temp("matched-rom-region");
+        std::fs::write(root.join("Game.rom"), b"game").unwrap();
+        let transport = Arc::new(RegionalHashMock {
+            media_url: std::sync::Mutex::new(None),
+        });
+
+        let Event::Finished(progress) = finish(
+            start_with_transport(
+                request(&root, settings(ImagePolicy::MissingOnly)),
+                transport.clone(),
+            )
+            .unwrap(),
+        ) else {
+            panic!("regional hash scrape did not finish");
+        };
+        assert_eq!(progress.updated, 1);
+        assert_eq!(
+            transport.media_url.lock().unwrap().as_deref(),
+            Some("https://media.screenscraper.fr/eu.png")
+        );
+        let gamelist = std::fs::read_to_string(root.join("gamelist.xml")).unwrap();
+        assert!(
+            gamelist.contains("<name>European name</name>"),
+            "{gamelist}"
+        );
+        assert!(
+            gamelist.contains("<releasedate>19910203T000000</releasedate>"),
+            "{gamelist}"
+        );
+        assert!(gamelist.contains("<image>"), "{gamelist}");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
     fn temp(name: &str) -> PathBuf {
         let path = std::env::temp_dir().join(format!(
             "degauss-scraper-worker-{name}-{}",
