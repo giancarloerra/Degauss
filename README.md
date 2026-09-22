@@ -100,6 +100,7 @@ Click the image to watch Degauss on YouTube.
   - [Upgrading from an earlier release](#upgrading-from-an-earlier-release)
   - [Returning to Degauss from a running core](#returning-to-degauss-from-a-running-core)
   - [Optional: starting Degauss from the stock menu on-demand](#optional-starting-degauss-from-the-stock-menu-on-demand)
+  - [Using Zaparoo Core with Degauss](#using-zaparoo-core-with-degauss)
   - [External storage support](#external-storage-support)
 - [Views](#views)
 - [Settings](#settings)
@@ -491,6 +492,19 @@ It is enabled by default in the standard MiSTer configuration.
 Degauss can browse the collection and launch games normally when started this way. However, after leaving a game/core, MiSTer will return to the stock menu instead of reopening Degauss automatically. There's not going to be the Frontend option anymore in the cores menu, and you'll need to re-launch Degauss from the OSD if you want to go back to it.
 
 Doing it in this way, the installed `/media/fat/degauss/MiSTer_Degauss` file is not used.
+
+### Using Zaparoo Core with Degauss
+
+[Zaparoo Core](https://zaparoo.org/docs/platforms/mister/) can run as a separate
+background service while Degauss remains the selected frontend in `MiSTer.ini`.
+Install and start Core using Zaparoo's MiSTer instructions; its optional
+Zaparoo Frontend is not needed.
+
+A valid launch from a Zaparoo reader, App, Web UI or API closes the active
+Degauss screen and starts the requested game or core. Returning to Menu opens
+Degauss again. Zaparoo's mappings and launch settings apply to Zaparoo
+launches; games started inside Degauss keep using Degauss's own launcher.
+Degauss does not install or manage Zaparoo Core.
 
 ### External storage support
 
