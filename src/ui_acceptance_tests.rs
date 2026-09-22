@@ -9820,6 +9820,30 @@ fn run_details_style_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
     }
     app.apply_screen_rotation(ScreenRotation::Off);
     assert_eq!((app.width, app.height), (352, 240));
+
+    // Rotation changes the height available to the list. Row density must
+    // follow that logical height, not the framebuffer's unrotated height.
+    app.details_style = DetailsStyle::Compact;
+    for (physical_width, physical_height, logical_height, rows) in
+        [(720, 1280, 720, 12.0), (1280, 720, 1280, 16.0)]
+    {
+        app.physical_width = physical_width;
+        app.physical_height = physical_height;
+        app.apply_screen_rotation(ScreenRotation::Clockwise);
+        assert_eq!(app.height, logical_height);
+        let base = Geometry::compute(
+            Layout::Details,
+            app.plain_screen(),
+            app.chrome_here(),
+            app.bar_here(),
+            app.width,
+            app.height,
+            &app.config,
+        );
+        let body = base.row_height * base.visible as f32;
+        assert_eq!(app.geometry.row_height, (body / rows).floor().max(9.0));
+        app.apply_screen_rotation(ScreenRotation::Off);
+    }
     app.ui.hide().unwrap();
     drop(app);
 
