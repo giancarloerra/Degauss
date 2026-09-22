@@ -4599,9 +4599,9 @@ impl App {
                 self.details_style
             };
             if style == DetailsStyle::Compact {
-                let rows = if self.physical_height >= 900 {
+                let rows = if self.height >= 900 {
                     16.0
-                } else if self.physical_height >= 600 {
+                } else if self.height >= 600 {
                     12.0
                 } else {
                     8.0
