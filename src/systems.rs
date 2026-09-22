@@ -1282,6 +1282,29 @@ extensions = ["md", "bin"]
     }
 
     #[test]
+    fn cifs_direct_folders_win_over_nested_folders_and_absence_falls_through() {
+        let base = temp_dir("cifs-direct-priority");
+        let direct = base.join("fat/cifs");
+        let nested = direct.join("games");
+        let local = base.join("fat/games");
+        std::fs::create_dir_all(direct.join("SNES")).unwrap();
+        std::fs::create_dir_all(nested.join("SNES")).unwrap();
+        std::fs::create_dir_all(nested.join("NES")).unwrap();
+        std::fs::create_dir_all(local.join("SNES")).unwrap();
+        std::fs::create_dir_all(local.join("Gameboy")).unwrap();
+        let roots = [direct.clone(), nested.clone(), local.clone()];
+
+        assert_eq!(existing_folder("SNES", &roots), Some(direct.join("SNES")));
+        assert_eq!(existing_folder("NES", &roots), Some(nested.join("NES")));
+        assert_eq!(
+            existing_folder("Gameboy", &roots),
+            Some(local.join("Gameboy"))
+        );
+
+        std::fs::remove_dir_all(&base).ok();
+    }
+
+    #[test]
     fn an_excluded_network_folder_falls_back_to_the_later_local_root() {
         let base = temp_dir("excluded-root-fallback");
         let network = base.join("fat/cifs/games");
