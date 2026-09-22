@@ -217,6 +217,9 @@ the same script selection. A later Menu reload, after Degauss has already
 returned, uses the normal startup screen. Neither path starts a second
 frontend. Scripts that load a game core keep that core on screen.
 
+Scripts launched from Degauss receive `LAUNCH_ORIGIN_ID=degauss` while they
+run, so they can identify the launcher without inspecting the MiSTer setup.
+
 **Options → Library → Show Scripts Folder** is On by default. Switching it Off
 hides this Menu entry without changing any script files; the choice is saved
 with the other Options settings. Missing or unreadable script folders and
