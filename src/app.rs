@@ -26,6 +26,8 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{mpsc, Arc};
 use std::time::{Duration, Instant};
 
 use slint::platform::software_renderer::MinimalSoftwareWindow;
@@ -362,7 +364,9 @@ fn option_operation(option: OptionId, input: OptionInput) -> OptionOperation {
         | OptionId::OverscanY
         | OptionId::ShiftX
         | OptionId::ShiftY
-        | OptionId::Screensaver => OptionOperation::Adjust(input.delta()),
+        | OptionId::Screensaver
+        | OptionId::AttractMode
+        | OptionId::ScreensaverSpeed => OptionOperation::Adjust(input.delta()),
     }
 }
 
@@ -2509,6 +2513,287 @@ struct SaverPicture {
     /// The title and the machine it is from, as one line: nothing else on
     /// that screen says what is being looked at.
     caption: String,
+    /// Present only in Attract Mode. The pictured game keeps its own owner
+    /// even while neighbouring pictures belong to another system.
+    target: Option<SaverTarget>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SaverTarget {
+    system_id: String,
+    name: String,
+    launch: browse::Launch,
+    slot: usize,
+}
+
+#[derive(Clone)]
+struct SaverCandidate {
+    system_id: String,
+    name: String,
+    config: SystemConfig,
+    pack_root: Option<PathBuf>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SaverLoadKind {
+    Initial,
+    Manual,
+    Automatic,
+}
+
+struct SaverLoad {
+    slot: usize,
+    pictures: Vec<SaverPicture>,
+    seed: u64,
+}
+
+/// A one-shot card read. No screen or input ownership crosses into this
+/// thread, so a slow gamelist or network mount cannot stall a button press.
+struct SaverJob {
+    result: mpsc::Receiver<std::result::Result<Option<SaverLoad>, String>>,
+    cancelled: Arc<AtomicBool>,
+    kind: SaverLoadKind,
+}
+
+impl SaverJob {
+    #[allow(clippy::too_many_arguments)]
+    fn start(
+        candidates: Vec<SaverCandidate>,
+        start: usize,
+        direction: isize,
+        exclude: Option<usize>,
+        cache_dir: PathBuf,
+        names: browse::DisplayNames,
+        seed: u64,
+        kind: SaverLoadKind,
+    ) -> std::io::Result<Self> {
+        let (sender, result) = mpsc::sync_channel(1);
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let worker_cancelled = Arc::clone(&cancelled);
+        std::thread::Builder::new()
+            .name("degauss-attract".to_string())
+            .spawn(move || {
+                let response = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    find_saver_pictures(
+                        &candidates,
+                        start,
+                        direction,
+                        exclude,
+                        &cache_dir,
+                        &names,
+                        seed,
+                        &worker_cancelled,
+                    )
+                }))
+                .map_err(|_| "Attract Mode picture reader stopped unexpectedly".to_string());
+                let _ = sender.send(response);
+            })?;
+        Ok(Self {
+            result,
+            cancelled,
+            kind,
+        })
+    }
+
+    fn try_recv(&self) -> Option<std::result::Result<Option<SaverLoad>, String>> {
+        match self.result.try_recv() {
+            Ok(result) => Some(result),
+            Err(mpsc::TryRecvError::Empty) => None,
+            Err(mpsc::TryRecvError::Disconnected) => {
+                Some(Err("Attract Mode picture reader disconnected".to_string()))
+            }
+        }
+    }
+
+    fn cancel(&self) {
+        self.cancelled.store(true, Ordering::Relaxed);
+    }
+}
+
+impl Drop for SaverJob {
+    fn drop(&mut self) {
+        self.cancel();
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn find_saver_pictures(
+    candidates: &[SaverCandidate],
+    start: usize,
+    direction: isize,
+    exclude: Option<usize>,
+    cache_dir: &Path,
+    names: &browse::DisplayNames,
+    mut seed: u64,
+    cancelled: &AtomicBool,
+) -> Option<SaverLoad> {
+    for offset in 0..candidates.len() {
+        if cancelled.load(Ordering::Relaxed) {
+            return None;
+        }
+        let slot = (start as isize + direction * offset as isize)
+            .rem_euclid(candidates.len() as isize) as usize;
+        if Some(slot) == exclude {
+            continue;
+        }
+        let candidate = &candidates[slot];
+        let mut pictures = match read_saver_candidate(candidate, slot, cache_dir, names, cancelled)
+        {
+            Ok(pictures) => pictures,
+            Err(error) => {
+                crate::note(&format!("attract mode  {}: {error}", candidate.name));
+                continue;
+            }
+        };
+        if pictures.is_empty() {
+            continue;
+        }
+        for i in (1..pictures.len()).rev() {
+            let j = (next_random(&mut seed) as usize) % (i + 1);
+            pictures.swap(i, j);
+        }
+        // Only decoded game pictures enter the strip. This stays on the
+        // cancellable worker; a broken image cannot turn a later frame black
+        // or make A refer to an image that was never displayed.
+        let before = pictures.len();
+        let mut checked = HashMap::new();
+        pictures.retain(|picture| {
+            if cancelled.load(Ordering::Relaxed) {
+                return false;
+            }
+            let usable = *checked.entry(picture.path.clone()).or_insert_with(|| {
+                std::fs::read(&picture.path).ok().is_some_and(|bytes| {
+                    crate::covers::decode(&bytes, &picture.path, [0, 0, 0]).is_ok()
+                })
+            });
+            std::thread::yield_now();
+            usable
+        });
+        if cancelled.load(Ordering::Relaxed) {
+            return None;
+        }
+        if before != pictures.len() {
+            crate::note(&format!(
+                "attract mode  {}: skipped {} unreadable pictures",
+                candidate.name,
+                before - pictures.len()
+            ));
+        }
+        if pictures.is_empty() {
+            continue;
+        }
+        return Some(SaverLoad {
+            slot,
+            pictures,
+            seed,
+        });
+    }
+    None
+}
+
+fn read_saver_candidate(
+    candidate: &SaverCandidate,
+    slot: usize,
+    cache_dir: &Path,
+    names: &browse::DisplayNames,
+    cancelled: &AtomicBool,
+) -> Result<Vec<SaverPicture>> {
+    let provider = if let Some(root) = candidate.pack_root.as_deref() {
+        let state = crate::cache::load_pack_source_state(cache_dir, &candidate.system_id)?;
+        let accepted = state
+            .as_ref()
+            .and_then(|state| state.accepted.as_ref())
+            .filter(|accepted| Path::new(&accepted.docs_root) == root && accepted.health.usable());
+        let Some(accepted) = accepted else {
+            return Ok(Vec::new());
+        };
+        let Some(prepared) = crate::cache::load_pack_prepared_map(cache_dir, &candidate.system_id)?
+        else {
+            return Ok(Vec::new());
+        };
+        Some(crate::artwork_pack::Provider::from_prepared_state(
+            &candidate.system_id,
+            root,
+            accepted.language.as_deref(),
+            accepted.health,
+            accepted.diagnostics.clone(),
+            accepted.signature.clone(),
+            prepared,
+        ))
+    } else {
+        None
+    };
+    let cached = if candidate.pack_root.is_some() {
+        crate::cache::load_artwork_pack_data_checked(cache_dir, &candidate.system_id)?
+            .map(|data| data.cache)
+    } else {
+        crate::cache::load_system(cache_dir, &candidate.system_id)
+    };
+    let mut pictures = Vec::new();
+    if let Some(cache) = cached {
+        for folder in cache.folders.values() {
+            if cancelled.load(Ordering::Relaxed) || pictures.len() >= SAVER_WANTED {
+                break;
+            }
+            let mut rows = folder.rows.clone();
+            if let Some(provider) = provider.as_ref() {
+                provider.apply_prepared(&mut rows);
+            }
+            add_playable_saver_rows(&mut pictures, rows, candidate, slot);
+        }
+    } else if candidate.pack_root.is_none() {
+        let library = Library::open_with_names(&candidate.config, names.clone())?;
+        let mut queue = VecDeque::from([library.start()]);
+        let mut folders = 0;
+        while let Some(place) = queue.pop_front() {
+            if cancelled.load(Ordering::Relaxed)
+                || folders >= SAVER_FOLDERS_SEARCHED
+                || pictures.len() >= SAVER_WANTED
+            {
+                break;
+            }
+            folders += 1;
+            let (rows, _) = match library.list(&place, false) {
+                Ok(listed) => listed,
+                Err(error) => {
+                    crate::note(&format!("attract mode  {}: {error}", candidate.name));
+                    continue;
+                }
+            };
+            for row in &rows {
+                if let browse::Kind::Enter(place) = &row.kind {
+                    queue.push_back(place.clone());
+                }
+            }
+            add_playable_saver_rows(&mut pictures, rows, candidate, slot);
+        }
+    }
+    Ok(pictures)
+}
+
+fn add_playable_saver_rows(
+    pictures: &mut Vec<SaverPicture>,
+    rows: Vec<browse::Row>,
+    candidate: &SaverCandidate,
+    slot: usize,
+) {
+    for row in rows {
+        if pictures.len() >= SAVER_WANTED {
+            break;
+        }
+        if let (browse::Kind::Play(launch), Some(path)) = (row.kind, row.cover) {
+            pictures.push(SaverPicture {
+                path,
+                caption: saver_caption(&row.name, &candidate.name),
+                target: Some(SaverTarget {
+                    system_id: candidate.system_id.clone(),
+                    name: row.name,
+                    launch,
+                    slot,
+                }),
+            });
+        }
+    }
 }
 
 /// What picking a letter on the grid does.
@@ -3810,6 +4095,13 @@ pub struct App {
     /// Pictures found and not yet shown, shuffled. The strip takes from
     /// here as it moves.
     saver_queue: Vec<SaverPicture>,
+    /// Randomised once on each Attract Mode entry. Only the chosen system
+    /// is read, and a left/right press advances through this fixed order.
+    saver_attract_candidates: Option<Vec<SaverCandidate>>,
+    saver_job: Option<SaverJob>,
+    saver_last_slot: Option<usize>,
+    saver_pending_directions: VecDeque<isize>,
+    saver_retry_at: Instant,
     /// How far the strip has travelled, in pixels.
     saver_offset: f32,
     saver_stepped: Instant,
@@ -4313,6 +4605,11 @@ impl App {
             gallery_title_shown_at: None,
             saver_pool: Vec::new(),
             saver_queue: Vec::new(),
+            saver_attract_candidates: None,
+            saver_job: None,
+            saver_last_slot: None,
+            saver_pending_directions: VecDeque::new(),
+            saver_retry_at: Instant::now(),
             saver_offset: 0.0,
             saver_stepped: Instant::now(),
             saver_return: Screen::Browse,
@@ -5379,11 +5676,29 @@ impl App {
         self.settings.screensaver_after.unwrap_or(120)
     }
 
+    fn attract_mode(&self) -> bool {
+        self.settings.attract_mode.unwrap_or(false)
+    }
+
+    fn screensaver_speed(&self) -> u8 {
+        match self.settings.screensaver_speed {
+            Some(2) => 2,
+            Some(4) => 4,
+            _ => 1,
+        }
+    }
+
     /// Show something, or stay browsing if there is nothing to show.
     ///
     /// A screensaver that draws a blank screen is worse than none: it looks
     /// like the machine has died.
     fn enter_screensaver(&mut self) {
+        if self.attract_mode() {
+            if self.saver_job.is_none() && Instant::now() >= self.saver_retry_at {
+                self.start_attract_job(SaverLoadKind::Initial, 1);
+            }
+            return;
+        }
         self.refill_saver();
         if self.saver_pool.is_empty() {
             // Nothing found this time. Come back sooner than a whole idle
@@ -5397,7 +5712,6 @@ impl App {
             "screensaver  starting with {} pictures",
             self.saver_pool.len()
         ));
-        self.saver_queue.clear();
         self.saver_return = self.screen;
         self.screen = Screen::Screensaver;
         self.saver_offset = 0.0;
@@ -5427,15 +5741,26 @@ impl App {
         self.saver_stepped = now;
         // A drift rather than a slide: fast enough to be moving, slow
         // enough that no part of the screen holds still for a tube.
-        self.saver_offset += elapsed * SAVER_PIXELS_PER_SECOND;
+        self.saver_offset +=
+            elapsed * SAVER_PIXELS_PER_SECOND * f32::from(self.screensaver_speed());
 
         // A picture that has gone off the left is finished with. Dropping
         // it and taking the next off the queue is what stops the strip
         // being the same handful going round: the old ring had no way to
         // put anything new in it.
         let cell = self.saver_cell();
+        let visible = (self.width as f32 / cell).ceil() as usize + 2;
         while cell > 0.0 && self.saver_offset >= cell && !self.saver_pool.is_empty() {
-            self.saver_pool.remove(0);
+            if self.attract_mode()
+                && self.saver_queue.is_empty()
+                && self.saver_pool.len() <= visible
+            {
+                // Reuse the visible strip while a network source is read.
+                // There is never an empty frame waiting for another system.
+                self.saver_pool.rotate_left(1);
+            } else {
+                self.saver_pool.remove(0);
+            }
             self.saver_offset -= cell;
         }
         self.take_from_queue();
@@ -5443,19 +5768,166 @@ impl App {
         // Out of pictures: another system, chosen the same way as the
         // first.
         if self.saver_queue.is_empty() && self.saver_pool.len() < SAVER_POOL_MAX {
-            self.refill_saver();
+            if self.attract_mode() {
+                if self.saver_job.is_none() && now >= self.saver_retry_at {
+                    self.start_attract_job(SaverLoadKind::Automatic, 1);
+                }
+            } else {
+                self.refill_saver();
+            }
         }
         self.dirty = true;
     }
 
     fn leave_screensaver(&mut self) {
+        if let Some(job) = self.saver_job.take() {
+            job.cancel();
+        }
         self.screen = self.saver_return;
         self.saver_pool.clear();
         self.saver_queue.clear();
+        self.saver_attract_candidates = None;
+        self.saver_last_slot = None;
+        self.saver_pending_directions.clear();
         self.saver_offset = 0.0;
         self.apply_geometry();
         self.touch_selection();
         self.dirty = true;
+    }
+
+    /// Initialise one shuffled system order per entry. This only checks
+    /// whether a source could have art; it does not scan every library.
+    fn attract_candidates(&mut self) -> Vec<SaverCandidate> {
+        if let Some(candidates) = self.saver_attract_candidates.as_ref() {
+            return candidates.clone();
+        }
+        let indices = self.saver_candidates().clone();
+        let mut candidates: Vec<SaverCandidate> = indices
+            .into_iter()
+            .filter_map(|index| self.all_systems.get(index))
+            .map(|system| SaverCandidate {
+                system_id: system.def.id.clone(),
+                name: system.name().to_string(),
+                config: system.to_config(),
+                pack_root: crate::artwork_pack::selected_root(
+                    &self.effective_artwork_pack_roots,
+                    &system.def.id,
+                )
+                .map(Path::to_path_buf),
+            })
+            .collect();
+        for index in (1..candidates.len()).rev() {
+            let other = (next_random(&mut self.seed) as usize) % (index + 1);
+            candidates.swap(index, other);
+        }
+        self.saver_attract_candidates = Some(candidates.clone());
+        candidates
+    }
+
+    fn saver_center_picture(&self) -> Option<SaverPicture> {
+        let cell = self.saver_cell();
+        if self.saver_pool.is_empty() || cell <= 0.0 {
+            return None;
+        }
+        let index = ((self.width as f32 / 2.0 + self.saver_offset) / cell).floor() as usize;
+        self.saver_pool.get(index % self.saver_pool.len()).cloned()
+    }
+
+    fn start_attract_job(&mut self, kind: SaverLoadKind, direction: isize) {
+        if let Some(job) = &self.saver_job {
+            if kind == SaverLoadKind::Manual {
+                self.saver_pending_directions.push_back(direction);
+                // A manual press takes priority over an automatic refill.
+                // A second manual press is queued, so each tap advances one
+                // usable system instead of silently collapsing taps.
+                if job.kind == SaverLoadKind::Automatic {
+                    job.cancel();
+                }
+            }
+            return;
+        }
+        let candidates = self.attract_candidates();
+        if candidates.is_empty() {
+            self.saver_retry_at = Instant::now() + Duration::from_secs(SAVER_RETRY_SECONDS);
+            return;
+        }
+        let current = if kind == SaverLoadKind::Manual {
+            self.saver_center_picture()
+                .and_then(|picture| picture.target.map(|target| target.slot))
+                .or(self.saver_last_slot)
+        } else {
+            self.saver_last_slot
+        };
+        let start = current
+            .map(|slot| (slot as isize + direction).rem_euclid(candidates.len() as isize) as usize)
+            .unwrap_or(0);
+        match SaverJob::start(
+            candidates,
+            start,
+            direction,
+            current,
+            self.cache_dir.clone(),
+            self.names.clone(),
+            self.seed,
+            kind,
+        ) {
+            Ok(job) => self.saver_job = Some(job),
+            Err(error) => {
+                self.message = Some(format!("Attract Mode could not read pictures: {error}"));
+                self.saver_retry_at = Instant::now() + Duration::from_secs(SAVER_RETRY_SECONDS);
+                self.dirty = true;
+            }
+        }
+    }
+
+    fn poll_saver_job(&mut self) {
+        let Some(result) = self.saver_job.as_ref().and_then(SaverJob::try_recv) else {
+            return;
+        };
+        let kind = self.saver_job.take().expect("result came from job").kind;
+        if kind == SaverLoadKind::Automatic && !self.saver_pending_directions.is_empty() {
+            if let Some(direction) = self.saver_pending_directions.pop_front() {
+                self.start_attract_job(SaverLoadKind::Manual, direction);
+            }
+            return;
+        }
+        if kind != SaverLoadKind::Initial && self.screen != Screen::Screensaver {
+            return;
+        }
+        match result {
+            Ok(Some(loaded)) => {
+                self.seed = loaded.seed;
+                self.saver_last_slot = Some(loaded.slot);
+                self.saver_retry_at = Instant::now();
+                self.saver_queue = loaded.pictures.into_iter().rev().collect();
+                if kind != SaverLoadKind::Automatic {
+                    self.saver_pool.clear();
+                    self.saver_offset = 0.0;
+                }
+                self.take_from_queue();
+                if kind == SaverLoadKind::Initial {
+                    self.saver_return = self.screen;
+                    self.screen = Screen::Screensaver;
+                    self.apply_geometry();
+                }
+                self.saver_stepped = Instant::now();
+                self.dirty = true;
+            }
+            Ok(None) => {
+                self.saver_retry_at = Instant::now() + Duration::from_secs(SAVER_RETRY_SECONDS);
+            }
+            Err(error) => {
+                crate::note(&error);
+                self.message = Some(error);
+                self.saver_retry_at = Instant::now() + Duration::from_secs(SAVER_RETRY_SECONDS);
+                self.dirty = true;
+            }
+        }
+        if self.screen == Screen::Screensaver {
+            if let Some(direction) = self.saver_pending_directions.pop_front() {
+                self.start_attract_job(SaverLoadKind::Manual, direction);
+            }
+        }
     }
 
     /// Gather pictures from one system picked at random.
@@ -5616,6 +6088,7 @@ impl App {
                 .map(|(path, title)| SaverPicture {
                     path,
                     caption: saver_caption(&title, &name),
+                    target: None,
                 })
                 .collect();
             self.seed = seed;
@@ -8531,6 +9004,56 @@ impl App {
                 }
             }
         }
+        self.launch_game(
+            name,
+            game,
+            config,
+            history_system,
+            history_launch,
+            override_launch,
+        )
+    }
+
+    fn confirm_attract_launch(&mut self) -> Option<Outcome> {
+        let picture = self.saver_center_picture()?;
+        let target = picture.target?;
+        // The hint is displayed only for a decoded picture. Do not launch a
+        // stale or unreadable path merely because it still has a cache row.
+        self.cover_for(&picture.path)?;
+        self.leave_screensaver();
+        let Some(system) = self
+            .all_systems
+            .iter()
+            .find(|system| system.def.id == target.system_id)
+        else {
+            self.message = Some(format!(
+                "{}: its system is no longer available",
+                target.name
+            ));
+            self.dirty = true;
+            return None;
+        };
+        self.launch_game(
+            target.name,
+            target.launch.clone(),
+            system.to_config(),
+            Some(target.system_id),
+            target.launch.clone(),
+            target.launch,
+        )
+    }
+
+    /// The same preflight, core selection, history and handover plan are used
+    /// for a selected row and for the exact game pictured in Attract Mode.
+    fn launch_game(
+        &mut self,
+        name: String,
+        game: browse::Launch,
+        config: SystemConfig,
+        history_system: Option<String>,
+        history_launch: browse::Launch,
+        override_launch: browse::Launch,
+    ) -> Option<Outcome> {
         let core_system = history_system
             .clone()
             .or_else(|| self.core_system_id())
@@ -11420,6 +11943,17 @@ impl App {
                 self.settings.screensaver_after = Some(next);
                 self.last_input = Instant::now();
             }
+            OptionId::AttractMode => {
+                self.settings.attract_mode = Some(!self.attract_mode());
+            }
+            OptionId::ScreensaverSpeed => {
+                let choices = [1, 2, 4];
+                let at = choices
+                    .iter()
+                    .position(|&speed| speed == self.screensaver_speed())
+                    .unwrap_or(0);
+                self.settings.screensaver_speed = Some(choices[step(at, delta, choices.len())]);
+            }
             OptionId::ShiftX => {
                 // A nudge wider than the margin moves nothing, so the number
                 // stops where the picture stops.
@@ -11689,6 +12223,12 @@ impl App {
                 0 => "off".to_string(),
                 60 => "1 minute".to_string(),
                 seconds => format!("{} minutes", seconds / 60),
+            },
+            OptionId::AttractMode => on_off(self.attract_mode()),
+            OptionId::ScreensaverSpeed => match self.screensaver_speed() {
+                2 => "2x".to_string(),
+                4 => "4x".to_string(),
+                _ => "Normal".to_string(),
             },
             OptionId::ShiftX => format!("{:+} px", self.shift_x()),
             OptionId::ShiftY => format!("{:+} px", self.shift_y()),
@@ -17001,11 +17541,30 @@ impl App {
         // Anything at all counts as somebody being here.
         self.last_input = Instant::now();
         if self.screen == Screen::Screensaver {
-            // The press that wakes it does nothing else. Waking a screen by
-            // launching whatever happened to be under the cursor would be a
-            // nasty surprise.
+            if self.attract_mode() {
+                match action {
+                    Action::Accept => return self.confirm_attract_launch(),
+                    Action::Slower => {
+                        self.start_attract_job(SaverLoadKind::Manual, -1);
+                        return None;
+                    }
+                    Action::Faster => {
+                        self.start_attract_job(SaverLoadKind::Manual, 1);
+                        return None;
+                    }
+                    _ => {}
+                }
+            }
+            // With Attract Mode off, even A only wakes the display. Other
+            // buttons retain that familiar behavior when it is on.
             self.leave_screensaver();
             return None;
+        }
+        if let Some(job) = self.saver_job.take() {
+            // A button pressed while initial pictures are loading keeps the
+            // current screen. The idle attempt cannot appear afterward.
+            job.cancel();
+            self.saver_attract_candidates = None;
         }
         if self.screen == Screen::Splash {
             // Nobody should have to wait for a logo.
@@ -17933,6 +18492,7 @@ impl App {
             Screen::Screensaver => {
                 let cell = self.saver_cell();
                 let count = self.saver_pool.len();
+                self.ui.set_saver_launchable(false);
                 if count > 0 {
                     let travelled = (self.saver_offset / cell).floor();
                     let first = travelled as usize % count;
@@ -17952,6 +18512,13 @@ impl App {
                             art_scale_x: 1.0,
                             value: SharedString::new(),
                         });
+                    }
+                    if self.attract_mode() {
+                        let center = ((self.width as f32 / 2.0 + sub) / cell).floor() as usize;
+                        self.ui.set_saver_launchable(
+                            rows.get(center).is_some_and(|row| row.has_cover)
+                                && self.saver_pool[(first + center) % count].target.is_some(),
+                        );
                     }
                     self.ui.set_saver_cell(cell);
                     self.ui.set_saver_offset(sub);
@@ -18986,6 +19553,9 @@ impl App {
                     return Ok(outcome);
                 }
             }
+            // Input must act on the picture already drawn, not on a worker
+            // result that has not reached the framebuffer yet.
+            self.poll_saver_job();
 
             let wanted = Duration::from_millis(self.speed_ms());
             if repeater.interval() != wanted {
@@ -19609,6 +20179,12 @@ impl App {
             // Through its own door: it has to find a picture before it can
             // show one, and a screensaver drawing nothing is not a preview.
             self.enter_screensaver();
+            // The headless render path has no event loop to poll the
+            // Attract Mode reader. A normal interactive frame never waits.
+            while self.saver_job.is_some() {
+                self.poll_saver_job();
+                std::thread::sleep(Duration::from_millis(1));
+            }
             return;
         }
         if screen == Screen::Menu {

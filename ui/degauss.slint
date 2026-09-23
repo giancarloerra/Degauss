@@ -514,6 +514,7 @@ export component DegaussWindow inherits Window {
     in property <string> plain-help;
     in property <length> saver-cell;
     in property <length> saver-offset;
+    in property <bool> saver-launchable: false;
     in property <string> overlay;
     in property <bool> overlay-dismissible;
     in property <float> overlay-offset;
@@ -2230,6 +2231,21 @@ export component DegaussWindow inherits Window {
                         x: root.pad;
                         y: root.pad / 2;
                     }
+                }
+            }
+            if root.saver-launchable: Rectangle {
+                background: root.c-bar;
+                border-radius: 2px;
+                width: launch-hint.preferred-width + root.pad * 2;
+                height: launch-hint.preferred-height + root.pad;
+                x: (parent.width - self.width) / 2;
+                y: root.pad * 2;
+                launch-hint := Text {
+                    text: "A Launch";
+                    color: root.c-text;
+                    font-size: root.small-glyph;
+                    x: root.pad;
+                    y: root.pad / 2;
                 }
             }
         }
