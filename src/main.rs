@@ -443,7 +443,7 @@ fn load_everything(args: &Args) -> Result<Loaded> {
         }
     });
     let network_boot = if args.interactive_startup() {
-        network_wait::detect(Path::new(&config.menu_root), &roots, &table)?
+        network_wait::detect(&config.wait_for_mounts)?
     } else {
         None
     };

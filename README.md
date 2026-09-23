@@ -527,14 +527,31 @@ Degauss opens it directly. The folder chooser appears only when two or more
 real locations contribute compatible games.
 
 USB storage is looked for when Degauss starts, so plug the stick in first
-(or restart after). When the official CIFS script is configured to mount a
-relevant game library at boot, Degauss waits for the actual mount before
-discovering systems. A failed wait can be retried or explicitly continued
-with the available local library; the existing complete index is not replaced
-by a partial one. An already-mounted share starts immediately. Moving a system
-between storages changes its paths, so its listing is stale until **Rebuild
-this system** or a full rebuild. A layout the defaults do not cover is one
-`game_roots` edit in `degauss.toml` away.
+(or restart after). `game_roots` in `degauss.toml` controls where to search;
+an absent optional root never causes a startup wait. If games depend on a
+mount that can arrive late, add its actual mountpoint to `wait_for_mounts`:
+
+```toml
+# Games are directly mounted here:
+wait_for_mounts = ["/media/fat/games"]
+```
+
+If the games root is inside a mounted parent, name the parent instead:
+
+```toml
+game_roots = ["/media/fat/games", "/media/fat/cifs/games"]
+wait_for_mounts = ["/media/fat/cifs"]
+```
+
+An existing directory is not enough: the listed path must be mounted. Degauss
+starts immediately when every required mountpoint is already mounted; otherwise
+it waits up to 180 seconds, then offers **Retry** or continuation with available
+local games. The complete library index is not replaced by a partial one.
+Installations that relied on the previous automatic wait based on the stock
+CIFS script must now explicitly list their required mountpoint. Moving a
+system between storages changes its paths, so its listing is stale until
+**Rebuild this system** or a full rebuild. A layout the defaults do not cover
+is one `game_roots` edit in `degauss.toml` away.
 
 The first run reads the card and writes an index, about a minute for a
 full one of 97k+ games. It reads the ordinary game libraries only: an
@@ -1875,6 +1892,12 @@ wrong place, gamelists that no longer match what is on the card, and
 anything a core needs that is missing. It reports; I decide; it executes.
 
 ## Troubleshooting and FAQ
+
+### Network games are missing when Degauss starts
+
+If a game share mounts after Degauss starts, add its actual mountpoint to
+`wait_for_mounts` in `degauss.toml`. See [External storage support](#external-storage-support)
+for examples and the startup wait behaviour.
 
 ### What MiSTer hardware has Degauss been reported working on?
 
