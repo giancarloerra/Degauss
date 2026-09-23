@@ -2390,6 +2390,16 @@ fn image_index(artwork: &Path, cancelled: &AtomicBool) -> Result<Option<ImageInd
         {
             continue;
         }
+        let Some(stem) = path
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .map(str::to_string)
+        else {
+            crate::note(&format!(
+                "artwork path {path:?}: skipped: filename is not UTF-8"
+            ));
+            continue;
+        };
         let file_type = item
             .file_type()
             .map_err(|error| DegaussError::io("reading Artwork Pack image", &path, error))?;
@@ -2416,17 +2426,6 @@ fn image_index(artwork: &Path, cancelled: &AtomicBool) -> Result<Option<ImageInd
         }
         count += 1;
         validate_jpeg_count(count, artwork)?;
-        let Some(stem) = path
-            .file_stem()
-            .and_then(|stem| stem.to_str())
-            .map(str::to_string)
-        else {
-            return Err(DegaussError::malformed(
-                "Artwork Pack image",
-                &path,
-                "filename is not UTF-8",
-            ));
-        };
         validate_key(&stem, &path)?;
         if let Some(key) = insert_image_entry(&mut images, &stem, path) {
             return Ok(Some((images, Some(key))));
@@ -4920,6 +4919,24 @@ mod tests {
             .iter()
             .any(|problem| problem.contains("outside the selected Artwork directory")));
         std::fs::remove_dir_all(root.parent().unwrap()).ok();
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_non_utf8_jpeg_name_does_not_hide_valid_pack_artwork() {
+        use std::os::unix::ffi::OsStringExt;
+
+        let (root, art) = pack("non-utf8-image");
+        std::fs::write(art.join("Good.jpg"), b"jpeg").unwrap();
+        let invalid = std::ffi::OsString::from_vec(b"Bad-\xff.jpg".to_vec());
+        std::fs::write(art.join(invalid), b"jpeg").unwrap();
+
+        let (images, collision) = image_index(&art, &AtomicBool::new(false)).unwrap().unwrap();
+        assert!(collision.is_none());
+        assert_eq!(images.len(), 2);
+        assert_eq!(images.get("good"), Some(&art.join("Good.jpg")));
+
+        std::fs::remove_dir_all(root.parent().unwrap()).unwrap();
     }
 
     #[test]

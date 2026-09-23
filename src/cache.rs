@@ -554,6 +554,7 @@ fn walk_controlled(
         if cancelled.load(Ordering::Relaxed) {
             return Ok(None);
         }
+        omit_non_utf8_cover(row);
         match &row.kind {
             Kind::Play(_) => {
                 games += 1;
@@ -693,6 +694,20 @@ fn walk_controlled(
         return Ok(None);
     }
     Ok(Some(games))
+}
+
+fn omit_non_utf8_cover(row: &mut Row) {
+    if row
+        .cover
+        .as_ref()
+        .is_some_and(|path| path.to_str().is_none())
+    {
+        if let Some(path) = row.cover.take() {
+            crate::note(&format!(
+                "artwork path {path:?}: skipped: path is not UTF-8"
+            ));
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2167,6 +2182,103 @@ mod tests {
 
         assert_eq!(after, before + 1);
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_non_utf8_filename_does_not_prevent_either_cache_from_being_written() {
+        use std::os::unix::ffi::OsStringExt;
+
+        let games = temp("non-utf8-game");
+        let store = temp("non-utf8-cache");
+        std::fs::write(games.join("Good.d64"), b"game").unwrap();
+        let invalid = std::ffi::OsString::from_vec(b"Bad-\xff.d64".to_vec());
+        std::fs::write(games.join(invalid), b"game").unwrap();
+        let config = system(&games);
+
+        for kind in [CacheKind::Gamelist, CacheKind::ArtworkPack] {
+            let library = match kind {
+                CacheKind::Gamelist => Library::open(&config).unwrap(),
+                CacheKind::ArtworkPack => {
+                    Library::open_source_neutral(&config, Default::default()).unwrap()
+                }
+            };
+            let cache = build_system(&library);
+            assert_eq!(cache.summary(&library.start()).games, 1);
+            install_transactional(
+                &store,
+                kind,
+                &[StagedSystemCache {
+                    id: "Test".into(),
+                    cache,
+                    fingerprints: ContentFingerprints::new(),
+                    fingerprints_complete: false,
+                }],
+            )
+            .unwrap();
+            let loaded = match kind {
+                CacheKind::Gamelist => load_system(&store, "Test"),
+                CacheKind::ArtworkPack => load_artwork_pack_system(&store, "Test"),
+            }
+            .expect("the cache with a healthy game reloads");
+            assert_eq!(loaded.summary(&library.start()).games, 1);
+        }
+
+        std::fs::remove_dir_all(games).unwrap();
+        std::fs::remove_dir_all(store).unwrap();
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_non_utf8_folder_omits_its_subtree_without_changing_other_counts() {
+        use std::os::unix::ffi::OsStringExt;
+
+        let games = temp("non-utf8-folder");
+        std::fs::write(games.join("Pokémon.d64"), b"game").unwrap();
+        std::fs::create_dir_all(games.join("Valid")).unwrap();
+        std::fs::write(games.join("Valid/Good.d64"), b"game").unwrap();
+        let invalid = std::ffi::OsString::from_vec(b"Bad-\xff".to_vec());
+        let bad_folder = games.join(invalid);
+        std::fs::create_dir_all(&bad_folder).unwrap();
+        std::fs::write(bad_folder.join("Hidden.d64"), b"game").unwrap();
+
+        let library = Library::open(&system(&games)).unwrap();
+        for _ in 0..2 {
+            let cache = build_system(&library);
+            assert_eq!(cache.summary(&library.start()).games, 2);
+            let root = cache.get(&library.start()).unwrap();
+            assert_eq!(root.rows.len(), 2);
+            assert!(root.rows.iter().any(|row| row.name == "Pokémon"));
+            assert!(root
+                .rows
+                .iter()
+                .any(|row| row.name == "Valid" && row.below == Some(1)));
+        }
+
+        std::fs::remove_dir_all(games).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_non_utf8_artwork_path_does_not_remove_the_playable_row() {
+        use std::os::unix::ffi::OsStringExt;
+
+        let game = PathBuf::from("/games/Good.d64");
+        let mut row = Row {
+            name: "Good".into(),
+            sort_key: "good".into(),
+            kind: Kind::Play(Launch::File(game.clone())),
+            cover: Some(PathBuf::from(std::ffi::OsString::from_vec(
+                b"/docs/Bad-\xff.jpg".to_vec(),
+            ))),
+            genre: None,
+            favorite: false,
+            below: None,
+            details: Default::default(),
+        };
+        omit_non_utf8_cover(&mut row);
+        assert_eq!(row.kind, Kind::Play(Launch::File(game)));
+        assert!(row.cover.is_none());
     }
 
     #[test]
