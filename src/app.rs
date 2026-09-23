@@ -67,7 +67,7 @@ const HANDHELD_CATEGORY: &str = "Handheld";
 const LAST_PLAYED_CATEGORY: &str = "Last Played";
 const LAST_PLAYED_PLACE: &str = "last-played:";
 const LAST_PLAYED_SYSTEM: &str = "@LastPlayed";
-const NETWORK_CACHE_PRESERVED: &str = "The network library is unavailable, so its complete cache was preserved. Restart Degauss after the mount is ready to rebuild system lists.";
+const NETWORK_CACHE_PRESERVED: &str = "Required game storage is unavailable, so the complete library cache was preserved. Restart Degauss after the mount is ready to rebuild system lists.";
 
 /// The category shown by the frontend. The system's own category remains
 /// unchanged because launch, cache and library ownership follow MiSTer.
@@ -3593,7 +3593,7 @@ pub struct App {
     table: Vec<SystemDef>,
     /// Where system logos live, for the same second look.
     logo_dir: Option<PathBuf>,
-    /// A boot-managed CIFS library which must become ready before the first
+    /// An explicitly required game mount which must become ready before the first
     /// discovery. The previous complete cache is not opened or changed while
     /// this is present.
     network_plan: Option<crate::network_wait::Plan>,
@@ -3846,7 +3846,7 @@ pub struct Loaded {
     /// What the themes folder held, with a line for each file that did
     /// not load.
     pub themes: ThemeSet,
-    /// A relevant boot-managed CIFS library that has not mounted yet.
+    /// Explicitly required game storage that has not mounted yet.
     /// Ordinary startup leaves this absent and retains the released path.
     pub network_boot: Option<crate::network_wait::Plan>,
 }
@@ -4435,7 +4435,7 @@ impl App {
         self.network_progress = None;
         match result {
             Ok(None) => {
-                self.network_problem = Some("Network library wait cancelled.".into());
+                self.network_problem = Some("Required game storage wait cancelled.".into());
             }
             Err(error) => {
                 crate::note(&format!("network      {error}"));
@@ -4444,9 +4444,9 @@ impl App {
             Ok(Some(discovered)) if discovered.systems.is_empty() => {
                 self.network_no_local = self.network_local_only;
                 self.network_problem = Some(if self.network_local_only {
-                    "No local game folders are available. Retry the network mount or exit.".into()
+                    "No local game folders are available. Retry the required mount or exit.".into()
                 } else {
-                    "Network storage is ready, but no configured game folders were found.".into()
+                    "Required storage is ready, but no configured game folders were found.".into()
                 });
             }
             Ok(Some(discovered)) => {
@@ -9003,7 +9003,7 @@ impl App {
             self.ui.set_operation_kind(4);
             self.ui.set_operation_details(false);
             self.ui
-                .set_operation_title("Waiting for Network Game Library".into());
+                .set_operation_title("Waiting for Required Game Storage".into());
             self.ui.set_operation_state(
                 if cancelling {
                     "Cancelling"
@@ -9022,7 +9022,7 @@ impl App {
                 if local_only {
                     "Available Local Storage"
                 } else {
-                    "CIFS Boot Mount"
+                    "Required Mountpoints"
                 }
                 .into(),
             );
@@ -20594,7 +20594,6 @@ fn test_network_startup_flow(window: Rc<MinimalSoftwareWindow>) {
     std::fs::write(root.join("_Console/NES.rbf"), b"fixture").unwrap();
     std::fs::write(local.join("NES/Local.nes"), b"fixture").unwrap();
     let mountinfo = root.join("mountinfo");
-    let log = root.join("cifs.log");
     std::fs::write(&mountinfo, "").unwrap();
 
     let mut config = Config::parse("[app]", &root.join("degauss.toml")).unwrap();
@@ -20622,8 +20621,6 @@ fn test_network_startup_flow(window: Rc<MinimalSoftwareWindow>) {
     let original_index = std::fs::read(crate::cache::index_path(&cache_dir)).unwrap();
     let plan = crate::network_wait::Plan::fixture(
         vec![network.clone()],
-        root.clone(),
-        log,
         mountinfo,
         Duration::from_secs(2),
     );
@@ -20659,7 +20656,7 @@ fn test_network_startup_flow(window: Rc<MinimalSoftwareWindow>) {
     assert_eq!(app.ui.get_operation_kind(), 4);
     assert_eq!(
         app.ui.get_operation_title().as_str(),
-        "Waiting for Network Game Library"
+        "Waiting for Required Game Storage"
     );
     assert_eq!(
         app.ui.get_operation_note().as_str(),

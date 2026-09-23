@@ -340,6 +340,9 @@ pub struct Config {
     /// Where to look for game folders.
     #[serde(default = "default_roots")]
     pub game_roots: Vec<String>,
+    /// Mountpoints that must be ready before interactive startup discovery.
+    #[serde(default)]
+    pub wait_for_mounts: Vec<String>,
     /// The top of the card, where the `_`-prefixed menu folders live. Read
     /// to find which group each installed core belongs to.
     #[serde(default = "default_menu_root")]
@@ -387,6 +390,15 @@ impl Config {
                     config.app.left_right
                 ),
             ));
+        }
+        for mount in &config.wait_for_mounts {
+            if !Path::new(mount).is_absolute() {
+                return Err(DegaussError::malformed(
+                    "config",
+                    origin,
+                    format!("wait_for_mounts entry {mount:?} must be an absolute mountpoint path"),
+                ));
+            }
         }
         Ok(config)
     }
@@ -462,6 +474,7 @@ favorite = "#fe2e1d"
         assert_eq!(config.app.layout, "details");
         assert_eq!(config.app.left_right, "speed");
         assert_eq!(config.app.font, "smooth");
+        assert!(config.wait_for_mounts.is_empty());
         assert!(
             config.game_roots.iter().any(|r| r == "/media/fat/games"),
             "the usual games root applies without being written out"
@@ -483,6 +496,21 @@ favorite = "#fe2e1d"
     fn explicit_game_roots_are_not_changed_by_new_defaults() {
         let text = format!("game_roots = [\"/custom/games\"]\n{SAMPLE}");
         assert_eq!(parse(&text).unwrap().game_roots, ["/custom/games"]);
+    }
+
+    #[test]
+    fn required_mounts_are_separate_from_game_roots_and_must_be_absolute() {
+        let text = format!(
+            "game_roots = [\"/media/fat/cifs/games\"]\nwait_for_mounts = [\"/media/fat/cifs\"]\n{SAMPLE}"
+        );
+        let config = parse(&text).unwrap();
+        assert_eq!(config.game_roots, ["/media/fat/cifs/games"]);
+        assert_eq!(config.wait_for_mounts, ["/media/fat/cifs"]);
+
+        let text = format!("wait_for_mounts = [\"cifs\"]\n{SAMPLE}");
+        let error = parse(&text).unwrap_err().to_string();
+        assert!(error.contains("wait_for_mounts"));
+        assert!(error.contains("absolute"));
     }
 
     #[test]
