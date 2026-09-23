@@ -26,8 +26,8 @@ game_roots = [
     "/media/network/games",
     "/media/fat/cifs",
     "/media/fat/cifs/games",
-    "/media/fat/games",
     "/media/fat",
+    "/media/fat/games",
 ]
 
 # The top of the card, where the _-prefixed menu folders live. Read once at

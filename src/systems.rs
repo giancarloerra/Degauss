@@ -1305,6 +1305,22 @@ extensions = ["md", "bin"]
     }
 
     #[test]
+    fn direct_card_folder_wins_over_games_and_absence_falls_through() {
+        let base = temp_dir("card-direct-priority");
+        let card = base.join("fat");
+        let nested = card.join("games");
+        std::fs::create_dir_all(card.join("SNES")).unwrap();
+        std::fs::create_dir_all(nested.join("SNES")).unwrap();
+        let roots = [card.clone(), nested.clone()];
+
+        assert_eq!(existing_folder("SNES", &roots), Some(card.join("SNES")));
+        std::fs::remove_dir_all(card.join("SNES")).unwrap();
+        assert_eq!(existing_folder("SNES", &roots), Some(nested.join("SNES")));
+
+        std::fs::remove_dir_all(&base).ok();
+    }
+
+    #[test]
     fn an_excluded_network_folder_falls_back_to_the_later_local_root() {
         let base = temp_dir("excluded-root-fallback");
         let network = base.join("fat/cifs/games");
