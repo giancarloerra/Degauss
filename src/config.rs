@@ -362,9 +362,9 @@ fn default_roots() -> Vec<String> {
     roots.push("/media/network/games".to_string());
     roots.push("/media/fat/cifs".to_string());
     roots.push("/media/fat/cifs/games".to_string());
-    roots.push("/media/fat/games".to_string());
-    // Arcade lives at /media/fat/_Arcade, outside the games folder.
+    // Main checks direct card folders, including _Arcade, before games/.
     roots.push("/media/fat".to_string());
+    roots.push("/media/fat/games".to_string());
     roots
 }
 
@@ -490,6 +490,37 @@ favorite = "#fe2e1d"
             .position(|root| root == "/media/fat/cifs/games")
             .unwrap();
         assert_eq!(nested, direct + 1, "direct CIFS folders take priority");
+        let direct_card = config
+            .game_roots
+            .iter()
+            .position(|root| root == "/media/fat")
+            .unwrap();
+        let nested_card = config
+            .game_roots
+            .iter()
+            .position(|root| root == "/media/fat/games")
+            .unwrap();
+        assert_eq!(
+            nested_card,
+            direct_card + 1,
+            "direct card folders take priority"
+        );
+    }
+
+    #[test]
+    fn shipped_config_checks_direct_card_folders_first() {
+        let config = parse(include_str!("../degauss.toml")).unwrap();
+        let direct = config
+            .game_roots
+            .iter()
+            .position(|root| root == "/media/fat")
+            .unwrap();
+        let nested = config
+            .game_roots
+            .iter()
+            .position(|root| root == "/media/fat/games")
+            .unwrap();
+        assert_eq!(nested, direct + 1);
     }
 
     #[test]

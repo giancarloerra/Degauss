@@ -12,8 +12,8 @@
 # Where to look for games, in the order MiSTer's own loader searches:
 # USB sticks first, then the network share, then the CIFS mount, then the
 # card. For each folder name the first root that has it wins; a root that
-# is not mounted is skipped. /media/fat is listed too because Arcade lives
-# at /media/fat/_Arcade rather than under games. Other storage that appears
+# is not mounted is skipped. Direct card folders (including Arcade) take
+# priority over /media/fat/games. Other storage that appears
 # later is picked up on the next start, or by Rebuild this system list.
 game_roots = [
     "/media/usb0/games",
@@ -25,8 +25,8 @@ game_roots = [
     "/media/network/games",
     "/media/fat/cifs",
     "/media/fat/cifs/games",
-    "/media/fat/games",
     "/media/fat",
+    "/media/fat/games",
 ]
 
 # Optional: wait at startup for mountpoints that your games require. The
