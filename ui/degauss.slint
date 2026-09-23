@@ -2092,7 +2092,7 @@ export component DegaussWindow inherits Window {
             }
             Text {
                 text: root.operation-problem;
-                x: root.pad; y: parent.height * 78%;
+                x: root.pad; y: root.operation-kind == 4 ? parent.height * 59% : parent.height * 78%;
                 width: parent.width - root.pad * 2;
                 height: max(0px, parent.height - self.y - root.bar-height);
                 font-size: root.small-glyph; color: root.c-text;
