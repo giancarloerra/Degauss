@@ -1799,6 +1799,7 @@ fn run_on_framebuffer(
             plan,
             name,
             history,
+            active_game,
         } => {
             // Preserve the browse position before asking Main to replace us.
             // Last Played deliberately waits until the FIFO write succeeds,
@@ -1809,6 +1810,12 @@ fn run_on_framebuffer(
             state::mark_resuming();
             note(&format!("ended        launching {name}"));
             launch::execute(&plan, Path::new(launch::CMD_FIFO))?;
+            if let Err(error) = launch::publish_active_game(
+                active_game.as_deref(),
+                Path::new(launch::ACTIVE_GAME_FILE),
+            ) {
+                note(&format!("active game  signal not updated: {error}"));
+            }
             if let Some(update) = history {
                 match history::record(&update.path, update.entry) {
                     Ok(settings::SaveOutcome::Durable) => {}

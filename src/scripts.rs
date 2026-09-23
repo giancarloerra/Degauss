@@ -7,6 +7,7 @@ use std::process::Command;
 use crate::error::{DegaussError, Result};
 
 pub const RETURN_ENV: &str = "DEGAUSS_SCRIPTS_RETURN";
+const ORIGIN_ENV: &str = "LAUNCH_ORIGIN_ID";
 
 /// Main's launcher can supply tty2 descriptors without a controlling terminal.
 /// ISIG needs both that association and a foreground process group to deliver
@@ -221,6 +222,7 @@ return_frontend() {
     fi
     trap - INT
     export DEGAUSS_SCRIPTS_RETURN="$script"
+    unset LAUNCH_ORIGIN_ID
     exec "$frontend" "$@"
 }
 interrupt_script() {
@@ -396,7 +398,8 @@ impl Launch {
             .arg(&self.return_directory)
             .arg(&self.executable)
             .args(&self.args)
-            .env_remove(RETURN_ENV);
+            .env_remove(RETURN_ENV)
+            .env(ORIGIN_ENV, "degauss");
         if let Some(owner) = &self.menu_owner {
             command.env(crate::frontend_session::OWNER_ENV, owner);
         } else {
@@ -698,10 +701,14 @@ mod tests {
             ),
             (
                 false,
-                "#!/bin/cat\nprintf 'NONEXEC_BASH_RAN\\n'\n",
-                "NONEXEC_BASH_RAN\n",
+                "#!/bin/cat\nprintf 'NONEXEC_BASH_RAN=%s\\n' \"$LAUNCH_ORIGIN_ID\"\n",
+                "NONEXEC_BASH_RAN=degauss\n",
             ),
-            (true, "printf 'EXEC_BASH_RAN\\n'\n", "EXEC_BASH_RAN\n"),
+            (
+                true,
+                "#!/bin/bash\nprintf 'EXEC_BASH_RAN=%s\\n' \"$LAUNCH_ORIGIN_ID\"\n",
+                "EXEC_BASH_RAN=degauss\n",
+            ),
         ] {
             let script = fixture.file("Scripts/interpreter choice.sh", body);
             let mode = if executable { 0o755 } else { 0o644 };
@@ -710,9 +717,15 @@ mod tests {
                 &fixture.0.join("Scripts"),
                 &script,
                 Path::new("/bin/bash"),
-                vec!["-c".into(), "printf FRONTEND_RETURNED".into()],
+                vec![
+                    "-c".into(),
+                    "printf 'FRONTEND_RETURNED=%s' \"${LAUNCH_ORIGIN_ID-unset}\"".into(),
+                ],
             )
             .unwrap();
+            assert!(launch.command().get_envs().any(|(key, value)| {
+                key == ORIGIN_ENV && value == Some(std::ffi::OsStr::new("degauss"))
+            }));
             let mut child = launch
                 .command()
                 .stdin(Stdio::piped())
@@ -726,7 +739,10 @@ mod tests {
             let stderr = String::from_utf8(output.stderr).unwrap();
             assert!(output.status.success(), "{stderr}");
             assert!(stdout.contains(expected), "{stdout}\n{stderr}");
-            assert!(stdout.contains("FRONTEND_RETURNED"), "{stdout}\n{stderr}");
+            assert!(
+                stdout.contains("FRONTEND_RETURNED=unset"),
+                "{stdout}\n{stderr}"
+            );
             assert!(!stderr.contains("Script exited with status"), "{stderr}");
         }
     }

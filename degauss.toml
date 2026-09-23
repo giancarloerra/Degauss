@@ -24,6 +24,7 @@ game_roots = [
     "/media/usb4/games",
     "/media/usb5/games",
     "/media/network/games",
+    "/media/fat/cifs",
     "/media/fat/cifs/games",
     "/media/fat/games",
     "/media/fat",

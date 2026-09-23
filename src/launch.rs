@@ -41,6 +41,9 @@ use crate::error::{DegaussError, Result};
 
 /// Where Main listens for commands.
 pub const CMD_FIFO: &str = "/dev/MiSTer_cmd";
+/// Shared game-launch signal read by Zaparoo Core.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+pub const ACTIVE_GAME_FILE: &str = "/tmp/ACTIVEGAME";
 
 const AMIGAVISION_2026_04_GAMES_BYTES: usize = 38_497;
 const AMIGAVISION_2026_04_GAMES_SHA1: [u8; 20] = [
@@ -1057,6 +1060,23 @@ pub fn execute(plan: &LaunchPlan, fifo: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Publish a successfully handed-off game, or clear a previous game's signal
+/// when launching a core without a selected game. Zaparoo reads the entire
+/// file as the absolute path, with no newline or other framing.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+pub fn publish_active_game(game: Option<&Path>, target: &Path) -> Result<()> {
+    let text = match game {
+        Some(path) => path.to_str().ok_or_else(|| {
+            DegaussError::unsupported(
+                "active game tracking",
+                format!("{} is not a UTF-8 path", path.display()),
+            )
+        })?,
+        None => "",
+    };
+    std::fs::write(target, text).map_err(|e| DegaussError::io("updating active game", target, e))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1064,6 +1084,36 @@ mod tests {
 
     const AMIGAVISION_2026_04_GAMES: &[u8] =
         include_bytes!("../tests/fixtures/amigavision-2026-04-games.txt");
+
+    #[test]
+    fn active_game_signal_is_exact_path_and_clears_on_core_only_launch() {
+        let marker = std::env::temp_dir().join(format!(
+            "degauss-activegame-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let first = Path::new("/media/fat/games/NES/First Game.nes");
+        let second = Path::new("/media/usb0/games/NES/Second Game.nes");
+        publish_active_game(Some(first), &marker).unwrap();
+        assert_eq!(
+            std::fs::read(&marker).unwrap(),
+            first.as_os_str().as_encoded_bytes()
+        );
+        publish_active_game(Some(second), &marker).unwrap();
+        assert_eq!(
+            std::fs::read(&marker).unwrap(),
+            second.as_os_str().as_encoded_bytes()
+        );
+        publish_active_game(None, &marker).unwrap();
+        assert!(std::fs::read(&marker).unwrap().is_empty());
+        std::fs::remove_file(&marker).unwrap();
+
+        let error = publish_active_game(Some(first), &std::env::temp_dir()).unwrap_err();
+        assert!(matches!(error, DegaussError::Io { .. }));
+    }
 
     fn rule(exts: &[&str], kind: &str, index: u8, delay: u8) -> LaunchRule {
         LaunchRule {

@@ -100,6 +100,7 @@ Click the image to watch Degauss on YouTube.
   - [Upgrading from an earlier release](#upgrading-from-an-earlier-release)
   - [Returning to Degauss from a running core](#returning-to-degauss-from-a-running-core)
   - [Optional: starting Degauss from the stock menu on-demand](#optional-starting-degauss-from-the-stock-menu-on-demand)
+  - [Using Zaparoo Core with Degauss](#using-zaparoo-core-with-degauss)
   - [External storage support](#external-storage-support)
 - [Views](#views)
 - [Settings](#settings)
@@ -216,6 +217,9 @@ If a script reloads MiSTer's menu before returning, the new launcher restores
 the same script selection. A later Menu reload, after Degauss has already
 returned, uses the normal startup screen. Neither path starts a second
 frontend. Scripts that load a game core keep that core on screen.
+
+Scripts launched from Degauss receive `LAUNCH_ORIGIN_ID=degauss` while they
+run, so they can identify the launcher without inspecting the MiSTer setup.
 
 **Options → Library → Show Scripts Folder** is On by default. Switching it Off
 hides this Menu entry without changing any script files; the choice is saved
@@ -447,8 +451,10 @@ for more detail.
 The recommended installation also uses Degauss's private
 `/media/fat/degauss/menu.rbf` while the frontend is open. This preserves colour
 for framebuffer output over an already configured S-Video or composite setup
-without replacing MiSTer's `/media/fat/menu.rbf`. The stock-menu on-demand mode
-does not use this private core.
+without replacing MiSTer's `/media/fat/menu.rbf`. The same fix also restores
+colour to MiSTer's framebuffer menu wallpapers while this core is active; it is
+not limited to Degauss's own interface. The stock-menu on-demand mode does not
+use this private core.
 
 ### Returning to Degauss from a running core
 
@@ -491,6 +497,19 @@ It is enabled by default in the standard MiSTer configuration.
 Degauss can browse the collection and launch games normally when started this way. However, after leaving a game/core, MiSTer will return to the stock menu instead of reopening Degauss automatically. There's not going to be the Frontend option anymore in the cores menu, and you'll need to re-launch Degauss from the OSD if you want to go back to it.
 
 Doing it in this way, the installed `/media/fat/degauss/MiSTer_Degauss` file is not used.
+
+### Using Zaparoo Core with Degauss
+
+[Zaparoo Core](https://zaparoo.org/docs/platforms/mister/) can run as a separate
+background service while Degauss remains the selected frontend in `MiSTer.ini`.
+Install and start Core using Zaparoo's MiSTer instructions; its optional
+Zaparoo Frontend is not needed.
+
+A valid launch from a Zaparoo reader, App, Web UI or API closes the active
+Degauss screen and starts the requested game or core. Returning to Menu opens
+Degauss again. Zaparoo's mappings and launch settings apply to Zaparoo
+launches; games started inside Degauss keep using Degauss's own launcher.
+Degauss does not install or manage Zaparoo Core.
 
 ### External storage support
 
@@ -679,8 +698,9 @@ running under Degauss Main already have the Frontend menu and shortcut.
   **Information**, the default, keeps the list wider with a compact
   year/players and publisher summary under the picture; **Large Artwork**
   gives the picture most of the width and the whole height of its column,
-  with no lines under it. Game Information in Actions opens the complete
-  metadata in either style.
+  with no lines under it; **Compact** gives about one third of the width to
+  the picture and shows more game rows on higher-resolution screens. Game
+  Information in Actions opens the complete metadata in every style.
 - **Tiled**: a grid of pictures with their titles underneath.
 - **Carousel**: one large cover with its neighbours either side.
 - **Multi list**: two text columns in reading order, showing twice as many entries
@@ -693,7 +713,8 @@ The Details Style changes only the games level of Details: the Home,
 category and system screens and the other views keep their proportions, and
 switching it does not rebuild the library or the artwork cache. It is saved
 as `details_style` in `settings.toml`; a saved value that is neither
-`information` nor `large-artwork` draws Information and is left in the file
+`information`, `large-artwork` nor `compact` draws Information and is left
+in the file
 for you to correct. That substitution is reported on the first screen,
 unless a library read starts at the same time and takes the screen first,
 and always in `/tmp/degauss.log`, which is the copy that survives such a
@@ -727,8 +748,8 @@ inspect long values and the full description; left/right moves by a page.
 without launching it or changing the view. Information comes from the system's
 selected Gamelist or Artwork Pack source, including for favourites. Missing
 fields remain empty. Details in its Information style keeps the compact
-summary and Large Artwork drops it; Game Information is where all available
-fields and the complete description can be read.
+summary; Large Artwork and Compact leave it to Game Information, where all
+available fields and the complete description can be read.
 
 Complete descriptions are read only when Game Information opens, with a visible
 loading or error state. Existing compact caches remain valid; no library rebuild
@@ -795,12 +816,12 @@ require **A** and confirmation, never a sideways press.
 | Navigation | Skip Artwork Faster Than | Above this speed, pictures wait until the list stops. 6x out of the box |
 | Navigation | Left and Right Behaviour | What left and right do while browsing: Scroll Speed Change (the default), Letter, Page or Direction. Letter and Page repeat while held; in Direction, left and right move one entry and up and down move a whole row in Tiled, Multi List and Gallery |
 | Navigation | Random Game Behaviour | Whether either random action starts the game, or only moves to it so you can look first |
-| Shortcuts | Hold A / Hold B / Hold X / Hold Y | Off by default. Assign None, Cycle View, Random Game, Random Favourite, Add/Remove Favourite, Game Information, Search This Folder or Jump to Letter to each one-second hold. Short presses retain their normal action. Holds work only while browsing and only where the chosen Actions command is available; otherwise the normal press is immediate |
+| Shortcuts | Hold A / Hold B / Hold X / Hold Y | Off by default. Assign None, Cycle View, Random Game, Random Favourite, Add/Remove Favourite, Game Information, Search This Folder, Jump to Letter, Actions or Menu to each one-second hold. Assign Actions and Menu to A/B for two-button controllers. Short presses retain their normal action. Holds work only while browsing and only where the chosen command is available; otherwise the normal press is immediate |
 | Appearance | Theme | Left and right choose a palette. Press A to open the editor. Standard uses the colours in `degauss.toml`. See [Themes and colours](#themes-and-colours) |
 | Appearance | View | The global default for places without a custom view: Details, Tiled, Carousel, List, Multi List or Gallery |
 | Appearance | Start Folder | Home by default, or any currently available top-level folder. If the saved folder is no longer present, Degauss safely starts at Home without replacing the choice |
 | Appearance | Reset All Custom Views | With A and confirmation, remove every place-specific view without changing the global View setting |
-| Appearance | Details Style | How Details shares the screen while browsing games. Information (default) keeps the list beside a picture of about 42% of the width, with the compact summary under it; Large Artwork gives the picture about 62% and the whole column height, with no lines under it |
+| Appearance | Details Style | How Details shares the screen while browsing games. Information (default) keeps the list beside a picture of about 42% of the width, with the summary under it; Large Artwork gives the picture about 62% and the whole column height; Compact uses about 33% for the picture and shows more rows on higher-resolution screens |
 | Appearance | Game Name Display | Full (default), remove parenthesised tags, remove square-bracketed tags, remove both, or retain only recognised region and/or disc-index tags. This changes presentation, sorting and search only; names stored in files and caches are unchanged |
 | Appearance | Folder Brackets | On by default. Turn off only Degauss's outer `[ name ]` marker for folders; square brackets that are part of the underlying name still follow Game Name Display |
 | Appearance | Game Total/Position | On by default. Turn off the selected-position and total counter while browsing games |

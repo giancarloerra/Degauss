@@ -819,11 +819,20 @@ fn run_cores_browser_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
     assert_eq!(app.category_system, saved.category_system);
     assert_eq!(app.left_at, saved.left_at);
 
-    let Outcome::Launch { plan, history, .. } = app.handle(Action::Accept).expect("core launch")
+    let Outcome::Launch {
+        plan,
+        history,
+        active_game,
+        ..
+    } = app.handle(Action::Accept).expect("core launch")
     else {
         panic!("unexpected core launch outcome")
     };
     assert!(history.is_none(), "launching a core is not game history");
+    assert!(
+        active_game.is_none(),
+        "a core has no selected game to publish"
+    );
     assert_eq!(
         plan.command,
         format!(
@@ -832,7 +841,12 @@ fn run_cores_browser_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
         )
     );
     app.game_list.select(3);
-    let Outcome::Launch { plan, history, .. } = app.handle(Action::Accept).expect("MGL launch")
+    let Outcome::Launch {
+        plan,
+        history,
+        active_game,
+        ..
+    } = app.handle(Action::Accept).expect("MGL launch")
     else {
         panic!("unexpected MGL launch outcome")
     };
@@ -840,6 +854,7 @@ fn run_cores_browser_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
         history.is_none(),
         "launching a menu profile is not game history"
     );
+    assert!(active_game.is_none(), "a core MGL is not a selected game");
     assert_eq!(
         plan.command,
         format!(
@@ -1676,6 +1691,72 @@ fn run_hold_shortcut_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
     app.random_launches = false;
     app.message = None;
     app.screen = Screen::Browse;
+    for (option, button, shortcut) in [
+        (OptionId::HoldA, HoldButton::A, HoldShortcut::Actions),
+        (OptionId::HoldB, HoldButton::B, HoldShortcut::Menu),
+    ] {
+        select_option(&mut app, OptionsPage::Shortcuts, option);
+        let steps = HoldShortcut::ALL
+            .iter()
+            .position(|candidate| *candidate == shortcut)
+            .unwrap();
+        for _ in 0..steps {
+            app.handle(Action::Accept);
+        }
+        assert_eq!(app.hold_shortcuts[button.index()], shortcut);
+    }
+    app.handle(Action::Quit);
+    let saved = Settings::load(&app.settings_path).unwrap();
+    assert_eq!(saved.hold_a_shortcut, Some(HoldShortcut::Actions));
+    assert_eq!(saved.hold_b_shortcut, Some(HoldShortcut::Menu));
+
+    app.screen = Screen::Browse;
+    app.message = None;
+    repeater.set_hold_shortcuts(app.available_hold_shortcuts());
+    let pressed = Instant::now();
+    assert_eq!(repeater.press(Action::Accept, pressed), None);
+    assert_eq!(
+        repeater.release(Action::Accept, pressed + Duration::from_millis(500)),
+        Some(Action::Accept),
+        "a short A still selects the current row"
+    );
+    assert_eq!(repeater.press(Action::Accept, pressed), None);
+    let due = repeater.tick(pressed + Duration::from_secs(1));
+    assert_eq!(due, vec![Action::HoldShortcut(HoldShortcut::Actions)]);
+    app.handle(due[0]);
+    assert_eq!(app.screen, Screen::Context);
+    assert_eq!(
+        repeater.release(Action::Accept, pressed + Duration::from_secs(2)),
+        None
+    );
+    app.handle(Action::Quit);
+    assert_eq!(app.screen, Screen::Browse);
+
+    repeater.set_hold_shortcuts(app.available_hold_shortcuts());
+    let pressed = Instant::now();
+    assert_eq!(repeater.press(Action::Quit, pressed), None);
+    assert_eq!(
+        repeater.release(Action::Quit, pressed + Duration::from_millis(500)),
+        Some(Action::Quit),
+        "a short B still goes back"
+    );
+    assert_eq!(repeater.press(Action::Quit, pressed), None);
+    let due = repeater.tick(pressed + Duration::from_secs(1));
+    assert_eq!(due, vec![Action::HoldShortcut(HoldShortcut::Menu)]);
+    app.dirty = false;
+    app.handle(due[0]);
+    assert_eq!(app.screen, Screen::Menu);
+    assert!(app.dirty, "the held Menu shortcut redraws the new screen");
+    assert_eq!(
+        repeater.release(Action::Quit, pressed + Duration::from_secs(2)),
+        None
+    );
+    app.handle(Action::Quit);
+    assert_eq!(app.screen, Screen::Browse);
+
+    app.random_launches = false;
+    app.message = None;
+    app.screen = Screen::Browse;
     let place = app.current_view_place().unwrap();
     let previous_layout = app.layout;
     assert!(app.perform_hold_shortcut(HoldShortcut::CycleView).is_none());
@@ -1901,10 +1982,16 @@ fn run_last_played_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
         .iter()
         .all(|(name, _)| name != LAST_PLAYED_CATEGORY));
     select_row_named(&mut app, "Current First");
-    let Some(Outcome::Launch { history, .. }) = app.confirm_launch() else {
+    let Some(Outcome::Launch {
+        history,
+        active_game,
+        ..
+    }) = app.confirm_launch()
+    else {
         panic!("the ordinary fixture game launches: {:?}", app.message);
     };
     assert!(history.is_none());
+    assert_eq!(active_game, Some(first.clone()));
     assert!(!crate::history::path_beside(&app.settings_path).exists());
     app.ui.hide().unwrap();
     drop(app);
@@ -2356,6 +2443,7 @@ fn run_last_played_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
     let Some(Outcome::Launch {
         plan,
         history: Some(from_favorite),
+        active_game,
         ..
     }) = app.confirm_launch()
     else {
@@ -2369,6 +2457,7 @@ fn run_last_played_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
         "a Degauss Favourite resolves the original game's current override: {}",
         plan.mgl
     );
+    assert_eq!(active_game, Some(first.clone()));
     assert_eq!(from_favorite.entry.system, "NES");
     assert_eq!(
         from_favorite.entry.launch,
@@ -9074,13 +9163,14 @@ fn assert_details_split(app: &App, style: DetailsStyle, over_game: bool, context
     assert_eq!(app.details_style, style, "{context}");
     assert_eq!(app.layout, Layout::Details, "{context}");
     // The picture's share of the safe width while browsing games, 42% for
-    // Information and 62% for Large Artwork, measured from the safe width
+    // Information, Large Artwork and Compact, measured from the safe width
     // itself rather than from the Details half, so a drift in either the
     // base split or the factor fails here. The half is rounded to a pixel
     // before the factor, hence the tolerance.
     let share = match style {
         DetailsStyle::Information => 0.42,
         DetailsStyle::LargeArtwork => 0.62,
+        DetailsStyle::Compact => 0.33,
     };
     if app.screen_rotation.is_portrait() {
         let base = Geometry::compute(
@@ -9117,9 +9207,9 @@ fn assert_details_split(app: &App, style: DetailsStyle, over_game: bool, context
         DetailsStyle::Information => {
             assert_eq!(panel, 0.0, "{context}: a folder has no compact lines")
         }
-        DetailsStyle::LargeArtwork => assert_eq!(
+        DetailsStyle::LargeArtwork | DetailsStyle::Compact => assert_eq!(
             panel, 0.0,
-            "{context}: Large Artwork gives the whole column height to the picture"
+            "{context}: this style gives the whole column height to the picture"
         ),
     }
 }
@@ -9420,7 +9510,9 @@ fn run_details_style_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
             ),
         };
         assert!(
-            logged.contains("Details Style large_artwork is not information or large-artwork"),
+            logged.contains(
+                "Details Style large_artwork is not information, large-artwork or compact"
+            ),
             "the unreadable token is logged: {logged}"
         );
         app.finish_background_work_for_headless();
@@ -9528,12 +9620,13 @@ fn run_details_style_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
         app.ui.hide().unwrap();
     }
 
-    // Both styles persist: the choice is written when the page is left and
+    // All styles persist: the choice is written when the page is left and
     // survives a fresh App from the reloaded file, in both directions.
     let mut app = fixture_app(root, window.clone(), Settings::default());
     let cache_before = cache_snapshot(&app.cache_dir);
     for (style, saved) in [
         (DetailsStyle::LargeArtwork, "large-artwork"),
+        (DetailsStyle::Compact, "compact"),
         (DetailsStyle::Information, "information"),
     ] {
         select_option(&mut app, OptionsPage::Appearance, OptionId::DetailsStyle);
@@ -9571,8 +9664,10 @@ fn run_details_style_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
         assert_details_split(&app, style, true, "the saved style survives restart");
         assert_eq!(app.settings.details_style.as_deref(), Some(saved));
     }
-    // Left steps back through the same two values, so neither is a dead end.
+    // Left steps back through every value, so none is a dead end.
     select_option(&mut app, OptionsPage::Appearance, OptionId::DetailsStyle);
+    app.handle(Action::Slower);
+    assert_eq!(app.details_style, DetailsStyle::Compact);
     app.handle(Action::Slower);
     assert_eq!(app.details_style, DetailsStyle::LargeArtwork);
     app.handle(Action::Slower);
@@ -9596,7 +9691,7 @@ fn run_details_style_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
         row.cover = cover;
         row
     };
-    let rows = vec![
+    let mut rows = vec![
         browse::Row {
             name: "Fixture Folder".into(),
             sort_key: "FIXTURE FOLDER".into(),
@@ -9611,6 +9706,9 @@ fn run_details_style_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
         game("Fixture Game Without Picture", None),
         game(&long_title, Some(artwork.clone())),
     ];
+    for index in 4..24 {
+        rows.push(game(&format!("Fixture Game {index}"), None));
+    }
     app.here = rows.clone();
     app.all_here = rows;
     app.game_list = ListState::new(app.here.len(), app.geometry.visible);
@@ -9672,33 +9770,28 @@ fn run_details_style_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
         assert!(app.ui.get_has_art());
     }
 
-    // The display correction belongs to the picture, not to the style:
-    // 4:3 artwork on a 4:3 tube needs the same horizontal stretch whether
-    // its column is the narrow one or the wide one.
+    // Display correction belongs to the picture, not to the style: changing
+    // its column width must preserve the configured physical aspect ratio.
     app.game_list.select(1);
-    app.artwork_scale = ArtworkScale::FourThree;
-    let corrected = artwork_horizontal(
-        ArtworkScale::FourThree,
-        app.width,
-        app.height,
-        app.screen_rotation,
-        true,
-    );
-    assert!(
-        (corrected - 1.0).abs() > 0.01,
-        "the fixture screen must need correction for this to prove anything"
-    );
-    for style in DetailsStyle::ALL {
-        app.details_style = style;
-        app.apply_geometry();
-        app.load_art();
-        app.refresh();
-        assert!(app.ui.get_has_art());
-        assert_eq!(
-            app.ui.get_art_scale_x(),
-            corrected,
-            "{style:?} must keep the artwork aspect correction"
+    for scale in [ArtworkScale::FourThree, ArtworkScale::SixteenNine] {
+        app.artwork_scale = scale;
+        let corrected = artwork_horizontal(scale, app.width, app.height, app.screen_rotation, true);
+        assert!(
+            (corrected - 1.0).abs() > 0.01,
+            "the fixture screen must need correction for this to prove anything"
         );
+        for style in DetailsStyle::ALL {
+            app.details_style = style;
+            app.apply_geometry();
+            app.load_art();
+            app.refresh();
+            assert!(app.ui.get_has_art());
+            assert_eq!(
+                app.ui.get_art_scale_x(),
+                corrected,
+                "{style:?} must keep the artwork aspect correction"
+            );
+        }
     }
     app.artwork_scale = ArtworkScale::Framebuffer;
     app.load_art();
@@ -9710,7 +9803,7 @@ fn run_details_style_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
     for style in DetailsStyle::ALL {
         app.details_style = style;
         app.game_list.select(1);
-        for (width, height) in [(352, 240), (640, 480), (1280, 720)] {
+        for (width, height) in [(352, 240), (640, 480), (1280, 720), (1920, 1080)] {
             app.physical_width = width;
             app.physical_height = height;
             (app.width, app.height) = app.screen_rotation.logical_size(width, height);
@@ -9724,6 +9817,40 @@ fn run_details_style_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
             app.load_art();
             app.refresh();
             assert_details_split(&app, style, true, &format!("{width}x{height}"));
+            if style == DetailsStyle::Compact {
+                let base = Geometry::compute(
+                    Layout::Details,
+                    app.plain_screen(),
+                    app.chrome_here(),
+                    app.bar_here(),
+                    app.width,
+                    app.height,
+                    &app.config,
+                );
+                if height == 240 {
+                    assert_eq!(app.geometry.row_height, base.row_height);
+                    assert_eq!(app.geometry.visible, base.visible);
+                    assert_eq!(app.geometry.body_font, base.body_font);
+                } else if height >= 720 {
+                    assert!(app.geometry.visible > 8, "{width}x{height}");
+                    assert!(app.geometry.body_font < base.body_font);
+                    assert_eq!(app.rows.row_count(), app.geometry.visible);
+                    app.game_list.select(20);
+                    app.refresh();
+                    let (window, selected) = app.game_list.window();
+                    assert!(window.start > 0, "the list must scroll to later games");
+                    assert!(
+                        app.rows
+                            .row_data(selected)
+                            .unwrap()
+                            .title
+                            .contains("Fixture Game 20"),
+                        "the selected game must stay visible"
+                    );
+                    app.game_list.select(1);
+                    app.refresh();
+                }
+            }
         }
     }
     app.physical_width = 352;
@@ -9782,6 +9909,30 @@ fn run_details_style_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
     }
     app.apply_screen_rotation(ScreenRotation::Off);
     assert_eq!((app.width, app.height), (352, 240));
+
+    // Rotation changes the height available to the list. Row density must
+    // follow that logical height, not the framebuffer's unrotated height.
+    app.details_style = DetailsStyle::Compact;
+    for (physical_width, physical_height, logical_height, rows) in
+        [(720, 1280, 720, 12.0), (1280, 720, 1280, 16.0)]
+    {
+        app.physical_width = physical_width;
+        app.physical_height = physical_height;
+        app.apply_screen_rotation(ScreenRotation::Clockwise);
+        assert_eq!(app.height, logical_height);
+        let base = Geometry::compute(
+            Layout::Details,
+            app.plain_screen(),
+            app.chrome_here(),
+            app.bar_here(),
+            app.width,
+            app.height,
+            &app.config,
+        );
+        let body = base.row_height * base.visible as f32;
+        assert_eq!(app.geometry.row_height, (body / rows).floor().max(9.0));
+        app.apply_screen_rotation(ScreenRotation::Off);
+    }
     app.ui.hide().unwrap();
     drop(app);
 
@@ -9791,6 +9942,7 @@ fn run_details_style_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
     for (style, saved) in [
         (DetailsStyle::Information, "information"),
         (DetailsStyle::LargeArtwork, "large-artwork"),
+        (DetailsStyle::Compact, "compact"),
     ] {
         let mut custom_views = CustomViews::default();
         games_place.set(&mut custom_views, "details".into());

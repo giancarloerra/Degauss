@@ -925,15 +925,23 @@ pub enum DetailsStyle {
     /// A wider picture taking the whole height of its column, with no
     /// lines under it.
     LargeArtwork,
+    /// A narrow preview leaves more width for titles and, on larger
+    /// framebuffers, more height for rows.
+    Compact,
 }
 
 impl DetailsStyle {
-    const ALL: [DetailsStyle; 2] = [DetailsStyle::Information, DetailsStyle::LargeArtwork];
+    const ALL: [DetailsStyle; 3] = [
+        DetailsStyle::Information,
+        DetailsStyle::LargeArtwork,
+        DetailsStyle::Compact,
+    ];
 
     fn setting(self) -> &'static str {
         match self {
             DetailsStyle::Information => "information",
             DetailsStyle::LargeArtwork => "large-artwork",
+            DetailsStyle::Compact => "compact",
         }
     }
 
@@ -941,6 +949,7 @@ impl DetailsStyle {
         match self {
             DetailsStyle::Information => "Information",
             DetailsStyle::LargeArtwork => "Large Artwork",
+            DetailsStyle::Compact => "Compact",
         }
     }
 
@@ -948,6 +957,7 @@ impl DetailsStyle {
         match text {
             "information" => Some(DetailsStyle::Information),
             "large-artwork" => Some(DetailsStyle::LargeArtwork),
+            "compact" => Some(DetailsStyle::Compact),
             _ => None,
         }
     }
@@ -961,11 +971,12 @@ impl DetailsStyle {
 
     /// What the picture's half of the safe width becomes while browsing
     /// games: 42% for Information, which leaves the list room for a long
-    /// title, and 62% for Large Artwork.
+    /// title, 62% for Large Artwork, and 33% for Compact.
     fn art_factor(self) -> f32 {
         match self {
             DetailsStyle::Information => 0.84,
             DetailsStyle::LargeArtwork => 1.24,
+            DetailsStyle::Compact => 0.66,
         }
     }
 }
@@ -3957,7 +3968,7 @@ impl App {
             None => DetailsStyle::default(),
             Some(text) => DetailsStyle::parse(text).unwrap_or_else(|| {
                 startup_problems.push(format!(
-                    "Details Style {text} is not information or large-artwork; using Information."
+                    "Details Style {text} is not information, large-artwork or compact; using Information."
                 ));
                 DetailsStyle::default()
             }),
@@ -4587,6 +4598,19 @@ impl App {
             } else {
                 self.details_style
             };
+            if style == DetailsStyle::Compact {
+                let rows = if self.height >= 900 {
+                    16.0
+                } else if self.height >= 600 {
+                    12.0
+                } else {
+                    8.0
+                };
+                let body = geometry.row_height * geometry.visible as f32;
+                geometry.row_height = (body / rows).floor().max(9.0);
+                geometry.body_font = (geometry.row_height * 0.62).floor().max(8.0);
+                geometry.visible = (body / geometry.row_height).floor().max(1.0) as usize;
+            }
             if portrait {
                 let body = geometry.art_height
                     + geometry.row_height * geometry.visible as f32
@@ -8596,6 +8620,14 @@ impl App {
                 plan: Box::new(plan),
                 name,
                 history,
+                active_game: match override_launch {
+                    browse::Launch::File(path)
+                        if path.is_absolute() && crate::zip::split_member_path(&path).is_none() =>
+                    {
+                        Some(path)
+                    }
+                    _ => None,
+                },
             }),
             Err(e) => {
                 self.message = Some(format!("{e}"));
@@ -8615,6 +8647,7 @@ impl App {
                 plan: Box::new(plan),
                 name: row.name.clone(),
                 history: None,
+                active_game: None,
             }),
             Err(error) => {
                 self.message = Some(error.to_string());
@@ -10182,6 +10215,7 @@ impl App {
                 plan: Box::new(plan),
                 name,
                 history: None,
+                active_game: None,
             }),
             Err(error) => {
                 self.message = Some(error.to_string());
@@ -13139,7 +13173,9 @@ impl App {
     }
 
     fn hold_shortcut_available(&self, shortcut: HoldShortcut) -> bool {
-        if self.in_misterzine_browser() {
+        if self.in_misterzine_browser()
+            && !matches!(shortcut, HoldShortcut::Actions | HoldShortcut::Menu)
+        {
             return false;
         }
         if !self.browse_shortcuts_ready() {
@@ -13158,6 +13194,7 @@ impl App {
             HoldShortcut::SearchThisFolder | HoldShortcut::JumpToLetter => {
                 self.browsing != Browsing::Categories
             }
+            HoldShortcut::Actions | HoldShortcut::Menu => true,
         }
     }
 
@@ -13197,6 +13234,11 @@ impl App {
             }
             HoldShortcut::SearchThisFolder => self.open_find(FindMode::Search),
             HoldShortcut::JumpToLetter => self.open_find(FindMode::Jump),
+            HoldShortcut::Actions => self.open_context(),
+            HoldShortcut::Menu => {
+                self.open_menu();
+                self.dirty = true;
+            }
         }
         None
     }
@@ -19946,6 +19988,7 @@ pub enum Outcome {
         plan: Box<crate::launch::LaunchPlan>,
         name: String,
         history: Option<HistoryUpdate>,
+        active_game: Option<PathBuf>,
     },
 }
 
@@ -20216,7 +20259,15 @@ pub(crate) fn test_library_launch_flow(window: Rc<MinimalSoftwareWindow>) {
         .confirm_launch()
         .expect("UI must allow a valid ZIP member")
     {
-        Outcome::Launch { plan, .. } => plan.mgl,
+        Outcome::Launch {
+            plan, active_game, ..
+        } => {
+            assert!(
+                active_game.is_none(),
+                "a ZIP member has no separate absolute file for Zaparoo"
+            );
+            plan.mgl
+        }
         _ => panic!("expected launch outcome"),
     };
     assert!(mgl(&mut app).contains("<rbf>_Console/NES</rbf>"));
@@ -23472,9 +23523,10 @@ mod tests {
             "an absent setting must draw the layout older installations have"
         );
         // Half the safe width times these factors is the 42% and 62% the
-        // two styles give the picture; the list keeps the rest.
+        // styles give the picture; the list keeps the rest.
         assert!((0.5 * DetailsStyle::Information.art_factor() - 0.42).abs() < 0.0001);
         assert!((0.5 * DetailsStyle::LargeArtwork.art_factor() - 0.62).abs() < 0.0001);
+        assert!((0.5 * DetailsStyle::Compact.art_factor() - 0.33).abs() < 0.0001);
     }
 
     #[test]
