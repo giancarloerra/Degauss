@@ -62,10 +62,12 @@ pub enum HoldShortcut {
     GameInformation,
     SearchThisFolder,
     JumpToLetter,
+    Actions,
+    Menu,
 }
 
 impl HoldShortcut {
-    pub const ALL: [Self; 8] = [
+    pub const ALL: [Self; 10] = [
         Self::None,
         Self::CycleView,
         Self::RandomGame,
@@ -74,6 +76,8 @@ impl HoldShortcut {
         Self::GameInformation,
         Self::SearchThisFolder,
         Self::JumpToLetter,
+        Self::Actions,
+        Self::Menu,
     ];
 
     pub const fn label(self) -> &'static str {
@@ -86,6 +90,8 @@ impl HoldShortcut {
             Self::GameInformation => "Game Information",
             Self::SearchThisFolder => "Search This Folder",
             Self::JumpToLetter => "Jump to Letter",
+            Self::Actions => "Actions",
+            Self::Menu => "Menu",
         }
     }
 
@@ -1036,9 +1042,11 @@ mod tests {
                 "Game Information",
                 "Search This Folder",
                 "Jump to Letter",
+                "Actions",
+                "Menu",
             ]
         );
-        assert_eq!(HoldShortcut::None.step(-1), HoldShortcut::JumpToLetter);
+        assert_eq!(HoldShortcut::None.step(-1), HoldShortcut::Menu);
     }
 
     #[test]

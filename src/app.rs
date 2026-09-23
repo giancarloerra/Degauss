@@ -8620,6 +8620,14 @@ impl App {
                 plan: Box::new(plan),
                 name,
                 history,
+                active_game: match override_launch {
+                    browse::Launch::File(path)
+                        if path.is_absolute() && crate::zip::split_member_path(&path).is_none() =>
+                    {
+                        Some(path)
+                    }
+                    _ => None,
+                },
             }),
             Err(e) => {
                 self.message = Some(format!("{e}"));
@@ -8639,6 +8647,7 @@ impl App {
                 plan: Box::new(plan),
                 name: row.name.clone(),
                 history: None,
+                active_game: None,
             }),
             Err(error) => {
                 self.message = Some(error.to_string());
@@ -10206,6 +10215,7 @@ impl App {
                 plan: Box::new(plan),
                 name,
                 history: None,
+                active_game: None,
             }),
             Err(error) => {
                 self.message = Some(error.to_string());
@@ -13163,7 +13173,9 @@ impl App {
     }
 
     fn hold_shortcut_available(&self, shortcut: HoldShortcut) -> bool {
-        if self.in_misterzine_browser() {
+        if self.in_misterzine_browser()
+            && !matches!(shortcut, HoldShortcut::Actions | HoldShortcut::Menu)
+        {
             return false;
         }
         if !self.browse_shortcuts_ready() {
@@ -13182,6 +13194,7 @@ impl App {
             HoldShortcut::SearchThisFolder | HoldShortcut::JumpToLetter => {
                 self.browsing != Browsing::Categories
             }
+            HoldShortcut::Actions | HoldShortcut::Menu => true,
         }
     }
 
@@ -13221,6 +13234,11 @@ impl App {
             }
             HoldShortcut::SearchThisFolder => self.open_find(FindMode::Search),
             HoldShortcut::JumpToLetter => self.open_find(FindMode::Jump),
+            HoldShortcut::Actions => self.open_context(),
+            HoldShortcut::Menu => {
+                self.open_menu();
+                self.dirty = true;
+            }
         }
         None
     }
@@ -19970,6 +19988,7 @@ pub enum Outcome {
         plan: Box<crate::launch::LaunchPlan>,
         name: String,
         history: Option<HistoryUpdate>,
+        active_game: Option<PathBuf>,
     },
 }
 
@@ -20240,7 +20259,15 @@ pub(crate) fn test_library_launch_flow(window: Rc<MinimalSoftwareWindow>) {
         .confirm_launch()
         .expect("UI must allow a valid ZIP member")
     {
-        Outcome::Launch { plan, .. } => plan.mgl,
+        Outcome::Launch {
+            plan, active_game, ..
+        } => {
+            assert!(
+                active_game.is_none(),
+                "a ZIP member has no separate absolute file for Zaparoo"
+            );
+            plan.mgl
+        }
         _ => panic!("expected launch outcome"),
     };
     assert!(mgl(&mut app).contains("<rbf>_Console/NES</rbf>"));

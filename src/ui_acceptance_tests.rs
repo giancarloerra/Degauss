@@ -819,11 +819,20 @@ fn run_cores_browser_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
     assert_eq!(app.category_system, saved.category_system);
     assert_eq!(app.left_at, saved.left_at);
 
-    let Outcome::Launch { plan, history, .. } = app.handle(Action::Accept).expect("core launch")
+    let Outcome::Launch {
+        plan,
+        history,
+        active_game,
+        ..
+    } = app.handle(Action::Accept).expect("core launch")
     else {
         panic!("unexpected core launch outcome")
     };
     assert!(history.is_none(), "launching a core is not game history");
+    assert!(
+        active_game.is_none(),
+        "a core has no selected game to publish"
+    );
     assert_eq!(
         plan.command,
         format!(
@@ -832,7 +841,12 @@ fn run_cores_browser_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
         )
     );
     app.game_list.select(3);
-    let Outcome::Launch { plan, history, .. } = app.handle(Action::Accept).expect("MGL launch")
+    let Outcome::Launch {
+        plan,
+        history,
+        active_game,
+        ..
+    } = app.handle(Action::Accept).expect("MGL launch")
     else {
         panic!("unexpected MGL launch outcome")
     };
@@ -840,6 +854,7 @@ fn run_cores_browser_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
         history.is_none(),
         "launching a menu profile is not game history"
     );
+    assert!(active_game.is_none(), "a core MGL is not a selected game");
     assert_eq!(
         plan.command,
         format!(
@@ -1676,6 +1691,72 @@ fn run_hold_shortcut_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
     app.random_launches = false;
     app.message = None;
     app.screen = Screen::Browse;
+    for (option, button, shortcut) in [
+        (OptionId::HoldA, HoldButton::A, HoldShortcut::Actions),
+        (OptionId::HoldB, HoldButton::B, HoldShortcut::Menu),
+    ] {
+        select_option(&mut app, OptionsPage::Shortcuts, option);
+        let steps = HoldShortcut::ALL
+            .iter()
+            .position(|candidate| *candidate == shortcut)
+            .unwrap();
+        for _ in 0..steps {
+            app.handle(Action::Accept);
+        }
+        assert_eq!(app.hold_shortcuts[button.index()], shortcut);
+    }
+    app.handle(Action::Quit);
+    let saved = Settings::load(&app.settings_path).unwrap();
+    assert_eq!(saved.hold_a_shortcut, Some(HoldShortcut::Actions));
+    assert_eq!(saved.hold_b_shortcut, Some(HoldShortcut::Menu));
+
+    app.screen = Screen::Browse;
+    app.message = None;
+    repeater.set_hold_shortcuts(app.available_hold_shortcuts());
+    let pressed = Instant::now();
+    assert_eq!(repeater.press(Action::Accept, pressed), None);
+    assert_eq!(
+        repeater.release(Action::Accept, pressed + Duration::from_millis(500)),
+        Some(Action::Accept),
+        "a short A still selects the current row"
+    );
+    assert_eq!(repeater.press(Action::Accept, pressed), None);
+    let due = repeater.tick(pressed + Duration::from_secs(1));
+    assert_eq!(due, vec![Action::HoldShortcut(HoldShortcut::Actions)]);
+    app.handle(due[0]);
+    assert_eq!(app.screen, Screen::Context);
+    assert_eq!(
+        repeater.release(Action::Accept, pressed + Duration::from_secs(2)),
+        None
+    );
+    app.handle(Action::Quit);
+    assert_eq!(app.screen, Screen::Browse);
+
+    repeater.set_hold_shortcuts(app.available_hold_shortcuts());
+    let pressed = Instant::now();
+    assert_eq!(repeater.press(Action::Quit, pressed), None);
+    assert_eq!(
+        repeater.release(Action::Quit, pressed + Duration::from_millis(500)),
+        Some(Action::Quit),
+        "a short B still goes back"
+    );
+    assert_eq!(repeater.press(Action::Quit, pressed), None);
+    let due = repeater.tick(pressed + Duration::from_secs(1));
+    assert_eq!(due, vec![Action::HoldShortcut(HoldShortcut::Menu)]);
+    app.dirty = false;
+    app.handle(due[0]);
+    assert_eq!(app.screen, Screen::Menu);
+    assert!(app.dirty, "the held Menu shortcut redraws the new screen");
+    assert_eq!(
+        repeater.release(Action::Quit, pressed + Duration::from_secs(2)),
+        None
+    );
+    app.handle(Action::Quit);
+    assert_eq!(app.screen, Screen::Browse);
+
+    app.random_launches = false;
+    app.message = None;
+    app.screen = Screen::Browse;
     let place = app.current_view_place().unwrap();
     let previous_layout = app.layout;
     assert!(app.perform_hold_shortcut(HoldShortcut::CycleView).is_none());
@@ -1901,10 +1982,16 @@ fn run_last_played_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
         .iter()
         .all(|(name, _)| name != LAST_PLAYED_CATEGORY));
     select_row_named(&mut app, "Current First");
-    let Some(Outcome::Launch { history, .. }) = app.confirm_launch() else {
+    let Some(Outcome::Launch {
+        history,
+        active_game,
+        ..
+    }) = app.confirm_launch()
+    else {
         panic!("the ordinary fixture game launches: {:?}", app.message);
     };
     assert!(history.is_none());
+    assert_eq!(active_game, Some(first.clone()));
     assert!(!crate::history::path_beside(&app.settings_path).exists());
     app.ui.hide().unwrap();
     drop(app);
@@ -2356,6 +2443,7 @@ fn run_last_played_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
     let Some(Outcome::Launch {
         plan,
         history: Some(from_favorite),
+        active_game,
         ..
     }) = app.confirm_launch()
     else {
@@ -2369,6 +2457,7 @@ fn run_last_played_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
         "a Degauss Favourite resolves the original game's current override: {}",
         plan.mgl
     );
+    assert_eq!(active_game, Some(first.clone()));
     assert_eq!(from_favorite.entry.system, "NES");
     assert_eq!(
         from_favorite.entry.launch,
