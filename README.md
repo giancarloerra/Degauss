@@ -451,8 +451,10 @@ for more detail.
 The recommended installation also uses Degauss's private
 `/media/fat/degauss/menu.rbf` while the frontend is open. This preserves colour
 for framebuffer output over an already configured S-Video or composite setup
-without replacing MiSTer's `/media/fat/menu.rbf`. The stock-menu on-demand mode
-does not use this private core.
+without replacing MiSTer's `/media/fat/menu.rbf`. The same fix also restores
+colour to MiSTer's framebuffer menu wallpapers while this core is active; it is
+not limited to Degauss's own interface. The stock-menu on-demand mode does not
+use this private core.
 
 ### Returning to Degauss from a running core
 
