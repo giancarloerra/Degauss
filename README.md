@@ -816,7 +816,9 @@ You Hid** shows the rows you hid without unhiding them, and **Unhide
 Everything** puts them all back. These settings are in **Options → Library**.
 
 The screensaver, after the set time, drifts through game images taken from your own
-card.
+card. Optional Attract Mode lets **A** launch the pictured game, **Left/Right**
+move between systems and **B** return to Degauss. It is off by default, so
+any button still just wakes the ordinary screensaver.
 
 ## Settings
 
@@ -847,6 +849,8 @@ require **A** and confirmation, never a sideways press.
 | Appearance | Artwork Scale Factor | Framebuffer keeps the original square-pixel fit and is the default. 4:3 and 16:9 correct game artwork for that physical display shape in Details, Tiled, Carousel and Gallery, including a folder or Last Played showing a game's artwork. Category logos, system logos and the screensaver are unchanged |
 | Appearance | Bottom Bar While Browsing | On by default. Show the time and button hints while browsing. A saved Off choice stays Off after updating or restarting; menus and operation controls remain visible |
 | Appearance | Screensaver | How long with nothing pressed before pictures start |
+| Appearance | Attract Mode | Off by default. When on, A launches the game pictured at the centre and Left/Right moves between systems |
+| Appearance | Screensaver Speed | Normal (default), 2x or 4x picture movement, independent of the idle time |
 | Library | Favourites First | Show favourites first in each folder, keeping them in alphabetical order |
 | Library | Folders Before Games | On, folders lead a system's listing; off, the games come first |
 | Library | Core Preference | Standard First (default) or RetroAchievements First. Used by systems whose Core Version is Default; the other version is used only when the preferred version is absent |

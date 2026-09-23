@@ -403,6 +403,11 @@ pub struct Settings {
     pub overscan_y: Option<u32>,
     /// Seconds of being left alone before the screensaver starts. Zero off.
     pub screensaver_after: Option<u64>,
+    /// Allow launching the pictured game and moving between systems in the
+    /// screensaver. Absent is off, preserving the wake-on-any-button behavior.
+    pub attract_mode: Option<bool>,
+    /// Screensaver movement multiplier: 1 (normal), 2 or 4. Absent is normal.
+    pub screensaver_speed: Option<u8>,
     /// Nudge the whole picture, in pixels. Screens are not all centred.
     pub shift_x: Option<i32>,
     pub shift_y: Option<i32>,

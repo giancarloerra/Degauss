@@ -91,6 +91,10 @@ pub enum OptionId {
     ShiftY,
     /// How long the machine is left alone before pictures take the screen.
     Screensaver,
+    /// Whether the screensaver's pictured game can be launched.
+    AttractMode,
+    /// How quickly the screensaver strip moves, independently of idle time.
+    ScreensaverSpeed,
     /// Not a setting: the door to the developer list.
     #[allow(dead_code)]
     Advanced,
@@ -149,6 +153,8 @@ pub const OPTIONS: &[OptionId] = &[
     OptionId::ShiftY,
     OptionId::Spacer,
     OptionId::Screensaver,
+    OptionId::AttractMode,
+    OptionId::ScreensaverSpeed,
     OptionId::RebuildCache,
     OptionId::ScrapeAll,
     OptionId::Spacer,
@@ -255,6 +261,8 @@ impl OptionsPage {
                 OptionId::ArtworkScale,
                 OptionId::ShowBar,
                 OptionId::Screensaver,
+                OptionId::AttractMode,
+                OptionId::ScreensaverSpeed,
             ],
             Self::Library => &[
                 OptionId::FavoritesFirst,
@@ -335,6 +343,8 @@ impl OptionId {
             OptionId::ShiftX => "Screen Position, Sideways",
             OptionId::ShiftY => "Screen Position, Up and Down",
             OptionId::Screensaver => "Screensaver",
+            OptionId::AttractMode => "Attract Mode",
+            OptionId::ScreensaverSpeed => "Screensaver Speed",
             OptionId::Advanced => "Developer",
             OptionId::Spacer => "",
         }
@@ -443,6 +453,12 @@ impl OptionId {
             OptionId::ShiftY => "Move the interface up or down within the available top and bottom margins.",
             OptionId::Screensaver => {
                 "Choose the idle time before the artwork screensaver starts, or turn it off."
+            }
+            OptionId::AttractMode => {
+                "Let A launch the pictured game and Left/Right change systems. Off keeps the usual wake-on-any-button screensaver."
+            }
+            OptionId::ScreensaverSpeed => {
+                "Move the screensaver pictures at Normal, 2x or 4x speed. This does not change when it starts."
             }
             OptionId::Advanced => "Press A for diagnostics: the drawing path and the readout.",
             OptionId::Spacer => "",
