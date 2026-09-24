@@ -410,6 +410,10 @@ pub struct Settings {
     /// Allow launching the pictured game and moving between systems in the
     /// screensaver. Absent is off, preserving the wake-on-any-button behavior.
     pub attract_mode: Option<bool>,
+    /// Show an immediate Attract Mode launcher in the general menu.
+    /// Absent is off, independently of automatic screensaver settings.
+    #[serde(default)]
+    pub attract_mode_menu: Option<bool>,
     /// Screensaver movement multiplier: 1 (normal), 2 or 4. Absent is normal.
     pub screensaver_speed: Option<u8>,
     /// Nudge the whole picture, in pixels. Screens are not all centred.
@@ -719,6 +723,7 @@ mod tests {
         );
         assert_eq!(settings.show_misterzine, None);
         assert!(!settings.show_misterzine.unwrap_or(false));
+        assert!(!settings.attract_mode_menu.unwrap_or(false));
     }
 
     #[test]
@@ -799,6 +804,7 @@ mod tests {
             game_name_display: Some(GameNameDisplay::KeepRegionAndDiscIndex),
             folder_brackets: Some(false),
             show_game_position: Some(false),
+            attract_mode_menu: Some(true),
             left_right: Some("letter".into()),
             font: Some("pixel".into()),
             theme_font_override: Some(true),

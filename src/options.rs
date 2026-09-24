@@ -95,6 +95,8 @@ pub enum OptionId {
     Screensaver,
     /// Whether the screensaver's pictured game can be launched.
     AttractMode,
+    /// Offer an immediate Attract Mode entry in the general menu.
+    AttractModeMenu,
     /// How quickly the screensaver strip moves, independently of idle time.
     ScreensaverSpeed,
     /// Not a setting: the door to the developer list.
@@ -157,6 +159,7 @@ pub const OPTIONS: &[OptionId] = &[
     OptionId::Spacer,
     OptionId::Screensaver,
     OptionId::AttractMode,
+    OptionId::AttractModeMenu,
     OptionId::ScreensaverSpeed,
     OptionId::RebuildCache,
     OptionId::ScrapeAll,
@@ -266,6 +269,7 @@ impl OptionsPage {
                 OptionId::ShowBar,
                 OptionId::Screensaver,
                 OptionId::AttractMode,
+                OptionId::AttractModeMenu,
                 OptionId::ScreensaverSpeed,
             ],
             Self::Library => &[
@@ -349,6 +353,7 @@ impl OptionId {
             OptionId::ShiftY => "Screen Position, Up and Down",
             OptionId::Screensaver => "Screensaver",
             OptionId::AttractMode => "Attract Mode",
+            OptionId::AttractModeMenu => "Show Attract Mode in Menu",
             OptionId::ScreensaverSpeed => "Screensaver Speed",
             OptionId::Advanced => "Developer",
             OptionId::Spacer => "",
@@ -464,6 +469,9 @@ impl OptionId {
             }
             OptionId::AttractMode => {
                 "Let A launch the pictured game and Left/Right change systems. Off keeps the usual wake-on-any-button screensaver."
+            }
+            OptionId::AttractModeMenu => {
+                "Add an Attract Mode entry to the Menu for immediate start, independent of the idle screensaver."
             }
             OptionId::ScreensaverSpeed => {
                 "Move the screensaver pictures at Normal, 2x or 4x speed. This does not change when it starts."

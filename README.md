@@ -266,8 +266,11 @@ while `/tmp/degauss.log` keeps the technical detail.
 - **Fast.** 0.47 s from launch to first frame. 0.57 s to open a folder of
   12,605 games.
 - **Artwork instant browsing.** Artwork is read straight from the card as
-  you scroll, with nothing pre-generated. Gallery reduces visible images to
-  its cell size in memory only. Nothing is written beside the artwork.
+  you scroll, with nothing pre-generated. After the selection settles, Degauss
+  prepares upcoming images in memory one at a time, spaced 250 ms apart and
+  bounded by the existing cache; scrolling through cached images keeps
+  preparation moving in that direction. Gallery reduces visible
+  images to its cell size in memory only. Nothing is written beside the artwork.
 - **Nothing resident.** No service, no daemon, no port, no background
   process, nothing at boot. One program, running only while you are
   looking at it.
@@ -818,7 +821,9 @@ Everything** puts them all back. These settings are in **Options → Library**.
 The screensaver, after the set time, drifts through game images taken from your own
 card. Optional Attract Mode lets **A** launch the pictured game, **Left/Right**
 move between systems and **B** return to Degauss. It is off by default, so
-any button still just wakes the ordinary screensaver.
+any button still just wakes the ordinary screensaver. Separately, **Show Attract
+Mode in Menu** adds an immediate launcher to **Y Menu**, even when the idle
+screensaver and automatic Attract Mode are off.
 
 ## Settings
 
@@ -851,6 +856,7 @@ require **A** and confirmation, never a sideways press.
 | Appearance | Bottom Bar While Browsing | On by default. Show the time and button hints while browsing. A saved Off choice stays Off after updating or restarting; menus and operation controls remain visible |
 | Appearance | Screensaver | How long with nothing pressed before pictures start |
 | Appearance | Attract Mode | Off by default. When on, A launches the game pictured at the centre and Left/Right moves between systems |
+| Appearance | Show Attract Mode in Menu | Off by default. Add an immediate Attract Mode entry to Y Menu, independently of idle screensaver settings |
 | Appearance | Screensaver Speed | Normal (default), 2x or 4x picture movement, independent of the idle time |
 | Library | Favourites First | Show favourites first in each folder, keeping them in alphabetical order |
 | Library | Folders Before Games | On, folders lead a system's listing; off, the games come first |

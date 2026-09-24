@@ -527,6 +527,23 @@ pub struct CoverCache {
     pub stats: CoverStats,
 }
 
+/// The decode parameters that must still match when background work returns.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CoverSpec {
+    max_edge: u32,
+    area_box: Option<AreaBox>,
+    ground: [u8; 3],
+}
+
+pub enum PreparedCover {
+    Image {
+        image: RgbImage,
+        preview: Option<((u32, u32), RgbImage)>,
+        stats: CoverStats,
+    },
+    Failed(String),
+}
+
 /// A cache lookup that may defer first-time decoding to a later frame.
 ///
 /// Gallery asks for many images at once. Distinguishing a cached result from
@@ -539,6 +556,62 @@ pub enum BudgetedCover<'a> {
 }
 
 impl CoverCache {
+    pub fn spec(&self) -> CoverSpec {
+        CoverSpec {
+            max_edge: self.max_edge,
+            area_box: self.area_box,
+            ground: self.ground,
+        }
+    }
+
+    /// Decode one future picture without touching the cache or UI thread.
+    pub fn prepare(path: &Path, spec: CoverSpec, preview_box: Option<(u32, u32)>) -> PreparedCover {
+        let mut stats = CoverStats::default();
+        match load_scaled_with(path, spec.max_edge, spec.area_box, spec.ground, &mut stats) {
+            Ok(image) => {
+                let preview = preview_box.and_then(|(width, height)| {
+                    (width > 0 && height > 0 && (image.width > width || image.height > height))
+                        .then(|| ((width, height), scale_to_box_area(&image, width, height)))
+                });
+                PreparedCover::Image {
+                    image,
+                    preview,
+                    stats,
+                }
+            }
+            Err(error) => PreparedCover::Failed(error.to_string()),
+        }
+    }
+
+    /// Accept a prepared picture only for the same cache configuration.
+    /// A foreground lookup may already have loaded it while the worker ran.
+    pub fn accept_prepared(&mut self, path: PathBuf, spec: CoverSpec, prepared: PreparedCover) {
+        if self.spec() != spec || self.knows(&path) {
+            return;
+        }
+        match prepared {
+            PreparedCover::Image {
+                image,
+                preview,
+                stats,
+            } => {
+                self.stats.decoded += stats.decoded;
+                self.stats.decode_us_total += stats.decode_us_total;
+                self.stats.scale_us_total += stats.scale_us_total;
+                self.stats.worst_decode_us = self.stats.worst_decode_us.max(stats.worst_decode_us);
+                self.insert(path.clone(), image);
+                if let Some((bounds, preview)) = preview {
+                    self.stats.bytes_held += preview.rgb.len();
+                    self.previews.insert(path, (bounds, preview));
+                }
+            }
+            PreparedCover::Failed(error) => {
+                self.stats.failures += 1;
+                self.failed.insert(path, error);
+            }
+        }
+    }
+
     pub fn new(max_edge: u32, capacity: usize, ground: [u8; 3]) -> Self {
         CoverCache {
             max_edge,
@@ -737,6 +810,38 @@ mod tests {
     /// A ground colour no fixture uses, so any pixel that comes back as
     /// this one arrived through the transparent path.
     const OPAQUE: [u8; 3] = [0x6c, 0x6c, 0x6c];
+
+    #[test]
+    fn prepared_art_reuses_the_normal_cache_and_rejects_stale_or_duplicate_results() {
+        let path =
+            std::env::temp_dir().join(format!("degauss-prefetch-{}.png", std::process::id()));
+        std::fs::write(&path, PNG_LOGO).unwrap();
+        let mut cache = CoverCache::new(64, 2, OPAQUE);
+        let spec = cache.spec();
+        let prepared = CoverCache::prepare(&path, spec, Some((1, 1)));
+        cache.accept_prepared(path.clone(), spec, prepared);
+        assert!(cache.knows(&path));
+        assert_eq!(cache.stats.decoded, 1);
+        let pixels = cache.get_preview(&path, 1, 1).unwrap().clone();
+        assert_eq!(
+            cache.stats.decoded, 1,
+            "a foreground hit does not decode again"
+        );
+        assert_eq!(pixels.width, 1);
+
+        let duplicate = CoverCache::prepare(&path, spec, None);
+        cache.accept_prepared(path.clone(), spec, duplicate);
+        assert_eq!(cache.stats.decoded, 1, "late duplicate work is discarded");
+
+        let stale = CoverCache::prepare(&path, spec, None);
+        cache.set_ground([0, 0, 0]);
+        cache.accept_prepared(path.clone(), spec, stale);
+        assert!(
+            !cache.knows(&path),
+            "old palette must not enter the new cache"
+        );
+        std::fs::remove_file(path).unwrap();
+    }
 
     // 2x2 indexed PNG shaped exactly like a real platform logo: every
     // palette entry is white and the shape is carried entirely by tRNS.

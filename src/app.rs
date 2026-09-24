@@ -35,7 +35,9 @@ use slint::{ComponentHandle, ModelRc, SharedPixelBuffer, SharedString, VecModel}
 
 use crate::browse::{self, Library, Place};
 use crate::config::{Color as ConfigColor, Colors, Config, SystemConfig};
-use crate::covers::{AreaBox, AreaFit, BudgetedCover, CoverCache, CoverStats};
+use crate::covers::{
+    AreaBox, AreaFit, BudgetedCover, CoverCache, CoverSpec, CoverStats, PreparedCover,
+};
 use crate::error::{DegaussError, Result};
 use crate::font::Font;
 use crate::game_filter::{
@@ -367,6 +369,7 @@ fn option_operation(option: OptionId, input: OptionInput) -> OptionOperation {
         | OptionId::ShiftY
         | OptionId::Screensaver
         | OptionId::AttractMode
+        | OptionId::AttractModeMenu
         | OptionId::ScreensaverSpeed => OptionOperation::Adjust(input.delta()),
     }
 }
@@ -831,6 +834,10 @@ impl Layout {
 
     fn rows_have_art(self) -> bool {
         matches!(self, Layout::Tiled | Layout::Carousel | Layout::Gallery)
+    }
+
+    fn prefetches_art(self) -> bool {
+        self == Layout::Details || self.rows_have_art()
     }
 
     /// True when entries are laid out in a grid rather than one per row.
@@ -3239,16 +3246,66 @@ fn next_random(seed: &mut u64) -> u64 {
 
 /// The general menu is deliberately stable. Actions for the selected row,
 /// including hiding it, live in the contextual Actions menu instead.
-fn menu_entries(show_scripts: bool) -> Vec<String> {
+fn menu_entries(show_scripts: bool, show_attract_mode: bool) -> Vec<String> {
     let mut entries = Vec::new();
     entries.push("Options".to_string());
     if show_scripts {
         entries.push("Scripts".to_string());
     }
+    if show_attract_mode {
+        entries.push("Attract Mode".to_string());
+    }
     entries.push("Help".to_string());
     entries.push("About".to_string());
     entries.push("Exit to MiSTer".to_string());
     entries
+}
+
+/// One speculative decode at a time. A changed folder or scroll direction
+/// invalidates its result without ever making the browsing frame wait.
+struct CoverPrefetchJob {
+    path: PathBuf,
+    folder: String,
+    gallery: bool,
+    direction: isize,
+    spec: CoverSpec,
+    cancel: Arc<AtomicBool>,
+    result: mpsc::Receiver<PreparedCover>,
+}
+
+impl CoverPrefetchJob {
+    fn start(
+        path: PathBuf,
+        folder: String,
+        gallery: bool,
+        direction: isize,
+        spec: CoverSpec,
+        preview_box: Option<(u32, u32)>,
+    ) -> std::io::Result<Self> {
+        let (sender, result) = mpsc::sync_channel(1);
+        let cancel = Arc::new(AtomicBool::new(false));
+        let worker_cancel = Arc::clone(&cancel);
+        let worker_path = path.clone();
+        std::thread::Builder::new()
+            .name("degauss-art-prefetch".into())
+            .spawn(move || {
+                if !worker_cancel.load(Ordering::Relaxed) {
+                    let prepared = CoverCache::prepare(&worker_path, spec, preview_box);
+                    if !worker_cancel.load(Ordering::Relaxed) {
+                        let _ = sender.send(prepared);
+                    }
+                }
+            })?;
+        Ok(Self {
+            path,
+            folder,
+            gallery,
+            direction,
+            spec,
+            cancel,
+            result,
+        })
+    }
 }
 
 /// Which HELP row describes the stick's sideways travel. What that row
@@ -4154,6 +4211,10 @@ pub struct App {
     /// pace and would be cut off half way on the title's clock.
     detail_marquee: Rc<slint::Timer>,
     art_pending: bool,
+    cover_prefetch: Option<CoverPrefetchJob>,
+    prefetch_direction: isize,
+    prefetch_scrolling: bool,
+    prefetch_next_at: Instant,
 
     timer: FrameTimer,
     last_work: FrameWork,
@@ -4235,6 +4296,8 @@ pub struct App {
     saver_last_slot: Option<usize>,
     saver_pending_directions: VecDeque<isize>,
     saver_retry_at: Instant,
+    /// Only an explicit menu launch forces interactive Attract Mode.
+    manual_attract_mode: bool,
     /// How far the strip has travelled, in pixels.
     saver_offset: f32,
     saver_stepped: Instant,
@@ -4714,6 +4777,10 @@ impl App {
             marquee: Rc::new(slint::Timer::default()),
             detail_marquee: Rc::new(slint::Timer::default()),
             art_pending: true,
+            cover_prefetch: None,
+            prefetch_direction: 1,
+            prefetch_scrolling: false,
+            prefetch_next_at: Instant::now(),
             timer: FrameTimer::new(),
             last_work: FrameWork::default(),
             last_build: Duration::ZERO,
@@ -4752,6 +4819,7 @@ impl App {
             saver_last_slot: None,
             saver_pending_directions: VecDeque::new(),
             saver_retry_at: Instant::now(),
+            manual_attract_mode: false,
             saver_offset: 0.0,
             saver_stepped: Instant::now(),
             saver_return: Screen::Browse,
@@ -5787,6 +5855,7 @@ impl App {
             self.art.deferred += 1;
         }
         self.art_pending = true;
+        self.prefetch_scrolling = false;
         self.selection_revision = self.selection_revision.wrapping_add(1);
         let now = Instant::now();
         self.settled_since = Some(now);
@@ -5858,6 +5927,10 @@ impl App {
         self.settings.attract_mode.unwrap_or(false)
     }
 
+    fn active_attract_mode(&self) -> bool {
+        self.manual_attract_mode || self.attract_mode()
+    }
+
     fn screensaver_speed(&self) -> u8 {
         match self.settings.screensaver_speed {
             Some(2) => 2,
@@ -5871,7 +5944,7 @@ impl App {
     /// A screensaver that draws a blank screen is worse than none: it looks
     /// like the machine has died.
     fn enter_screensaver(&mut self) {
-        if self.attract_mode() {
+        if self.active_attract_mode() {
             if self.saver_job.is_none() && Instant::now() >= self.saver_retry_at {
                 self.start_attract_job(SaverLoadKind::Initial, 1);
             }
@@ -5929,7 +6002,7 @@ impl App {
         let cell = self.saver_cell();
         let visible = (self.width as f32 / cell).ceil() as usize + 2;
         while cell > 0.0 && self.saver_offset >= cell && !self.saver_pool.is_empty() {
-            if self.attract_mode()
+            if self.active_attract_mode()
                 && self.saver_queue.is_empty()
                 && self.saver_pool.len() <= visible
             {
@@ -5946,7 +6019,7 @@ impl App {
         // Out of pictures: another system, chosen the same way as the
         // first.
         if self.saver_queue.is_empty() && self.saver_pool.len() < SAVER_POOL_MAX {
-            if self.attract_mode() {
+            if self.active_attract_mode() {
                 if self.saver_job.is_none() && now >= self.saver_retry_at {
                     self.start_attract_job(SaverLoadKind::Automatic, 1);
                 }
@@ -5967,6 +6040,7 @@ impl App {
         self.saver_attract_candidates = None;
         self.saver_last_slot = None;
         self.saver_pending_directions.clear();
+        self.manual_attract_mode = false;
         self.saver_offset = 0.0;
         self.apply_geometry();
         self.touch_selection();
@@ -6026,6 +6100,10 @@ impl App {
         }
         let candidates = self.attract_candidates();
         if candidates.is_empty() {
+            if kind == SaverLoadKind::Initial && self.manual_attract_mode {
+                self.message = Some("Attract Mode found no pictures to show.".to_string());
+                self.dirty = true;
+            }
             self.saver_retry_at = Instant::now() + Duration::from_secs(SAVER_RETRY_SECONDS);
             return;
         }
@@ -6096,11 +6174,19 @@ impl App {
                 self.dirty = true;
             }
             Ok(None) => {
+                if kind == SaverLoadKind::Initial && self.manual_attract_mode {
+                    self.manual_attract_mode = false;
+                    self.message = Some("Attract Mode found no pictures to show.".to_string());
+                    self.dirty = true;
+                }
                 if kind != SaverLoadKind::Manual {
                     self.saver_retry_at = Instant::now() + Duration::from_secs(SAVER_RETRY_SECONDS);
                 }
             }
             Err(error) => {
+                if kind == SaverLoadKind::Initial {
+                    self.manual_attract_mode = false;
+                }
                 crate::note(&error);
                 self.message = Some(error);
                 self.saver_retry_at = Instant::now() + Duration::from_secs(SAVER_RETRY_SECONDS);
@@ -8755,6 +8841,11 @@ impl App {
     }
 
     fn show_here(&mut self) {
+        if let Some(job) = &self.cover_prefetch {
+            job.cancel.store(true, Ordering::Relaxed);
+        }
+        self.prefetch_direction = 1;
+        self.prefetch_scrolling = false;
         let Some(crumb) = self.trail.last().cloned() else {
             return;
         };
@@ -12158,6 +12249,10 @@ impl App {
             OptionId::AttractMode => {
                 self.settings.attract_mode = Some(!self.attract_mode());
             }
+            OptionId::AttractModeMenu => {
+                self.settings.attract_mode_menu =
+                    Some(!self.settings.attract_mode_menu.unwrap_or(false));
+            }
             OptionId::ScreensaverSpeed => {
                 let choices = [1, 2, 4];
                 let at = choices
@@ -12438,6 +12533,7 @@ impl App {
                 seconds => format!("{} minutes", seconds / 60),
             },
             OptionId::AttractMode => on_off(self.attract_mode()),
+            OptionId::AttractModeMenu => on_off(self.settings.attract_mode_menu.unwrap_or(false)),
             OptionId::ScreensaverSpeed => match self.screensaver_speed() {
                 2 => "2x".to_string(),
                 4 => "4x".to_string(),
@@ -12788,7 +12884,10 @@ impl App {
     }
 
     fn open_menu(&mut self) {
-        self.menu = menu_entries(self.settings.show_scripts.unwrap_or(true));
+        self.menu = menu_entries(
+            self.settings.show_scripts.unwrap_or(true),
+            self.settings.attract_mode_menu.unwrap_or(false),
+        );
         self.menu_list = ListState::new(self.menu.len(), self.geometry.visible);
         self.screen = Screen::Menu;
         self.apply_geometry();
@@ -13713,6 +13812,8 @@ impl App {
         if target != self.active_list().selected() {
             self.active_list_mut().select(target);
             self.touch_selection();
+            self.prefetch_direction = delta.signum();
+            self.prefetch_scrolling = true;
         }
     }
 
@@ -13730,6 +13831,8 @@ impl App {
         if self.active_list_mut().move_items(delta * visible) {
             self.skip_blank_menu(delta);
             self.touch_selection();
+            self.prefetch_direction = delta.signum();
+            self.prefetch_scrolling = true;
         }
     }
 
@@ -17756,7 +17859,7 @@ impl App {
         // Anything at all counts as somebody being here.
         self.last_input = Instant::now();
         if self.screen == Screen::Screensaver {
-            if self.attract_mode() {
+            if self.active_attract_mode() {
                 match action {
                     Action::Accept => return self.confirm_attract_launch(),
                     Action::Slower => {
@@ -17780,6 +17883,7 @@ impl App {
             // current screen. The idle attempt cannot appear afterward.
             job.cancel();
             self.saver_attract_candidates = None;
+            self.manual_attract_mode = false;
         }
         if self.screen == Screen::Splash {
             // Nobody should have to wait for a logo.
@@ -18024,6 +18128,8 @@ impl App {
                     if self.active_list_mut().move_items(-step) {
                         self.skip_blank_menu(-1);
                         self.touch_selection();
+                        self.prefetch_direction = -1;
+                        self.prefetch_scrolling = true;
                     }
                 }
             }
@@ -18036,6 +18142,8 @@ impl App {
                     if self.active_list_mut().move_items(step) {
                         self.skip_blank_menu(1);
                         self.touch_selection();
+                        self.prefetch_direction = 1;
+                        self.prefetch_scrolling = true;
                     }
                 }
             }
@@ -18088,6 +18196,8 @@ impl App {
                         Horizontal::Direction => {
                             if self.active_list_mut().move_items(delta) {
                                 self.touch_selection();
+                                self.prefetch_direction = delta.signum();
+                                self.prefetch_scrolling = true;
                             }
                         }
                     }
@@ -18351,6 +18461,13 @@ impl App {
                         self.apply_geometry();
                     } else if choice == "Scripts" {
                         self.open_scripts();
+                    } else if choice == "Attract Mode" {
+                        self.manual_attract_mode = true;
+                        self.saver_retry_at = Instant::now();
+                        self.start_attract_job(SaverLoadKind::Initial, 1);
+                        if self.saver_job.is_none() {
+                            self.manual_attract_mode = false;
+                        }
                     } else if choice == "Help" {
                         self.screen = Screen::Help;
                         self.apply_geometry();
@@ -18725,6 +18842,172 @@ impl App {
         )
     }
 
+    fn prefetch_folder(&self) -> Option<String> {
+        let system = self.open_system.as_ref()?;
+        let place = &self.trail.last()?.place;
+        Some(format!("{system}:{}", place.key()))
+    }
+
+    fn prefetch_nearby(&self, path: &Path, direction: isize, count: usize) -> bool {
+        let selected = self.game_list.selected() as isize;
+        (1..=count).any(|distance| {
+            let index = selected + direction * distance as isize;
+            usize::try_from(index)
+                .ok()
+                .and_then(|index| self.here.get(index))
+                .and_then(|row| row.cover.as_deref())
+                == Some(path)
+        })
+    }
+
+    /// Use idle time or a run of cache hits to prepare upcoming pictures in the
+    /// direction of travel. Never read a whole folder or decode on this frame.
+    fn poll_cover_prefetch(&mut self, now: Instant) {
+        if let Some(job) = self.cover_prefetch.as_ref() {
+            let nearby = self.screen == Screen::Browse
+                && self.browsing == Browsing::Games
+                && self.prefetch_folder().as_deref() == Some(job.folder.as_str())
+                && self.layout.eq(&Layout::Gallery) == job.gallery
+                && self.prefetch_nearby(
+                    &job.path,
+                    job.direction,
+                    if job.gallery {
+                        self.gallery_covers.capacity()
+                    } else {
+                        self.covers.capacity()
+                    },
+                )
+                && (!self.prefetch_scrolling || self.prefetch_direction == job.direction);
+            if !nearby {
+                job.cancel.store(true, Ordering::Relaxed);
+            }
+            match job.result.try_recv() {
+                Ok(prepared) => {
+                    let job = self.cover_prefetch.take().expect("prefetch finished");
+                    if nearby && !job.cancel.load(Ordering::Relaxed) {
+                        let cache = if job.gallery {
+                            &mut self.gallery_covers
+                        } else {
+                            &mut self.covers
+                        };
+                        cache.accept_prepared(job.path, job.spec, prepared);
+                        self.dirty = true;
+                    }
+                    self.prefetch_next_at = now + Duration::from_millis(250);
+                }
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    self.cover_prefetch = None;
+                }
+                Err(mpsc::TryRecvError::Empty) => return,
+            }
+        }
+        if self.cover_prefetch.is_some()
+            || self.screen != Screen::Browse
+            || self.browsing != Browsing::Games
+            || self.build.is_some()
+            || self.source_job.is_some()
+            || !self.show_art
+            || !self.layout.prefetches_art()
+            || self.speed > self.art_limit()
+        {
+            return;
+        }
+        let Some(folder) = self.prefetch_folder() else {
+            return;
+        };
+        let moving = self.prefetch_scrolling
+            && self.settled_since.is_some_and(|since| {
+                now.saturating_duration_since(since) < Duration::from_millis(250)
+            });
+        if now < self.prefetch_next_at
+            || (!moving
+                && !self.settled_since.is_some_and(|since| {
+                    now.saturating_duration_since(since) >= Duration::from_millis(250)
+                }))
+        {
+            return;
+        }
+        let gallery = self.layout == Layout::Gallery;
+        if gallery {
+            // Gallery already decodes its visible page under a frame budget.
+            if moving
+                && self
+                    .here
+                    .get(self.game_list.selected())
+                    .and_then(|row| row.cover.as_deref())
+                    .is_none_or(|path| !self.gallery_covers.knows(path))
+            {
+                return;
+            }
+        } else {
+            let palette = self.effective_palette();
+            let ground = if self.layout == Layout::Carousel {
+                [
+                    palette.background.r,
+                    palette.background.g,
+                    palette.background.b,
+                ]
+            } else {
+                [palette.surface.r, palette.surface.g, palette.surface.b]
+            };
+            self.covers.set_ground(ground);
+            if moving
+                && self
+                    .here
+                    .get(self.game_list.selected())
+                    .and_then(|row| row.cover.as_deref())
+                    .is_none_or(|path| !self.covers.knows(path))
+            {
+                return;
+            }
+        }
+        let cache = if gallery {
+            &self.gallery_covers
+        } else {
+            &self.covers
+        };
+        // Never prepare more than the existing cache can hold, but keep
+        // working through a smaller folder instead of stopping after six.
+        let lookahead = cache.capacity().min(self.here.len());
+        let spec = cache.spec();
+        let direction = self.prefetch_direction;
+        let selected = self.game_list.selected() as isize;
+        let candidate = (1..=lookahead).find_map(|distance| {
+            let index = selected + direction * distance as isize;
+            let path = usize::try_from(index)
+                .ok()
+                .and_then(|index| self.here.get(index))?
+                .cover
+                .as_ref()?;
+            (!cache.knows(path)).then(|| path.clone())
+        });
+        let Some(path) = candidate else {
+            self.prefetch_next_at = now + Duration::from_millis(250);
+            return;
+        };
+        let horizontal = artwork_horizontal(
+            self.artwork_scale,
+            self.width,
+            self.height,
+            self.screen_rotation,
+            true,
+        );
+        let preview_box = if gallery {
+            None
+        } else if self.layout == Layout::Details {
+            self.low_resolution_detail_preview_box(horizontal)
+        } else {
+            self.low_resolution_row_preview_box(horizontal)
+        };
+        match CoverPrefetchJob::start(path, folder, gallery, direction, spec, preview_box) {
+            Ok(job) => self.cover_prefetch = Some(job),
+            Err(error) => {
+                crate::note(&format!("art prefetch could not start: {error}"));
+                self.prefetch_next_at = now + Duration::from_secs(1);
+            }
+        }
+    }
+
     fn load_art(&mut self) {
         if self.screen == Screen::ScraperMatches {
             self.ui
@@ -18910,7 +19193,7 @@ impl App {
                             value: SharedString::new(),
                         });
                     }
-                    if self.attract_mode() {
+                    if self.active_attract_mode() {
                         let center = ((self.width as f32 / 2.0 + sub) / cell).floor() as usize;
                         self.ui.set_saver_launchable(
                             rows.get(center).is_some_and(|row| row.has_cover)
@@ -20128,6 +20411,7 @@ impl App {
             if self.build.is_some() && first_frame_done && self.screen != Screen::Splash {
                 self.build_one_system();
             }
+            self.poll_cover_prefetch(Instant::now());
         }
     }
 
@@ -21090,6 +21374,57 @@ pub(crate) fn test_library_launch_flow(window: Rc<MinimalSoftwareWindow>) {
     );
     app.finish_background_work_for_headless();
 
+    app.open_menu();
+    assert!(!app.menu.iter().any(|entry| entry == "Attract Mode"));
+    app.settings.screensaver_after = Some(0);
+    app.settings.attract_mode = Some(false);
+    app.settings.attract_mode_menu = Some(true);
+    app.open_menu();
+    assert!(app.menu.iter().any(|entry| entry == "Attract Mode"));
+    app.manual_attract_mode = true;
+    assert!(
+        app.active_attract_mode(),
+        "manual entry is interactive with idle mode off"
+    );
+    app.manual_attract_mode = false;
+    assert!(!app.active_attract_mode(), "manual choice does not persist");
+    app.saver_attract_candidates = Some(Vec::new());
+    let entry = app
+        .menu
+        .iter()
+        .position(|item| item == "Attract Mode")
+        .unwrap();
+    app.menu_list.select(entry);
+    app.handle(Action::Accept);
+    assert!(app.saver_job.is_none());
+    assert!(!app.manual_attract_mode);
+    assert_eq!(
+        app.message.as_deref(),
+        Some("Attract Mode found no pictures to show.")
+    );
+    app.message = None;
+    let system = app.all_systems.first().expect("fixture system exists");
+    app.saver_attract_candidates = Some(vec![SaverCandidate {
+        system_id: system.def.id.clone(),
+        name: system.name().to_string(),
+        config: system.to_config(),
+        pack_root: None,
+    }]);
+    app.menu_list.select(entry);
+    app.handle(Action::Accept);
+    assert!(
+        app.saver_job.is_some(),
+        "manual entry starts the picture reader now"
+    );
+    assert!(app.manual_attract_mode);
+    app.handle(Action::Quit);
+    assert!(
+        !app.manual_attract_mode,
+        "cancel does not change future idle mode"
+    );
+    app.settings.attract_mode_menu = None;
+    app.settings.screensaver_after = None;
+
     let misterzine_cover = root.join("misterzine-cover.png");
     std::fs::write(
         &misterzine_cover,
@@ -21644,6 +21979,74 @@ pub(crate) fn test_library_launch_flow(window: Rc<MinimalSoftwareWindow>) {
         ),
         "the missing format-specific core is named"
     );
+
+    let future_cover = root.join("future-cover.png");
+    std::fs::write(&future_cover, include_bytes!("../assets/logos/Arcade.png")).unwrap();
+    app.here.truncate(1);
+    let mut future = app.here[0].clone();
+    future.cover = Some(future_cover.clone());
+    app.here.push(future);
+    app.game_list = ListState::new(app.here.len(), app.geometry.visible);
+    app.game_list.select(0);
+    app.screen = Screen::Browse;
+    app.browsing = Browsing::Games;
+    app.layout = Layout::Details;
+    app.show_art = true;
+    app.speed = 0;
+    app.prefetch_direction = 1;
+    app.prefetch_next_at = Instant::now();
+    let before_input = Instant::now();
+    app.settled_since = Some(before_input + Duration::from_millis(1));
+    app.poll_cover_prefetch(before_input);
+    assert!(
+        app.cover_prefetch.is_none(),
+        "input later in a frame must not make the idle clock panic"
+    );
+    app.settled_since = Some(Instant::now());
+    app.poll_cover_prefetch(Instant::now());
+    assert!(
+        app.cover_prefetch.is_none(),
+        "idle delay does not block browsing"
+    );
+    app.settled_since = Some(Instant::now() - Duration::from_millis(300));
+    app.poll_cover_prefetch(Instant::now());
+    assert!(
+        app.cover_prefetch.is_some(),
+        "idle time starts one future decode"
+    );
+    for _ in 0..100 {
+        app.poll_cover_prefetch(Instant::now());
+        if app.covers.knows(&future_cover) {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert!(
+        app.covers.knows(&future_cover),
+        "future cover enters the live cache"
+    );
+    let next_cover = root.join("next-cover.png");
+    std::fs::write(&next_cover, include_bytes!("../assets/logos/Arcade.png")).unwrap();
+    let mut next = app.here[0].clone();
+    next.cover = Some(next_cover);
+    app.here.push(next);
+    app.game_list = ListState::new(app.here.len(), app.geometry.visible);
+    app.game_list.select(1);
+    app.prefetch_scrolling = true;
+    app.prefetch_direction = 1;
+    app.prefetch_next_at = Instant::now() + Duration::from_secs(60);
+    app.settled_since = Some(Instant::now());
+    app.poll_cover_prefetch(Instant::now());
+    assert!(
+        app.cover_prefetch.is_none(),
+        "moving does not bypass the 250 ms pacing"
+    );
+    app.prefetch_next_at = Instant::now();
+    app.poll_cover_prefetch(Instant::now());
+    assert!(
+        app.cover_prefetch.is_some(),
+        "moving through cached art continues preparing in that direction"
+    );
     drop(app);
     std::fs::remove_dir_all(root).unwrap();
 }
@@ -21813,6 +22216,22 @@ fn test_network_startup_flow(window: Rc<MinimalSoftwareWindow>) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn image_prefetch_covers_picture_views_but_not_text_only_views() {
+        use super::Layout;
+        for layout in [
+            Layout::Details,
+            Layout::Tiled,
+            Layout::Carousel,
+            Layout::Gallery,
+        ] {
+            assert!(layout.prefetches_art(), "{layout:?} uses pictures");
+        }
+        for layout in [Layout::List, Layout::MultiList] {
+            assert!(!layout.prefetches_art(), "{layout:?} does not use pictures");
+        }
+    }
+
     #[test]
     fn resume_alignment_accepts_old_and_new_multi_root_navigation_trails() {
         use crate::browse::Place;
@@ -22640,12 +23059,18 @@ mod tests {
 
     #[test]
     fn the_general_menu_is_stable_and_hiding_stays_in_actions() {
-        let menu = menu_entries(true);
+        let menu = menu_entries(true, false);
         assert_eq!(
             menu,
             ["Options", "Scripts", "Help", "About", "Exit to MiSTer"]
         );
-        assert!(menu_entries(false).iter().all(|entry| entry != "Scripts"));
+        assert!(menu_entries(false, false)
+            .iter()
+            .all(|entry| entry != "Scripts" && entry != "Attract Mode"));
+        assert_eq!(
+            menu_entries(false, true),
+            ["Options", "Attract Mode", "Help", "About", "Exit to MiSTer"]
+        );
 
         let actions = context_entries(
             Browsing::Systems,
