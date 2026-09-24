@@ -683,6 +683,7 @@ fn run_cores_browser_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
     let ra_launcher = ra.join("RA_NES.mgl");
     let unstable_launcher = unstable.join("NES_unstable_20260916_ab12.rbf");
     std::fs::write(&standard, b"fixture").unwrap();
+    std::fs::write(console.join("SNES.rbf"), b"fixture").unwrap();
     std::fs::write(
         &console_launcher,
         "<mistergamedescription><rbf>_Console/SNES</rbf><setname>SFC</setname></mistergamedescription>",
@@ -723,7 +724,7 @@ fn run_cores_browser_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
         OptionId::ShowCores,
         "the targeted catalogue build keeps the user on the option they changed"
     );
-    assert_eq!(app.core_catalogue.entries.len(), 4);
+    assert_eq!(app.core_catalogue.entries.len(), 5);
     assert_eq!(
         crate::cache::load_core_catalogue(&app.cache_dir),
         Some(app.core_catalogue.clone()),
@@ -771,15 +772,16 @@ fn run_cores_browser_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
     app.handle(Action::Accept);
     assert_eq!(app.browsing, Browsing::Systems);
     assert!(app.in_cores_browser());
-    assert_eq!(app.core_categories(), vec![("Console".into(), 4)]);
+    assert_eq!(app.core_categories(), vec![("Console".into(), 5)]);
 
     app.handle(Action::Accept);
     assert_eq!(app.browsing, Browsing::Games);
-    assert_eq!(app.here.len(), 4);
+    assert_eq!(app.here.len(), 5);
     assert_eq!(app.here[0].name, "NES [Standard]");
     assert_eq!(app.here[1].name, "NES [RA]");
     assert_eq!(app.here[2].name, "NES [Unstable: 20260916_ab12]");
     assert_eq!(app.here[3].name, "SFC [Launcher]");
+    assert_eq!(app.here[4].name, "SNES [Standard]");
     app.open_context();
     assert_eq!(
         app.context_actions,

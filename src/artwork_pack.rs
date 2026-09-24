@@ -3148,7 +3148,11 @@ impl<R: BufRead> BufRead for IdentityXmlInput<'_, R> {
     }
 }
 
-fn xml_text(path: &Path, wanted: &str, cancelled: &AtomicBool) -> Result<Option<String>> {
+pub(crate) fn xml_text(
+    path: &Path,
+    wanted: &str,
+    cancelled: &AtomicBool,
+) -> Result<Option<String>> {
     let file = File::open(path)
         .map_err(|error| DegaussError::io("opening game descriptor", path, error))?;
     xml_text_from_reader(BufReader::new(file), path, wanted, cancelled)
