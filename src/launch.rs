@@ -504,7 +504,12 @@ fn check_descriptor_core(launcher: &Path, menu_root: &Path) -> Result<()> {
         None
     };
     if let Some(rbf) = rbf {
-        if !crate::core_variants::core_present(menu_root, &rbf)? {
+        let installed = if extension.eq_ignore_ascii_case("mra") {
+            arcade_core_present(launcher, menu_root, &rbf)?
+        } else {
+            crate::core_variants::core_present(menu_root, &rbf)?
+        };
+        if !installed {
             return Err(DegaussError::unsupported(
                 "launcher core",
                 format!(
@@ -515,6 +520,49 @@ fn check_descriptor_core(launcher: &Path, menu_root: &Path) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// Main resolves an MRA's bare RBF name in its menu folder's cores directory,
+/// accepting both the bare name and Arcade- prefixed versioned filenames.
+fn arcade_core_present(launcher: &Path, menu_root: &Path, rbf: &str) -> Result<bool> {
+    if Path::new(rbf).components().count() != 1 {
+        return Ok(false);
+    }
+    let arcade_root = launcher
+        .ancestors()
+        .filter(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.starts_with('_'))
+        })
+        .last()
+        .unwrap_or(menu_root);
+    let cores = arcade_root.join("cores");
+    let entries = match std::fs::read_dir(&cores) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(DegaussError::io("Arcade cores directory", &cores, error)),
+    };
+    let prefixed = format!("Arcade-{rbf}");
+    for entry in entries {
+        let entry = entry.map_err(|error| DegaussError::io("Arcade core entry", &cores, error))?;
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else {
+            continue;
+        };
+        if !name.to_ascii_lowercase().ends_with(".rbf") {
+            continue;
+        }
+        let matches = [rbf, prefixed.as_str()].iter().any(|wanted| {
+            name.get(..wanted.len())
+                .is_some_and(|prefix| prefix.eq_ignore_ascii_case(wanted))
+                && matches!(name.as_bytes().get(wanted.len()), Some(b'.' | b'_'))
+        });
+        if matches && entry.path().is_file() {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 fn plan_self_describing(
@@ -2849,7 +2897,7 @@ mod tests {
         }
         std::fs::write(
             &arcade,
-            "<misterromdescription><rbf>_Arcade/cores/Test</rbf></misterromdescription>",
+            "<misterromdescription><rbf>Test</rbf></misterromdescription>",
         )
         .unwrap();
         for path in [&favorite, &core_launcher] {
@@ -2862,7 +2910,7 @@ mod tests {
         let temporary_mgl = root.join("degauss.mgl");
         let missing_arcade =
             plan_with_preference(&c64(), &arcade, &temporary_mgl, &menu, false).unwrap_err();
-        assert!(missing_arcade.to_string().contains("_Arcade/cores/Test"));
+        assert!(missing_arcade.to_string().contains("requires Test"));
         let missing_favorite =
             plan_with_preference(&c64(), &favorite, &temporary_mgl, &menu, false).unwrap_err();
         assert!(missing_favorite.to_string().contains("_Console/Other"));
@@ -2870,12 +2918,23 @@ mod tests {
         assert!(missing_core.to_string().contains("_Console/Other"));
 
         std::fs::create_dir_all(menu.join("_Arcade/cores")).unwrap();
-        std::fs::write(menu.join("_Arcade/cores/Test_20260924.rbf"), b"core").unwrap();
+        std::fs::write(menu.join("_Arcade/cores/Arcade-Test_20260924.rbf"), b"core").unwrap();
         std::fs::write(menu.join("_Console/Other_20260924.rbf"), b"core").unwrap();
         for path in [&arcade, &favorite] {
             let planned = plan_with_preference(&c64(), path, &temporary_mgl, &menu, false).unwrap();
             assert_eq!(planned.command, format!("load_core {}\n", path.display()));
         }
+        std::fs::remove_file(menu.join("_Arcade/cores/Arcade-Test_20260924.rbf")).unwrap();
+        std::fs::write(menu.join("_Arcade/cores/Test_20260924.rbf"), b"core").unwrap();
+        assert!(plan_with_preference(&c64(), &arcade, &temporary_mgl, &menu, false).is_ok());
+
+        let usb_arcade = root.join("usb/_Arcade/Test.mra");
+        std::fs::create_dir_all(usb_arcade.parent().unwrap()).unwrap();
+        std::fs::copy(&arcade, &usb_arcade).unwrap();
+        assert!(plan_with_preference(&c64(), &usb_arcade, &temporary_mgl, &menu, false).is_err());
+        std::fs::create_dir_all(root.join("usb/_Arcade/cores")).unwrap();
+        std::fs::write(root.join("usb/_Arcade/cores/Test_20260924.rbf"), b"core").unwrap();
+        assert!(plan_with_preference(&c64(), &usb_arcade, &temporary_mgl, &menu, false).is_ok());
         assert_eq!(
             plan_core(&core_launcher, &menu).unwrap().command,
             format!(
