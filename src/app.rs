@@ -6100,6 +6100,7 @@ impl App {
         }
         let candidates = self.attract_candidates();
         if candidates.is_empty() {
+            self.saver_attract_candidates = None;
             if kind == SaverLoadKind::Initial && self.manual_attract_mode {
                 self.message = Some("Attract Mode found no pictures to show.".to_string());
                 self.dirty = true;
@@ -6133,6 +6134,9 @@ impl App {
         ) {
             Ok(job) => self.saver_job = Some(job),
             Err(error) => {
+                if kind == SaverLoadKind::Initial {
+                    self.saver_attract_candidates = None;
+                }
                 self.message = Some(format!("Attract Mode could not read pictures: {error}"));
                 self.saver_retry_at = Instant::now() + Duration::from_secs(SAVER_RETRY_SECONDS);
                 self.dirty = true;
@@ -6174,6 +6178,9 @@ impl App {
                 self.dirty = true;
             }
             Ok(None) => {
+                if kind == SaverLoadKind::Initial {
+                    self.saver_attract_candidates = None;
+                }
                 if kind == SaverLoadKind::Initial && self.manual_attract_mode {
                     self.manual_attract_mode = false;
                     self.message = Some("Attract Mode found no pictures to show.".to_string());
@@ -6186,6 +6193,7 @@ impl App {
             Err(error) => {
                 if kind == SaverLoadKind::Initial {
                     self.manual_attract_mode = false;
+                    self.saver_attract_candidates = None;
                 }
                 crate::note(&error);
                 self.message = Some(error);
@@ -7709,6 +7717,7 @@ impl App {
         for group in changed_groups {
             self.invalidate_artwork_provider_group(&group);
             self.saver_candidates = None;
+            self.saver_attract_candidates = None;
             self.saver_pool.clear();
             self.saver_queue.clear();
         }
@@ -7884,6 +7893,7 @@ impl App {
                 .any(|root| picture.path.starts_with(root))
         });
         self.saver_candidates = None;
+        self.saver_attract_candidates = None;
     }
 
     fn store_provider_snapshots(&mut self, snapshots: Vec<crate::provider_job::Snapshot>) {
@@ -9571,6 +9581,7 @@ impl App {
         // The screensaver's shortlist holds positions into the list that
         // was just replaced, so it is built again on next use.
         self.saver_candidates = None;
+        self.saver_attract_candidates = None;
         // The system being browsed can be among what vanished. Its trail
         // points into folders nothing can list any more, so browsing
         // walks back to the top rather than failing folder by folder.
@@ -16043,6 +16054,7 @@ impl App {
         self.gallery_covers = self.fresh_gallery_cover_cache();
         self.saver_covers = self.fresh_saver_cover_cache();
         self.saver_candidates = None;
+        self.saver_attract_candidates = None;
         self.saver_pool.clear();
         self.saver_queue.clear();
 
@@ -21402,14 +21414,12 @@ pub(crate) fn test_library_launch_flow(window: Rc<MinimalSoftwareWindow>) {
         app.message.as_deref(),
         Some("Attract Mode found no pictures to show.")
     );
+    assert!(
+        app.saver_attract_candidates.is_none(),
+        "a later source change must be able to rebuild the shortlist"
+    );
     app.message = None;
-    let system = app.all_systems.first().expect("fixture system exists");
-    app.saver_attract_candidates = Some(vec![SaverCandidate {
-        system_id: system.def.id.clone(),
-        name: system.name().to_string(),
-        config: system.to_config(),
-        pack_root: None,
-    }]);
+    app.saver_candidates = Some(vec![0]);
     app.menu_list.select(entry);
     app.handle(Action::Accept);
     assert!(
@@ -22046,6 +22056,12 @@ pub(crate) fn test_library_launch_flow(window: Rc<MinimalSoftwareWindow>) {
     assert!(
         app.cover_prefetch.is_some(),
         "moving through cached art continues preparing in that direction"
+    );
+    app.saver_attract_candidates = Some(Vec::new());
+    app.apply_discovered_systems(app.all_systems.clone());
+    assert!(
+        app.saver_attract_candidates.is_none(),
+        "newly discovered systems replace the old Attract Mode shortlist"
     );
     drop(app);
     std::fs::remove_dir_all(root).unwrap();
