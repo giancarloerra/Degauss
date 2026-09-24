@@ -206,8 +206,16 @@ impl ArtIndex {
             };
             index.directories.insert(key(dir));
             for item in listing.flatten() {
+                let name = item.file_name();
+                if name.to_str().is_none() {
+                    crate::note(&format!(
+                        "artwork path {:?}: skipped: filename is not UTF-8",
+                        item.path()
+                    ));
+                    continue;
+                }
                 index.files += 1;
-                index.names.insert(key(&dir.join(item.file_name())));
+                index.names.insert(key(&dir.join(name)));
             }
         }
         index
@@ -600,7 +608,16 @@ impl Library {
             .collect::<std::io::Result<Vec<_>>>()
             .map_err(|error| DegaussError::io("reading folder entry", dir, error))?;
         for item in entries {
-            let name = item.file_name().to_string_lossy().into_owned();
+            let name = match item.file_name().into_string() {
+                Ok(name) => name,
+                Err(_) => {
+                    crate::note(&format!(
+                        "game source  {:?}: skipped: filename is not UTF-8",
+                        item.path()
+                    ));
+                    continue;
+                }
+            };
             // Dotfiles are not content, and a card that has met a Mac is
             // full of `._` companions that are not games either.
             if name.starts_with('.') {
@@ -620,7 +637,7 @@ impl Library {
                 }
                 if self.is_art_directory(&path, root)
                     || self.is_structural_art_subtree(&path, root)?
-                    || self.is_skipped(&name)
+                    || self.is_skipped(&path)
                 {
                     continue;
                 }
@@ -1135,14 +1152,16 @@ impl Library {
         for item in listing {
             let item =
                 item.map_err(|error| DegaussError::io("reading folder entry", dir, error))?;
-            let name = item.file_name().to_string_lossy().into_owned();
+            let Ok(name) = item.file_name().into_string() else {
+                continue;
+            };
             if name.starts_with('.') || name == "System Volume Information" {
                 continue;
             }
             let path = item.path();
             let is_dir = entry_is_dir_checked(&item)?;
             // A folder left out of the listing leads nowhere whatever it holds.
-            let excluded = is_dir && (self.is_art_directory(&path, root) || self.is_skipped(&name));
+            let excluded = is_dir && (self.is_art_directory(&path, root) || self.is_skipped(&path));
             // What a file is, asked once: the set check and the content
             // check below both want it.
             let extension = if is_dir {
@@ -1200,11 +1219,20 @@ impl Library {
         }
     }
 
-    fn is_skipped(&self, name: &str) -> bool {
+    fn is_skipped(&self, path: &Path) -> bool {
+        let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+            return false;
+        };
         self.config
             .skip_folders
             .iter()
             .any(|skip| skip.eq_ignore_ascii_case(name))
+            || (name == "cores"
+                && path.parent() == Some(Path::new(&self.config.path))
+                && Path::new(&self.config.path)
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    == Some("_Arcade"))
     }
 }
 
@@ -1320,8 +1348,14 @@ fn amiga_listings(dir: &Path) -> Vec<(String, PathBuf)> {
     let mut found: Vec<(String, PathBuf)> = listing
         .flatten()
         .filter(|item| extension_of(&item.path()) == "txt")
-        .map(|item| {
+        .filter_map(|item| {
             let path = item.path();
+            if item.file_name().to_str().is_none() {
+                crate::note(&format!(
+                    "game source  {path:?}: skipped: filename is not UTF-8"
+                ));
+                return None;
+            }
             let stem = path
                 .file_stem()
                 .map(|stem| stem.to_string_lossy().into_owned())
@@ -1331,7 +1365,7 @@ fn amiga_listings(dir: &Path) -> Vec<(String, PathBuf)> {
                 Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
                 None => stem,
             };
-            (name, path)
+            Some((name, path))
         })
         .collect();
     found.sort_by_key(|(name, _)| name.to_lowercase());
@@ -1596,6 +1630,40 @@ mod tests {
             compatible_cores: Vec::new(),
             extra_paths: Vec::new(),
         }
+    }
+
+    #[test]
+    fn arcade_support_exclusion_matches_only_the_exact_top_level_path() {
+        let root = temp("arcade-support-exact");
+        let arcade = root.join("_Arcade");
+        std::fs::create_dir_all(&arcade).unwrap();
+        let mut config = system(&arcade);
+        config.name = "Arcade".into();
+        let library = Library::open(&config).unwrap();
+        assert!(library.is_skipped(&arcade.join("cores")));
+        assert!(!library.is_skipped(&arcade.join("Cores")));
+        assert!(!library.is_skipped(&arcade.join("_Organized/cores")));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn non_utf8_artwork_names_are_not_indexed_as_lossy_paths() {
+        use std::os::unix::ffi::OsStringExt;
+
+        let root = temp("non-utf8-artwork");
+        let art = root.join("media");
+        std::fs::create_dir_all(&art).unwrap();
+        std::fs::write(art.join("Good.jpg"), b"jpeg").unwrap();
+        let invalid = std::ffi::OsString::from_vec(b"Bad-\xff.jpg".to_vec());
+        std::fs::write(art.join(invalid), b"jpeg").unwrap();
+
+        let index = ArtIndex::read(std::slice::from_ref(&art));
+        assert_eq!(index.files, 1);
+        assert!(index.contains(&art.join("Good.jpg")));
+        assert!(!index.contains(&art.join("Bad-�.jpg")));
+
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     fn names_of(rows: &[Row]) -> Vec<String> {

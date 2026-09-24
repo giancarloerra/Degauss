@@ -5,9 +5,8 @@
 //! will actually be drawn at, and cached. What the cache
 //! cannot hold is reported rather than silently re-decoded every frame.
 //!
-//! Downscaling takes one source pixel per destination pixel. It is the
-//! cheapest thing that fits the frame budget on this hardware, which is what
-//! keeps artwork arriving while the list is moving.
+//! The original point-sampling path remains available for the quickest
+//! first pass. Low-line screens can area-filter the smaller final image.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -40,6 +39,7 @@ impl RgbImage {
         Ok(RgbImage { width, height, rgb })
     }
 
+    #[cfg(test)]
     pub fn pixel(&self, x: u32, y: u32) -> [u8; 3] {
         let i = ((y * self.width + x) * 3) as usize;
         [self.rgb[i], self.rgb[i + 1], self.rgb[i + 2]]
@@ -80,6 +80,16 @@ pub fn load_scaled(
     ground: [u8; 3],
     stats: &mut CoverStats,
 ) -> Result<RgbImage> {
+    load_scaled_with(path, max_edge, None, ground, stats)
+}
+
+fn load_scaled_with(
+    path: &Path,
+    max_edge: u32,
+    area_box: Option<AreaBox>,
+    ground: [u8; 3],
+    stats: &mut CoverStats,
+) -> Result<RgbImage> {
     // Scraped artwork is tens of kilobytes. A file orders of magnitude
     // larger is a mistake or a stray download, and decoding it would take
     // memory this board does not have to spare. Refusing it costs one
@@ -103,7 +113,16 @@ pub fn load_scaled(
     let decode_us = started.elapsed().as_micros() as u64;
 
     let started = Instant::now();
-    let scaled = scale_to_fit(&full, max_edge);
+    let scaled = match area_box {
+        None => scale_to_fit(&full, max_edge),
+        Some(box_size) => {
+            // Keep two source samples per final pixel without retaining a
+            // large decoded image in the cache. Gallery thumbnails and the
+            // screensaver then get the same box filter as Details.
+            let sampled = scale_to_fit(&full, max_edge.saturating_mul(2));
+            scale_to_box_area_fit(&sampled, box_size.width, box_size.height, box_size.fit)
+        }
+    };
     let scale_us = started.elapsed().as_micros() as u64;
 
     stats.decoded += 1;
@@ -300,10 +319,8 @@ pub fn decode_png(
 /// input untouched when it already fits, because upscaling art on a 240-line
 /// display only wastes memory.
 ///
-/// Sampling rather than averaging the block is deliberate: averaging costs
-/// noticeably more per screenshot and shows up on the worst frame of a
-/// scroll. On a 352 by 240 screen the harder edges it buys are not worth the
-/// stutter.
+/// Point sampling remains the fast original path and the first stage of
+/// optional area filtering. It keeps large decoded files out of the cache.
 pub fn scale_to_fit(source: &RgbImage, max_edge: u32) -> RgbImage {
     let longest = source.width.max(source.height);
     if longest <= max_edge || max_edge == 0 {
@@ -315,15 +332,171 @@ pub fn scale_to_fit(source: &RgbImage, max_edge: u32) -> RgbImage {
     let height = ((source.height as f32 * scale).round() as u32).max(1);
 
     let mut out = vec![0u8; (width * height * 3) as usize];
+    // MiSTer's ARMv7 has no cheap 64-bit divide. Each destination column
+    // picks the same source column on every row, so divide once per column
+    // rather than once per pixel. The sample coordinates are unchanged.
+    let source_columns: Vec<usize> = (0..width)
+        .map(|x| {
+            let sx = ((u64::from(x) * u64::from(source.width) / u64::from(width)) as u32)
+                .min(source.width - 1);
+            sx as usize * 3
+        })
+        .collect();
     for y in 0..height {
-        let sy = ((y as u64 * source.height as u64 / height as u64) as u32).min(source.height - 1);
-        for x in 0..width {
-            let sx = ((x as u64 * source.width as u64 / width as u64) as u32).min(source.width - 1);
-            let px = source.pixel(sx, sy);
-            let i = ((y * width + x) * 3) as usize;
-            out[i] = px[0];
-            out[i + 1] = px[1];
-            out[i + 2] = px[2];
+        let sy = ((u64::from(y) * u64::from(source.height) / u64::from(height)) as u32)
+            .min(source.height - 1);
+        let source_row = sy as usize * source.width as usize * 3;
+        let target_row = y as usize * width as usize * 3;
+        for (x, column) in source_columns.iter().copied().enumerate() {
+            let source_at = source_row + column;
+            let target_at = target_row + x * 3;
+            out[target_at..target_at + 3].copy_from_slice(&source.rgb[source_at..source_at + 3]);
+        }
+    }
+
+    RgbImage {
+        width,
+        height,
+        rgb: out,
+    }
+}
+
+/// Area-filter an already decoded picture to the rectangle where it will be
+/// drawn. The source cache keeps its existing size and point-sampling path.
+pub fn scale_to_box_area(source: &RgbImage, max_width: u32, max_height: u32) -> RgbImage {
+    scale_to_box_area_fit(source, max_width, max_height, AreaFit::Contain)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AreaFit {
+    Contain,
+    Cover,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AreaBox {
+    pub width: u32,
+    pub height: u32,
+    pub fit: AreaFit,
+}
+
+/// The width of one destination pixel over source pixels, in units of the
+/// destination axis. Computing this once per column/row avoids division in
+/// the inner pixel loop on MiSTer's ARM CPU.
+#[derive(Clone, Copy)]
+struct AreaSpan {
+    first: u32,
+    last: u32,
+    first_weight: u32,
+    last_weight: u32,
+    middle_weight: u32,
+}
+
+impl AreaSpan {
+    fn new(index: u32, source: u32, target: u32) -> Self {
+        let start = u64::from(index) * u64::from(source);
+        let end = u64::from(index + 1) * u64::from(source);
+        let target = u64::from(target);
+        let first = start / target;
+        let last = (end - 1) / target;
+        Self {
+            first: first as u32,
+            last: last as u32,
+            first_weight: (end.min((first + 1) * target) - start) as u32,
+            last_weight: (end - start.max(last * target)) as u32,
+            middle_weight: target as u32,
+        }
+    }
+
+    #[inline]
+    fn weight(self, at: u32) -> u64 {
+        if at == self.first {
+            u64::from(self.first_weight)
+        } else if at == self.last {
+            u64::from(self.last_weight)
+        } else {
+            u64::from(self.middle_weight)
+        }
+    }
+}
+
+fn scale_to_box_area_fit(
+    source: &RgbImage,
+    max_width: u32,
+    max_height: u32,
+    fit: AreaFit,
+) -> RgbImage {
+    if max_width == 0
+        || max_height == 0
+        || (source.width <= max_width && source.height <= max_height)
+    {
+        return source.clone();
+    }
+
+    let x_scale = max_width as f64 / source.width as f64;
+    let y_scale = max_height as f64 / source.height as f64;
+    let scale = match fit {
+        AreaFit::Contain => x_scale.min(y_scale),
+        AreaFit::Cover => x_scale.max(y_scale),
+    };
+    if scale >= 1.0 {
+        return source.clone();
+    }
+    let (width, height) = match fit {
+        AreaFit::Contain => (
+            ((source.width as f64 * scale).round() as u32).clamp(1, max_width),
+            ((source.height as f64 * scale).round() as u32).clamp(1, max_height),
+        ),
+        AreaFit::Cover => (
+            ((source.width as f64 * scale).ceil() as u32).max(max_width),
+            ((source.height as f64 * scale).ceil() as u32).max(max_height),
+        ),
+    };
+    let mut out = vec![0u8; (width * height * 3) as usize];
+    let denominator = u64::from(source.width) * u64::from(source.height);
+    let columns: Vec<AreaSpan> = (0..width)
+        .map(|x| AreaSpan::new(x, source.width, width))
+        .collect();
+    let mut prefixes = vec![[0u64; 3]; source.width as usize + 1];
+    let mut sums = vec![[0u64; 3]; width as usize];
+
+    for y in 0..height {
+        let row = AreaSpan::new(y, source.height, height);
+        sums.fill([0; 3]);
+        for sy in row.first..=row.last {
+            let weight_y = row.weight(sy);
+            let source_row = sy as usize * source.width as usize * 3;
+            for sx in 0..source.width as usize {
+                let at = source_row + sx * 3;
+                let previous = prefixes[sx];
+                for (channel, sum) in prefixes[sx + 1].iter_mut().enumerate() {
+                    *sum = previous[channel] + u64::from(source.rgb[at + channel]);
+                }
+            }
+
+            for (x, column) in columns.iter().copied().enumerate() {
+                let first = source_row + column.first as usize * 3;
+                let last = source_row + column.last as usize * 3;
+                for (channel, sum) in sums[x].iter_mut().enumerate() {
+                    let mut horizontal =
+                        u64::from(source.rgb[first + channel]) * u64::from(column.first_weight);
+                    if column.first != column.last {
+                        horizontal +=
+                            u64::from(source.rgb[last + channel]) * u64::from(column.last_weight);
+                        horizontal += (prefixes[column.last as usize][channel]
+                            - prefixes[column.first as usize + 1][channel])
+                            * u64::from(column.middle_weight);
+                    }
+                    *sum += horizontal * weight_y;
+                }
+            }
+        }
+
+        for (x, channels) in sums.iter().enumerate() {
+            let index = ((y as usize * width as usize) + x) * 3;
+            for (channel, sum) in channels.iter().copied().enumerate() {
+                out[index + channel] = ((sum + denominator / 2) / denominator) as u8;
+            }
         }
     }
 
@@ -337,17 +510,38 @@ pub fn scale_to_fit(source: &RgbImage, max_edge: u32) -> RgbImage {
 /// Fixed-capacity cover cache with least-recently-used eviction.
 pub struct CoverCache {
     max_edge: u32,
+    area_box: Option<AreaBox>,
     capacity: usize,
     /// What transparent artwork is composited onto: the colour it is drawn
     /// on. Changing this colour discards decoded pixels.
     ground: [u8; 3],
     images: HashMap<PathBuf, RgbImage>,
+    /// One final CRT-sized preview per decoded image. The source cache's
+    /// eviction order bounds these previews as well.
+    previews: HashMap<PathBuf, ((u32, u32), RgbImage)>,
     /// Most recently used last.
     order: Vec<PathBuf>,
     /// Paths that failed to load, so a broken file is attempted once and
     /// then reported, never retried every frame.
     failed: HashMap<PathBuf, String>,
     pub stats: CoverStats,
+}
+
+/// The decode parameters that must still match when background work returns.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CoverSpec {
+    max_edge: u32,
+    area_box: Option<AreaBox>,
+    ground: [u8; 3],
+}
+
+pub enum PreparedCover {
+    Image {
+        image: RgbImage,
+        preview: Option<((u32, u32), RgbImage)>,
+        stats: CoverStats,
+    },
+    Failed(String),
 }
 
 /// A cache lookup that may defer first-time decoding to a later frame.
@@ -362,16 +556,80 @@ pub enum BudgetedCover<'a> {
 }
 
 impl CoverCache {
+    pub fn spec(&self) -> CoverSpec {
+        CoverSpec {
+            max_edge: self.max_edge,
+            area_box: self.area_box,
+            ground: self.ground,
+        }
+    }
+
+    /// Decode one future picture without touching the cache or UI thread.
+    pub fn prepare(path: &Path, spec: CoverSpec, preview_box: Option<(u32, u32)>) -> PreparedCover {
+        let mut stats = CoverStats::default();
+        match load_scaled_with(path, spec.max_edge, spec.area_box, spec.ground, &mut stats) {
+            Ok(image) => {
+                let preview = preview_box.and_then(|(width, height)| {
+                    (width > 0 && height > 0 && (image.width > width || image.height > height))
+                        .then(|| ((width, height), scale_to_box_area(&image, width, height)))
+                });
+                PreparedCover::Image {
+                    image,
+                    preview,
+                    stats,
+                }
+            }
+            Err(error) => PreparedCover::Failed(error.to_string()),
+        }
+    }
+
+    /// Accept a prepared picture only for the same cache configuration.
+    /// A foreground lookup may already have loaded it while the worker ran.
+    pub fn accept_prepared(&mut self, path: PathBuf, spec: CoverSpec, prepared: PreparedCover) {
+        if self.spec() != spec || self.knows(&path) {
+            return;
+        }
+        match prepared {
+            PreparedCover::Image {
+                image,
+                preview,
+                stats,
+            } => {
+                self.stats.decoded += stats.decoded;
+                self.stats.decode_us_total += stats.decode_us_total;
+                self.stats.scale_us_total += stats.scale_us_total;
+                self.stats.worst_decode_us = self.stats.worst_decode_us.max(stats.worst_decode_us);
+                self.insert(path.clone(), image);
+                if let Some((bounds, preview)) = preview {
+                    self.stats.bytes_held += preview.rgb.len();
+                    self.previews.insert(path, (bounds, preview));
+                }
+            }
+            PreparedCover::Failed(error) => {
+                self.stats.failures += 1;
+                self.failed.insert(path, error);
+            }
+        }
+    }
+
     pub fn new(max_edge: u32, capacity: usize, ground: [u8; 3]) -> Self {
         CoverCache {
             max_edge,
+            area_box: None,
             capacity: capacity.max(1),
             ground,
             images: HashMap::new(),
+            previews: HashMap::new(),
             order: Vec::new(),
             failed: HashMap::new(),
             stats: CoverStats::default(),
         }
+    }
+
+    pub fn new_area(box_size: AreaBox, capacity: usize, ground: [u8; 3]) -> Self {
+        let mut cache = Self::new(box_size.width.max(box_size.height), capacity, ground);
+        cache.area_box = Some(box_size);
+        cache
     }
 
     /// Art for a path, decoding it the first time. `None` means it already
@@ -387,7 +645,7 @@ impl CoverCache {
         }
 
         let mut stats = self.stats;
-        match load_scaled(path, self.max_edge, self.ground, &mut stats) {
+        match load_scaled_with(path, self.max_edge, self.area_box, self.ground, &mut stats) {
             Ok(image) => {
                 self.stats = stats;
                 self.insert(path.to_path_buf(), image);
@@ -399,6 +657,32 @@ impl CoverCache {
                 None
             }
         }
+    }
+
+    /// The area-filtered Details preview, reused when the same picture is
+    /// selected again at the same framebuffer size.
+    pub fn get_preview(&mut self, path: &Path, width: u32, height: u32) -> Option<&RgbImage> {
+        self.get(path)?;
+        let source = self.images.get(path)?;
+        if width == 0 || height == 0 || (source.width <= width && source.height <= height) {
+            return Some(source);
+        }
+        let bounds = (width, height);
+        if self
+            .previews
+            .get(path)
+            .is_some_and(|(size, _)| *size == bounds)
+        {
+            return self.previews.get(path).map(|(_, image)| image);
+        }
+
+        let preview = scale_to_box_area(source, width, height);
+        if let Some((_, old)) = self.previews.insert(path.to_path_buf(), (bounds, preview)) {
+            self.stats.bytes_held = self.stats.bytes_held.saturating_sub(old.rgb.len());
+        }
+        let image = &self.previews.get(path)?.1;
+        self.stats.bytes_held += image.rgb.len();
+        Some(image)
     }
 
     /// Art for a path, spending one unit only when the path has never been
@@ -429,6 +713,10 @@ impl CoverCache {
         self.max_edge
     }
 
+    pub fn area_box(&self) -> Option<AreaBox> {
+        self.area_box
+    }
+
     pub fn capacity(&self) -> usize {
         self.capacity
     }
@@ -437,6 +725,7 @@ impl CoverCache {
         if self.ground != ground {
             self.ground = ground;
             self.images.clear();
+            self.previews.clear();
             self.order.clear();
             self.stats.bytes_held = 0;
         }
@@ -456,6 +745,14 @@ impl CoverCache {
             }
         });
         self.order.retain(|path| !path.starts_with(root));
+        self.previews.retain(|path, (_, image)| {
+            if path.starts_with(root) {
+                removed_bytes = removed_bytes.saturating_add(image.rgb.len());
+                false
+            } else {
+                true
+            }
+        });
         self.failed.retain(|path, _| !path.starts_with(root));
         self.stats.bytes_held = self.stats.bytes_held.saturating_sub(removed_bytes);
     }
@@ -484,6 +781,9 @@ impl CoverCache {
             let oldest = self.order.remove(0);
             if let Some(dropped) = self.images.remove(&oldest) {
                 self.stats.bytes_held = self.stats.bytes_held.saturating_sub(dropped.rgb.len());
+                if let Some((_, preview)) = self.previews.remove(&oldest) {
+                    self.stats.bytes_held = self.stats.bytes_held.saturating_sub(preview.rgb.len());
+                }
                 self.stats.evictions += 1;
             }
         }
@@ -510,6 +810,38 @@ mod tests {
     /// A ground colour no fixture uses, so any pixel that comes back as
     /// this one arrived through the transparent path.
     const OPAQUE: [u8; 3] = [0x6c, 0x6c, 0x6c];
+
+    #[test]
+    fn prepared_art_reuses_the_normal_cache_and_rejects_stale_or_duplicate_results() {
+        let path =
+            std::env::temp_dir().join(format!("degauss-prefetch-{}.png", std::process::id()));
+        std::fs::write(&path, PNG_LOGO).unwrap();
+        let mut cache = CoverCache::new(64, 2, OPAQUE);
+        let spec = cache.spec();
+        let prepared = CoverCache::prepare(&path, spec, Some((1, 1)));
+        cache.accept_prepared(path.clone(), spec, prepared);
+        assert!(cache.knows(&path));
+        assert_eq!(cache.stats.decoded, 1);
+        let pixels = cache.get_preview(&path, 1, 1).unwrap().clone();
+        assert_eq!(
+            cache.stats.decoded, 1,
+            "a foreground hit does not decode again"
+        );
+        assert_eq!(pixels.width, 1);
+
+        let duplicate = CoverCache::prepare(&path, spec, None);
+        cache.accept_prepared(path.clone(), spec, duplicate);
+        assert_eq!(cache.stats.decoded, 1, "late duplicate work is discarded");
+
+        let stale = CoverCache::prepare(&path, spec, None);
+        cache.set_ground([0, 0, 0]);
+        cache.accept_prepared(path.clone(), spec, stale);
+        assert!(
+            !cache.knows(&path),
+            "old palette must not enter the new cache"
+        );
+        std::fs::remove_file(path).unwrap();
+    }
 
     // 2x2 indexed PNG shaped exactly like a real platform logo: every
     // palette entry is white and the shape is carried entirely by tRNS.
@@ -622,6 +954,64 @@ mod tests {
         assert!(cache.knows(&second));
         assert!(cache.stats.bytes_held < bytes_before);
         std::fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn crt_preview_is_reused_and_bounded_by_the_source_cache() {
+        let mut cache = CoverCache::new(4, 2, OPAQUE);
+        let first = PathBuf::from("first.png");
+        let second = PathBuf::from("second.png");
+        let third = PathBuf::from("third.png");
+        let source = RgbImage::new(4, 4, vec![100; 4 * 4 * 3]).unwrap();
+        cache.insert(first.clone(), source.clone());
+
+        let preview = cache.get_preview(&first, 2, 2).unwrap();
+        assert_eq!((preview.width, preview.height), (2, 2));
+        let address = preview as *const RgbImage;
+        let held = cache.stats.bytes_held;
+        assert_eq!(
+            cache.get_preview(&first, 2, 2).unwrap() as *const RgbImage,
+            address
+        );
+        assert_eq!(
+            cache.stats.bytes_held, held,
+            "repeat selection does not scale again"
+        );
+
+        assert_eq!(cache.get_preview(&first, 1, 1).unwrap().width, 1);
+        assert_eq!(
+            cache.previews.len(),
+            1,
+            "a new box replaces the old preview"
+        );
+        assert_eq!(cache.stats.bytes_held, source.rgb.len() + 3);
+        cache.insert(second, source.clone());
+        cache.insert(third, source);
+        assert!(!cache.images.contains_key(&first));
+        assert!(!cache.previews.contains_key(&first));
+        assert_eq!(cache.stats.bytes_held, 2 * 4 * 4 * 3);
+    }
+
+    #[test]
+    fn crt_preview_is_invalidated_with_source_and_matte() {
+        let mut cache = CoverCache::new(4, 2, OPAQUE);
+        let first = PathBuf::from("art/first.png");
+        let second = PathBuf::from("other/second.png");
+        let source = RgbImage::new(4, 4, vec![100; 4 * 4 * 3]).unwrap();
+        cache.insert(first.clone(), source.clone());
+        cache.insert(second.clone(), source);
+        cache.get_preview(&first, 2, 2).unwrap();
+        cache.get_preview(&second, 2, 2).unwrap();
+
+        cache.invalidate_under(Path::new("art"));
+        assert!(!cache.previews.contains_key(&first));
+        assert!(cache.previews.contains_key(&second));
+        assert_eq!(cache.stats.bytes_held, 4 * 4 * 3 + 2 * 2 * 3);
+
+        cache.set_ground([1, 2, 3]);
+        assert!(cache.previews.is_empty());
+        assert!(cache.images.is_empty());
+        assert_eq!(cache.stats.bytes_held, 0);
     }
 
     #[test]
@@ -812,10 +1202,119 @@ mod tests {
     }
 
     #[test]
+    fn area_preview_filters_the_actual_destination_footprint() {
+        let source = RgbImage::new(3, 1, vec![0, 0, 0, 0, 0, 0, 255, 0, 0]).unwrap();
+        let filtered = scale_to_box_area(&source, 2, 1);
+        assert_eq!((filtered.width, filtered.height), (2, 1));
+        assert_eq!(filtered.pixel(0, 0), [0, 0, 0]);
+        assert_eq!(filtered.pixel(1, 0), [170, 0, 0]);
+
+        let blocks = RgbImage::new(2, 2, vec![0, 0, 0, 200, 0, 0, 0, 200, 0, 200, 200, 0]).unwrap();
+        assert_eq!(scale_to_box_area(&blocks, 1, 1).pixel(0, 0), [100, 100, 0]);
+        assert_eq!(scale_to_box_area(&blocks, 2, 2), blocks);
+    }
+
+    #[test]
+    fn area_preview_fits_both_dimensions_without_enlarging_small_art() {
+        let source = solid(320, 240, [7, 8, 9]);
+        let filtered = scale_to_box_area(&source, 126, 90);
+        assert_eq!((filtered.width, filtered.height), (120, 90));
+        assert_eq!(filtered.pixel(119, 89), [7, 8, 9]);
+        assert_eq!(scale_to_box_area(&source, 400, 400), source);
+    }
+
+    #[test]
+    fn precomputed_area_spans_match_the_original_pixel_footprints() {
+        // A regression in edge weights makes real screenshots look striped.
+        // Compare against the direct overlap calculation used before the
+        // MiSTer first-pass optimisation, including uneven ratios.
+        for (source_width, source_height, target_width, target_height) in [
+            (3, 1, 2, 1),
+            (7, 5, 4, 3),
+            (13, 11, 3, 7),
+            (320, 240, 126, 90),
+        ] {
+            let mut rgb = Vec::with_capacity((source_width * source_height * 3) as usize);
+            for y in 0..source_height {
+                for x in 0..source_width {
+                    rgb.extend_from_slice(&[
+                        (x * 17 + y * 3) as u8,
+                        (x * 5 + y * 11) as u8,
+                        (x * 7 + y * 13) as u8,
+                    ]);
+                }
+            }
+            let source = RgbImage::new(source_width, source_height, rgb).unwrap();
+            let actual = scale_to_box_area(&source, target_width, target_height);
+            let denominator = u64::from(source_width) * u64::from(source_height);
+            for y in 0..actual.height {
+                for x in 0..actual.width {
+                    let left = u64::from(x) * u64::from(source_width);
+                    let right = u64::from(x + 1) * u64::from(source_width);
+                    let top = u64::from(y) * u64::from(source_height);
+                    let bottom = u64::from(y + 1) * u64::from(source_height);
+                    let mut sums = [0u64; 3];
+                    for sy in
+                        top / u64::from(actual.height)..bottom.div_ceil(u64::from(actual.height))
+                    {
+                        let overlap_y = bottom.min((sy + 1) * u64::from(actual.height))
+                            - top.max(sy * u64::from(actual.height));
+                        for sx in
+                            left / u64::from(actual.width)..right.div_ceil(u64::from(actual.width))
+                        {
+                            let overlap_x = right.min((sx + 1) * u64::from(actual.width))
+                                - left.max(sx * u64::from(actual.width));
+                            let pixel = source.pixel(sx as u32, sy as u32);
+                            for channel in 0..3 {
+                                sums[channel] += overlap_x * overlap_y * u64::from(pixel[channel]);
+                            }
+                        }
+                    }
+                    let expected = sums.map(|sum| ((sum + denominator / 2) / denominator) as u8);
+                    assert_eq!(actual.pixel(x, y), expected, "at {x},{y}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn screensaver_area_cover_fills_its_cell_without_changing_the_original_cache() {
+        let source = solid(640, 640, [12, 34, 56]);
+        let covered = scale_to_box_area_fit(&source, 320, 240, AreaFit::Cover);
+        assert_eq!((covered.width, covered.height), (320, 320));
+        assert_eq!(covered.pixel(319, 319), [12, 34, 56]);
+        let original = scale_to_fit(&source, 320);
+        assert_eq!((original.width, original.height), (320, 320));
+        assert_eq!(source.width, 640);
+    }
+
+    #[test]
     fn non_square_art_keeps_its_aspect_ratio() {
         let source = solid(400, 100, [9, 9, 9]);
         let out = scale_to_fit(&source, 100);
         assert_eq!((out.width, out.height), (100, 25));
+    }
+
+    #[test]
+    fn precomputed_nearest_columns_keep_the_original_pixel_choices() {
+        let (width, height) = (257u32, 191u32);
+        let mut rgb = Vec::with_capacity((width * height * 3) as usize);
+        for y in 0..height {
+            for x in 0..width {
+                rgb.extend_from_slice(&[(x * 37) as u8, (y * 17) as u8, (x + y) as u8]);
+            }
+        }
+        let source = RgbImage::new(width, height, rgb).unwrap();
+        let result = scale_to_fit(&source, 97);
+        for y in 0..result.height {
+            for x in 0..result.width {
+                let sx = ((u64::from(x) * u64::from(width) / u64::from(result.width)) as u32)
+                    .min(width - 1);
+                let sy = ((u64::from(y) * u64::from(height) / u64::from(result.height)) as u32)
+                    .min(height - 1);
+                assert_eq!(result.pixel(x, y), source.pixel(sx, sy));
+            }
+        }
     }
 
     #[test]

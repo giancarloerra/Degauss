@@ -62,6 +62,32 @@ fn information_keeps_missing_provider_fields_blank() {
 }
 
 #[test]
+fn information_distinguishes_mra_variants_without_changing_the_display_title() {
+    let mut row = information_row();
+    row.name = "Shared metadata title (World) [Rev A]".into();
+    row.kind = browse::Kind::Play(browse::Launch::File(PathBuf::from(
+        "/media/fat/_Arcade/Game (World).mra",
+    )));
+    for mode in GameNameDisplay::ALL {
+        let shown_name = mode.apply(&row.name);
+        let information = game_information_named(&row, &shown_name);
+        assert!(information.starts_with(&format!(
+            "{shown_name}\n\nMRA File: Game (World).mra\n\nGenre: Puzzle / Action"
+        )));
+        assert!(information.contains("Publisher: Example Publisher"));
+        assert!(information.contains(&row.details.desc));
+        assert!(!information.contains("/media/fat/_Arcade"));
+    }
+
+    row.kind = browse::Kind::Play(browse::Launch::File(PathBuf::from(
+        "/media/fat/_Arcade/Game (Japan).MRA",
+    )));
+    row.cover = Some(PathBuf::from("artwork-pack/Game.jpg"));
+    assert!(game_information(&row).contains("MRA File: Game (Japan).MRA"));
+    assert!(!game_information(&row).contains("Game (World).mra"));
+}
+
+#[test]
 fn manual_search_is_single_game_only_and_preserves_every_bulk_setting() {
     use crate::scraper::Scope;
 
@@ -683,6 +709,7 @@ fn run_cores_browser_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
     let ra_launcher = ra.join("RA_NES.mgl");
     let unstable_launcher = unstable.join("NES_unstable_20260916_ab12.rbf");
     std::fs::write(&standard, b"fixture").unwrap();
+    std::fs::write(console.join("SNES.rbf"), b"fixture").unwrap();
     std::fs::write(
         &console_launcher,
         "<mistergamedescription><rbf>_Console/SNES</rbf><setname>SFC</setname></mistergamedescription>",
@@ -723,7 +750,7 @@ fn run_cores_browser_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
         OptionId::ShowCores,
         "the targeted catalogue build keeps the user on the option they changed"
     );
-    assert_eq!(app.core_catalogue.entries.len(), 4);
+    assert_eq!(app.core_catalogue.entries.len(), 5);
     assert_eq!(
         crate::cache::load_core_catalogue(&app.cache_dir),
         Some(app.core_catalogue.clone()),
@@ -771,15 +798,16 @@ fn run_cores_browser_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
     app.handle(Action::Accept);
     assert_eq!(app.browsing, Browsing::Systems);
     assert!(app.in_cores_browser());
-    assert_eq!(app.core_categories(), vec![("Console".into(), 4)]);
+    assert_eq!(app.core_categories(), vec![("Console".into(), 5)]);
 
     app.handle(Action::Accept);
     assert_eq!(app.browsing, Browsing::Games);
-    assert_eq!(app.here.len(), 4);
+    assert_eq!(app.here.len(), 5);
     assert_eq!(app.here[0].name, "NES [Standard]");
     assert_eq!(app.here[1].name, "NES [RA]");
     assert_eq!(app.here[2].name, "NES [Unstable: 20260916_ab12]");
     assert_eq!(app.here[3].name, "SFC [Launcher]");
+    assert_eq!(app.here[4].name, "SNES [Standard]");
     app.open_context();
     assert_eq!(
         app.context_actions,
@@ -951,9 +979,13 @@ fn run_misterzine_browser_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
     app.misterzine_items[0].set_game_match(2, None);
     app.rebuild_misterzine_rows();
     assert_eq!(app.here.len(), 2);
-    let first_cover = root.join("first.jpg");
+    let first_cover = root.join("first.png");
     let second_cover = root.join("second.jpg");
-    std::fs::write(&first_cover, crate::covers::JPEG_16).unwrap();
+    std::fs::copy(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/logos/NES.png"),
+        &first_cover,
+    )
+    .unwrap();
     std::fs::write(&second_cover, crate::covers::JPEG_16).unwrap();
     let game = |name: &str, cover: PathBuf| browse::Row {
         name: name.into(),
@@ -977,6 +1009,21 @@ fn run_misterzine_browser_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
     app.refresh();
     assert_eq!(app.ui.get_compact_info().as_str(), "2 Games");
     assert_eq!(app.current_art().0.as_deref(), Some(first_cover.as_path()));
+    let (width, height) = app.low_resolution_detail_preview_box(1.0).unwrap();
+    let palette = app.effective_palette();
+    let ground = [palette.surface.r, palette.surface.g, palette.surface.b];
+    let source = crate::covers::load_scaled(
+        &first_cover,
+        app.covers.max_edge(),
+        ground,
+        &mut Default::default(),
+    )
+    .unwrap();
+    assert!(
+        crate::covers::scale_to_box_area(&source, width, height).width < source.width,
+        "Core Updates' matched game image must actually need the CRT filter"
+    );
+    assert_current_art_matte(&mut app, &first_cover, ground);
     app.maintain_misterzine_games(slideshow_started + Duration::from_secs(CORE_UPDATE_ART_SECONDS));
     assert_eq!(app.current_art().0.as_deref(), Some(second_cover.as_path()));
     app.open_context();
@@ -1450,7 +1497,8 @@ fn assert_current_art_matte(app: &mut App, path: &Path, ground: [u8; 3]) {
         assert!(row.has_cover, "the actual rendered row must contain art");
         row.cover
     };
-    let edge = if app.screen == Screen::Browse && app.layout == Layout::Gallery {
+    let is_gallery = app.screen == Screen::Browse && app.layout == Layout::Gallery;
+    let edge = if is_gallery {
         app.gallery_covers.max_edge()
     } else {
         app.covers.max_edge()
@@ -1460,6 +1508,32 @@ fn assert_current_art_matte(app: &mut App, path: &Path, ground: [u8; 3]) {
         expected.rgb.as_chunks::<3>().0.contains(&ground),
         "the real PNG must contain transparent pixels to exercise the matte"
     );
+    let art_scale = artwork_horizontal(
+        app.artwork_scale,
+        app.width,
+        app.height,
+        app.screen_rotation,
+        true,
+    );
+    let preview_box = app
+        .low_resolution_detail_preview_box(art_scale)
+        .or_else(|| app.low_resolution_information_preview_box(art_scale));
+    let row_box = app.low_resolution_row_preview_box(art_scale);
+    let expected = if is_gallery && app.crt_smoothing() {
+        let box_size = app.gallery_covers.area_box().unwrap();
+        let mut filtered = crate::covers::CoverCache::new_area(box_size, 1, ground);
+        filtered.get(path).unwrap().clone()
+    } else if app.screen == Screen::Screensaver && app.crt_smoothing() {
+        let mut filtered =
+            crate::covers::CoverCache::new_area(saver_image_box(app.height), 1, ground);
+        filtered.get(path).unwrap().clone()
+    } else if let Some((width, height)) = preview_box.or(row_box) {
+        let filtered = crate::covers::scale_to_box_area(&expected, width, height);
+        assert!(filtered.width <= expected.width && filtered.height <= expected.height);
+        filtered
+    } else {
+        expected
+    };
     assert_eq!(
         image.to_rgb8().unwrap().as_bytes(),
         expected.rgb.as_slice(),
@@ -1482,7 +1556,30 @@ fn run_artwork_matte_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
         &path,
     )
     .unwrap();
+    let logo_dir = root.join("logos");
+    std::fs::create_dir_all(&logo_dir).unwrap();
+    let logo = logo_dir.join("NES.png");
+    std::fs::copy(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/logos/NES.png"),
+        &logo,
+    )
+    .unwrap();
     let mut app = fixture_app(&root, window, Settings::default());
+    for system in app.systems.iter_mut().chain(app.all_systems.iter_mut()) {
+        system.logo_dir = Some(logo_dir.clone());
+    }
+    app.logo_dir = Some(logo_dir);
+    let original_wordmark = app.ui.get_original_logo().size();
+    assert!(app.ui.get_brand_logo().size().width < original_wordmark.width);
+    assert!(app.ui.get_about_logo().size().width < original_wordmark.width);
+    app.width = 1280;
+    app.height = 720;
+    app.apply_geometry();
+    assert_eq!(app.ui.get_brand_logo().size(), original_wordmark);
+    assert_eq!(app.ui.get_about_logo().size(), original_wordmark);
+    app.width = 352;
+    app.height = 240;
+    app.apply_geometry();
     for row in &mut app.here {
         row.cover = Some(path.clone());
     }
@@ -1552,12 +1649,152 @@ fn run_artwork_matte_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
         app.saver_pool = vec![SaverPicture {
             path: path.clone(),
             caption: "Fixture Game - NES".into(),
+            target: None,
         }];
         app.screen = Screen::Screensaver;
         app.apply_geometry();
         assert_current_art_matte(&mut app, &path, [0, 0, 0]);
         capture_live_if_requested(&mut app, &format!("matte-{theme}-screensaver"));
+
+        // The selected system logo uses the smaller group picture slot,
+        // while a folder borrows the same logo in the full game picture slot.
+        app.screen = Screen::Browse;
+        app.browsing = Browsing::Systems;
+        app.set_layout(Layout::Details);
+        app.load_art();
+        let (width, height) = app.low_resolution_detail_preview_box(1.0).unwrap();
+        let source = crate::covers::load_scaled(
+            &logo,
+            app.group_covers.max_edge(),
+            background,
+            &mut Default::default(),
+        )
+        .unwrap();
+        let expected = crate::covers::scale_to_box_area(&source, width, height);
+        assert!(
+            expected.height < source.height,
+            "system logo must be area-filtered"
+        );
+        assert!(app.ui.get_has_art(), "system logo must be selected");
+        let actual = app.ui.get_art().to_rgb8().unwrap();
+        assert_eq!(
+            (actual.width(), actual.height()),
+            (expected.width, expected.height),
+            "system logo preview size"
+        );
+        let mismatch = actual
+            .as_bytes()
+            .iter()
+            .zip(&expected.rgb)
+            .position(|(actual, expected)| actual != expected);
+        assert!(
+            mismatch.is_none(),
+            "system logo differs at byte {mismatch:?}"
+        );
+
+        app.browsing = Browsing::Games;
+        app.game_list.select(0);
+        let original = app.here[0].clone();
+        app.here[0].kind = browse::Kind::Enter(Place::Dir(games.join("Fixture Folder")));
+        app.here[0].cover = None;
+        app.load_art();
+        let (width, height) = app.low_resolution_detail_preview_box(1.0).unwrap();
+        let source = crate::covers::load_scaled(
+            &logo,
+            app.covers.max_edge(),
+            surface,
+            &mut Default::default(),
+        )
+        .unwrap();
+        let expected = crate::covers::scale_to_box_area(&source, width, height);
+        assert!(
+            expected.width < source.width,
+            "folder logo must be area-filtered"
+        );
+        assert!(app.ui.get_has_art(), "folder must show its system logo");
+        let actual = app.ui.get_art().to_rgb8().unwrap();
+        assert_eq!(
+            (actual.width(), actual.height()),
+            (expected.width, expected.height),
+            "folder logo preview size"
+        );
+        let mismatch = actual
+            .as_bytes()
+            .iter()
+            .zip(&expected.rgb)
+            .position(|(actual, expected)| actual != expected);
+        assert!(
+            mismatch.is_none(),
+            "folder logo differs at byte {mismatch:?}"
+        );
+        app.here[0] = original;
     }
+
+    // The user can regain the original fast sampler without changing
+    // artwork, while HDMI continues to use that sampler automatically.
+    select_option(&mut app, OptionsPage::Appearance, OptionId::CrtSmoothing);
+    app.handle(Action::Faster);
+    assert_eq!(app.settings.crt_smoothing, Some(false));
+    assert_eq!(app.option_value(OptionId::CrtSmoothing), "Off");
+    app.handle(Action::Quit);
+    assert_eq!(
+        Settings::load(&app.settings_path).unwrap().crt_smoothing,
+        Some(false)
+    );
+    assert_eq!(app.ui.get_brand_logo().size(), original_wordmark);
+    app.screen = Screen::Browse;
+    app.browsing = Browsing::Games;
+    let surface = app.effective_palette().surface;
+    for layout in [
+        Layout::Details,
+        Layout::Tiled,
+        Layout::Carousel,
+        Layout::Gallery,
+    ] {
+        app.set_layout(layout);
+        let ground = if layout == Layout::Carousel {
+            let background = app.effective_palette().background;
+            [background.r, background.g, background.b]
+        } else {
+            [surface.r, surface.g, surface.b]
+        };
+        assert_current_art_matte(&mut app, &path, ground);
+    }
+    assert_eq!(app.gallery_covers.area_box(), None);
+    app.saver_pool = vec![SaverPicture {
+        path: path.clone(),
+        caption: "Fixture Game - NES".into(),
+        target: None,
+    }];
+    app.screen = Screen::Screensaver;
+    app.apply_geometry();
+    assert_current_art_matte(&mut app, &path, [0, 0, 0]);
+    select_option(&mut app, OptionsPage::Appearance, OptionId::CrtSmoothing);
+    app.handle(Action::Faster);
+    app.handle(Action::Quit);
+    assert_eq!(
+        Settings::load(&app.settings_path).unwrap().crt_smoothing,
+        Some(true)
+    );
+    app.screen = Screen::Browse;
+    app.set_layout(Layout::Gallery);
+    app.apply_geometry();
+    assert_eq!(
+        app.gallery_covers.area_box(),
+        Some(gallery_image_box(app.geometry))
+    );
+    app.width = 1280;
+    app.height = 720;
+    app.apply_geometry();
+    assert!(!app.crt_smoothing());
+    assert_eq!(app.gallery_covers.area_box(), None);
+    let persisted = toml::to_string(&app.settings).unwrap();
+    assert_eq!(
+        toml::from_str::<Settings>(&persisted)
+            .unwrap()
+            .crt_smoothing,
+        Some(true)
+    );
 }
 
 fn run_selected_controls_flow(app: &mut App) {
@@ -3474,12 +3711,21 @@ fn run_manual_search_ui_flow(app: &mut App, root: &Path) {
         app.scraper_settings == saved,
         "manual selection must not override write policies"
     );
-    app.scraper_preview_image = Some(crate::covers::RgbImage::new(1, 1, vec![255, 0, 0]).unwrap());
+    let preview = crate::covers::RgbImage::new(320, 240, [255, 0, 0].repeat(320 * 240)).unwrap();
+    app.scraper_preview_image = Some(preview.clone());
     app.load_art();
     assert!(
         app.ui.get_has_art(),
         "manual previews ignore the browse artwork preference"
     );
+    let (width, height) = app.low_resolution_picker_preview_box().unwrap();
+    let filtered = crate::covers::scale_to_box_area(&preview, width, height);
+    assert!(filtered.width < preview.width);
+    assert_eq!(app.ui.get_art().to_rgb8().unwrap().as_bytes(), filtered.rgb);
+    app.settings.crt_smoothing = Some(false);
+    app.load_art();
+    assert_eq!(app.ui.get_art().to_rgb8().unwrap().as_bytes(), preview.rgb);
+    app.settings.crt_smoothing = None;
     app.handle(Action::Quit);
     assert_eq!(app.screen, Screen::Scraper);
     assert_eq!(app.scraper_list.selected(), search_row);
@@ -4843,6 +5089,7 @@ fn capture_ui_if_requested(root: &Path, window: Rc<MinimalSoftwareWindow>) {
     app.saver_pool.push(SaverPicture {
         path: artwork.clone(),
         caption: "Fixture Game - NES".into(),
+        target: None,
     });
     app.set_screen(Screen::Screensaver);
     assert_eq!(app.screen, Screen::Screensaver);
@@ -6640,6 +6887,423 @@ fn fixture_system(root: &Path, id: &str, games: &str) -> FoundSystem {
         logo_dir: None,
         menu_folder: None,
     }
+}
+
+fn wait_for_attract_job(app: &mut App) {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while app.saver_job.is_some() && Instant::now() < deadline {
+        app.poll_saver_job();
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    assert!(
+        app.saver_job.is_none(),
+        "Attract Mode card read did not finish"
+    );
+}
+
+fn run_attract_mode_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
+    let root = root.join("attract-mode");
+    let valid_image = Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/logos/NES.png");
+    for (id, extension) in [("NES", "nes"), ("SNES", "sfc"), ("C64", "d64")] {
+        let games = root.join("games").join(id);
+        let media = games.join("media");
+        std::fs::create_dir_all(&media).unwrap();
+        std::fs::write(games.join(format!("First.{extension}")), b"game").unwrap();
+        std::fs::write(games.join(format!("Second.{extension}")), b"game").unwrap();
+        for image in ["first.png", "second.png"] {
+            if id == "C64" {
+                std::fs::write(media.join(image), b"broken image").unwrap();
+            } else {
+                std::fs::copy(&valid_image, media.join(image)).unwrap();
+            }
+        }
+        std::fs::write(
+            games.join("gamelist.xml"),
+            format!(
+                "<gameList><game><path>First.{extension}</path><name>{id} First</name><image>./media/first.png</image></game><game><path>Second.{extension}</path><name>{id} Second</name><image>./media/second.png</image></game></gameList>"
+            ),
+        )
+        .unwrap();
+    }
+    for core in ["_Console/NES.rbf", "_Console/SNES.rbf"] {
+        let core = root.join(core);
+        std::fs::create_dir_all(core.parent().unwrap()).unwrap();
+        std::fs::write(core, b"core").unwrap();
+    }
+    let settings = Settings {
+        attract_mode: Some(true),
+        last_played: Some(5),
+        ..Default::default()
+    };
+    let mut app = unopened_fixture_app(&root, window, settings);
+    app.all_systems = ["NES", "SNES", "C64"]
+        .map(|id| fixture_system(&root, id, &format!("games/{id}")))
+        .into();
+    app.leave_splash();
+    app.enter_screensaver();
+    assert_eq!(app.screen, Screen::Browse, "initial read is asynchronous");
+    wait_for_attract_job(&mut app);
+    assert_eq!(app.screen, Screen::Screensaver);
+    app.refresh();
+    assert!(app.ui.get_saver_launchable());
+    let first = app.saver_center_picture().unwrap().target.unwrap();
+    assert_ne!(first.system_id, "C64", "broken art is not a usable system");
+    assert!(app
+        .saver_pool
+        .iter()
+        .all(|picture| picture.target.is_some()));
+
+    app.handle(Action::Faster);
+    assert_eq!(app.screen, Screen::Screensaver);
+    assert_eq!(
+        app.saver_center_picture()
+            .unwrap()
+            .target
+            .unwrap()
+            .system_id,
+        first.system_id,
+        "the old art stays visible during the next read"
+    );
+    wait_for_attract_job(&mut app);
+    let second = app.saver_center_picture().unwrap().target.unwrap();
+    assert_ne!(second.system_id, first.system_id);
+    assert_ne!(second.system_id, "C64");
+    app.handle(Action::Slower);
+    wait_for_attract_job(&mut app);
+    let returned = app.saver_center_picture().unwrap().target.unwrap();
+    assert_eq!(
+        returned.system_id, first.system_id,
+        "Left retraces the shuffled order"
+    );
+
+    app.handle(Action::Faster);
+    app.handle(Action::Faster);
+    assert_eq!(app.saver_pending_directions.len(), 1);
+    wait_for_attract_job(&mut app);
+    assert_eq!(
+        app.saver_center_picture()
+            .unwrap()
+            .target
+            .unwrap()
+            .system_id,
+        first.system_id,
+        "two Right taps each advance one usable system"
+    );
+    let other = if first.system_id == "NES" {
+        "SNES"
+    } else {
+        "NES"
+    };
+    for image in ["first.png", "second.png"] {
+        std::fs::remove_file(root.join("games").join(other).join("media").join(image)).unwrap();
+    }
+    let automatic_retry_at = app.saver_retry_at;
+    app.handle(Action::Faster);
+    wait_for_attract_job(&mut app);
+    assert_eq!(
+        app.saver_center_picture()
+            .unwrap()
+            .target
+            .unwrap()
+            .system_id,
+        first.system_id,
+        "no other usable system keeps the current picture"
+    );
+    assert!(!app.saver_pool.is_empty());
+    assert_eq!(
+        app.saver_retry_at, automatic_retry_at,
+        "an empty manual switch must not delay automatic refill"
+    );
+
+    // Automatic continuation may revisit the current system when it is
+    // the only one with usable artwork; a manual tap must still stay put.
+    app.saver_queue.clear();
+    let before_refill = app.saver_pool.len();
+    app.start_attract_job(SaverLoadKind::Automatic, 1);
+    wait_for_attract_job(&mut app);
+    assert_eq!(app.saver_last_slot, Some(first.slot));
+    assert!(app.saver_pool.len() > before_refill);
+
+    app.refresh();
+    let chosen = app.saver_center_picture().unwrap();
+    let target = chosen.target.unwrap();
+    let Some(Outcome::Launch {
+        history,
+        active_game,
+        ..
+    }) = app.handle(Action::Accept)
+    else {
+        panic!("pictured game must launch: {:?}", app.message);
+    };
+    let history = history.expect("Attract Mode must update Last Played");
+    assert_eq!(history.entry.system, target.system_id);
+    assert_eq!(history.entry.launch, target.launch);
+    assert!(active_game.is_some());
+    assert_eq!(app.screen, Screen::Browse);
+
+    let missing = SaverPicture {
+        path: valid_image.clone(),
+        caption: "Missing Game".into(),
+        target: Some(SaverTarget {
+            system_id: target.system_id.clone(),
+            name: "Missing Game".into(),
+            launch: browse::Launch::File(root.join("missing-game.nes")),
+            slot: 0,
+        }),
+    };
+    app.saver_pool.push(missing);
+    app.saver_return = Screen::Browse;
+    app.screen = Screen::Screensaver;
+    assert!(app.handle(Action::Accept).is_none());
+    assert!(app
+        .message
+        .as_deref()
+        .unwrap_or_default()
+        .contains("file is gone"));
+    assert_eq!(app.screen, Screen::Browse);
+    app.message = None;
+    let core = if target.system_id == "NES" {
+        "_Console/NES.rbf"
+    } else {
+        "_Console/SNES.rbf"
+    };
+    std::fs::remove_file(root.join(core)).unwrap();
+    app.saver_pool.push(SaverPicture {
+        path: valid_image.clone(),
+        caption: target.name.clone(),
+        target: Some(target.clone()),
+    });
+    app.screen = Screen::Screensaver;
+    assert!(app.handle(Action::Accept).is_none());
+    assert!(
+        app.message.is_some(),
+        "a missing core stays in Degauss with an error"
+    );
+    assert_eq!(app.screen, Screen::Browse);
+    app.message = None;
+    app.saver_pool.push(SaverPicture {
+        path: valid_image.clone(),
+        caption: target.name.clone(),
+        target: Some(target.clone()),
+    });
+    app.screen = Screen::Screensaver;
+    app.handle(Action::Faster);
+    assert!(app.saver_job.is_some());
+    app.handle(Action::Quit);
+    assert_eq!(app.screen, Screen::Browse);
+    assert!(app.saver_job.is_none(), "B cancels a pending card read");
+
+    // The released screensaver remains non-interactive unless opted in.
+    app.settings.attract_mode = None;
+    app.saver_return = Screen::Browse;
+    app.screen = Screen::Screensaver;
+    assert!(app.handle(Action::Accept).is_none());
+    assert_eq!(app.screen, Screen::Browse);
+    let idle_before = app.screensaver_after();
+    assert_eq!(app.screensaver_speed(), 1);
+    app.adjust_option_value(OptionId::ScreensaverSpeed, 1);
+    assert_eq!(app.screensaver_speed(), 2);
+    app.adjust_option_value(OptionId::ScreensaverSpeed, 1);
+    assert_eq!(app.screensaver_speed(), 4);
+    assert_eq!(app.screensaver_after(), idle_before);
+    app.settings.save(&app.settings_path).unwrap();
+    let reloaded = Settings::load(&app.settings_path).unwrap();
+    assert_eq!(reloaded.attract_mode, None);
+    assert_eq!(reloaded.screensaver_speed, Some(4));
+    app.saver_pool = vec![
+        SaverPicture {
+            path: valid_image.clone(),
+            caption: "Fixture Game".into(),
+            target: None,
+        };
+        SAVER_POOL_MAX
+    ];
+    let now = Instant::now();
+    app.settings.screensaver_speed = None;
+    app.saver_offset = 0.0;
+    app.saver_stepped = now - Duration::from_millis(100);
+    app.advance_saver(now);
+    assert!((app.saver_offset - 2.4).abs() < 0.01);
+    app.settings.screensaver_speed = Some(4);
+    app.saver_offset = 0.0;
+    app.saver_stepped = now - Duration::from_millis(100);
+    app.advance_saver(now);
+    assert!((app.saver_offset - 9.6).abs() < 0.01);
+
+    // A cache can contain a derived folder picture, but it is never a
+    // launch target even if the source has playable game pictures too.
+    for image in ["first.png", "second.png"] {
+        std::fs::copy(
+            &valid_image,
+            root.join("games").join(other).join("media").join(image),
+        )
+        .unwrap();
+    }
+    let system = fixture_system(&root, "NES", "games/NES");
+    let library = Library::open_with_names(&system.to_config(), Default::default()).unwrap();
+    let mut cache = crate::cache::build_system(&library);
+    let folder = cache.folders.values_mut().next().unwrap();
+    folder.rows.push(browse::Row {
+        name: "Pictured Folder".into(),
+        sort_key: "pictured folder".into(),
+        kind: browse::Kind::Enter(Place::Dir(root.join("games/NES/Pictured Folder"))),
+        cover: Some(root.join("games/NES/media/first.png")),
+        genre: None,
+        favorite: false,
+        below: None,
+        details: Default::default(),
+    });
+    crate::cache::save_system(&app.cache_dir, "NES", &cache).unwrap();
+    let candidate = SaverCandidate {
+        system_id: "NES".into(),
+        name: "NES".into(),
+        config: system.to_config(),
+        pack_root: None,
+    };
+    let pictured = read_saver_candidate(
+        &candidate,
+        0,
+        &app.cache_dir,
+        &Default::default(),
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    assert_eq!(pictured.len(), 2, "folder artwork stays non-launchable");
+    assert!(pictured.iter().all(|picture| picture.target.is_some()));
+
+    // An explicitly prepared Artwork Pack uses its saved presentation, not
+    // the gamelist pictures that happen to exist for the same system.
+    let pack_root = root.join("docs");
+    std::fs::create_dir_all(&pack_root).unwrap();
+    let neutral = Library::open_source_neutral(&system.to_config(), Default::default()).unwrap();
+    let pack_cache = crate::cache::build_system(&neutral);
+    let launch = pack_cache
+        .folders
+        .values()
+        .flat_map(|folder| &folder.rows)
+        .find_map(|row| match &row.kind {
+            browse::Kind::Play(launch) => Some(launch.clone()),
+            _ => None,
+        })
+        .unwrap();
+    crate::cache::install_transactional(
+        &app.cache_dir,
+        crate::cache::CacheKind::ArtworkPack,
+        &[crate::cache::StagedSystemCache {
+            id: "NES".into(),
+            cache: pack_cache,
+            fingerprints: Default::default(),
+            fingerprints_complete: true,
+        }],
+    )
+    .unwrap();
+    let prepared = std::collections::HashMap::from([(
+        launch,
+        crate::artwork_pack::PackPresentation {
+            cover: Some(valid_image.clone()),
+            ..Default::default()
+        },
+    )]);
+    crate::cache::save_pack_state(
+        &app.cache_dir,
+        "NES",
+        &crate::cache::PackSourceState {
+            accepted: Some(crate::cache::AcceptedSource {
+                docs_root: pack_root.to_string_lossy().into_owned(),
+                language: None,
+                signature: None,
+                cache_marker: 0,
+                health: crate::artwork_pack::ProviderHealth::Ready,
+                diagnostics: Vec::new(),
+                skipped_entries: 0,
+            }),
+            declined: None,
+        },
+        &prepared,
+    )
+    .unwrap();
+    let pack_pictures = read_saver_candidate(
+        &SaverCandidate {
+            pack_root: Some(pack_root),
+            ..candidate.clone()
+        },
+        0,
+        &app.cache_dir,
+        &Default::default(),
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    assert_eq!(pack_pictures.len(), 1);
+    assert_eq!(pack_pictures[0].path, valid_image);
+
+    let folder = cache.folders.values_mut().next().unwrap();
+    folder.rows = (0..30)
+        .map(|number| browse::Row {
+            name: format!("Game {number}"),
+            sort_key: format!("game {number}"),
+            kind: browse::Kind::Play(browse::Launch::File(root.join("games/NES/First.nes"))),
+            cover: Some(root.join("games/NES/media/first.png")),
+            genre: None,
+            favorite: false,
+            below: None,
+            details: Default::default(),
+        })
+        .collect();
+    crate::cache::save_system(&app.cache_dir, "NES", &cache).unwrap();
+    let shuffled = find_saver_pictures(
+        std::slice::from_ref(&candidate),
+        0,
+        1,
+        None,
+        &app.cache_dir,
+        &Default::default(),
+        1,
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    let titles: Vec<_> = shuffled
+        .pictures
+        .iter()
+        .map(|picture| picture.target.as_ref().unwrap().name.as_str())
+        .collect();
+    let mut sorted = titles.clone();
+    sorted.sort_unstable();
+    assert_ne!(
+        titles, sorted,
+        "Attract Mode must not walk games alphabetically"
+    );
+    app.saver_pool.clear();
+    app.saver_queue.clear();
+    app.saver_candidates = Some(vec![0]);
+    app.enter_screensaver();
+    assert_eq!(app.saver_pool.len(), SAVER_POOL_MAX);
+    assert_eq!(
+        app.saver_queue.len(),
+        6,
+        "initial entry keeps the remaining pictures"
+    );
+    app.handle(Action::Quit);
+    let folder = cache.folders.values_mut().next().unwrap();
+    let repeat = folder.rows[0].clone();
+    folder.rows.extend((0..50).map(|_| repeat.clone()));
+    crate::cache::save_system(&app.cache_dir, "NES", &cache).unwrap();
+    let loaded = find_saver_pictures(
+        &[candidate],
+        0,
+        1,
+        None,
+        &app.cache_dir,
+        &Default::default(),
+        1,
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    assert_eq!(
+        loaded.pictures.len(),
+        SAVER_ATTRACT_WANTED,
+        "a manual switch does not decode the entire system"
+    );
+    app.ui.hide().unwrap();
 }
 
 /// A Pack cache as the previous release wrote it: complete rows and no
@@ -8968,6 +9632,202 @@ fn run_folder_artwork_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
     app.ui.hide().unwrap();
 }
 
+fn run_custom_placeholder_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
+    let root = root.join("custom-placeholder");
+    let games = root.join("games/NES");
+    let logos = root.join("logos");
+    std::fs::create_dir_all(&games).unwrap();
+    std::fs::create_dir_all(&logos).unwrap();
+    for name in ["First Game.nes", "Second Game.nes"] {
+        std::fs::write(games.join(name), b"fixture").unwrap();
+    }
+    let shipped = logos.join("NES.png");
+    let custom = logos.join("chosen.png");
+    let game_art = games.join("game.png");
+    std::fs::copy(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/logos/NES.png"),
+        &shipped,
+    )
+    .unwrap();
+    std::fs::copy(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/logos/Arduboy.png"),
+        &custom,
+    )
+    .unwrap();
+    std::fs::copy(&shipped, &game_art).unwrap();
+    let category_image = crate::category_images::install(&logos, "Console", &custom).unwrap();
+
+    let mut app = fixture_app(&root, window, Settings::default());
+    app.logo_dir = Some(logos.clone());
+    for system in app.systems.iter_mut().chain(app.all_systems.iter_mut()) {
+        system.logo_dir = Some(logos.clone());
+    }
+    app.reroll_category_art();
+    app.open_system = None;
+    app.browsing = Browsing::Categories;
+    let category = app
+        .categories
+        .iter()
+        .position(|(name, _)| name == "Console")
+        .unwrap();
+    app.category_list.select(category);
+    app.open_selected_category();
+    app.open_system_now();
+    app.finish_background_work_for_headless();
+    assert!(
+        app.skipped_systems,
+        "the one-system category opens directly"
+    );
+    assert_eq!(app.browsing, Browsing::Games);
+    assert_eq!(app.game_placeholder_logo(), Some(category_image.clone()));
+    assert_eq!(app.current_art().0, Some(category_image.clone()));
+
+    // The missing-art placeholder, and every list view that draws it, use
+    // the same chosen category picture rather than the shipped system logo.
+    app.load_art();
+    assert!(app.ui.get_has_art());
+    for layout in [Layout::Tiled, Layout::Carousel, Layout::Gallery] {
+        app.set_layout(layout);
+        app.load_art();
+        app.refresh();
+        let (range, _) = app.game_list.window();
+        let row = app
+            .rows
+            .row_data(app.game_list.selected() - range.start)
+            .unwrap();
+        assert!(
+            row.has_cover,
+            "{} must show the placeholder",
+            layout.label()
+        );
+        let source = if layout == Layout::Gallery {
+            let mut cache = crate::covers::CoverCache::new_area(
+                app.gallery_covers.area_box().unwrap(),
+                1,
+                [
+                    app.effective_palette().surface.r,
+                    app.effective_palette().surface.g,
+                    app.effective_palette().surface.b,
+                ],
+            );
+            cache.get(&category_image).unwrap().clone()
+        } else {
+            let palette = app.effective_palette();
+            let ground = if layout == Layout::Carousel {
+                [
+                    palette.background.r,
+                    palette.background.g,
+                    palette.background.b,
+                ]
+            } else {
+                [palette.surface.r, palette.surface.g, palette.surface.b]
+            };
+            let sampled = crate::covers::load_scaled(
+                &category_image,
+                app.covers.max_edge(),
+                ground,
+                &mut Default::default(),
+            )
+            .unwrap();
+            let (width, height) = app.low_resolution_row_preview_box(1.0).unwrap();
+            crate::covers::scale_to_box_area(&sampled, width, height)
+        };
+        assert_eq!(
+            row.cover.to_rgb8().unwrap().as_bytes(),
+            source.rgb,
+            "{} must smooth the chosen placeholder at its drawn size",
+            layout.label()
+        );
+    }
+
+    // A fast scroll defers each game's screenshot but still shows the
+    // chosen, cached logo immediately, then the game art when it settles.
+    app.set_layout(Layout::Details);
+    app.here[0].cover = Some(game_art);
+    app.game_list.select(0);
+    app.load_art();
+    app.speed = SPEED_STEPS.len() - 1;
+    app.game_list.select(1);
+    app.touch_selection();
+    app.refresh();
+    assert!(app.art_pending);
+    assert!(app.ui.get_has_art());
+    let palette = app.effective_palette();
+    let sampled = crate::covers::load_scaled(
+        &category_image,
+        app.covers.max_edge(),
+        [palette.surface.r, palette.surface.g, palette.surface.b],
+        &mut Default::default(),
+    )
+    .unwrap();
+    let (width, height) = app.low_resolution_detail_preview_box(1.0).unwrap();
+    let filtered = crate::covers::scale_to_box_area(&sampled, width, height);
+    assert_eq!(app.ui.get_art().to_rgb8().unwrap().as_bytes(), filtered.rgb);
+
+    // A custom system image works through the same missing-art and fast-scroll
+    // paths, even when the system was selected from a category with several
+    // systems rather than auto-opened like Arcade.
+    let system_image = crate::category_images::install_system(&logos, "NES", &shipped).unwrap();
+    app.skipped_systems = false;
+    assert_eq!(app.game_placeholder_logo(), Some(system_image));
+    app.touch_selection();
+    app.refresh();
+    let system_image = app.game_placeholder_logo().unwrap();
+    let sampled = crate::covers::load_scaled(
+        &system_image,
+        app.covers.max_edge(),
+        [palette.surface.r, palette.surface.g, palette.surface.b],
+        &mut Default::default(),
+    )
+    .unwrap();
+    let (width, height) = app.low_resolution_detail_preview_box(1.0).unwrap();
+    let filtered = crate::covers::scale_to_box_area(&sampled, width, height);
+    assert_eq!(app.ui.get_art().to_rgb8().unwrap().as_bytes(), filtered.rgb);
+
+    app.settings.crt_smoothing = Some(false);
+    app.apply_geometry();
+    app.touch_selection();
+    app.refresh();
+    assert_eq!(
+        app.ui.get_art().to_rgb8().unwrap().as_bytes(),
+        sampled.rgb,
+        "Off restores the original unfiltered placeholder"
+    );
+
+    // Clearing both selections restores the original shipped system logo.
+    crate::category_images::clear_system(&logos, "NES").unwrap();
+    crate::category_images::clear(&logos, "Console").unwrap();
+    assert_eq!(app.game_placeholder_logo(), Some(shipped));
+
+    // The image picker itself uses the same filter at the smaller chooser
+    // rectangle; Off still displays the existing unfiltered preview.
+    app.settings.crt_smoothing = Some(true);
+    app.screen = Screen::CategoryImage;
+    app.category_image_choices = vec![crate::category_images::Choice {
+        label: "chosen.png".into(),
+        path: custom.clone(),
+    }];
+    app.menu_list = ListState::new(1, app.geometry.visible);
+    app.apply_geometry();
+    app.load_art();
+    let (width, height) = app.low_resolution_picker_preview_box().unwrap();
+    let palette = app.effective_palette();
+    let sampled = crate::covers::load_scaled(
+        &custom,
+        app.covers.max_edge(),
+        [palette.surface.r, palette.surface.g, palette.surface.b],
+        &mut Default::default(),
+    )
+    .unwrap();
+    let filtered = crate::covers::scale_to_box_area(&sampled, width, height);
+    assert!(filtered.width < sampled.width);
+    assert_eq!(app.ui.get_art().to_rgb8().unwrap().as_bytes(), filtered.rgb);
+    app.settings.crt_smoothing = Some(false);
+    app.load_art();
+    assert_eq!(app.ui.get_art().to_rgb8().unwrap().as_bytes(), sampled.rgb);
+    app.ui.hide().unwrap();
+}
+
 /// A Neo Geo library of ROM sets, browsed, started and favourited through
 /// the interface: the rows a card owner sees are games, choosing one hands
 /// Main the complete set path, and a favourite made here is the ordinary
@@ -10530,10 +11390,12 @@ pub(super) fn run_ui_acceptance_flow(window: Rc<MinimalSoftwareWindow>) {
     run_degraded_pack_acknowledgement_flow(&root, window.clone());
     run_arcade_core_descriptor_favourite_flow(&root, window.clone());
     run_folder_artwork_flow(&root, window.clone());
+    run_custom_placeholder_flow(&root, window.clone());
     run_paged_theme_name_flow(&root, window.clone());
     run_theme_editor_save_changes_flow(&root, window.clone());
     run_metadata_filter_flow(&root, window.clone());
     run_last_played_flow(&root, window.clone());
+    run_attract_mode_flow(&root, window.clone());
     let mut app = fixture_app(&root, window.clone(), Settings::default());
     run_selected_controls_flow(&mut app);
     run_artwork_visibility_flow(&mut app);

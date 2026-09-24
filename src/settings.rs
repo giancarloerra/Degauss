@@ -64,10 +64,11 @@ pub enum HoldShortcut {
     JumpToLetter,
     Actions,
     Menu,
+    StartAttractMode,
 }
 
 impl HoldShortcut {
-    pub const ALL: [Self; 10] = [
+    pub const ALL: [Self; 11] = [
         Self::None,
         Self::CycleView,
         Self::RandomGame,
@@ -78,6 +79,7 @@ impl HoldShortcut {
         Self::JumpToLetter,
         Self::Actions,
         Self::Menu,
+        Self::StartAttractMode,
     ];
 
     pub const fn label(self) -> &'static str {
@@ -92,6 +94,7 @@ impl HoldShortcut {
             Self::JumpToLetter => "Jump to Letter",
             Self::Actions => "Actions",
             Self::Menu => "Menu",
+            Self::StartAttractMode => "Start Attract Mode",
         }
     }
 
@@ -323,6 +326,10 @@ pub struct Settings {
     pub hidden_paths: Vec<String>,
     pub show_stats: Option<bool>,
     pub show_art: Option<bool>,
+    /// Area-filter images at low-line framebuffer sizes. Absent is On;
+    /// Off retains the faster image sampling used before v0.9.0.
+    #[serde(default)]
+    pub crt_smoothing: Option<bool>,
     /// How game artwork is horizontally corrected for the physical display:
     /// "framebuffer", "4:3" or "16:9". Absent keeps the original
     /// framebuffer-pixel behaviour.
@@ -403,6 +410,15 @@ pub struct Settings {
     pub overscan_y: Option<u32>,
     /// Seconds of being left alone before the screensaver starts. Zero off.
     pub screensaver_after: Option<u64>,
+    /// Allow launching the pictured game and moving between systems in the
+    /// screensaver. Absent is off, preserving the wake-on-any-button behavior.
+    pub attract_mode: Option<bool>,
+    /// Show an immediate Attract Mode launcher in the general menu.
+    /// Absent is off, independently of automatic screensaver settings.
+    #[serde(default)]
+    pub attract_mode_menu: Option<bool>,
+    /// Screensaver movement multiplier: 1 (normal), 2 or 4. Absent is normal.
+    pub screensaver_speed: Option<u8>,
     /// Nudge the whole picture, in pixels. Screens are not all centred.
     pub shift_x: Option<i32>,
     pub shift_y: Option<i32>,
@@ -710,6 +726,7 @@ mod tests {
         );
         assert_eq!(settings.show_misterzine, None);
         assert!(!settings.show_misterzine.unwrap_or(false));
+        assert!(!settings.attract_mode_menu.unwrap_or(false));
     }
 
     #[test]
@@ -790,6 +807,7 @@ mod tests {
             game_name_display: Some(GameNameDisplay::KeepRegionAndDiscIndex),
             folder_brackets: Some(false),
             show_game_position: Some(false),
+            attract_mode_menu: Some(true),
             left_right: Some("letter".into()),
             font: Some("pixel".into()),
             theme_font_override: Some(true),
@@ -1044,9 +1062,25 @@ mod tests {
                 "Jump to Letter",
                 "Actions",
                 "Menu",
+                "Start Attract Mode",
             ]
         );
-        assert_eq!(HoldShortcut::None.step(-1), HoldShortcut::Menu);
+        assert_eq!(HoldShortcut::None.step(-1), HoldShortcut::StartAttractMode);
+    }
+
+    #[test]
+    fn attract_shortcut_is_saved_without_enabling_the_menu_entry() {
+        let path = temp_path("hold-attract-mode");
+        let mut settings = Settings::default();
+        settings.set_hold_shortcut(HoldButton::Y, HoldShortcut::StartAttractMode);
+        settings.save(&path).unwrap();
+        let restored = Settings::load(&path).unwrap();
+        assert_eq!(
+            restored.hold_shortcut(HoldButton::Y),
+            HoldShortcut::StartAttractMode
+        );
+        assert!(!restored.attract_mode_menu.unwrap_or(false));
+        std::fs::remove_file(path).unwrap();
     }
 
     #[test]

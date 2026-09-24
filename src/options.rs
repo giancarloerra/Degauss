@@ -38,6 +38,8 @@ pub enum OptionId {
     /// Which named palette from the themes folder is on, if any.
     Theme,
     ShowArt,
+    /// Improve low-line artwork and logos with an area filter.
+    CrtSmoothing,
     /// Correct game artwork for the physical aspect ratio of a display
     /// whose framebuffer pixels are not square.
     ArtworkScale,
@@ -91,6 +93,12 @@ pub enum OptionId {
     ShiftY,
     /// How long the machine is left alone before pictures take the screen.
     Screensaver,
+    /// Whether the screensaver's pictured game can be launched.
+    AttractMode,
+    /// Offer an immediate Attract Mode entry in the general menu.
+    AttractModeMenu,
+    /// How quickly the screensaver strip moves, independently of idle time.
+    ScreensaverSpeed,
     /// Not a setting: the door to the developer list.
     #[allow(dead_code)]
     Advanced,
@@ -122,6 +130,7 @@ pub const OPTIONS: &[OptionId] = &[
     OptionId::ShowGamePosition,
     OptionId::Font,
     OptionId::ShowArt,
+    OptionId::CrtSmoothing,
     OptionId::ArtworkScale,
     OptionId::ShowBar,
     OptionId::Spacer,
@@ -149,6 +158,9 @@ pub const OPTIONS: &[OptionId] = &[
     OptionId::ShiftY,
     OptionId::Spacer,
     OptionId::Screensaver,
+    OptionId::AttractMode,
+    OptionId::AttractModeMenu,
+    OptionId::ScreensaverSpeed,
     OptionId::RebuildCache,
     OptionId::ScrapeAll,
     OptionId::Spacer,
@@ -252,9 +264,13 @@ impl OptionsPage {
                 OptionId::ShowGamePosition,
                 OptionId::Font,
                 OptionId::ShowArt,
+                OptionId::CrtSmoothing,
                 OptionId::ArtworkScale,
                 OptionId::ShowBar,
                 OptionId::Screensaver,
+                OptionId::AttractMode,
+                OptionId::AttractModeMenu,
+                OptionId::ScreensaverSpeed,
             ],
             Self::Library => &[
                 OptionId::FavoritesFirst,
@@ -303,6 +319,7 @@ impl OptionId {
             OptionId::Font => "Text",
             OptionId::Theme => "Theme",
             OptionId::ShowArt => "Artwork",
+            OptionId::CrtSmoothing => "CRT Image Smoothing",
             OptionId::ArtworkScale => "Artwork Scale Factor",
             OptionId::ShowHidden => "Show What You Hid",
             OptionId::ShowEmpty => "Show Systems with No Games",
@@ -335,6 +352,9 @@ impl OptionId {
             OptionId::ShiftX => "Screen Position, Sideways",
             OptionId::ShiftY => "Screen Position, Up and Down",
             OptionId::Screensaver => "Screensaver",
+            OptionId::AttractMode => "Attract Mode",
+            OptionId::AttractModeMenu => "Show Attract Mode in Menu",
+            OptionId::ScreensaverSpeed => "Screensaver Speed",
             OptionId::Advanced => "Developer",
             OptionId::Spacer => "",
         }
@@ -379,6 +399,9 @@ impl OptionId {
                 "Left/right choose a theme. A edits colours, logo and default text."
             }
             OptionId::ShowArt => "Show or hide library artwork. Manual-match previews remain available.",
+            OptionId::CrtSmoothing => {
+                "Smooth artwork and logos at 240p/288p. Off restores the faster original scaling; higher-resolution modes are unchanged."
+            }
             OptionId::ArtworkScale => {
                 "Match game artwork to the display shape. Logos and screensaver images are unchanged."
             }
@@ -443,6 +466,15 @@ impl OptionId {
             OptionId::ShiftY => "Move the interface up or down within the available top and bottom margins.",
             OptionId::Screensaver => {
                 "Choose the idle time before the artwork screensaver starts, or turn it off."
+            }
+            OptionId::AttractMode => {
+                "Let A launch the pictured game and Left/Right change systems. Off keeps the usual wake-on-any-button screensaver."
+            }
+            OptionId::AttractModeMenu => {
+                "Add an Attract Mode entry to the Menu for immediate start, independent of the idle screensaver."
+            }
+            OptionId::ScreensaverSpeed => {
+                "Move the screensaver pictures at Normal, 2x or 4x speed. This does not change when it starts."
             }
             OptionId::Advanced => "Press A for diagnostics: the drawing path and the readout.",
             OptionId::Spacer => "",

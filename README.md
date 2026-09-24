@@ -266,8 +266,11 @@ while `/tmp/degauss.log` keeps the technical detail.
 - **Fast.** 0.47 s from launch to first frame. 0.57 s to open a folder of
   12,605 games.
 - **Artwork instant browsing.** Artwork is read straight from the card as
-  you scroll, with nothing pre-generated. Gallery reduces visible images to
-  its cell size in memory only. Nothing is written beside the artwork.
+  you scroll, with nothing pre-generated. After the selection settles, Degauss
+  prepares upcoming images in memory one at a time, spaced 250 ms apart and
+  bounded by the existing cache; scrolling through cached images keeps
+  preparation moving in that direction. Gallery reduces visible
+  images to its cell size in memory only. Nothing is written beside the artwork.
 - **Nothing resident.** No service, no daemon, no port, no background
   process, nothing at boot. One program, running only while you are
   looking at it.
@@ -816,7 +819,13 @@ You Hid** shows the rows you hid without unhiding them, and **Unhide
 Everything** puts them all back. These settings are in **Options → Library**.
 
 The screensaver, after the set time, drifts through game images taken from your own
-card.
+card. Optional Attract Mode lets **A** launch the pictured game, **Left/Right**
+move between systems and **B** return to Degauss. It is off by default, so
+any button still just wakes the ordinary screensaver. Separately, **Show Attract
+Mode in Menu** adds an immediate launcher to **Y Menu**, even when the idle
+screensaver and automatic Attract Mode are off.
+**Options → Shortcuts** can instead assign **Start Attract Mode** to a one-second
+button hold without enabling the Menu entry.
 
 ## Settings
 
@@ -833,7 +842,7 @@ require **A** and confirmation, never a sideways press.
 | Navigation | Skip Artwork Faster Than | Above this speed, pictures wait until the list stops. 6x out of the box |
 | Navigation | Left and Right Behaviour | What left and right do while browsing: Scroll Speed Change (the default), Letter, Page or Direction. Letter and Page repeat while held; in Direction, left and right move one entry and up and down move a whole row in Tiled, Multi List and Gallery |
 | Navigation | Random Game Behaviour | Whether either random action starts the game, or only moves to it so you can look first |
-| Shortcuts | Hold A / Hold B / Hold X / Hold Y | Off by default. Assign None, Cycle View, Random Game, Random Favourite, Add/Remove Favourite, Game Information, Search This Folder, Jump to Letter, Actions or Menu to each one-second hold. Assign Actions and Menu to A/B for two-button controllers. Short presses retain their normal action. Holds work only while browsing and only where the chosen command is available; otherwise the normal press is immediate |
+| Shortcuts | Hold A / Hold B / Hold X / Hold Y | Off by default. Assign None, Cycle View, Random Game, Random Favourite, Add/Remove Favourite, Game Information, Search This Folder, Jump to Letter, Actions, Menu or Start Attract Mode to each one-second hold. Assign Actions and Menu to A/B for two-button controllers. Short presses retain their normal action. Holds work only while browsing and only where the chosen command is available; otherwise the normal press is immediate |
 | Appearance | Theme | Left and right choose a palette. Press A to open the editor. Standard uses the colours in `degauss.toml`. See [Themes and colours](#themes-and-colours) |
 | Appearance | View | The global default for places without a custom view: Details, Tiled, Carousel, List, Multi List or Gallery |
 | Appearance | Start Folder | Home by default, or any currently available top-level folder. If the saved folder is no longer present, Degauss safely starts at Home without replacing the choice |
@@ -844,9 +853,13 @@ require **A** and confirmation, never a sideways press.
 | Appearance | Game Total/Position | On by default. Turn off the selected-position and total counter while browsing games |
 | Appearance | Text | The typeface: Smooth, Pixel (a DOS font on whole pixels), and the bolder Smooth 2 and Pixel 2 |
 | Appearance | Artwork | Turn pictures off entirely |
+| Appearance | CRT Image Smoothing | On by default for 240p/288p output: smoother artwork and logos in the browsing views and screensaver. Off uses the original, faster scaling; higher-resolution output is unchanged |
 | Appearance | Artwork Scale Factor | Framebuffer keeps the original square-pixel fit and is the default. 4:3 and 16:9 correct game artwork for that physical display shape in Details, Tiled, Carousel and Gallery, including a folder or Last Played showing a game's artwork. Category logos, system logos and the screensaver are unchanged |
 | Appearance | Bottom Bar While Browsing | On by default. Show the time and button hints while browsing. A saved Off choice stays Off after updating or restarting; menus and operation controls remain visible |
 | Appearance | Screensaver | How long with nothing pressed before pictures start |
+| Appearance | Attract Mode | Off by default. When on, A launches the game pictured at the centre and Left/Right moves between systems |
+| Appearance | Show Attract Mode in Menu | Off by default. Add an immediate Attract Mode entry to Y Menu, independently of idle screensaver settings |
+| Appearance | Screensaver Speed | Normal (default), 2x or 4x picture movement, independent of the idle time |
 | Library | Favourites First | Show favourites first in each folder, keeping them in alphabetical order |
 | Library | Folders Before Games | On, folders lead a system's listing; off, the games come first |
 | Library | Core Preference | Standard First (default) or RetroAchievements First. Used by systems whose Core Version is Default; the other version is used only when the preferred version is absent |
