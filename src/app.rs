@@ -6101,6 +6101,16 @@ impl App {
         self.saver_pool.get(index % self.saver_pool.len()).cloned()
     }
 
+    fn start_manual_attract_mode(&mut self) {
+        self.manual_attract_mode = true;
+        self.saver_retry_at = Instant::now();
+        self.start_attract_job(SaverLoadKind::Initial, 1);
+        if self.saver_job.is_none() {
+            self.manual_attract_mode = false;
+        }
+        self.dirty = true;
+    }
+
     fn start_attract_job(&mut self, kind: SaverLoadKind, direction: isize) {
         if let Some(job) = &self.saver_job {
             if kind == SaverLoadKind::Manual {
@@ -14066,7 +14076,10 @@ impl App {
 
     fn hold_shortcut_available(&self, shortcut: HoldShortcut) -> bool {
         if self.in_misterzine_browser()
-            && !matches!(shortcut, HoldShortcut::Actions | HoldShortcut::Menu)
+            && !matches!(
+                shortcut,
+                HoldShortcut::Actions | HoldShortcut::Menu | HoldShortcut::StartAttractMode
+            )
         {
             return false;
         }
@@ -14086,7 +14099,7 @@ impl App {
             HoldShortcut::SearchThisFolder | HoldShortcut::JumpToLetter => {
                 self.browsing != Browsing::Categories
             }
-            HoldShortcut::Actions | HoldShortcut::Menu => true,
+            HoldShortcut::Actions | HoldShortcut::Menu | HoldShortcut::StartAttractMode => true,
         }
     }
 
@@ -14131,6 +14144,7 @@ impl App {
                 self.open_menu();
                 self.dirty = true;
             }
+            HoldShortcut::StartAttractMode => self.start_manual_attract_mode(),
         }
         None
     }
@@ -18498,12 +18512,7 @@ impl App {
                     } else if choice == "Scripts" {
                         self.open_scripts();
                     } else if choice == "Attract Mode" {
-                        self.manual_attract_mode = true;
-                        self.saver_retry_at = Instant::now();
-                        self.start_attract_job(SaverLoadKind::Initial, 1);
-                        if self.saver_job.is_none() {
-                            self.manual_attract_mode = false;
-                        }
+                        self.start_manual_attract_mode();
                     } else if choice == "Help" {
                         self.screen = Screen::Help;
                         self.apply_geometry();
@@ -21458,6 +21467,24 @@ pub(crate) fn test_library_launch_flow(window: Rc<MinimalSoftwareWindow>) {
     );
     app.settings.attract_mode_menu = None;
     app.settings.screensaver_after = None;
+    app.screen = Screen::Browse;
+    app.hold_shortcuts[HoldButton::Y.index()] = HoldShortcut::StartAttractMode;
+    app.saver_candidates = Some(vec![0]);
+    let mut repeater = Repeater::new(RepeatConfig::default());
+    repeater.set_hold_shortcuts(app.available_hold_shortcuts());
+    let pressed = Instant::now();
+    assert_eq!(repeater.press(Action::Menu, pressed), None);
+    let due = repeater.tick(pressed + Duration::from_secs(1));
+    assert_eq!(
+        due,
+        vec![Action::HoldShortcut(HoldShortcut::StartAttractMode)]
+    );
+    app.handle(due[0]);
+    assert!(app.saver_job.is_some(), "held Y starts the picture reader");
+    assert!(app.manual_attract_mode, "the menu switch remains off");
+    app.handle(Action::Quit);
+    assert!(!app.manual_attract_mode);
+    app.hold_shortcuts[HoldButton::Y.index()] = HoldShortcut::None;
 
     for kind in [
         SaverLoadKind::Initial,
@@ -21486,7 +21513,7 @@ pub(crate) fn test_library_launch_flow(window: Rc<MinimalSoftwareWindow>) {
         app.invalidate_saver_candidates();
         app.saver_candidates = Some(vec![0]);
         if kind == SaverLoadKind::Automatic {
-            app.saver_pending_directions.push_back(-1);
+            app.saver_pending_directions.push_back(1);
         }
         sender.send(Ok(None)).unwrap();
         app.poll_saver_job();
@@ -21500,7 +21527,15 @@ pub(crate) fn test_library_launch_flow(window: Rc<MinimalSoftwareWindow>) {
             },
             "source changes preserve the requested Attract Mode action"
         );
-        assert_eq!(replayed.direction, direction);
+        assert_eq!(
+            replayed.direction,
+            if kind == SaverLoadKind::Automatic {
+                1
+            } else {
+                direction
+            },
+            "a queued manual direction takes precedence over a stale automatic read"
+        );
         if kind == SaverLoadKind::Initial {
             assert!(app.manual_attract_mode, "manual entry remains active");
         }

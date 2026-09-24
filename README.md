@@ -824,6 +824,8 @@ move between systems and **B** return to Degauss. It is off by default, so
 any button still just wakes the ordinary screensaver. Separately, **Show Attract
 Mode in Menu** adds an immediate launcher to **Y Menu**, even when the idle
 screensaver and automatic Attract Mode are off.
+**Options → Shortcuts** can instead assign **Start Attract Mode** to a one-second
+button hold without enabling the Menu entry.
 
 ## Settings
 
@@ -840,7 +842,7 @@ require **A** and confirmation, never a sideways press.
 | Navigation | Skip Artwork Faster Than | Above this speed, pictures wait until the list stops. 6x out of the box |
 | Navigation | Left and Right Behaviour | What left and right do while browsing: Scroll Speed Change (the default), Letter, Page or Direction. Letter and Page repeat while held; in Direction, left and right move one entry and up and down move a whole row in Tiled, Multi List and Gallery |
 | Navigation | Random Game Behaviour | Whether either random action starts the game, or only moves to it so you can look first |
-| Shortcuts | Hold A / Hold B / Hold X / Hold Y | Off by default. Assign None, Cycle View, Random Game, Random Favourite, Add/Remove Favourite, Game Information, Search This Folder, Jump to Letter, Actions or Menu to each one-second hold. Assign Actions and Menu to A/B for two-button controllers. Short presses retain their normal action. Holds work only while browsing and only where the chosen command is available; otherwise the normal press is immediate |
+| Shortcuts | Hold A / Hold B / Hold X / Hold Y | Off by default. Assign None, Cycle View, Random Game, Random Favourite, Add/Remove Favourite, Game Information, Search This Folder, Jump to Letter, Actions, Menu or Start Attract Mode to each one-second hold. Assign Actions and Menu to A/B for two-button controllers. Short presses retain their normal action. Holds work only while browsing and only where the chosen command is available; otherwise the normal press is immediate |
 | Appearance | Theme | Left and right choose a palette. Press A to open the editor. Standard uses the colours in `degauss.toml`. See [Themes and colours](#themes-and-colours) |
 | Appearance | View | The global default for places without a custom view: Details, Tiled, Carousel, List, Multi List or Gallery |
 | Appearance | Start Folder | Home by default, or any currently available top-level folder. If the saved folder is no longer present, Degauss safely starts at Home without replacing the choice |

@@ -1632,6 +1632,20 @@ mod tests {
         }
     }
 
+    #[test]
+    fn arcade_support_exclusion_matches_only_the_exact_top_level_path() {
+        let root = temp("arcade-support-exact");
+        let arcade = root.join("_Arcade");
+        std::fs::create_dir_all(&arcade).unwrap();
+        let mut config = system(&arcade);
+        config.name = "Arcade".into();
+        let library = Library::open(&config).unwrap();
+        assert!(library.is_skipped(&arcade.join("cores")));
+        assert!(!library.is_skipped(&arcade.join("Cores")));
+        assert!(!library.is_skipped(&arcade.join("_Organized/cores")));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
     #[cfg(target_os = "linux")]
     #[test]
     fn non_utf8_artwork_names_are_not_indexed_as_lossy_paths() {

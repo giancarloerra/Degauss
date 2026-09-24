@@ -64,10 +64,11 @@ pub enum HoldShortcut {
     JumpToLetter,
     Actions,
     Menu,
+    StartAttractMode,
 }
 
 impl HoldShortcut {
-    pub const ALL: [Self; 10] = [
+    pub const ALL: [Self; 11] = [
         Self::None,
         Self::CycleView,
         Self::RandomGame,
@@ -78,6 +79,7 @@ impl HoldShortcut {
         Self::JumpToLetter,
         Self::Actions,
         Self::Menu,
+        Self::StartAttractMode,
     ];
 
     pub const fn label(self) -> &'static str {
@@ -92,6 +94,7 @@ impl HoldShortcut {
             Self::JumpToLetter => "Jump to Letter",
             Self::Actions => "Actions",
             Self::Menu => "Menu",
+            Self::StartAttractMode => "Start Attract Mode",
         }
     }
 
@@ -1059,9 +1062,25 @@ mod tests {
                 "Jump to Letter",
                 "Actions",
                 "Menu",
+                "Start Attract Mode",
             ]
         );
-        assert_eq!(HoldShortcut::None.step(-1), HoldShortcut::Menu);
+        assert_eq!(HoldShortcut::None.step(-1), HoldShortcut::StartAttractMode);
+    }
+
+    #[test]
+    fn attract_shortcut_is_saved_without_enabling_the_menu_entry() {
+        let path = temp_path("hold-attract-mode");
+        let mut settings = Settings::default();
+        settings.set_hold_shortcut(HoldButton::Y, HoldShortcut::StartAttractMode);
+        settings.save(&path).unwrap();
+        let restored = Settings::load(&path).unwrap();
+        assert_eq!(
+            restored.hold_shortcut(HoldButton::Y),
+            HoldShortcut::StartAttractMode
+        );
+        assert!(!restored.attract_mode_menu.unwrap_or(false));
+        std::fs::remove_file(path).unwrap();
     }
 
     #[test]
