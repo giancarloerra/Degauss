@@ -5873,7 +5873,11 @@ impl App {
             candidates,
             start,
             direction,
-            current,
+            if kind == SaverLoadKind::Manual {
+                current
+            } else {
+                None
+            },
             self.cache_dir.clone(),
             self.names.clone(),
             self.seed,
