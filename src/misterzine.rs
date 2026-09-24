@@ -1725,6 +1725,7 @@ where
         .iter()
         .filter(|(_, archive)| archive_can_hold_menu_core(archive))
         .collect();
+    let mut readable_archives = 0;
     for (index, (name, archive)) in archives.iter().enumerate() {
         if cancelled.load(Ordering::Relaxed) {
             return Err(FetchError {
@@ -1800,7 +1801,10 @@ where
             Ok::<_, FetchError>(archive_cores)
         })();
         match loaded {
-            Ok(archive_cores) => cores.extend(archive_cores),
+            Ok(archive_cores) => {
+                readable_archives += 1;
+                cores.extend(archive_cores);
+            }
             Err(error) if error.cancelled => return Err(error),
             Err(error) => {
                 crate::note(&format!(
@@ -1810,6 +1814,13 @@ where
                 failed_sources.push(format!("{} / {}: {}", database.label(), name, error.user));
             }
         }
+    }
+    if manifest.files.is_empty() && !archives.is_empty() && readable_archives == 0 {
+        return Err(FetchError {
+            user: "A configured Downloader database has no readable archives.".into(),
+            diagnostic: format!("{}: all archive summaries failed", database.id),
+            cancelled: false,
+        });
     }
     let _ = manifest.timestamp;
     Ok(cores)
@@ -2959,6 +2970,7 @@ fn run_with_fetch<F>(
     let mut failed_sources = Vec::new();
     let mut databases_read = 0;
     for (index, database) in config.databases.iter().enumerate() {
+        let failures_before = failed_sources.len();
         send_progress(
             events,
             Phase::Downloading,
@@ -2987,7 +2999,9 @@ fn run_with_fetch<F>(
                     "core updates  {} failed: {}",
                     database.id, error.diagnostic
                 ));
-                failed_sources.push(format!("{}: {}", database.label(), error.user));
+                if failed_sources.len() == failures_before {
+                    failed_sources.push(format!("{}: {}", database.label(), error.user));
+                }
                 continue;
             }
         };
@@ -3928,6 +3942,62 @@ db_url = https://example.test/two.json
         assert_eq!(failures.len(), 1);
         assert!(failures[0].contains("Custom / slow_bundle"));
         assert!(failures[0].contains("did not respond in time"));
+    }
+
+    #[test]
+    fn all_unreadable_archives_keep_the_last_complete_result() {
+        const DATABASE_URL: &str = "https://example.test/db.json";
+        const SUMMARY_URL: &str = "https://example.test/summary.json";
+        let root = TestRoot::new("all-archives-unreadable");
+        root.write(
+            "downloader.ini",
+            format!("[custom]\ndb_url = {DATABASE_URL}\n"),
+        );
+        let complete = manifest(
+            "custom",
+            &[("_Console/Saved_20260901.rbf", b"saved", &[], true)],
+        );
+        let request = request(&root, Vec::new(), false);
+        let (saved, notice) = ready(run_events(request.clone(), |url, _, _, _| {
+            assert_eq!(url, DATABASE_URL);
+            Ok(complete.clone())
+        }));
+        assert!(notice.is_none());
+        assert_eq!(saved.items.len(), 1);
+
+        let archive_only = serde_json::to_vec(&json!({
+            "v": 1,
+            "db_id": "custom",
+            "timestamp": 1_800_000_000_u64,
+            "files": {},
+            "tag_dictionary": {},
+            "default_options": {"filter": "all"},
+            "archives": {
+                "delayed_bundle": {
+                    "extract": "selective", "target_folder": "",
+                    "summary_file": {
+                        "hash": md5_hex(b"summary"), "size": 7, "url": SUMMARY_URL
+                    }
+                }
+            }
+        }))
+        .unwrap();
+        let mut refresh = request;
+        refresh.force_refresh = true;
+        let (shown, notice) = ready(run_events(refresh, |url, _, _, _| match url {
+            DATABASE_URL => Ok(archive_only.clone()),
+            SUMMARY_URL => Err(FetchError {
+                user: "A Downloader database did not respond in time.".into(),
+                diagnostic: "curl exit Some(28)".into(),
+                cancelled: false,
+            }),
+            other => panic!("unexpected URL {other}"),
+        }));
+        assert_eq!(shown.items[0].title(), saved.items[0].title());
+        let notice = notice.unwrap();
+        assert!(notice.contains("Showing saved results"));
+        assert!(notice.contains("Custom / delayed_bundle"));
+        assert!(!notice.contains("no readable archives"));
     }
 
     #[test]

@@ -143,7 +143,7 @@ Click the image to watch Degauss on YouTube.
 | **A** (enter) | open a folder, launch a game; in Options, choose the next value or run an action |
 | **B** (escape) | back, out of the folder |
 | **X** (tab) | **Actions** for the current selection and location: Game Information, random game, random favourite, keep a favourite in Main Favourites or in a folder, drop a favourite, rename or remove an empty Favourites folder, jump to letter, search or filter games, hide a row, rebuild this system, change view, etc. |
-| **Y** (space) | **Menu**: Options, Scripts, Help, About, Exit to MiSTer |
+| **Y** (space) | **Menu**: Options, Help, About, Exit to MiSTer. Scripts and optional Attract Mode are on Home |
 
 **Options → Shortcuts** can assign an optional one-second hold to A, B, X or Y.
 A short press keeps the button's normal action. An available hold runs once and
@@ -222,7 +222,7 @@ Scripts launched from Degauss receive `LAUNCH_ORIGIN_ID=degauss` while they
 run, so they can identify the launcher without inspecting the MiSTer setup.
 
 **Options → Library → Show Scripts Folder** is On by default. Switching it Off
-hides this Menu entry without changing any script files; the choice is saved
+hides the Home entry without changing any script files; the choice is saved
 with the other Options settings. Missing or unreadable script folders and
 scripts report their underlying error.
 
