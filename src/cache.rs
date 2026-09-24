@@ -2063,6 +2063,51 @@ mod tests {
         std::fs::remove_dir_all(card).ok();
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn arcade_skips_only_its_top_level_cores_support_folder() {
+        let card = temp("arcade-cores-loop");
+        let arcade = card.join("_Arcade");
+        let cores = arcade.join("cores");
+        let organised = arcade.join("_Organized");
+        let alternatives = arcade.join("_alternatives");
+        std::fs::create_dir_all(&cores).unwrap();
+        std::fs::create_dir_all(organised.join("cores")).unwrap();
+        std::fs::create_dir_all(&alternatives).unwrap();
+        std::fs::write(cores.join("Support.rbf"), b"rbf").unwrap();
+        std::os::unix::fs::symlink(&cores, cores.join("cores")).unwrap();
+        for path in [
+            arcade.join("Root.mra"),
+            organised.join("Game.mra"),
+            organised.join("cores/Nested.mra"),
+        ] {
+            std::fs::write(path, b"<misterromdescription/>").unwrap();
+        }
+        std::fs::write(alternatives.join("Alt.mgl"), b"<mistergamedescription/>").unwrap();
+
+        let mut config = system(&arcade);
+        config.name = "Arcade".into();
+        config.extensions = vec!["mra".into(), "mgl".into()];
+        config.rbf.clear();
+        let library = Library::open(&config).unwrap();
+        let (rows, _) = library.list(&library.start(), true).unwrap();
+        assert!(rows.iter().any(|row| row.name == "_Organized"));
+        assert!(rows.iter().any(|row| row.name == "_alternatives"));
+        assert!(!rows.iter().any(|row| row.name == "cores"));
+        let (nested, _) = library.list(&Place::Dir(organised.clone()), true).unwrap();
+        assert!(nested.iter().any(|row| row.name == "cores"));
+
+        let mut warnings = Vec::new();
+        let cache = build_system_checked(&library, &mut warnings)
+            .expect("Arcade rescan must not follow a support-folder loop");
+        assert_eq!(cache.summary(&library.start()).games, 4);
+        assert!(!cache.folders.contains_key(&Place::Dir(cores).key()));
+        assert!(cache.folders.contains_key(&Place::Dir(organised).key()));
+        assert!(cache.folders.contains_key(&Place::Dir(alternatives).key()));
+        assert!(warnings.is_empty());
+        std::fs::remove_dir_all(card).unwrap();
+    }
+
     #[test]
     fn games_inside_a_folder_full_of_pictures_are_still_counted() {
         // The DOS core keeps its games in a folder called media, which is

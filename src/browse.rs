@@ -637,7 +637,7 @@ impl Library {
                 }
                 if self.is_art_directory(&path, root)
                     || self.is_structural_art_subtree(&path, root)?
-                    || self.is_skipped(&name)
+                    || self.is_skipped(&path)
                 {
                     continue;
                 }
@@ -1161,7 +1161,7 @@ impl Library {
             let path = item.path();
             let is_dir = entry_is_dir_checked(&item)?;
             // A folder left out of the listing leads nowhere whatever it holds.
-            let excluded = is_dir && (self.is_art_directory(&path, root) || self.is_skipped(&name));
+            let excluded = is_dir && (self.is_art_directory(&path, root) || self.is_skipped(&path));
             // What a file is, asked once: the set check and the content
             // check below both want it.
             let extension = if is_dir {
@@ -1219,11 +1219,20 @@ impl Library {
         }
     }
 
-    fn is_skipped(&self, name: &str) -> bool {
+    fn is_skipped(&self, path: &Path) -> bool {
+        let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+            return false;
+        };
         self.config
             .skip_folders
             .iter()
             .any(|skip| skip.eq_ignore_ascii_case(name))
+            || (name == "cores"
+                && path.parent() == Some(Path::new(&self.config.path))
+                && Path::new(&self.config.path)
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    == Some("_Arcade"))
     }
 }
 

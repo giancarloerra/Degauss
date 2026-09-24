@@ -2576,6 +2576,8 @@ struct SaverJob {
     result: mpsc::Receiver<std::result::Result<Option<SaverLoad>, String>>,
     cancelled: Arc<AtomicBool>,
     kind: SaverLoadKind,
+    direction: isize,
+    generation: u64,
 }
 
 impl SaverJob {
@@ -2589,6 +2591,7 @@ impl SaverJob {
         names: browse::DisplayNames,
         seed: u64,
         kind: SaverLoadKind,
+        generation: u64,
     ) -> std::io::Result<Self> {
         let (sender, result) = mpsc::sync_channel(1);
         let cancelled = Arc::new(AtomicBool::new(false));
@@ -2615,6 +2618,8 @@ impl SaverJob {
             result,
             cancelled,
             kind,
+            direction,
+            generation,
         })
     }
 
@@ -4293,6 +4298,7 @@ pub struct App {
     /// is read, and a left/right press advances through this fixed order.
     saver_attract_candidates: Option<Vec<SaverCandidate>>,
     saver_job: Option<SaverJob>,
+    saver_generation: u64,
     saver_last_slot: Option<usize>,
     saver_pending_directions: VecDeque<isize>,
     saver_retry_at: Instant,
@@ -4816,6 +4822,7 @@ impl App {
             saver_queue: Vec::new(),
             saver_attract_candidates: None,
             saver_job: None,
+            saver_generation: 0,
             saver_last_slot: None,
             saver_pending_directions: VecDeque::new(),
             saver_retry_at: Instant::now(),
@@ -6047,6 +6054,15 @@ impl App {
         self.dirty = true;
     }
 
+    fn invalidate_saver_candidates(&mut self) {
+        self.saver_candidates = None;
+        self.saver_attract_candidates = None;
+        self.saver_generation = self.saver_generation.wrapping_add(1);
+        if let Some(job) = &self.saver_job {
+            job.cancel();
+        }
+    }
+
     /// Initialise one shuffled system order per entry. This only checks
     /// whether a source could have art; it does not scan every library.
     fn attract_candidates(&mut self) -> Vec<SaverCandidate> {
@@ -6131,6 +6147,7 @@ impl App {
             self.names.clone(),
             self.seed,
             kind,
+            self.saver_generation,
         ) {
             Ok(job) => self.saver_job = Some(job),
             Err(error) => {
@@ -6148,7 +6165,18 @@ impl App {
         let Some(result) = self.saver_job.as_ref().and_then(SaverJob::try_recv) else {
             return;
         };
-        let kind = self.saver_job.take().expect("result came from job").kind;
+        let job = self.saver_job.take().expect("result came from job");
+        let kind = job.kind;
+        if job.generation != self.saver_generation {
+            if kind == SaverLoadKind::Automatic {
+                if let Some(direction) = self.saver_pending_directions.pop_front() {
+                    self.start_attract_job(SaverLoadKind::Manual, direction);
+                    return;
+                }
+            }
+            self.start_attract_job(kind, job.direction);
+            return;
+        }
         if kind == SaverLoadKind::Automatic && !self.saver_pending_directions.is_empty() {
             if let Some(direction) = self.saver_pending_directions.pop_front() {
                 self.start_attract_job(SaverLoadKind::Manual, direction);
@@ -7716,8 +7744,7 @@ impl App {
         }
         for group in changed_groups {
             self.invalidate_artwork_provider_group(&group);
-            self.saver_candidates = None;
-            self.saver_attract_candidates = None;
+            self.invalidate_saver_candidates();
             self.saver_pool.clear();
             self.saver_queue.clear();
         }
@@ -7892,8 +7919,7 @@ impl App {
                 .iter()
                 .any(|root| picture.path.starts_with(root))
         });
-        self.saver_candidates = None;
-        self.saver_attract_candidates = None;
+        self.invalidate_saver_candidates();
     }
 
     fn store_provider_snapshots(&mut self, snapshots: Vec<crate::provider_job::Snapshot>) {
@@ -9580,8 +9606,7 @@ impl App {
         self.all_systems = found;
         // The screensaver's shortlist holds positions into the list that
         // was just replaced, so it is built again on next use.
-        self.saver_candidates = None;
-        self.saver_attract_candidates = None;
+        self.invalidate_saver_candidates();
         // The system being browsed can be among what vanished. Its trail
         // points into folders nothing can list any more, so browsing
         // walks back to the top rather than failing folder by folder.
@@ -16053,8 +16078,7 @@ impl App {
         self.group_covers = self.fresh_group_cover_cache();
         self.gallery_covers = self.fresh_gallery_cover_cache();
         self.saver_covers = self.fresh_saver_cover_cache();
-        self.saver_candidates = None;
-        self.saver_attract_candidates = None;
+        self.invalidate_saver_candidates();
         self.saver_pool.clear();
         self.saver_queue.clear();
 
@@ -21434,6 +21458,58 @@ pub(crate) fn test_library_launch_flow(window: Rc<MinimalSoftwareWindow>) {
     );
     app.settings.attract_mode_menu = None;
     app.settings.screensaver_after = None;
+
+    for kind in [
+        SaverLoadKind::Initial,
+        SaverLoadKind::Manual,
+        SaverLoadKind::Automatic,
+    ] {
+        let (sender, result) = mpsc::sync_channel(1);
+        let direction = if kind == SaverLoadKind::Initial {
+            1
+        } else {
+            -1
+        };
+        app.saver_job = Some(SaverJob {
+            result,
+            cancelled: Arc::new(AtomicBool::new(false)),
+            kind,
+            direction,
+            generation: app.saver_generation,
+        });
+        app.screen = if kind == SaverLoadKind::Initial {
+            Screen::Browse
+        } else {
+            Screen::Screensaver
+        };
+        app.manual_attract_mode = kind == SaverLoadKind::Initial;
+        app.invalidate_saver_candidates();
+        app.saver_candidates = Some(vec![0]);
+        if kind == SaverLoadKind::Automatic {
+            app.saver_pending_directions.push_back(-1);
+        }
+        sender.send(Ok(None)).unwrap();
+        app.poll_saver_job();
+        let replayed = app.saver_job.as_ref().expect("stale read is replayed");
+        assert_eq!(
+            replayed.kind,
+            if kind == SaverLoadKind::Automatic {
+                SaverLoadKind::Manual
+            } else {
+                kind
+            },
+            "source changes preserve the requested Attract Mode action"
+        );
+        assert_eq!(replayed.direction, direction);
+        if kind == SaverLoadKind::Initial {
+            assert!(app.manual_attract_mode, "manual entry remains active");
+        }
+        replayed.cancel();
+        app.saver_job = None;
+        app.screen = Screen::Browse;
+        app.manual_attract_mode = false;
+        app.saver_pending_directions.clear();
+    }
 
     let misterzine_cover = root.join("misterzine-cover.png");
     std::fs::write(
