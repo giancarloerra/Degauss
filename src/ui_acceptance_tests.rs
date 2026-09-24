@@ -951,9 +951,13 @@ fn run_misterzine_browser_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
     app.misterzine_items[0].set_game_match(2, None);
     app.rebuild_misterzine_rows();
     assert_eq!(app.here.len(), 2);
-    let first_cover = root.join("first.jpg");
+    let first_cover = root.join("first.png");
     let second_cover = root.join("second.jpg");
-    std::fs::write(&first_cover, crate::covers::JPEG_16).unwrap();
+    std::fs::copy(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/logos/NES.png"),
+        &first_cover,
+    )
+    .unwrap();
     std::fs::write(&second_cover, crate::covers::JPEG_16).unwrap();
     let game = |name: &str, cover: PathBuf| browse::Row {
         name: name.into(),
@@ -977,6 +981,21 @@ fn run_misterzine_browser_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
     app.refresh();
     assert_eq!(app.ui.get_compact_info().as_str(), "2 Games");
     assert_eq!(app.current_art().0.as_deref(), Some(first_cover.as_path()));
+    let (width, height) = app.low_resolution_detail_preview_box(1.0).unwrap();
+    let palette = app.effective_palette();
+    let ground = [palette.surface.r, palette.surface.g, palette.surface.b];
+    let source = crate::covers::load_scaled(
+        &first_cover,
+        app.covers.max_edge(),
+        ground,
+        &mut Default::default(),
+    )
+    .unwrap();
+    assert!(
+        crate::covers::scale_to_box_area(&source, width, height).width < source.width,
+        "Core Updates' matched game image must actually need the CRT filter"
+    );
+    assert_current_art_matte(&mut app, &first_cover, ground);
     app.maintain_misterzine_games(slideshow_started + Duration::from_secs(CORE_UPDATE_ART_SECONDS));
     assert_eq!(app.current_art().0.as_deref(), Some(second_cover.as_path()));
     app.open_context();
@@ -3664,12 +3683,21 @@ fn run_manual_search_ui_flow(app: &mut App, root: &Path) {
         app.scraper_settings == saved,
         "manual selection must not override write policies"
     );
-    app.scraper_preview_image = Some(crate::covers::RgbImage::new(1, 1, vec![255, 0, 0]).unwrap());
+    let preview = crate::covers::RgbImage::new(320, 240, [255, 0, 0].repeat(320 * 240)).unwrap();
+    app.scraper_preview_image = Some(preview.clone());
     app.load_art();
     assert!(
         app.ui.get_has_art(),
         "manual previews ignore the browse artwork preference"
     );
+    let (width, height) = app.low_resolution_picker_preview_box().unwrap();
+    let filtered = crate::covers::scale_to_box_area(&preview, width, height);
+    assert!(filtered.width < preview.width);
+    assert_eq!(app.ui.get_art().to_rgb8().unwrap().as_bytes(), filtered.rgb);
+    app.settings.crt_smoothing = Some(false);
+    app.load_art();
+    assert_eq!(app.ui.get_art().to_rgb8().unwrap().as_bytes(), preview.rgb);
+    app.settings.crt_smoothing = None;
     app.handle(Action::Quit);
     assert_eq!(app.screen, Screen::Scraper);
     assert_eq!(app.scraper_list.selected(), search_row);
@@ -9742,6 +9770,33 @@ fn run_custom_placeholder_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
     crate::category_images::clear_system(&logos, "NES").unwrap();
     crate::category_images::clear(&logos, "Console").unwrap();
     assert_eq!(app.game_placeholder_logo(), Some(shipped));
+
+    // The image picker itself uses the same filter at the smaller chooser
+    // rectangle; Off still displays the existing unfiltered preview.
+    app.settings.crt_smoothing = Some(true);
+    app.screen = Screen::CategoryImage;
+    app.category_image_choices = vec![crate::category_images::Choice {
+        label: "chosen.png".into(),
+        path: custom.clone(),
+    }];
+    app.menu_list = ListState::new(1, app.geometry.visible);
+    app.apply_geometry();
+    app.load_art();
+    let (width, height) = app.low_resolution_picker_preview_box().unwrap();
+    let palette = app.effective_palette();
+    let sampled = crate::covers::load_scaled(
+        &custom,
+        app.covers.max_edge(),
+        [palette.surface.r, palette.surface.g, palette.surface.b],
+        &mut Default::default(),
+    )
+    .unwrap();
+    let filtered = crate::covers::scale_to_box_area(&sampled, width, height);
+    assert!(filtered.width < sampled.width);
+    assert_eq!(app.ui.get_art().to_rgb8().unwrap().as_bytes(), filtered.rgb);
+    app.settings.crt_smoothing = Some(false);
+    app.load_art();
+    assert_eq!(app.ui.get_art().to_rgb8().unwrap().as_bytes(), sampled.rgb);
     app.ui.hide().unwrap();
 }
 

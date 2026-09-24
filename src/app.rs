@@ -18586,6 +18586,36 @@ impl App {
         ))
     }
 
+    fn low_resolution_picker_preview_box(&self) -> Option<(u32, u32)> {
+        if !self.crt_smoothing() {
+            return None;
+        }
+        let landscape_fraction = match self.screen {
+            Screen::CategoryImage => 0.44,
+            Screen::ScraperMatches => 0.42,
+            _ => return None,
+        };
+        let geometry = self.geometry;
+        let safe_width = self.width as f32 - geometry.inset_x * 2.0;
+        let safe_height = self.height as f32 - geometry.inset_y * 2.0;
+        let body_height = safe_height
+            - if self.chrome_here() {
+                geometry.chrome
+            } else {
+                0.0
+            }
+            - if self.bar_here() { geometry.bar } else { 0.0 };
+        let (width, height) = if portrait_dimensions(self.width, self.height) {
+            (safe_width, body_height * 0.45)
+        } else {
+            (safe_width * landscape_fraction, body_height)
+        };
+        Some((
+            (width - 2.0).floor().max(1.0) as u32,
+            (height - 2.0).floor().max(1.0) as u32,
+        ))
+    }
+
     /// A picture for a path, decoding it here or asking for it elsewhere.
     ///
     /// The one place that decides, so every list goes the same way.
@@ -18675,7 +18705,13 @@ impl App {
             self.ui.set_art_heart(false);
             self.ui.set_art_scale_x(1.0);
             if let Some(image) = self.scraper_preview_image.as_ref() {
-                self.ui.set_art(to_image(image));
+                if let Some((width, height)) = self.low_resolution_picker_preview_box() {
+                    self.ui.set_art(to_image(&crate::covers::scale_to_box_area(
+                        image, width, height,
+                    )));
+                } else {
+                    self.ui.set_art(to_image(image));
+                }
                 self.ui.set_has_art(true);
             } else {
                 self.ui.set_has_art(false);
@@ -18720,7 +18756,8 @@ impl App {
             && self.layout == Layout::Details;
         let preview_box = self
             .low_resolution_detail_preview_box(art_scale_x)
-            .or_else(|| self.low_resolution_information_preview_box(art_scale_x));
+            .or_else(|| self.low_resolution_information_preview_box(art_scale_x))
+            .or_else(|| self.low_resolution_picker_preview_box());
         match path.and_then(|path| {
             if group_preview {
                 self.group_covers.get(&path).map(|image| match preview_box {

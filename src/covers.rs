@@ -457,24 +457,44 @@ fn scale_to_box_area_fit(
     let columns: Vec<AreaSpan> = (0..width)
         .map(|x| AreaSpan::new(x, source.width, width))
         .collect();
+    let mut prefixes = vec![[0u64; 3]; source.width as usize + 1];
+    let mut sums = vec![[0u64; 3]; width as usize];
 
     for y in 0..height {
         let row = AreaSpan::new(y, source.height, height);
-        for (x, column) in columns.iter().copied().enumerate() {
-            let mut channels = [0u64; 3];
-            for sy in row.first..=row.last {
-                let weight_y = row.weight(sy);
-                for sx in column.first..=column.last {
-                    let weight = column.weight(sx) * weight_y;
-                    let index =
-                        ((u64::from(sy) * u64::from(source.width) + u64::from(sx)) * 3) as usize;
-                    for (channel, sum) in channels.iter_mut().enumerate() {
-                        *sum += weight * u64::from(source.rgb[index + channel]);
-                    }
+        sums.fill([0; 3]);
+        for sy in row.first..=row.last {
+            let weight_y = row.weight(sy);
+            let source_row = sy as usize * source.width as usize * 3;
+            for sx in 0..source.width as usize {
+                let at = source_row + sx * 3;
+                let previous = prefixes[sx];
+                for (channel, sum) in prefixes[sx + 1].iter_mut().enumerate() {
+                    *sum = previous[channel] + u64::from(source.rgb[at + channel]);
                 }
             }
+
+            for (x, column) in columns.iter().copied().enumerate() {
+                let first = source_row + column.first as usize * 3;
+                let last = source_row + column.last as usize * 3;
+                for (channel, sum) in sums[x].iter_mut().enumerate() {
+                    let mut horizontal =
+                        u64::from(source.rgb[first + channel]) * u64::from(column.first_weight);
+                    if column.first != column.last {
+                        horizontal +=
+                            u64::from(source.rgb[last + channel]) * u64::from(column.last_weight);
+                        horizontal += (prefixes[column.last as usize][channel]
+                            - prefixes[column.first as usize + 1][channel])
+                            * u64::from(column.middle_weight);
+                    }
+                    *sum += horizontal * weight_y;
+                }
+            }
+        }
+
+        for (x, channels) in sums.iter().enumerate() {
             let index = ((y as usize * width as usize) + x) * 3;
-            for (channel, sum) in channels.into_iter().enumerate() {
+            for (channel, sum) in channels.iter().copied().enumerate() {
                 out[index + channel] = ((sum + denominator / 2) / denominator) as u8;
             }
         }
