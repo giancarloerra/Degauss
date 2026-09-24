@@ -2390,6 +2390,12 @@ fn image_index(artwork: &Path, cancelled: &AtomicBool) -> Result<Option<ImageInd
         {
             continue;
         }
+        if path.to_str().is_none() {
+            crate::note(&format!(
+                "artwork path {path:?}: skipped: path is not UTF-8"
+            ));
+            continue;
+        }
         let Some(stem) = path
             .file_stem()
             .and_then(|stem| stem.to_str())
@@ -4935,6 +4941,29 @@ mod tests {
         assert!(collision.is_none());
         assert_eq!(images.len(), 2);
         assert_eq!(images.get("good"), Some(&art.join("Good.jpg")));
+
+        std::fs::remove_dir_all(root.parent().unwrap()).unwrap();
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_non_utf8_artwork_ancestor_does_not_enter_the_prepared_map() {
+        use std::os::unix::ffi::OsStringExt;
+
+        let (root, valid_art) = pack("non-utf8-artwork-ancestor");
+        let invalid = std::ffi::OsString::from_vec(b"Bad-\xff".to_vec());
+        let invalid_art = root.parent().unwrap().join(invalid).join("Artwork");
+        std::fs::create_dir_all(&invalid_art).unwrap();
+        std::fs::write(invalid_art.join("Good.jpg"), b"jpeg").unwrap();
+
+        let (invalid_images, _) = image_index(&invalid_art, &AtomicBool::new(false))
+            .unwrap()
+            .unwrap();
+        assert!(invalid_images.is_empty());
+        let (valid_images, _) = image_index(&valid_art, &AtomicBool::new(false))
+            .unwrap()
+            .unwrap();
+        assert!(valid_images.contains_key("chosen game (usa)"));
 
         std::fs::remove_dir_all(root.parent().unwrap()).unwrap();
     }
