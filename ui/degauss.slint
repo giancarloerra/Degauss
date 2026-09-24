@@ -76,19 +76,20 @@ component ScrollingTitle inherits Rectangle {
 // The original wordmark stays fully visible. The second copy adds a flat
 // colour from zero percent (original artwork) to 100 percent (monochrome).
 component BlendedLogo inherits Rectangle {
+    in property <image> artwork: @image-url("../assets/degauss-logo.png");
     in property <color> tint: transparent;
     in property <float> tint-mix: 1.0;
     in property <bool> tint-enabled: false;
 
     Image {
-        source: @image-url("../assets/degauss-logo.png");
+        source: root.artwork;
         image-fit: contain;
         width: parent.width;
         height: parent.height;
     }
     Image {
         visible: root.tint-enabled;
-        source: @image-url("../assets/degauss-logo.png");
+        source: root.artwork;
         colorize: root.tint;
         opacity: root.tint-mix;
         image-fit: contain;
@@ -349,6 +350,9 @@ export component DegaussWindow inherits Window {
     in property <bool> logo-tint-enabled: false;
     // Zero is the original artwork and one is the flat logo-tint colour.
     in property <float> logo-tint-mix: 1.0;
+    out property <image> original-logo: @image-url("../assets/degauss-logo.png");
+    in-out property <image> brand-logo: @image-url("../assets/degauss-logo.png");
+    in-out property <image> about-logo: @image-url("../assets/degauss-logo.png");
 
     // Safe area, so nothing lands under the bezel.
     in property <length> inset-left;
@@ -578,6 +582,7 @@ export component DegaussWindow inherits Window {
             }
             BlendedLogo {
                 visible: heading-bar.brand-width > 0px;
+                artwork: root.brand-logo;
                 x: root.pad;
                 y: 0px;
                 width: heading-bar.brand-width;
@@ -651,6 +656,7 @@ export component DegaussWindow inherits Window {
                 background: root.c-background;
 
                 logo := BlendedLogo {
+                    artwork: root.about-logo;
                     tint: root.logo-tint;
                     tint-mix: root.logo-tint-mix;
                     tint-enabled: root.logo-tint-enabled;

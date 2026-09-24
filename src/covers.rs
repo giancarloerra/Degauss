@@ -398,6 +398,9 @@ pub struct CoverCache {
     /// on. Changing this colour discards decoded pixels.
     ground: [u8; 3],
     images: HashMap<PathBuf, RgbImage>,
+    /// One final CRT-sized preview per decoded image. The source cache's
+    /// eviction order bounds these previews as well.
+    previews: HashMap<PathBuf, ((u32, u32), RgbImage)>,
     /// Most recently used last.
     order: Vec<PathBuf>,
     /// Paths that failed to load, so a broken file is attempted once and
@@ -424,6 +427,7 @@ impl CoverCache {
             capacity: capacity.max(1),
             ground,
             images: HashMap::new(),
+            previews: HashMap::new(),
             order: Vec::new(),
             failed: HashMap::new(),
             stats: CoverStats::default(),
@@ -455,6 +459,32 @@ impl CoverCache {
                 None
             }
         }
+    }
+
+    /// The area-filtered Details preview, reused when the same picture is
+    /// selected again at the same framebuffer size.
+    pub fn get_preview(&mut self, path: &Path, width: u32, height: u32) -> Option<&RgbImage> {
+        self.get(path)?;
+        let source = self.images.get(path)?;
+        if width == 0 || height == 0 || (source.width <= width && source.height <= height) {
+            return Some(source);
+        }
+        let bounds = (width, height);
+        if self
+            .previews
+            .get(path)
+            .is_some_and(|(size, _)| *size == bounds)
+        {
+            return self.previews.get(path).map(|(_, image)| image);
+        }
+
+        let preview = scale_to_box_area(source, width, height);
+        if let Some((_, old)) = self.previews.insert(path.to_path_buf(), (bounds, preview)) {
+            self.stats.bytes_held = self.stats.bytes_held.saturating_sub(old.rgb.len());
+        }
+        let image = &self.previews.get(path)?.1;
+        self.stats.bytes_held += image.rgb.len();
+        Some(image)
     }
 
     /// Art for a path, spending one unit only when the path has never been
@@ -493,6 +523,7 @@ impl CoverCache {
         if self.ground != ground {
             self.ground = ground;
             self.images.clear();
+            self.previews.clear();
             self.order.clear();
             self.stats.bytes_held = 0;
         }
@@ -512,6 +543,14 @@ impl CoverCache {
             }
         });
         self.order.retain(|path| !path.starts_with(root));
+        self.previews.retain(|path, (_, image)| {
+            if path.starts_with(root) {
+                removed_bytes = removed_bytes.saturating_add(image.rgb.len());
+                false
+            } else {
+                true
+            }
+        });
         self.failed.retain(|path, _| !path.starts_with(root));
         self.stats.bytes_held = self.stats.bytes_held.saturating_sub(removed_bytes);
     }
@@ -540,6 +579,9 @@ impl CoverCache {
             let oldest = self.order.remove(0);
             if let Some(dropped) = self.images.remove(&oldest) {
                 self.stats.bytes_held = self.stats.bytes_held.saturating_sub(dropped.rgb.len());
+                if let Some((_, preview)) = self.previews.remove(&oldest) {
+                    self.stats.bytes_held = self.stats.bytes_held.saturating_sub(preview.rgb.len());
+                }
                 self.stats.evictions += 1;
             }
         }
@@ -678,6 +720,64 @@ mod tests {
         assert!(cache.knows(&second));
         assert!(cache.stats.bytes_held < bytes_before);
         std::fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn crt_preview_is_reused_and_bounded_by_the_source_cache() {
+        let mut cache = CoverCache::new(4, 2, OPAQUE);
+        let first = PathBuf::from("first.png");
+        let second = PathBuf::from("second.png");
+        let third = PathBuf::from("third.png");
+        let source = RgbImage::new(4, 4, vec![100; 4 * 4 * 3]).unwrap();
+        cache.insert(first.clone(), source.clone());
+
+        let preview = cache.get_preview(&first, 2, 2).unwrap();
+        assert_eq!((preview.width, preview.height), (2, 2));
+        let address = preview as *const RgbImage;
+        let held = cache.stats.bytes_held;
+        assert_eq!(
+            cache.get_preview(&first, 2, 2).unwrap() as *const RgbImage,
+            address
+        );
+        assert_eq!(
+            cache.stats.bytes_held, held,
+            "repeat selection does not scale again"
+        );
+
+        assert_eq!(cache.get_preview(&first, 1, 1).unwrap().width, 1);
+        assert_eq!(
+            cache.previews.len(),
+            1,
+            "a new box replaces the old preview"
+        );
+        assert_eq!(cache.stats.bytes_held, source.rgb.len() + 3);
+        cache.insert(second, source.clone());
+        cache.insert(third, source);
+        assert!(!cache.images.contains_key(&first));
+        assert!(!cache.previews.contains_key(&first));
+        assert_eq!(cache.stats.bytes_held, 2 * 4 * 4 * 3);
+    }
+
+    #[test]
+    fn crt_preview_is_invalidated_with_source_and_matte() {
+        let mut cache = CoverCache::new(4, 2, OPAQUE);
+        let first = PathBuf::from("art/first.png");
+        let second = PathBuf::from("other/second.png");
+        let source = RgbImage::new(4, 4, vec![100; 4 * 4 * 3]).unwrap();
+        cache.insert(first.clone(), source.clone());
+        cache.insert(second.clone(), source);
+        cache.get_preview(&first, 2, 2).unwrap();
+        cache.get_preview(&second, 2, 2).unwrap();
+
+        cache.invalidate_under(Path::new("art"));
+        assert!(!cache.previews.contains_key(&first));
+        assert!(cache.previews.contains_key(&second));
+        assert_eq!(cache.stats.bytes_held, 4 * 4 * 3 + 2 * 2 * 3);
+
+        cache.set_ground([1, 2, 3]);
+        assert!(cache.previews.is_empty());
+        assert!(cache.images.is_empty());
+        assert_eq!(cache.stats.bytes_held, 0);
     }
 
     #[test]

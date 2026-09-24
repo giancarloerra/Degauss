@@ -1460,16 +1460,13 @@ fn assert_current_art_matte(app: &mut App, path: &Path, ground: [u8; 3]) {
         expected.rgb.as_chunks::<3>().0.contains(&ground),
         "the real PNG must contain transparent pixels to exercise the matte"
     );
-    let preview_box = app.low_resolution_detail_preview_box(
+    let preview_box = app.low_resolution_detail_preview_box(artwork_horizontal(
+        app.artwork_scale,
+        app.width,
+        app.height,
+        app.screen_rotation,
         true,
-        artwork_horizontal(
-            app.artwork_scale,
-            app.width,
-            app.height,
-            app.screen_rotation,
-            true,
-        ),
-    );
+    ));
     let expected = if let Some((width, height)) = preview_box {
         let filtered = crate::covers::scale_to_box_area(&expected, width, height);
         assert!(
@@ -1502,7 +1499,30 @@ fn run_artwork_matte_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
         &path,
     )
     .unwrap();
+    let logo_dir = root.join("logos");
+    std::fs::create_dir_all(&logo_dir).unwrap();
+    let logo = logo_dir.join("NES.png");
+    std::fs::copy(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/logos/NES.png"),
+        &logo,
+    )
+    .unwrap();
     let mut app = fixture_app(&root, window, Settings::default());
+    for system in app.systems.iter_mut().chain(app.all_systems.iter_mut()) {
+        system.logo_dir = Some(logo_dir.clone());
+    }
+    app.logo_dir = Some(logo_dir);
+    let original_wordmark = app.ui.get_original_logo().size();
+    assert!(app.ui.get_brand_logo().size().width < original_wordmark.width);
+    assert!(app.ui.get_about_logo().size().width < original_wordmark.width);
+    app.width = 1280;
+    app.height = 720;
+    app.apply_geometry();
+    assert_eq!(app.ui.get_brand_logo().size(), original_wordmark);
+    assert_eq!(app.ui.get_about_logo().size(), original_wordmark);
+    app.width = 352;
+    app.height = 240;
+    app.apply_geometry();
     for row in &mut app.here {
         row.cover = Some(path.clone());
     }
@@ -1578,6 +1598,79 @@ fn run_artwork_matte_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
         app.apply_geometry();
         assert_current_art_matte(&mut app, &path, [0, 0, 0]);
         capture_live_if_requested(&mut app, &format!("matte-{theme}-screensaver"));
+
+        // The selected system logo uses the smaller group picture slot,
+        // while a folder borrows the same logo in the full game picture slot.
+        app.screen = Screen::Browse;
+        app.browsing = Browsing::Systems;
+        app.set_layout(Layout::Details);
+        app.load_art();
+        let (width, height) = app.low_resolution_detail_preview_box(1.0).unwrap();
+        let source = crate::covers::load_scaled(
+            &logo,
+            app.group_covers.max_edge(),
+            background,
+            &mut Default::default(),
+        )
+        .unwrap();
+        let expected = crate::covers::scale_to_box_area(&source, width, height);
+        assert!(
+            expected.height < source.height,
+            "system logo must be area-filtered"
+        );
+        assert!(app.ui.get_has_art(), "system logo must be selected");
+        let actual = app.ui.get_art().to_rgb8().unwrap();
+        assert_eq!(
+            (actual.width(), actual.height()),
+            (expected.width, expected.height),
+            "system logo preview size"
+        );
+        let mismatch = actual
+            .as_bytes()
+            .iter()
+            .zip(&expected.rgb)
+            .position(|(actual, expected)| actual != expected);
+        assert!(
+            mismatch.is_none(),
+            "system logo differs at byte {mismatch:?}"
+        );
+
+        app.browsing = Browsing::Games;
+        app.game_list.select(0);
+        let original = app.here[0].clone();
+        app.here[0].kind = browse::Kind::Enter(Place::Dir(games.join("Fixture Folder")));
+        app.here[0].cover = None;
+        app.load_art();
+        let (width, height) = app.low_resolution_detail_preview_box(1.0).unwrap();
+        let source = crate::covers::load_scaled(
+            &logo,
+            app.covers.max_edge(),
+            surface,
+            &mut Default::default(),
+        )
+        .unwrap();
+        let expected = crate::covers::scale_to_box_area(&source, width, height);
+        assert!(
+            expected.width < source.width,
+            "folder logo must be area-filtered"
+        );
+        assert!(app.ui.get_has_art(), "folder must show its system logo");
+        let actual = app.ui.get_art().to_rgb8().unwrap();
+        assert_eq!(
+            (actual.width(), actual.height()),
+            (expected.width, expected.height),
+            "folder logo preview size"
+        );
+        let mismatch = actual
+            .as_bytes()
+            .iter()
+            .zip(&expected.rgb)
+            .position(|(actual, expected)| actual != expected);
+        assert!(
+            mismatch.is_none(),
+            "folder logo differs at byte {mismatch:?}"
+        );
+        app.here[0] = original;
     }
 }
 

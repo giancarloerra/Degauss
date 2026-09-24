@@ -3655,6 +3655,87 @@ fn to_image(image: &crate::covers::RgbImage) -> slint::Image {
     slint::Image::from_rgb8(buffer)
 }
 
+fn wordmark_size(source: (u32, u32), box_width: f32, box_height: f32) -> (u32, u32) {
+    let scale = (box_width / source.0 as f32)
+        .min(box_height / source.1 as f32)
+        .min(1.0);
+    (
+        ((source.0 as f32 * scale).floor() as u32).max(1),
+        ((source.1 as f32 * scale).floor() as u32).max(1),
+    )
+}
+
+/// Pre-filter the bundled wordmark once at the size used on a CRT. Keep its
+/// premultiplied alpha so transparent edges and theme tinting remain intact.
+fn area_scaled_wordmark(source: &slint::Image, width: u32, height: u32) -> slint::Image {
+    let original = source
+        .to_rgba8_premultiplied()
+        .expect("bundled wordmark pixels are available");
+    if original.width() == width && original.height() == height {
+        return source.clone();
+    }
+    let source_width = u64::from(original.width());
+    let source_height = u64::from(original.height());
+    let denominator = source_width * source_height;
+    let pixels = original.as_bytes();
+    let mut scaled = SharedPixelBuffer::<slint::Rgba8Pixel>::new(width, height);
+    let output = scaled.make_mut_bytes();
+    for y in 0..u64::from(height) {
+        let top = y * source_height;
+        let bottom = (y + 1) * source_height;
+        for x in 0..u64::from(width) {
+            let left = x * source_width;
+            let right = (x + 1) * source_width;
+            let mut channels = [0u64; 4];
+            for sy in top / u64::from(height)..bottom.div_ceil(u64::from(height)) {
+                let overlap_y =
+                    bottom.min((sy + 1) * u64::from(height)) - top.max(sy * u64::from(height));
+                for sx in left / u64::from(width)..right.div_ceil(u64::from(width)) {
+                    let overlap_x =
+                        right.min((sx + 1) * u64::from(width)) - left.max(sx * u64::from(width));
+                    let weight = overlap_x * overlap_y;
+                    let index = ((sy * source_width + sx) * 4) as usize;
+                    for (channel, sum) in channels.iter_mut().enumerate() {
+                        *sum += weight * u64::from(pixels[index + channel]);
+                    }
+                }
+            }
+            let index = ((y * u64::from(width) + x) * 4) as usize;
+            for (channel, sum) in channels.into_iter().enumerate() {
+                output[index + channel] = ((sum + denominator / 2) / denominator) as u8;
+            }
+        }
+    }
+    slint::Image::from_rgba8_premultiplied(scaled)
+}
+
+fn update_crt_wordmarks(ui: &DegaussWindow, width: u32, height: u32, geometry: Geometry) {
+    let original = ui.get_original_logo();
+    let source_size = original.size();
+    let source_size = (source_size.width, source_size.height);
+    if width.min(height) > 288 || width.max(height) > 720 {
+        if ui.get_brand_logo().size() != original.size() {
+            ui.set_brand_logo(original.clone());
+        }
+        if ui.get_about_logo().size() != original.size() {
+            ui.set_about_logo(original);
+        }
+        return;
+    }
+    let safe_width = width as f32 - geometry.inset_x * 2.0;
+    let safe_height = height as f32 - geometry.inset_y * 2.0;
+    let brand = wordmark_size(source_size, safe_width * 0.28, geometry.chrome);
+    let about = wordmark_size(source_size, safe_width * 0.70, safe_height * 0.38);
+    let brand_size = ui.get_brand_logo().size();
+    if (brand_size.width, brand_size.height) != brand {
+        ui.set_brand_logo(area_scaled_wordmark(&original, brand.0, brand.1));
+    }
+    let about_size = ui.get_about_logo().size();
+    if (about_size.width, about_size.height) != about {
+        ui.set_about_logo(area_scaled_wordmark(&original, about.0, about.1));
+    }
+}
+
 struct CoreUpdateGames {
     key: String,
     matches: crate::misterzine::GameMatches,
@@ -4956,6 +5037,7 @@ impl App {
         }
         self.ui.set_plain_help_height(help_height);
         self.geometry = geometry;
+        update_crt_wordmarks(&self.ui, self.width, self.height, geometry);
         let (gallery_edge, gallery_capacity, _) = self.gallery_cache_spec();
         if self.gallery_covers.max_edge() != gallery_edge
             || self.gallery_covers.capacity() != gallery_capacity
@@ -9033,7 +9115,7 @@ impl App {
         let target = picture.target?;
         // The hint is displayed only for a decoded picture. Do not launch a
         // stale or unreadable path merely because it still has a cache row.
-        self.cover_for(&picture.path, None)?;
+        self.cover_for(&picture.path, None, false)?;
         self.leave_screensaver();
         let Some(system) = self
             .all_systems
@@ -18333,14 +18415,8 @@ impl App {
 
     /// The source-space bounds of the actual Details picture on a low-line
     /// framebuffer. Other views retain the normal cached image unchanged.
-    fn low_resolution_detail_preview_box(
-        &self,
-        game_art: bool,
-        horizontal_scale: f32,
-    ) -> Option<(u32, u32)> {
-        if !game_art
-            || self.screen != Screen::Browse
-            || self.browsing != Browsing::Games
+    fn low_resolution_detail_preview_box(&self, horizontal_scale: f32) -> Option<(u32, u32)> {
+        if self.screen != Screen::Browse
             || self.layout != Layout::Details
             || self.width.min(self.height) > 288
             || self.width.max(self.height) > 720
@@ -18370,7 +18446,11 @@ impl App {
             body_height
         };
         let picture_width = (panel_width - geometry.pad) / horizontal_scale;
-        let picture_height = panel_height - self.detail_panel_measure().1 - geometry.pad;
+        let picture_height = if self.browsing == Browsing::Games {
+            panel_height - self.detail_panel_measure().1 - geometry.pad
+        } else {
+            panel_height * 0.42
+        };
         Some((
             picture_width.floor().max(1.0) as u32,
             picture_height.floor().max(1.0) as u32,
@@ -18384,6 +18464,7 @@ impl App {
         &mut self,
         path: &std::path::Path,
         preview_box: Option<(u32, u32)>,
+        cache_preview: bool,
     ) -> Option<slint::Image> {
         let palette = self.effective_palette();
         let ground = match self.screen {
@@ -18401,12 +18482,16 @@ impl App {
             _ => [palette.surface.r, palette.surface.g, palette.surface.b],
         };
         self.covers.set_ground(ground);
-        self.covers.get(path).map(|image| match preview_box {
-            Some((width, height)) => {
-                to_image(&crate::covers::scale_to_box_area(image, width, height))
+        match preview_box {
+            Some((width, height)) if cache_preview => {
+                self.covers.get_preview(path, width, height).map(to_image)
             }
-            None => to_image(image),
-        })
+            Some((width, height)) => self
+                .covers
+                .get(path)
+                .map(|image| to_image(&crate::covers::scale_to_box_area(image, width, height))),
+            None => self.covers.get(path).map(to_image),
+        }
     }
 
     /// A browse-row image from the cache belonging to the current layout.
@@ -18421,7 +18506,7 @@ impl App {
             return (slint::Image::default(), false, false);
         };
         if self.layout != Layout::Gallery {
-            return match self.cover_for(&path, None) {
+            return match self.cover_for(&path, None, false) {
                 Some(image) => (image, true, false),
                 None => (slint::Image::default(), false, false),
             };
@@ -18501,12 +18586,17 @@ impl App {
         let group_preview = self.screen == Screen::Browse
             && self.browsing != Browsing::Games
             && self.layout == Layout::Details;
-        let preview_box = self.low_resolution_detail_preview_box(game_art, art_scale_x);
+        let preview_box = self.low_resolution_detail_preview_box(art_scale_x);
         match path.and_then(|path| {
             if group_preview {
-                self.group_covers.get(&path).map(to_image)
+                self.group_covers.get(&path).map(|image| match preview_box {
+                    Some((width, height)) => {
+                        to_image(&crate::covers::scale_to_box_area(image, width, height))
+                    }
+                    None => to_image(image),
+                })
             } else {
-                self.cover_for(&path, preview_box)
+                self.cover_for(&path, preview_box, game_art)
             }
         }) {
             Some(image) => {
@@ -18571,7 +18661,7 @@ impl App {
                     let needed = (self.width as f32 / cell).ceil() as usize + 2;
                     for step in 0..needed {
                         let picture = self.saver_pool[(first + step) % count].clone();
-                        let (cover, has_cover) = match self.cover_for(&picture.path, None) {
+                        let (cover, has_cover) = match self.cover_for(&picture.path, None, false) {
                             Some(image) => (image, true),
                             None => (slint::Image::default(), false),
                         };
@@ -24250,6 +24340,20 @@ mod tests {
             artwork_horizontal(ArtworkScale::FourThree, 400, 200, ScreenRotation::Off, true,),
             1.5
         );
+    }
+
+    #[test]
+    fn crt_wordmark_area_scaling_preserves_transparent_edges() {
+        let mut source = SharedPixelBuffer::<slint::Rgba8Pixel>::new(2, 1);
+        source
+            .make_mut_bytes()
+            .copy_from_slice(&[255, 0, 0, 255, 0, 0, 0, 0]);
+        let source = slint::Image::from_rgba8_premultiplied(source);
+        let scaled = area_scaled_wordmark(&source, 1, 1);
+        let pixels = scaled.to_rgba8_premultiplied().unwrap();
+        assert_eq!(pixels.as_bytes(), &[128, 0, 0, 128]);
+        assert_eq!(wordmark_size((600, 150), 88.0, 22.0), (88, 22));
+        assert_eq!(wordmark_size((600, 150), 200.0, 100.0), (200, 50));
     }
 
     #[test]
