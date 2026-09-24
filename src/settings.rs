@@ -323,6 +323,10 @@ pub struct Settings {
     pub hidden_paths: Vec<String>,
     pub show_stats: Option<bool>,
     pub show_art: Option<bool>,
+    /// Area-filter images at low-line framebuffer sizes. Absent is On;
+    /// Off retains the faster image sampling used before v0.9.0.
+    #[serde(default)]
+    pub crt_smoothing: Option<bool>,
     /// How game artwork is horizontally corrected for the physical display:
     /// "framebuffer", "4:3" or "16:9". Absent keeps the original
     /// framebuffer-pixel behaviour.

@@ -35,7 +35,7 @@ use slint::{ComponentHandle, ModelRc, SharedPixelBuffer, SharedString, VecModel}
 
 use crate::browse::{self, Library, Place};
 use crate::config::{Color as ConfigColor, Colors, Config, SystemConfig};
-use crate::covers::{BudgetedCover, CoverCache, CoverStats};
+use crate::covers::{AreaBox, AreaFit, BudgetedCover, CoverCache, CoverStats};
 use crate::error::{DegaussError, Result};
 use crate::font::Font;
 use crate::game_filter::{
@@ -332,6 +332,7 @@ fn option_operation(option: OptionId, input: OptionInput) -> OptionOperation {
         | OptionId::StartFolder
         | OptionId::Font
         | OptionId::ShowArt
+        | OptionId::CrtSmoothing
         | OptionId::ArtworkScale
         | OptionId::DetailsStyle
         | OptionId::GameNameDisplay
@@ -3281,6 +3282,23 @@ struct Geometry {
     inset_y: f32,
 }
 
+fn gallery_image_box(geometry: Geometry) -> AreaBox {
+    let gap = geometry.pad / 2.0;
+    AreaBox {
+        width: (geometry.tile_width - gap - 6.0).floor().max(1.0) as u32,
+        height: (geometry.tile_height - gap - 6.0).floor().max(1.0) as u32,
+        fit: AreaFit::Contain,
+    }
+}
+
+fn saver_image_box(height: u32) -> AreaBox {
+    AreaBox {
+        width: (height as f32 * 4.0 / 3.0).floor().max(32.0) as u32,
+        height,
+        fit: AreaFit::Cover,
+    }
+}
+
 fn portrait_dimensions(width: u32, height: u32) -> bool {
     height > width
 }
@@ -3709,11 +3727,21 @@ fn area_scaled_wordmark(source: &slint::Image, width: u32, height: u32) -> slint
     slint::Image::from_rgba8_premultiplied(scaled)
 }
 
-fn update_crt_wordmarks(ui: &DegaussWindow, width: u32, height: u32, geometry: Geometry) {
+fn low_line_output(width: u32, height: u32) -> bool {
+    width.min(height) <= 288 && width.max(height) <= 720
+}
+
+fn update_crt_wordmarks(
+    ui: &DegaussWindow,
+    width: u32,
+    height: u32,
+    geometry: Geometry,
+    smoothing: bool,
+) {
     let original = ui.get_original_logo();
     let source_size = original.size();
     let source_size = (source_size.width, source_size.height);
-    if width.min(height) > 288 || width.max(height) > 720 {
+    if !smoothing {
         if ui.get_brand_logo().size() != original.size() {
             ui.set_brand_logo(original.clone());
         }
@@ -3947,6 +3975,8 @@ pub struct App {
     /// them separate prevents the dense view from filling the large-art
     /// cache with unnecessarily large images.
     gallery_covers: CoverCache,
+    /// Only the moving strip uses crop-to-fill artwork against black.
+    saver_covers: CoverCache,
     ui: DegaussWindow,
     window: Rc<MinimalSoftwareWindow>,
     rows: Rc<VecModel<Row>>,
@@ -4429,11 +4459,18 @@ impl App {
             .max(gallery_geometry.tile_height)
             .ceil()
             .max(1.0) as u32;
-        let gallery_covers = CoverCache::new(
-            gallery_edge,
-            config.app.art_cache.max(gallery_geometry.visible).max(8),
-            ground,
-        );
+        let gallery_capacity = config.app.art_cache.max(gallery_geometry.visible).max(8);
+        let gallery_covers =
+            if settings.crt_smoothing.unwrap_or(true) && low_line_output(width, height) {
+                CoverCache::new_area(
+                    gallery_image_box(gallery_geometry),
+                    gallery_capacity,
+                    ground,
+                )
+            } else {
+                CoverCache::new(gallery_edge, gallery_capacity, ground)
+            };
+        let saver_covers = CoverCache::new_area(saver_image_box(height), SAVER_POOL_MAX, [0, 0, 0]);
 
         let system_count = systems.len();
         let cache_dir = crate::cache::dir_for(&settings_path);
@@ -4653,6 +4690,7 @@ impl App {
             covers,
             group_covers,
             gallery_covers,
+            saver_covers,
             ui,
             window,
             rows,
@@ -5037,12 +5075,26 @@ impl App {
         }
         self.ui.set_plain_help_height(help_height);
         self.geometry = geometry;
-        update_crt_wordmarks(&self.ui, self.width, self.height, geometry);
-        let (gallery_edge, gallery_capacity, _) = self.gallery_cache_spec();
-        if self.gallery_covers.max_edge() != gallery_edge
+        update_crt_wordmarks(
+            &self.ui,
+            self.width,
+            self.height,
+            geometry,
+            self.crt_smoothing(),
+        );
+        let (gallery_edge, gallery_box, gallery_capacity, _) = self.gallery_cache_spec();
+        let expected_gallery_box = self.crt_smoothing().then_some(gallery_box);
+        let expected_gallery_edge = expected_gallery_box
+            .map(|box_size| box_size.width.max(box_size.height))
+            .unwrap_or(gallery_edge);
+        if self.gallery_covers.max_edge() != expected_gallery_edge
+            || self.gallery_covers.area_box() != expected_gallery_box
             || self.gallery_covers.capacity() != gallery_capacity
         {
             self.gallery_covers = self.fresh_gallery_cover_cache();
+        }
+        if self.saver_covers.area_box() != Some(saver_image_box(self.height)) {
+            self.saver_covers = self.fresh_saver_cover_cache();
         }
         for list in [
             &mut self.category_list,
@@ -5760,6 +5812,24 @@ impl App {
         effective_system_logo(self.logo_dir.as_deref(), system)
     }
 
+    /// A one-system category opens straight into its games. Its chosen
+    /// category image is therefore the visible image of that folder, unless
+    /// a more specific custom system image was chosen.
+    fn game_placeholder_logo(&self) -> Option<PathBuf> {
+        let system = self.open_system_ref()?;
+        self.logo_dir
+            .as_deref()
+            .and_then(|dir| crate::category_images::system_image(dir, &system.def.id))
+            .or_else(|| {
+                let category = self.open_category.as_deref()?;
+                let dir = self.logo_dir.as_deref()?;
+                (self.skipped_systems && crate::category_images::has_override(dir, category))
+                    .then(|| self.category_logo(category))
+                    .flatten()
+            })
+            .or_else(|| system.logo())
+    }
+
     /// How long the machine has been left alone before the screensaver
     /// starts, in seconds. Zero turns it off.
     fn screensaver_after(&self) -> u64 {
@@ -5817,7 +5887,7 @@ impl App {
     /// along the top and bottom is exactly what a screensaver is for
     /// avoiding on a tube.
     fn saver_cell(&self) -> f32 {
-        (self.height as f32 * 4.0 / 3.0).floor().max(32.0)
+        saver_image_box(self.height).width as f32
     }
 
     /// Move the strip along, and top it up from another system now and then.
@@ -7688,6 +7758,7 @@ impl App {
         for root in &artwork_roots {
             self.covers.invalidate_under(root);
             self.gallery_covers.invalidate_under(root);
+            self.saver_covers.invalidate_under(root);
         }
         self.saver_pool.retain(|picture| {
             !artwork_roots
@@ -11340,10 +11411,14 @@ impl App {
         )
     }
 
+    fn crt_smoothing(&self) -> bool {
+        self.settings.crt_smoothing.unwrap_or(true) && low_line_output(self.width, self.height)
+    }
+
     /// Thumbnail edge and capacity for the Gallery browse rectangle. The
     /// cache holds at least one complete visible page, or an eviction would
     /// force the same page to decode again forever on large framebuffers.
-    fn gallery_cache_spec(&self) -> (u32, usize, [u8; 3]) {
+    fn gallery_cache_spec(&self) -> (u32, AreaBox, usize, [u8; 3]) {
         let geometry = Geometry::compute(
             Layout::Gallery,
             false,
@@ -11361,14 +11436,23 @@ impl App {
         let palette = self.effective_palette();
         (
             edge,
+            gallery_image_box(geometry),
             self.config.app.art_cache.max(geometry.visible).max(8),
             [palette.surface.r, palette.surface.g, palette.surface.b],
         )
     }
 
     fn fresh_gallery_cover_cache(&self) -> CoverCache {
-        let (edge, capacity, ground) = self.gallery_cache_spec();
-        CoverCache::new(edge, capacity, ground)
+        let (edge, box_size, capacity, ground) = self.gallery_cache_spec();
+        if self.crt_smoothing() {
+            CoverCache::new_area(box_size, capacity, ground)
+        } else {
+            CoverCache::new(edge, capacity, ground)
+        }
+    }
+
+    fn fresh_saver_cover_cache(&self) -> CoverCache {
+        CoverCache::new_area(saver_image_box(self.height), SAVER_POOL_MAX, [0, 0, 0])
     }
 
     /// Put the effective palette everywhere colour lives: the Slint
@@ -11982,6 +12066,11 @@ impl App {
                 self.settings.show_art = Some(self.show_art);
                 self.touch_selection();
             }
+            OptionId::CrtSmoothing => {
+                self.settings.crt_smoothing = Some(!self.settings.crt_smoothing.unwrap_or(true));
+                self.apply_geometry();
+                self.touch_selection();
+            }
             OptionId::ArtworkScale => {
                 let at = step(self.artwork_scale.index(), delta, ArtworkScale::ALL.len());
                 self.artwork_scale = ArtworkScale::ALL[at];
@@ -12254,6 +12343,7 @@ impl App {
                 None => "Standard".to_string(),
             },
             OptionId::ShowArt => on_off(self.show_art),
+            OptionId::CrtSmoothing => on_off(self.settings.crt_smoothing.unwrap_or(true)),
             OptionId::ArtworkScale => self.artwork_scale.shown().to_string(),
             OptionId::DetailsStyle => self.details_style.shown().to_string(),
             OptionId::GameNameDisplay => self.game_name_display.label().to_string(),
@@ -15821,6 +15911,7 @@ impl App {
         self.covers = self.fresh_cover_cache();
         self.group_covers = self.fresh_group_cover_cache();
         self.gallery_covers = self.fresh_gallery_cover_cache();
+        self.saver_covers = self.fresh_saver_cover_cache();
         self.saver_candidates = None;
         self.saver_pool.clear();
         self.saver_queue.clear();
@@ -17268,6 +17359,7 @@ impl App {
                             for path in &system.paths {
                                 self.covers.invalidate_under(path);
                                 self.gallery_covers.invalidate_under(path);
+                                self.saver_covers.invalidate_under(path);
                             }
                             if self.open_system.as_deref() == Some(id.as_str()) {
                                 self.opened_config = Some(system.to_config());
@@ -18366,8 +18458,7 @@ impl App {
                                 }
                                 // A folder has no picture of its own; the
                                 // system's logo is better than a blank plate.
-                                self.open_system_ref()
-                                    .and_then(|system| self.system_logo(system))
+                                self.game_placeholder_logo()
                             }),
                             self.game_name_display.apply(&row.name).into_owned(),
                             heart,
@@ -18414,12 +18505,9 @@ impl App {
     }
 
     /// The source-space bounds of the actual Details picture on a low-line
-    /// framebuffer. Other views retain the normal cached image unchanged.
+    /// framebuffer.
     fn low_resolution_detail_preview_box(&self, horizontal_scale: f32) -> Option<(u32, u32)> {
-        if self.screen != Screen::Browse
-            || self.layout != Layout::Details
-            || self.width.min(self.height) > 288
-            || self.width.max(self.height) > 720
+        if self.screen != Screen::Browse || self.layout != Layout::Details || !self.crt_smoothing()
         {
             return None;
         }
@@ -18454,6 +18542,47 @@ impl App {
         Some((
             picture_width.floor().max(1.0) as u32,
             picture_height.floor().max(1.0) as u32,
+        ))
+    }
+
+    fn low_resolution_row_preview_box(&self, horizontal_scale: f32) -> Option<(u32, u32)> {
+        if self.screen != Screen::Browse || !self.crt_smoothing() {
+            return None;
+        }
+        let geometry = self.geometry;
+        let (width, height) = match self.layout {
+            Layout::Tiled => {
+                let gap = geometry.pad / 2.0;
+                (
+                    geometry.tile_width - gap - 4.0,
+                    geometry.tile_height - gap - 4.0 - geometry.small_font,
+                )
+            }
+            Layout::Carousel => (
+                geometry.tile_width - geometry.pad * 2.0,
+                geometry.tile_height
+                    - self.detail_panel_measure().1
+                    - geometry.pad * 3.0
+                    - geometry.body_font,
+            ),
+            _ => return None,
+        };
+        Some((
+            (width / horizontal_scale).floor().max(1.0) as u32,
+            height.floor().max(1.0) as u32,
+        ))
+    }
+
+    fn low_resolution_information_preview_box(&self, horizontal_scale: f32) -> Option<(u32, u32)> {
+        if self.screen != Screen::Information || !self.crt_smoothing() {
+            return None;
+        }
+        let safe_width = self.width as f32 - self.geometry.inset_x * 2.0;
+        Some((
+            ((safe_width - self.geometry.pad * 3.0) / horizontal_scale)
+                .floor()
+                .max(1.0) as u32,
+            (self.geometry.small_font * 7.0).floor().max(1.0) as u32,
         ))
     }
 
@@ -18501,12 +18630,15 @@ impl App {
         &mut self,
         path: Option<PathBuf>,
         gallery_budget: &mut usize,
+        horizontal_scale: f32,
+        cache_preview: bool,
     ) -> (slint::Image, bool, bool) {
         let Some(path) = path else {
             return (slint::Image::default(), false, false);
         };
         if self.layout != Layout::Gallery {
-            return match self.cover_for(&path, None, false) {
+            let preview_box = self.low_resolution_row_preview_box(horizontal_scale);
+            return match self.cover_for(&path, preview_box, cache_preview) {
                 Some(image) => (image, true, false),
                 None => (slint::Image::default(), false, false),
             };
@@ -18586,7 +18718,9 @@ impl App {
         let group_preview = self.screen == Screen::Browse
             && self.browsing != Browsing::Games
             && self.layout == Layout::Details;
-        let preview_box = self.low_resolution_detail_preview_box(art_scale_x);
+        let preview_box = self
+            .low_resolution_detail_preview_box(art_scale_x)
+            .or_else(|| self.low_resolution_information_preview_box(art_scale_x));
         match path.and_then(|path| {
             if group_preview {
                 self.group_covers.get(&path).map(|image| match preview_box {
@@ -18613,8 +18747,41 @@ impl App {
         self.art_pending = false;
     }
 
+    /// Fast scrolling defers game images, but the current system's already
+    /// cached logo can stand in without decoding each passing game's art.
+    fn show_deferred_art_placeholder(&mut self) {
+        if !self.art_pending
+            || self.screen != Screen::Browse
+            || self.browsing != Browsing::Games
+            || self.open_system.is_none()
+            || self.layout != Layout::Details
+            || !self.show_art
+            || self.speed <= self.art_limit()
+        {
+            return;
+        }
+        let (_, caption, heart, _) = self.current_art();
+        let image = if heart {
+            None
+        } else {
+            let preview_box = self.low_resolution_detail_preview_box(1.0);
+            self.game_placeholder_logo()
+                .and_then(|path| self.cover_for(&path, preview_box, true))
+        };
+        self.ui.set_art_caption(caption.into());
+        self.ui.set_art_heart(heart);
+        self.ui.set_art_scale_x(1.0);
+        if let Some(image) = image {
+            self.ui.set_art(image);
+            self.ui.set_has_art(true);
+        } else {
+            self.ui.set_has_art(false);
+        }
+    }
+
     fn refresh(&mut self) {
         self.apply_start_folder_if_ready();
+        self.show_deferred_art_placeholder();
         let (range, selected_in_window) = if self.screen == Screen::Context {
             context_window(&self.menu, &self.menu_list, self.geometry.visible)
         } else {
@@ -18661,7 +18828,12 @@ impl App {
                     let needed = (self.width as f32 / cell).ceil() as usize + 2;
                     for step in 0..needed {
                         let picture = self.saver_pool[(first + step) % count].clone();
-                        let (cover, has_cover) = match self.cover_for(&picture.path, None, false) {
+                        let image = if self.crt_smoothing() {
+                            self.saver_covers.get(&picture.path).map(to_image)
+                        } else {
+                            self.cover_for(&picture.path, None, false)
+                        };
+                        let (cover, has_cover) = match image {
                             Some(image) => (image, true),
                             None => (slint::Image::default(), false),
                         };
@@ -18705,8 +18877,19 @@ impl App {
                                 None
                             };
                             let game_art = with_art && self.category_art_is_game_art(name);
-                            let (cover, has_cover, deferred) =
-                                self.row_cover_for(logo, &mut gallery_budget);
+                            let art_scale_x = artwork_horizontal(
+                                self.artwork_scale,
+                                self.width,
+                                self.height,
+                                self.screen_rotation,
+                                game_art,
+                            );
+                            let (cover, has_cover, deferred) = self.row_cover_for(
+                                logo,
+                                &mut gallery_budget,
+                                art_scale_x,
+                                game_art,
+                            );
                             gallery_pending |= deferred;
                             rows.push(Row {
                                 title: SharedString::from(name.as_str()),
@@ -18717,13 +18900,7 @@ impl App {
                                 ),
                                 cover,
                                 has_cover,
-                                art_scale_x: artwork_horizontal(
-                                    self.artwork_scale,
-                                    self.width,
-                                    self.height,
-                                    self.screen_rotation,
-                                    game_art,
-                                ),
+                                art_scale_x,
                                 value: SharedString::new(),
                             });
                         }
@@ -18739,7 +18916,7 @@ impl App {
                                     None
                                 };
                                 let (cover, has_cover, deferred) =
-                                    self.row_cover_for(logo, &mut gallery_budget);
+                                    self.row_cover_for(logo, &mut gallery_budget, 1.0, false);
                                 gallery_pending |= deferred;
                                 rows.push(Row {
                                     title: SharedString::from(name.as_str()),
@@ -18758,7 +18935,7 @@ impl App {
                                     None
                                 };
                                 let (cover, has_cover, deferred) =
-                                    self.row_cover_for(logo, &mut gallery_budget);
+                                    self.row_cover_for(logo, &mut gallery_budget, 1.0, false);
                                 gallery_pending |= deferred;
                                 let name = self.systems[index].name().to_string();
                                 let favorite = browse_row_favorite(
@@ -18790,8 +18967,7 @@ impl App {
                         // Read once, because it is the same for every row.
                         let inside_favorites = self.in_favorites();
                         let logo = if with_art {
-                            self.open_system_ref()
-                                .and_then(|system| self.system_logo(system))
+                            self.game_placeholder_logo()
                         } else {
                             None
                         };
@@ -18820,8 +18996,12 @@ impl App {
                             } else {
                                 None
                             };
-                            let (cover, has_cover, deferred) =
-                                self.row_cover_for(wanted, &mut gallery_budget);
+                            let (cover, has_cover, deferred) = self.row_cover_for(
+                                wanted,
+                                &mut gallery_budget,
+                                art_scale_x,
+                                game_art,
+                            );
                             gallery_pending |= deferred;
                             let row = &self.here[index];
                             let shown_name = self.game_name_display.apply(&row.name);
@@ -19955,6 +20135,7 @@ impl App {
         self.covers = self.fresh_cover_cache();
         self.group_covers = self.fresh_group_cover_cache();
         self.gallery_covers = self.fresh_gallery_cover_cache();
+        self.saver_covers = self.fresh_saver_cover_cache();
         self.timer = FrameTimer::new();
         self.art = ArtStats::default();
         self.dirty = true;
@@ -20001,9 +20182,12 @@ impl App {
             }
         }
 
-        if let Some(text) =
-            report_failure_caches(&[&self.covers, &self.gallery_covers, &self.group_covers])
-        {
+        if let Some(text) = report_failure_caches(&[
+            &self.covers,
+            &self.gallery_covers,
+            &self.group_covers,
+            &self.saver_covers,
+        ]) {
             println!("{text}");
         }
 
@@ -20530,6 +20714,11 @@ impl App {
     }
 
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    pub fn saver_covers(&self) -> &CoverCache {
+        &self.saver_covers
+    }
+
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     pub fn frame_summary(&self) -> crate::metrics::FrameSummary {
         self.timer.summary()
     }
@@ -20602,8 +20791,12 @@ fn message_consumes_input(has_message: bool, build_running: bool) -> bool {
 }
 
 #[cfg(target_os = "linux")]
-pub fn report_art_failures(covers: &CoverCache, thumbnails: &CoverCache) -> Option<String> {
-    report_failure_caches(&[covers, thumbnails])
+pub fn report_art_failures(
+    covers: &CoverCache,
+    thumbnails: &CoverCache,
+    screensaver: &CoverCache,
+) -> Option<String> {
+    report_failure_caches(&[covers, thumbnails, screensaver])
 }
 
 /// Group artwork, large artwork and Gallery thumbnails report one
@@ -24209,13 +24402,17 @@ mod tests {
         std::fs::create_dir_all(&root).unwrap();
         let shared = root.join("shared.png");
         let thumbnail_only = root.join("thumbnail.png");
+        let saver_only = root.join("saver.png");
         let mut covers = CoverCache::new(64, 4, [0, 0, 0]);
         let mut thumbnails = CoverCache::new(32, 4, [0, 0, 0]);
+        let mut screensaver = CoverCache::new_area(saver_image_box(240), 4, [0, 0, 0]);
         assert!(covers.get(&shared).is_none());
         assert!(thumbnails.get(&shared).is_none());
         assert!(thumbnails.get(&thumbnail_only).is_none());
+        assert!(screensaver.get(&saver_only).is_none());
 
-        let report = report_failure_caches(&[&covers, &thumbnails]).expect("two failed paths");
+        let report = report_failure_caches(&[&covers, &thumbnails, &screensaver])
+            .expect("three failed paths");
         let shared_text = shared.display().to_string();
         assert_eq!(
             report
@@ -24226,6 +24423,7 @@ mod tests {
             "the same failed path from both caches must be one report line"
         );
         assert!(report.contains(&thumbnail_only.display().to_string()));
+        assert!(report.contains(&saver_only.display().to_string()));
         std::fs::remove_dir_all(&root).ok();
     }
 

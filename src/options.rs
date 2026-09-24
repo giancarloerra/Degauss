@@ -38,6 +38,8 @@ pub enum OptionId {
     /// Which named palette from the themes folder is on, if any.
     Theme,
     ShowArt,
+    /// Improve low-line artwork and logos with an area filter.
+    CrtSmoothing,
     /// Correct game artwork for the physical aspect ratio of a display
     /// whose framebuffer pixels are not square.
     ArtworkScale,
@@ -126,6 +128,7 @@ pub const OPTIONS: &[OptionId] = &[
     OptionId::ShowGamePosition,
     OptionId::Font,
     OptionId::ShowArt,
+    OptionId::CrtSmoothing,
     OptionId::ArtworkScale,
     OptionId::ShowBar,
     OptionId::Spacer,
@@ -258,6 +261,7 @@ impl OptionsPage {
                 OptionId::ShowGamePosition,
                 OptionId::Font,
                 OptionId::ShowArt,
+                OptionId::CrtSmoothing,
                 OptionId::ArtworkScale,
                 OptionId::ShowBar,
                 OptionId::Screensaver,
@@ -311,6 +315,7 @@ impl OptionId {
             OptionId::Font => "Text",
             OptionId::Theme => "Theme",
             OptionId::ShowArt => "Artwork",
+            OptionId::CrtSmoothing => "CRT Image Smoothing",
             OptionId::ArtworkScale => "Artwork Scale Factor",
             OptionId::ShowHidden => "Show What You Hid",
             OptionId::ShowEmpty => "Show Systems with No Games",
@@ -389,6 +394,9 @@ impl OptionId {
                 "Left/right choose a theme. A edits colours, logo and default text."
             }
             OptionId::ShowArt => "Show or hide library artwork. Manual-match previews remain available.",
+            OptionId::CrtSmoothing => {
+                "Smooth artwork and logos at 240p/288p. Off restores the faster original scaling; higher-resolution modes are unchanged."
+            }
             OptionId::ArtworkScale => {
                 "Match game artwork to the display shape. Logos and screensaver images are unchanged."
             }

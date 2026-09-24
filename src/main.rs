@@ -1774,7 +1774,7 @@ fn run_on_framebuffer(
         covers.len(),
         thumbnails.len()
     ));
-    if let Some(text) = app::report_art_failures(covers, thumbnails) {
+    if let Some(text) = app::report_art_failures(covers, thumbnails, app.saver_covers()) {
         note(&text);
     }
 

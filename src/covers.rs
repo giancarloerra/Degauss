@@ -5,9 +5,8 @@
 //! will actually be drawn at, and cached. What the cache
 //! cannot hold is reported rather than silently re-decoded every frame.
 //!
-//! Downscaling takes one source pixel per destination pixel. It is the
-//! cheapest thing that fits the frame budget on this hardware, which is what
-//! keeps artwork arriving while the list is moving.
+//! The original point-sampling path remains available for the quickest
+//! first pass. Low-line screens can area-filter the smaller final image.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -40,6 +39,7 @@ impl RgbImage {
         Ok(RgbImage { width, height, rgb })
     }
 
+    #[cfg(test)]
     pub fn pixel(&self, x: u32, y: u32) -> [u8; 3] {
         let i = ((y * self.width + x) * 3) as usize;
         [self.rgb[i], self.rgb[i + 1], self.rgb[i + 2]]
@@ -80,6 +80,16 @@ pub fn load_scaled(
     ground: [u8; 3],
     stats: &mut CoverStats,
 ) -> Result<RgbImage> {
+    load_scaled_with(path, max_edge, None, ground, stats)
+}
+
+fn load_scaled_with(
+    path: &Path,
+    max_edge: u32,
+    area_box: Option<AreaBox>,
+    ground: [u8; 3],
+    stats: &mut CoverStats,
+) -> Result<RgbImage> {
     // Scraped artwork is tens of kilobytes. A file orders of magnitude
     // larger is a mistake or a stray download, and decoding it would take
     // memory this board does not have to spare. Refusing it costs one
@@ -103,7 +113,16 @@ pub fn load_scaled(
     let decode_us = started.elapsed().as_micros() as u64;
 
     let started = Instant::now();
-    let scaled = scale_to_fit(&full, max_edge);
+    let scaled = match area_box {
+        None => scale_to_fit(&full, max_edge),
+        Some(box_size) => {
+            // Keep two source samples per final pixel without retaining a
+            // large decoded image in the cache. Gallery thumbnails and the
+            // screensaver then get the same box filter as Details.
+            let sampled = scale_to_fit(&full, max_edge.saturating_mul(2));
+            scale_to_box_area_fit(&sampled, box_size.width, box_size.height, box_size.fit)
+        }
+    };
     let scale_us = started.elapsed().as_micros() as u64;
 
     stats.decoded += 1;
@@ -300,10 +319,8 @@ pub fn decode_png(
 /// input untouched when it already fits, because upscaling art on a 240-line
 /// display only wastes memory.
 ///
-/// Sampling rather than averaging the block is deliberate: averaging costs
-/// noticeably more per screenshot and shows up on the worst frame of a
-/// scroll. On a 352 by 240 screen the harder edges it buys are not worth the
-/// stutter.
+/// Point sampling remains the fast original path and the first stage of
+/// optional area filtering. It keeps large decoded files out of the cache.
 pub fn scale_to_fit(source: &RgbImage, max_edge: u32) -> RgbImage {
     let longest = source.width.max(source.height);
     if longest <= max_edge || max_edge == 0 {
@@ -315,15 +332,25 @@ pub fn scale_to_fit(source: &RgbImage, max_edge: u32) -> RgbImage {
     let height = ((source.height as f32 * scale).round() as u32).max(1);
 
     let mut out = vec![0u8; (width * height * 3) as usize];
+    // MiSTer's ARMv7 has no cheap 64-bit divide. Each destination column
+    // picks the same source column on every row, so divide once per column
+    // rather than once per pixel. The sample coordinates are unchanged.
+    let source_columns: Vec<usize> = (0..width)
+        .map(|x| {
+            let sx = ((u64::from(x) * u64::from(source.width) / u64::from(width)) as u32)
+                .min(source.width - 1);
+            sx as usize * 3
+        })
+        .collect();
     for y in 0..height {
-        let sy = ((y as u64 * source.height as u64 / height as u64) as u32).min(source.height - 1);
-        for x in 0..width {
-            let sx = ((x as u64 * source.width as u64 / width as u64) as u32).min(source.width - 1);
-            let px = source.pixel(sx, sy);
-            let i = ((y * width + x) * 3) as usize;
-            out[i] = px[0];
-            out[i + 1] = px[1];
-            out[i + 2] = px[2];
+        let sy = ((u64::from(y) * u64::from(source.height) / u64::from(height)) as u32)
+            .min(source.height - 1);
+        let source_row = sy as usize * source.width as usize * 3;
+        let target_row = y as usize * width as usize * 3;
+        for (x, column) in source_columns.iter().copied().enumerate() {
+            let source_at = source_row + column;
+            let target_at = target_row + x * 3;
+            out[target_at..target_at + 3].copy_from_slice(&source.rgb[source_at..source_at + 3]);
         }
     }
 
@@ -335,9 +362,70 @@ pub fn scale_to_fit(source: &RgbImage, max_edge: u32) -> RgbImage {
 }
 
 /// Area-filter an already decoded picture to the rectangle where it will be
-/// drawn. This is used only by the experimental CRT Details preview; the
-/// ordinary cache keeps its existing size and point-sampling behaviour.
+/// drawn. The source cache keeps its existing size and point-sampling path.
 pub fn scale_to_box_area(source: &RgbImage, max_width: u32, max_height: u32) -> RgbImage {
+    scale_to_box_area_fit(source, max_width, max_height, AreaFit::Contain)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AreaFit {
+    Contain,
+    Cover,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AreaBox {
+    pub width: u32,
+    pub height: u32,
+    pub fit: AreaFit,
+}
+
+/// The width of one destination pixel over source pixels, in units of the
+/// destination axis. Computing this once per column/row avoids division in
+/// the inner pixel loop on MiSTer's ARM CPU.
+#[derive(Clone, Copy)]
+struct AreaSpan {
+    first: u32,
+    last: u32,
+    first_weight: u32,
+    last_weight: u32,
+    middle_weight: u32,
+}
+
+impl AreaSpan {
+    fn new(index: u32, source: u32, target: u32) -> Self {
+        let start = u64::from(index) * u64::from(source);
+        let end = u64::from(index + 1) * u64::from(source);
+        let target = u64::from(target);
+        let first = start / target;
+        let last = (end - 1) / target;
+        Self {
+            first: first as u32,
+            last: last as u32,
+            first_weight: (end.min((first + 1) * target) - start) as u32,
+            last_weight: (end - start.max(last * target)) as u32,
+            middle_weight: target as u32,
+        }
+    }
+
+    #[inline]
+    fn weight(self, at: u32) -> u64 {
+        if at == self.first {
+            u64::from(self.first_weight)
+        } else if at == self.last {
+            u64::from(self.last_weight)
+        } else {
+            u64::from(self.middle_weight)
+        }
+    }
+}
+
+fn scale_to_box_area_fit(
+    source: &RgbImage,
+    max_width: u32,
+    max_height: u32,
+    fit: AreaFit,
+) -> RgbImage {
     if max_width == 0
         || max_height == 0
         || (source.width <= max_width && source.height <= max_height)
@@ -345,38 +433,47 @@ pub fn scale_to_box_area(source: &RgbImage, max_width: u32, max_height: u32) -> 
         return source.clone();
     }
 
-    let scale =
-        (max_width as f64 / source.width as f64).min(max_height as f64 / source.height as f64);
-    let width = ((source.width as f64 * scale).round() as u32).clamp(1, max_width);
-    let height = ((source.height as f64 * scale).round() as u32).clamp(1, max_height);
+    let x_scale = max_width as f64 / source.width as f64;
+    let y_scale = max_height as f64 / source.height as f64;
+    let scale = match fit {
+        AreaFit::Contain => x_scale.min(y_scale),
+        AreaFit::Cover => x_scale.max(y_scale),
+    };
+    if scale >= 1.0 {
+        return source.clone();
+    }
+    let (width, height) = match fit {
+        AreaFit::Contain => (
+            ((source.width as f64 * scale).round() as u32).clamp(1, max_width),
+            ((source.height as f64 * scale).round() as u32).clamp(1, max_height),
+        ),
+        AreaFit::Cover => (
+            ((source.width as f64 * scale).ceil() as u32).max(max_width),
+            ((source.height as f64 * scale).ceil() as u32).max(max_height),
+        ),
+    };
     let mut out = vec![0u8; (width * height * 3) as usize];
     let denominator = u64::from(source.width) * u64::from(source.height);
+    let columns: Vec<AreaSpan> = (0..width)
+        .map(|x| AreaSpan::new(x, source.width, width))
+        .collect();
 
     for y in 0..height {
-        let top = u64::from(y) * u64::from(source.height);
-        let bottom = u64::from(y + 1) * u64::from(source.height);
-        let first_y = top / u64::from(height);
-        let last_y = bottom.div_ceil(u64::from(height));
-        for x in 0..width {
-            let left = u64::from(x) * u64::from(source.width);
-            let right = u64::from(x + 1) * u64::from(source.width);
-            let first_x = left / u64::from(width);
-            let last_x = right.div_ceil(u64::from(width));
+        let row = AreaSpan::new(y, source.height, height);
+        for (x, column) in columns.iter().copied().enumerate() {
             let mut channels = [0u64; 3];
-            for sy in first_y..last_y {
-                let overlap_y =
-                    bottom.min((sy + 1) * u64::from(height)) - top.max(sy * u64::from(height));
-                for sx in first_x..last_x {
-                    let overlap_x =
-                        right.min((sx + 1) * u64::from(width)) - left.max(sx * u64::from(width));
-                    let weight = overlap_x * overlap_y;
-                    let index = ((sy * u64::from(source.width) + sx) * 3) as usize;
+            for sy in row.first..=row.last {
+                let weight_y = row.weight(sy);
+                for sx in column.first..=column.last {
+                    let weight = column.weight(sx) * weight_y;
+                    let index =
+                        ((u64::from(sy) * u64::from(source.width) + u64::from(sx)) * 3) as usize;
                     for (channel, sum) in channels.iter_mut().enumerate() {
                         *sum += weight * u64::from(source.rgb[index + channel]);
                     }
                 }
             }
-            let index = ((u64::from(y) * u64::from(width) + u64::from(x)) * 3) as usize;
+            let index = ((y as usize * width as usize) + x) * 3;
             for (channel, sum) in channels.into_iter().enumerate() {
                 out[index + channel] = ((sum + denominator / 2) / denominator) as u8;
             }
@@ -393,6 +490,7 @@ pub fn scale_to_box_area(source: &RgbImage, max_width: u32, max_height: u32) -> 
 /// Fixed-capacity cover cache with least-recently-used eviction.
 pub struct CoverCache {
     max_edge: u32,
+    area_box: Option<AreaBox>,
     capacity: usize,
     /// What transparent artwork is composited onto: the colour it is drawn
     /// on. Changing this colour discards decoded pixels.
@@ -424,6 +522,7 @@ impl CoverCache {
     pub fn new(max_edge: u32, capacity: usize, ground: [u8; 3]) -> Self {
         CoverCache {
             max_edge,
+            area_box: None,
             capacity: capacity.max(1),
             ground,
             images: HashMap::new(),
@@ -432,6 +531,12 @@ impl CoverCache {
             failed: HashMap::new(),
             stats: CoverStats::default(),
         }
+    }
+
+    pub fn new_area(box_size: AreaBox, capacity: usize, ground: [u8; 3]) -> Self {
+        let mut cache = Self::new(box_size.width.max(box_size.height), capacity, ground);
+        cache.area_box = Some(box_size);
+        cache
     }
 
     /// Art for a path, decoding it the first time. `None` means it already
@@ -447,7 +552,7 @@ impl CoverCache {
         }
 
         let mut stats = self.stats;
-        match load_scaled(path, self.max_edge, self.ground, &mut stats) {
+        match load_scaled_with(path, self.max_edge, self.area_box, self.ground, &mut stats) {
             Ok(image) => {
                 self.stats = stats;
                 self.insert(path.to_path_buf(), image);
@@ -513,6 +618,10 @@ impl CoverCache {
 
     pub fn max_edge(&self) -> u32 {
         self.max_edge
+    }
+
+    pub fn area_box(&self) -> Option<AreaBox> {
+        self.area_box
     }
 
     pub fn capacity(&self) -> usize {
@@ -990,10 +1099,97 @@ mod tests {
     }
 
     #[test]
+    fn precomputed_area_spans_match_the_original_pixel_footprints() {
+        // A regression in edge weights makes real screenshots look striped.
+        // Compare against the direct overlap calculation used before the
+        // MiSTer first-pass optimisation, including uneven ratios.
+        for (source_width, source_height, target_width, target_height) in [
+            (3, 1, 2, 1),
+            (7, 5, 4, 3),
+            (13, 11, 3, 7),
+            (320, 240, 126, 90),
+        ] {
+            let mut rgb = Vec::with_capacity((source_width * source_height * 3) as usize);
+            for y in 0..source_height {
+                for x in 0..source_width {
+                    rgb.extend_from_slice(&[
+                        (x * 17 + y * 3) as u8,
+                        (x * 5 + y * 11) as u8,
+                        (x * 7 + y * 13) as u8,
+                    ]);
+                }
+            }
+            let source = RgbImage::new(source_width, source_height, rgb).unwrap();
+            let actual = scale_to_box_area(&source, target_width, target_height);
+            let denominator = u64::from(source_width) * u64::from(source_height);
+            for y in 0..actual.height {
+                for x in 0..actual.width {
+                    let left = u64::from(x) * u64::from(source_width);
+                    let right = u64::from(x + 1) * u64::from(source_width);
+                    let top = u64::from(y) * u64::from(source_height);
+                    let bottom = u64::from(y + 1) * u64::from(source_height);
+                    let mut sums = [0u64; 3];
+                    for sy in
+                        top / u64::from(actual.height)..bottom.div_ceil(u64::from(actual.height))
+                    {
+                        let overlap_y = bottom.min((sy + 1) * u64::from(actual.height))
+                            - top.max(sy * u64::from(actual.height));
+                        for sx in
+                            left / u64::from(actual.width)..right.div_ceil(u64::from(actual.width))
+                        {
+                            let overlap_x = right.min((sx + 1) * u64::from(actual.width))
+                                - left.max(sx * u64::from(actual.width));
+                            let pixel = source.pixel(sx as u32, sy as u32);
+                            for channel in 0..3 {
+                                sums[channel] += overlap_x * overlap_y * u64::from(pixel[channel]);
+                            }
+                        }
+                    }
+                    let expected = sums.map(|sum| ((sum + denominator / 2) / denominator) as u8);
+                    assert_eq!(actual.pixel(x, y), expected, "at {x},{y}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn screensaver_area_cover_fills_its_cell_without_changing_the_original_cache() {
+        let source = solid(640, 640, [12, 34, 56]);
+        let covered = scale_to_box_area_fit(&source, 320, 240, AreaFit::Cover);
+        assert_eq!((covered.width, covered.height), (320, 320));
+        assert_eq!(covered.pixel(319, 319), [12, 34, 56]);
+        let original = scale_to_fit(&source, 320);
+        assert_eq!((original.width, original.height), (320, 320));
+        assert_eq!(source.width, 640);
+    }
+
+    #[test]
     fn non_square_art_keeps_its_aspect_ratio() {
         let source = solid(400, 100, [9, 9, 9]);
         let out = scale_to_fit(&source, 100);
         assert_eq!((out.width, out.height), (100, 25));
+    }
+
+    #[test]
+    fn precomputed_nearest_columns_keep_the_original_pixel_choices() {
+        let (width, height) = (257u32, 191u32);
+        let mut rgb = Vec::with_capacity((width * height * 3) as usize);
+        for y in 0..height {
+            for x in 0..width {
+                rgb.extend_from_slice(&[(x * 37) as u8, (y * 17) as u8, (x + y) as u8]);
+            }
+        }
+        let source = RgbImage::new(width, height, rgb).unwrap();
+        let result = scale_to_fit(&source, 97);
+        for y in 0..result.height {
+            for x in 0..result.width {
+                let sx = ((u64::from(x) * u64::from(width) / u64::from(result.width)) as u32)
+                    .min(width - 1);
+                let sy = ((u64::from(y) * u64::from(height) / u64::from(result.height)) as u32)
+                    .min(height - 1);
+                assert_eq!(result.pixel(x, y), source.pixel(sx, sy));
+            }
+        }
     }
 
     #[test]
