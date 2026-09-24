@@ -2342,6 +2342,17 @@ fn game_information(row: &browse::Row) -> String {
 
 fn game_information_named(row: &browse::Row, shown_name: &str) -> String {
     let mut text = shown_name.to_string();
+    if let browse::Kind::Play(browse::Launch::File(path)) = &row.kind {
+        if path
+            .extension()
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("mra"))
+        {
+            if let Some(filename) = path.file_name() {
+                text.push_str("\n\nMRA File: ");
+                text.push_str(&filename.to_string_lossy());
+            }
+        }
+    }
     let values = [
         ("Genre", row.genre.as_deref().unwrap_or("")),
         ("Publisher", row.details.publisher.as_str()),

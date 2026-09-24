@@ -62,6 +62,31 @@ fn information_keeps_missing_provider_fields_blank() {
 }
 
 #[test]
+fn information_distinguishes_mra_variants_without_changing_the_display_title() {
+    let mut row = information_row();
+    row.name = "Shared metadata title".into();
+    row.kind = browse::Kind::Play(browse::Launch::File(PathBuf::from(
+        "/media/fat/_Arcade/Game (World).mra",
+    )));
+    for shown_name in ["Shared metadata title", "001 Shared metadata title"] {
+        let information = game_information_named(&row, shown_name);
+        assert!(information.starts_with(&format!(
+            "{shown_name}\n\nMRA File: Game (World).mra\n\nGenre: Puzzle / Action"
+        )));
+        assert!(information.contains("Publisher: Example Publisher"));
+        assert!(information.contains(&row.details.desc));
+        assert!(!information.contains("/media/fat/_Arcade"));
+    }
+
+    row.kind = browse::Kind::Play(browse::Launch::File(PathBuf::from(
+        "/media/fat/_Arcade/Game (Japan).MRA",
+    )));
+    row.cover = Some(PathBuf::from("artwork-pack/Game.jpg"));
+    assert!(game_information(&row).contains("MRA File: Game (Japan).MRA"));
+    assert!(!game_information(&row).contains("Game (World).mra"));
+}
+
+#[test]
 fn manual_search_is_single_game_only_and_preserves_every_bulk_setting() {
     use crate::scraper::Scope;
 
