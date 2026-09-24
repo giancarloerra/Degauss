@@ -353,7 +353,7 @@ impl OptionId {
             OptionId::ShiftY => "Screen Position, Up and Down",
             OptionId::Screensaver => "Screensaver",
             OptionId::AttractMode => "Attract Mode",
-            OptionId::AttractModeMenu => "Show Attract Mode in Menu",
+            OptionId::AttractModeMenu => "Show Attract Mode on Home",
             OptionId::ScreensaverSpeed => "Screensaver Speed",
             OptionId::Advanced => "Developer",
             OptionId::Spacer => "",
@@ -420,7 +420,7 @@ impl OptionId {
                 "Show installed core versions and updates available through this MiSTer's configured Downloader databases."
             }
             OptionId::ShowUnstable => "Show the Unstable category for nightly core builds.",
-            OptionId::ShowScripts => "Show Scripts in the main menu. Run installed scripts and return to Degauss when they finish.",
+            OptionId::ShowScripts => "Show Scripts on Home. Run installed scripts and return to Degauss when they finish.",
             OptionId::CorePreference => "Choose the preferred core when standard and RetroAchievements versions are both installed.",
             OptionId::AutomaticDataSource => {
                 "Choose which available source systems left on Automatic try first when they are entered."
@@ -471,7 +471,7 @@ impl OptionId {
                 "Let A launch the pictured game and Left/Right change systems. Off keeps the usual wake-on-any-button screensaver."
             }
             OptionId::AttractModeMenu => {
-                "Add an Attract Mode entry to the Menu for immediate start, independent of the idle screensaver."
+                "Add Attract Mode to Home for immediate start, independent of the idle screensaver."
             }
             OptionId::ScreensaverSpeed => {
                 "Move the screensaver pictures at Normal, 2x or 4x speed. This does not change when it starts."

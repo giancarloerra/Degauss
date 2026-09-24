@@ -73,8 +73,8 @@ separately. CRT presentation is applied for the README.
 
 | | |
 |---|---|
-| <img src="docs/screenshots/0.4.0/18-saved-custom-theme.png" alt="A Saved Custom Theme" height="200"> | <img src="docs/screenshots/0.4.0/26-screensaver-artwork-slideshow.png" alt="Screensaver Artwork Slideshow" height="200"> |
-| A Saved Custom Theme | Screensaver Artwork Slideshow |
+| <img src="docs/screenshots/0.4.0/18-saved-custom-theme.png" alt="A Saved Custom Theme" height="200"> | <img src="docs/screenshots/0.9.0/01-attract-mode.png" alt="Attract Mode" height="200"> |
+| A Saved Custom Theme | Attract Mode |
 
 ## Watch Degauss in action
 
@@ -143,7 +143,7 @@ Click the image to watch Degauss on YouTube.
 | **A** (enter) | open a folder, launch a game; in Options, choose the next value or run an action |
 | **B** (escape) | back, out of the folder |
 | **X** (tab) | **Actions** for the current selection and location: Game Information, random game, random favourite, keep a favourite in Main Favourites or in a folder, drop a favourite, rename or remove an empty Favourites folder, jump to letter, search or filter games, hide a row, rebuild this system, change view, etc. |
-| **Y** (space) | **Menu**: Options, Scripts, Help, About, Exit to MiSTer |
+| **Y** (space) | **Menu**: Options, Help, About, Exit to MiSTer. Scripts and optional Attract Mode are on Home |
 
 **Options → Shortcuts** can assign an optional one-second hold to A, B, X or Y.
 A short press keeps the button's normal action. An available hold runs once and
@@ -193,7 +193,7 @@ within 40 ms; held scrolling and deliberate repeated taps are not affected.
 
 ### Running MiSTer scripts
 
-Open **Y Menu → Scripts** to browse the installed scripts and their subfolders.
+Open **Scripts** from the main browser to browse the installed scripts and their subfolders.
 The browser starts at `Scripts` under the configured `menu_root`, normally
 `/media/fat/Scripts`. It lists `.sh` files, with folders first. Hidden files
 and folders, and Degauss's own `degauss.sh`, are excluded.
@@ -202,7 +202,7 @@ Executable `.sh` files run directly, including compiled MiSTer utilities and
 scripts with their own interpreter. Non-executable shell scripts run with Bash.
 
 **A** opens a folder or asks for confirmation before running a script.
-**B** goes to its parent folder, or returns to Menu at the Scripts root.
+**B** goes to its parent folder, or returns to Home at the Scripts root.
 Choose **A Run** to execute the selected script or **B Cancel** to leave it
 untouched. Only run scripts you trust: they retain their normal access to the
 card and may require a keyboard or other interaction.
@@ -222,7 +222,7 @@ Scripts launched from Degauss receive `LAUNCH_ORIGIN_ID=degauss` while they
 run, so they can identify the launcher without inspecting the MiSTer setup.
 
 **Options → Library → Show Scripts Folder** is On by default. Switching it Off
-hides this Menu entry without changing any script files; the choice is saved
+hides the Home entry without changing any script files; the choice is saved
 with the other Options settings. Missing or unreadable script folders and
 scripts report their underlying error.
 
@@ -256,9 +256,12 @@ the library.
 
 The first open reads the configured databases and saves the result. Later
 opens use that saved result without a network request. **Refresh** reads the
-databases again; if it cannot reach them, the last valid result remains
-available. **B** cancels safely. A first-use failure shows a concise cause,
-while `/tmp/degauss.log` keeps the technical detail.
+databases again. If one source times out or returns unusable data, Degauss
+shows the results from the others and names the skipped source at the end;
+partial results are not saved as a complete catalogue. If none can be read,
+the last valid saved result remains available. **B** cancels and returns Home. A
+first-use failure shows a concise cause, while `/tmp/degauss.log` keeps the
+technical detail.
 
 ## Why Degauss
 
@@ -822,10 +825,10 @@ The screensaver, after the set time, drifts through game images taken from your 
 card. Optional Attract Mode lets **A** launch the pictured game, **Left/Right**
 move between systems and **B** return to Degauss. It is off by default, so
 any button still just wakes the ordinary screensaver. Separately, **Show Attract
-Mode in Menu** adds an immediate launcher to **Y Menu**, even when the idle
+Mode on Home** adds an immediate launcher to the main browser, even when the idle
 screensaver and automatic Attract Mode are off.
 **Options → Shortcuts** can instead assign **Start Attract Mode** to a one-second
-button hold without enabling the Menu entry.
+button hold without enabling the Home entry.
 
 ## Settings
 
@@ -858,7 +861,7 @@ require **A** and confirmation, never a sideways press.
 | Appearance | Bottom Bar While Browsing | On by default. Show the time and button hints while browsing. A saved Off choice stays Off after updating or restarting; menus and operation controls remain visible |
 | Appearance | Screensaver | How long with nothing pressed before pictures start |
 | Appearance | Attract Mode | Off by default. When on, A launches the game pictured at the centre and Left/Right moves between systems |
-| Appearance | Show Attract Mode in Menu | Off by default. Add an immediate Attract Mode entry to Y Menu, independently of idle screensaver settings |
+| Appearance | Show Attract Mode on Home | Off by default. Add an immediate Attract Mode entry to the main browser, independently of idle screensaver settings |
 | Appearance | Screensaver Speed | Normal (default), 2x or 4x picture movement, independent of the idle time |
 | Library | Favourites First | Show favourites first in each folder, keeping them in alphabetical order |
 | Library | Folders Before Games | On, folders lead a system's listing; off, the games come first |
@@ -868,7 +871,7 @@ require **A** and confirmation, never a sideways press.
 | Library | Show Other Folder | Show the Other group, the cores that are not games |
 | Library | Show Utility Folder | Show the Utility group, test patterns and measurement cores |
 | Library | Show Unstable Folder | Show installed Unstable cores. On by default |
-| Library | Show Scripts Folder | On by default. Show Scripts in Menu to browse and run installed `.sh` files. Turning this Off hides the entry without changing the files |
+| Library | Show Scripts Folder | On by default. Show Scripts in the main browser to browse and run installed `.sh` files. Turning this Off hides the entry without changing the files |
 | Library | Show Core Updates | Off by default. Show every installed core and uninstalled cores selected by this MiSTer's configured Downloader databases |
 | Library | Show Systems with No Games | Systems and folders holding nothing are left out on their own; this shows them. Off by default |
 | Library | Show What You Hid | Show what you hid yourself with **Hide This** |

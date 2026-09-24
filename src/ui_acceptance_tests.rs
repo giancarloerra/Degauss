@@ -519,6 +519,10 @@ fn run_start_folder_and_game_position_flow(root: &Path, window: Rc<MinimalSoftwa
     assert_eq!(app.settings.start_folder.as_deref(), Some("Computer"));
 
     let choices = app.start_folder_choices();
+    assert!(choices.iter().all(|choice| !matches!(
+        choice.as_deref(),
+        Some(SCRIPTS_CATEGORY | ATTRACT_MODE_CATEGORY)
+    )));
     let current = choices
         .iter()
         .position(|choice| choice.as_deref() == Some("Computer"))
@@ -1084,13 +1088,29 @@ fn run_misterzine_browser_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
 
     app.filter = "ARCADE".to_string();
     app.apply_filter();
+    app.settings.custom_views.categories = Some("list".into());
     app.prepare_misterzine_browser(false);
     assert_eq!(app.here.len(), 1, "refresh keeps current visit filters");
+    app.misterzine_job = Some(crate::misterzine::Job::pending_fixture());
     app.handle(Action::Quit);
+    app.refresh();
+    assert_eq!(app.screen, Screen::Browse);
+    assert_eq!(app.browsing, Browsing::Categories);
+    assert!(app.misterzine_job.is_none(), "Back stops late refreshes");
+    assert!(app.ui.get_show_brand(), "Home restores its wordmark");
+    assert_eq!(app.layout, Layout::List, "Home restores its saved view");
+    assert_eq!(app.ui.get_layout(), app.layout.index());
     assert!(app.filter.is_empty());
     assert!(!app.misterzine_filters.is_active());
     app.prepare_misterzine_browser(true);
     assert_eq!(app.here.len(), 2, "reopening starts unfiltered");
+    app.handle(Action::Quit);
+    assert_eq!(app.browsing, Browsing::Categories);
+    assert!(
+        app.ui.get_show_brand(),
+        "finished reads also return to Home"
+    );
+    app.prepare_misterzine_browser(true);
 
     let Outcome::Launch { plan, .. } = app.handle(Action::Accept).expect("local core launch")
     else {
@@ -1192,7 +1212,7 @@ fn run_handheld_category_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
             .iter()
             .map(|(name, _)| name.as_str())
             .collect::<Vec<_>>(),
-        vec!["Console"]
+        vec!["Console", SCRIPTS_CATEGORY]
     );
     let saved = app.position();
     let selected_game = row_key(&app.here[app.game_list.selected()]);
@@ -1224,7 +1244,7 @@ fn run_handheld_category_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
             .iter()
             .map(|(name, _)| name.as_str())
             .collect::<Vec<_>>(),
-        vec!["Console", HANDHELD_CATEGORY]
+        vec!["Console", HANDHELD_CATEGORY, SCRIPTS_CATEGORY]
     );
     assert_eq!(app.systems.len(), 1);
     assert_eq!(app.systems[0].def.id, "NES");
@@ -1328,8 +1348,11 @@ fn run_scripts_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
             },
         );
         app.open_menu();
+        assert!(!app.menu.iter().any(|entry| entry == "Scripts"));
         assert_eq!(
-            app.menu.iter().any(|entry| entry == "Scripts"),
+            app.categories
+                .iter()
+                .any(|(name, _)| name == SCRIPTS_CATEGORY),
             saved.unwrap_or(true)
         );
         assert_eq!(
@@ -1344,9 +1367,12 @@ fn run_scripts_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
             app.handle(Action::Quit);
             assert_eq!(app.screen, Screen::Menu);
             assert_eq!(
-                app.menu.iter().any(|entry| entry == "Scripts"),
+                app.categories
+                    .iter()
+                    .any(|(name, _)| name == SCRIPTS_CATEGORY),
                 !was_visible
             );
+            assert!(!app.menu.iter().any(|entry| entry == "Scripts"));
             let settings = Settings::load(&app.settings_path).unwrap();
             assert_eq!(settings.show_scripts, Some(!was_visible));
             app.ui.hide().unwrap();
@@ -1360,11 +1386,16 @@ fn run_scripts_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
     app.game_list.select(1);
     let selected = row_key(&app.here[app.game_list.selected()]);
     let games = app.here.len();
-    app.open_menu();
-    app.menu_list.select(
-        app.menu
+    app.screen = Screen::Browse;
+    app.browsing = Browsing::Categories;
+    app.open_category = None;
+    app.rebuild_system_list();
+    app.resolve_view();
+    app.apply_geometry();
+    app.category_list.select(
+        app.categories
             .iter()
-            .position(|entry| entry == "Scripts")
+            .position(|(name, _)| name == SCRIPTS_CATEGORY)
             .unwrap(),
     );
     assert_eq!(app.handle(Action::Accept), None);
@@ -1418,10 +1449,10 @@ fn run_scripts_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
     app.handle(Action::Quit);
     assert_eq!(app.menu[app.menu_list.selected()], "[ Tools and Tests ]");
     app.handle(Action::Quit);
-    assert_eq!(app.screen, Screen::Menu);
-    assert_eq!(app.menu[app.menu_list.selected()], "Scripts");
-    app.handle(Action::Quit);
     assert_eq!(app.screen, Screen::Browse);
+    assert_eq!(app.browsing, Browsing::Categories);
+    assert_eq!(app.selected_category_name(), Some(SCRIPTS_CATEGORY));
+    assert!(app.ui.get_show_brand());
     assert_eq!(row_key(&app.here[app.game_list.selected()]), selected);
     assert_eq!(app.here.len(), games);
     assert!(app.build.is_none(), "scripts must not start game indexing");

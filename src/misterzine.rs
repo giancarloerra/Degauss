@@ -863,6 +863,16 @@ struct ConfiguredDatabase {
     filter: Option<String>,
 }
 
+impl ConfiguredDatabase {
+    fn label(&self) -> String {
+        if self.description.trim().is_empty() {
+            readable_source(&self.id)
+        } else {
+            self.description.trim().to_string()
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct DownloaderConfig {
     global_filter: String,
@@ -1591,11 +1601,7 @@ fn remote_core(
     }
     Ok(Some(RemoteCore {
         database: database.id.clone(),
-        source_label: if database.description.trim().is_empty() {
-            readable_source(&database.id)
-        } else {
-            database.description.trim().to_string()
-        },
+        source_label: database.label(),
         path: path.replace('\\', "/"),
         identity,
         title: title_from_stem(stem),
@@ -1663,6 +1669,7 @@ fn fetch_database<F>(
     cancelled: &AtomicBool,
     events: &SyncSender<Event>,
     fetch: &mut F,
+    failed_sources: &mut Vec<String>,
 ) -> std::result::Result<Vec<RemoteCore>, FetchError>
 where
     F: FnMut(&str, u64, Duration, &AtomicBool) -> std::result::Result<Vec<u8>, FetchError>,
@@ -1713,12 +1720,14 @@ where
             cancelled: false,
         },
     )?;
+    let has_direct_cores = !cores.is_empty();
     let archives: Vec<_> = manifest
         .archives
-        .values()
-        .filter(|archive| archive_can_hold_menu_core(archive))
+        .iter()
+        .filter(|(_, archive)| archive_can_hold_menu_core(archive))
         .collect();
-    for (index, archive) in archives.iter().enumerate() {
+    let mut readable_archives = 0;
+    for (index, (name, archive)) in archives.iter().enumerate() {
         if cancelled.load(Ordering::Relaxed) {
             return Err(FetchError {
                 user: String::new(),
@@ -1733,62 +1742,86 @@ where
             archives.len(),
             false,
         );
-        if let Some(summary_file) = archive.summary_file.as_ref() {
-            if !safe_web_url(&summary_file.url)
-                || !validate_hash(&summary_file.hash)
-                || summary_file.size > MAX_DATABASE_BYTES
+        // Each archive summary is independent. Keep the other configured
+        // sources when one server times out or returns unusable data.
+        let loaded = (|| {
+            let mut archive_cores = Vec::new();
+            let summary = if let Some(summary_file) = archive.summary_file.as_ref() {
+                if !safe_web_url(&summary_file.url)
+                    || !validate_hash(&summary_file.hash)
+                    || summary_file.size > MAX_DATABASE_BYTES
+                {
+                    return Err(FetchError {
+                        user: "A configured Downloader archive has an invalid summary.".into(),
+                        diagnostic: "invalid archive summary descriptor".into(),
+                        cancelled: false,
+                    });
+                }
+                let payload = fetch(
+                    &summary_file.url,
+                    MAX_DATABASE_BYTES,
+                    Duration::from_secs(20),
+                    cancelled,
+                )?;
+                if payload.len() as u64 != summary_file.size
+                    || md5_hex(&payload) != summary_file.hash.to_ascii_lowercase()
+                {
+                    return Err(FetchError {
+                        user: "A Downloader archive summary failed its integrity check.".into(),
+                        diagnostic: "archive summary size or MD5 mismatch".into(),
+                        cancelled: false,
+                    });
+                }
+                let json = decode_json_payload(&payload, cancelled)?;
+                Some(
+                    serde_json::from_slice::<ArchiveSummary>(&json).map_err(|error| {
+                        FetchError {
+                            user:
+                                "A Downloader archive summary returned data Degauss could not read."
+                                    .into(),
+                            diagnostic: format!("summary JSON: {error}"),
+                            cancelled: false,
+                        }
+                    })?,
+                )
+            } else {
+                None
+            };
+            if let Some(summary) = summary
+                .as_ref()
+                .or(archive.summary_inline.as_ref())
+                .or(archive.internal_summary.as_ref())
             {
-                return Err(FetchError {
-                    user: "A configured Downloader archive has an invalid summary.".into(),
-                    diagnostic: format!("{}: invalid archive summary descriptor", database.id),
-                    cancelled: false,
-                });
-            }
-            let payload = fetch(
-                &summary_file.url,
-                MAX_DATABASE_BYTES,
-                Duration::from_secs(20),
-                cancelled,
-            )?;
-            if payload.len() as u64 != summary_file.size
-                || md5_hex(&payload) != summary_file.hash.to_ascii_lowercase()
-            {
-                return Err(FetchError {
-                    user: "A Downloader archive summary failed its integrity check.".into(),
-                    diagnostic: format!("{}: archive summary size or MD5 mismatch", database.id),
-                    cancelled: false,
-                });
-            }
-            let json = decode_json_payload(&payload, cancelled)?;
-            let summary: ArchiveSummary =
-                serde_json::from_slice(&json).map_err(|error| FetchError {
-                    user: "A Downloader archive summary returned data Degauss could not read."
-                        .into(),
-                    diagnostic: format!("{}: summary JSON: {error}", database.id),
+                collect_remote_files(database, &summary.files, rule.as_ref(), &mut archive_cores)
+                    .map_err(|detail| FetchError {
+                    user: "A configured Downloader archive returned invalid core data.".into(),
+                    diagnostic: detail,
                     cancelled: false,
                 })?;
-            collect_remote_files(database, &summary.files, rule.as_ref(), &mut cores).map_err(
-                |detail| FetchError {
-                    user: "A configured Downloader archive returned invalid core data.".into(),
-                    diagnostic: format!("{}: {detail}", database.id),
-                    cancelled: false,
-                },
-            )?;
-            continue;
+            }
+            Ok::<_, FetchError>(archive_cores)
+        })();
+        match loaded {
+            Ok(archive_cores) => {
+                readable_archives += 1;
+                cores.extend(archive_cores);
+            }
+            Err(error) if error.cancelled => return Err(error),
+            Err(error) => {
+                crate::note(&format!(
+                    "core updates  {} archive {} failed: {}",
+                    database.id, name, error.diagnostic
+                ));
+                failed_sources.push(format!("{} / {}: {}", database.label(), name, error.user));
+            }
         }
-        if let Some(summary) = archive
-            .summary_inline
-            .as_ref()
-            .or(archive.internal_summary.as_ref())
-        {
-            collect_remote_files(database, &summary.files, rule.as_ref(), &mut cores).map_err(
-                |detail| FetchError {
-                    user: "A configured Downloader archive returned invalid core data.".into(),
-                    diagnostic: format!("{}: {detail}", database.id),
-                    cancelled: false,
-                },
-            )?;
-        }
+    }
+    if !has_direct_cores && !archives.is_empty() && readable_archives == 0 {
+        return Err(FetchError {
+            user: "A configured Downloader database has no readable archives.".into(),
+            diagnostic: format!("{}: all archive summaries failed", database.id),
+            cancelled: false,
+        });
     }
     let _ = manifest.timestamp;
     Ok(cores)
@@ -2847,11 +2880,25 @@ fn finish_with_saved_or_error(
     if let Some(snapshot) = saved {
         let _ = events.send(Event::Ready {
             snapshot: snapshot.clone(),
-            notice: Some("Core Updates could not be refreshed. Showing saved results.".into()),
+            notice: Some(format!(
+                "Core Updates could not be refreshed. Showing saved results.\n\n{message}"
+            )),
         });
     } else {
         let _ = events.send(Event::Failed { message });
     }
+}
+
+fn unavailable_sources_notice(failed_sources: &[String], partial: bool) -> String {
+    let ending = if partial {
+        "Other results are shown. Refresh to retry."
+    } else {
+        "Refresh to retry."
+    };
+    format!(
+        "Core Updates skipped these sources:\n\n{}\n\n{ending}",
+        failed_sources.join("\n"),
+    )
 }
 
 fn run_with_fetch<F>(
@@ -2921,7 +2968,10 @@ fn run_with_fetch<F>(
 
     let mut remote = Vec::new();
     let mut seen_paths = BTreeSet::new();
+    let mut failed_sources = Vec::new();
+    let mut databases_read = 0;
     for (index, database) in config.databases.iter().enumerate() {
+        let failures_before = failed_sources.len();
         send_progress(
             events,
             Phase::Downloading,
@@ -2929,9 +2979,18 @@ fn run_with_fetch<F>(
             config.databases.len(),
             false,
         );
-        let database_cores = match fetch_database(&config, database, cancelled, events, &mut fetch)
-        {
-            Ok(cores) => cores,
+        let database_cores = match fetch_database(
+            &config,
+            database,
+            cancelled,
+            events,
+            &mut fetch,
+            &mut failed_sources,
+        ) {
+            Ok(cores) => {
+                databases_read += 1;
+                cores
+            }
             Err(error) if error.cancelled => {
                 let _ = events.send(Event::Cancelled);
                 return;
@@ -2941,8 +3000,10 @@ fn run_with_fetch<F>(
                     "core updates  {} failed: {}",
                     database.id, error.diagnostic
                 ));
-                finish_with_saved_or_error(&saved_snapshot, error.user, events);
-                return;
+                if failed_sources.len() == failures_before {
+                    failed_sources.push(format!("{}: {}", database.label(), error.user));
+                }
+                continue;
             }
         };
         for core in database_cores {
@@ -2962,6 +3023,14 @@ fn run_with_fetch<F>(
         config.databases.len(),
         false,
     );
+    if databases_read == 0 && !failed_sources.is_empty() {
+        finish_with_saved_or_error(
+            &saved_snapshot,
+            unavailable_sources_notice(&failed_sources, false),
+            events,
+        );
+        return;
+    }
     let old_hashes = load_cache(&request.cache_dir)
         .ok()
         .flatten()
@@ -2994,6 +3063,15 @@ fn run_with_fetch<F>(
     };
     if cancelled.load(Ordering::Relaxed) {
         let _ = events.send(Event::Cancelled);
+        return;
+    }
+    if !failed_sources.is_empty() {
+        // A partial read is useful now but must not become the complete
+        // cached catalogue for later opens.
+        let _ = events.send(Event::Ready {
+            snapshot,
+            notice: Some(unavailable_sources_notice(&failed_sources, true)),
+        });
         return;
     }
     if let Err(error) = save_cache(&request.cache_dir, &cache, cancelled) {
@@ -3702,10 +3780,9 @@ db_url = https://example.test/two.json
             })
         }));
         assert_eq!(saved.items.len(), 1);
-        assert_eq!(
-            notice.as_deref(),
-            Some("Core Updates could not be refreshed. Showing saved results.")
-        );
+        let notice = notice.unwrap();
+        assert!(notice.contains("Showing saved results"));
+        assert!(notice.contains("MiSTer Distribution: network unavailable"));
 
         root.write(
             "downloader.ini",
@@ -3718,6 +3795,214 @@ db_url = https://example.test/two.json
         }));
         assert!(notice.is_none());
         assert_eq!(refetches.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn one_timed_out_database_does_not_hide_other_core_updates_or_poison_cache() {
+        const FIRST: &str = "https://example.test/first.json";
+        const SLOW: &str = "https://example.test/slow.json";
+        const LAST: &str = "https://example.test/last.json";
+        let root = TestRoot::new("partial-database");
+        root.write(
+            "downloader.ini",
+            format!(
+                "[first]\ndb_url = {FIRST}\n[slow]\ndb_url = {SLOW}\n[last]\ndb_url = {LAST}\n"
+            ),
+        );
+        let request = request(&root, Vec::new(), false);
+        let first = manifest(
+            "first",
+            &[("_Console/First_20260901.rbf", b"one", &[], true)],
+        );
+        let last = manifest("last", &[("_Console/Last_20260901.rbf", b"two", &[], true)]);
+        let (snapshot, notice) = ready(run_events(request.clone(), |url, _, _, _| match url {
+            FIRST => Ok(first.clone()),
+            LAST => Ok(last.clone()),
+            SLOW => Err(FetchError {
+                user: "A Downloader database did not respond in time.".into(),
+                diagnostic: "curl exit Some(28)".into(),
+                cancelled: false,
+            }),
+            other => panic!("unexpected URL {other}"),
+        }));
+        assert_eq!(snapshot.items.len(), 2);
+        let notice = notice.unwrap();
+        assert!(notice.contains("Slow: A Downloader database did not respond in time"));
+        assert!(
+            !cache_path(&request.cache_dir).exists(),
+            "partial results must be retried"
+        );
+
+        let calls = AtomicUsize::new(0);
+        let (recovered, notice) = ready(run_events(request, |url, _, _, _| {
+            calls.fetch_add(1, Ordering::Relaxed);
+            Ok(match url {
+                FIRST => first.clone(),
+                LAST => last.clone(),
+                SLOW => manifest(
+                    "slow",
+                    &[("_Console/Slow_20260901.rbf", b"three", &[], true)],
+                ),
+                other => panic!("unexpected URL {other}"),
+            })
+        }));
+        assert_eq!(calls.load(Ordering::Relaxed), 3);
+        assert_eq!(recovered.items.len(), 3);
+        assert!(notice.is_none());
+    }
+
+    #[test]
+    fn no_reachable_source_without_saved_results_reports_the_failed_names() {
+        let root = TestRoot::new("all-failed");
+        root.write(
+            "downloader.ini",
+            "[custom]\ndb_url = https://example.test/core.json\n",
+        );
+        let events = run_events(request(&root, Vec::new(), false), |_, _, _, _| {
+            Err(FetchError {
+                user: "A Downloader database did not respond in time.".into(),
+                diagnostic: "curl exit Some(28)".into(),
+                cancelled: false,
+            })
+        });
+        let message = events.into_iter().find_map(|event| match event {
+            Event::Failed { message } => Some(message),
+            _ => None,
+        });
+        let message = message.expect("no source and no saved result must be a failure");
+        assert!(message.contains("Custom: A Downloader database did not respond in time"));
+        assert!(!message.contains("Other results are shown"));
+    }
+
+    #[test]
+    fn timed_out_archive_summary_skips_only_that_archive() {
+        const DATABASE_URL: &str = "https://example.test/db.json";
+        const SLOW_SUMMARY: &str = "https://example.test/slow-summary.json";
+        let body = serde_json::to_vec(&json!({
+            "v": 1,
+            "db_id": "custom",
+            "timestamp": 1_800_000_000_u64,
+            "files": {
+                "_Console/Direct_20260901.rbf": {
+                    "hash": md5_hex(b"direct"), "size": 6, "tags": []
+                }
+            },
+            "tag_dictionary": {},
+            "default_options": {"filter": "all"},
+            "archives": {
+                "slow_bundle": {
+                    "extract": "selective", "target_folder": "",
+                    "summary_file": {
+                        "hash": md5_hex(b"summary"), "size": 7, "url": SLOW_SUMMARY
+                    }
+                },
+                "working_bundle": {
+                    "extract": "selective", "target_folder": "",
+                    "summary_inline": {"files": {
+                        "_Console/Working_20260901.rbf": {
+                            "hash": md5_hex(b"working"), "size": 7, "tags": []
+                        }
+                    }}
+                }
+            }
+        }))
+        .unwrap();
+        let configured = database("custom", DATABASE_URL);
+        let config = DownloaderConfig {
+            global_filter: String::new(),
+            global_filter_defined: false,
+            databases: vec![configured.clone()],
+        };
+        let (sender, _receiver) = mpsc::sync_channel(16);
+        let mut failures = Vec::new();
+        let mut fetch = |url: &str, _: u64, _: Duration, _: &AtomicBool| match url {
+            DATABASE_URL => Ok(body.clone()),
+            SLOW_SUMMARY => Err(FetchError {
+                user: "A Downloader database did not respond in time.".into(),
+                diagnostic: "curl exit Some(28)".into(),
+                cancelled: false,
+            }),
+            other => panic!("unexpected URL {other}"),
+        };
+        let cores = fetch_database(
+            &config,
+            &configured,
+            &AtomicBool::new(false),
+            &sender,
+            &mut fetch,
+            &mut failures,
+        )
+        .unwrap();
+        assert_eq!(
+            cores
+                .iter()
+                .map(|core| core.title.as_str())
+                .collect::<Vec<_>>(),
+            ["Direct", "Working"]
+        );
+        assert_eq!(failures.len(), 1);
+        assert!(failures[0].contains("Custom / slow_bundle"));
+        assert!(failures[0].contains("did not respond in time"));
+    }
+
+    #[test]
+    fn all_unreadable_archives_keep_the_last_complete_result() {
+        const DATABASE_URL: &str = "https://example.test/db.json";
+        const SUMMARY_URL: &str = "https://example.test/summary.json";
+        let root = TestRoot::new("all-archives-unreadable");
+        root.write(
+            "downloader.ini",
+            format!("[custom]\ndb_url = {DATABASE_URL}\n"),
+        );
+        let complete = manifest(
+            "custom",
+            &[("_Console/Saved_20260901.rbf", b"saved", &[], true)],
+        );
+        let request = request(&root, Vec::new(), false);
+        let (saved, notice) = ready(run_events(request.clone(), |url, _, _, _| {
+            assert_eq!(url, DATABASE_URL);
+            Ok(complete.clone())
+        }));
+        assert!(notice.is_none());
+        assert_eq!(saved.items.len(), 1);
+
+        let archive_only = serde_json::to_vec(&json!({
+            "v": 1,
+            "db_id": "custom",
+            "timestamp": 1_800_000_000_u64,
+            "files": {
+                "docs/notes.txt": {
+                    "hash": md5_hex(b"notes"), "size": 5, "tags": []
+                }
+            },
+            "tag_dictionary": {},
+            "default_options": {"filter": "all"},
+            "archives": {
+                "delayed_bundle": {
+                    "extract": "selective", "target_folder": "",
+                    "summary_file": {
+                        "hash": md5_hex(b"summary"), "size": 7, "url": SUMMARY_URL
+                    }
+                }
+            }
+        }))
+        .unwrap();
+        let mut refresh = request;
+        refresh.force_refresh = true;
+        let (shown, notice) = ready(run_events(refresh, |url, _, _, _| match url {
+            DATABASE_URL => Ok(archive_only.clone()),
+            SUMMARY_URL => Err(FetchError {
+                user: "A Downloader database did not respond in time.".into(),
+                diagnostic: "curl exit Some(28)".into(),
+                cancelled: false,
+            }),
+            other => panic!("unexpected URL {other}"),
+        }));
+        assert_eq!(shown.items[0].title(), saved.items[0].title());
+        let notice = notice.unwrap();
+        assert!(notice.contains("Showing saved results"));
+        assert!(notice.contains("Custom / delayed_bundle"));
+        assert!(!notice.contains("no readable archives"));
     }
 
     #[test]
@@ -3779,16 +4064,19 @@ db_url = https://example.test/two.json
                 other => panic!("unexpected URL {other}"),
             })
         };
+        let mut failed_sources = Vec::new();
         let cores = fetch_database(
             &config,
             &configured,
             &AtomicBool::new(false),
             &sender,
             &mut fetch,
+            &mut failed_sources,
         )
         .unwrap();
         assert_eq!(cores.len(), 1);
         assert_eq!(cores[0].title, "External");
+        assert!(failed_sources.is_empty());
     }
 
     #[test]
