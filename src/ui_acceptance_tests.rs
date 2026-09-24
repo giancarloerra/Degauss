@@ -6752,6 +6752,7 @@ fn run_attract_mode_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
     for image in ["first.png", "second.png"] {
         std::fs::remove_file(root.join("games").join(other).join("media").join(image)).unwrap();
     }
+    let automatic_retry_at = app.saver_retry_at;
     app.handle(Action::Faster);
     wait_for_attract_job(&mut app);
     assert_eq!(
@@ -6764,6 +6765,10 @@ fn run_attract_mode_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
         "no other usable system keeps the current picture"
     );
     assert!(!app.saver_pool.is_empty());
+    assert_eq!(
+        app.saver_retry_at, automatic_retry_at,
+        "an empty manual switch must not delay automatic refill"
+    );
 
     // Automatic continuation may revisit the current system when it is
     // the only one with usable artwork; a manual tap must still stay put.

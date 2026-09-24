@@ -5926,7 +5926,9 @@ impl App {
                 self.dirty = true;
             }
             Ok(None) => {
-                self.saver_retry_at = Instant::now() + Duration::from_secs(SAVER_RETRY_SECONDS);
+                if kind != SaverLoadKind::Manual {
+                    self.saver_retry_at = Instant::now() + Duration::from_secs(SAVER_RETRY_SECONDS);
+                }
             }
             Err(error) => {
                 crate::note(&error);
