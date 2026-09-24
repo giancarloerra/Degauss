@@ -2238,8 +2238,9 @@ export component DegaussWindow inherits Window {
                 border-radius: 2px;
                 width: launch-hint.preferred-width + root.pad * 2;
                 height: launch-hint.preferred-height + root.pad;
-                x: (parent.width - self.width) / 2;
-                y: root.pad * 2;
+                x: root.inset-left
+                    + (parent.width - root.inset-left - root.inset-right - self.width) / 2;
+                y: root.inset-top + root.pad * 2;
                 launch-hint := Text {
                     text: "A Launch";
                     color: root.c-text;
