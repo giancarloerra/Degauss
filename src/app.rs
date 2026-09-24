@@ -5016,6 +5016,9 @@ impl App {
         let mut row = row.clone();
         let shown_name = self.game_name_display.apply(&row.name).into_owned();
         let request = self.information_request(&row);
+        if let Ok(request) = &request {
+            row.kind = browse::Kind::Play(request.launch.clone());
+        }
         match request.and_then(crate::information_job::start) {
             Ok(job) => {
                 row.details.desc = "Reading full description...".to_string();
