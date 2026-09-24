@@ -1720,6 +1720,7 @@ where
             cancelled: false,
         },
     )?;
+    let has_direct_cores = !cores.is_empty();
     let archives: Vec<_> = manifest
         .archives
         .iter()
@@ -1815,7 +1816,7 @@ where
             }
         }
     }
-    if manifest.files.is_empty() && !archives.is_empty() && readable_archives == 0 {
+    if !has_direct_cores && !archives.is_empty() && readable_archives == 0 {
         return Err(FetchError {
             user: "A configured Downloader database has no readable archives.".into(),
             diagnostic: format!("{}: all archive summaries failed", database.id),
@@ -3969,7 +3970,11 @@ db_url = https://example.test/two.json
             "v": 1,
             "db_id": "custom",
             "timestamp": 1_800_000_000_u64,
-            "files": {},
+            "files": {
+                "docs/notes.txt": {
+                    "hash": md5_hex(b"notes"), "size": 5, "tags": []
+                }
+            },
             "tag_dictionary": {},
             "default_options": {"filter": "all"},
             "archives": {
