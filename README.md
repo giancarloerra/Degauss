@@ -73,8 +73,8 @@ separately. CRT presentation is applied for the README.
 
 | | |
 |---|---|
-| <img src="docs/screenshots/0.4.0/18-saved-custom-theme.png" alt="A Saved Custom Theme" height="200"> | <img src="docs/screenshots/0.4.0/26-screensaver-artwork-slideshow.png" alt="Screensaver Artwork Slideshow" height="200"> |
-| A Saved Custom Theme | Screensaver Artwork Slideshow |
+| <img src="docs/screenshots/0.4.0/18-saved-custom-theme.png" alt="A Saved Custom Theme" height="200"> | <img src="docs/screenshots/0.9.0/01-attract-mode.png" alt="Attract Mode" height="200"> |
+| A Saved Custom Theme | Attract Mode |
 
 ## Watch Degauss in action
 
