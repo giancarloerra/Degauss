@@ -7002,6 +7002,26 @@ fn run_attract_mode_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
         "initial entry keeps the remaining pictures"
     );
     app.handle(Action::Quit);
+    let folder = cache.folders.values_mut().next().unwrap();
+    let repeat = folder.rows[0].clone();
+    folder.rows.extend((0..50).map(|_| repeat.clone()));
+    crate::cache::save_system(&app.cache_dir, "NES", &cache).unwrap();
+    let loaded = find_saver_pictures(
+        &[candidate],
+        0,
+        1,
+        None,
+        &app.cache_dir,
+        &Default::default(),
+        1,
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    assert_eq!(
+        loaded.pictures.len(),
+        SAVER_ATTRACT_WANTED,
+        "a manual switch does not decode the entire system"
+    );
     app.ui.hide().unwrap();
 }
 

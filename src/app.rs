@@ -1127,6 +1127,10 @@ const SAVER_WANTED: usize = 400;
 /// cache, so this is memory as much as it is variety.
 const SAVER_POOL_MAX: usize = 24;
 
+/// Prepare enough decoded pictures for the strip and its queue without
+/// reading hundreds of files before a manual system switch can complete.
+const SAVER_ATTRACT_WANTED: usize = SAVER_POOL_MAX * 2;
+
 /// What the screensaver delay can be set to, in seconds. Zero is off.
 const SAVER_CHOICES: [u64; 5] = [0, 60, 120, 300, 600];
 
@@ -2655,11 +2659,12 @@ fn find_saver_pictures(
         // Only decoded game pictures enter the strip. This stays on the
         // cancellable worker; a broken image cannot turn a later frame black
         // or make A refer to an image that was never displayed.
-        let before = pictures.len();
         let mut checked = HashMap::new();
-        pictures.retain(|picture| {
-            if cancelled.load(Ordering::Relaxed) {
-                return false;
+        let mut usable_pictures = Vec::with_capacity(SAVER_ATTRACT_WANTED);
+        let mut skipped = 0;
+        for picture in pictures {
+            if cancelled.load(Ordering::Relaxed) || usable_pictures.len() >= SAVER_ATTRACT_WANTED {
+                break;
             }
             let usable = *checked.entry(picture.path.clone()).or_insert_with(|| {
                 std::fs::read(&picture.path).ok().is_some_and(|bytes| {
@@ -2667,24 +2672,27 @@ fn find_saver_pictures(
                 })
             });
             std::thread::yield_now();
-            usable
-        });
+            if usable {
+                usable_pictures.push(picture);
+            } else {
+                skipped += 1;
+            }
+        }
         if cancelled.load(Ordering::Relaxed) {
             return None;
         }
-        if before != pictures.len() {
+        if skipped > 0 {
             crate::note(&format!(
                 "attract mode  {}: skipped {} unreadable pictures",
-                candidate.name,
-                before - pictures.len()
+                candidate.name, skipped
             ));
         }
-        if pictures.is_empty() {
+        if usable_pictures.is_empty() {
             continue;
         }
         return Some(SaverLoad {
             slot,
-            pictures,
+            pictures: usable_pictures,
             seed,
         });
     }
