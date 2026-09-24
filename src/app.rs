@@ -1193,6 +1193,8 @@ const FAVORITES_ID: &str = "Favorites";
 const CORES_CATEGORY: &str = "Cores";
 const CORES_SYSTEM_ID: &str = "__cores";
 const MISTERZINE_CATEGORY: &str = "Core Updates";
+const SCRIPTS_CATEGORY: &str = "Scripts";
+const ATTRACT_MODE_CATEGORY: &str = "Attract Mode";
 const MISTERZINE_SYSTEM_ID: &str = "__misterzine";
 /// Keep the pre-rename custom-view key so existing settings remain effective.
 const MISTERZINE_VIEW_PLACE: &str = "MiSTerZine";
@@ -3251,19 +3253,11 @@ fn next_random(seed: &mut u64) -> u64 {
 
 /// The general menu is deliberately stable. Actions for the selected row,
 /// including hiding it, live in the contextual Actions menu instead.
-fn menu_entries(show_scripts: bool, show_attract_mode: bool) -> Vec<String> {
-    let mut entries = Vec::new();
-    entries.push("Options".to_string());
-    if show_scripts {
-        entries.push("Scripts".to_string());
-    }
-    if show_attract_mode {
-        entries.push("Attract Mode".to_string());
-    }
-    entries.push("Help".to_string());
-    entries.push("About".to_string());
-    entries.push("Exit to MiSTer".to_string());
-    entries
+fn menu_entries() -> Vec<String> {
+    ["Options", "Help", "About", "Exit to MiSTer"]
+        .into_iter()
+        .map(str::to_string)
+        .collect()
 }
 
 /// One speculative decode at a time. A changed folder or scroll direction
@@ -11315,6 +11309,12 @@ impl App {
                 categories.push((name.to_string(), count));
             }
         }
+        if self.settings.show_scripts.unwrap_or(true) {
+            categories.push((SCRIPTS_CATEGORY.to_string(), 0));
+        }
+        if self.settings.attract_mode_menu.unwrap_or(false) {
+            categories.push((ATTRACT_MODE_CATEGORY.to_string(), 0));
+        }
 
         self.systems = match self.open_category.as_deref() {
             Some(CORES_CATEGORY) | Some(MISTERZINE_CATEGORY) => Vec::new(),
@@ -11349,7 +11349,12 @@ impl App {
     /// visibility settings and installed cores can change the list order.
     fn start_folder_choices(&self) -> Vec<Option<String>> {
         std::iter::once(None)
-            .chain(self.categories.iter().map(|(name, _)| Some(name.clone())))
+            .chain(
+                self.categories
+                    .iter()
+                    .filter(|(name, _)| name != SCRIPTS_CATEGORY && name != ATTRACT_MODE_CATEGORY)
+                    .map(|(name, _)| Some(name.clone())),
+            )
             .collect()
     }
 
@@ -11467,6 +11472,14 @@ impl App {
         let name = name.clone();
         if name == LAST_PLAYED_CATEGORY {
             self.open_last_played();
+            return;
+        }
+        if name == SCRIPTS_CATEGORY {
+            self.open_scripts();
+            return;
+        }
+        if name == ATTRACT_MODE_CATEGORY {
+            self.start_manual_attract_mode();
             return;
         }
         self.open_category = Some(name.clone());
@@ -12298,6 +12311,7 @@ impl App {
             OptionId::AttractModeMenu => {
                 self.settings.attract_mode_menu =
                     Some(!self.settings.attract_mode_menu.unwrap_or(false));
+                self.rebuild_system_list();
             }
             OptionId::ScreensaverSpeed => {
                 let choices = [1, 2, 4];
@@ -12333,6 +12347,7 @@ impl App {
             }
             OptionId::ShowScripts => {
                 self.settings.show_scripts = Some(!self.settings.show_scripts.unwrap_or(true));
+                self.rebuild_system_list();
             }
             OptionId::CorePreference => {
                 self.settings.core_preference =
@@ -12834,10 +12849,15 @@ impl App {
             }
             Screen::Browse => match self.browsing {
                 Browsing::Games if self.in_misterzine_browser() => {
+                    // A late network or game-art result must not redraw Home
+                    // with Core Updates' rows after this browser was left.
+                    self.misterzine_job = None;
+                    self.clear_misterzine_games();
                     self.filter.clear();
                     self.misterzine_filters.clear();
                     self.misterzine_filter_options = std::array::from_fn(|_| Vec::new());
                     self.misterzine_filter_field = None;
+                    self.message = None;
                     self.all_here.clear();
                     self.here.clear();
                     self.open_category = None;
@@ -12930,10 +12950,7 @@ impl App {
     }
 
     fn open_menu(&mut self) {
-        self.menu = menu_entries(
-            self.settings.show_scripts.unwrap_or(true),
-            self.settings.attract_mode_menu.unwrap_or(false),
-        );
+        self.menu = menu_entries();
         self.menu_list = ListState::new(self.menu.len(), self.geometry.visible);
         self.screen = Screen::Menu;
         self.apply_geometry();
@@ -13022,14 +13039,17 @@ impl App {
 
     fn leave_scripts(&mut self) {
         let Some(browser) = &self.scripts_browser else {
-            self.open_menu();
+            self.screen = Screen::Browse;
+            self.resolve_view();
+            self.apply_geometry();
+            self.touch_selection();
             return;
         };
         if self.scripts_directory == browser.root() {
-            self.open_menu();
-            if let Some(selected) = self.menu.iter().position(|entry| entry == "Scripts") {
-                self.menu_list.select(selected);
-            }
+            self.screen = Screen::Browse;
+            self.resolve_view();
+            self.apply_geometry();
+            self.touch_selection();
         } else if let Some(parent) = self.scripts_directory.parent().map(Path::to_path_buf) {
             let selected = self.scripts_directory.clone();
             self.show_scripts_directory(parent, Some(&selected));
@@ -13037,7 +13057,12 @@ impl App {
     }
 
     pub fn resume_scripts(&mut self, script: &Path) {
-        self.open_menu();
+        self.screen = Screen::Browse;
+        self.browsing = Browsing::Categories;
+        self.open_category = None;
+        self.rebuild_system_list();
+        self.resolve_view();
+        self.apply_geometry();
         self.open_scripts();
         if self.message.is_some() {
             return;
@@ -17888,6 +17913,12 @@ impl App {
             self.dirty = true;
             return None;
         }
+        if self.misterzine_job.is_some() && action == Action::Quit && self.in_misterzine_browser() {
+            // Dropping the job cancels its network work. Leave this browser
+            // now, so a slow source cannot hold Back or redraw Home later.
+            self.misterzine_job = None;
+            return self.go_back();
+        }
         if let Some(job) = &self.misterzine_job {
             if matches!(action, Action::Quit | Action::Context | Action::Menu) {
                 job.cancel();
@@ -18509,10 +18540,6 @@ impl App {
                     } else if choice == "Options" {
                         self.screen = Screen::OptionsRoot;
                         self.apply_geometry();
-                    } else if choice == "Scripts" {
-                        self.open_scripts();
-                    } else if choice == "Attract Mode" {
-                        self.start_manual_attract_mode();
                     } else if choice == "Help" {
                         self.screen = Screen::Help;
                         self.apply_geometry();
@@ -19955,7 +19982,7 @@ impl App {
                     Some(_) => {
                         "Run this script after confirmation. Degauss returns when it finishes."
                     }
-                    None => "No scripts in this folder. B returns to the parent or menu.",
+                    None => "No scripts in this folder. B returns to the parent or Home.",
                 };
                 (heading, help.to_string())
             }
@@ -21419,13 +21446,25 @@ pub(crate) fn test_library_launch_flow(window: Rc<MinimalSoftwareWindow>) {
     );
     app.finish_background_work_for_headless();
 
-    app.open_menu();
-    assert!(!app.menu.iter().any(|entry| entry == "Attract Mode"));
+    app.screen = Screen::Browse;
+    app.browsing = Browsing::Categories;
+    app.open_category = None;
+    app.rebuild_system_list();
+    assert!(!app
+        .categories
+        .iter()
+        .any(|(name, _)| name == ATTRACT_MODE_CATEGORY));
     app.settings.screensaver_after = Some(0);
     app.settings.attract_mode = Some(false);
     app.settings.attract_mode_menu = Some(true);
-    app.open_menu();
-    assert!(app.menu.iter().any(|entry| entry == "Attract Mode"));
+    app.rebuild_system_list();
+    assert!(app
+        .categories
+        .iter()
+        .any(|(name, _)| name == ATTRACT_MODE_CATEGORY));
+    assert!(!menu_entries()
+        .iter()
+        .any(|entry| entry == ATTRACT_MODE_CATEGORY));
     app.manual_attract_mode = true;
     assert!(
         app.active_attract_mode(),
@@ -21435,11 +21474,11 @@ pub(crate) fn test_library_launch_flow(window: Rc<MinimalSoftwareWindow>) {
     assert!(!app.active_attract_mode(), "manual choice does not persist");
     app.saver_attract_candidates = Some(Vec::new());
     let entry = app
-        .menu
+        .categories
         .iter()
-        .position(|item| item == "Attract Mode")
+        .position(|(name, _)| name == ATTRACT_MODE_CATEGORY)
         .unwrap();
-    app.menu_list.select(entry);
+    app.category_list.select(entry);
     app.handle(Action::Accept);
     assert!(app.saver_job.is_none());
     assert!(!app.manual_attract_mode);
@@ -21453,7 +21492,7 @@ pub(crate) fn test_library_launch_flow(window: Rc<MinimalSoftwareWindow>) {
     );
     app.message = None;
     app.saver_candidates = Some(vec![0]);
-    app.menu_list.select(entry);
+    app.category_list.select(entry);
     app.handle(Action::Accept);
     assert!(
         app.saver_job.is_some(),
@@ -23186,17 +23225,9 @@ mod tests {
 
     #[test]
     fn the_general_menu_is_stable_and_hiding_stays_in_actions() {
-        let menu = menu_entries(true, false);
         assert_eq!(
-            menu,
-            ["Options", "Scripts", "Help", "About", "Exit to MiSTer"]
-        );
-        assert!(menu_entries(false, false)
-            .iter()
-            .all(|entry| entry != "Scripts" && entry != "Attract Mode"));
-        assert_eq!(
-            menu_entries(false, true),
-            ["Options", "Attract Mode", "Help", "About", "Exit to MiSTer"]
+            menu_entries(),
+            ["Options", "Help", "About", "Exit to MiSTer"]
         );
 
         let actions = context_entries(
