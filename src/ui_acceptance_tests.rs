@@ -6765,6 +6765,15 @@ fn run_attract_mode_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
     );
     assert!(!app.saver_pool.is_empty());
 
+    // Automatic continuation may revisit the current system when it is
+    // the only one with usable artwork; a manual tap must still stay put.
+    app.saver_queue.clear();
+    let before_refill = app.saver_pool.len();
+    app.start_attract_job(SaverLoadKind::Automatic, 1);
+    wait_for_attract_job(&mut app);
+    assert_eq!(app.saver_last_slot, Some(first.slot));
+    assert!(app.saver_pool.len() > before_refill);
+
     app.refresh();
     let chosen = app.saver_center_picture().unwrap();
     let target = chosen.target.unwrap();
