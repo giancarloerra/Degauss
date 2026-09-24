@@ -33,6 +33,7 @@
 //!   `crate::mgl`, when it has to interpret an MGL rather than hand it over.
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::AtomicBool;
 
 use sha1::{Digest, Sha1};
 
@@ -471,6 +472,7 @@ fn plan_direct_launcher(core: &Path, menu_root: &Path, kinds: &[&str]) -> Result
             ),
         ));
     }
+    check_descriptor_core(&canonical_core, menu_root)?;
     let path = canonical_core.to_str().ok_or_else(|| {
         DegaussError::unsupported(
             "core launch",
@@ -483,6 +485,46 @@ fn plan_direct_launcher(core: &Path, menu_root: &Path, kinds: &[&str]) -> Result
         command: format!("load_core {path}\n"),
         boot_file: None,
     })
+}
+
+/// An MRA or MGL names its own core. Check that Main can find that core
+/// before handing over the display and input devices.
+fn check_descriptor_core(launcher: &Path, menu_root: &Path) -> Result<()> {
+    let Some(extension) = launcher
+        .extension()
+        .and_then(|extension| extension.to_str())
+    else {
+        return Ok(());
+    };
+    let rbf = if extension.eq_ignore_ascii_case("mra") {
+        crate::artwork_pack::xml_text(launcher, "rbf", &AtomicBool::new(false))?
+    } else if extension.eq_ignore_ascii_case("mgl") {
+        crate::favorites::descriptor_reference(launcher, "MGL launcher")?.rbf
+    } else {
+        None
+    };
+    if let Some(rbf) = rbf {
+        if !crate::core_variants::core_present(menu_root, &rbf)? {
+            return Err(DegaussError::unsupported(
+                "launcher core",
+                format!(
+                    "{} requires {rbf}, which is not installed",
+                    launcher.display()
+                ),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn plan_self_describing(
+    system: &SystemConfig,
+    game: &Path,
+    mgl_path: &Path,
+    menu_root: &Path,
+) -> Result<LaunchPlan> {
+    check_descriptor_core(game, menu_root)?;
+    plan(system, game, mgl_path)
 }
 
 /// The element a favourite carries when the thing it points at is not a
@@ -828,7 +870,7 @@ pub fn plan_with_selections(
     selected_family: Option<&str>,
 ) -> Result<LaunchPlan> {
     if let Some(launcher) = amiga_vision_cd32_mgl(system, game, menu_root)? {
-        return plan(system, &launcher, mgl_path);
+        return plan_self_describing(system, &launcher, mgl_path, menu_root);
     }
     if let Some((install, title)) = amiga_marker(game) {
         return plan_amiga_vision_with_selections(
@@ -848,7 +890,7 @@ pub fn plan_with_selections(
         && amiga_marker(game).is_none()
     {
         if !crate::core_variants::recognized_favorite(game, system)? {
-            return plan(system, game, mgl_path);
+            return plan_self_describing(system, game, mgl_path, menu_root);
         }
         let referenced = crate::favorites::descriptor_reference(game, "favourite MGL")?
             .files
@@ -861,7 +903,7 @@ pub fn plan_with_selections(
             .transpose()?
             .flatten()
         {
-            return plan(system, &launcher, mgl_path);
+            return plan_self_describing(system, &launcher, mgl_path, menu_root);
         }
         let fixed = match favorite_rule(system, game)? {
             Some(rule) => rule_core(system, rule, menu_root)?,
@@ -883,7 +925,7 @@ pub fn plan_with_selections(
         if !crate::core_variants::needs_conversion(game, &core)?
             && !crate::favorites::has_home_relative_paths(game)?
         {
-            return plan(system, game, mgl_path);
+            return plan_self_describing(system, game, mgl_path, menu_root);
         }
         let text = crate::core_variants::convert_favorite(game, &core)?;
         let mgl = crate::favorites::relocate_mgl(&text, game, system)?;
@@ -895,7 +937,7 @@ pub fn plan_with_selections(
         });
     }
     if !needs_system_core(game) {
-        return plan(system, game, mgl_path);
+        return plan_self_describing(system, game, mgl_path, menu_root);
     }
     let rule = rule_for(system, game)?;
     if rule.rbf.is_some() {
@@ -1351,6 +1393,7 @@ mod tests {
         std::fs::create_dir_all(root.join("_Console")).unwrap();
         std::fs::write(root.join("_Console/GnW.rbf"), b"core").unwrap();
         std::fs::write(root.join("_Console/GameAndWatch.rbf"), b"core").unwrap();
+        std::fs::write(root.join("_Console/Custom.rbf"), b"core").unwrap();
         let system = shipped_system("GameNWatch", vec![root.join("games/GameNWatch")]);
         let legacy = root.join("games/GameNWatch/Legacy.bin");
         let current = root.join("games/GameNWatch/Current.gnw");
@@ -1494,6 +1537,8 @@ mod tests {
             std::fs::create_dir_all(storage.join("_Console/_Amiga CD32 Games")).unwrap();
         }
         std::fs::create_dir_all(sd.join("_Computer")).unwrap();
+        std::fs::create_dir_all(sd.join("_Other")).unwrap();
+        std::fs::write(sd.join("_Other/Custom.rbf"), b"core").unwrap();
         std::fs::create_dir_all(&sd_games).unwrap();
         std::fs::create_dir_all(&usb_games).unwrap();
         std::fs::write(sd.join("_Computer/Minimig.rbf"), b"core").unwrap();
@@ -2038,6 +2083,8 @@ mod tests {
     #[test]
     fn an_arcade_core_mgl_is_handed_to_main_unrewritten() {
         let (root, system) = nes_card("arcade-direct");
+        std::fs::create_dir_all(root.join("_Arcade/cores")).unwrap();
+        std::fs::write(root.join("_Arcade/cores/Battletoads.rbf"), b"core").unwrap();
         let mgl = root.join("_@Favorites/Battletoads.mgl");
         std::fs::write(
             &mgl,
@@ -2781,5 +2828,68 @@ mod tests {
             .to_string()
             .contains("no longer installed"));
         std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn self_describing_launches_check_their_own_versioned_core_before_handoff() {
+        let root = std::env::temp_dir().join(format!(
+            "degauss-descriptor-core-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let menu = root.join("menu");
+        let arcade = menu.join("_Arcade/Test.mra");
+        let favorite = menu.join("_@Favorites/Other.mgl");
+        let core_launcher = menu.join("_Console/Other.mgl");
+        for path in [&arcade, &favorite, &core_launcher] {
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        }
+        std::fs::write(
+            &arcade,
+            "<misterromdescription><rbf>_Arcade/cores/Test</rbf></misterromdescription>",
+        )
+        .unwrap();
+        for path in [&favorite, &core_launcher] {
+            std::fs::write(
+                path,
+                "<mistergamedescription><rbf>_Console/Other</rbf></mistergamedescription>",
+            )
+            .unwrap();
+        }
+        let temporary_mgl = root.join("degauss.mgl");
+        let missing_arcade =
+            plan_with_preference(&c64(), &arcade, &temporary_mgl, &menu, false).unwrap_err();
+        assert!(missing_arcade.to_string().contains("_Arcade/cores/Test"));
+        let missing_favorite =
+            plan_with_preference(&c64(), &favorite, &temporary_mgl, &menu, false).unwrap_err();
+        assert!(missing_favorite.to_string().contains("_Console/Other"));
+        let missing_core = plan_core(&core_launcher, &menu).unwrap_err();
+        assert!(missing_core.to_string().contains("_Console/Other"));
+
+        std::fs::create_dir_all(menu.join("_Arcade/cores")).unwrap();
+        std::fs::write(menu.join("_Arcade/cores/Test_20260924.rbf"), b"core").unwrap();
+        std::fs::write(menu.join("_Console/Other_20260924.rbf"), b"core").unwrap();
+        for path in [&arcade, &favorite] {
+            let planned = plan_with_preference(&c64(), path, &temporary_mgl, &menu, false).unwrap();
+            assert_eq!(planned.command, format!("load_core {}\n", path.display()));
+        }
+        assert_eq!(
+            plan_core(&core_launcher, &menu).unwrap().command,
+            format!(
+                "load_core {}\n",
+                core_launcher.canonicalize().unwrap().display()
+            )
+        );
+        let ordinary = plan(
+            &c64(),
+            Path::new("/media/fat/games/C64/Game.prg"),
+            &temporary_mgl,
+        )
+        .unwrap();
+        assert!(ordinary.mgl.contains("Game.prg"));
+        std::fs::remove_dir_all(root).unwrap();
     }
 }
