@@ -3823,6 +3823,9 @@ pub struct App {
     /// This decides which core a game is launched with, so pointing at a
     /// different machine is not a cosmetic mistake.
     open_system: Option<String>,
+    /// A saved game position waiting for startup's source check or Pack
+    /// preparation to finish opening its system.
+    pending_restore: Option<crate::state::State>,
     /// The system currently open, and the folders entered inside it.
     library: Option<Library>,
     names: browse::DisplayNames,
@@ -4572,6 +4575,7 @@ impl App {
             source_resolution_cancelled: false,
             source_resolution_groups: HashSet::new(),
             source_resolution_action: SourceResolutionAction::Startup,
+            pending_restore: None,
             provider_recovery_needed: HashSet::new(),
             pack_health_shown: HashSet::new(),
             pack_health_pending: None,
@@ -6356,6 +6360,7 @@ impl App {
     /// still screen with no explanation, so the message is drawn first and
     /// the work happens after it is on screen.
     fn open_selected_system(&mut self) {
+        self.pending_restore = None;
         self.remember_system_here();
         let Some(system) = self.systems.get(self.system_list.selected()) else {
             return;
@@ -6950,9 +6955,10 @@ impl App {
                 .unwrap_or(configured_start);
             self.library = None;
             self.trail.clear();
-            self.open_system = Some(id);
+            self.open_system = Some(id.clone());
             self.enter(start);
             self.show_pack_health_once();
+            self.finish_pending_restore(&id);
             return;
         }
 
@@ -6977,9 +6983,10 @@ impl App {
                 let start = library.start();
                 self.library = Some(library);
                 self.trail.clear();
-                self.open_system = Some(id);
+                self.open_system = Some(id.clone());
                 self.enter(start);
                 self.show_pack_health_once();
+                self.finish_pending_restore(&id);
             }
             Err(e) => {
                 // Say what went wrong rather than showing an empty list.
@@ -7516,6 +7523,9 @@ impl App {
         let resolution = match result {
             Ok(Some(resolution)) => resolution,
             Ok(None) => {
+                if matches!(action, SourceResolutionAction::OpenSystem) {
+                    self.pending_restore = None;
+                }
                 for group in &self.source_resolution_groups {
                     self.artwork_source_errors.insert(
                         group.clone(),
@@ -7529,6 +7539,9 @@ impl App {
                 return;
             }
             Err(error) => {
+                if matches!(action, SourceResolutionAction::OpenSystem) {
+                    self.pending_restore = None;
+                }
                 for group in &self.source_resolution_groups {
                     self.artwork_source_errors
                         .insert(group.clone(), error.to_string());
@@ -20406,11 +20419,23 @@ impl App {
         self.left_at = saved.left_at.clone();
         self.open_system_now();
         if self.open_system.is_none() {
+            self.pending_restore = Some(saved.clone());
             self.resolve_view();
             self.apply_geometry();
             return;
         }
+        self.restore_saved_trail(saved);
+    }
 
+    fn finish_pending_restore(&mut self, system_id: &str) {
+        if let Some(saved) = self.pending_restore.take() {
+            if saved.system == system_id {
+                self.restore_saved_trail(&saved);
+            }
+        }
+    }
+
+    fn restore_saved_trail(&mut self, saved: &crate::state::State) {
         // The system may now skip a Roots chooser that a previous release
         // saved, or regain one after a second root begins contributing. Find
         // the place opening already reached rather than assuming both trails
@@ -21457,6 +21482,76 @@ pub(crate) fn test_library_launch_flow(window: Rc<MinimalSoftwareWindow>) {
         format!("f:{}", archive.join("A/Target.nes").display()),
         "return must select the exact member, not another folder's same basename"
     );
+    // Startup source resolution runs off the render thread. A return must
+    // finish its saved folder walk after that job opens the system, even when
+    // another category is present and the game is inside a nested archive.
+    let computer = root.join("games/C64");
+    std::fs::create_dir_all(&computer).unwrap();
+    app.all_systems.push(FoundSystem {
+        def: table
+            .iter()
+            .find(|system| system.id == "C64")
+            .unwrap()
+            .clone(),
+        paths: vec![computer],
+        logo_dir: None,
+        menu_folder: None,
+    });
+    let mut grouped_saved = saved.clone();
+    grouped_saved.category = "Console".into();
+    app.open_system = None;
+    app.opened_config = None;
+    app.library = None;
+    app.system_cache = None;
+    app.trail.clear();
+    app.here.clear();
+    app.open_category = None;
+    app.browsing = Browsing::Categories;
+    app.rebuild_system_list();
+    assert!(app.categories.iter().any(|(name, _)| name == "Computer"));
+    app.resolve_artwork_sources(SourceResolutionAction::Startup);
+    assert!(app.source_resolution.is_some());
+    app.restore_position(&grouped_saved);
+    assert_eq!(app.open_system, None, "the source check defers opening");
+    assert!(app.pending_restore.is_some(), "saved trail remains pending");
+    app.finish_background_work_for_headless();
+    assert!(app.pending_restore.is_none());
+    assert_eq!(app.open_system.as_deref(), Some("NES"));
+    assert_eq!(app.open_category.as_deref(), Some("Console"));
+    assert_eq!(
+        app.trail.last().map(|crumb| &crumb.place),
+        Some(&Place::ArchiveDirectory {
+            archive: archive.clone(),
+            prefix: "A".into(),
+        })
+    );
+    assert_eq!(
+        row_key(&app.here[app.game_list.selected()]),
+        format!("f:{}", archive.join("A/Target.nes").display())
+    );
+    app.open_system_by_index(0);
+    assert!(!app.here.is_empty());
+    let mut root_saved = app.position();
+    root_saved.category = "Console".into();
+    let root_row = root_saved.selected_row.clone();
+    app.open_system = None;
+    app.library = None;
+    app.system_cache = None;
+    app.trail.clear();
+    app.here.clear();
+    app.open_category = None;
+    app.browsing = Browsing::Categories;
+    app.resolve_artwork_sources(SourceResolutionAction::Startup);
+    app.restore_position(&root_saved);
+    app.finish_background_work_for_headless();
+    assert_eq!(app.trail.len(), 1, "root-level returns remain at the root");
+    assert_eq!(
+        app.here.get(app.game_list.selected()).map(row_key),
+        root_row,
+        "root-level return retains its selected row"
+    );
+    app.all_systems.retain(|system| system.def.id != "C64");
+    app.restore_position(&saved);
     let mut old_saved = saved.clone();
     old_saved.selected_row = None;
     app.restore_position(&old_saved);
