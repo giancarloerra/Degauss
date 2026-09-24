@@ -9033,7 +9033,7 @@ impl App {
         let target = picture.target?;
         // The hint is displayed only for a decoded picture. Do not launch a
         // stale or unreadable path merely because it still has a cache row.
-        self.cover_for(&picture.path)?;
+        self.cover_for(&picture.path, None)?;
         self.leave_screensaver();
         let Some(system) = self
             .all_systems
@@ -18331,10 +18331,60 @@ impl App {
         }
     }
 
+    /// The source-space bounds of the actual Details picture on a low-line
+    /// framebuffer. Other views retain the normal cached image unchanged.
+    fn low_resolution_detail_preview_box(
+        &self,
+        game_art: bool,
+        horizontal_scale: f32,
+    ) -> Option<(u32, u32)> {
+        if !game_art
+            || self.screen != Screen::Browse
+            || self.browsing != Browsing::Games
+            || self.layout != Layout::Details
+            || self.width.min(self.height) > 288
+            || self.width.max(self.height) > 720
+        {
+            return None;
+        }
+
+        let geometry = self.geometry;
+        let portrait = portrait_dimensions(self.width, self.height);
+        let safe_width = self.width as f32 - geometry.inset_x * 2.0;
+        let safe_height = self.height as f32 - geometry.inset_y * 2.0;
+        let body_height = safe_height
+            - if self.chrome_here() {
+                geometry.chrome
+            } else {
+                0.0
+            }
+            - if self.bar_here() { geometry.bar } else { 0.0 };
+        let panel_width = if portrait {
+            safe_width
+        } else {
+            geometry.art_width
+        };
+        let panel_height = if portrait {
+            geometry.art_height
+        } else {
+            body_height
+        };
+        let picture_width = (panel_width - geometry.pad) / horizontal_scale;
+        let picture_height = panel_height - self.detail_panel_measure().1 - geometry.pad;
+        Some((
+            picture_width.floor().max(1.0) as u32,
+            picture_height.floor().max(1.0) as u32,
+        ))
+    }
+
     /// A picture for a path, decoding it here or asking for it elsewhere.
     ///
     /// The one place that decides, so every list goes the same way.
-    fn cover_for(&mut self, path: &std::path::Path) -> Option<slint::Image> {
+    fn cover_for(
+        &mut self,
+        path: &std::path::Path,
+        preview_box: Option<(u32, u32)>,
+    ) -> Option<slint::Image> {
         let palette = self.effective_palette();
         let ground = match self.screen {
             Screen::Screensaver => [0, 0, 0],
@@ -18351,7 +18401,12 @@ impl App {
             _ => [palette.surface.r, palette.surface.g, palette.surface.b],
         };
         self.covers.set_ground(ground);
-        self.covers.get(path).map(to_image)
+        self.covers.get(path).map(|image| match preview_box {
+            Some((width, height)) => {
+                to_image(&crate::covers::scale_to_box_area(image, width, height))
+            }
+            None => to_image(image),
+        })
     }
 
     /// A browse-row image from the cache belonging to the current layout.
@@ -18366,7 +18421,7 @@ impl App {
             return (slint::Image::default(), false, false);
         };
         if self.layout != Layout::Gallery {
-            return match self.cover_for(&path) {
+            return match self.cover_for(&path, None) {
                 Some(image) => (image, true, false),
                 None => (slint::Image::default(), false, false),
             };
@@ -18435,21 +18490,23 @@ impl App {
         let (path, caption, heart, game_art) = self.current_art();
         self.ui.set_art_caption(SharedString::from(caption));
         self.ui.set_art_heart(heart);
-        self.ui.set_art_scale_x(artwork_horizontal(
+        let art_scale_x = artwork_horizontal(
             self.artwork_scale,
             self.width,
             self.height,
             self.screen_rotation,
             game_art,
-        ));
+        );
+        self.ui.set_art_scale_x(art_scale_x);
         let group_preview = self.screen == Screen::Browse
             && self.browsing != Browsing::Games
             && self.layout == Layout::Details;
+        let preview_box = self.low_resolution_detail_preview_box(game_art, art_scale_x);
         match path.and_then(|path| {
             if group_preview {
                 self.group_covers.get(&path).map(to_image)
             } else {
-                self.cover_for(&path)
+                self.cover_for(&path, preview_box)
             }
         }) {
             Some(image) => {
@@ -18514,7 +18571,7 @@ impl App {
                     let needed = (self.width as f32 / cell).ceil() as usize + 2;
                     for step in 0..needed {
                         let picture = self.saver_pool[(first + step) % count].clone();
-                        let (cover, has_cover) = match self.cover_for(&picture.path) {
+                        let (cover, has_cover) = match self.cover_for(&picture.path, None) {
                             Some(image) => (image, true),
                             None => (slint::Image::default(), false),
                         };
@@ -18963,7 +19020,7 @@ impl App {
     /// often than the shape of the screen does. Only over a game: a folder
     /// has nothing to say, and six empty labels beside it push the picture
     /// up the screen to make room for nothing.
-    fn apply_detail_panel(&self) {
+    fn detail_panel_measure(&self) -> (f32, f32) {
         let line = (self.geometry.small_font * 1.6).ceil().max(12.0);
         let wanted = (line * 3.0 + self.geometry.pad)
             .max(self.geometry.row_height * self.geometry.visible as f32 * 0.36);
@@ -18990,8 +19047,13 @@ impl App {
         let wants = self.layout == Layout::Details
             && over_game
             && (self.in_misterzine_browser() || self.details_style == DetailsStyle::Information);
+        (line, if wants { panel } else { 0.0 })
+    }
+
+    fn apply_detail_panel(&self) {
+        let (line, height) = self.detail_panel_measure();
         self.ui.set_detail_line(line);
-        self.ui.set_detail_height(if wants { panel } else { 0.0 });
+        self.ui.set_detail_height(height);
     }
 
     fn update_chrome(&self) {

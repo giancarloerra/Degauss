@@ -334,6 +334,62 @@ pub fn scale_to_fit(source: &RgbImage, max_edge: u32) -> RgbImage {
     }
 }
 
+/// Area-filter an already decoded picture to the rectangle where it will be
+/// drawn. This is used only by the experimental CRT Details preview; the
+/// ordinary cache keeps its existing size and point-sampling behaviour.
+pub fn scale_to_box_area(source: &RgbImage, max_width: u32, max_height: u32) -> RgbImage {
+    if max_width == 0
+        || max_height == 0
+        || (source.width <= max_width && source.height <= max_height)
+    {
+        return source.clone();
+    }
+
+    let scale =
+        (max_width as f64 / source.width as f64).min(max_height as f64 / source.height as f64);
+    let width = ((source.width as f64 * scale).round() as u32).clamp(1, max_width);
+    let height = ((source.height as f64 * scale).round() as u32).clamp(1, max_height);
+    let mut out = vec![0u8; (width * height * 3) as usize];
+    let denominator = u64::from(source.width) * u64::from(source.height);
+
+    for y in 0..height {
+        let top = u64::from(y) * u64::from(source.height);
+        let bottom = u64::from(y + 1) * u64::from(source.height);
+        let first_y = top / u64::from(height);
+        let last_y = bottom.div_ceil(u64::from(height));
+        for x in 0..width {
+            let left = u64::from(x) * u64::from(source.width);
+            let right = u64::from(x + 1) * u64::from(source.width);
+            let first_x = left / u64::from(width);
+            let last_x = right.div_ceil(u64::from(width));
+            let mut channels = [0u64; 3];
+            for sy in first_y..last_y {
+                let overlap_y =
+                    bottom.min((sy + 1) * u64::from(height)) - top.max(sy * u64::from(height));
+                for sx in first_x..last_x {
+                    let overlap_x =
+                        right.min((sx + 1) * u64::from(width)) - left.max(sx * u64::from(width));
+                    let weight = overlap_x * overlap_y;
+                    let index = ((sy * u64::from(source.width) + sx) * 3) as usize;
+                    for (channel, sum) in channels.iter_mut().enumerate() {
+                        *sum += weight * u64::from(source.rgb[index + channel]);
+                    }
+                }
+            }
+            let index = ((u64::from(y) * u64::from(width) + u64::from(x)) * 3) as usize;
+            for (channel, sum) in channels.into_iter().enumerate() {
+                out[index + channel] = ((sum + denominator / 2) / denominator) as u8;
+            }
+        }
+    }
+
+    RgbImage {
+        width,
+        height,
+        rgb: out,
+    }
+}
+
 /// Fixed-capacity cover cache with least-recently-used eviction.
 pub struct CoverCache {
     max_edge: u32,
@@ -809,6 +865,28 @@ mod tests {
         let source = solid(8, 8, [1, 2, 3]);
         let out = scale_to_fit(&source, 64);
         assert_eq!(out, source, "upscaling would only waste memory");
+    }
+
+    #[test]
+    fn area_preview_filters_the_actual_destination_footprint() {
+        let source = RgbImage::new(3, 1, vec![0, 0, 0, 0, 0, 0, 255, 0, 0]).unwrap();
+        let filtered = scale_to_box_area(&source, 2, 1);
+        assert_eq!((filtered.width, filtered.height), (2, 1));
+        assert_eq!(filtered.pixel(0, 0), [0, 0, 0]);
+        assert_eq!(filtered.pixel(1, 0), [170, 0, 0]);
+
+        let blocks = RgbImage::new(2, 2, vec![0, 0, 0, 200, 0, 0, 0, 200, 0, 200, 200, 0]).unwrap();
+        assert_eq!(scale_to_box_area(&blocks, 1, 1).pixel(0, 0), [100, 100, 0]);
+        assert_eq!(scale_to_box_area(&blocks, 2, 2), blocks);
+    }
+
+    #[test]
+    fn area_preview_fits_both_dimensions_without_enlarging_small_art() {
+        let source = solid(320, 240, [7, 8, 9]);
+        let filtered = scale_to_box_area(&source, 126, 90);
+        assert_eq!((filtered.width, filtered.height), (120, 90));
+        assert_eq!(filtered.pixel(119, 89), [7, 8, 9]);
+        assert_eq!(scale_to_box_area(&source, 400, 400), source);
     }
 
     #[test]

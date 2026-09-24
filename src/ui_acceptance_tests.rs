@@ -1460,6 +1460,26 @@ fn assert_current_art_matte(app: &mut App, path: &Path, ground: [u8; 3]) {
         expected.rgb.as_chunks::<3>().0.contains(&ground),
         "the real PNG must contain transparent pixels to exercise the matte"
     );
+    let preview_box = app.low_resolution_detail_preview_box(
+        true,
+        artwork_horizontal(
+            app.artwork_scale,
+            app.width,
+            app.height,
+            app.screen_rotation,
+            true,
+        ),
+    );
+    let expected = if let Some((width, height)) = preview_box {
+        let filtered = crate::covers::scale_to_box_area(&expected, width, height);
+        assert!(
+            filtered.width < expected.width || filtered.height < expected.height,
+            "the CRT Details fixture must exercise real downscaling"
+        );
+        filtered
+    } else {
+        expected
+    };
     assert_eq!(
         image.to_rgb8().unwrap().as_bytes(),
         expected.rgb.as_slice(),
