@@ -330,6 +330,9 @@ pub struct Settings {
     /// Off retains the faster image sampling used before v0.9.0.
     #[serde(default)]
     pub crt_smoothing: Option<bool>,
+    /// Optional HDMI scanlines while Degauss is open. Absent is Off.
+    #[serde(default)]
+    pub hdmi_scanlines: Option<bool>,
     /// How game artwork is horizontally corrected for the physical display:
     /// "framebuffer", "4:3" or "16:9". Absent keeps the original
     /// framebuffer-pixel behaviour.
@@ -727,6 +730,7 @@ mod tests {
         assert_eq!(settings.show_misterzine, None);
         assert!(!settings.show_misterzine.unwrap_or(false));
         assert!(!settings.attract_mode_menu.unwrap_or(false));
+        assert!(!settings.hdmi_scanlines.unwrap_or(false));
     }
 
     #[test]
@@ -807,6 +811,7 @@ mod tests {
             game_name_display: Some(GameNameDisplay::KeepRegionAndDiscIndex),
             folder_brackets: Some(false),
             show_game_position: Some(false),
+            hdmi_scanlines: Some(true),
             attract_mode_menu: Some(true),
             left_right: Some("letter".into()),
             font: Some("pixel".into()),

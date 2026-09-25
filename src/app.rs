@@ -335,6 +335,7 @@ fn option_operation(option: OptionId, input: OptionInput) -> OptionOperation {
         | OptionId::Font
         | OptionId::ShowArt
         | OptionId::CrtSmoothing
+        | OptionId::HdmiScanlines
         | OptionId::ArtworkScale
         | OptionId::DetailsStyle
         | OptionId::GameNameDisplay
@@ -11592,6 +11593,21 @@ impl App {
         self.settings.crt_smoothing.unwrap_or(true) && low_line_output(self.width, self.height)
     }
 
+    pub fn hdmi_scanlines(&self) -> bool {
+        self.settings.hdmi_scanlines.unwrap_or(false)
+    }
+
+    pub fn apply_saved_hdmi_scanlines(&mut self) {
+        if self.hdmi_scanlines() {
+            if let Err(error) =
+                crate::launch::set_hdmi_scanlines(true, Path::new(crate::launch::CMD_FIFO))
+            {
+                self.message = Some(format!("HDMI scanlines could not be enabled: {error}"));
+                self.dirty = true;
+            }
+        }
+    }
+
     /// Thumbnail edge and capacity for the Gallery browse rectangle. The
     /// cache holds at least one complete visible page, or an eviction would
     /// force the same page to decode again forever on large framebuffers.
@@ -12248,6 +12264,21 @@ impl App {
                 self.apply_geometry();
                 self.touch_selection();
             }
+            OptionId::HdmiScanlines => {
+                let enabled = !self.hdmi_scanlines();
+                if cfg!(all(target_os = "linux", target_arch = "arm")) && !cfg!(test) {
+                    if let Err(error) = crate::launch::set_hdmi_scanlines(
+                        enabled,
+                        Path::new(crate::launch::CMD_FIFO),
+                    ) {
+                        self.message =
+                            Some(format!("HDMI scanlines could not be changed: {error}"));
+                        self.dirty = true;
+                        return;
+                    }
+                }
+                self.settings.hdmi_scanlines = Some(enabled);
+            }
             OptionId::ArtworkScale => {
                 let at = step(self.artwork_scale.index(), delta, ArtworkScale::ALL.len());
                 self.artwork_scale = ArtworkScale::ALL[at];
@@ -12527,6 +12558,7 @@ impl App {
             },
             OptionId::ShowArt => on_off(self.show_art),
             OptionId::CrtSmoothing => on_off(self.settings.crt_smoothing.unwrap_or(true)),
+            OptionId::HdmiScanlines => on_off(self.hdmi_scanlines()),
             OptionId::ArtworkScale => self.artwork_scale.shown().to_string(),
             OptionId::DetailsStyle => self.details_style.shown().to_string(),
             OptionId::GameNameDisplay => self.game_name_display.label().to_string(),
@@ -21445,6 +21477,15 @@ pub(crate) fn test_library_launch_flow(window: Rc<MinimalSoftwareWindow>) {
         None,
     );
     app.finish_background_work_for_headless();
+
+    assert!(!app.hdmi_scanlines());
+    assert_eq!(app.option_value(OptionId::HdmiScanlines), "Off");
+    app.adjust_option_value(OptionId::HdmiScanlines, 1);
+    assert!(app.hdmi_scanlines());
+    assert_eq!(app.option_value(OptionId::HdmiScanlines), "On");
+    app.adjust_option_value(OptionId::HdmiScanlines, -1);
+    assert!(!app.hdmi_scanlines());
+    app.settings.hdmi_scanlines = None;
 
     app.screen = Screen::Browse;
     app.browsing = Browsing::Categories;

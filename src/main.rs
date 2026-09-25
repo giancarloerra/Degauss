@@ -1657,6 +1657,7 @@ fn run_on_framebuffer(
         RepaintBufferType::ReusedBuffer,
         args.rotation,
     )?;
+    app.apply_saved_hdmi_scanlines();
     // Only when asked: without the flag the view saved in settings.toml,
     // which App::new already chose, is the one the user wants.
     if let Some(layout) = args.layout {
@@ -1744,12 +1745,18 @@ fn run_on_framebuffer(
     let outcome = app.run(&mut framebuffer, &mut input, &mut presenter, || {
         session.owner_alive()
     });
+    let scanlines_reset = if app.hdmi_scanlines() {
+        launch::set_hdmi_scanlines(false, Path::new(launch::CMD_FIFO))
+    } else {
+        Ok(())
+    };
 
     terminal.restore();
     if let Some(console) = console.as_mut() {
         console.restore();
     }
     let outcome = outcome?;
+    scanlines_reset?;
 
     let summary = app.frame_summary();
     note(&format!(
