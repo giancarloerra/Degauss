@@ -766,7 +766,9 @@ impl CoverCache {
             .map(|(path, reason)| (path.as_path(), reason.as_str()))
     }
 
-    fn touch(&mut self, path: &Path) {
+    /// Keep an already cached picture recent without decoding it or counting
+    /// a speculative prefetch as a visible cache hit.
+    pub(crate) fn touch(&mut self, path: &Path) {
         if let Some(pos) = self.order.iter().position(|p| p == path) {
             let owned = self.order.remove(pos);
             self.order.push(owned);
