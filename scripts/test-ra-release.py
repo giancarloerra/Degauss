@@ -18,6 +18,32 @@ spec.loader.exec_module(package_ra)
 
 
 class ReleaseTests(unittest.TestCase):
+    def test_database_maps_shipped_shadow_masks_to_repository_files(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            staged = root / 'deploy/Scripts/.config/degauss/masks'
+            staged.mkdir(parents=True)
+            name = 'Scanlines + Grille.txt'
+            (staged / name).write_bytes(b'staged copy')
+            frontend = staged.parent / 'degauss'
+            frontend.write_bytes(b'frontend')
+            main = root / 'MiSTer_Degauss'
+            main.write_bytes(b'main')
+            out = root / 'database.json'
+            subprocess.run(
+                [sys.executable, str(ROOT / 'scripts/make-db.py'),
+                 'v0.9.0', str(root / 'deploy'), str(main), str(out)],
+                cwd=ROOT, check=True, capture_output=True,
+            )
+            entry = json.loads(out.read_text())['files']['Scripts/.config/degauss/masks/' + name]
+            source = (ROOT / 'assets/masks' / name).read_bytes()
+            self.assertEqual(entry['hash'], hashlib.md5(source).hexdigest())
+            self.assertEqual(entry['size'], len(source))
+            self.assertEqual(
+                entry['url'],
+                'https://raw.githubusercontent.com/giancarloerra/Degauss/v0.9.0/assets/masks/Scanlines%20%2B%20Grille.txt',
+            )
+
     def test_degauss_menu_binary_matches_recorded_checksum(self):
         menu_dir = ROOT / 'support/menu-core'
         expected = (menu_dir / 'menu.rbf.sha256').read_text().split()[0]
