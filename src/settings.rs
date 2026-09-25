@@ -330,6 +330,14 @@ pub struct Settings {
     /// Off retains the faster image sampling used before v0.9.0.
     #[serde(default)]
     pub crt_smoothing: Option<bool>,
+    /// Legacy boolean used by the first scanline test build. A named mask
+    /// supersedes it; false or absent means Off.
+    #[serde(default)]
+    pub hdmi_scanlines: Option<bool>,
+    /// Name of a MiSTer shadow-mask file in the Degauss masks folder.
+    /// Absent is Off unless the legacy scanline boolean is true.
+    #[serde(default)]
+    pub display_mask: Option<String>,
     /// How game artwork is horizontally corrected for the physical display:
     /// "framebuffer", "4:3" or "16:9". Absent keeps the original
     /// framebuffer-pixel behaviour.
@@ -727,6 +735,8 @@ mod tests {
         assert_eq!(settings.show_misterzine, None);
         assert!(!settings.show_misterzine.unwrap_or(false));
         assert!(!settings.attract_mode_menu.unwrap_or(false));
+        assert!(!settings.hdmi_scanlines.unwrap_or(false));
+        assert_eq!(settings.display_mask, None);
     }
 
     #[test]
@@ -807,6 +817,7 @@ mod tests {
             game_name_display: Some(GameNameDisplay::KeepRegionAndDiscIndex),
             folder_brackets: Some(false),
             show_game_position: Some(false),
+            hdmi_scanlines: Some(true),
             attract_mode_menu: Some(true),
             left_right: Some("letter".into()),
             font: Some("pixel".into()),

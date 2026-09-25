@@ -335,6 +335,7 @@ fn option_operation(option: OptionId, input: OptionInput) -> OptionOperation {
         | OptionId::Font
         | OptionId::ShowArt
         | OptionId::CrtSmoothing
+        | OptionId::HdmiScanlines
         | OptionId::ArtworkScale
         | OptionId::DetailsStyle
         | OptionId::GameNameDisplay
@@ -3875,6 +3876,8 @@ pub struct App {
     settings: Settings,
     settings_path: PathBuf,
     themes_dir: PathBuf,
+    display_masks_dir: PathBuf,
+    display_masks: Vec<String>,
 
     systems: Vec<FoundSystem>,
     /// The groups present on this machine, with how many systems each has.
@@ -4392,6 +4395,14 @@ impl App {
             themes,
             problems: mut startup_problems,
         } = themes;
+        let display_masks_dir = settings_path.with_file_name("masks");
+        let display_masks = match crate::display_mask::names(&display_masks_dir) {
+            Ok(names) => names,
+            Err(error) => {
+                startup_problems.push(error.to_string());
+                Vec::new()
+            }
+        };
         if let Some(problem) = last_played_problem.as_ref() {
             startup_problems.push(format!("Last Played could not be read: {problem}"));
         }
@@ -4662,6 +4673,8 @@ impl App {
             settings,
             settings_path,
             themes_dir,
+            display_masks_dir,
+            display_masks,
             systems,
             categories: Vec::new(),
             category_list: ListState::new(0, geometry.visible),
@@ -5497,6 +5510,12 @@ impl App {
     }
 
     pub fn open_options_page(&mut self, page: OptionsPage) {
+        if page == OptionsPage::Display {
+            match crate::display_mask::names(&self.display_masks_dir) {
+                Ok(names) => self.display_masks = names,
+                Err(error) => crate::note(&error.to_string()),
+            }
+        }
         self.options_page = page;
         self.options_root_list.select(page.index());
         self.screen = Screen::Options;
@@ -11592,6 +11611,47 @@ impl App {
         self.settings.crt_smoothing.unwrap_or(true) && low_line_output(self.width, self.height)
     }
 
+    pub fn display_mask(&self) -> Option<&str> {
+        self.settings.display_mask.as_deref().or_else(|| {
+            self.settings
+                .hdmi_scanlines
+                .unwrap_or(false)
+                .then_some(crate::display_mask::LEGACY_SCANLINES)
+        })
+    }
+
+    #[cfg_attr(test, allow(dead_code))]
+    pub fn apply_saved_display_mask(&mut self) {
+        self.apply_saved_display_mask_at(Path::new(crate::launch::CMD_FIFO));
+    }
+
+    fn apply_saved_display_mask_at(&mut self, fifo: &Path) {
+        let Some(name) = self.display_mask() else {
+            return;
+        };
+        if let Err(error) = crate::display_mask::validate(&self.display_masks_dir, name) {
+            crate::note(&format!("display mask invalid; switching off: {error}"));
+            if let Err(reset_error) = crate::launch::set_display_mask(None, fifo) {
+                crate::note(&format!(
+                    "display mask could not be switched off: {reset_error}"
+                ));
+                self.message = Some(format!(
+                    "Display mask could not be switched off: {reset_error}"
+                ));
+                self.dirty = true;
+                return;
+            }
+            self.settings.display_mask = None;
+            self.settings.hdmi_scanlines = Some(false);
+            self.save_settings();
+            return;
+        }
+        if let Err(error) = crate::launch::set_display_mask(Some(name), fifo) {
+            self.message = Some(format!("Display mask could not be enabled: {error}"));
+            self.dirty = true;
+        }
+    }
+
     /// Thumbnail edge and capacity for the Gallery browse rectangle. The
     /// cache holds at least one complete visible page, or an eviction would
     /// force the same page to decode again forever on large framebuffers.
@@ -12248,6 +12308,53 @@ impl App {
                 self.apply_geometry();
                 self.touch_selection();
             }
+            OptionId::HdmiScanlines => {
+                let current = self
+                    .display_mask()
+                    .and_then(|name| self.display_masks.iter().position(|item| item == name))
+                    .map_or(0, |index| index + 1);
+                let next = step(current, delta, self.display_masks.len() + 1);
+                let name = next
+                    .checked_sub(1)
+                    .map(|index| self.display_masks[index].clone());
+                if let Some(name) = name.as_deref() {
+                    if let Err(error) = crate::display_mask::validate(&self.display_masks_dir, name)
+                    {
+                        crate::note(&format!("display mask invalid; switching off: {error}"));
+                        if cfg!(all(target_os = "linux", target_arch = "arm")) && !cfg!(test) {
+                            if let Err(reset_error) = crate::launch::set_display_mask(
+                                None,
+                                Path::new(crate::launch::CMD_FIFO),
+                            ) {
+                                crate::note(&format!(
+                                    "display mask could not be switched off: {reset_error}"
+                                ));
+                                self.message = Some(format!(
+                                    "Display mask could not be switched off: {reset_error}"
+                                ));
+                                self.dirty = true;
+                                return;
+                            }
+                        }
+                        self.settings.display_mask = None;
+                        self.settings.hdmi_scanlines = Some(false);
+                        self.dirty = true;
+                        return;
+                    }
+                }
+                if cfg!(all(target_os = "linux", target_arch = "arm")) && !cfg!(test) {
+                    if let Err(error) = crate::launch::set_display_mask(
+                        name.as_deref(),
+                        Path::new(crate::launch::CMD_FIFO),
+                    ) {
+                        self.message = Some(format!("Display mask could not be changed: {error}"));
+                        self.dirty = true;
+                        return;
+                    }
+                }
+                self.settings.display_mask = name;
+                self.settings.hdmi_scanlines = Some(false);
+            }
             OptionId::ArtworkScale => {
                 let at = step(self.artwork_scale.index(), delta, ArtworkScale::ALL.len());
                 self.artwork_scale = ArtworkScale::ALL[at];
@@ -12527,6 +12634,7 @@ impl App {
             },
             OptionId::ShowArt => on_off(self.show_art),
             OptionId::CrtSmoothing => on_off(self.settings.crt_smoothing.unwrap_or(true)),
+            OptionId::HdmiScanlines => self.display_mask().unwrap_or("Off").to_string(),
             OptionId::ArtworkScale => self.artwork_scale.shown().to_string(),
             OptionId::DetailsStyle => self.details_style.shown().to_string(),
             OptionId::GameNameDisplay => self.game_name_display.label().to_string(),
@@ -18920,21 +19028,41 @@ impl App {
         Some(format!("{system}:{}", place.key()))
     }
 
-    fn prefetch_nearby(&self, path: &Path, direction: isize, count: usize) -> bool {
+    fn prefetch_nearby(&self, path: &Path, count: usize, moving: bool) -> bool {
         let selected = self.game_list.selected() as isize;
-        (1..=count).any(|distance| {
-            let index = selected + direction * distance as isize;
-            usize::try_from(index)
-                .ok()
-                .and_then(|index| self.here.get(index))
-                .and_then(|row| row.cover.as_deref())
-                == Some(path)
-        })
+        let mut considered = 0;
+        for distance in 1..=count.min(self.here.len().saturating_sub(1)) {
+            for direction in [self.prefetch_direction, -self.prefetch_direction] {
+                if moving && direction != self.prefetch_direction {
+                    continue;
+                }
+                let index = selected + direction * distance as isize;
+                let Some(row) = usize::try_from(index)
+                    .ok()
+                    .and_then(|index| self.here.get(index))
+                else {
+                    continue;
+                };
+                considered += 1;
+                if row.cover.as_deref() == Some(path) {
+                    return true;
+                }
+                if considered >= count {
+                    return false;
+                }
+            }
+        }
+        false
     }
 
-    /// Use idle time or a run of cache hits to prepare upcoming pictures in the
-    /// direction of travel. Never read a whole folder or decode on this frame.
+    /// Use idle time to prepare nearby pictures on both sides, or cache hits
+    /// while moving to prepare in the direction of travel. Never decode on
+    /// the browsing frame.
     fn poll_cover_prefetch(&mut self, now: Instant) {
+        let moving = self.prefetch_scrolling
+            && self.settled_since.is_some_and(|since| {
+                now.saturating_duration_since(since) < Duration::from_millis(250)
+            });
         if let Some(job) = self.cover_prefetch.as_ref() {
             let nearby = self.screen == Screen::Browse
                 && self.browsing == Browsing::Games
@@ -18942,14 +19070,14 @@ impl App {
                 && self.layout.eq(&Layout::Gallery) == job.gallery
                 && self.prefetch_nearby(
                     &job.path,
-                    job.direction,
                     if job.gallery {
-                        self.gallery_covers.capacity()
+                        self.gallery_covers.capacity().saturating_sub(1)
                     } else {
-                        self.covers.capacity()
+                        self.covers.capacity().saturating_sub(1)
                     },
+                    moving,
                 )
-                && (!self.prefetch_scrolling || self.prefetch_direction == job.direction);
+                && (!moving || self.prefetch_direction == job.direction);
             if !nearby {
                 job.cancel.store(true, Ordering::Relaxed);
             }
@@ -18957,15 +19085,26 @@ impl App {
                 Ok(prepared) => {
                     let job = self.cover_prefetch.take().expect("prefetch finished");
                     if nearby && !job.cancel.load(Ordering::Relaxed) {
+                        let selected_path = self
+                            .here
+                            .get(self.game_list.selected())
+                            .and_then(|row| row.cover.as_deref());
                         let cache = if job.gallery {
                             &mut self.gallery_covers
                         } else {
                             &mut self.covers
                         };
+                        if let Some(path) = selected_path {
+                            cache.touch(path);
+                        }
                         cache.accept_prepared(job.path, job.spec, prepared);
                         self.dirty = true;
                     }
-                    self.prefetch_next_at = now + Duration::from_millis(250);
+                    self.prefetch_next_at = if moving {
+                        now + Duration::from_millis(250)
+                    } else {
+                        now
+                    };
                 }
                 Err(mpsc::TryRecvError::Disconnected) => {
                     self.cover_prefetch = None;
@@ -18987,10 +19126,6 @@ impl App {
         let Some(folder) = self.prefetch_folder() else {
             return;
         };
-        let moving = self.prefetch_scrolling
-            && self.settled_since.is_some_and(|since| {
-                now.saturating_duration_since(since) < Duration::from_millis(250)
-            });
         if now < self.prefetch_next_at
             || (!moving
                 && !self.settled_since.is_some_and(|since| {
@@ -19038,22 +19173,39 @@ impl App {
         } else {
             &self.covers
         };
-        // Never prepare more than the existing cache can hold, but keep
-        // working through a smaller folder instead of stopping after six.
-        let lookahead = cache.capacity().min(self.here.len());
+        // Leave room for the selected picture so continuous idle work cannot
+        // evict it and repeatedly decode the same cache window.
+        let lookahead = cache
+            .capacity()
+            .saturating_sub(1)
+            .min(self.here.len().saturating_sub(1));
         let spec = cache.spec();
-        let direction = self.prefetch_direction;
         let selected = self.game_list.selected() as isize;
-        let candidate = (1..=lookahead).find_map(|distance| {
-            let index = selected + direction * distance as isize;
-            let path = usize::try_from(index)
-                .ok()
-                .and_then(|index| self.here.get(index))?
-                .cover
-                .as_ref()?;
-            (!cache.knows(path)).then(|| path.clone())
-        });
-        let Some(path) = candidate else {
+        let mut candidate = None;
+        let mut considered = 0;
+        'search: for distance in 1..=lookahead {
+            for direction in [self.prefetch_direction, -self.prefetch_direction] {
+                if moving && direction != self.prefetch_direction {
+                    continue;
+                }
+                let index = selected + direction * distance as isize;
+                let Some(row) = usize::try_from(index)
+                    .ok()
+                    .and_then(|index| self.here.get(index))
+                else {
+                    continue;
+                };
+                considered += 1;
+                if let Some(path) = row.cover.as_ref().filter(|path| !cache.knows(path)) {
+                    candidate = Some((path.clone(), direction));
+                    break 'search;
+                }
+                if considered >= lookahead {
+                    break 'search;
+                }
+            }
+        }
+        let Some((path, direction)) = candidate else {
             self.prefetch_next_at = now + Duration::from_millis(250);
             return;
         };
@@ -21392,6 +21544,12 @@ pub(crate) fn test_library_launch_flow(window: Rc<MinimalSoftwareWindow>) {
     std::fs::write(root.join("_Arcade/LegacyNES.rbf"), b"legacy").unwrap();
     std::fs::write(root.join("_RA_Cores/Cores/NES.rbf"), b"ra").unwrap();
     std::fs::write(root.join("_RA_Cores/NES.mgl"), b"<mistergamedescription><rbf>_RA_Cores/Cores/NES</rbf><setname same_dir=\"1\">RA_NES</setname></mistergamedescription>").unwrap();
+    std::fs::create_dir_all(root.join("masks")).unwrap();
+    std::fs::write(
+        root.join("masks/Scanlines.txt"),
+        include_str!("../assets/masks/Scanlines.txt"),
+    )
+    .unwrap();
     let nightly = "_Unstable/NES_unstable_20260101_123456.rbf";
     std::fs::write(root.join(nightly), b"nightly").unwrap();
     let archive = root.join("games/NES/small.zip");
@@ -21445,6 +21603,38 @@ pub(crate) fn test_library_launch_flow(window: Rc<MinimalSoftwareWindow>) {
         None,
     );
     app.finish_background_work_for_headless();
+
+    assert_eq!(app.option_value(OptionId::HdmiScanlines), "Off");
+    app.adjust_option_value(OptionId::HdmiScanlines, 1);
+    assert_eq!(app.option_value(OptionId::HdmiScanlines), "Scanlines");
+    app.adjust_option_value(OptionId::HdmiScanlines, -1);
+    assert_eq!(app.option_value(OptionId::HdmiScanlines), "Off");
+    app.settings.hdmi_scanlines = Some(true);
+    assert_eq!(app.option_value(OptionId::HdmiScanlines), "Scanlines");
+    app.settings.hdmi_scanlines = None;
+    std::fs::write(root.join("masks/0 Broken.txt"), "v2\n2,2\n70f,008\n").unwrap();
+    app.display_masks = crate::display_mask::names(&root.join("masks")).unwrap();
+    app.adjust_option_value(OptionId::HdmiScanlines, 1);
+    assert_eq!(app.option_value(OptionId::HdmiScanlines), "Off");
+    assert_eq!(app.settings.hdmi_scanlines, Some(false));
+
+    app.settings.display_mask = Some("0 Broken".into());
+    std::fs::create_dir(root.join("blocked-mask-fifo")).unwrap();
+    app.apply_saved_display_mask_at(&root.join("blocked-mask-fifo"));
+    assert_eq!(app.display_mask(), Some("0 Broken"));
+    assert!(app
+        .message
+        .as_deref()
+        .unwrap()
+        .contains("could not be switched off"));
+    let mask_command = root.join("mask-command");
+    app.apply_saved_display_mask_at(&mask_command);
+    assert_eq!(app.display_mask(), None);
+    assert_eq!(
+        std::fs::read_to_string(mask_command).unwrap(),
+        "fb_mask off\n"
+    );
+    app.message = None;
 
     app.screen = Screen::Browse;
     app.browsing = Browsing::Categories;
@@ -22146,6 +22336,11 @@ pub(crate) fn test_library_launch_flow(window: Rc<MinimalSoftwareWindow>) {
     let mut future = app.here[0].clone();
     future.cover = Some(future_cover.clone());
     app.here.push(future);
+    let second_cover = root.join("second-cover.png");
+    std::fs::write(&second_cover, include_bytes!("../assets/logos/Arcade.png")).unwrap();
+    let mut second = app.here[0].clone();
+    second.cover = Some(second_cover.clone());
+    app.here.push(second);
     app.game_list = ListState::new(app.here.len(), app.geometry.visible);
     app.game_list.select(0);
     app.screen = Screen::Browse;
@@ -22185,10 +22380,95 @@ pub(crate) fn test_library_launch_flow(window: Rc<MinimalSoftwareWindow>) {
         app.covers.knows(&future_cover),
         "future cover enters the live cache"
     );
+    assert!(
+        app.cover_prefetch
+            .as_ref()
+            .is_some_and(|job| job.path == second_cover),
+        "the next idle decode starts without a per-image 250 ms pause"
+    );
+    for _ in 0..100 {
+        app.poll_cover_prefetch(Instant::now());
+        if app.covers.knows(&second_cover) {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert!(app.covers.knows(&second_cover));
+    let behind_cover = root.join("behind-cover.png");
+    std::fs::write(&behind_cover, include_bytes!("../assets/logos/Arcade.png")).unwrap();
+    app.here[0].cover = Some(behind_cover.clone());
+    app.game_list = ListState::new(app.here.len(), app.geometry.visible);
+    app.game_list.select(1);
+    app.prefetch_next_at = Instant::now();
+    app.prefetch_scrolling = false;
+    app.settled_since = Some(Instant::now() - Duration::from_millis(300));
+    app.poll_cover_prefetch(Instant::now());
+    assert!(
+        app.cover_prefetch
+            .as_ref()
+            .is_some_and(|job| job.path == behind_cover),
+        "idle prefetch also covers the opposite side of the selection"
+    );
+    for _ in 0..100 {
+        app.poll_cover_prefetch(Instant::now());
+        if app.covers.knows(&behind_cover) {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert!(app.covers.knows(&behind_cover));
+    let selected_cover = root.join("selected-cover.png");
+    std::fs::write(
+        &selected_cover,
+        include_bytes!("../assets/logos/Arcade.png"),
+    )
+    .unwrap();
+    app.here[1].cover = Some(selected_cover.clone());
+    app.game_list.select(1);
+    let palette = app.effective_palette();
+    let ground = [palette.surface.r, palette.surface.g, palette.surface.b];
+    let cover_edge = app.covers.max_edge();
+    let original_covers =
+        std::mem::replace(&mut app.covers, CoverCache::new(cover_edge, 2, ground));
+    app.covers.get(&selected_cover).unwrap();
+    app.covers.get(&behind_cover).unwrap();
+    let hit_count = app.covers.stats.cache_hits;
+    app.prefetch_next_at = Instant::now();
+    app.settled_since = Some(Instant::now() - Duration::from_millis(300));
+    app.poll_cover_prefetch(Instant::now());
+    assert!(app
+        .cover_prefetch
+        .as_ref()
+        .is_some_and(|job| job.path == second_cover));
+    for _ in 0..100 {
+        app.poll_cover_prefetch(Instant::now());
+        if app.covers.knows(&second_cover) {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert!(app.covers.knows(&second_cover));
+    assert!(
+        app.covers.knows(&selected_cover),
+        "continuous prefetch cannot evict the selected picture"
+    );
+    assert_eq!(
+        app.covers.stats.cache_hits, hit_count,
+        "protecting a selected picture is not a visible cache hit"
+    );
+    app.covers = original_covers;
+    app.covers.get(&selected_cover).unwrap();
     let next_cover = root.join("next-cover.png");
     std::fs::write(&next_cover, include_bytes!("../assets/logos/Arcade.png")).unwrap();
+    let left_only_cover = root.join("left-only-cover.png");
+    std::fs::write(
+        &left_only_cover,
+        include_bytes!("../assets/logos/Arcade.png"),
+    )
+    .unwrap();
+    app.here[0].cover = Some(left_only_cover);
     let mut next = app.here[0].clone();
-    next.cover = Some(next_cover);
+    next.cover = Some(next_cover.clone());
     app.here.push(next);
     app.game_list = ListState::new(app.here.len(), app.geometry.visible);
     app.game_list.select(1);
@@ -22204,8 +22484,10 @@ pub(crate) fn test_library_launch_flow(window: Rc<MinimalSoftwareWindow>) {
     app.prefetch_next_at = Instant::now();
     app.poll_cover_prefetch(Instant::now());
     assert!(
-        app.cover_prefetch.is_some(),
-        "moving through cached art continues preparing in that direction"
+        app.cover_prefetch
+            .as_ref()
+            .is_some_and(|job| job.path == next_cover),
+        "moving through cached art prepares only in that direction"
     );
     app.saver_attract_candidates = Some(Vec::new());
     app.apply_discovered_systems(app.all_systems.clone());

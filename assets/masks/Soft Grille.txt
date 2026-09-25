@@ -1,0 +1,4 @@
+# MiSTer v2 shadow mask. Three-pixel neutral grille at half intensity.
+v2
+3,1
+70f,70f,008

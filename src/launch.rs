@@ -42,6 +42,23 @@ use crate::error::{DegaussError, Result};
 
 /// Where Main listens for commands.
 pub const CMD_FIFO: &str = "/dev/MiSTer_cmd";
+
+/// Ask Degauss Main to use a native MiSTer mask for the Menu framebuffer.
+pub fn set_display_mask(name: Option<&str>, fifo: &Path) -> Result<()> {
+    let command = match name {
+        Some(name) if crate::display_mask::valid_name(name) => format!("fb_mask {name}\n"),
+        Some(_) => {
+            return Err(DegaussError::unsupported(
+                "display mask name",
+                "use a plain mask file name".to_string(),
+            ));
+        }
+        None => "fb_mask off\n".to_string(),
+    };
+    std::fs::write(fifo, command)
+        .map_err(|error| DegaussError::io("setting display mask", fifo, error))
+}
+
 /// Shared game-launch signal read by Zaparoo Core.
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 pub const ACTIVE_GAME_FILE: &str = "/tmp/ACTIVEGAME";
@@ -2565,6 +2582,21 @@ mod tests {
         let err = execute(&plan, Path::new("/nonexistent/dir/MiSTer_cmd")).expect_err("must fail");
         assert!(err.to_string().contains("MiSTer_cmd"), "got: {err}");
         std::fs::remove_file(std::env::temp_dir().join("degauss-nofifo.mgl")).ok();
+    }
+
+    #[test]
+    fn display_mask_commands_switch_preset_and_off_without_changing_launch_commands() {
+        let path =
+            std::env::temp_dir().join(format!("degauss-scanlines-cmd-{}", std::process::id()));
+        set_display_mask(Some("Soft Scanlines"), &path).unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), b"fb_mask Soft Scanlines\n");
+        set_display_mask(None, &path).unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), b"fb_mask off\n");
+        std::fs::remove_file(&path).ok();
+        let error = set_display_mask(Some("Scanlines"), Path::new("/nonexistent/dir/MiSTer_cmd"))
+            .expect_err("missing Main command FIFO must not appear successful");
+        assert!(error.to_string().contains("MiSTer_cmd"));
+        assert!(set_display_mask(Some("../wrong"), &path).is_err());
     }
 
     #[test]

@@ -5,8 +5,10 @@ Upstream source revision:
   81f657c557da769d615f91af7da04a06a5732460
 Upstream source:
   https://github.com/MiSTer-devel/Menu_MiSTer/tree/81f657c557da769d615f91af7da04a06a5732460
-Applied patch:
+Applied patches:
   support/menu-core/yc-framebuffer.patch
+  support/menu-core/hdmi-scanlines.patch
+Quartus fitter seed: 2
 
 The corresponding patched source archive is attached to the Degauss release
 as Degauss_Menu-source.tar.gz.
