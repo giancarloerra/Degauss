@@ -1607,6 +1607,30 @@ fn run_on_framebuffer(
 }
 
 #[cfg(target_os = "linux")]
+struct DisplayMaskCleanup<'a> {
+    fifo: &'a Path,
+    armed: bool,
+}
+
+#[cfg(target_os = "linux")]
+impl DisplayMaskCleanup<'_> {
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl Drop for DisplayMaskCleanup<'_> {
+    fn drop(&mut self) {
+        if self.armed {
+            if let Err(error) = launch::set_display_mask(None, self.fifo) {
+                note(&format!("display mask could not be switched off: {error}"));
+            }
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
 fn run_on_framebuffer(
     loaded: Loaded,
     args: Args,
@@ -1658,7 +1682,14 @@ fn run_on_framebuffer(
         RepaintBufferType::ReusedBuffer,
         args.rotation,
     )?;
+    let mask_selected_at_start = app.display_mask().is_some();
     app.apply_saved_display_mask();
+    // A later startup error must not leave the Menu mask active. The normal
+    // post-run reset below handles successful startup and disarms this guard.
+    let mut mask_cleanup = DisplayMaskCleanup {
+        fifo: Path::new(launch::CMD_FIFO),
+        armed: mask_selected_at_start,
+    };
     // Only when asked: without the flag the view saved in settings.toml,
     // which App::new already chose, is the one the user wants.
     if let Some(layout) = args.layout {
@@ -1751,6 +1782,7 @@ fn run_on_framebuffer(
     } else {
         Ok(())
     };
+    mask_cleanup.disarm();
 
     terminal.restore();
     if let Some(console) = console.as_mut() {
@@ -2199,6 +2231,30 @@ fn truncate(text: &str, width: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn display_mask_cleanup_resets_on_early_return_only() {
+        let fifo = std::env::temp_dir().join(format!("degauss-mask-guard-{}", std::process::id()));
+        std::fs::write(&fifo, "").unwrap();
+        {
+            let _cleanup = DisplayMaskCleanup {
+                fifo: &fifo,
+                armed: true,
+            };
+        }
+        assert_eq!(std::fs::read_to_string(&fifo).unwrap(), "fb_mask off\n");
+        std::fs::write(&fifo, "").unwrap();
+        {
+            let mut cleanup = DisplayMaskCleanup {
+                fifo: &fifo,
+                armed: true,
+            };
+            cleanup.disarm();
+        }
+        assert_eq!(std::fs::read_to_string(&fifo).unwrap(), "");
+        std::fs::remove_file(fifo).unwrap();
+    }
 
     fn parse(words: &[&str]) -> Args {
         parse_from(words.iter().map(|w| w.to_string()))

@@ -16,11 +16,7 @@ pub fn names(dir: &Path) -> Result<Vec<String>> {
     for entry in entries {
         let entry = entry.map_err(|error| DegaussError::io("reading display masks", dir, error))?;
         let path = entry.path();
-        if !path.is_file()
-            || !path
-                .extension()
-                .is_some_and(|ext| ext.eq_ignore_ascii_case("txt"))
-        {
+        if !path.is_file() || !path.extension().is_some_and(|ext| ext == "txt") {
             continue;
         }
         let Some(name) = path.file_stem().and_then(|stem| stem.to_str()) else {
@@ -96,6 +92,15 @@ pub fn validate(dir: &Path, name: &str) -> Result<PathBuf> {
                 "invalid dimensions",
             ));
         };
+        // MiSTer's comma-delimited reader does not accept whitespace before
+        // a comma, even though it accepts whitespace after one.
+        if width.trim_end() != width {
+            return Err(DegaussError::malformed(
+                "display mask",
+                &path,
+                "invalid dimensions",
+            ));
+        }
         let (Ok(width), Ok(height)) = (
             width.trim().parse::<usize>(),
             height.trim().parse::<usize>(),
@@ -124,6 +129,9 @@ pub fn validate(dir: &Path, name: &str) -> Result<PathBuf> {
             };
             let values: Vec<_> = row.split(',').collect();
             if values.len() != width
+                || values[..values.len().saturating_sub(1)]
+                    .iter()
+                    .any(|value| value.trim_end() != *value)
                 || values.iter().any(|value| {
                     u16::from_str_radix(value.trim(), 16).is_err()
                         || u16::from_str_radix(value.trim(), 16)
@@ -171,5 +179,29 @@ mod tests {
         assert!(validate(&dir, "../Broken").is_err());
         std::fs::remove_file(file).unwrap();
         std::fs::remove_dir(dir).unwrap();
+    }
+
+    #[test]
+    fn discovery_only_offers_files_main_can_open() {
+        let dir = std::env::temp_dir().join(format!("degauss-mask-case-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("lower.txt"), "v2\n1,1\n70f\n").unwrap();
+        std::fs::write(dir.join("upper.TXT"), "v2\n1,1\n70f\n").unwrap();
+        assert_eq!(names(&dir).unwrap(), vec!["lower"]);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn validation_matches_main_comma_parsing() {
+        let dir = std::env::temp_dir().join(format!("degauss-mask-fields-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("Custom.txt");
+        std::fs::write(&file, "v2\n2, 1\n70f, 70f\n").unwrap();
+        validate(&dir, "Custom").unwrap();
+        std::fs::write(&file, "v2\n2 ,1\n70f,70f\n").unwrap();
+        assert!(validate(&dir, "Custom").is_err());
+        std::fs::write(&file, "v2\n2,1\n70f ,70f\n").unwrap();
+        assert!(validate(&dir, "Custom").is_err());
+        std::fs::remove_dir_all(dir).unwrap();
     }
 }
