@@ -11620,27 +11620,33 @@ impl App {
         })
     }
 
+    #[cfg_attr(test, allow(dead_code))]
     pub fn apply_saved_display_mask(&mut self) {
+        self.apply_saved_display_mask_at(Path::new(crate::launch::CMD_FIFO));
+    }
+
+    fn apply_saved_display_mask_at(&mut self, fifo: &Path) {
         let Some(name) = self.display_mask() else {
             return;
         };
         if let Err(error) = crate::display_mask::validate(&self.display_masks_dir, name) {
             crate::note(&format!("display mask invalid; switching off: {error}"));
-            if let Err(reset_error) =
-                crate::launch::set_display_mask(None, Path::new(crate::launch::CMD_FIFO))
-            {
+            if let Err(reset_error) = crate::launch::set_display_mask(None, fifo) {
                 crate::note(&format!(
                     "display mask could not be switched off: {reset_error}"
                 ));
+                self.message = Some(format!(
+                    "Display mask could not be switched off: {reset_error}"
+                ));
+                self.dirty = true;
+                return;
             }
             self.settings.display_mask = None;
             self.settings.hdmi_scanlines = Some(false);
             self.save_settings();
             return;
         }
-        if let Err(error) =
-            crate::launch::set_display_mask(Some(name), Path::new(crate::launch::CMD_FIFO))
-        {
+        if let Err(error) = crate::launch::set_display_mask(Some(name), fifo) {
             self.message = Some(format!("Display mask could not be enabled: {error}"));
             self.dirty = true;
         }
@@ -12323,6 +12329,11 @@ impl App {
                                 crate::note(&format!(
                                     "display mask could not be switched off: {reset_error}"
                                 ));
+                                self.message = Some(format!(
+                                    "Display mask could not be switched off: {reset_error}"
+                                ));
+                                self.dirty = true;
+                                return;
                             }
                         }
                         self.settings.display_mask = None;
@@ -21606,6 +21617,24 @@ pub(crate) fn test_library_launch_flow(window: Rc<MinimalSoftwareWindow>) {
     app.adjust_option_value(OptionId::HdmiScanlines, 1);
     assert_eq!(app.option_value(OptionId::HdmiScanlines), "Off");
     assert_eq!(app.settings.hdmi_scanlines, Some(false));
+
+    app.settings.display_mask = Some("0 Broken".into());
+    std::fs::create_dir(root.join("blocked-mask-fifo")).unwrap();
+    app.apply_saved_display_mask_at(&root.join("blocked-mask-fifo"));
+    assert_eq!(app.display_mask(), Some("0 Broken"));
+    assert!(app
+        .message
+        .as_deref()
+        .unwrap()
+        .contains("could not be switched off"));
+    let mask_command = root.join("mask-command");
+    app.apply_saved_display_mask_at(&mask_command);
+    assert_eq!(app.display_mask(), None);
+    assert_eq!(
+        std::fs::read_to_string(mask_command).unwrap(),
+        "fb_mask off\n"
+    );
+    app.message = None;
 
     app.screen = Screen::Browse;
     app.browsing = Browsing::Categories;

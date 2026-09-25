@@ -55,7 +55,7 @@ pub fn validate(dir: &Path, name: &str) -> Result<PathBuf> {
         .map_err(|error| DegaussError::io("reading display mask", &path, error))?;
     let lines: Vec<&str> = content
         .lines()
-        .map(str::trim_ascii)
+        .map(|line| line.trim_start_matches([' ', '\t']))
         .filter(|line| !line.is_empty() && !line.starts_with('#') && !line.starts_with(';'))
         .collect();
     let mut at = 0;
@@ -205,6 +205,8 @@ mod tests {
         std::fs::write(&file, "v2\n2,\u{a0}1\n70f,70f\n").unwrap();
         assert!(validate(&dir, "Custom").is_err());
         std::fs::write(&file, "v2\n2,1\n70f,\u{a0}70f\n").unwrap();
+        assert!(validate(&dir, "Custom").is_err());
+        std::fs::write(&file, "v2 \n2,1\n70f,70f\n").unwrap();
         assert!(validate(&dir, "Custom").is_err());
         std::fs::remove_dir_all(dir).unwrap();
     }
