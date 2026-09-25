@@ -14,14 +14,18 @@
 
 Degauss plays nice with the standard MiSTer setup, folders and scripts, instead of trying to replace it all.
 
-It browses the games and folders on your card as they already are, with artwork and metadata
-from EmulationStation gamelists or optional local MiSTer Game Artwork Databases, and builds a
-beautiful, fast UI around them. Its optional ScreenScraper tool can add or update gamelist
-artwork and metadata when you explicitly start it. It reads the same folders the stock menu
-reads, so it agrees with the rest of your setup and scripts by construction.
-
-It runs without background processes and without replacing the stock system. It is optimised for
-speed and for CRTs, and works as well on HDMI, with several views, custom theming, different fonts, many features for favourites, browsing, lists, random discovery, a screensaver and a full set of options: it works out of the box, and can be tuned to your liking.
+1. **Blazing-fast browsing** through large collections, with nothing left running while you play.
+2. **Your existing MiSTer library, as it is**, including SD, external storage and ZIP games that do not need unpacking.
+3. **Six ways to browse**, with a different view for each system or folder if you want.
+4. **Artwork and full game information** from your existing files and artwork packs, or Degauss’s built-in scraper.
+5. **Themes** with an on-device editor, font choices and custom system images.
+6. **Made for CRTs and HDMI**, with smoother CRT artwork, screen-alignment controls and a rotatable interface for vertical displays.
+7. **Optional HDMI CRT effects** for the interface, including scanlines and shadow masks.
+8. **Find and rediscover games** with search, filters, shared MiSTer favourites, Last Played and random picks.
+9. **Attract Mode** showcases your collection and lets you switch systems or launch the pictured game.
+10. **Core Updates** shows installed cores and updates available from your configured download sources.
+11. **Core choice per system or game**, including installed RetroAchievements and Unstable versions.
+12. **Fits into MiSTer**: configured controllers work straight away, and you can run installed scripts or use Zaparoo Core launches.
 
 Source available, written in Rust and using Slint, and licensed for non-commercial use.
 
@@ -71,10 +75,10 @@ separately. CRT presentation is applied for the README.
 | <img src="docs/screenshots/0.4.0/13-neon-theme.png" alt="Neon Theme" height="200"> | <img src="docs/screenshots/0.4.0/16-theme-editor.png" alt="Theme Editor" height="200"> | <img src="docs/screenshots/0.4.0/17-category-system-image-picker.png" alt="Category &amp; System Image Picker" height="200"> |
 | Neon Theme | Theme Editor | Category & System Image Picker |
 
-| | |
-|---|---|
-| <img src="docs/screenshots/0.4.0/18-saved-custom-theme.png" alt="A Saved Custom Theme" height="200"> | <img src="docs/screenshots/0.9.0/01-attract-mode.png" alt="Attract Mode" height="200"> |
-| A Saved Custom Theme | Attract Mode |
+| | | |
+|---|---|---|
+| <img src="docs/screenshots/0.4.0/18-saved-custom-theme.png" alt="A Saved Custom Theme" height="200"> | <img src="docs/screenshots/0.9.0/01-attract-mode.png" alt="Attract Mode" height="200"> | <img src="docs/screenshots/0.9.0/02-display-effects.png" alt="Display settings with Scanlines and Grille selected" height="200"> |
+| A Saved Custom Theme | Attract Mode | Shadow Mask Effects |
 
 ## Watch Degauss in action
 
@@ -863,6 +867,7 @@ require **A** and confirmation, never a sideways press.
 | Appearance | Attract Mode | Off by default. When on, A launches the game pictured at the centre and Left/Right moves between systems |
 | Appearance | Show Attract Mode on Home | Off by default. Add an immediate Attract Mode entry to the main browser, independently of idle screensaver settings |
 | Appearance | Screensaver Speed | Normal (default), 2x or 4x picture movement, independent of the idle time |
+| Display | Shadow Mask Effects | Off by default. Choose supplied scanlines or aperture grille, or put a MiSTer shadow-mask `.txt` file in `Scripts/.config/degauss/masks/` to select it by name. A malformed file switches the effect Off and is logged. The mask affects Degauss on HDMI and scaled analog output, not games |
 | Library | Favourites First | Show favourites first in each folder, keeping them in alphabetical order |
 | Library | Folders Before Games | On, folders lead a system's listing; off, the games come first |
 | Library | Core Preference | Standard First (default) or RetroAchievements First. Used by systems whose Core Version is Default; the other version is used only when the preferred version is absent |
