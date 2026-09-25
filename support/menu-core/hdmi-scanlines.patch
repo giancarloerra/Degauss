@@ -1,0 +1,33 @@
+diff --git a/sys/sys_top.v b/sys/sys_top.v
+index 096a106..c3d268e 100644
+--- a/sys/sys_top.v
++++ b/sys/sys_top.v
+@@ -326,6 +326,7 @@ wire[12:0] ARX, ARY;
+ reg [11:0] VSET = 0, HSET = 0;
+ reg        FREESCALE = 0;
+ reg  [2:0] scaler_flt;
++reg        fb_shadowmask_enable = 0;
+ reg        lowlat = 0;
+ reg        cfg_done = 0;
+ 
+@@ -500,7 +501,10 @@ always@(posedge clk_sys) begin
+ 				endcase
+ 			end
+ `ifndef MISTER_DEBUG_NOHDMI
+-			if(cmd == 'h3E) {shadowmask_wr,shadowmask_data} <= {1'b1, io_din};
++			if(cmd == 'h3E) begin
++				{shadowmask_wr,shadowmask_data} <= {1'b1, io_din};
++				if(cnt == 0 && io_din[15:13] == 0) fb_shadowmask_enable <= io_din[4];
++			end
+ 			if(cmd == 'h40) begin
+ 				case(cnt[3:0])
+ 					0: io_dout_sys <= {arxy, arx};
+@@ -1169,7 +1173,7 @@ cyclonev_hps_interface_peripheral_i2c hdmi_i2c
+ 		.vs_in(hdmi_vs),
+ 		.de_in(hdmi_de),
+ 		.brd_in(hdmi_brd),
+-		.enable(~LFB_EN),
++		.enable(~LFB_EN | fb_shadowmask_enable),
+ 
+ 		.dout(hdmi_data_mask),
+ 		.hs_out(hdmi_hs_mask),

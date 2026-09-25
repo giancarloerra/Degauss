@@ -99,7 +99,7 @@ fi
 # The staged asset folders are rebuilt from scratch: a plain copy over
 # last time's staging keeps files the repository no longer ships, and a
 # stale theme or logo would ride every local deploy from then on.
-rm -rf deploy/Scripts/.config/degauss/logos deploy/Scripts/.config/degauss/themes
+rm -rf deploy/Scripts/.config/degauss/logos deploy/Scripts/.config/degauss/themes deploy/Scripts/.config/degauss/masks
 mkdir -p deploy/Scripts/.config/degauss/logos
 cp "${degauss_binary}" deploy/Scripts/.config/degauss/degauss
 cp degauss.toml deploy/Scripts/.config/degauss/degauss.toml
@@ -114,6 +114,10 @@ fi
 # them from.
 mkdir -p deploy/Scripts/.config/degauss/themes
 cp assets/themes/*.toml deploy/Scripts/.config/degauss/themes/
+# Native MiSTer shadow-mask files, including supplied presets. A copy over
+# an installed card leaves user-added mask files in that folder intact.
+mkdir -p deploy/Scripts/.config/degauss/masks
+cp assets/masks/*.txt deploy/Scripts/.config/degauss/masks/
 # The licence travels with the program, so a copy on a card is never a copy
 # with no terms attached. The typefaces are baked into the binary and carry
 # their own terms, so those travel with it too.

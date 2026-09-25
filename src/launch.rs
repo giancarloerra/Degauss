@@ -43,15 +43,20 @@ use crate::error::{DegaussError, Result};
 /// Where Main listens for commands.
 pub const CMD_FIFO: &str = "/dev/MiSTer_cmd";
 
-/// Ask the running MiSTer Main to apply its Menu framebuffer scanline filter.
-pub fn set_hdmi_scanlines(enabled: bool, fifo: &Path) -> Result<()> {
-    let command = if enabled {
-        b"fb_scanlines 1\n".as_slice()
-    } else {
-        b"fb_scanlines 0\n".as_slice()
+/// Ask Degauss Main to use a native MiSTer mask for the Menu framebuffer.
+pub fn set_display_mask(name: Option<&str>, fifo: &Path) -> Result<()> {
+    let command = match name {
+        Some(name) if crate::display_mask::valid_name(name) => format!("fb_mask {name}\n"),
+        Some(_) => {
+            return Err(DegaussError::unsupported(
+                "display mask name",
+                "use a plain mask file name".to_string(),
+            ));
+        }
+        None => "fb_mask off\n".to_string(),
     };
     std::fs::write(fifo, command)
-        .map_err(|error| DegaussError::io("setting HDMI scanlines", fifo, error))
+        .map_err(|error| DegaussError::io("setting display mask", fifo, error))
 }
 
 /// Shared game-launch signal read by Zaparoo Core.
@@ -2580,17 +2585,18 @@ mod tests {
     }
 
     #[test]
-    fn hdmi_scanline_commands_switch_on_and_off_without_changing_launch_commands() {
+    fn display_mask_commands_switch_preset_and_off_without_changing_launch_commands() {
         let path =
             std::env::temp_dir().join(format!("degauss-scanlines-cmd-{}", std::process::id()));
-        set_hdmi_scanlines(true, &path).unwrap();
-        assert_eq!(std::fs::read(&path).unwrap(), b"fb_scanlines 1\n");
-        set_hdmi_scanlines(false, &path).unwrap();
-        assert_eq!(std::fs::read(&path).unwrap(), b"fb_scanlines 0\n");
+        set_display_mask(Some("Soft Scanlines"), &path).unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), b"fb_mask Soft Scanlines\n");
+        set_display_mask(None, &path).unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), b"fb_mask off\n");
         std::fs::remove_file(&path).ok();
-        let error = set_hdmi_scanlines(true, Path::new("/nonexistent/dir/MiSTer_cmd"))
+        let error = set_display_mask(Some("Scanlines"), Path::new("/nonexistent/dir/MiSTer_cmd"))
             .expect_err("missing Main command FIFO must not appear successful");
         assert!(error.to_string().contains("MiSTer_cmd"));
+        assert!(set_display_mask(Some("../wrong"), &path).is_err());
     }
 
     #[test]

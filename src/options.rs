@@ -40,7 +40,7 @@ pub enum OptionId {
     ShowArt,
     /// Improve low-line artwork and logos with an area filter.
     CrtSmoothing,
-    /// Apply scanlines in MiSTer's HDMI scaler while Degauss is open.
+    /// A MiSTer shadow mask for Degauss's framebuffer output.
     HdmiScanlines,
     /// Correct game artwork for the physical aspect ratio of a display
     /// whose framebuffer pixels are not square.
@@ -324,7 +324,7 @@ impl OptionId {
             OptionId::Theme => "Theme",
             OptionId::ShowArt => "Artwork",
             OptionId::CrtSmoothing => "CRT Image Smoothing",
-            OptionId::HdmiScanlines => "HDMI Scanlines",
+            OptionId::HdmiScanlines => "Shadow Mask Effects",
             OptionId::ArtworkScale => "Artwork Scale Factor",
             OptionId::ShowHidden => "Show What You Hid",
             OptionId::ShowEmpty => "Show Systems with No Games",
@@ -408,7 +408,7 @@ impl OptionId {
                 "Smooth artwork and logos at 240p/288p. Off restores the faster original scaling; higher-resolution modes are unchanged."
             }
             OptionId::HdmiScanlines => {
-                "Add scanlines to Degauss on HDMI using MiSTer's video scaler. Off leaves video unchanged."
+                "Choose Off or a MiSTer mask from the Degauss masks folder. It affects HDMI and scaled analog output while Degauss is open, not games."
             }
             OptionId::ArtworkScale => {
                 "Match game artwork to the display shape. Logos and screensaver images are unchanged."

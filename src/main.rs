@@ -18,6 +18,7 @@ mod config;
 mod core_choices;
 mod core_variants;
 mod covers;
+mod display_mask;
 mod error;
 mod favorites;
 mod font;
@@ -1657,7 +1658,7 @@ fn run_on_framebuffer(
         RepaintBufferType::ReusedBuffer,
         args.rotation,
     )?;
-    app.apply_saved_hdmi_scanlines();
+    app.apply_saved_display_mask();
     // Only when asked: without the flag the view saved in settings.toml,
     // which App::new already chose, is the one the user wants.
     if let Some(layout) = args.layout {
@@ -1745,8 +1746,8 @@ fn run_on_framebuffer(
     let outcome = app.run(&mut framebuffer, &mut input, &mut presenter, || {
         session.owner_alive()
     });
-    let scanlines_reset = if app.hdmi_scanlines() {
-        launch::set_hdmi_scanlines(false, Path::new(launch::CMD_FIFO))
+    let mask_reset = if app.display_mask().is_some() {
+        launch::set_display_mask(None, Path::new(launch::CMD_FIFO))
     } else {
         Ok(())
     };
@@ -1756,7 +1757,7 @@ fn run_on_framebuffer(
         console.restore();
     }
     let outcome = outcome?;
-    scanlines_reset?;
+    mask_reset?;
 
     let summary = app.frame_summary();
     note(&format!(

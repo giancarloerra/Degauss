@@ -3876,6 +3876,8 @@ pub struct App {
     settings: Settings,
     settings_path: PathBuf,
     themes_dir: PathBuf,
+    display_masks_dir: PathBuf,
+    display_masks: Vec<String>,
 
     systems: Vec<FoundSystem>,
     /// The groups present on this machine, with how many systems each has.
@@ -4393,6 +4395,14 @@ impl App {
             themes,
             problems: mut startup_problems,
         } = themes;
+        let display_masks_dir = settings_path.with_file_name("masks");
+        let display_masks = match crate::display_mask::names(&display_masks_dir) {
+            Ok(names) => names,
+            Err(error) => {
+                startup_problems.push(error.to_string());
+                Vec::new()
+            }
+        };
         if let Some(problem) = last_played_problem.as_ref() {
             startup_problems.push(format!("Last Played could not be read: {problem}"));
         }
@@ -4663,6 +4673,8 @@ impl App {
             settings,
             settings_path,
             themes_dir,
+            display_masks_dir,
+            display_masks,
             systems,
             categories: Vec::new(),
             category_list: ListState::new(0, geometry.visible),
@@ -5498,6 +5510,12 @@ impl App {
     }
 
     pub fn open_options_page(&mut self, page: OptionsPage) {
+        if page == OptionsPage::Display {
+            match crate::display_mask::names(&self.display_masks_dir) {
+                Ok(names) => self.display_masks = names,
+                Err(error) => crate::note(&error.to_string()),
+            }
+        }
         self.options_page = page;
         self.options_root_list.select(page.index());
         self.screen = Screen::Options;
@@ -11593,18 +11611,38 @@ impl App {
         self.settings.crt_smoothing.unwrap_or(true) && low_line_output(self.width, self.height)
     }
 
-    pub fn hdmi_scanlines(&self) -> bool {
-        self.settings.hdmi_scanlines.unwrap_or(false)
+    pub fn display_mask(&self) -> Option<&str> {
+        self.settings.display_mask.as_deref().or_else(|| {
+            self.settings
+                .hdmi_scanlines
+                .unwrap_or(false)
+                .then_some(crate::display_mask::LEGACY_SCANLINES)
+        })
     }
 
-    pub fn apply_saved_hdmi_scanlines(&mut self) {
-        if self.hdmi_scanlines() {
-            if let Err(error) =
-                crate::launch::set_hdmi_scanlines(true, Path::new(crate::launch::CMD_FIFO))
+    pub fn apply_saved_display_mask(&mut self) {
+        let Some(name) = self.display_mask() else {
+            return;
+        };
+        if let Err(error) = crate::display_mask::validate(&self.display_masks_dir, name) {
+            crate::note(&format!("display mask invalid; switching off: {error}"));
+            if let Err(reset_error) =
+                crate::launch::set_display_mask(None, Path::new(crate::launch::CMD_FIFO))
             {
-                self.message = Some(format!("HDMI scanlines could not be enabled: {error}"));
-                self.dirty = true;
+                crate::note(&format!(
+                    "display mask could not be switched off: {reset_error}"
+                ));
             }
+            self.settings.display_mask = None;
+            self.settings.hdmi_scanlines = Some(false);
+            self.save_settings();
+            return;
+        }
+        if let Err(error) =
+            crate::launch::set_display_mask(Some(name), Path::new(crate::launch::CMD_FIFO))
+        {
+            self.message = Some(format!("Display mask could not be enabled: {error}"));
+            self.dirty = true;
         }
     }
 
@@ -12265,19 +12303,46 @@ impl App {
                 self.touch_selection();
             }
             OptionId::HdmiScanlines => {
-                let enabled = !self.hdmi_scanlines();
-                if cfg!(all(target_os = "linux", target_arch = "arm")) && !cfg!(test) {
-                    if let Err(error) = crate::launch::set_hdmi_scanlines(
-                        enabled,
-                        Path::new(crate::launch::CMD_FIFO),
-                    ) {
-                        self.message =
-                            Some(format!("HDMI scanlines could not be changed: {error}"));
+                let current = self
+                    .display_mask()
+                    .and_then(|name| self.display_masks.iter().position(|item| item == name))
+                    .map_or(0, |index| index + 1);
+                let next = step(current, delta, self.display_masks.len() + 1);
+                let name = next
+                    .checked_sub(1)
+                    .map(|index| self.display_masks[index].clone());
+                if let Some(name) = name.as_deref() {
+                    if let Err(error) = crate::display_mask::validate(&self.display_masks_dir, name)
+                    {
+                        crate::note(&format!("display mask invalid; switching off: {error}"));
+                        if cfg!(all(target_os = "linux", target_arch = "arm")) && !cfg!(test) {
+                            if let Err(reset_error) = crate::launch::set_display_mask(
+                                None,
+                                Path::new(crate::launch::CMD_FIFO),
+                            ) {
+                                crate::note(&format!(
+                                    "display mask could not be switched off: {reset_error}"
+                                ));
+                            }
+                        }
+                        self.settings.display_mask = None;
+                        self.settings.hdmi_scanlines = Some(false);
                         self.dirty = true;
                         return;
                     }
                 }
-                self.settings.hdmi_scanlines = Some(enabled);
+                if cfg!(all(target_os = "linux", target_arch = "arm")) && !cfg!(test) {
+                    if let Err(error) = crate::launch::set_display_mask(
+                        name.as_deref(),
+                        Path::new(crate::launch::CMD_FIFO),
+                    ) {
+                        self.message = Some(format!("Display mask could not be changed: {error}"));
+                        self.dirty = true;
+                        return;
+                    }
+                }
+                self.settings.display_mask = name;
+                self.settings.hdmi_scanlines = Some(false);
             }
             OptionId::ArtworkScale => {
                 let at = step(self.artwork_scale.index(), delta, ArtworkScale::ALL.len());
@@ -12558,7 +12623,7 @@ impl App {
             },
             OptionId::ShowArt => on_off(self.show_art),
             OptionId::CrtSmoothing => on_off(self.settings.crt_smoothing.unwrap_or(true)),
-            OptionId::HdmiScanlines => on_off(self.hdmi_scanlines()),
+            OptionId::HdmiScanlines => self.display_mask().unwrap_or("Off").to_string(),
             OptionId::ArtworkScale => self.artwork_scale.shown().to_string(),
             OptionId::DetailsStyle => self.details_style.shown().to_string(),
             OptionId::GameNameDisplay => self.game_name_display.label().to_string(),
@@ -21468,6 +21533,12 @@ pub(crate) fn test_library_launch_flow(window: Rc<MinimalSoftwareWindow>) {
     std::fs::write(root.join("_Arcade/LegacyNES.rbf"), b"legacy").unwrap();
     std::fs::write(root.join("_RA_Cores/Cores/NES.rbf"), b"ra").unwrap();
     std::fs::write(root.join("_RA_Cores/NES.mgl"), b"<mistergamedescription><rbf>_RA_Cores/Cores/NES</rbf><setname same_dir=\"1\">RA_NES</setname></mistergamedescription>").unwrap();
+    std::fs::create_dir_all(root.join("masks")).unwrap();
+    std::fs::write(
+        root.join("masks/Scanlines.txt"),
+        include_str!("../assets/masks/Scanlines.txt"),
+    )
+    .unwrap();
     let nightly = "_Unstable/NES_unstable_20260101_123456.rbf";
     std::fs::write(root.join(nightly), b"nightly").unwrap();
     let archive = root.join("games/NES/small.zip");
@@ -21522,14 +21593,19 @@ pub(crate) fn test_library_launch_flow(window: Rc<MinimalSoftwareWindow>) {
     );
     app.finish_background_work_for_headless();
 
-    assert!(!app.hdmi_scanlines());
     assert_eq!(app.option_value(OptionId::HdmiScanlines), "Off");
     app.adjust_option_value(OptionId::HdmiScanlines, 1);
-    assert!(app.hdmi_scanlines());
-    assert_eq!(app.option_value(OptionId::HdmiScanlines), "On");
+    assert_eq!(app.option_value(OptionId::HdmiScanlines), "Scanlines");
     app.adjust_option_value(OptionId::HdmiScanlines, -1);
-    assert!(!app.hdmi_scanlines());
+    assert_eq!(app.option_value(OptionId::HdmiScanlines), "Off");
+    app.settings.hdmi_scanlines = Some(true);
+    assert_eq!(app.option_value(OptionId::HdmiScanlines), "Scanlines");
     app.settings.hdmi_scanlines = None;
+    std::fs::write(root.join("masks/0 Broken.txt"), "v2\n2,2\n70f,008\n").unwrap();
+    app.display_masks = crate::display_mask::names(&root.join("masks")).unwrap();
+    app.adjust_option_value(OptionId::HdmiScanlines, 1);
+    assert_eq!(app.option_value(OptionId::HdmiScanlines), "Off");
+    assert_eq!(app.settings.hdmi_scanlines, Some(false));
 
     app.screen = Screen::Browse;
     app.browsing = Browsing::Categories;
