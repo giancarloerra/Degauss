@@ -1614,8 +1614,8 @@ struct DisplayMaskCleanup<'a> {
 
 #[cfg(target_os = "linux")]
 impl DisplayMaskCleanup<'_> {
-    fn disarm(&mut self) {
-        self.armed = false;
+    fn finish_reset(&mut self, result: &Result<()>) {
+        self.armed = result.is_err();
     }
 }
 
@@ -1782,7 +1782,7 @@ fn run_on_framebuffer(
     } else {
         Ok(())
     };
-    mask_cleanup.disarm();
+    mask_cleanup.finish_reset(&mask_reset);
 
     terminal.restore();
     if let Some(console) = console.as_mut() {
@@ -2250,9 +2250,22 @@ mod tests {
                 fifo: &fifo,
                 armed: true,
             };
-            cleanup.disarm();
+            cleanup.finish_reset(&Ok(()));
         }
         assert_eq!(std::fs::read_to_string(&fifo).unwrap(), "");
+        std::fs::remove_file(&fifo).unwrap();
+        std::fs::create_dir(&fifo).unwrap();
+        let mut cleanup = DisplayMaskCleanup {
+            fifo: &fifo,
+            armed: false,
+        };
+        let failed_reset = launch::set_display_mask(None, &fifo);
+        assert!(failed_reset.is_err());
+        cleanup.finish_reset(&failed_reset);
+        std::fs::remove_dir(&fifo).unwrap();
+        std::fs::write(&fifo, "").unwrap();
+        drop(cleanup);
+        assert_eq!(std::fs::read_to_string(&fifo).unwrap(), "fb_mask off\n");
         std::fs::remove_file(fifo).unwrap();
     }
 

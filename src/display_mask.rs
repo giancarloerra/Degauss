@@ -55,14 +55,14 @@ pub fn validate(dir: &Path, name: &str) -> Result<PathBuf> {
         .map_err(|error| DegaussError::io("reading display mask", &path, error))?;
     let lines: Vec<&str> = content
         .lines()
-        .map(str::trim)
+        .map(str::trim_ascii)
         .filter(|line| !line.is_empty() && !line.starts_with('#') && !line.starts_with(';'))
         .collect();
     let mut at = 0;
     let mut blocks = 0;
     while at < lines.len() {
         if lines[at].to_ascii_lowercase().starts_with("resolution=") {
-            let threshold = lines[at][11..].trim().parse::<u32>().ok();
+            let threshold = lines[at][11..].trim_ascii().parse::<u32>().ok();
             if threshold.is_none_or(|threshold| threshold == 0) {
                 return Err(DegaussError::malformed(
                     "display mask",
@@ -94,7 +94,7 @@ pub fn validate(dir: &Path, name: &str) -> Result<PathBuf> {
         };
         // MiSTer's comma-delimited reader does not accept whitespace before
         // a comma, even though it accepts whitespace after one.
-        if width.trim_end() != width {
+        if width.trim_ascii_end() != width {
             return Err(DegaussError::malformed(
                 "display mask",
                 &path,
@@ -102,8 +102,8 @@ pub fn validate(dir: &Path, name: &str) -> Result<PathBuf> {
             ));
         }
         let (Ok(width), Ok(height)) = (
-            width.trim().parse::<usize>(),
-            height.trim().parse::<usize>(),
+            width.trim_ascii().parse::<usize>(),
+            height.trim_ascii().parse::<usize>(),
         ) else {
             return Err(DegaussError::malformed(
                 "display mask",
@@ -131,10 +131,10 @@ pub fn validate(dir: &Path, name: &str) -> Result<PathBuf> {
             if values.len() != width
                 || values[..values.len().saturating_sub(1)]
                     .iter()
-                    .any(|value| value.trim_end() != *value)
+                    .any(|value| value.trim_ascii_end() != *value)
                 || values.iter().any(|value| {
-                    u16::from_str_radix(value.trim(), 16).is_err()
-                        || u16::from_str_radix(value.trim(), 16)
+                    u16::from_str_radix(value.trim_ascii(), 16).is_err()
+                        || u16::from_str_radix(value.trim_ascii(), 16)
                             .is_ok_and(|value| value > if v2 { 0x7ff } else { 7 })
                 })
             {
@@ -201,6 +201,10 @@ mod tests {
         std::fs::write(&file, "v2\n2 ,1\n70f,70f\n").unwrap();
         assert!(validate(&dir, "Custom").is_err());
         std::fs::write(&file, "v2\n2,1\n70f ,70f\n").unwrap();
+        assert!(validate(&dir, "Custom").is_err());
+        std::fs::write(&file, "v2\n2,\u{a0}1\n70f,70f\n").unwrap();
+        assert!(validate(&dir, "Custom").is_err());
+        std::fs::write(&file, "v2\n2,1\n70f,\u{a0}70f\n").unwrap();
         assert!(validate(&dir, "Custom").is_err());
         std::fs::remove_dir_all(dir).unwrap();
     }
