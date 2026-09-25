@@ -1620,6 +1620,27 @@ impl DisplayMaskCleanup<'_> {
 }
 
 #[cfg(target_os = "linux")]
+fn prepare_display_mask_handoff(
+    outcome: &Result<Outcome>,
+    mask_active: bool,
+    cleanup: &mut DisplayMaskCleanup<'_>,
+) -> Result<()> {
+    cleanup.armed = mask_active;
+    // Main clears this temporary mask when loading a core. Sending Off here
+    // would put two commands in its unframed FIFO before it reads either one.
+    if matches!(outcome, Ok(Outcome::Launch { .. })) {
+        return Ok(());
+    }
+    let reset = if mask_active {
+        launch::set_display_mask(None, cleanup.fifo)
+    } else {
+        Ok(())
+    };
+    cleanup.finish_reset(&reset);
+    reset
+}
+
+#[cfg(target_os = "linux")]
 impl Drop for DisplayMaskCleanup<'_> {
     fn drop(&mut self) {
         if self.armed {
@@ -1777,12 +1798,8 @@ fn run_on_framebuffer(
     let outcome = app.run(&mut framebuffer, &mut input, &mut presenter, || {
         session.owner_alive()
     });
-    let mask_reset = if app.display_mask().is_some() {
-        launch::set_display_mask(None, Path::new(launch::CMD_FIFO))
-    } else {
-        Ok(())
-    };
-    mask_cleanup.finish_reset(&mask_reset);
+    let mask_reset =
+        prepare_display_mask_handoff(&outcome, app.display_mask().is_some(), &mut mask_cleanup);
 
     terminal.restore();
     if let Some(console) = console.as_mut() {
@@ -1850,6 +1867,9 @@ fn run_on_framebuffer(
             state::mark_resuming();
             note(&format!("ended        launching {name}"));
             launch::execute(&plan, Path::new(launch::CMD_FIFO))?;
+            // Main's core-load restart clears the mask. A failed FIFO write
+            // leaves the guard armed so it still sends Off on this exit.
+            mask_cleanup.armed = false;
             if let Err(error) = launch::publish_active_game(
                 active_game.as_deref(),
                 Path::new(launch::ACTIVE_GAME_FILE),
@@ -2265,6 +2285,45 @@ mod tests {
         std::fs::remove_dir(&fifo).unwrap();
         std::fs::write(&fifo, "").unwrap();
         drop(cleanup);
+        assert_eq!(std::fs::read_to_string(&fifo).unwrap(), "fb_mask off\n");
+
+        std::fs::write(&fifo, "").unwrap();
+        let core_launch: Result<Outcome> = Ok(Outcome::Launch {
+            plan: Box::new(launch::LaunchPlan {
+                mgl: String::new(),
+                mgl_path: PathBuf::new(),
+                command: "load_core /tmp/test.mgl\n".into(),
+                boot_file: None,
+            }),
+            name: "Test".into(),
+            history: None,
+            active_game: None,
+        });
+        {
+            let mut cleanup = DisplayMaskCleanup {
+                fifo: &fifo,
+                armed: true,
+            };
+            prepare_display_mask_handoff(&core_launch, true, &mut cleanup).unwrap();
+            assert_eq!(std::fs::read_to_string(&fifo).unwrap(), "");
+            let Ok(Outcome::Launch { plan, .. }) = &core_launch else {
+                unreachable!()
+            };
+            launch::execute(plan, &fifo).unwrap();
+            cleanup.armed = false;
+        }
+        assert_eq!(
+            std::fs::read_to_string(&fifo).unwrap(),
+            "load_core /tmp/test.mgl\n"
+        );
+        std::fs::write(&fifo, "").unwrap();
+        {
+            let mut cleanup = DisplayMaskCleanup {
+                fifo: &fifo,
+                armed: true,
+            };
+            prepare_display_mask_handoff(&Ok(Outcome::Quit), true, &mut cleanup).unwrap();
+        }
         assert_eq!(std::fs::read_to_string(&fifo).unwrap(), "fb_mask off\n");
         std::fs::remove_file(fifo).unwrap();
     }
