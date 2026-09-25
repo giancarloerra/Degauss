@@ -19009,11 +19009,18 @@ impl App {
                 Ok(prepared) => {
                     let job = self.cover_prefetch.take().expect("prefetch finished");
                     if nearby && !job.cancel.load(Ordering::Relaxed) {
+                        let selected_path = self
+                            .here
+                            .get(self.game_list.selected())
+                            .and_then(|row| row.cover.as_deref());
                         let cache = if job.gallery {
                             &mut self.gallery_covers
                         } else {
                             &mut self.covers
                         };
+                        if let Some(path) = selected_path {
+                            cache.touch(path);
+                        }
                         cache.accept_prepared(job.path, job.spec, prepared);
                         self.dirty = true;
                     }
@@ -22305,6 +22312,47 @@ pub(crate) fn test_library_launch_flow(window: Rc<MinimalSoftwareWindow>) {
         std::thread::sleep(Duration::from_millis(10));
     }
     assert!(app.covers.knows(&behind_cover));
+    let selected_cover = root.join("selected-cover.png");
+    std::fs::write(
+        &selected_cover,
+        include_bytes!("../assets/logos/Arcade.png"),
+    )
+    .unwrap();
+    app.here[1].cover = Some(selected_cover.clone());
+    app.game_list.select(1);
+    let palette = app.effective_palette();
+    let ground = [palette.surface.r, palette.surface.g, palette.surface.b];
+    let cover_edge = app.covers.max_edge();
+    let original_covers =
+        std::mem::replace(&mut app.covers, CoverCache::new(cover_edge, 2, ground));
+    app.covers.get(&selected_cover).unwrap();
+    app.covers.get(&behind_cover).unwrap();
+    let hit_count = app.covers.stats.cache_hits;
+    app.prefetch_next_at = Instant::now();
+    app.settled_since = Some(Instant::now() - Duration::from_millis(300));
+    app.poll_cover_prefetch(Instant::now());
+    assert!(app
+        .cover_prefetch
+        .as_ref()
+        .is_some_and(|job| job.path == second_cover));
+    for _ in 0..100 {
+        app.poll_cover_prefetch(Instant::now());
+        if app.covers.knows(&second_cover) {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert!(app.covers.knows(&second_cover));
+    assert!(
+        app.covers.knows(&selected_cover),
+        "continuous prefetch cannot evict the selected picture"
+    );
+    assert_eq!(
+        app.covers.stats.cache_hits, hit_count,
+        "protecting a selected picture is not a visible cache hit"
+    );
+    app.covers = original_covers;
+    app.covers.get(&selected_cover).unwrap();
     let next_cover = root.join("next-cover.png");
     std::fs::write(&next_cover, include_bytes!("../assets/logos/Arcade.png")).unwrap();
     let left_only_cover = root.join("left-only-cover.png");
