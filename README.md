@@ -2024,6 +2024,12 @@ Leave **Game Data Source** on **Automatic**, or select it manually:
 
 Artwork stored only inside Zaparoo's database or Console Mode's central image folder is not automatically shared. If there is no usable `gamelist.xml`, keep or restore one beside the games; otherwise use Degauss's scraper or a MiSTer Artwork Pack.
 
+### Can I add or customise Degauss's scanline and shadow-mask effects?
+
+Open **Options → Display → Shadow Mask Effects** to choose **Off** or an included preset. To change a preset, copy its `.txt` file under a new name and edit the copy. You can also use another MiSTer-compatible shadow-mask `.txt` file. Place it in `/media/fat/Scripts/.config/degauss/masks/`, then reopen **Display** and select the new name. MiSTer's [Shadow Mask guide](https://github.com/MiSTer-devel/ShadowMasks_MiSTer) explains the format and links to an editor.
+
+These are mask presets, not general-purpose shaders. They affect Degauss on HDMI and scaled analog output while it is open, not games.
+
 ### My problem is not listed here
 
 Reproduce the problem once, then save Degauss's log before restarting Degauss or rebooting MiSTer:
