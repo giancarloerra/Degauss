@@ -39,7 +39,7 @@ use crate::covers::{
     AreaBox, AreaFit, BudgetedCover, CoverCache, CoverSpec, CoverStats, PreparedCover,
 };
 use crate::error::{DegaussError, Result};
-use crate::font::Font;
+use crate::font::{Font, TextSize};
 use crate::game_filter::{
     Choice as GameFilterChoice, Field as GameFilterField, Filters as GameFilters,
 };
@@ -3653,16 +3653,16 @@ fn theme_editor_help(mode: EditorMode, selected: usize, custom_source: bool) -> 
     match mode {
         EditorMode::Browse if selected == 0 => "<> Change   A Change   B Back",
         EditorMode::Browse if selected == 11 => "<> Change   A Edit   B Back",
-        EditorMode::Browse if matches!(selected, 12 | 13) => "<> Change   A Change   B Back",
-        EditorMode::Browse if selected == 14 && custom_source => "A Save Changes   B Back",
+        EditorMode::Browse if matches!(selected, 12..=14) => "<> Change   A Change   B Back",
+        EditorMode::Browse if selected == 15 && custom_source => "A Save Changes   B Back",
         EditorMode::Browse
-            if (selected == 14 && !custom_source) || (selected == 15 && custom_source) =>
+            if (selected == 15 && !custom_source) || (selected == 16 && custom_source) =>
         {
             "A Save As   B Back"
         }
-        EditorMode::Browse if selected == 16 && custom_source => "A Delete   B Back",
+        EditorMode::Browse if selected == 17 && custom_source => "A Delete   B Back",
         EditorMode::Browse
-            if (selected == 15 && !custom_source) || (selected == 17 && custom_source) =>
+            if (selected == 16 && !custom_source) || (selected == 18 && custom_source) =>
         {
             "A Cancel   B Back"
         }
@@ -4134,6 +4134,7 @@ pub struct App {
     hold_shortcuts: [HoldShortcut; 4],
     /// The typeface everything is set in.
     font: Font,
+    text_size: TextSize,
     /// The persistent Text option, independent of a theme's optional default.
     /// A theme without a valid font always resolves back to this value rather
     /// than inheriting whichever theme was selected before it.
@@ -4535,6 +4536,9 @@ impl App {
             &config.app.font,
             settings.theme_font_override,
         );
+        let text_size = active_theme
+            .map(|at| themes[at].file.selected_text_size())
+            .unwrap_or_default();
         if active_theme.is_some() {
             settings.theme_font_override = Some(restored_override);
         }
@@ -4646,6 +4650,7 @@ impl App {
             // typeface that always exists. A name neither of them recognises
             // is not worth refusing to start over.
             font,
+            text_size,
             system_font,
             themes,
             active_theme,
@@ -5275,6 +5280,12 @@ impl App {
         // at. Asking for one it was not is not an error: it quietly draws
         // the largest smaller one, so the asking is done here instead.
         self.ui.set_font_family(self.font.family().into());
+        self.ui
+            .set_list_font_family(self.font.text_family(self.text_size).into());
+        self.ui
+            .set_list_body_glyph(self.font.text_glyph(geometry.body_font, self.text_size));
+        self.ui
+            .set_list_small_glyph(self.font.text_glyph(geometry.small_font, self.text_size));
         self.ui
             .set_body_glyph(self.font.quantise(geometry.body_font));
         self.ui
@@ -11614,6 +11625,12 @@ impl App {
         )
     }
 
+    fn effective_text_size(&self) -> TextSize {
+        self.active_theme
+            .map(|at| self.themes[at].file.selected_text_size())
+            .unwrap_or_default()
+    }
+
     /// A cover cache with nothing in it, composited against the surface
     /// colour that is actually on screen.
     fn fresh_cover_cache(&self) -> CoverCache {
@@ -11786,7 +11803,7 @@ impl App {
     }
 
     fn preview_theme_editor(&mut self) {
-        let (palette, logo, logo_opacity, font) = {
+        let (palette, logo, logo_opacity, font, text_size) = {
             let Some(editor) = self.theme_editor.as_ref() else {
                 return;
             };
@@ -11795,13 +11812,15 @@ impl App {
                 editor.draft.logo,
                 editor.draft.logo_opacity,
                 editor.draft.font,
+                editor.draft.text_size,
             )
         };
-        if self.font != font {
+        if self.font != font || self.text_size != text_size {
             self.font = font;
+            self.text_size = text_size;
             // Changing colour is the common editor operation and needs no
-            // layout rebuild. Recompute only when the draft's typeface
-            // changes so the continuous picker stays as light as before.
+            // layout rebuild. Recompute only when the draft's typeface or
+            // list size changes so the continuous picker stays as light as before.
             self.apply_geometry();
         }
         push_palette(&self.ui, &palette, logo, logo_opacity);
@@ -11868,6 +11887,7 @@ impl App {
         self.theme_editor = None;
         self.screen = Screen::Options;
         self.font = self.effective_font();
+        self.text_size = self.effective_text_size();
         self.apply_palette();
         self.apply_geometry();
         invalidate_geometry(&mut self.pending_complete_repaints, &mut self.dirty);
@@ -12419,8 +12439,10 @@ impl App {
                 // not to the theme that happened to be selected previously.
                 self.settings.theme_font_override = Some(false);
                 let before = self.font;
+                let before_size = self.text_size;
                 self.font = self.effective_font();
-                if self.font != before {
+                self.text_size = self.effective_text_size();
+                if self.font != before || self.text_size != before_size {
                     self.apply_geometry();
                 }
                 self.apply_palette();
@@ -23865,10 +23887,14 @@ mod tests {
         );
         assert_eq!(
             theme_editor_help(EditorMode::Browse, 14, false),
-            "A Save As   B Back"
+            "<> Change   A Change   B Back"
         );
         assert_eq!(
             theme_editor_help(EditorMode::Browse, 15, false),
+            "A Save As   B Back"
+        );
+        assert_eq!(
+            theme_editor_help(EditorMode::Browse, 16, false),
             "A Cancel   B Back"
         );
         assert_eq!(
@@ -23893,18 +23919,22 @@ mod tests {
         );
         assert_eq!(
             theme_editor_help(EditorMode::Browse, 15, true),
-            "A Save As   B Back"
-        );
-        assert_eq!(
-            theme_editor_help(EditorMode::Browse, 14, true),
             "A Save Changes   B Back"
         );
         assert_eq!(
+            theme_editor_help(EditorMode::Browse, 14, true),
+            "<> Change   A Change   B Back"
+        );
+        assert_eq!(
             theme_editor_help(EditorMode::Browse, 16, true),
-            "A Delete   B Back"
+            "A Save As   B Back"
         );
         assert_eq!(
             theme_editor_help(EditorMode::Browse, 17, true),
+            "A Delete   B Back"
+        );
+        assert_eq!(
+            theme_editor_help(EditorMode::Browse, 18, true),
             "A Cancel   B Back"
         );
         assert_eq!(
@@ -23915,7 +23945,7 @@ mod tests {
 
     #[test]
     fn only_the_long_theme_control_list_scrolls() {
-        assert_eq!(theme_editor_visible_items(EditorMode::Browse, 18, 16), 16);
+        assert_eq!(theme_editor_visible_items(EditorMode::Browse, 19, 16), 16);
         assert_eq!(theme_editor_visible_items(EditorMode::Name, 42, 16), 42);
         assert_eq!(theme_editor_visible_items(EditorMode::Delete, 2, 16), 2);
     }

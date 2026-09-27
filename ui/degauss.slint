@@ -34,6 +34,7 @@ component ScrollingTitle inherits Rectangle {
     in property <string> text;
     in property <color> text-color;
     in property <length> font-size;
+    in property <string> family-name;
     in property <bool> active;
     in property <bool> at-end;
     in property <TextHorizontalAlignment> align: left;
@@ -49,6 +50,7 @@ component ScrollingTitle inherits Rectangle {
         text: root.text;
         color: root.text-color;
         font-size: root.font-size;
+        font-family: root.family-name;
         horizontal-alignment: root.align;
         vertical-alignment: center;
         height: parent.height;
@@ -110,6 +112,7 @@ struct DetailLine {
 component DetailPanel inherits Rectangle {
     in property <[DetailLine]> lines;
     in property <length> font-size;
+    in property <string> family-name;
     in property <length> line-height;
     in property <length> pad;
     in property <color> text-color;
@@ -123,6 +126,7 @@ component DetailPanel inherits Rectangle {
     gauge := Text {
         text: "Lang:";
         font-size: root.font-size;
+        font-family: root.family-name;
         visible: false;
     }
 
@@ -136,6 +140,7 @@ component DetailPanel inherits Rectangle {
                 text: line.label;
                 color: root.label-color;
                 font-size: root.font-size;
+                font-family: root.family-name;
                 vertical-alignment: center;
                 x: 0;
                 y: 0;
@@ -154,6 +159,7 @@ component DetailPanel inherits Rectangle {
                 text: line.value;
                 text-color: root.text-color;
                 font-size: root.font-size;
+                family-name: root.family-name;
                 active: true;
                 at-end: root.at-end;
                 ms-per-px: root.ms-per-px;
@@ -281,6 +287,7 @@ component MenuRow inherits Rectangle {
     in property <length> pad;
     in property <length> font-size;
     in property <length> value-font;
+    in property <string> family-name;
     in property <length> value-min-width: 0px;
     in property <color> text-color;
     in property <color> value-color;
@@ -297,12 +304,14 @@ component MenuRow inherits Rectangle {
     value-gauge := Text {
         text: root.item.value;
         font-size: root.value-font;
+        font-family: root.family-name;
         visible: false;
     }
     Text {
         text: root.item.favorite ? "\u{2665}" : "";
         color: root.favorite-color;
         font-size: root.font-size;
+        font-family: root.family-name;
         x: root.pad;
         width: root.marker-width;
         height: parent.height;
@@ -312,6 +321,7 @@ component MenuRow inherits Rectangle {
         text: root.item.title;
         text-color: root.selected ? root.selection-text : root.text-color;
         font-size: root.font-size;
+        family-name: root.family-name;
         active: root.selected;
         at-end: root.at-end;
         x: root.pad + root.marker-width;
@@ -323,6 +333,7 @@ component MenuRow inherits Rectangle {
         text: root.item.value;
         text-color: root.selected ? root.selection-text : root.value-color;
         font-size: root.value-font;
+        family-name: root.family-name;
         active: root.selected;
         at-end: root.at-end;
         align: right;
@@ -379,6 +390,9 @@ export component DegaussWindow inherits Window {
     // so what is drawn has to be one of those, while what the layout is
     // measured in stays exactly what it was. Rust decides both.
     in property <string> font-family;
+    in property <string> list-font-family;
+    in property <length> list-body-glyph: 13px;
+    in property <length> list-small-glyph: 11px;
     in property <length> body-glyph: 13px;
     in property <length> small-glyph: 11px;
     in property <length> bar-glyph: 9px;
@@ -595,6 +609,7 @@ export component DegaussWindow inherits Window {
                 text: root.heading;
                 text-color: root.c-text;
                 font-size: root.small-glyph;
+                family-name: root.font-family;
                 active: true;
                 at-end: root.marquee-end;
                 x: root.pad + heading-bar.brand-width
@@ -608,6 +623,7 @@ export component DegaussWindow inherits Window {
                 text-color: root.help-height > 0px || root.heading-detail != ""
                     ? root.c-text-dim : root.c-state;
                 font-size: root.small-glyph;
+                family-name: root.font-family;
                 align: right;
                 active: true;
                 at-end: root.marquee-end;
@@ -719,8 +735,9 @@ export component DegaussWindow inherits Window {
                     reserve-marker: root.screen == 0;
                     at-end: root.marquee-end;
                     pad: root.pad;
-                    font-size: root.body-glyph;
-                    value-font: root.body-glyph;
+                    font-size: root.list-body-glyph;
+                    value-font: root.list-body-glyph;
+                    family-name: root.list-font-family;
                     text-color: root.c-text;
                     value-color: root.c-text-dim;
                     selection-color: root.c-accent;
@@ -746,8 +763,9 @@ export component DegaussWindow inherits Window {
                     reserve-marker: true;
                     at-end: root.marquee-end;
                     pad: root.pad;
-                    font-size: root.body-glyph;
-                    value-font: root.small-glyph;
+                    font-size: root.list-body-glyph;
+                    value-font: root.list-small-glyph;
+                    family-name: root.list-font-family;
                     value-min-width: 28px;
                     text-color: root.c-text;
                     value-color: root.c-text-dim;
@@ -784,7 +802,8 @@ export component DegaussWindow inherits Window {
                                 text-color: index == root.selected
                                     ? root.c-accent-text
                                     : root.c-text;
-                                font-size: root.body-glyph;
+                                font-size: root.list-body-glyph;
+                                family-name: root.list-font-family;
                                 active: index == root.selected;
                                 at-end: root.marquee-end;
                             }
@@ -851,7 +870,8 @@ export component DegaussWindow inherits Window {
                                     text-color: index == root.selected
                                         ? root.c-accent-text
                                         : root.c-text;
-                                    font-size: root.body-glyph;
+                                    font-size: root.list-body-glyph;
+                                    family-name: root.list-font-family;
                                     active: index == root.selected;
                                     at-end: root.marquee-end;
                                 }
@@ -860,7 +880,8 @@ export component DegaussWindow inherits Window {
                                     color: index == root.selected
                                         ? root.c-accent-text
                                         : root.c-text-dim;
-                                    font-size: root.small-glyph;
+                                    font-size: root.list-small-glyph;
+                                    font-family: root.list-font-family;
                                     vertical-alignment: center;
                                     horizontal-alignment: right;
                                     width: row.value == "" ? 0px : self.preferred-width;
@@ -920,6 +941,7 @@ export component DegaussWindow inherits Window {
                         text: root.find-query + "_";
                         text-color: root.c-text;
                         font-size: root.body-glyph;
+                        family-name: root.font-family;
                         active: true;
                         at-end: root.marquee-end;
                         x: root.pad;
@@ -1004,6 +1026,7 @@ export component DegaussWindow inherits Window {
                                 text: row.title;
                                 text-color: index == root.selected ? root.c-accent-text : root.c-text;
                                 font-size: root.body-glyph;
+                                family-name: root.font-family;
                                 active: index == root.selected;
                                 at-end: root.marquee-end;
                             }
@@ -1348,9 +1371,10 @@ export component DegaussWindow inherits Window {
                             border-width: root.theme-selected-role == 4 ? 2px : 0px;
                             border-color: root.c-accent;
                             Text {
-                                text: "Ordinary text";
+                                text: "Game list text";
                                 color: root.c-text;
-                                font-size: root.small-glyph;
+                                font-family: root.list-font-family;
+                                font-size: root.list-body-glyph;
                                 vertical-alignment: center;
                                 x: root.pad / 2;
                             }
@@ -1471,8 +1495,9 @@ export component DegaussWindow inherits Window {
                             reserve-marker: !root.show-brand;
                             at-end: root.marquee-end;
                             pad: root.pad;
-                            font-size: root.body-glyph;
-                            value-font: root.small-glyph;
+                            font-size: root.list-body-glyph;
+                            value-font: root.list-small-glyph;
+                            family-name: root.list-font-family;
                             value-min-width: 34px;
                             text-color: root.c-text;
                             value-color: root.c-text-dim;
@@ -1618,6 +1643,7 @@ export component DegaussWindow inherits Window {
                         text: row.title;
                         text-color: index == root.selected ? root.c-accent-text : root.c-text-dim;
                         font-size: root.small-glyph;
+                        family-name: root.font-family;
                         align: center;
                         active: index == root.selected;
                         at-end: root.marquee-end;
@@ -1711,6 +1737,7 @@ export component DegaussWindow inherits Window {
                         text: row.title;
                         text-color: offset == 0 ? root.c-text : root.c-text-dim;
                         font-size: root.body-glyph;
+                        family-name: root.font-family;
                         align: center;
                         active: offset == 0;
                         at-end: root.marquee-end;
@@ -1730,6 +1757,7 @@ export component DegaussWindow inherits Window {
                     height: parent.panel;
                     lines: root.detail-lines;
                     font-size: root.small-glyph;
+                    family-name: root.font-family;
                     line-height: root.detail-line;
                     pad: root.pad;
                     text-color: root.c-text;

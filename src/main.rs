@@ -22,6 +22,7 @@ mod display_mask;
 mod error;
 mod favorites;
 mod font;
+mod font_packs;
 mod frontend_session;
 mod game_filter;
 mod game_launch_cores;
@@ -976,6 +977,8 @@ fn build_app(
     rotation_override: Option<ScreenRotation>,
 ) -> Result<App> {
     let window = render::install_platform(repaint)?;
+    font_packs::register()
+        .map_err(|e| DegaussError::unsupported("registering embedded text sizes", e.to_string()))?;
     let ui = DegaussWindow::new()
         .map_err(|e| DegaussError::unsupported("building the interface", e.to_string()))?;
     let rotation = rotation_override

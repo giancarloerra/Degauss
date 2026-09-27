@@ -20,3 +20,18 @@ pub const SMOOTH_SIZES: [f32; 5] = [12.0, 26.0, 34.0, 44.0, 56.0];
 /// the same vertical stem is two pixels wide in one letter and three in the
 /// next.
 pub const PIXEL_SIZES: [f32; 4] = [12.0, 24.0, 36.0, 48.0];
+
+/// List and menu text sizes for each existing smooth-font rung. The middle
+/// column is the released size, so themes without a text-size choice render
+/// exactly as before. Rows correspond to SMOOTH_SIZES above.
+pub const SMOOTH_TEXT_SIZES: [[f32; 5]; 5] = [
+    [8.0, 10.0, 12.0, 14.0, 16.0],
+    [18.0, 22.0, 26.0, 30.0, 35.0],
+    [23.0, 28.0, 34.0, 40.0, 45.0],
+    [29.0, 37.0, 44.0, 51.0, 59.0],
+    [37.0, 47.0, 56.0, 65.0, 75.0],
+];
+
+/// The pixel fonts have dedicated grid-aligned faces at these base sizes.
+/// A larger screen uses the same face at two, three or four times its base.
+pub const PIXEL_TEXT_BASE_SIZES: [f32; 5] = [8.0, 10.0, 12.0, 14.0, 16.0];

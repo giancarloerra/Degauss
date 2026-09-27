@@ -948,6 +948,12 @@ before it. An unrecognised value is also reported. After selecting a theme,
 **Text** remains an independent option: changing it overrides the current
 theme default and that choice continues across restarts.
 
+The optional top-level `text_size` sets list and menu text to `smaller`,
+`small`, `default`, `large` or `larger`. It does not change the number of
+rows, artwork, the bottom bar, dialogs or Theme Editor controls. Themes
+without this key retain the original Default size. The same setting is
+available as **List text size** in the Theme Editor, with a live preview.
+
 A theme can be five lines. `themes/Night.toml`:
 
 ```toml
@@ -995,7 +1001,7 @@ currently selected palette and previews every change immediately.
 | Control | Does |
 |---|---|
 | **up / down** | choose a colour role or control; in the continuous picker, choose the red, green or blue channel; in hexadecimal editing, change the selected digit with an immediate preview |
-| **left / right** | choose another starting point, change the theme's Default text, change the selected RGB channel through its smooth gradient in five-unit steps (hold to repeat), switch logo colour between Original and Selection, change logo colour mix in five-percent steps, or select a hexadecimal digit |
+| **left / right** | choose another starting point, change the theme's Default text or List text size, change the selected RGB channel through its smooth gradient in five-unit steps (hold to repeat), switch logo colour between Original and Selection, change logo colour mix in five-percent steps, or select a hexadecimal digit |
 | **A** | open the continuous colour picker, apply the already-live colour, or activate Save changes, Save as and other controls |
 | **X** | choose another palette role and swap its exact colour with the selected role; switch between the continuous picker and exact hexadecimal editing; in the name grid, delete one character |
 | **Y** | restore the colour that was present when the picker opened; in the name grid, cycle lowercase, uppercase and symbol pages |
@@ -1012,7 +1018,7 @@ lowercase, uppercase and symbol pages, **X** deletes one character, **SP**
 enters a space and **Clear** clears the complete name. Its green checkmark
 saves and its red X cancels. Saving writes a complete
 `.toml` file into `Scripts/.config/degauss/themes/`, selects it, and stores
-its name in `settings.toml`; the default text choice remains part of the theme
+its name in `settings.toml`; the default text and list-size choices remain part of the theme
 file. Names use the characters shown on the grid; `\`, `/`, `:`, `*`, `?`,
 `"`, `<`, `>` and `|` are excluded because they cannot be used in these
 filenames. An existing theme is never overwritten. A save error remains on
@@ -2161,20 +2167,22 @@ its source at
 Four typefaces are baked into the binary:
 
 - [DejaVu Sans](https://dejavu-fonts.github.io), under the Bitstream Vera and
-  Arev licences ([text](assets/fonts/DejaVuSans-LICENSE.txt)).
+  Arev licences ([text](assets/fonts/DejaVuSans-LICENSE.txt)). The original is
+  unmodified; size variants have distinct family names.
 - [Px437 DOS/V re. JPN12](https://int10h.org/oldschool-pc-fonts/), from The
   Ultimate Oldschool PC Font Pack, © 2016-2020 VileR, under
   [CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/)
-  ([text](assets/fonts/Px437-LICENSE.txt)). Unmodified; its glyphs are
-  rasterised at fixed sizes.
+  ([text](assets/fonts/Px437-LICENSE.txt)). The original is unmodified;
+  size variants are derived from it for crisp list text.
 - [Roboto Condensed Bold](https://github.com/googlefonts/roboto-2) v2.138,
   © Google, under the
   [Apache License 2.0](https://www.apache.org/licenses/LICENSE-2.0)
-  ([text](assets/fonts/RobotoCondensed-LICENSE.txt)). Unmodified.
+  ([text](assets/fonts/RobotoCondensed-LICENSE.txt)). The original is
+  unmodified; size variants have distinct family names.
 - [Tamzen 6x12 Bold](https://github.com/sunaku/tamzen-font), © 2011 Suraj
   N. Kurapati, derived from Tamsyn © 2010 Scott Fial, free to use, copy,
   modify and distribute ([text](assets/fonts/Tamzen-LICENSE.txt)).
-  Unmodified.
+  The original is unmodified; size variants are derived from it.
 
 Names are drawn in the Latin, Greek and Cyrillic alphabets, with the accents
 and marks of each. A name in Japanese or Chinese draws as a gap: neither

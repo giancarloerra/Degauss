@@ -4917,7 +4917,7 @@ fn capture_ui_if_requested(root: &Path, window: Rc<MinimalSoftwareWindow>) {
     assert_eq!(app.theme_editor.as_ref().unwrap().mode, EditorMode::Swap);
     capture_frame(&mut app, &directory, "theme-editor-swap", 352, 240);
     app.handle(Action::Quit);
-    app.select(14);
+    app.select(15);
     app.handle(Action::Accept);
     assert_eq!(app.theme_editor.as_ref().unwrap().mode, EditorMode::Name);
     capture_frame(&mut app, &directory, "theme-editor-save", 352, 240);
@@ -11011,7 +11011,7 @@ fn run_theme_editor_save_changes_flow(root: &Path, window: Rc<MinimalSoftwareWin
         Some("Editable")
     );
     app.open_theme_editor();
-    assert_eq!(app.theme_editor.as_ref().unwrap().rows().len(), 18);
+    assert_eq!(app.theme_editor.as_ref().unwrap().rows().len(), 19);
     assert!(app.theme_editor.as_ref().unwrap().source_is_custom());
     assert!(!app.horizontal_scrolls());
 
@@ -11033,7 +11033,34 @@ fn run_theme_editor_save_changes_flow(root: &Path, window: Rc<MinimalSoftwareWin
     assert!(app.horizontal_scrolls());
     app.handle(Action::Accept);
     assert!(!app.horizontal_scrolls());
+    let old_geometry = (app.geometry.row_height, app.geometry.visible);
+    let old_editor_glyph = app.ui.get_body_glyph();
+    let old_bar_glyph = app.ui.get_bar_glyph();
+    let old_list_glyph = app.ui.get_list_body_glyph();
+    assert_eq!(old_list_glyph, old_editor_glyph);
     app.select(14);
+    app.handle(Action::Faster);
+    assert_eq!(
+        app.theme_editor.as_ref().unwrap().draft.text_size,
+        TextSize::Large
+    );
+    assert!(app.ui.get_list_body_glyph() > old_list_glyph);
+    assert_eq!(app.ui.get_body_glyph(), old_editor_glyph);
+    assert_eq!(app.ui.get_bar_glyph(), old_bar_glyph);
+    assert_eq!(
+        (app.geometry.row_height, app.geometry.visible),
+        old_geometry
+    );
+    if let Some(directory) = std::env::var_os("DEGAUSS_UI_CAPTURE_DIR") {
+        capture_frame(
+            &mut app,
+            &PathBuf::from(directory),
+            "theme-editor-large-list-text",
+            352,
+            240,
+        );
+    }
+    app.select(15);
     app.handle(Action::Accept);
     assert_eq!(app.screen, Screen::Options);
     assert!(app.theme_editor.is_none());
@@ -11044,6 +11071,12 @@ fn run_theme_editor_save_changes_flow(root: &Path, window: Rc<MinimalSoftwareWin
             .apply(&palette)
             .background,
         saved_colour
+    );
+    assert_eq!(
+        crate::theme::load(&themes_dir).themes[0]
+            .file
+            .selected_text_size(),
+        TextSize::Large
     );
     let saved_settings = Settings::load(&app.settings_path).unwrap();
     assert_eq!(saved_settings.theme.as_deref(), Some("Editable"));
@@ -11057,6 +11090,7 @@ fn run_theme_editor_save_changes_flow(root: &Path, window: Rc<MinimalSoftwareWin
         Some("Editable"),
         "the updated selected theme must survive restart"
     );
+    assert_eq!(app.text_size, TextSize::Large);
     app.open_theme_editor();
     app.select(1);
     app.handle(Action::Accept);
@@ -11067,7 +11101,7 @@ fn run_theme_editor_save_changes_flow(root: &Path, window: Rc<MinimalSoftwareWin
     let blocked = root.join("settings-parent-is-a-file");
     std::fs::write(&blocked, b"not a directory").unwrap();
     app.settings_path = blocked.join("settings.toml");
-    app.select(14);
+    app.select(15);
     app.handle(Action::Accept);
     assert_eq!(app.screen, Screen::ThemeEditor);
     assert!(

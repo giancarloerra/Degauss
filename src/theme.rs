@@ -24,7 +24,7 @@ use serde::Deserialize;
 
 use crate::config::{Color, Colors};
 use crate::error::{DegaussError, Result};
-use crate::font::Font;
+use crate::font::{Font, TextSize};
 
 /// The colours one theme file names. Every field is optional, so a theme
 /// can say "amber text on a dark ground" in three lines and leave the rest
@@ -36,6 +36,8 @@ pub struct ThemeFile {
     /// Typeface selected with this theme. Absent uses the system-wide Text
     /// choice, preserving old theme files without inheriting another theme.
     pub font: Option<Font>,
+    /// Optional size of list and menu text. Older themes keep Default.
+    pub text_size: Option<TextSize>,
     /// Editor-created files carry this marker. Canonical editor output that
     /// predates the marker is also recognised during parsing.
     pub created_by_editor: bool,
@@ -86,6 +88,7 @@ struct ColorsTable {
 #[serde(deny_unknown_fields)]
 struct RawTheme {
     font: Option<String>,
+    text_size: Option<String>,
     #[serde(default)]
     created_by_editor: bool,
     background: Option<Color>,
@@ -129,6 +132,15 @@ impl ThemeFile {
         };
         let mut file = ThemeFile {
             font,
+            text_size: raw
+                .text_size
+                .as_deref()
+                .map(|value| {
+                    TextSize::parse(value).ok_or_else(|| {
+                        format!("unknown text_size {value:?}; use smaller, small, default, large or larger")
+                    })
+                })
+                .transpose()?,
             created_by_editor: raw.created_by_editor,
             font_problem,
             background: pick("background", raw.background, table.background),
@@ -194,12 +206,17 @@ impl ThemeFile {
         self.font.unwrap_or(system)
     }
 
+    pub fn selected_text_size(&self) -> TextSize {
+        self.text_size.unwrap_or_default()
+    }
+
     /// A self-contained theme. Editor output never inherits colours from a
     /// different installation's `degauss.toml`.
     pub fn complete(palette: &Colors, logo: Option<Color>, logo_opacity: u8) -> Self {
         assert!(logo_opacity <= 100, "logo colour mix must be 0 through 100");
         ThemeFile {
             font: None,
+            text_size: None,
             created_by_editor: false,
             font_problem: None,
             background: Some(palette.background),
@@ -231,6 +248,9 @@ impl ThemeFile {
                 .map(|font| format!("font = {:?}\n", font.label()))
                 .unwrap_or_default(),
         );
+        if let Some(size) = self.text_size.filter(|size| *size != TextSize::Default) {
+            body.push_str(&format!("text_size = {:?}\n", size.label()));
+        }
         body.push_str(&format!(
             "background = \"{}\"\npanel = \"{}\"\nsurface = \"{}\"\nbar = \"{}\"\n\
              text = \"{}\"\ntext_dim = \"{}\"\naccent = \"{}\"\naccent_text = \"{}\"\n\
@@ -886,6 +906,7 @@ mod tests {
     fn old_and_invalid_theme_fonts_use_the_system_font() {
         let old = ThemeFile::parse(r##"text = "#ffffff""##).expect("old theme parses");
         assert_eq!(old.font, None);
+        assert_eq!(old.selected_text_size(), TextSize::Default);
         assert_eq!(old.selected_font(Font::Pixel2), Font::Pixel2);
 
         let pixel = ThemeFile::parse("font = \"PIXEL 2\"").expect("font parses");
@@ -900,6 +921,22 @@ mod tests {
             .font_problem
             .as_deref()
             .is_some_and(|problem| problem.contains("future font")));
+    }
+
+    #[test]
+    fn list_text_size_round_trips_without_changing_older_theme_output() {
+        let palette = Colors::default();
+        let mut file = ThemeFile::complete(&palette, None, 100);
+        assert!(!file.to_toml(&palette).contains("text_size"));
+        for size in TextSize::ALL {
+            file.text_size = Some(size);
+            let output = file.to_toml(&palette);
+            assert_eq!(output.contains("text_size"), size != TextSize::Default);
+            let parsed = ThemeFile::parse(&output).unwrap();
+            assert_eq!(parsed.selected_text_size(), size);
+        }
+        let error = ThemeFile::parse("text_size = \"giant\"").unwrap_err();
+        assert!(error.contains("unknown text_size"), "{error}");
     }
 
     #[test]
