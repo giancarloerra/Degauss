@@ -83,8 +83,8 @@ separately. CRT presentation is applied for the README.
 ## Watch Degauss in action
 
 <p align="center">
-  <a href="https://www.youtube.com/watch?v=aFnvkkhbPFY">
-    <img src="https://img.youtube.com/vi/aFnvkkhbPFY/maxresdefault.jpg"
+  <a href="https://www.youtube.com/watch?v=I2TwQtroipM">
+    <img src="https://img.youtube.com/vi/I2TwQtroipM/maxresdefault.jpg"
          alt="Degauss in motion" width="640">
   </a>
 </p>
