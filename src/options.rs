@@ -42,6 +42,8 @@ pub enum OptionId {
     CrtSmoothing,
     /// A MiSTer shadow mask for Degauss's framebuffer output.
     HdmiScanlines,
+    /// Native MiSTer video preset applied only while Degauss is open.
+    VideoPreset,
     /// Correct game artwork for the physical aspect ratio of a display
     /// whose framebuffer pixels are not square.
     ArtworkScale,
@@ -86,6 +88,8 @@ pub enum OptionId {
     ResetHidden,
     ShowStats,
     Present,
+    /// Select one of MiSTer Main's discovered INI profiles.
+    SwitchIni,
     /// Turn the complete frontend while leaving the MiSTer video mode alone.
     ScreenRotation,
     OverscanX,
@@ -134,6 +138,7 @@ pub const OPTIONS: &[OptionId] = &[
     OptionId::ShowArt,
     OptionId::CrtSmoothing,
     OptionId::HdmiScanlines,
+    OptionId::VideoPreset,
     OptionId::ArtworkScale,
     OptionId::ShowBar,
     OptionId::Spacer,
@@ -172,7 +177,7 @@ pub const OPTIONS: &[OptionId] = &[
 
 /// Tuning and diagnostics: things you set once, or only while measuring.
 /// Kept behind a door so the main list stays about using the thing.
-pub const ADVANCED: [OptionId; 2] = [OptionId::Present, OptionId::ShowStats];
+pub const ADVANCED: [OptionId; 3] = [OptionId::SwitchIni, OptionId::Present, OptionId::ShowStats];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OptionsPage {
@@ -296,6 +301,7 @@ impl OptionsPage {
             ],
             Self::Display => &[
                 OptionId::HdmiScanlines,
+                OptionId::VideoPreset,
                 OptionId::ScreenRotation,
                 OptionId::OverscanX,
                 OptionId::OverscanY,
@@ -325,6 +331,7 @@ impl OptionId {
             OptionId::ShowArt => "Artwork",
             OptionId::CrtSmoothing => "CRT Image Smoothing",
             OptionId::HdmiScanlines => "Shadow Mask Effects",
+            OptionId::VideoPreset => "Video Preset",
             OptionId::ArtworkScale => "Artwork Scale Factor",
             OptionId::ShowHidden => "Show What You Hid",
             OptionId::ShowEmpty => "Show Systems with No Games",
@@ -351,6 +358,7 @@ impl OptionId {
             OptionId::ResetHidden => "Unhide Everything",
             OptionId::ShowStats => "Performance Readout",
             OptionId::Present => "Drawing Path",
+            OptionId::SwitchIni => "Switch INI",
             OptionId::ScreenRotation => "Screen Rotation",
             OptionId::OverscanX => "Edge Margin, Sides",
             OptionId::OverscanY => "Edge Margin, Top and Bottom",
@@ -410,6 +418,9 @@ impl OptionId {
             OptionId::HdmiScanlines => {
                 "Choose Off or a MiSTer mask from the Degauss masks folder. It affects HDMI and scaled analog output while Degauss is open, not games."
             }
+            OptionId::VideoPreset => {
+                "Choose an installed MiSTer video preset for Degauss only. Off keeps your separate Shadow Mask Effects choice."
+            }
             OptionId::ArtworkScale => {
                 "Match game artwork to the display shape. Logos and screensaver images are unchanged."
             }
@@ -463,6 +474,7 @@ impl OptionId {
             }
             OptionId::ShowStats => "Replace button hints with rendering and frame-time measurements.",
             OptionId::Present => "Direct draws into the framebuffer. Staged draws into memory before copying the frame.",
+            OptionId::SwitchIni => "Choose a MiSTer INI profile. Switching reloads the current core and may leave this display without a signal.",
             OptionId::ScreenRotation => {
                 "Rotate the complete frontend for a vertical CRT. This does not change MiSTer video modes or game rotation."
             }
@@ -484,7 +496,7 @@ impl OptionId {
             OptionId::ScreensaverSpeed => {
                 "Move the screensaver pictures at Normal, 2x or 4x speed. This does not change when it starts."
             }
-            OptionId::Advanced => "Press A for diagnostics: the drawing path and the readout.",
+            OptionId::Advanced => "Press A for INI profiles, the drawing path and the readout.",
             OptionId::Spacer => "",
         }
     }

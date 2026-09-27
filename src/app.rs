@@ -44,7 +44,8 @@ use crate::game_filter::{
     Choice as GameFilterChoice, Field as GameFilterField, Filters as GameFilters,
 };
 use crate::input::{
-    Action, DuplicateGuard, InputReader, KeyEdge, RepeatConfig, Repeater, SPEED_START, SPEED_STEPS,
+    Action, DuplicateGuard, IniChord, IniChordResult, InputReader, KeyEdge, RepeatConfig, Repeater,
+    SPEED_START, SPEED_STEPS,
 };
 use crate::list_state::ListState;
 use crate::metrics::{FrameTimer, StartupTimings};
@@ -215,6 +216,7 @@ const SPLASH_MS: u64 = 1400;
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Pending {
     Exit,
+    SwitchIni(u8),
     RunScript(Box<crate::scripts::Launch>),
     Hide(usize),
     ResetCustomViews,
@@ -294,6 +296,8 @@ enum OptionOperation {
     RebuildCache,
     OpenScraperAll,
     OpenAdvanced,
+    CycleIni(isize),
+    ConfirmSwitchIni,
 }
 
 /// Translate controls to option semantics before any state can change. The
@@ -322,6 +326,11 @@ fn option_operation(option: OptionId, input: OptionInput) -> OptionOperation {
             OptionInput::Activate => OptionOperation::OpenAdvanced,
             OptionInput::Previous | OptionInput::Next => OptionOperation::None,
         },
+        OptionId::SwitchIni => match input {
+            OptionInput::Activate => OptionOperation::ConfirmSwitchIni,
+            OptionInput::Previous => OptionOperation::CycleIni(-1),
+            OptionInput::Next => OptionOperation::CycleIni(1),
+        },
         OptionId::Theme => match input {
             OptionInput::Activate => OptionOperation::OpenThemeEditor,
             OptionInput::Previous => OptionOperation::Adjust(-1),
@@ -336,6 +345,7 @@ fn option_operation(option: OptionId, input: OptionInput) -> OptionOperation {
         | OptionId::ShowArt
         | OptionId::CrtSmoothing
         | OptionId::HdmiScanlines
+        | OptionId::VideoPreset
         | OptionId::ArtworkScale
         | OptionId::DetailsStyle
         | OptionId::GameNameDisplay
@@ -3878,6 +3888,9 @@ pub struct App {
     themes_dir: PathBuf,
     display_masks_dir: PathBuf,
     display_masks: Vec<String>,
+    video_presets_dir: PathBuf,
+    video_presets: Vec<crate::video_preset::Preset>,
+    video_preset_active: bool,
 
     systems: Vec<FoundSystem>,
     /// The groups present on this machine, with how many systems each has.
@@ -3935,6 +3948,9 @@ pub struct App {
     options_root_list: ListState,
     option_lists: [ListState; 6],
     advanced_list: ListState,
+    ini_profiles: Vec<crate::ini_profile::Profile>,
+    ini_current: Option<u8>,
+    ini_selected: usize,
     theme_editor_list: ListState,
     help_list: ListState,
     about_list: ListState,
@@ -4403,6 +4419,10 @@ impl App {
                 Vec::new()
             }
         };
+        let video_presets_dir = Path::new(&config.menu_root).join("Presets");
+        // Presets are enumerated when Display options are opened. A library
+        // start should not walk an optional collection of preset files.
+        let video_presets = Vec::new();
         if let Some(problem) = last_played_problem.as_ref() {
             startup_problems.push(format!("Last Played could not be read: {problem}"));
         }
@@ -4675,6 +4695,9 @@ impl App {
             themes_dir,
             display_masks_dir,
             display_masks,
+            video_presets_dir,
+            video_presets,
+            video_preset_active: false,
             systems,
             categories: Vec::new(),
             category_list: ListState::new(0, geometry.visible),
@@ -4703,6 +4726,9 @@ impl App {
             option_lists: OptionsPage::ALL
                 .map(|page| ListState::new(page.ids().len(), geometry.visible)),
             advanced_list: ListState::new(ADVANCED.len(), geometry.visible),
+            ini_profiles: Vec::new(),
+            ini_current: None,
+            ini_selected: 0,
             theme_editor_list: ListState::new(EDITOR_ROWS, geometry.visible),
             about_list: ListState::new(1, geometry.visible),
             help_list: ListState::new(HELP.len(), geometry.visible),
@@ -5514,6 +5540,17 @@ impl App {
             match crate::display_mask::names(&self.display_masks_dir) {
                 Ok(names) => self.display_masks = names,
                 Err(error) => crate::note(&error.to_string()),
+            }
+            match crate::video_preset::discover(&self.video_presets_dir) {
+                Ok(presets) => self.video_presets = presets,
+                Err(error) => {
+                    self.message = Some(format!("Video presets could not be read: {error}"));
+                    self.dirty = true;
+                }
+            }
+        } else if page == OptionsPage::Developer {
+            if let Err(error) = self.refresh_ini_profiles() {
+                crate::note(&error);
             }
         }
         self.options_page = page;
@@ -11620,6 +11657,30 @@ impl App {
         })
     }
 
+    pub fn video_preset(&self) -> Option<&str> {
+        self.settings.video_preset.as_deref()
+    }
+
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    pub fn video_preset_active(&self) -> bool {
+        self.video_preset_active
+    }
+
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    pub fn apply_saved_video_preset(&mut self) {
+        if let Some(name) = self.video_preset() {
+            if cfg!(all(target_os = "linux", target_arch = "arm")) && !cfg!(test) {
+                match crate::video_preset::apply(Some(name), Path::new(crate::launch::CMD_FIFO)) {
+                    Ok(()) => self.video_preset_active = true,
+                    Err(error) => {
+                        self.message = Some(format!("Video preset could not be enabled: {error}"));
+                        self.dirty = true;
+                    }
+                }
+            }
+        }
+    }
+
     #[cfg_attr(test, allow(dead_code))]
     pub fn apply_saved_display_mask(&mut self) {
         self.apply_saved_display_mask_at(Path::new(crate::launch::CMD_FIFO));
@@ -12151,11 +12212,81 @@ impl App {
                 self.open_scraper(crate::scraper::Scope::All, Screen::Options)
             }
             OptionOperation::OpenAdvanced => {
+                if let Err(error) = self.refresh_ini_profiles() {
+                    self.message = Some(error);
+                }
                 self.screen = Screen::Advanced;
                 self.apply_geometry();
                 self.dirty = true;
             }
+            OptionOperation::CycleIni(delta) => {
+                if !self.ini_profiles.is_empty() {
+                    self.ini_selected = (self.ini_selected as isize + delta)
+                        .rem_euclid(self.ini_profiles.len() as isize)
+                        as usize;
+                    self.dirty = true;
+                }
+            }
+            OptionOperation::ConfirmSwitchIni => {
+                if self.ini_profiles.is_empty() {
+                    if let Err(error) = self.refresh_ini_profiles() {
+                        self.message = Some(error);
+                        self.dirty = true;
+                        return;
+                    }
+                }
+                if let Some(profile) = self.ini_profiles.get(self.ini_selected).cloned() {
+                    if self.ini_slot_available(profile.slot) {
+                        self.pending = Some(Pending::SwitchIni(profile.slot));
+                        self.message = Some(format!(
+                            "Switch to {}?\n\nThis reloads the current core or frontend. The selected video settings may leave this display without a signal.\n\nA Switch   B Cancel",
+                            profile.name
+                        ));
+                        self.dirty = true;
+                    }
+                }
+            }
         }
+    }
+
+    fn refresh_ini_profiles(&mut self) -> std::result::Result<(), String> {
+        match crate::ini_profile::discover(Path::new(crate::launch::CMD_FIFO)) {
+            Ok(snapshot) => {
+                self.ini_current = Some(snapshot.current);
+                self.ini_profiles = snapshot.profiles;
+                self.ini_selected = self
+                    .ini_profiles
+                    .iter()
+                    .position(|profile| profile.slot == snapshot.current)
+                    .unwrap_or(0);
+                Ok(())
+            }
+            Err(error) => {
+                self.ini_profiles.clear();
+                self.ini_current = None;
+                Err(format!("Cannot read MiSTer INI profiles: {error}"))
+            }
+        }
+    }
+
+    fn ini_slot_available(&mut self, slot: u8) -> bool {
+        let snapshot = match crate::ini_profile::discover(Path::new(crate::launch::CMD_FIFO)) {
+            Ok(snapshot) => snapshot,
+            Err(error) => {
+                self.message = Some(format!("Cannot read MiSTer INI profiles: {error}"));
+                self.dirty = true;
+                return false;
+            }
+        };
+        if snapshot.current == slot {
+            self.message = Some("That INI profile is already active.".to_string());
+        } else if !snapshot.profiles.iter().any(|profile| profile.slot == slot) {
+            self.message = Some("That INI profile is unavailable.".to_string());
+        } else {
+            return true;
+        }
+        self.dirty = true;
+        false
     }
 
     /// Reclassify only the visible navigation tree. If the option changes
@@ -12354,6 +12485,32 @@ impl App {
                 }
                 self.settings.display_mask = name;
                 self.settings.hdmi_scanlines = Some(false);
+            }
+            OptionId::VideoPreset => {
+                let current = self
+                    .video_preset()
+                    .and_then(|name| {
+                        self.video_presets
+                            .iter()
+                            .position(|item| item.relative_path == name)
+                    })
+                    .map_or(0, |index| index + 1);
+                let next = step(current, delta, self.video_presets.len() + 1);
+                let name = next
+                    .checked_sub(1)
+                    .map(|index| self.video_presets[index].relative_path.clone());
+                if cfg!(all(target_os = "linux", target_arch = "arm")) && !cfg!(test) {
+                    if let Err(error) = crate::video_preset::apply(
+                        name.as_deref(),
+                        Path::new(crate::launch::CMD_FIFO),
+                    ) {
+                        self.message = Some(format!("Video preset could not be changed: {error}"));
+                        self.dirty = true;
+                        return;
+                    }
+                }
+                self.settings.video_preset = name;
+                self.video_preset_active = self.settings.video_preset.is_some();
             }
             OptionId::ArtworkScale => {
                 let at = step(self.artwork_scale.index(), delta, ArtworkScale::ALL.len());
@@ -12596,6 +12753,7 @@ impl App {
             | OptionId::RebuildCache
             | OptionId::ScrapeAll
             | OptionId::ResetHidden
+            | OptionId::SwitchIni
             | OptionId::Advanced => {
                 debug_assert!(false, "action row reached value adjustment")
             }
@@ -12635,6 +12793,16 @@ impl App {
             OptionId::ShowArt => on_off(self.show_art),
             OptionId::CrtSmoothing => on_off(self.settings.crt_smoothing.unwrap_or(true)),
             OptionId::HdmiScanlines => self.display_mask().unwrap_or("Off").to_string(),
+            OptionId::VideoPreset => self
+                .video_preset()
+                .and_then(|name| {
+                    self.video_presets
+                        .iter()
+                        .find(|item| item.relative_path == name)
+                })
+                .map(|item| item.name.clone())
+                .or_else(|| self.video_preset().map(|name| format!("Missing: {name}")))
+                .unwrap_or_else(|| "Off".to_string()),
             OptionId::ArtworkScale => self.artwork_scale.shown().to_string(),
             OptionId::DetailsStyle => self.details_style.shown().to_string(),
             OptionId::GameNameDisplay => self.game_name_display.label().to_string(),
@@ -12642,6 +12810,17 @@ impl App {
             OptionId::ShowGamePosition => on_off(self.settings.show_game_position.unwrap_or(true)),
             OptionId::ShowStats => on_off(self.show_stats),
             OptionId::Present => capitalised(self.present_label),
+            OptionId::SwitchIni => self
+                .ini_profiles
+                .get(self.ini_selected)
+                .map(|profile| {
+                    if Some(profile.slot) == self.ini_current {
+                        format!("{} (current)", profile.name)
+                    } else {
+                        profile.name.clone()
+                    }
+                })
+                .unwrap_or_else(|| "Unavailable".to_string()),
             OptionId::ScreenRotation => self.screen_rotation.label().to_string(),
             OptionId::ShowHidden => on_off(self.show_hidden),
             OptionId::ShowEmpty => on_off(self.show_empty),
@@ -18140,6 +18319,11 @@ impl App {
                     self.dirty = true;
                     match pending {
                         Pending::Exit => return Some(Outcome::Quit),
+                        Pending::SwitchIni(slot) => {
+                            if self.ini_slot_available(slot) {
+                                return Some(Outcome::SwitchIni(slot));
+                            }
+                        }
                         Pending::RunScript(launch) => {
                             if let Err(error) = launch.validate() {
                                 self.message = Some(error.to_string());
@@ -20399,6 +20583,7 @@ impl App {
             interval: Duration::from_millis(self.speed_ms()),
             ..Default::default()
         });
+        let mut ini_chord = IniChord::default();
         let mut duplicates = DuplicateGuard::new();
         let mut first_frame_done = false;
         // Dropped for good if the device ever declines, so a framebuffer
@@ -20446,6 +20631,17 @@ impl App {
                 let Some(edge) = duplicates.admit(edge, at) else {
                     continue;
                 };
+                match ini_chord.intercept(edge) {
+                    IniChordResult::Forward => {}
+                    IniChordResult::Consume => continue,
+                    IniChordResult::Switch(slot) => {
+                        repeater.cancel(Action::Quit);
+                        if self.ini_slot_available(slot) && self.save_settings() {
+                            return Ok(Outcome::SwitchIni(slot));
+                        }
+                        continue;
+                    }
+                }
                 let action = match edge {
                     KeyEdge::Down(action) => repeater.press(action, now),
                     KeyEdge::Up(action) => repeater.release(action, now),
@@ -20463,6 +20659,9 @@ impl App {
             repeater.set_hold_context(self.selection_revision);
             repeater.set_hold_shortcuts(self.available_hold_shortcuts());
             for action in repeater.tick(now) {
+                if matches!(action, Action::HoldShortcut(_)) {
+                    ini_chord.back_hold_fired();
+                }
                 if let Some(outcome) = self.handle(action) {
                     if !matches!(outcome, Outcome::Script(_)) {
                         self.save_settings();
@@ -21498,6 +21697,7 @@ pub enum Outcome {
     Quit,
     LauncherReplaced,
     Script(Box<crate::scripts::Launch>),
+    SwitchIni(u8),
 
     /// A launch carries its finished plan rather than a row index: the plan
     /// is built while the interface is still up, so everything that can go
@@ -21548,6 +21748,12 @@ pub(crate) fn test_library_launch_flow(window: Rc<MinimalSoftwareWindow>) {
     std::fs::write(
         root.join("masks/Scanlines.txt"),
         include_str!("../assets/masks/Scanlines.txt"),
+    )
+    .unwrap();
+    std::fs::create_dir_all(root.join("Presets/Display Specific")).unwrap();
+    std::fs::write(
+        root.join("Presets/Display Specific/Sony PVM.ini"),
+        "gamma=off\n",
     )
     .unwrap();
     let nightly = "_Unstable/NES_unstable_20260101_123456.rbf";
@@ -21603,6 +21809,20 @@ pub(crate) fn test_library_launch_flow(window: Rc<MinimalSoftwareWindow>) {
         None,
     );
     app.finish_background_work_for_headless();
+
+    app.open_options_page(OptionsPage::Display);
+    assert_eq!(app.option_value(OptionId::VideoPreset), "Off");
+    app.adjust_option_value(OptionId::VideoPreset, 1);
+    assert_eq!(
+        app.option_value(OptionId::VideoPreset),
+        "Display Specific/Sony PVM"
+    );
+    assert_eq!(
+        app.settings.video_preset.as_deref(),
+        Some("Display Specific/Sony PVM.ini")
+    );
+    app.adjust_option_value(OptionId::VideoPreset, -1);
+    assert_eq!(app.option_value(OptionId::VideoPreset), "Off");
 
     assert_eq!(app.option_value(OptionId::HdmiScanlines), "Off");
     app.adjust_option_value(OptionId::HdmiScanlines, 1);
@@ -23417,6 +23637,18 @@ mod tests {
             option_operation(OptionId::Theme, OptionInput::Activate),
             OptionOperation::OpenThemeEditor
         );
+        assert_eq!(
+            option_operation(OptionId::SwitchIni, OptionInput::Previous),
+            OptionOperation::CycleIni(-1)
+        );
+        assert_eq!(
+            option_operation(OptionId::SwitchIni, OptionInput::Next),
+            OptionOperation::CycleIni(1)
+        );
+        assert_eq!(
+            option_operation(OptionId::SwitchIni, OptionInput::Activate),
+            OptionOperation::ConfirmSwitchIni
+        );
     }
 
     #[test]
@@ -23428,6 +23660,7 @@ mod tests {
             OptionId::ScrapeAll,
             OptionId::Advanced,
             OptionId::Theme,
+            OptionId::SwitchIni,
             OptionId::Spacer,
         ];
         for option in OPTIONS.iter().chain(ADVANCED.iter()).copied() {

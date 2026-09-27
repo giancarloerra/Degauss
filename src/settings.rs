@@ -338,6 +338,9 @@ pub struct Settings {
     /// Absent is Off unless the legacy scanline boolean is true.
     #[serde(default)]
     pub display_mask: Option<String>,
+    /// Native MiSTer preset relative to menu_root/Presets; absent is Off.
+    #[serde(default)]
+    pub video_preset: Option<String>,
     /// How game artwork is horizontally corrected for the physical display:
     /// "framebuffer", "4:3" or "16:9". Absent keeps the original
     /// framebuffer-pixel behaviour.
@@ -737,6 +740,7 @@ mod tests {
         assert!(!settings.attract_mode_menu.unwrap_or(false));
         assert!(!settings.hdmi_scanlines.unwrap_or(false));
         assert_eq!(settings.display_mask, None);
+        assert_eq!(settings.video_preset, None);
     }
 
     #[test]

@@ -70,6 +70,61 @@ pub enum Action {
     HoldShortcut(HoldShortcut),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IniChordResult {
+    Forward,
+    Consume,
+    Switch(u8),
+}
+
+/// Back is delayed until release so a direction can select an INI even when
+/// the current video mode leaves the display invisible.
+#[derive(Default)]
+pub struct IniChord {
+    back_down: bool,
+    used: bool,
+}
+
+impl IniChord {
+    pub fn intercept(&mut self, edge: KeyEdge) -> IniChordResult {
+        match edge {
+            KeyEdge::Down(Action::Quit) => {
+                self.back_down = true;
+                self.used = false;
+            }
+            KeyEdge::Down(direction) if self.back_down => {
+                let slot = match direction {
+                    Action::Faster => Some(0),
+                    Action::Slower => Some(1),
+                    Action::Up => Some(2),
+                    Action::Down => Some(3),
+                    _ => None,
+                };
+                if let Some(slot) = slot {
+                    if self.used {
+                        return IniChordResult::Consume;
+                    }
+                    self.used = true;
+                    return IniChordResult::Switch(slot);
+                }
+            }
+            KeyEdge::Up(Action::Quit) => {
+                self.back_down = false;
+                if self.used {
+                    self.used = false;
+                    return IniChordResult::Consume;
+                }
+            }
+            _ => {}
+        }
+        IniChordResult::Forward
+    }
+
+    pub fn back_hold_fired(&mut self) {
+        self.back_down = false;
+    }
+}
+
 impl Action {
     /// Every action that can be produced directly by a keyboard or by
     /// MiSTer's translated controller input.
@@ -252,6 +307,7 @@ impl Repeater {
             let hold_shortcuts = self.hold_shortcuts;
             self.held.retain(|held| {
                 held.action.repeats()
+                    || held.action == Action::Quit
                     || button_for_action(held.action)
                         .and_then(|button| hold_shortcuts[button.index()])
                         .is_some()
@@ -294,7 +350,8 @@ impl Repeater {
         }
         let retained = action.repeats()
             || (self.horizontal_repeats && matches!(action, Action::Slower | Action::Faster))
-            || self.hold_action(action).is_some();
+            || self.hold_action(action).is_some()
+            || action == Action::Quit;
         if retained {
             self.held.push(Held {
                 action,
@@ -303,7 +360,7 @@ impl Repeater {
                 repeating: false,
             });
         }
-        if self.hold_action(action).is_some() {
+        if self.hold_action(action).is_some() || action == Action::Quit {
             None
         } else {
             Some(action)
@@ -324,9 +381,16 @@ impl Repeater {
             } else {
                 Some(action)
             }
+        } else if action == Action::Quit && self.hold_action(action).is_none() {
+            Some(Action::Quit)
         } else {
             None
         }
+    }
+
+    /// A Back+direction INI chord consumes Back rather than navigating.
+    pub fn cancel(&mut self, action: Action) {
+        self.held.retain(|held| held.action != action);
     }
 
     /// Actions due because a key is still held.
@@ -342,6 +406,11 @@ impl Repeater {
                     held.repeating = true;
                     due.push(shortcut);
                 }
+                continue;
+            }
+            if held.action == Action::Quit {
+                // Back alone acts on release so a following direction can
+                // form a chord. It is never a repeating navigation action.
                 continue;
             }
             let ready = if held.repeating {
@@ -1027,12 +1096,65 @@ mod tests {
 
     #[test]
     fn a_face_button_stays_immediate_without_an_available_hold_action() {
-        for action in [Action::Accept, Action::Quit, Action::Context, Action::Menu] {
+        for action in [Action::Accept, Action::Context, Action::Menu] {
             let mut repeater = Repeater::new(RepeatConfig::default());
             let now = Instant::now();
             assert_eq!(repeater.press(action, now), Some(action));
             assert!(repeater.tick(now + SHORTCUT_HOLD).is_empty());
             assert_eq!(repeater.release(action, now + SHORTCUT_HOLD), None);
+        }
+    }
+
+    #[test]
+    fn back_alone_waits_for_release_but_its_hold_shortcut_still_fires() {
+        let now = Instant::now();
+        let mut ordinary = Repeater::new(RepeatConfig::default());
+        assert_eq!(ordinary.press(Action::Quit, now), None);
+        assert!(ordinary.tick(now + SHORTCUT_HOLD).is_empty());
+        assert_eq!(
+            ordinary.release(Action::Quit, now + SHORTCUT_HOLD),
+            Some(Action::Quit)
+        );
+
+        let mut held = Repeater::new(RepeatConfig::default());
+        held.set_hold_shortcuts(shortcuts(&[(HoldButton::B, HoldShortcut::RandomGame)]));
+        assert_eq!(held.press(Action::Quit, now), None);
+        assert_eq!(
+            held.tick(now + SHORTCUT_HOLD),
+            [Action::HoldShortcut(HoldShortcut::RandomGame)]
+        );
+        assert_eq!(held.release(Action::Quit, now + SHORTCUT_HOLD), None);
+    }
+
+    #[test]
+    fn back_direction_chords_map_to_main_slots_and_consume_back() {
+        for (direction, slot) in [
+            (Action::Faster, 0),
+            (Action::Slower, 1),
+            (Action::Up, 2),
+            (Action::Down, 3),
+        ] {
+            let mut chord = IniChord::default();
+            assert_eq!(
+                chord.intercept(KeyEdge::Down(Action::Quit)),
+                IniChordResult::Forward
+            );
+            assert_eq!(
+                chord.intercept(KeyEdge::Down(direction)),
+                IniChordResult::Switch(slot)
+            );
+            assert_eq!(
+                chord.intercept(KeyEdge::Down(direction)),
+                IniChordResult::Consume
+            );
+            assert_eq!(
+                chord.intercept(KeyEdge::Up(Action::Quit)),
+                IniChordResult::Consume
+            );
+            assert_eq!(
+                chord.intercept(KeyEdge::Down(direction)),
+                IniChordResult::Forward
+            );
         }
     }
 
@@ -1929,12 +2051,8 @@ mod tests {
     #[test]
     fn a_different_action_inside_the_window_is_immediate() {
         // The guard is per action. A reversal of direction, a speed change
-        // either way, or launching then backing out must never wait.
-        for (first, second) in [
-            (Action::Down, Action::Up),
-            (Action::Slower, Action::Faster),
-            (Action::Accept, Action::Quit),
-        ] {
+        // either way must never wait.
+        for (first, second) in [(Action::Down, Action::Up), (Action::Slower, Action::Faster)] {
             let mut guarded = Pipeline::guarded(Repeater::new(RepeatConfig::default()));
             assert_eq!(
                 guarded.feed(&[(KeyEdge::Down(first), 0), (KeyEdge::Down(second), 2)]),
@@ -1947,6 +2065,26 @@ mod tests {
             );
             assert!(!guarded.repeater.anything_held());
         }
+    }
+
+    #[test]
+    fn launching_then_backing_out_keeps_both_actions() {
+        let mut guarded = Pipeline::guarded(Repeater::new(RepeatConfig::default()));
+        assert_eq!(
+            guarded.feed(&[
+                (KeyEdge::Down(Action::Accept), 0),
+                (KeyEdge::Down(Action::Quit), 2)
+            ]),
+            vec![Action::Accept],
+            "Back waits for a possible INI chord"
+        );
+        assert_eq!(
+            guarded.feed(&[
+                (KeyEdge::Up(Action::Accept), 4),
+                (KeyEdge::Up(Action::Quit), 6)
+            ]),
+            vec![Action::Quit],
+        );
     }
 
     #[test]

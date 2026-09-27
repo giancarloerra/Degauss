@@ -439,22 +439,27 @@ add these settings under `[Menu]` in the active `MiSTer.ini`:
 ```ini
 [Menu]
 fb_terminal=1
-vga_scaler=1
+vga_scaler=0
 ```
 
 The `[Menu]` section applies these settings to Degauss without changing the
-video configuration used by game cores. The scaler also needs a 15 kHz
-`video_mode` supported by the CRT. A mode already known to work with MiSTer's
-Menu on that display is the best choice. If none is configured, this common
-MiSTer Menu mode is a reasonable starting point:
+video configuration used by game cores. With Degauss's bundled Menu core,
+`vga_scaler=0` sends the framebuffer to analog at native 15 kHz while HDMI
+keeps its configured `video_mode`. If only analog is connected, the HDMI mode
+does not need to match the CRT.
+
+To retain the older shared-scaler route, use `vga_scaler=1`. In that mode the
+scaler needs a 15 kHz `video_mode` supported by the CRT. A mode already known
+to work with MiSTer's Menu on that display is the best choice. If none is
+configured, this common MiSTer Menu mode is a reasonable starting point:
 
 ```ini
 video_mode=640,54,56,106,224,16,0,28,13764
 ```
 
 That is a custom timing rather than a universal setting, so some displays may
-need a different compatible mode. When HDMI and CRT are connected together,
-both receive the same scaler timing and both must support it. See MiSTer's
+need a different compatible mode. With `vga_scaler=1`, both connected displays
+receive the same scaler timing and both must support it. See MiSTer's
 [INI settings](https://mister-devel.github.io/MkDocs_MiSTer/advanced/ini/)
 for more detail.
 
@@ -868,6 +873,7 @@ require **A** and confirmation, never a sideways press.
 | Appearance | Show Attract Mode on Home | Off by default. Add an immediate Attract Mode entry to the main browser, independently of idle screensaver settings |
 | Appearance | Screensaver Speed | Normal (default), 2x or 4x picture movement, independent of the idle time |
 | Display | Shadow Mask Effects | Off by default. Choose supplied scanlines or aperture grille, or put a MiSTer shadow-mask `.txt` file in `Scripts/.config/degauss/masks/` to select it by name. A malformed file switches the effect Off and is logged. The mask affects Degauss on HDMI and scaled analog output, not games |
+| Display | Video Preset | Off by default. Choose an installed MiSTer `.ini` preset from `Presets/`, including subfolders. Filters, gamma and mask apply only while Degauss is open; the separate Shadow Mask Effects choice is retained |
 | Library | Favourites First | Show favourites first in each folder, keeping them in alphabetical order |
 | Library | Folders Before Games | On, folders lead a system's listing; off, the games come first |
 | Library | Core Preference | Standard First (default) or RetroAchievements First. Used by systems whose Core Version is Default; the other version is used only when the preferred version is absent |
@@ -888,6 +894,7 @@ require **A** and confirmation, never a sideways press.
 | Display | Screen Position, Sideways | Nudge the picture, for a screen that sits off centre |
 | Display | Screen Position, Up and Down | The same, vertically |
 | Display | Screen Rotation | Off by default. Rotate the complete Degauss interface 90° Clockwise or Counterclockwise for a vertical display. A keeps the preview; B or the 15-second timeout reverts it. This does not change MiSTer video modes or game rotation |
+| Developer | Switch INI | Choose Main or an available alternate MiSTer INI profile, then confirm. This reloads Menu and uses the selected profile's `main=` frontend. If video is invisible while Degauss remains running, hold B/Back and press Right for Main, Left for the first alternate, Up for the second or Down for the third. Unavailable slots do nothing |
 | Developer | Drawing Path | Draw into the screen directly, or into memory first |
 | Developer | Performance Readout | Replace the key hints with frame timings |
 
@@ -1984,21 +1991,21 @@ Current Update All replaces Console Mode's existing `main=` value, so it does no
 
 Seeing MiSTer's OSD on a CRT does not necessarily mean that its Linux framebuffer is routed there. This is especially relevant when using an SS1's analog output.
 
-Inside the active `[Menu]` section of `MiSTer.ini`, enable the framebuffer terminal and VGA scaler:
+Inside the active `[Menu]` section of `MiSTer.ini`, enable the framebuffer terminal and native analog output:
 
 ```ini
 [Menu]
 fb_terminal=1
-vga_scaler=1
+vga_scaler=0
 ```
 
-The scaler also needs a 15 kHz `video_mode` supported by that CRT. A mode already known to work with MiSTer's Menu on the same display is the best choice. This common mode can be used as a starting point:
+With Degauss's bundled Menu core, this sends the framebuffer to analog at native 15 kHz while HDMI keeps its own configured `video_mode`. If you instead use `vga_scaler=1`, both outputs use the scaler. That route needs a 15 kHz `video_mode` supported by the CRT; this common mode can be used as a starting point:
 
 ```ini
 video_mode=640,54,56,106,224,16,0,28,13764
 ```
 
-That timing is not universal. If HDMI and CRT are connected together, both receive the same scaler timing and both must support it.
+That timing is not universal. With `vga_scaler=1`, both connected displays must support the same scaler timing.
 
 ### Update All enabled Degauss, but its files are missing
 
