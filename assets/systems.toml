@@ -495,6 +495,31 @@ index = 1
 delay = 1
 
 [[systems]]
+name = "Coleco Adam"
+id = "ColecoAdam"
+folders = ["Adam"]
+rbf = "_Computer/ColecoAdam"
+extensions = ["col", "bin", "rom", "dsk", "ddp", "mgl"]
+
+[[systems.launch]]
+extensions = ["col", "bin", "rom"]
+type = "f"
+index = 1
+delay = 1
+
+[[systems.launch]]
+extensions = ["dsk"]
+type = "s"
+index = 0
+delay = 1
+
+[[systems.launch]]
+extensions = ["ddp"]
+type = "s"
+index = 4
+delay = 1
+
+[[systems]]
 name = "Commodore 16"
 id = "C16"
 folders = ["C16"]

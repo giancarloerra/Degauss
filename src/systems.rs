@@ -1481,6 +1481,32 @@ extensions = ["md", "bin"]
             c64.launch.iter().any(|r| r.kind == "s" && r.index == 0),
             "the disk slot must survive generation"
         );
+        let adam = table
+            .iter()
+            .find(|system| system.id == "ColecoAdam")
+            .expect("Coleco Adam is in the table");
+        assert_eq!(adam.name, "Coleco Adam");
+        assert_eq!(adam.folders, ["Adam"]);
+        assert_eq!(adam.rbf, "_Computer/ColecoAdam");
+        assert_eq!(adam.category(), "Computer");
+        assert_eq!(adam.extensions, ["col", "bin", "rom", "dsk", "ddp", "mgl"]);
+        assert!(adam.launch.iter().any(|rule| {
+            rule.extensions == ["col", "bin", "rom"] && rule.kind == "f" && rule.index == 1
+        }));
+        assert!(adam
+            .launch
+            .iter()
+            .any(|rule| { rule.extensions == ["dsk"] && rule.kind == "s" && rule.index == 0 }));
+        assert!(adam
+            .launch
+            .iter()
+            .any(|rule| { rule.extensions == ["ddp"] && rule.kind == "s" && rule.index == 4 }));
+        let colecovision = table
+            .iter()
+            .find(|system| system.id == "ColecoVision")
+            .expect("ColecoVision remains in the table");
+        assert_eq!(colecovision.folders, ["Coleco"]);
+        assert_eq!(colecovision.rbf, "_Console/ColecoVision");
         let pocket = table
             .iter()
             .find(|system| system.id == "NeoGeoPocket")
@@ -1595,6 +1621,33 @@ extensions = ["md", "bin"]
         assert_eq!(found[0].name(), "Commodore 64");
         assert_eq!(found[0].path(), root.join("C64"));
         std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn coleco_adam_is_discovered_as_a_computer_from_its_standard_folder() {
+        let card = temp_dir("coleco-adam-discovery");
+        let games = card.join("games");
+        std::fs::create_dir_all(games.join("Adam")).unwrap();
+        std::fs::create_dir_all(card.join("_Computer")).unwrap();
+        std::fs::write(card.join("_Computer/ColecoAdam_20260922.rbf"), b"core").unwrap();
+
+        let adam = load_table(Path::new("assets/systems.toml"))
+            .unwrap()
+            .into_iter()
+            .find(|system| system.id == "ColecoAdam")
+            .expect("Coleco Adam definition");
+        let found = discover(
+            &[adam],
+            std::slice::from_ref(&games),
+            None,
+            &CoreIndex::read(&card),
+        );
+
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].name(), "Coleco Adam");
+        assert_eq!(found[0].path(), games.join("Adam"));
+        assert_eq!(found[0].category(), "Computer");
+        std::fs::remove_dir_all(card).ok();
     }
 
     #[test]

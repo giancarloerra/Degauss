@@ -1865,6 +1865,34 @@ mod tests {
     }
 
     #[test]
+    fn coleco_adam_formats_use_the_core_documented_slots() {
+        let system = shipped_system("ColecoAdam", vec![PathBuf::from("/media/fat/games/Adam")]);
+        for (name, kind, index) in [
+            ("Cartridge.col", "f", 1),
+            ("Disk.dsk", "s", 0),
+            ("Data Pack.ddp", "s", 4),
+        ] {
+            let plan = plan(
+                &system,
+                &Path::new("/media/fat/games/Adam").join(name),
+                Path::new("/tmp/degauss.mgl"),
+            )
+            .expect("Coleco Adam launch plan");
+            assert!(
+                plan.mgl.contains("<rbf>_Computer/ColecoAdam</rbf>"),
+                "got: {}",
+                plan.mgl
+            );
+            assert!(
+                plan.mgl
+                    .contains(&format!(r#"type="{kind}" index="{index}""#)),
+                "got: {}",
+                plan.mgl
+            );
+        }
+    }
+
+    #[test]
     fn an_accented_amiga_title_is_written_back_in_the_encoding_it_came_from() {
         // The listings are ISO-8859-1, and Degauss reads them by mapping
         // each byte to the code point of the same value. Writing the chosen
