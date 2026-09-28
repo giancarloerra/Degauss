@@ -126,6 +126,7 @@ Click the image to watch Degauss on YouTube.
   - [What MiSTer hardware has Degauss been reported working on?](#what-mister-hardware-has-degauss-been-reported-working-on)
   - [I installed an Artwork Pack, but its artwork is not showing](#i-installed-an-artwork-pack-but-its-artwork-is-not-showing)
   - [Degauss stays on “Starting Degauss frontend...”](#degauss-stays-on-starting-degauss-frontend)
+  - [Why does Update All warn that Degauss replaces MiSTer firmware with a fork?](#why-does-update-all-warn-that-degauss-replaces-mister-firmware-with-a-fork)
   - [How do I install Degauss on an SS1 currently using Console Mode?](#how-do-i-install-degauss-on-an-ss1-currently-using-console-mode)
   - [Degauss appears over HDMI but not on an analog CRT](#degauss-appears-over-hdmi-but-not-on-an-analog-crt)
   - [Update All enabled Degauss, but its files are missing](#update-all-enabled-degauss-but-its-files-are-missing)
@@ -1977,6 +1978,18 @@ If Degauss never reaches that screen:
    It reports missing, incomplete or invalid installation files.
 
 If Degauss is intentionally launched from **Scripts** instead of replacing the stock frontend, the `main=` line is not required. That mode requires `fb_terminal=1` under `[Menu]` in `MiSTer.ini`.
+
+### Why does Update All warn that Degauss replaces MiSTer firmware with a fork?
+
+This warning is expected when turning Degauss **On** under **Update All → Settings → Frontends**. A fork here means Degauss's separately maintained build of MiSTer Main. Update All is not asking to create a GitHub fork or account.
+
+The warning's word “replace” refers to which Main binary starts. Select **Yes** if you want Degauss to start automatically. This is the recommended setup for almost all users and enables Degauss's full frontend integration: Degauss starts on boot, returns after leaving a game, and provides the **System → Frontend** command while a game is running. Then choose **SAVE** and **EXIT and RUN UPDATE ALL**. Update All installs `/media/fat/degauss/MiSTer_Degauss`, leaves the official `/media/fat/MiSTer` binary in place, and selects Degauss by adding this to `MiSTer.ini`:
+
+```ini
+main=degauss/MiSTer_Degauss
+```
+
+To return to the official Main binary, choose **Update All → Settings → Frontends → Stock MiSTer UI** and save the change. Update All removes the Degauss `main=` selection.
 
 ### How do I install Degauss on an SS1 currently using Console Mode?
 
