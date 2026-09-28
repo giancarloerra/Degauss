@@ -1749,6 +1749,9 @@ system resolved on your own card, which is the answer for that card.
 
 </details>
 
+Atari 2600 `.bin` games belong in `games/Atari2600`. In the shared
+`games/ATARI7800` folder, `.bin` remains an Atari 7800 format.
+
 System logos are read from the `logos` folder beside `degauss.toml`,
 named after the system. The 89 files in `assets/logos/` are copied from
 lehcimcramtrebor/es-theme-forever (`CUSTOMIZE/logos`). The marks themselves 
