@@ -17,6 +17,7 @@ const GENERAL_PRESETS: [&str; 5] = [
     "Scanlines - Sharp.ini",
     "Scanlines - Soft.ini",
 ];
+const CUSTOM_PRESETS_DIR: &str = "Degauss";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Preset {
@@ -41,6 +42,49 @@ pub fn discover(root: &Path) -> Result<Vec<Preset>> {
                 name: relative[..relative.len() - 4].to_string(),
                 relative_path: relative.to_string(),
             });
+        }
+    }
+    let custom_dir = root.join(CUSTOM_PRESETS_DIR);
+    let entries = match fs::read_dir(&custom_dir) {
+        Ok(entries) => Some(entries),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => {
+            return Err(DegaussError::io(
+                "reading custom video presets",
+                &custom_dir,
+                error,
+            ))
+        }
+    };
+    if let Some(entries) = entries {
+        for entry in entries {
+            let entry = entry.map_err(|error| {
+                DegaussError::io("reading custom video preset entry", &custom_dir, error)
+            })?;
+            let path = entry.path();
+            if !path.is_file()
+                || !path
+                    .extension()
+                    .and_then(|ext| ext.to_str())
+                    .is_some_and(|ext| ext.eq_ignore_ascii_case("ini"))
+            {
+                continue;
+            }
+            let Some(file_name) = path.file_name().and_then(|name| name.to_str()) else {
+                continue;
+            };
+            let relative = format!("{CUSTOM_PRESETS_DIR}/{file_name}");
+            if !valid_relative_path(&relative) {
+                continue;
+            }
+            let contents = fs::read_to_string(&path)
+                .map_err(|error| DegaussError::io("reading custom video preset", &path, error))?;
+            if preset_components_present(menu_root, &contents) {
+                presets.push(Preset {
+                    name: format!("Custom/{}", &file_name[..file_name.len() - 4]),
+                    relative_path: relative,
+                });
+            }
         }
     }
     presets.sort_by_key(|item| item.name.to_lowercase());
@@ -208,5 +252,36 @@ mod tests {
         ] {
             assert!(!valid_relative_path(invalid));
         }
+    }
+
+    #[test]
+    fn offers_user_presets_only_from_dedicated_folder_with_installed_components() {
+        let root =
+            std::env::temp_dir().join(format!("degauss-custom-presets-{}", std::process::id()));
+        let presets_root = root.join("Presets");
+        fs::create_dir_all(presets_root.join("Degauss")).unwrap();
+        fs::create_dir_all(presets_root.join("Core Specific")).unwrap();
+        fs::create_dir_all(root.join("gamma")).unwrap();
+        fs::write(
+            presets_root.join("Degauss/My Tube.ini"),
+            "gamma=gamma_110.txt\n",
+        )
+        .unwrap();
+        fs::write(
+            presets_root.join("Degauss/Incomplete.ini"),
+            "mask=missing.txt\n",
+        )
+        .unwrap();
+        fs::write(presets_root.join("Core Specific/NES.ini"), "gamma=off\n").unwrap();
+        assert!(discover(&presets_root).unwrap().is_empty());
+        fs::write(root.join("gamma/gamma_110.txt"), "curve").unwrap();
+        assert_eq!(
+            discover(&presets_root).unwrap(),
+            vec![Preset {
+                name: "Custom/My Tube".to_string(),
+                relative_path: "Degauss/My Tube.ini".to_string(),
+            }]
+        );
+        fs::remove_dir_all(root).unwrap();
     }
 }

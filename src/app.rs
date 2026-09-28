@@ -12548,6 +12548,28 @@ impl App {
                             .and_then(|()| crate::launch::set_display_mask(mask.as_deref(), fifo))
                     };
                     if let Err(error) = result {
+                        if preset.is_some() {
+                            let switched_off = crate::video_preset::apply(None, fifo)
+                                .and_then(|()| crate::launch::set_display_mask(None, fifo));
+                            match switched_off {
+                                Ok(()) => {
+                                    self.settings.video_preset = None;
+                                    self.video_preset_active = false;
+                                    self.settings.display_mask = None;
+                                    self.settings.hdmi_scanlines = Some(false);
+                                    self.message = Some(format!(
+                                        "Video preset could not be enabled: {error}. Video Effects is Off."
+                                    ));
+                                }
+                                Err(reset_error) => {
+                                    self.message = Some(format!(
+                                        "Video preset could not be enabled: {error}. Video Effects could not be switched off: {reset_error}"
+                                    ));
+                                }
+                            }
+                            self.dirty = true;
+                            return;
+                        }
                         self.message = Some(format!("Video effect could not be changed: {error}"));
                         self.dirty = true;
                         return;
