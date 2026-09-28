@@ -1837,6 +1837,11 @@ Any agent that can hold an ssh session will do. I use Claude Code.
 The one rule that makes it safe: it looks, it tells you what it found, you
 decide, then it acts. Never let it write to the card on its own initiative.
 
+For the complete review-first workflow, read
+[Managing Degauss artwork with an AI coding agent](tools/artwork-agent/DEGAUSS_AI_ARTWORK_FAQ.md),
+or [download the complete artwork agent kit](tools/artwork-agent/Degauss-AI-Artwork-Agent-Kit.zip)
+with its scripts, tests and requirements.
+
 Everything else your agent can work out or ask you about. To save you both
 the first hour, paste this into it at the start:
 
@@ -1930,6 +1935,12 @@ Degauss has been reported working on:
 - QMTech
 - Multisystem2
 - SS1
+
+### Can an AI coding agent manage my Degauss artwork?
+
+Yes. An agent with SSH access can audit the gamelists and artwork already on the MiSTer, identify genuine gaps, and prepare reviewed changes without replacing Degauss's own scraper. It should report what it found and wait for approval before writing to the card.
+
+Read [Managing Degauss artwork with an AI coding agent](tools/artwork-agent/DEGAUSS_AI_ARTWORK_FAQ.md), or [download the complete artwork agent kit](tools/artwork-agent/Degauss-AI-Artwork-Agent-Kit.zip) with its scripts, tests, requirements and licence.
 
 ### I installed an Artwork Pack, but its artwork is not showing
 
