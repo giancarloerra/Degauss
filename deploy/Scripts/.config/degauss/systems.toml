@@ -207,8 +207,9 @@ rbf = ""
 extensions = ["mra", "mgl"]
 
 category = "Arcade"
-# Nothing is skipped. The folders a card holds beside the games are the
-# work of the organise scripts people run: _Organized re-sorts every game
+# Only the top-level _Arcade/cores support folder is excluded in code. The
+# other folders a card holds beside the games are the work of the organise
+# scripts people run: _Organized re-sorts every game
 # by genre and manufacturer, _alternatives holds the other builds of a
 # board. Hiding them made those scripts pointless; browsing a folder at a
 # time makes them useful, and cannot produce the duplicates that hiding
