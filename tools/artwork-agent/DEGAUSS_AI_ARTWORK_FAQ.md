@@ -142,22 +142,26 @@ Yes, when the complete kit is supplied. The distributable kit contains:
 - `README.md`
 - `arcade_artwork_audit.py`
 - `arcade_artwork_source.py`
+- `system_artwork_audit.py`
+- `system_artwork_source.py`
 - `degauss_artwork_apply.py`
 - `test_arcade_artwork_audit.py`
 - `test_arcade_artwork_source.py`
+- `test_system_artwork_audit.py`
+- `test_system_artwork_source.py`
 - `test_degauss_artwork_apply.py`
 - `requirements.txt`
 - `LICENSE`
 
 The scripts contain no user or developer credentials. The ScreenScraper helper reads a separately protected developer TOML selected through `--developer-config` or `SCREENSCRAPER_DEVELOPER_CONFIG`, and reads the user's own protected Degauss ScreenScraper configuration on the MiSTer. Neither credential file belongs in the kit.
 
-The Arcade audit and source tools are intentionally limited to Arcade MRAs named by the latest Update All log. `degauss_artwork_apply.py` is the generic final-write tool for any Degauss system. It accepts only an explicit, hash-pinned, reviewed manifest; its default mode is a dry run. Discovery and matching remain system-specific and must be completed before preparing that manifest.
+The Arcade tools are intentionally limited to Arcade MRAs named by the latest Update All log. The bundled system tools implement complete-system adapters for Amiga, Commodore 64, Genesis, SNES, and Nintendo 64. `degauss_artwork_apply.py` is the generic final-write tool. It accepts only an explicit, hash-pinned, reviewed manifest; its default mode is a dry run.
 
 Before use, install Pillow and run the bundled tests:
 
 ```bash
 python3 -m pip install -r requirements.txt
-python3 -m unittest -v test_arcade_artwork_audit.py test_arcade_artwork_source.py test_degauss_artwork_apply.py
+python3 -m unittest -v test_*.py
 ```
 
 ## Degauss's artwork data model
@@ -441,11 +445,13 @@ Source details:
 |---|---|---|
 | [ScreenScraper](https://www.screenscraper.fr/) | Exact screenshots for supported console, computer, and Arcade platforms through its official API | Public title plus platform; exact returned identity; authorised user and developer credentials |
 | [Libretro MAME 2010 thumbnail sources](https://github.com/libretro-thumbnails/mame2010-thumbnail-sources) | Arcade `Named_Snaps` when ScreenScraper records an exact-title miss, ambiguity, or no screenshot | Exact safe MAME set name only |
-| [Libretro thumbnail repositories](https://github.com/libretro-thumbnails/libretro-thumbnails) | Locating the public system-specific Libretro thumbnail repository and its Named Snaps collection | Exact system and exact repository filename; visually inspect before approval |
+| [Libretro thumbnail repositories](https://github.com/libretro-thumbnails/libretro-thumbnails) | Public system-specific `Named_Snaps` after a recorded ScreenScraper miss | Exact ROM filename first; otherwise one unique public-title blob; complete commit-pinned index; visually inspect before approval |
 | Official game, test-suite, homebrew, or core repository | Items that artwork databases do not catalogue, such as test tools and homebrew | Directly attributable image for the exact public item and version |
 | Existing EmulationStation-compatible collection | Reusing already-owned images from ES-DE, Batocera, RetroPie, Recalbox, or EmuELEC | Exact imported game identity after path rebasing and visual review |
 
 Libretro is a public repository fallback, not a title-search service. ScreenScraper is the primary external title-and-platform lookup. An official project source is preferable for a test suite, demo, homebrew release, or support disc when it publishes an exact screenshot. A search engine result is not an artwork source by itself.
+
+Do not launch an emulator or core to manufacture a missing screenshot. New artwork must be a pre-existing image from the card, the user's own collection, or a verified public online source. If no exact pre-existing image can be verified for an obscure game, demo, test tool, hack, edition, or volume, leave it unresolved and report it.
 
 Check the source's current terms before redistributing downloaded images. This procedure records provenance but does not grant redistribution rights.
 
@@ -457,7 +463,7 @@ Use sources in this order:
 2. Exact artwork imported from the user's own existing frontend collection.
 3. An official game, homebrew, test-suite, or core project page when it publishes a directly attributable image for that exact item.
 4. ScreenScraper's official API, when authorised credentials are available and an exact game identity resolves.
-5. For Arcade, Libretro's public MAME Named Snaps by exact safe set name, but only after ScreenScraper records no exact title, an ambiguous exact title, or no screenshot.
+5. Libretro's public `Named_Snaps`, but only after ScreenScraper records no exact title, an ambiguous exact title, or no screenshot. Arcade requires an exact safe set name. A supported system adapter requires an exact ROM filename or one unique commit-pinned blob for the same public identity.
 6. Another public collection only after its identity, provenance, terms, and exact image have been reviewed and explicitly approved.
 
 Do not use a fallback after an authentication, API, TLS, or network failure. Do not use a random search-engine image as an unrecorded substitute. Record the source URL or repository identity, exact game identity, media type, byte size, and SHA-256 for every externally obtained file.
@@ -542,6 +548,62 @@ The reference script then:
 The script does not rebuild Degauss automatically.
 
 ## Extending the method beyond Arcade
+
+The bundled `system_artwork_audit.py` and `system_artwork_source.py` adapters cover Amiga, Commodore 64, Genesis, SNES, and Nintendo 64. They mirror each system's current Degauss roots and browse rules, keep demos and other uncertain variants out of automatic sourcing, and generate manifests for `degauss_artwork_apply.py`.
+
+Example audit and primary-source pass:
+
+```bash
+python3 system_artwork_audit.py --system SNES --output-dir ./system-audits
+python3 system_artwork_source.py \
+  --audits ./system-audits \
+  --output-dir ./system-candidates \
+  --system SNES \
+  --fetch \
+  --contact-sheets
+```
+
+The optional Libretro fallback requires a JSON configuration that maps each selected system to its official repository name and either a complete recursive tree JSON or a local Git checkout. The index must be pinned to a commit and must not be truncated. Large repositories may require the local Git form.
+
+```json
+{
+  "SNES": {
+    "repository": "Nintendo_-_Super_Nintendo_Entertainment_System",
+    "tree_json": "./Nintendo-SNES-tree.json"
+  }
+}
+```
+
+```bash
+python3 system_artwork_source.py \
+  --audits ./system-audits \
+  --output-dir ./system-candidates \
+  --system SNES \
+  --libretro-config ./libretro-sources.json \
+  --fetch \
+  --contact-sheets
+```
+
+After inspecting every contact-sheet image, create a review JSON that lists every candidate Git blob SHA-1 exactly once, either in `approved_blob_sha1` or in `rejected` with a reason. Manifest creation fails if any current candidate is unreviewed.
+
+```json
+{
+  "approved_blob_sha1": ["0123456789abcdef0123456789abcdef01234567"],
+  "rejected": {
+    "89abcdef0123456789abcdef0123456789abcdef": "wrong edition"
+  }
+}
+```
+
+```bash
+python3 system_artwork_source.py \
+  --audits ./system-audits \
+  --output-dir ./system-candidates \
+  --system SNES \
+  --libretro-config ./libretro-sources.json \
+  --libretro-review ./snes-libretro-review.json \
+  --manifest
+```
 
 Do not make the Arcade scripts generic by changing only a directory constant. Each system can have different roots, browse extensions, archives, virtual games, shared gamelists, and support files.
 
@@ -685,6 +747,8 @@ Start read-only. Run the installed Degauss --audit and --list-systems commands. 
 For every candidate gap, resolve exact-path, filename, stem, .slug, and parent-inherited matches using current Degauss behaviour. Distinguish a missing entry, empty artwork field, broken reference, virtual item, shared regional variant, distinct edition, and non-game/support row. Do not write yet.
 
 Reuse exact local art first. If external lookup is authorised, send only a public game title and platform ID. Read credentials from protected files inside the process and never print them or authenticated URLs. Require an exact identity match, fully decode the image, inspect it, and record its source, size, and SHA-256. Do not use a fallback to hide a source or network failure.
+
+Do not launch an emulator or core to create artwork. Use only pre-existing card art, the user's existing collection, or an exact image from a verified public online source. Leave obscure or uncertain items unresolved.
 
 Group only genuinely identical visual games. Never merge sequels, editions, volumes, conversions, or materially different releases. Leave every uncertain item unchanged.
 

@@ -55,6 +55,31 @@ def remote_digest(path: str) -> tuple[int, str] | None:
     return int(lines[0].strip()), lines[1].strip()
 
 
+def remote_digests(paths: list[str]) -> dict[str, tuple[int, str] | None]:
+    unique = list(dict.fromkeys(paths))
+    if not unique:
+        return {}
+    code = '''import hashlib, json, os
+paths = PATHS
+result = {}
+for path in paths:
+    if not os.path.isfile(path):
+        result[path] = None
+        continue
+    digest = hashlib.sha256()
+    size = 0
+    with open(path, "rb") as handle:
+        while chunk := handle.read(1024 * 1024):
+            size += len(chunk)
+            digest.update(chunk)
+    result[path] = [size, digest.hexdigest()]
+print(json.dumps(result))
+'''.replace("PATHS", repr(unique))
+    raw = run(["ssh", "-o", "BatchMode=yes", "mister", "python3 -"], data=code.encode())
+    parsed = json.loads(raw)
+    return {path: (int(value[0]), value[1]) if value is not None else None for path, value in parsed.items()}
+
+
 def safe_root(value: str) -> str:
     path = PurePosixPath(value)
     if not path.is_absolute() or ".." in path.parts or not value.startswith("/media/fat/"):
@@ -220,6 +245,55 @@ def copy_local(local: str, remote: str, expected: tuple[int, str]) -> None:
         ssh(f"if test -e {shlex.quote(part)}; then rm {shlex.quote(part)}; fi")
 
 
+def copy_local_batch(items: list[tuple[str, str, tuple[int, str]]]) -> None:
+    unique: dict[str, tuple[str, tuple[int, str]]] = {}
+    for local, remote, expected in items:
+        prior = unique.get(remote)
+        if prior is not None and prior != (local, expected):
+            raise RuntimeError(f"Conflicting local images target the same path: {remote}")
+        unique[remote] = (local, expected)
+    if not unique:
+        return
+    current = remote_digests(list(unique))
+    pending = {
+        remote: value for remote, value in unique.items()
+        if current.get(remote) != value[1]
+    }
+    for remote, (_, expected) in pending.items():
+        if current.get(remote) is not None:
+            raise RuntimeError(f"Refusing to replace a different existing artwork file: {remote}")
+    if not pending:
+        return
+    parts = {remote: remote + ".part-artwork-" + uuid.uuid4().hex for remote in pending}
+    try:
+        directories = sorted({str(PurePosixPath(remote).parent) for remote in pending})
+        ssh("mkdir -p " + " ".join(shlex.quote(path) for path in directories))
+        for remote, (local, _) in pending.items():
+            run(["scp", "-q", local, f"mister:{parts[remote]}"])
+        part_actual = remote_digests(list(parts.values()))
+        for remote, (_, expected) in pending.items():
+            if part_actual.get(parts[remote]) != expected:
+                raise RuntimeError(f"Transferred artwork differs from manifest: {remote}")
+        moves = [(parts[remote], remote) for remote in pending]
+        code = '''import os
+moves = MOVES
+existing = [target for _, target in moves if os.path.exists(target)]
+if existing:
+    raise RuntimeError("an artwork target appeared during upload")
+for part, target in moves:
+    os.replace(part, target)
+os.sync()
+'''.replace("MOVES", repr(moves))
+        run(["ssh", "-o", "BatchMode=yes", "mister", "python3 -"], data=code.encode())
+        final = remote_digests(list(pending))
+        for remote, (_, expected) in pending.items():
+            if final.get(remote) != expected:
+                raise RuntimeError(f"Final artwork differs from manifest: {remote}")
+    finally:
+        ssh("for path in " + " ".join(shlex.quote(path) for path in parts.values())
+            + "; do if test -e \"$path\"; then rm \"$path\"; fi; done")
+
+
 def write_gamelist(path: str, original: bytes, updated: bytes) -> str:
     old_digest = len(original), sha256(original)
     if remote_digest(path) != old_digest:
@@ -258,9 +332,29 @@ def plan(manifest: dict) -> tuple[bytes, bytes, list[tuple[dict, str, tuple[int,
     if sha256(original) != manifest["gamelist_sha256"]:
         raise ValueError("Live gamelist SHA-256 differs from manifest")
     verified = []
+    image_cache: dict[str, tuple[str, tuple[int, str]]] = {}
+    existing_descriptors: dict[str, tuple[str, tuple[int, str]]] = {}
+    for operation in manifest["operations"]:
+        descriptor = operation.get("image", {})
+        if descriptor.get("kind") != "existing":
+            continue
+        expected = (int(descriptor.get("size", -1)), descriptor.get("sha256", ""))
+        if expected[0] < 1 or not re.fullmatch(r"[0-9a-f]{64}", expected[1]):
+            raise ValueError("Image has no valid size/SHA-256")
+        remote = remote_from_relative(root, descriptor.get("path", ""))
+        existing_descriptors[json.dumps(descriptor, sort_keys=True, separators=(",", ":"))] = (remote, expected)
+    existing_actual = remote_digests([item[0] for item in existing_descriptors.values()])
+    for cache_key, (remote, expected) in existing_descriptors.items():
+        if existing_actual.get(remote) != expected:
+            raise ValueError(f"Existing image differs from manifest: {remote}")
+        image_cache[cache_key] = (remote, expected)
     for operation in manifest["operations"]:
         artwork = safe_relative(operation.get("artwork", ""), label="artwork path")
-        source, digest = verify_image(operation.get("image", {}), root)
+        descriptor = operation.get("image", {})
+        cache_key = json.dumps(descriptor, sort_keys=True, separators=(",", ":"))
+        if cache_key not in image_cache:
+            image_cache[cache_key] = verify_image(descriptor, root)
+        source, digest = image_cache[cache_key]
         if operation["image"]["kind"] == "existing" and operation["image"]["path"] != artwork:
             raise ValueError("Existing image path must equal the operation artwork path")
         verified.append((operation, source, digest))
@@ -290,21 +384,31 @@ def main() -> int:
         return 0
     assert_no_writer()
     root = manifest["root"]
+    copies: list[tuple[str, str, tuple[int, str]]] = []
     for operation, source, digest in verified:
         if operation["image"]["kind"] == "local":
-            copy_local(source, remote_from_relative(root, operation["artwork"]), digest)
+            target = remote_from_relative(root, operation["artwork"])
+            copies.append((source, target, digest))
+    copy_local_batch(copies)
     gamelist = root.rstrip("/") + "/gamelist.xml"
     backup = write_gamelist(gamelist, original, updated)
     final_root = ET.fromstring(ssh(f"cat {shlex.quote(gamelist)}"))
     final_entries = read_entries(final_root)
+    final_expected: dict[str, tuple[int, str]] = {}
     for operation, _, digest in verified:
         path = operation["path"]
         game = final_entries[path][0]
         value = next((game.findtext(field) for field in ART_FIELDS if game.find(field) is not None), "")
         if value != operation["artwork"]:
             raise RuntimeError(f"Final artwork reference differs for {path}")
-        if remote_digest(remote_from_relative(root, value)) != digest:
-            raise RuntimeError(f"Final artwork file differs for {path}")
+        remote = remote_from_relative(root, value)
+        if remote in final_expected and final_expected[remote] != digest:
+            raise RuntimeError(f"Conflicting expected artwork hashes for {remote}")
+        final_expected[remote] = digest
+    final_images = remote_digests(list(final_expected))
+    for remote, digest in final_expected.items():
+        if final_images.get(remote) != digest:
+            raise RuntimeError(f"Final artwork file differs for {remote}")
     print(f"Applied {len(verified)} operations; backup: {backup}")
     return 0
 
