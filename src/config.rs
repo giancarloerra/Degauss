@@ -226,6 +226,25 @@ impl SystemConfig {
             return false;
         };
         let ext = ext.to_ascii_lowercase();
+        if self.setname.as_deref() == Some("Atari2600") && ext == "bin" {
+            let roots = std::iter::once(self.path.as_str())
+                .chain(self.extra_paths.iter().map(String::as_str))
+                .map(Path::new);
+            // The shared 7800 folder belongs to Atari 7800 for .bin files.
+            // A dedicated Atari2600 folder also works with older user-edited
+            // systems.toml files that do not list bin yet.
+            for root in roots {
+                if path.starts_with(root) {
+                    let name = root.file_name().and_then(|name| name.to_str());
+                    if name.is_some_and(|name| name.eq_ignore_ascii_case("ATARI7800")) {
+                        return false;
+                    }
+                    if name.is_some_and(|name| name.eq_ignore_ascii_case("Atari2600")) {
+                        return true;
+                    }
+                }
+            }
+        }
         self.extensions.iter().any(|e| e.eq_ignore_ascii_case(&ext))
     }
 
