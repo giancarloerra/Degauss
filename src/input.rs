@@ -30,9 +30,27 @@
 //! pair is dropped by the [`DuplicateGuard`] before anything else sees it,
 //! so one press moves once.
 
+use std::path::PathBuf;
 use std::time::{Duration, Instant, SystemTime};
 
 use crate::settings::{HoldButton, HoldShortcut};
+
+/// Compare the input paths already open with the keyboard-capable paths found
+/// by a later scan. Sorted, deduplicated results keep hotplug reconciliation
+/// deterministic without changing the order of the live device readers.
+fn input_path_changes(
+    existing: &[PathBuf],
+    discovered: &[PathBuf],
+) -> (Vec<PathBuf>, Vec<PathBuf>) {
+    use std::collections::BTreeSet;
+
+    let existing = existing.iter().cloned().collect::<BTreeSet<_>>();
+    let discovered = discovered.iter().cloned().collect::<BTreeSet<_>>();
+    let added = discovered.difference(&existing).cloned().collect();
+    let removed = existing.difference(&discovered).cloned().collect();
+    (added, removed)
+}
+
 /// What Degauss does, independent of which key or button produced it.
 ///
 /// Only the device build turns real key codes into these; a development
@@ -653,12 +671,13 @@ pub use linux::{
 
 #[cfg(target_os = "linux")]
 mod linux {
+    use std::io::ErrorKind;
     use std::path::PathBuf;
-    use std::time::SystemTime;
+    use std::time::{Duration, Instant, SystemTime};
 
     use evdev::{Device, EventSummary};
 
-    use super::{action_for_key, key_edge, merge_by_stamp, KeyEdge};
+    use super::{action_for_key, input_path_changes, key_edge, merge_by_stamp, KeyEdge};
     use crate::error::{DegaussError, Result};
 
     /// What was opened, so Degauss can show whether it is actually
@@ -675,7 +694,10 @@ mod linux {
     pub struct InputReader {
         devices: Vec<(PathBuf, Device)>,
         summaries: Vec<DeviceSummary>,
+        last_scan: Instant,
     }
+
+    const INPUT_SCAN_INTERVAL: Duration = Duration::from_secs(1);
 
     impl InputReader {
         /// Open every keyboard-capable input device, without grabbing any.
@@ -710,7 +732,11 @@ mod linux {
                 devices.push((path, device));
             }
 
-            Ok(InputReader { devices, summaries })
+            Ok(InputReader {
+                devices,
+                summaries,
+                last_scan: Instant::now(),
+            })
         }
 
         pub fn devices(&self) -> &[DeviceSummary] {
@@ -721,15 +747,92 @@ mod linux {
             self.summaries.iter().any(|d| d.is_mister_virtual)
         }
 
+        /// Reconcile direct keyboards that appeared or disappeared after
+        /// startup. MiSTer's gamepads continue to arrive through its existing
+        /// virtual input device, so this does not change controller mapping.
+        fn refresh_devices(&mut self) {
+            let mut discovered = Vec::new();
+            for (path, device) in evdev::enumerate() {
+                let useful = device
+                    .supported_keys()
+                    .is_some_and(|keys| keys.iter().any(|k| action_for_key(k.code()).is_some()));
+                if useful {
+                    discovered.push((path, device));
+                }
+            }
+
+            let existing_paths = self
+                .devices
+                .iter()
+                .map(|(path, _)| path.clone())
+                .collect::<Vec<_>>();
+            let discovered_paths = discovered
+                .iter()
+                .map(|(path, _)| path.clone())
+                .collect::<Vec<_>>();
+            let (added, removed) = input_path_changes(&existing_paths, &discovered_paths);
+
+            for path in &removed {
+                crate::note(&format!("input        disconnected {}", path.display()));
+            }
+            self.devices.retain(|(path, _)| !removed.contains(path));
+            self.summaries
+                .retain(|summary| !removed.contains(&summary.path));
+
+            for (path, device) in discovered {
+                if !added.contains(&path) {
+                    continue;
+                }
+                if let Err(error) = device.set_nonblocking(true) {
+                    crate::note(&format!(
+                        "input        {} could not be opened non-blocking: {error}",
+                        path.display()
+                    ));
+                    continue;
+                }
+
+                let name = device.name().unwrap_or("unnamed").to_string();
+                let summary = DeviceSummary {
+                    path: path.clone(),
+                    is_mister_virtual: name.contains("MiSTer virtual input"),
+                    name,
+                };
+                crate::note(&format!(
+                    "input        connected {} {}",
+                    path.display(),
+                    summary.name
+                ));
+                self.summaries.push(summary);
+                self.devices.push((path, device));
+            }
+        }
+
         /// Drain whatever is waiting, each edge with the time the kernel
         /// stamped on its event, in stamp order. Never blocks.
         pub fn poll(&mut self) -> Vec<(KeyEdge, SystemTime)> {
+            let now = Instant::now();
+            if now.duration_since(self.last_scan) >= INPUT_SCAN_INTERVAL {
+                self.refresh_devices();
+                self.last_scan = now;
+            }
+
             let mut edges = Vec::new();
-            for (_, device) in &mut self.devices {
+            let mut disconnected = Vec::new();
+            for (path, device) in &mut self.devices {
                 let events = match device.fetch_events() {
                     Ok(events) => events,
-                    // WouldBlock simply means nothing is waiting.
-                    Err(_) => continue,
+                    // WouldBlock simply means nothing is waiting. Any other
+                    // error means this descriptor is no longer usable; drop
+                    // it so the next scan can reopen a reconnected device.
+                    Err(error) if error.kind() == ErrorKind::WouldBlock => continue,
+                    Err(error) => {
+                        crate::note(&format!(
+                            "input        {} stopped responding: {error}",
+                            path.display()
+                        ));
+                        disconnected.push(path.clone());
+                        continue;
+                    }
                 };
                 let drained = edges.len();
                 for event in events {
@@ -744,6 +847,12 @@ mod linux {
                     }
                 }
                 merge_by_stamp(&mut edges, drained);
+            }
+            if !disconnected.is_empty() {
+                self.devices
+                    .retain(|(path, _)| !disconnected.contains(path));
+                self.summaries
+                    .retain(|summary| !disconnected.contains(&summary.path));
             }
             edges
         }
@@ -1085,6 +1194,24 @@ mod elsewhere {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn input_device_reconciliation_adds_and_removes_each_path_once() {
+        let existing = [
+            PathBuf::from("/dev/input/event0"),
+            PathBuf::from("/dev/input/event2"),
+        ];
+        let discovered = [
+            PathBuf::from("/dev/input/event0"),
+            PathBuf::from("/dev/input/event1"),
+            PathBuf::from("/dev/input/event1"),
+        ];
+
+        let (added, removed) = input_path_changes(&existing, &discovered);
+
+        assert_eq!(added, [PathBuf::from("/dev/input/event1")]);
+        assert_eq!(removed, [PathBuf::from("/dev/input/event2")]);
+    }
 
     fn shortcuts(entries: &[(HoldButton, HoldShortcut)]) -> [Option<HoldShortcut>; 4] {
         let mut shortcuts = [None; 4];
