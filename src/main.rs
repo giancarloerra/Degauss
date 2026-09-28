@@ -1636,7 +1636,10 @@ fn prepare_display_mask_handoff(
     preset_active: bool,
     cleanup: &mut DisplayMaskCleanup<'_>,
 ) -> Result<()> {
-    cleanup.armed = mask_active;
+    // Resetting a full preset can restore the mask that was active before it.
+    // Clear that restored mask too, even though the preset took precedence in
+    // the current Degauss settings.
+    cleanup.armed = mask_active || preset_active;
     cleanup.preset_armed = preset_active;
     // Main clears this temporary mask when loading a core. Sending Off here
     // would put two commands in its unframed FIFO before it reads either one.
@@ -1650,7 +1653,7 @@ fn prepare_display_mask_handoff(
     };
     cleanup.finish_preset_reset(&preset_reset);
     preset_reset?;
-    let reset = if mask_active {
+    let reset = if mask_active || preset_active {
         launch::set_display_mask(None, cleanup.fifo)
     } else {
         Ok(())
@@ -1736,7 +1739,7 @@ fn run_on_framebuffer(
     // post-run reset below handles successful startup and disarms this guard.
     let mut mask_cleanup = DisplayMaskCleanup {
         fifo: Path::new(launch::CMD_FIFO),
-        armed: mask_selected_at_start,
+        armed: mask_selected_at_start || app.video_preset_active(),
         preset_armed: app.video_preset_active(),
     };
     // Only when asked: without the flag the view saved in settings.toml,
@@ -2363,7 +2366,8 @@ mod tests {
                 armed: true,
                 preset_armed: true,
             };
-            prepare_display_mask_handoff(&core_launch, true, true, &mut cleanup).unwrap();
+            prepare_display_mask_handoff(&core_launch, false, true, &mut cleanup).unwrap();
+            assert!(cleanup.armed, "a preset may restore its previous mask");
             assert_eq!(std::fs::read_to_string(&fifo).unwrap(), "");
             let Ok(Outcome::Launch { plan, .. }) = &core_launch else {
                 unreachable!()

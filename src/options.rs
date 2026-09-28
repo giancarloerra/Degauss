@@ -40,9 +40,7 @@ pub enum OptionId {
     ShowArt,
     /// Improve low-line artwork and logos with an area filter.
     CrtSmoothing,
-    /// A MiSTer shadow mask for Degauss's framebuffer output.
-    HdmiScanlines,
-    /// Native MiSTer video preset applied only while Degauss is open.
+    /// A Degauss mask or general MiSTer video preset, never both at once.
     VideoPreset,
     /// Correct game artwork for the physical aspect ratio of a display
     /// whose framebuffer pixels are not square.
@@ -137,7 +135,6 @@ pub const OPTIONS: &[OptionId] = &[
     OptionId::Font,
     OptionId::ShowArt,
     OptionId::CrtSmoothing,
-    OptionId::HdmiScanlines,
     OptionId::VideoPreset,
     OptionId::ArtworkScale,
     OptionId::ShowBar,
@@ -300,7 +297,6 @@ impl OptionsPage {
                 OptionId::ScrapeAll,
             ],
             Self::Display => &[
-                OptionId::HdmiScanlines,
                 OptionId::VideoPreset,
                 OptionId::ScreenRotation,
                 OptionId::OverscanX,
@@ -330,8 +326,7 @@ impl OptionId {
             OptionId::Theme => "Theme",
             OptionId::ShowArt => "Artwork",
             OptionId::CrtSmoothing => "CRT Image Smoothing",
-            OptionId::HdmiScanlines => "Shadow Mask Effects",
-            OptionId::VideoPreset => "Video Preset",
+            OptionId::VideoPreset => "Video Effects",
             OptionId::ArtworkScale => "Artwork Scale Factor",
             OptionId::ShowHidden => "Show What You Hid",
             OptionId::ShowEmpty => "Show Systems with No Games",
@@ -415,11 +410,8 @@ impl OptionId {
             OptionId::CrtSmoothing => {
                 "Smooth artwork and logos at 240p/288p. Off restores the faster original scaling; higher-resolution modes are unchanged."
             }
-            OptionId::HdmiScanlines => {
-                "Choose Off or a MiSTer mask from the Degauss masks folder. It affects HDMI and scaled analog output while Degauss is open, not games."
-            }
             OptionId::VideoPreset => {
-                "Choose an installed MiSTer video preset for Degauss only. Off keeps your separate Shadow Mask Effects choice."
+                "Choose Off, a Degauss mask, or a general MiSTer video preset. Effects apply only while Degauss is open."
             }
             OptionId::ArtworkScale => {
                 "Match game artwork to the display shape. Logos and screensaver images are unchanged."
@@ -670,6 +662,16 @@ mod tests {
             assert!(!seen.contains(&option), "{option:?} listed twice");
             seen.push(option);
         }
+    }
+
+    #[test]
+    fn display_has_one_effect_choice() {
+        let effects: Vec<_> = OptionsPage::Display
+            .ids()
+            .iter()
+            .filter(|id| id.label() == "Video Effects")
+            .collect();
+        assert_eq!(effects.len(), 1);
     }
 
     #[test]

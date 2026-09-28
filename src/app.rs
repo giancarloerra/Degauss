@@ -344,7 +344,6 @@ fn option_operation(option: OptionId, input: OptionInput) -> OptionOperation {
         | OptionId::Font
         | OptionId::ShowArt
         | OptionId::CrtSmoothing
-        | OptionId::HdmiScanlines
         | OptionId::VideoPreset
         | OptionId::ArtworkScale
         | OptionId::DetailsStyle
@@ -11666,6 +11665,11 @@ impl App {
     }
 
     pub fn display_mask(&self) -> Option<&str> {
+        // A saved preset takes precedence if an older settings file contains
+        // both choices. The unified menu writes only one choice at a time.
+        if self.settings.video_preset.is_some() {
+            return None;
+        }
         self.settings.display_mask.as_deref().or_else(|| {
             self.settings
                 .hdmi_scanlines
@@ -12461,54 +12465,16 @@ impl App {
                 self.apply_geometry();
                 self.touch_selection();
             }
-            OptionId::HdmiScanlines => {
-                let current = self
-                    .display_mask()
-                    .and_then(|name| self.display_masks.iter().position(|item| item == name))
-                    .map_or(0, |index| index + 1);
-                let next = step(current, delta, self.display_masks.len() + 1);
-                let name = next
-                    .checked_sub(1)
-                    .map(|index| self.display_masks[index].clone());
-                if let Some(name) = name.as_deref() {
-                    if let Err(error) = crate::display_mask::validate(&self.display_masks_dir, name)
-                    {
-                        crate::note(&format!("display mask invalid; switching off: {error}"));
-                        if cfg!(all(target_os = "linux", target_arch = "arm")) && !cfg!(test) {
-                            if let Err(reset_error) = crate::launch::set_display_mask(
-                                None,
-                                Path::new(crate::launch::CMD_FIFO),
-                            ) {
-                                crate::note(&format!(
-                                    "display mask could not be switched off: {reset_error}"
-                                ));
-                                self.message = Some(format!(
-                                    "Display mask could not be switched off: {reset_error}"
-                                ));
-                                self.dirty = true;
-                                return;
-                            }
-                        }
-                        self.settings.display_mask = None;
-                        self.settings.hdmi_scanlines = Some(false);
-                        self.dirty = true;
-                        return;
-                    }
-                }
-                if cfg!(all(target_os = "linux", target_arch = "arm")) && !cfg!(test) {
-                    if let Err(error) = crate::launch::set_display_mask(
-                        name.as_deref(),
-                        Path::new(crate::launch::CMD_FIFO),
-                    ) {
-                        self.message = Some(format!("Display mask could not be changed: {error}"));
-                        self.dirty = true;
-                        return;
-                    }
-                }
-                self.settings.display_mask = name;
-                self.settings.hdmi_scanlines = Some(false);
-            }
             OptionId::VideoPreset => {
+                let masks = self.display_masks.len();
+                // A preset saved by the earlier unrestricted picker remains
+                // usable, but one adjustment must always allow leaving it.
+                let saved_preset_not_offered = self.video_preset().is_some_and(|name| {
+                    !self
+                        .video_presets
+                        .iter()
+                        .any(|item| item.relative_path == name)
+                });
                 let current = self
                     .video_preset()
                     .and_then(|name| {
@@ -12516,23 +12482,81 @@ impl App {
                             .iter()
                             .position(|item| item.relative_path == name)
                     })
-                    .map_or(0, |index| index + 1);
-                let next = step(current, delta, self.video_presets.len() + 1);
-                let name = next
-                    .checked_sub(1)
+                    .map(|index| masks + index + 1)
+                    .or_else(|| {
+                        self.display_mask().and_then(|name| {
+                            self.display_masks
+                                .iter()
+                                .position(|item| item == name)
+                                .map(|index| index + 1)
+                        })
+                    })
+                    .unwrap_or(0);
+                let next = if saved_preset_not_offered {
+                    0
+                } else {
+                    step(current, delta, masks + self.video_presets.len() + 1)
+                };
+                let mask = (1..=masks)
+                    .contains(&next)
+                    .then(|| self.display_masks[next - 1].clone());
+                let preset = next
+                    .checked_sub(masks + 1)
                     .map(|index| self.video_presets[index].relative_path.clone());
-                if cfg!(all(target_os = "linux", target_arch = "arm")) && !cfg!(test) {
-                    if let Err(error) = crate::video_preset::apply(
-                        name.as_deref(),
-                        Path::new(crate::launch::CMD_FIFO),
-                    ) {
-                        self.message = Some(format!("Video preset could not be changed: {error}"));
+                if let Some(name) = mask.as_deref() {
+                    if let Err(error) = crate::display_mask::validate(&self.display_masks_dir, name)
+                    {
+                        crate::note(&format!("display mask invalid; switching off: {error}"));
+                        if cfg!(all(target_os = "linux", target_arch = "arm")) && !cfg!(test) {
+                            let reset_preset = if self.video_preset_active {
+                                crate::video_preset::apply(None, Path::new(crate::launch::CMD_FIFO))
+                            } else {
+                                Ok(())
+                            };
+                            if let Err(reset_error) = reset_preset.and_then(|()| {
+                                crate::launch::set_display_mask(
+                                    None,
+                                    Path::new(crate::launch::CMD_FIFO),
+                                )
+                            }) {
+                                self.message = Some(format!(
+                                    "Video effect could not be switched off: {reset_error}"
+                                ));
+                                self.dirty = true;
+                                return;
+                            }
+                        }
+                        self.settings.video_preset = None;
+                        self.video_preset_active = false;
+                        self.settings.display_mask = None;
+                        self.settings.hdmi_scanlines = Some(false);
                         self.dirty = true;
                         return;
                     }
                 }
-                self.settings.video_preset = name;
+                if cfg!(all(target_os = "linux", target_arch = "arm")) && !cfg!(test) {
+                    let fifo = Path::new(crate::launch::CMD_FIFO);
+                    let result = if let Some(name) = preset.as_deref() {
+                        crate::video_preset::apply(Some(name), fifo)
+                    } else {
+                        let reset_preset = if self.video_preset_active {
+                            crate::video_preset::apply(None, fifo)
+                        } else {
+                            Ok(())
+                        };
+                        reset_preset
+                            .and_then(|()| crate::launch::set_display_mask(mask.as_deref(), fifo))
+                    };
+                    if let Err(error) = result {
+                        self.message = Some(format!("Video effect could not be changed: {error}"));
+                        self.dirty = true;
+                        return;
+                    }
+                }
+                self.settings.video_preset = preset;
                 self.video_preset_active = self.settings.video_preset.is_some();
+                self.settings.display_mask = mask;
+                self.settings.hdmi_scanlines = Some(false);
             }
             OptionId::ArtworkScale => {
                 let at = step(self.artwork_scale.index(), delta, ArtworkScale::ALL.len());
@@ -12814,7 +12838,6 @@ impl App {
             },
             OptionId::ShowArt => on_off(self.show_art),
             OptionId::CrtSmoothing => on_off(self.settings.crt_smoothing.unwrap_or(true)),
-            OptionId::HdmiScanlines => self.display_mask().unwrap_or("Off").to_string(),
             OptionId::VideoPreset => self
                 .video_preset()
                 .and_then(|name| {
@@ -12823,8 +12846,8 @@ impl App {
                         .find(|item| item.relative_path == name)
                 })
                 .map(|item| item.name.clone())
-                .or_else(|| self.video_preset().map(|name| format!("Missing: {name}")))
-                .unwrap_or_else(|| "Off".to_string()),
+                .or_else(|| self.video_preset().map(|name| format!("Saved: {name}")))
+                .unwrap_or_else(|| self.display_mask().unwrap_or("Off").to_string()),
             OptionId::ArtworkScale => self.artwork_scale.shown().to_string(),
             OptionId::DetailsStyle => self.details_style.shown().to_string(),
             OptionId::GameNameDisplay => self.game_name_display.label().to_string(),
@@ -21835,6 +21858,10 @@ pub(crate) fn test_library_launch_flow(window: Rc<MinimalSoftwareWindow>) {
     app.open_options_page(OptionsPage::Display);
     assert_eq!(app.option_value(OptionId::VideoPreset), "Off");
     app.adjust_option_value(OptionId::VideoPreset, 1);
+    assert_eq!(app.option_value(OptionId::VideoPreset), "Scanlines");
+    assert_eq!(app.settings.display_mask.as_deref(), Some("Scanlines"));
+    assert_eq!(app.settings.video_preset, None);
+    app.adjust_option_value(OptionId::VideoPreset, 1);
     assert_eq!(
         app.option_value(OptionId::VideoPreset),
         "Display Specific/Sony PVM"
@@ -21843,21 +21870,43 @@ pub(crate) fn test_library_launch_flow(window: Rc<MinimalSoftwareWindow>) {
         app.settings.video_preset.as_deref(),
         Some("Display Specific/Sony PVM.ini")
     );
+    assert_eq!(app.settings.display_mask, None);
+    app.adjust_option_value(OptionId::VideoPreset, -1);
+    assert_eq!(app.option_value(OptionId::VideoPreset), "Scanlines");
+    assert_eq!(app.settings.video_preset, None);
     app.adjust_option_value(OptionId::VideoPreset, -1);
     assert_eq!(app.option_value(OptionId::VideoPreset), "Off");
-
-    assert_eq!(app.option_value(OptionId::HdmiScanlines), "Off");
-    app.adjust_option_value(OptionId::HdmiScanlines, 1);
-    assert_eq!(app.option_value(OptionId::HdmiScanlines), "Scanlines");
-    app.adjust_option_value(OptionId::HdmiScanlines, -1);
-    assert_eq!(app.option_value(OptionId::HdmiScanlines), "Off");
+    assert_eq!(app.settings.display_mask, None);
+    // A retained local candidate may contain both old separate selections.
+    // Show the preset, then clear both when the unified choice reaches Off.
+    app.settings.display_mask = Some("Scanlines".into());
+    app.settings.video_preset = Some("Display Specific/Sony PVM.ini".into());
+    app.video_preset_active = true;
+    assert_eq!(app.display_mask(), None);
+    assert_eq!(
+        app.option_value(OptionId::VideoPreset),
+        "Display Specific/Sony PVM"
+    );
+    app.adjust_option_value(OptionId::VideoPreset, 1);
+    assert_eq!(app.option_value(OptionId::VideoPreset), "Off");
+    assert_eq!(app.settings.video_preset, None);
+    assert_eq!(app.settings.display_mask, None);
+    app.settings.video_preset = Some("Core Specific/Previously Saved.ini".into());
+    app.video_preset_active = true;
+    assert_eq!(
+        app.option_value(OptionId::VideoPreset),
+        "Saved: Core Specific/Previously Saved.ini"
+    );
+    app.adjust_option_value(OptionId::VideoPreset, 1);
+    assert_eq!(app.option_value(OptionId::VideoPreset), "Off");
+    assert_eq!(app.settings.video_preset, None);
     app.settings.hdmi_scanlines = Some(true);
-    assert_eq!(app.option_value(OptionId::HdmiScanlines), "Scanlines");
+    assert_eq!(app.option_value(OptionId::VideoPreset), "Scanlines");
     app.settings.hdmi_scanlines = None;
     std::fs::write(root.join("masks/0 Broken.txt"), "v2\n2,2\n70f,008\n").unwrap();
     app.display_masks = crate::display_mask::names(&root.join("masks")).unwrap();
-    app.adjust_option_value(OptionId::HdmiScanlines, 1);
-    assert_eq!(app.option_value(OptionId::HdmiScanlines), "Off");
+    app.adjust_option_value(OptionId::VideoPreset, 1);
+    assert_eq!(app.option_value(OptionId::VideoPreset), "Off");
     assert_eq!(app.settings.hdmi_scanlines, Some(false));
 
     app.settings.display_mask = Some("0 Broken".into());

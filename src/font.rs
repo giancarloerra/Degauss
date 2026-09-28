@@ -374,6 +374,29 @@ mod tests {
     }
 
     #[test]
+    fn smooth_size_packs_embed_distinct_families() {
+        // The renderer selects its embedded glyphs by this name. DejaVu's
+        // typographic family must differ for every preset, not only the
+        // visible default-font-family property in the Slint component.
+        for (preset, family) in [
+            ("smaller", "DejaVu Sans Smaller"),
+            ("small", "DejaVu Sans Small"),
+            ("large", "DejaVu Sans Large"),
+            ("larger", "DejaVu Sans Larger"),
+        ] {
+            let generated =
+                std::fs::read_to_string(format!("{}/smooth_{preset}.rs", env!("OUT_DIR")))
+                    .expect("the build writes each smooth font pack");
+            assert!(
+                generated.contains(&format!(
+                    "family_name : sp :: Slice :: from_slice (\"{family}\""
+                )),
+                "{preset} must embed glyphs under {family:?}"
+            );
+        }
+    }
+
+    #[test]
     fn a_name_off_a_card_has_a_glyph_for_every_letter_in_it() {
         // Nothing is drawn for a character whose glyph was not baked: not a
         // box, not a question mark, nothing. A name loses the letter and

@@ -1,4 +1,4 @@
-//! Installed MiSTer video presets offered for Degauss's framebuffer.
+//! General MiSTer video presets offered for Degauss's framebuffer.
 
 use std::fs;
 use std::path::Path;
@@ -6,6 +6,17 @@ use std::path::Path;
 use std::path::PathBuf;
 
 use crate::error::{DegaussError, Result};
+
+// MiSTer's preset collection also includes core-specific and display-specific
+// game configurations. Only these general framebuffer effects belong in the
+// Degauss menu. A preset is offered only while its own files are installed.
+const GENERAL_PRESETS: [&str; 5] = [
+    "Display Specific/Sony PVM.ini",
+    "Interpolation Only.ini",
+    "Scanlines - Medium.ini",
+    "Scanlines - Sharp.ini",
+    "Scanlines - Soft.ini",
+];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Preset {
@@ -15,48 +26,61 @@ pub struct Preset {
 
 pub fn discover(root: &Path) -> Result<Vec<Preset>> {
     let mut presets = Vec::new();
-    let mut folders = vec![root.to_path_buf()];
-    while let Some(folder) = folders.pop() {
-        let entries = match fs::read_dir(&folder) {
-            Ok(entries) => entries,
-            Err(error) if folder == root && error.kind() == std::io::ErrorKind::NotFound => {
-                return Ok(presets);
-            }
-            Err(error) => return Err(DegaussError::io("reading MiSTer presets", &folder, error)),
+    let Some(menu_root) = root.parent() else {
+        return Ok(presets);
+    };
+    for relative in GENERAL_PRESETS {
+        let path = root.join(relative);
+        let contents = match fs::read_to_string(&path) {
+            Ok(contents) => contents,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(DegaussError::io("reading MiSTer preset", &path, error)),
         };
-        for entry in entries {
-            let entry = entry
-                .map_err(|error| DegaussError::io("reading MiSTer presets", &folder, error))?;
-            let kind = entry.file_type().map_err(|error| {
-                DegaussError::io("inspecting MiSTer preset", entry.path(), error)
-            })?;
-            if kind.is_dir() {
-                folders.push(entry.path());
-            } else if kind.is_file()
-                && entry
-                    .path()
-                    .extension()
-                    .and_then(|ext| ext.to_str())
-                    .is_some_and(|ext| ext.eq_ignore_ascii_case("ini"))
-            {
-                let path = entry.path();
-                let Ok(relative) = path.strip_prefix(root) else {
-                    continue;
-                };
-                let relative = relative.to_string_lossy().replace('\\', "/");
-                if !valid_relative_path(&relative) {
-                    continue;
-                }
-                let name = relative[..relative.len() - 4].to_string();
-                presets.push(Preset {
-                    name,
-                    relative_path: relative,
-                });
-            }
+        if preset_components_present(menu_root, &contents) {
+            presets.push(Preset {
+                name: relative[..relative.len() - 4].to_string(),
+                relative_path: relative.to_string(),
+            });
         }
     }
     presets.sort_by_key(|item| item.name.to_lowercase());
     Ok(presets)
+}
+
+fn preset_components_present(menu_root: &Path, contents: &str) -> bool {
+    let mut has_effect = false;
+    for line in contents.lines() {
+        let Some((key, value)) = line.trim().split_once('=') else {
+            continue;
+        };
+        let folder = match key.trim().to_ascii_lowercase().as_str() {
+            "hfilter" | "vfilter" | "sfilter" | "ifilter" => "filters",
+            "gamma" => "gamma",
+            "mask" => "shadow_masks",
+            "maskmode" => {
+                has_effect = true;
+                continue;
+            }
+            _ => continue,
+        };
+        has_effect = true;
+        let value = value.trim();
+        if value.eq_ignore_ascii_case("off")
+            || value.eq_ignore_ascii_case("same")
+            || value.eq_ignore_ascii_case("none")
+        {
+            continue;
+        }
+        if value.is_empty()
+            || value.starts_with('/')
+            || value.contains("..")
+            || value.contains('\\')
+            || !menu_root.join(folder).join(value).is_file()
+        {
+            return false;
+        }
+    }
+    has_effect
 }
 
 pub fn valid_relative_path(path: &str) -> bool {
@@ -143,15 +167,34 @@ mod tests {
     use super::*;
 
     #[test]
-    fn finds_nested_native_presets_without_following_links() {
+    fn offers_only_general_presets_with_installed_components() {
         let root = std::env::temp_dir().join(format!("degauss-presets-{}", std::process::id()));
-        fs::create_dir_all(root.join("Display Specific")).unwrap();
-        fs::write(root.join("Display Specific/Sony PVM.ini"), "gamma=off\n").unwrap();
-        fs::write(root.join("Other.txt"), "").unwrap();
-        let presets = discover(&root).unwrap();
+        let presets_root = root.join("Presets");
+        fs::create_dir_all(presets_root.join("Display Specific")).unwrap();
+        fs::create_dir_all(presets_root.join("Core Specific")).unwrap();
+        fs::create_dir_all(root.join("gamma")).unwrap();
+        fs::write(
+            presets_root.join("Display Specific/Sony PVM.ini"),
+            "gamma=Pure_Gamma/gamma_110.txt\n",
+        )
+        .unwrap();
+        fs::write(presets_root.join("Core Specific/NES.ini"), "gamma=off\n").unwrap();
+        fs::write(presets_root.join("Display Specific/JVC.ini"), "gamma=off\n").unwrap();
+        fs::write(
+            presets_root.join("Scanlines - Soft.ini"),
+            "mask=missing.txt\n",
+        )
+        .unwrap();
+        assert!(discover(&presets_root).unwrap().is_empty());
+        fs::create_dir_all(root.join("gamma/Pure_Gamma")).unwrap();
+        fs::write(root.join("gamma/Pure_Gamma/gamma_110.txt"), "curve").unwrap();
+        let presets = discover(&presets_root).unwrap();
         assert_eq!(presets.len(), 1);
         assert_eq!(presets[0].name, "Display Specific/Sony PVM");
         assert_eq!(presets[0].relative_path, "Display Specific/Sony PVM.ini");
+        fs::create_dir_all(root.join("shadow_masks")).unwrap();
+        fs::write(root.join("shadow_masks/missing.txt"), "mask").unwrap();
+        assert_eq!(discover(&presets_root).unwrap().len(), 2);
         fs::remove_dir_all(root).unwrap();
     }
 

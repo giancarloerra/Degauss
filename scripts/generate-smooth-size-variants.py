@@ -26,7 +26,9 @@ for source, family, stem in SOURCES:
         variant_family = f"{family} {preset}"
         postscript = f"{stem}-{preset}"
         for record in names.names:
-            if record.nameID in (1, 4):
+            # DejaVu also has a typographic family (name ID 16). Slint uses
+            # that name when embedding glyphs, ahead of the legacy family.
+            if record.nameID in (1, 4, 16):
                 replacement = variant_family
             elif record.nameID in (3, 6):
                 replacement = postscript

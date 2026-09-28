@@ -872,8 +872,7 @@ require **A** and confirmation, never a sideways press.
 | Appearance | Attract Mode | Off by default. When on, A launches the game pictured at the centre and Left/Right moves between systems |
 | Appearance | Show Attract Mode on Home | Off by default. Add an immediate Attract Mode entry to the main browser, independently of idle screensaver settings |
 | Appearance | Screensaver Speed | Normal (default), 2x or 4x picture movement, independent of the idle time |
-| Display | Shadow Mask Effects | Off by default. Choose supplied scanlines or aperture grille, or put a MiSTer shadow-mask `.txt` file in `Scripts/.config/degauss/masks/` to select it by name. A malformed file switches the effect Off and is logged. The mask affects Degauss on HDMI and scaled analog output, not games |
-| Display | Video Preset | Off by default. Choose an installed MiSTer `.ini` preset from `Presets/`, including subfolders. Filters, gamma and mask apply only while Degauss is open; the separate Shadow Mask Effects choice is retained |
+| Display | Video Effects | Off by default. Choose a supplied or custom Degauss mask, or one of the general MiSTer video presets whose required files are installed. Core-specific and incomplete presets are not offered. Off removes both kinds of Degauss effect. Effects apply only while Degauss is open, on HDMI and scaled analog output, not games |
 | Library | Favourites First | Show favourites first in each folder, keeping them in alphabetical order |
 | Library | Folders Before Games | On, folders lead a system's listing; off, the games come first |
 | Library | Core Preference | Standard First (default) or RetroAchievements First. Used by systems whose Core Version is Default; the other version is used only when the preferred version is absent |
@@ -2039,9 +2038,9 @@ Artwork stored only inside Zaparoo's database or Console Mode's central image fo
 
 ### Can I add or customise Degauss's scanline and shadow-mask effects?
 
-Open **Options → Display → Shadow Mask Effects** to choose **Off** or an included preset. To change a preset, copy its `.txt` file under a new name and edit the copy. You can also use another MiSTer-compatible shadow-mask `.txt` file. Place it in `/media/fat/Scripts/.config/degauss/masks/`, then reopen **Display** and select the new name. MiSTer's [Shadow Mask guide](https://github.com/MiSTer-devel/ShadowMasks_MiSTer) explains the format and links to an editor.
+Open **Options → Display → Video Effects** to choose **Off**, an included mask, or a general MiSTer video preset with its required files installed. Core-specific and incomplete presets are not offered. To change a mask, copy its `.txt` file under a new name and edit the copy. You can also use another MiSTer-compatible shadow-mask `.txt` file. Place it in `/media/fat/Scripts/.config/degauss/masks/`, then reopen **Display** and select the new name. MiSTer's [Shadow Mask guide](https://github.com/MiSTer-devel/ShadowMasks_MiSTer) explains the format and links to an editor.
 
-These are mask presets, not general-purpose shaders. They affect Degauss on HDMI and scaled analog output while it is open, not games.
+The mask files are not general-purpose shaders. All Video Effects choices affect Degauss on HDMI and scaled analog output while it is open, not games.
 
 ### My problem is not listed here
 
