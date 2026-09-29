@@ -3,7 +3,31 @@
 use std::fs;
 use std::io::{self, Write};
 use std::path::Path;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::time::{Duration, Instant};
+#[cfg(test)]
+use std::time::{SystemTime, UNIX_EPOCH};
+
+static REQUEST_SEQUENCE: AtomicU32 = AtomicU32::new(0);
+
+fn next_request_token() -> u32 {
+    const FIRST: u32 = 100_000_000;
+    const RANGE: u32 = 900_000_000;
+    let sequence = REQUEST_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    FIRST
+        + std::process::id()
+            .wrapping_mul(1_000_003)
+            .wrapping_add(sequence)
+            % RANGE
+}
+
+fn remove_if_present(path: &Path) -> io::Result<()> {
+    match fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error),
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Profile {
@@ -81,19 +105,9 @@ fn parse_reply(bytes: &[u8]) -> io::Result<Snapshot> {
 }
 
 pub fn discover(fifo: &Path) -> io::Result<Snapshot> {
-    let token = ((SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_err(io::Error::other)?
-        .as_nanos()
-        % 900_000_000) as u32)
-        + 100_000_000;
+    let token = next_request_token();
     let status = format!("/tmp/degauss-ini-profiles-{token}.status");
-    if Path::new(&status).exists() {
-        return Err(io::Error::new(
-            io::ErrorKind::AlreadyExists,
-            "INI profile reply path is already in use",
-        ));
-    }
+    remove_if_present(Path::new(&status))?;
     send_request(fifo, format!("ini_profiles {token}\n").as_bytes())?;
     let deadline = Instant::now() + Duration::from_secs(3);
     while Instant::now() < deadline {
@@ -108,6 +122,7 @@ pub fn discover(fifo: &Path) -> io::Result<Snapshot> {
             Err(error) => return Err(error),
         }
     }
+    let _ = remove_if_present(Path::new(&status));
     Err(io::Error::new(
         io::ErrorKind::TimedOut,
         "MiSTer Main did not report its selectable INI profiles",
@@ -194,6 +209,31 @@ pub fn select_slot(slot: u8) -> io::Result<()> {
     Ok(())
 }
 
+#[cfg(any(target_os = "linux", test))]
+fn select_slot_with_rollback_using(
+    previous: u8,
+    slot: u8,
+    mut select: impl FnMut(u8) -> io::Result<()>,
+) -> io::Result<()> {
+    let Err(selection_error) = select(slot) else {
+        return Ok(());
+    };
+    match select(previous) {
+        Ok(()) => Err(selection_error),
+        Err(rollback_error) => Err(io::Error::new(
+            selection_error.kind(),
+            format!(
+                "{selection_error}; restoring INI slot {previous} also failed: {rollback_error}"
+            ),
+        )),
+    }
+}
+
+#[cfg(target_os = "linux")]
+pub fn select_slot_with_rollback(previous: u8, slot: u8) -> io::Result<()> {
+    select_slot_with_rollback_using(previous, slot, select_slot)
+}
+
 #[cfg(not(target_os = "linux"))]
 #[allow(dead_code)]
 pub fn current_slot() -> io::Result<u8> {
@@ -233,6 +273,31 @@ mod tests {
         assert_eq!(marker_slot([0, 0, 0, 7]).unwrap(), 0);
         assert_eq!(marker_slot([0x34, 0x99, 0xBA, 2]).unwrap(), 2);
         assert!(marker_slot([0x34, 0x99, 0xBA, 4]).is_err());
+    }
+
+    #[test]
+    fn failed_slot_selection_restores_the_previous_slot() {
+        let mut calls = Vec::new();
+        let error = select_slot_with_rollback_using(1, 2, |slot| {
+            calls.push(slot);
+            if slot == 2 {
+                Err(io::Error::other("selection failed"))
+            } else {
+                Ok(())
+            }
+        })
+        .unwrap_err();
+        assert_eq!(calls, [2, 1]);
+        assert_eq!(error.to_string(), "selection failed");
+    }
+
+    #[test]
+    fn request_tokens_are_distinct_and_in_mains_supported_range() {
+        let first = next_request_token();
+        let second = next_request_token();
+        assert_ne!(first, second);
+        assert!((100_000_000..1_000_000_000).contains(&first));
+        assert!((100_000_000..1_000_000_000).contains(&second));
     }
 
     #[test]

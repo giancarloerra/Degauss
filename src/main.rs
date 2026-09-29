@@ -1877,7 +1877,7 @@ fn run_on_framebuffer(
             note(&format!("ended        switching MiSTer INI slot {slot}"));
             let previous = ini_profile::current_slot()
                 .map_err(|e| DegaussError::io("reading active MiSTer INI", "/dev/mem", e))?;
-            ini_profile::select_slot(slot)
+            ini_profile::select_slot_with_rollback(previous, slot)
                 .map_err(|e| DegaussError::io("selecting MiSTer INI profile", "/dev/mem", e))?;
             if let Err(error) = std::fs::write(launch::CMD_FIFO, "load_core menu.rbf\n") {
                 if let Err(rollback) = ini_profile::select_slot(previous) {

@@ -4,6 +4,7 @@ use std::fs;
 use std::path::Path;
 #[cfg(target_os = "linux")]
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU32, Ordering};
 
 use crate::error::{DegaussError, Result};
 
@@ -18,6 +19,28 @@ const GENERAL_PRESETS: [&str; 5] = [
     "Scanlines - Soft.ini",
 ];
 const CUSTOM_PRESETS_DIR: &str = "Degauss";
+
+static REQUEST_SEQUENCE: AtomicU32 = AtomicU32::new(0);
+
+fn next_request_token() -> u32 {
+    const FIRST: u32 = 100_000_000;
+    const RANGE: u32 = 900_000_000;
+    let sequence = REQUEST_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    FIRST
+        + std::process::id()
+            .wrapping_mul(1_000_003)
+            .wrapping_add(sequence)
+            % RANGE
+}
+
+#[cfg(target_os = "linux")]
+fn remove_if_present(path: &Path) -> std::io::Result<()> {
+    match fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error),
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Preset {
@@ -138,7 +161,7 @@ pub fn valid_relative_path(path: &str) -> bool {
 
 #[cfg(target_os = "linux")]
 pub fn apply(relative_path: Option<&str>, fifo: &Path) -> Result<()> {
-    use std::time::{Duration, SystemTime, UNIX_EPOCH};
+    use std::time::Duration;
 
     if relative_path.is_some_and(|path| !valid_relative_path(path)) {
         return Err(DegaussError::unsupported(
@@ -146,19 +169,11 @@ pub fn apply(relative_path: Option<&str>, fifo: &Path) -> Result<()> {
             "invalid preset path",
         ));
     }
-    let token = ((SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_err(|error| DegaussError::unsupported("MiSTer video preset", error.to_string()))?
-        .as_nanos()
-        % 900_000_000) as u32)
-        + 100_000_000;
+    let token = next_request_token();
     let status = PathBuf::from(format!("/tmp/degauss-preset-{token}.status"));
-    if status.exists() {
-        return Err(DegaussError::unsupported(
-            "MiSTer video preset",
-            "request status path already exists",
-        ));
-    }
+    remove_if_present(&status).map_err(|error| {
+        DegaussError::io("cleaning stale MiSTer video preset status", &status, error)
+    })?;
     let name = relative_path.unwrap_or("off");
     fs::write(fifo, format!("fb_preset {token} {name}\n"))
         .map_err(|error| DegaussError::io("requesting MiSTer video preset", fifo, error))?;
@@ -192,6 +207,7 @@ pub fn apply(relative_path: Option<&str>, fifo: &Path) -> Result<()> {
             }
         }
     }
+    let _ = remove_if_present(&status);
     Err(DegaussError::unsupported(
         "MiSTer video preset",
         "Main did not confirm the preset. Check that the installed Degauss Main and Menu core support video presets",
@@ -252,6 +268,15 @@ mod tests {
         ] {
             assert!(!valid_relative_path(invalid));
         }
+    }
+
+    #[test]
+    fn request_tokens_are_distinct_and_in_mains_supported_range() {
+        let first = next_request_token();
+        let second = next_request_token();
+        assert_ne!(first, second);
+        assert!((100_000_000..1_000_000_000).contains(&first));
+        assert!((100_000_000..1_000_000_000).contains(&second));
     }
 
     #[test]
