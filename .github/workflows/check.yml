@@ -31,7 +31,7 @@ jobs:
       # swapfile rather than replacing the runner's existing swapfile.
       - name: Add swap for the big generated source
         run: |
-          sudo fallocate -l 16G /mnt/degauss-swap
+          sudo fallocate -l 32G /mnt/degauss-swap
           sudo chmod 600 /mnt/degauss-swap
           sudo mkswap /mnt/degauss-swap
           sudo swapon /mnt/degauss-swap
