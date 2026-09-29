@@ -13,6 +13,13 @@ permissions:
 jobs:
   test:
     runs-on: ubuntu-latest
+    env:
+      # Clean runners cannot reuse incremental output. Limiting the compiler's
+      # codegen fan-out keeps the embedded font packs inside runner memory
+      # without changing the code or checks that are executed.
+      CARGO_INCREMENTAL: 0
+      CARGO_PROFILE_DEV_CODEGEN_UNITS: 16
+      CARGO_PROFILE_TEST_CODEGEN_UNITS: 16
     steps:
       - uses: actions/checkout@v5
       - run: rustup component add clippy rustfmt
