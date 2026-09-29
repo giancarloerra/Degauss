@@ -129,6 +129,7 @@ Click the image to watch Degauss on YouTube.
   - [Why does Update All warn that Degauss replaces MiSTer firmware with a fork?](#why-does-update-all-warn-that-degauss-replaces-mister-firmware-with-a-fork)
   - [How do I install Degauss on an SS1 currently using Console Mode?](#how-do-i-install-degauss-on-an-ss1-currently-using-console-mode)
   - [Degauss appears over HDMI but not on an analog CRT](#degauss-appears-over-hdmi-but-not-on-an-analog-crt)
+  - [Coloured vertical stripes appear over S-Video or composite](#coloured-vertical-stripes-appear-over-s-video-or-composite)
   - [Update All enabled Degauss, but its files are missing](#update-all-enabled-degauss-but-its-files-are-missing)
   - [Can Degauss reuse artwork from Zaparoo Frontend or Console Mode?](#can-degauss-reuse-artwork-from-zaparoo-frontend-or-console-mode)
   - [My problem is not listed here](#my-problem-is-not-listed-here)
@@ -441,13 +442,14 @@ add these settings under `[Menu]` in the active `MiSTer.ini`:
 [Menu]
 fb_terminal=1
 vga_scaler=0
+degauss_native_analog=1
 ```
 
 The `[Menu]` section applies these settings to Degauss without changing the
 video configuration used by game cores. With Degauss's bundled Menu core,
-`vga_scaler=0` sends the framebuffer to analog at native 15 kHz while HDMI
-keeps its configured `video_mode`. If only analog is connected, the HDMI mode
-does not need to match the CRT.
+`degauss_native_analog=1` sends the framebuffer to analog at native 15 kHz
+while HDMI keeps its configured `video_mode`. It is off by default, so existing
+HDMI-only and shared-scaler setups do not change.
 
 To retain the older shared-scaler route, use `vga_scaler=1`. In that mode the
 scaler needs a 15 kHz `video_mode` supported by the CRT. A mode already known
@@ -716,6 +718,8 @@ Favourite; self-describing MGL, MRA and RBF launches and formats with a fixed
 core do not offer it.
 
 The **Unstable** group browses installed `_Unstable` cores by their full build names.
+MiSTer-DB9 builds ending in `_YYYYMMDD_<hash>_DB9.rbf` are recognized as the
+corresponding Standard core; matching unstable DB9 builds are recognized too.
 RetroAchievements requires a compatible RA installation, including its Main profile.
 Degauss releases include a separate RA Main that retains Frontend and the saved
 shortcut without being overwritten by the upstream RA updater. Select it in the
@@ -2018,15 +2022,33 @@ Inside the active `[Menu]` section of `MiSTer.ini`, enable the framebuffer termi
 [Menu]
 fb_terminal=1
 vga_scaler=0
+degauss_native_analog=1
 ```
 
-With Degauss's bundled Menu core, this sends the framebuffer to analog at native 15 kHz while HDMI keeps its own configured `video_mode`. If you instead use `vga_scaler=1`, both outputs use the scaler. That route needs a 15 kHz `video_mode` supported by the CRT; this common mode can be used as a starting point:
+With Degauss's bundled Menu core, this sends the framebuffer to analog at native 15 kHz while HDMI keeps its own configured `video_mode`. The native analog option is off by default. If you instead use `vga_scaler=1`, both outputs use the scaler. That route needs a 15 kHz `video_mode` supported by the CRT; this common mode can be used as a starting point:
 
 ```ini
 video_mode=640,54,56,106,224,16,0,28,13764
 ```
 
 That timing is not universal. With `vga_scaler=1`, both connected displays must support the same scaler timing.
+
+### Coloured vertical stripes appear over S-Video or composite
+
+At a 352-pixel Menu timing, the Y/C encoder does not receive enough samples per
+colour-carrier cycle. Use a 13.5 MHz output and halve only the framebuffer width:
+
+```ini
+[Menu]
+fb_terminal=1
+vga_scaler=1
+video_mode=704,24,62,68,240,4,3,15,13500
+fb_hscale=2
+```
+
+Degauss still renders at 352×240 while the encoder runs at 13.5 MHz. This is
+the validated NTSC setup. A PAL timing is not supplied because it has not yet
+been validated on the target display path.
 
 ### Update All enabled Degauss, but its files are missing
 
