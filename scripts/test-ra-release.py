@@ -59,6 +59,14 @@ class ReleaseTests(unittest.TestCase):
         self.assertNotIn("+\t.hmax(12'd1058),", patch)
         self.assertNotIn("+\t.vmax(menu_pal ? 12'd300 : 12'd240),", patch)
 
+    def test_ra_preset_load_failure_restores_the_previous_video_state(self):
+        patch = (ROOT / 'support/ra-main/frontend.patch').read_text()
+        self.assertIn('+bool video_loadPreset(char *name, bool save)', patch)
+        self.assertIn('+\tif (!video_loadPreset(path, false))', patch)
+        self.assertIn('+\t\tdegauss_restore_preset_baseline(true);', patch)
+        self.assertIn('+\t\tsnprintf(error, error_size, "Preset could not be opened");', patch)
+        self.assertIn('+\t\treturn false;', patch)
+
     def test_workflow_rejects_upstream_ra_at_any_card_path(self):
         workflow = (ROOT / '.github/workflows/release.yml').read_text()
         start = workflow.index('          import posixpath\n')

@@ -1451,10 +1451,10 @@ index 0000000..b0aca3a
 +printf '%s\n' "$fork_failure" | grep -q 'menustate = MENU_SYSTEM1;'
 diff --git a/tests/run-degauss-video-tests.sh b/tests/run-degauss-video-tests.sh
 new file mode 100755
-index 0000000..44cde35
+index 0000000..1edd286
 --- /dev/null
 +++ b/tests/run-degauss-video-tests.sh
-@@ -0,0 +1,100 @@
+@@ -0,0 +1,103 @@
 +#!/usr/bin/env bash
 +set -euo pipefail
 +
@@ -1548,6 +1548,9 @@ index 0000000..44cde35
 +printf '%s\n' "$preset_apply" | grep -Fq 'memcpy(degauss_scaler_before_preset, scaler_flt'
 +printf '%s\n' "$preset_apply" | grep -Fq 'memcpy(degauss_scaler_data_before_preset, scaler_flt_data'
 +printf '%s\n' "$preset_apply" | grep -Fq 'memcpy(degauss_shadow_mask_before_preset, shadow_mask_cfg'
++printf '%s\n' "$preset_apply" | grep -Fq 'if (!video_loadPreset(path, false))'
++printf '%s\n' "$preset_apply" | grep -Fq 'degauss_restore_preset_baseline(true);'
++printf '%s\n' "$preset_apply" | grep -Fq 'return false;'
 +
 +# A mask selected while a full preset is active is checked before it is
 +# accepted as the state to restore later. A missing file resets that state.
@@ -1601,7 +1604,7 @@ index 0000000..88931fd
 +    subprocess.run([str(path / 'test')], check=True)
 +print('Frontend completion restores VT1 before disabling script framebuffer')
 diff --git a/video.cpp b/video.cpp
-index 542ef71..0a3b8dc 100644
+index 542ef71..1d3bb06 100644
 --- a/video.cpp
 +++ b/video.cpp
 @@ -50,6 +50,8 @@
@@ -1924,7 +1927,35 @@ index 542ef71..0a3b8dc 100644
  static void load_flt_pres(const char *str, int type)
  {
  	char *arg = get_preset_arg(str);
-@@ -2653,6 +2903,57 @@ static void video_cfg_init()
+@@ -1038,7 +1288,7 @@ static void load_flt_pres(const char *str, int type)
+ 	}
+ }
+ 
+-void video_loadPreset(char *name, bool save)
++bool video_loadPreset(char *name, bool save)
+ {
+ 	char *arg;
+ 	fileTextReader reader;
+@@ -1046,8 +1296,9 @@ void video_loadPreset(char *name, bool save)
+ 	bool scaler_dirty = false;
+ 	bool mask_dirty = false;
+ 	bool gamma_dirty = false;
++	const bool opened = FileOpenTextReader(&reader, name);
+ 
+-	if (FileOpenTextReader(&reader, name))
++	if (opened)
+ 	{
+ 		const char *line;
+ 		while ((line = FileReadLine(&reader)))
+@@ -1118,6 +1369,7 @@ void video_loadPreset(char *name, bool save)
+ 		if (mask_dirty) video_save_shadow_mask_cfg();
+ 		if (gamma_dirty) video_save_gamma_cfg();
+ 	}
++	return opened;
+ }
+ 
+ static void hdmi_packet_enable(uint8_t mask, bool enable)
+@@ -2653,6 +2905,62 @@ static void video_cfg_init()
  	loadShadowMaskCfg();
  }
  
@@ -1972,7 +2003,12 @@ index 542ef71..0a3b8dc 100644
 +	memcpy(degauss_shadow_mask_before_preset, shadow_mask_cfg, sizeof(shadow_mask_cfg));
 +	degauss_display_mask[0] = 0;
 +	degauss_preset_active = true;
-+	video_loadPreset(path, false);
++	if (!video_loadPreset(path, false))
++	{
++		degauss_restore_preset_baseline(true);
++		snprintf(error, error_size, "Preset could not be opened");
++		return false;
++	}
 +	degauss_preset_filter = scaler_flt[VFILTER_HORZ].mode || scaler_flt[VFILTER_VERT].mode ||
 +		scaler_flt[VFILTER_SCAN].mode || scaler_flt[VFILTER_ILACE].mode;
 +	if (video_fb_state()) video_fb_enable(1, fb_num);
@@ -1982,7 +2018,7 @@ index 542ef71..0a3b8dc 100644
  void video_cfg_reset()
  {
  	FileDeleteConfig(gamma_cfg_path);
-@@ -2668,6 +2969,7 @@ void video_cfg_reset()
+@@ -2668,6 +2976,7 @@ void video_cfg_reset()
  
  void video_init()
  {
@@ -1990,7 +2026,7 @@ index 542ef71..0a3b8dc 100644
  	yc_parse(yc_modes, sizeof(yc_modes) / sizeof(yc_modes[0]));
  
  	fb_init();
-@@ -2707,7 +3009,7 @@ void video_reinit()
+@@ -2707,7 +3016,7 @@ void video_reinit()
  	support_FHD = 0;
  	video_mode_load(true);
  
@@ -1999,7 +2035,7 @@ index 542ef71..0a3b8dc 100644
  	video_set_mode(&v_def, 0);
  	user_io_send_buttons(1);
  	video_mode_adjust(1);
-@@ -3085,20 +3387,58 @@ bool video_mode_select(uint32_t vtime, vmode_custom_t* out_mode)
+@@ -3085,20 +3394,58 @@ bool video_mode_select(uint32_t vtime, vmode_custom_t* out_mode)
  	return adjustable;
  }
  
@@ -2063,7 +2099,7 @@ index 542ef71..0a3b8dc 100644
  
  		int COLORBURST_START = (int)(3.7f * (CLK_VIDEO / CLK_REF));
  		int COLORBURST_END = (int)(9.0f * (CLK_VIDEO / CLK_REF)) + COLORBURST_START;
-@@ -3106,11 +3446,11 @@ static void set_yc_mode()
+@@ -3106,11 +3453,11 @@ static void set_yc_mode()
  
  		char yc_key[64];
  		char yc_key_expand[64];
@@ -2078,7 +2114,7 @@ index 542ef71..0a3b8dc 100644
  		{
  		if (!strcasecmp(yc_modes[i].key, yc_key) || !strcasecmp(yc_modes[i].key, yc_key_expand))
  			{
-@@ -3334,9 +3674,15 @@ static void fb_write_module_params()
+@@ -3334,9 +3681,15 @@ static void fb_write_module_params()
  	});
  }
  
@@ -2094,7 +2130,7 @@ index 542ef71..0a3b8dc 100644
  
  	if (fb_base)
  	{
-@@ -3362,7 +3708,8 @@ void video_fb_enable(int enable, int n)
+@@ -3362,7 +3715,8 @@ void video_fb_enable(int enable, int n)
  				}
  
  				//printf("Switch to Linux frame buffer\n");
@@ -2104,7 +2140,7 @@ index 542ef71..0a3b8dc 100644
  				spi_w((uint16_t)fb_addr); // base address low word
  				spi_w(fb_addr >> 16);     // base address high word
  				spi_w(fb_width);          // frame width
-@@ -3400,7 +3747,16 @@ void video_fb_enable(int enable, int n)
+@@ -3400,7 +3754,16 @@ void video_fb_enable(int enable, int n)
  		}
  
  		DisableIO();
@@ -2122,7 +2158,7 @@ index 542ef71..0a3b8dc 100644
  		if (is_menu()) user_io_status_set("[8:5]", (fb_enabled && !fb_num) ? 0x160 : 0);
  	}
  }
-@@ -3419,6 +3775,7 @@ int video_fb_state()
+@@ -3419,6 +3782,7 @@ int video_fb_state()
  static void video_fb_config()
  {
  	PROFILE_FUNCTION();
@@ -2130,7 +2166,7 @@ index 542ef71..0a3b8dc 100644
  
  	int fb_scale = cfg.fb_size;
  
-@@ -3432,20 +3789,38 @@ static void video_fb_config()
+@@ -3432,20 +3796,38 @@ static void video_fb_config()
  	else if (fb_scale == 3) fb_scale = 2;
  	else if (fb_scale > 4) fb_scale = 4;
  
@@ -2175,7 +2211,7 @@ index 542ef71..0a3b8dc 100644
  static void draw_checkers()
  {
  	volatile uint32_t* buf = fb_base + (FB_SIZE*menu_bgn);
-@@ -3453,6 +3828,7 @@ static void draw_checkers()
+@@ -3453,6 +3835,7 @@ static void draw_checkers()
  	uint32_t col1 = 0x888888;
  	uint32_t col2 = 0x666666;
  	int sz = fb_width / 128;
@@ -2183,7 +2219,7 @@ index 542ef71..0a3b8dc 100644
  
  	for (int y = brd_y; y < fb_height - brd_y; y++)
  	{
-@@ -3760,6 +4136,8 @@ void video_menu_bg(int n, int idle)
+@@ -3760,6 +4143,8 @@ void video_menu_bg(int n, int idle)
  		imlib_context_set_image(bg1); imlib_free_image(); bg1 = 0;
  		imlib_context_set_image(bg2); imlib_free_image(); bg2 = 0;
  		imlib_context_set_image(curtain); imlib_free_image(); curtain = 0;
@@ -2192,24 +2228,26 @@ index 542ef71..0a3b8dc 100644
  	}
  	else
  	{
-@@ -4353,4 +4731,3 @@ int video_get_rotated()
+@@ -4353,4 +4738,3 @@ int video_get_rotated()
  {
    return current_video_info.rotated;
  }
 -
 diff --git a/video.h b/video.h
-index 0f02587..f38c673 100644
+index 0f02587..e0d8221 100644
 --- a/video.h
 +++ b/video.h
-@@ -53,6 +53,8 @@ int   video_get_shadow_mask_mode();
+@@ -53,7 +53,9 @@ int   video_get_shadow_mask_mode();
  void  video_set_shadow_mask_mode(int n);
  char* video_get_shadow_mask(int only_name = 1);
  void  video_set_shadow_mask(const char *name);
+-void  video_loadPreset(char *name, bool save);
 +bool  video_set_degauss_display_mask(const char *name);
 +bool  video_set_degauss_preset(const char *name, char *error, size_t error_size);
- void  video_loadPreset(char *name, bool save);
++bool  video_loadPreset(char *name, bool save);
  
  int   video_get_rotated();
+ 
 @@ -65,6 +67,7 @@ int   hasAPI1_5();
  
  void video_fb_enable(int enable, int n = 0);
