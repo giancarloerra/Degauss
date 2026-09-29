@@ -66,7 +66,7 @@ for namespace, limit in (("GLIBC", (2, 31)), ("GLIBCXX", (3, 4, 28))):
 PYABI
 cp bin/MiSTer "$build_root/MiSTer_RA_Degauss"
 shasum -a 256 "$build_root/MiSTer_RA_Degauss"
-printf 'RA Main source: %s\nDegauss integration: 0651979d53f570c29f8772e124ae603297830954\n' \
+printf 'RA Main source: %s\nDegauss integration: 5098f8a0771129fc10d87acfdd567b7f4573451d\n' \
     "$source_pin" > "$build_root/SOURCE-PINS.txt"
 printf 'CA bundle: curl Mozilla 2026-08-13 (MPL-2.0), SHA256 %s\n' "$ca_sha" >> "$build_root/SOURCE-PINS.txt"
 # Keep corresponding patched source and its build instructions with the binary.
