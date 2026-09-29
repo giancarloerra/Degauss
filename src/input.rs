@@ -30,6 +30,7 @@
 //! pair is dropped by the [`DuplicateGuard`] before anything else sees it,
 //! so one press moves once.
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use std::time::{Duration, Instant, SystemTime};
 
@@ -41,13 +42,23 @@ use crate::settings::{HoldButton, HoldShortcut};
 fn input_path_changes(
     existing: &[PathBuf],
     discovered: &[PathBuf],
+    missing_scans: &mut BTreeMap<PathBuf, u8>,
 ) -> (Vec<PathBuf>, Vec<PathBuf>) {
-    use std::collections::BTreeSet;
-
     let existing = existing.iter().cloned().collect::<BTreeSet<_>>();
     let discovered = discovered.iter().cloned().collect::<BTreeSet<_>>();
     let added = discovered.difference(&existing).cloned().collect();
-    let removed = existing.difference(&discovered).cloned().collect();
+    missing_scans.retain(|path, _| existing.contains(path) && !discovered.contains(path));
+    let mut removed = Vec::new();
+    for path in existing.difference(&discovered) {
+        let count = missing_scans.entry(path.clone()).or_default();
+        *count = count.saturating_add(1);
+        if *count >= 2 {
+            removed.push(path.clone());
+        }
+    }
+    for path in &removed {
+        missing_scans.remove(path);
+    }
     (added, removed)
 }
 
@@ -671,6 +682,7 @@ pub use linux::{
 
 #[cfg(target_os = "linux")]
 mod linux {
+    use std::collections::BTreeMap;
     use std::io::ErrorKind;
     use std::path::PathBuf;
     use std::time::{Duration, Instant, SystemTime};
@@ -694,6 +706,7 @@ mod linux {
     pub struct InputReader {
         devices: Vec<(PathBuf, Device)>,
         summaries: Vec<DeviceSummary>,
+        missing_scans: BTreeMap<PathBuf, u8>,
         last_scan: Instant,
     }
 
@@ -735,6 +748,7 @@ mod linux {
             Ok(InputReader {
                 devices,
                 summaries,
+                missing_scans: BTreeMap::new(),
                 last_scan: Instant::now(),
             })
         }
@@ -770,7 +784,8 @@ mod linux {
                 .iter()
                 .map(|(path, _)| path.clone())
                 .collect::<Vec<_>>();
-            let (added, removed) = input_path_changes(&existing_paths, &discovered_paths);
+            let (added, removed) =
+                input_path_changes(&existing_paths, &discovered_paths, &mut self.missing_scans);
 
             for path in &removed {
                 crate::note(&format!("input        disconnected {}", path.display()));
@@ -853,6 +868,9 @@ mod linux {
                     .retain(|(path, _)| !disconnected.contains(path));
                 self.summaries
                     .retain(|summary| !disconnected.contains(&summary.path));
+                for path in disconnected {
+                    self.missing_scans.remove(&path);
+                }
             }
             edges
         }
@@ -1207,10 +1225,37 @@ mod tests {
             PathBuf::from("/dev/input/event1"),
         ];
 
-        let (added, removed) = input_path_changes(&existing, &discovered);
+        let mut missing_scans = BTreeMap::new();
+        let (added, removed) = input_path_changes(&existing, &discovered, &mut missing_scans);
 
         assert_eq!(added, [PathBuf::from("/dev/input/event1")]);
+        assert!(removed.is_empty());
+
+        let existing = [
+            PathBuf::from("/dev/input/event0"),
+            PathBuf::from("/dev/input/event1"),
+            PathBuf::from("/dev/input/event2"),
+        ];
+        let (added, removed) = input_path_changes(&existing, &discovered, &mut missing_scans);
+        assert!(added.is_empty());
         assert_eq!(removed, [PathBuf::from("/dev/input/event2")]);
+    }
+
+    #[test]
+    fn one_omitted_scan_does_not_drop_an_open_input_device() {
+        let path = PathBuf::from("/dev/input/event2");
+        let mut missing_scans = BTreeMap::new();
+
+        let (_, removed) = input_path_changes(std::slice::from_ref(&path), &[], &mut missing_scans);
+        assert!(removed.is_empty());
+        let (_, removed) = input_path_changes(
+            std::slice::from_ref(&path),
+            std::slice::from_ref(&path),
+            &mut missing_scans,
+        );
+        assert!(removed.is_empty());
+        let (_, removed) = input_path_changes(std::slice::from_ref(&path), &[], &mut missing_scans);
+        assert!(removed.is_empty());
     }
 
     fn shortcuts(entries: &[(HoldButton, HoldShortcut)]) -> [Option<HoldShortcut>; 4] {
