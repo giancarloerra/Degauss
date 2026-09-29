@@ -97,6 +97,10 @@ fn send_request(fifo: &Path, request: &[u8]) -> io::Result<()> {
     options.open(fifo)?.write_all(request)
 }
 
+pub fn reload_menu(fifo: &Path) -> io::Result<()> {
+    send_request(fifo, b"load_core menu.rbf\n")
+}
+
 fn parse_reply(bytes: &[u8]) -> io::Result<Snapshot> {
     if bytes.len() < 2 || bytes[0] > 3 || !(1..=4).contains(&bytes[1]) {
         return Err(invalid_response());
@@ -312,7 +316,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn request_does_not_block_when_fifo_has_no_reader() {
+    fn requests_do_not_block_when_fifo_has_no_reader() {
         use std::ffi::CString;
         use std::os::unix::ffi::OsStrExt;
 
@@ -327,10 +331,12 @@ mod tests {
         let native = CString::new(path.as_os_str().as_bytes()).unwrap();
         assert_eq!(unsafe { libc::mkfifo(native.as_ptr(), 0o600) }, 0);
         let started = Instant::now();
-        let error = send_request(&path, b"ini_profiles 123456789\n").unwrap_err();
+        let request_error = send_request(&path, b"ini_profiles 123456789\n").unwrap_err();
+        let reload_error = reload_menu(&path).unwrap_err();
         fs::remove_file(&path).unwrap();
 
-        assert_eq!(error.raw_os_error(), Some(libc::ENXIO));
+        assert_eq!(request_error.raw_os_error(), Some(libc::ENXIO));
+        assert_eq!(reload_error.raw_os_error(), Some(libc::ENXIO));
         assert!(started.elapsed() < Duration::from_secs(1));
     }
 

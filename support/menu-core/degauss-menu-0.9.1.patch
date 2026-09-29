@@ -50,7 +50,7 @@ index 7ac4c3b..9f5b047 100644
  wire [2:0] led = status[8:6];
  
 diff --git a/sys/sys_top.v b/sys/sys_top.v
-index a416879..a980964 100644
+index a416879..1ba5e80 100644
 --- a/sys/sys_top.v
 +++ b/sys/sys_top.v
 @@ -326,6 +326,14 @@ wire[12:0] ARX, ARY;
@@ -122,7 +122,7 @@ index a416879..a980964 100644
  			if(cmd == 'h40) begin
  				case(cnt[3:0])
  					0: io_dout_sys <= {arxy, arx};
-@@ -702,6 +725,32 @@ wire         vbuf_read;
+@@ -702,6 +725,94 @@ wire         vbuf_read;
  wire [127:0] vbuf_writedata;
  wire  [15:0] vbuf_byteenable;
  wire         vbuf_write;
@@ -143,19 +143,81 @@ index a416879..a980964 100644
 +wire [63:0] native_fb_writedata;
 +wire  [7:0] native_fb_byteenable;
 +wire         native_fb_active = LFB_EN & LFB_NATIVE & ~vga_scaler;
++wire         menu_ram_readdatavalid;
++wire         native_fb_readdatavalid;
 +
-+assign ram_address = native_fb_read ? native_fb_address : menu_ram_address;
-+assign ram_burstcount = native_fb_read ? native_fb_burstcount : menu_ram_burstcount;
-+assign ram_byteenable = native_fb_read ? native_fb_byteenable : menu_ram_byteenable;
++localparam [2:0] RAM_IDLE           = 3'd0;
++localparam [2:0] RAM_MENU_REQUEST   = 3'd1;
++localparam [2:0] RAM_MENU_READ      = 3'd2;
++localparam [2:0] RAM_NATIVE_REQUEST = 3'd3;
++localparam [2:0] RAM_NATIVE_READ    = 3'd4;
++reg [2:0] ram_owner = RAM_IDLE;
++reg [7:0] ram_reads_remaining = 0;
++
++wire ram_menu_selected = ram_owner == RAM_MENU_REQUEST;
++wire ram_native_selected = ram_owner == RAM_NATIVE_REQUEST;
++
++assign ram_address = ram_native_selected ? native_fb_address : menu_ram_address;
++assign ram_burstcount = ram_native_selected ? native_fb_burstcount : menu_ram_burstcount;
++assign ram_byteenable = ram_native_selected ? native_fb_byteenable : menu_ram_byteenable;
 +assign ram_writedata = menu_ram_writedata;
-+assign ram_read = native_fb_read | menu_ram_read;
-+assign ram_write = menu_ram_write & ~native_fb_read;
-+assign menu_ram_waitrequest = ram_waitrequest | native_fb_read;
-+assign native_fb_waitrequest = ram_waitrequest | ~native_fb_active;
++assign ram_read = ram_native_selected ? native_fb_read :
++                  ram_menu_selected ? menu_ram_read : 1'b0;
++assign ram_write = ram_menu_selected & menu_ram_write;
++assign menu_ram_waitrequest = ram_waitrequest | ~ram_menu_selected;
++assign native_fb_waitrequest = ram_waitrequest | ~ram_native_selected;
++assign menu_ram_readdatavalid = ram_readdatavalid & (ram_owner == RAM_MENU_READ);
++assign native_fb_readdatavalid = ram_readdatavalid & (ram_owner == RAM_NATIVE_READ);
++
++always @(posedge ram_clk) begin
++	if(reset) begin
++		ram_owner <= RAM_IDLE;
++		ram_reads_remaining <= 0;
++	end
++	else begin
++		case(ram_owner)
++			RAM_IDLE: begin
++				if(native_fb_active && native_fb_read) ram_owner <= RAM_NATIVE_REQUEST;
++				else if(menu_ram_read || menu_ram_write) ram_owner <= RAM_MENU_REQUEST;
++			end
++
++			RAM_MENU_REQUEST: begin
++				if(!(menu_ram_read || menu_ram_write)) ram_owner <= RAM_IDLE;
++				else if(!ram_waitrequest) begin
++					if(menu_ram_read) begin
++						ram_reads_remaining <= menu_ram_burstcount;
++						ram_owner <= RAM_MENU_READ;
++					end
++					else ram_owner <= RAM_IDLE;
++				end
++			end
++
++			RAM_MENU_READ: if(ram_readdatavalid) begin
++				if(ram_reads_remaining <= 1) ram_owner <= RAM_IDLE;
++				else ram_reads_remaining <= ram_reads_remaining - 1'd1;
++			end
++
++			RAM_NATIVE_REQUEST: begin
++				if(!native_fb_active || !native_fb_read) ram_owner <= RAM_IDLE;
++				else if(!ram_waitrequest) begin
++					ram_reads_remaining <= native_fb_burstcount;
++					ram_owner <= RAM_NATIVE_READ;
++				end
++			end
++
++			RAM_NATIVE_READ: if(ram_readdatavalid) begin
++				if(ram_reads_remaining <= 1) ram_owner <= RAM_IDLE;
++				else ram_reads_remaining <= ram_reads_remaining - 1'd1;
++			end
++
++			default: ram_owner <= RAM_IDLE;
++		endcase
++	end
++end
  
  wire  [23:0] hdmi_data;
  wire         hdmi_vs, hdmi_hs, hdmi_de, hdmi_vbl, hdmi_brd;
-@@ -830,8 +879,72 @@ wire         bob_deint;
+@@ -830,8 +941,72 @@ wire         bob_deint;
  	);
  `endif
  
@@ -213,7 +275,7 @@ index a416879..a980964 100644
 +	.avl_clk(ram_clk),
 +	.avl_waitrequest(native_fb_waitrequest),
 +	.avl_readdata(ram_readdata),
-+	.avl_readdatavalid(ram_readdatavalid),
++	.avl_readdatavalid(native_fb_readdatavalid),
 +	.avl_burstcount(native_fb_burstcount),
 +	.avl_writedata(native_fb_writedata),
 +	.avl_address(native_fb_address),
@@ -228,7 +290,7 @@ index a416879..a980964 100644
  reg  [5:0] LFB_FMT    = 0;
  reg [11:0] LFB_WIDTH  = 0;
  reg [11:0] LFB_HEIGHT = 0;
-@@ -1152,6 +1265,32 @@ cyclonev_hps_interface_peripheral_i2c hdmi_i2c
+@@ -1152,6 +1327,32 @@ cyclonev_hps_interface_peripheral_i2c hdmi_i2c
  
  	wire [23:0] hdmi_data_mask;
  	wire        hdmi_de_mask, hdmi_vs_mask, hdmi_hs_mask;
@@ -261,7 +323,7 @@ index a416879..a980964 100644
  
  	reg [15:0] shadowmask_data;
  	reg        shadowmask_wr = 0;
-@@ -1164,12 +1303,12 @@ cyclonev_hps_interface_peripheral_i2c hdmi_i2c
+@@ -1164,12 +1365,12 @@ cyclonev_hps_interface_peripheral_i2c hdmi_i2c
  		.cmd_wr(shadowmask_wr),
  		.cmd_in(shadowmask_data),
  
@@ -280,7 +342,7 @@ index a416879..a980964 100644
  
  		.dout(hdmi_data_mask),
  		.hs_out(hdmi_hs_mask),
-@@ -1318,6 +1457,18 @@ always @(posedge hdmi_tx_clk) begin
+@@ -1318,6 +1519,18 @@ always @(posedge hdmi_tx_clk) begin
  	vs <= (~vga_fb & direct_video) ? hdmi_dv_vs   : hdmi_vs_osd;
  	de <= (~vga_fb & direct_video) ? hdmi_dv_de   : hdmi_de_osd;
  	d  <= (~vga_fb & direct_video) ? hdmi_dv_data : hdmi_data_osd;
@@ -299,7 +361,7 @@ index a416879..a980964 100644
  `else
  	hs <= hdmi_dv_hs;
  	vs <= hdmi_dv_vs;
-@@ -1343,7 +1494,7 @@ assign HDMI_TX_D  = hdmi_out_d;
+@@ -1343,7 +1556,7 @@ assign HDMI_TX_D  = hdmi_out_d;
  	`ifndef MISTER_DEBUG_NOHDMI
  		cyclonev_clkselect vga_clk_sw
  		( 
@@ -308,7 +370,7 @@ index a416879..a980964 100644
  			.inclk({clk_vid, hdmi_clk_out, 2'b00}),
  			.outclk(vga_tx_clk)
  		);
-@@ -1385,11 +1536,12 @@ scanlines #(0) VGA_scanlines
+@@ -1385,11 +1598,12 @@ scanlines #(0) VGA_scanlines
  	.clk(clk_vid),
  
  	.scanlines(scanlines),
@@ -326,7 +388,7 @@ index a416879..a980964 100644
  
  	.dout(vga_data_sl),
  	.hs_out(vga_hs_sl),
-@@ -1489,6 +1641,42 @@ reg  [39:0] PhaseInc;
+@@ -1489,6 +1703,42 @@ reg  [39:0] PhaseInc;
  		assign {vgas_o, vgas_hs, vgas_vs, vgas_cs, vgas_de} = 0;
  	`endif
  
@@ -369,7 +431,7 @@ index a416879..a980964 100644
  	wire [23:0] vga_o, vga_o_t;
  	wire vga_hs, vga_vs, vga_cs, vga_de, vga_hs_t, vga_vs_t, vga_cs_t, vga_de_t;
  	vga_out vga_out
-@@ -1513,20 +1701,20 @@ reg  [39:0] PhaseInc;
+@@ -1513,20 +1763,20 @@ reg  [39:0] PhaseInc;
  		assign {vga_o, vga_hs, vga_vs, vga_cs, vga_de } =  {vga_o_t, vga_hs_t, vga_vs_t, vga_cs_t, vga_de_t } ;
  	`endif
  
@@ -401,7 +463,7 @@ index a416879..a980964 100644
  `endif
  
  reg video_sync = 0;
-@@ -1757,6 +1945,7 @@ emu emu
+@@ -1757,6 +2007,7 @@ emu emu
  (
  	.CLK_50M(FPGA_CLK2_50),
  	.RESET(reset),
@@ -409,7 +471,7 @@ index a416879..a980964 100644
  	.HPS_BUS({f1, HDMI_TX_VS, 
  				 clk_100m, clk_ihdmi,
  				 ce_hpix, hde_emu, hhs_fix, hvs_fix, 
-@@ -1821,15 +2010,15 @@ emu emu
+@@ -1821,15 +2072,15 @@ emu emu
  	.ADC_BUS({ADC_SCK,ADC_SDO,ADC_SDI,ADC_CONVST}),
  
  	.DDRAM_CLK(ram_clk),
@@ -420,11 +482,12 @@ index a416879..a980964 100644
 +	.DDRAM_BURSTCNT(menu_ram_burstcount),
 +	.DDRAM_BUSY(menu_ram_waitrequest),
  	.DDRAM_DOUT(ram_readdata),
- 	.DDRAM_DOUT_READY(ram_readdatavalid),
+-	.DDRAM_DOUT_READY(ram_readdatavalid),
 -	.DDRAM_RD(ram_read),
 -	.DDRAM_DIN(ram_writedata),
 -	.DDRAM_BE(ram_byteenable),
 -	.DDRAM_WE(ram_write),
++	.DDRAM_DOUT_READY(menu_ram_readdatavalid),
 +	.DDRAM_RD(menu_ram_read),
 +	.DDRAM_DIN(menu_ram_writedata),
 +	.DDRAM_BE(menu_ram_byteenable),

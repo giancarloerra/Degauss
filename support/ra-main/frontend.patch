@@ -2680,7 +2680,7 @@ index 0000000..ea6d84b
 +printf '%s\n' "$fork_failure" | grep -q 'menustate = MENU_SYSTEM1;'
 diff --git a/tests/run-degauss-video-tests.sh b/tests/run-degauss-video-tests.sh
 new file mode 100644
-index 0000000..69c8353
+index 0000000..32ffdf3
 --- /dev/null
 +++ b/tests/run-degauss-video-tests.sh
 @@ -0,0 +1,111 @@
@@ -2789,11 +2789,11 @@ index 0000000..69c8353
 +printf '%s\n' "$preset_apply" | grep -Fq 'degauss_restore_preset_baseline(true);'
 +printf '%s\n' "$preset_apply" | grep -Fq 'return false;'
 +
-+# A mask selected while a full preset is active is checked before it is
-+# accepted as the state to restore later. A missing file resets that state.
++# A mask selected while a full preset is active is parsed before it is
++# accepted as the state to restore later. A missing or malformed file resets it.
 +deferred_mask="$(sed -n '/if (degauss_preset_active)/,/return true;/p' video.cpp | head -n 20)"
 +printf '%s\n' "$deferred_mask" | grep -Fq 'Scripts/.config/degauss/masks/%s.txt'
-+printf '%s\n' "$deferred_mask" | grep -Fq 'if (!FileExists(path))'
++printf '%s\n' "$deferred_mask" | grep -Fq 'if (!degauss_validate_mask_path(path))'
 +printf '%s\n' "$deferred_mask" | grep -Fq 'degauss_mask_before_preset[0] = 0;'
 diff --git a/tests/run-degauss-vt-test.py b/tests/run-degauss-vt-test.py
 new file mode 100644
@@ -2841,7 +2841,7 @@ index 0000000..88931fd
 +    subprocess.run([str(path / 'test')], check=True)
 +print('Frontend completion restores VT1 before disabling script framebuffer')
 diff --git a/video.cpp b/video.cpp
-index 542ef71..4c30e2f 100644
+index 542ef71..d24188a 100644
 --- a/video.cpp
 +++ b/video.cpp
 @@ -50,6 +50,8 @@
@@ -2919,10 +2919,12 @@ index 542ef71..4c30e2f 100644
  	DisableIO();
  }
  
-@@ -980,6 +999,54 @@ void video_set_shadow_mask(const char *name)
+@@ -980,6 +999,56 @@ void video_set_shadow_mask(const char *name)
  	video_save_shadow_mask_cfg();
  }
  
++static bool degauss_validate_mask_path(const char *path);
++
 +bool video_set_degauss_display_mask(const char *name)
 +{
 +	if (!is_menu() || !video_fb_state())
@@ -2948,7 +2950,7 @@ index 542ef71..4c30e2f 100644
 +		{
 +			char path[1024];
 +			snprintf(path, sizeof(path), "Scripts/.config/degauss/masks/%s.txt", name);
-+			if (!FileExists(path))
++			if (!degauss_validate_mask_path(path))
 +			{
 +				degauss_mask_before_preset[0] = 0;
 +				printf("Degauss display mask was not applied; effect switched off. Check the mask file\n");
@@ -2974,7 +2976,7 @@ index 542ef71..4c30e2f 100644
  static void loadShadowMaskCfg()
  {
  	PROFILE_FUNCTION();
-@@ -1021,6 +1088,189 @@ static char* get_preset_arg(const char *str)
+@@ -1021,6 +1090,194 @@ static char* get_preset_arg(const char *str)
  	return par;
  }
  
@@ -3005,10 +3007,8 @@ index 542ef71..4c30e2f 100644
 +	return count == 256;
 +}
 +
-+static bool degauss_validate_mask(const char *name)
++static bool degauss_validate_mask_path(const char *path)
 +{
-+	char path[1024];
-+	snprintf(path, sizeof(path), SMASK_DIR"/%s", name);
 +	fileTextReader reader;
 +	if (!FileOpenTextReader(&reader, path)) return false;
 +	int width = -1, height = 0, row = 0, blocks = 0;
@@ -3053,6 +3053,13 @@ index 542ef71..4c30e2f 100644
 +		}
 +	}
 +	return blocks > 0 && width == -1;
++}
++
++static bool degauss_validate_mask(const char *name)
++{
++	char path[1024];
++	snprintf(path, sizeof(path), SMASK_DIR"/%s", name);
++	return degauss_validate_mask_path(path);
 +}
 +
 +static bool degauss_validate_preset(const char *path, char *error, size_t size)
@@ -3164,7 +3171,7 @@ index 542ef71..4c30e2f 100644
  static void load_flt_pres(const char *str, int type)
  {
  	char *arg = get_preset_arg(str);
-@@ -1038,7 +1288,7 @@ static void load_flt_pres(const char *str, int type)
+@@ -1038,7 +1295,7 @@ static void load_flt_pres(const char *str, int type)
  	}
  }
  
@@ -3173,7 +3180,7 @@ index 542ef71..4c30e2f 100644
  {
  	char *arg;
  	fileTextReader reader;
-@@ -1046,8 +1296,9 @@ void video_loadPreset(char *name, bool save)
+@@ -1046,8 +1303,9 @@ void video_loadPreset(char *name, bool save)
  	bool scaler_dirty = false;
  	bool mask_dirty = false;
  	bool gamma_dirty = false;
@@ -3184,7 +3191,7 @@ index 542ef71..4c30e2f 100644
  	{
  		const char *line;
  		while ((line = FileReadLine(&reader)))
-@@ -1118,6 +1369,7 @@ void video_loadPreset(char *name, bool save)
+@@ -1118,6 +1376,7 @@ void video_loadPreset(char *name, bool save)
  		if (mask_dirty) video_save_shadow_mask_cfg();
  		if (gamma_dirty) video_save_gamma_cfg();
  	}
@@ -3192,7 +3199,7 @@ index 542ef71..4c30e2f 100644
  }
  
  static void hdmi_packet_enable(uint8_t mask, bool enable)
-@@ -2653,6 +2905,63 @@ static void video_cfg_init()
+@@ -2653,6 +2912,63 @@ static void video_cfg_init()
  	loadShadowMaskCfg();
  }
  
@@ -3256,7 +3263,7 @@ index 542ef71..4c30e2f 100644
  void video_cfg_reset()
  {
  	FileDeleteConfig(gamma_cfg_path);
-@@ -2668,6 +2977,7 @@ void video_cfg_reset()
+@@ -2668,6 +2984,7 @@ void video_cfg_reset()
  
  void video_init()
  {
@@ -3264,7 +3271,7 @@ index 542ef71..4c30e2f 100644
  	yc_parse(yc_modes, sizeof(yc_modes) / sizeof(yc_modes[0]));
  
  	fb_init();
-@@ -2707,7 +3017,7 @@ void video_reinit()
+@@ -2707,7 +3024,7 @@ void video_reinit()
  	support_FHD = 0;
  	video_mode_load(true);
  
@@ -3273,7 +3280,7 @@ index 542ef71..4c30e2f 100644
  	video_set_mode(&v_def, 0);
  	user_io_send_buttons(1);
  	video_mode_adjust(1);
-@@ -3085,20 +3395,58 @@ bool video_mode_select(uint32_t vtime, vmode_custom_t* out_mode)
+@@ -3085,20 +3402,58 @@ bool video_mode_select(uint32_t vtime, vmode_custom_t* out_mode)
  	return adjustable;
  }
  
@@ -3337,7 +3344,7 @@ index 542ef71..4c30e2f 100644
  
  		int COLORBURST_START = (int)(3.7f * (CLK_VIDEO / CLK_REF));
  		int COLORBURST_END = (int)(9.0f * (CLK_VIDEO / CLK_REF)) + COLORBURST_START;
-@@ -3106,11 +3454,11 @@ static void set_yc_mode()
+@@ -3106,11 +3461,11 @@ static void set_yc_mode()
  
  		char yc_key[64];
  		char yc_key_expand[64];
@@ -3352,7 +3359,7 @@ index 542ef71..4c30e2f 100644
  		{
  		if (!strcasecmp(yc_modes[i].key, yc_key) || !strcasecmp(yc_modes[i].key, yc_key_expand))
  			{
-@@ -3334,6 +3682,11 @@ static void fb_write_module_params()
+@@ -3334,6 +3689,11 @@ static void fb_write_module_params()
  	});
  }
  
@@ -3364,7 +3371,7 @@ index 542ef71..4c30e2f 100644
  void video_fb_enable(int enable, int n)
  {
  	PROFILE_FUNCTION();
-@@ -3362,7 +3715,8 @@ void video_fb_enable(int enable, int n)
+@@ -3362,7 +3722,8 @@ void video_fb_enable(int enable, int n)
  				}
  
  				//printf("Switch to Linux frame buffer\n");
@@ -3374,7 +3381,7 @@ index 542ef71..4c30e2f 100644
  				spi_w((uint16_t)fb_addr); // base address low word
  				spi_w(fb_addr >> 16);     // base address high word
  				spi_w(fb_width);          // frame width
-@@ -3400,7 +3754,18 @@ void video_fb_enable(int enable, int n)
+@@ -3400,7 +3761,18 @@ void video_fb_enable(int enable, int n)
  		}
  
  		DisableIO();
@@ -3394,7 +3401,7 @@ index 542ef71..4c30e2f 100644
  		if (is_menu()) user_io_status_set("[8:5]", (fb_enabled && !fb_num) ? 0x160 : 0);
  	}
  }
-@@ -3419,6 +3784,7 @@ int video_fb_state()
+@@ -3419,6 +3791,7 @@ int video_fb_state()
  static void video_fb_config()
  {
  	PROFILE_FUNCTION();
@@ -3402,7 +3409,7 @@ index 542ef71..4c30e2f 100644
  
  	int fb_scale = cfg.fb_size;
  
-@@ -3432,20 +3798,38 @@ static void video_fb_config()
+@@ -3432,20 +3805,38 @@ static void video_fb_config()
  	else if (fb_scale == 3) fb_scale = 2;
  	else if (fb_scale > 4) fb_scale = 4;
  
@@ -3447,7 +3454,7 @@ index 542ef71..4c30e2f 100644
  static void draw_checkers()
  {
  	volatile uint32_t* buf = fb_base + (FB_SIZE*menu_bgn);
-@@ -3453,6 +3837,7 @@ static void draw_checkers()
+@@ -3453,6 +3844,7 @@ static void draw_checkers()
  	uint32_t col1 = 0x888888;
  	uint32_t col2 = 0x666666;
  	int sz = fb_width / 128;
@@ -3455,7 +3462,7 @@ index 542ef71..4c30e2f 100644
  
  	for (int y = brd_y; y < fb_height - brd_y; y++)
  	{
-@@ -3760,6 +4145,8 @@ void video_menu_bg(int n, int idle)
+@@ -3760,6 +4152,8 @@ void video_menu_bg(int n, int idle)
  		imlib_context_set_image(bg1); imlib_free_image(); bg1 = 0;
  		imlib_context_set_image(bg2); imlib_free_image(); bg2 = 0;
  		imlib_context_set_image(curtain); imlib_free_image(); curtain = 0;
@@ -3464,7 +3471,7 @@ index 542ef71..4c30e2f 100644
  	}
  	else
  	{
-@@ -4353,4 +4740,3 @@ int video_get_rotated()
+@@ -4353,4 +4747,3 @@ int video_get_rotated()
  {
    return current_video_info.rotated;
  }

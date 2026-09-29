@@ -59,10 +59,15 @@ class ReleaseTests(unittest.TestCase):
         self.assertNotIn("+\t.hmax(12'd1058),", patch)
         self.assertNotIn("+\t.vmax(menu_pal ? 12'd300 : 12'd240),", patch)
 
-    def test_degauss_menu_arbiter_forwards_both_readers(self):
+    def test_degauss_menu_arbiter_holds_each_read_until_its_burst_completes(self):
         patch = (ROOT / 'support/menu-core/degauss-menu-0.9.1.patch').read_text()
-        self.assertIn('+assign ram_read = native_fb_read | menu_ram_read;', patch)
-        self.assertNotIn('+assign ram_read = native_fb_read;', patch)
+        self.assertIn('+localparam [2:0] RAM_MENU_READ', patch)
+        self.assertIn('+localparam [2:0] RAM_NATIVE_READ', patch)
+        self.assertIn('+reg [7:0] ram_reads_remaining = 0;', patch)
+        self.assertIn('+assign menu_ram_readdatavalid = ram_readdatavalid &', patch)
+        self.assertIn('+assign native_fb_readdatavalid = ram_readdatavalid &', patch)
+        self.assertIn('+\t.avl_readdatavalid(native_fb_readdatavalid),', patch)
+        self.assertIn('+\t.DDRAM_DOUT_READY(menu_ram_readdatavalid),', patch)
         self.assertIn('+set_global_assignment -name SEED 5', patch)
         source = (ROOT / 'support/menu-core/Degauss_Menu.SOURCE.txt').read_text()
         self.assertIn('Quartus fitter seed: 5', source)
