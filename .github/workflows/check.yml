@@ -34,6 +34,8 @@ jobs:
           sudo swapon /mnt/degauss-swap
           free -h
       - run: cargo test -j 1
+        env:
+          CARGO_PROFILE_TEST_DEBUG: 0
       # Every upgrade shape a card can arrive in, rehearsed against the
       # launcher's migration block with fake binaries. Fails if the shim's
       # pristine-hash table drifts from the committed fixtures, or any

@@ -642,9 +642,9 @@ index 54b3e77..b7b055a 100644
  			achievements_poll();
  			video_poll();
  		}
-diff --git a/modified/support/degauss/README.md b/support/degauss/README.md
+diff --git a/support/degauss/README.md b/support/degauss/README.md
 new file mode 100644
-index 0000000..d601ce1
+index 0000000..343577e
 --- /dev/null
 +++ b/support/degauss/README.md
 @@ -0,0 +1,74 @@
@@ -662,7 +662,7 @@ index 0000000..d601ce1
 +  `Scripts/degauss.sh` once per Main process.
 +- The System menu contains **Frontend** when `fb_terminal=1` and that script
 +  exists.
-+- A on **Frontend** loads `menu.rbf`. Main then restarts and uses the same
++- Selecting **Frontend** loads `menu.rbf`. Main then restarts and uses the same
 +  handoff path.
 +- Starting `degauss.sh` from the Scripts menu uses the same framebuffer
 +  execution path without the console banner or final key prompt.
@@ -722,7 +722,7 @@ index 0000000..d601ce1
 +```bash
 +./build-degauss-main.sh
 +```
-diff --git a/modified/support/degauss/degauss_launcher.cpp b/support/degauss/degauss_launcher.cpp
+diff --git a/support/degauss/degauss_launcher.cpp b/support/degauss/degauss_launcher.cpp
 new file mode 100644
 index 0000000..e850d41
 --- /dev/null
@@ -781,7 +781,7 @@ index 0000000..e850d41
 +	snprintf(path, size, "%s", DEGAUSS_SCRIPT);
 +	return true;
 +}
-diff --git a/modified/support/degauss/degauss_launcher.h b/support/degauss/degauss_launcher.h
+diff --git a/support/degauss/degauss_launcher.h b/support/degauss/degauss_launcher.h
 new file mode 100644
 index 0000000..5fe1dd8
 --- /dev/null
@@ -832,12 +832,12 @@ index 0000000..5fe1dd8
 +bool degauss_installed(void);
 +
 +#endif
-diff --git a/modified/support/degauss/degauss_shortcut.cpp b/support/degauss/degauss_shortcut.cpp
+diff --git a/support/degauss/degauss_shortcut.cpp b/support/degauss/degauss_shortcut.cpp
 new file mode 100644
-index 0000000..3615922
+index 0000000..9ebcbfa
 --- /dev/null
 +++ b/support/degauss/degauss_shortcut.cpp
-@@ -0,0 +1,188 @@
+@@ -0,0 +1,189 @@
 +// Degauss frontend shortcut integration for MiSTer Main.
 +//
 +// Copyright (C) 2026 Giancarlo Erra
@@ -992,6 +992,7 @@ index 0000000..3615922
 +
 +	if (!menu_event && capture_active)
 +	{
++		if (!value) return false;
 +		if (value == 1 && key)
 +		{
 +			capture_active = false;
@@ -1026,7 +1027,7 @@ index 0000000..3615922
 +	if (!request_state.pending) return false;
 +	return request_state.take(runtime_eligible(false));
 +}
-diff --git a/modified/support/degauss/degauss_shortcut.h b/support/degauss/degauss_shortcut.h
+diff --git a/support/degauss/degauss_shortcut.h b/support/degauss/degauss_shortcut.h
 new file mode 100644
 index 0000000..7dde22f
 --- /dev/null
@@ -1070,7 +1071,7 @@ index 0000000..7dde22f
 +bool degauss_shortcut_take_request(void);
 +
 +#endif
-diff --git a/modified/support/degauss/degauss_shortcut_logic.h b/support/degauss/degauss_shortcut_logic.h
+diff --git a/support/degauss/degauss_shortcut_logic.h b/support/degauss/degauss_shortcut_logic.h
 new file mode 100644
 index 0000000..bc47972
 --- /dev/null
@@ -1249,12 +1250,12 @@ index 0000000..bc47972
 +} // namespace degauss_shortcut_logic
 +
 +#endif
-diff --git a/modified/support/degauss/physical_cd_autorun.cpp b/support/degauss/physical_cd_autorun.cpp
+diff --git a/support/degauss/physical_cd_autorun.cpp b/support/degauss/physical_cd_autorun.cpp
 new file mode 100644
-index 0000000..ef2250a
+index 0000000..729bea1
 --- /dev/null
 +++ b/support/degauss/physical_cd_autorun.cpp
-@@ -0,0 +1,833 @@
+@@ -0,0 +1,835 @@
 +#include "physical_cd_autorun.h"
 +
 +// Disc signatures and raw-read fallbacks come from Zaparoo Main's working
@@ -2053,7 +2054,9 @@ index 0000000..ef2250a
 +		result->toc_fingerprint, "launch", path))
 +	{
 +		printf("CD autorun: unable to queue launch for %s\n", path);
-+		write_event("error", "Physical disc launch could not be prepared.");
++		if (access(DEGAUSS_PHYSICAL_DISC_EVENT_FILE, F_OK) != 0)
++			write_event("error", "Physical disc launch could not be prepared.");
++		s_poll_timer = GetTimer(CD_POLL_MS * 4);
 +		return true;
 +	}
 +
@@ -2088,7 +2091,7 @@ index 0000000..ef2250a
 +
 +	start_detection();
 +}
-diff --git a/modified/support/degauss/physical_cd_autorun.h b/support/degauss/physical_cd_autorun.h
+diff --git a/support/degauss/physical_cd_autorun.h b/support/degauss/physical_cd_autorun.h
 new file mode 100644
 index 0000000..15e2286
 --- /dev/null
@@ -2100,7 +2103,7 @@ index 0000000..15e2286
 +// from an installed physical-CD provider is returned to Degauss through the
 +// normal frontend launch handoff.
 +void physical_cd_autorun_poll(void);
-diff --git a/modified/support/degauss/physical_cd_logic.cpp b/support/degauss/physical_cd_logic.cpp
+diff --git a/support/degauss/physical_cd_logic.cpp b/support/degauss/physical_cd_logic.cpp
 new file mode 100644
 index 0000000..24081c7
 --- /dev/null
@@ -2239,7 +2242,7 @@ index 0000000..24081c7
 +	default: return "unknown CD";
 +	}
 +}
-diff --git a/modified/support/degauss/physical_cd_logic.h b/support/degauss/physical_cd_logic.h
+diff --git a/support/degauss/physical_cd_logic.h b/support/degauss/physical_cd_logic.h
 new file mode 100644
 index 0000000..9472a15
 --- /dev/null
@@ -2291,7 +2294,7 @@ index 0000000..9472a15
 +const char *degauss_cd_provider_mgl_name(degauss_cd_provider_kind_t provider,
 +	degauss_cd_disc_type_t type);
 +const char *degauss_cd_disc_type_name(degauss_cd_disc_type_t type);
-diff --git a/modified/tests/degauss_physical_cd_logic_test.cpp b/tests/degauss_physical_cd_logic_test.cpp
+diff --git a/tests/degauss_physical_cd_logic_test.cpp b/tests/degauss_physical_cd_logic_test.cpp
 new file mode 100644
 index 0000000..3fe0614
 --- /dev/null
@@ -2401,7 +2404,7 @@ index 0000000..3fe0614
 +	assert(!strcmp(degauss_cd_disc_type_name(DEGAUSS_CD_NEOGEOCD), "Neo Geo CD"));
 +	return 0;
 +}
-diff --git a/modified/tests/degauss_shortcut_logic_test.cpp b/tests/degauss_shortcut_logic_test.cpp
+diff --git a/tests/degauss_shortcut_logic_test.cpp b/tests/degauss_shortcut_logic_test.cpp
 new file mode 100644
 index 0000000..e627958
 --- /dev/null
@@ -2552,12 +2555,12 @@ index 0000000..e627958
 +	test_keyboard_runtime();
 +	return 0;
 +}
-diff --git a/modified/tests/run-degauss-physical-cd-tests.sh b/tests/run-degauss-physical-cd-tests.sh
-new file mode 100755
-index 0000000..47c3b8a
+diff --git a/tests/run-degauss-physical-cd-tests.sh b/tests/run-degauss-physical-cd-tests.sh
+new file mode 100644
+index 0000000..842db34
 --- /dev/null
 +++ b/tests/run-degauss-physical-cd-tests.sh
-@@ -0,0 +1,24 @@
+@@ -0,0 +1,26 @@
 +#!/usr/bin/env bash
 +set -euo pipefail
 +
@@ -2577,17 +2580,19 @@ index 0000000..47c3b8a
 +grep -q 'detection_current(generation)' support/degauss/physical_cd_autorun.cpp
 +grep -q 'DEGAUSS_PHYSICAL_DISC_CONTROL_FILE' support/degauss/physical_cd_autorun.cpp
 +grep -q 'DEGAUSS_PHYSICAL_DISC_EVENT_FILE' support/degauss/physical_cd_autorun.cpp
++grep -q 'access(DEGAUSS_PHYSICAL_DISC_EVENT_FILE, F_OK) != 0' support/degauss/physical_cd_autorun.cpp
++grep -q 'GetTimer(CD_POLL_MS \* 4)' support/degauss/physical_cd_autorun.cpp
 +if grep -q 'xml_load' support/degauss/physical_cd_autorun.cpp; then
 +	echo "Physical-disc detection bypasses the Degauss launch handoff" >&2
 +	exit 1
 +fi
 +grep -q 'physical_cd_autorun_poll();' scheduler.cpp
-diff --git a/modified/tests/run-degauss-shortcut-tests.sh b/tests/run-degauss-shortcut-tests.sh
-new file mode 100755
-index 0000000..b0aca3a
+diff --git a/tests/run-degauss-shortcut-tests.sh b/tests/run-degauss-shortcut-tests.sh
+new file mode 100644
+index 0000000..ea6d84b
 --- /dev/null
 +++ b/tests/run-degauss-shortcut-tests.sh
-@@ -0,0 +1,80 @@
+@@ -0,0 +1,85 @@
 +#!/usr/bin/env bash
 +set -euo pipefail
 +
@@ -2614,6 +2619,11 @@ index 0000000..b0aca3a
 +grep -B8 'degauss_shortcut_handle_keyboard_event' input.cpp | grep -q 'valid_keyboard_key(ev->code)'
 +grep -B8 'degauss_shortcut_handle_keyboard_event' input.cpp | grep -q '!input\[dev\]\.force_joy'
 +grep -q 'uint8_t  kbdmap\[256\]' input.cpp
++
++# The Enter release that opened capture must reach Main's ordinary keyboard
++# path, otherwise the next Enter press remains latched and is ignored.
++capture_handler="$(sed -n '/bool degauss_shortcut_handle_keyboard_event/,/^}/p' support/degauss/degauss_shortcut.cpp)"
++printf '%s\n' "$capture_handler" | grep -Fq 'if (!value) return false;'
 +
 +# The two Degauss rows must follow their visible order when Up or Down changes
 +# menusub. They stay above every stock System-menu index, with no controller
@@ -2668,12 +2678,12 @@ index 0000000..b0aca3a
 +printf '%s\n' "$fork_failure" | grep -q 'video_chvt(1);'
 +printf '%s\n' "$fork_failure" | grep -q 'video_fb_enable(0);'
 +printf '%s\n' "$fork_failure" | grep -q 'menustate = MENU_SYSTEM1;'
-diff --git a/modified/tests/run-degauss-video-tests.sh b/tests/run-degauss-video-tests.sh
-new file mode 100755
-index 0000000..e49ed64
+diff --git a/tests/run-degauss-video-tests.sh b/tests/run-degauss-video-tests.sh
+new file mode 100644
+index 0000000..69c8353
 --- /dev/null
 +++ b/tests/run-degauss-video-tests.sh
-@@ -0,0 +1,110 @@
+@@ -0,0 +1,111 @@
 +#!/usr/bin/env bash
 +set -euo pipefail
 +
@@ -2766,6 +2776,7 @@ index 0000000..e49ed64
 +	exit 1
 +fi
 +printf '%s\n' "$preset_restore" | grep -Fq 'memcpy(gamma_cfg, degauss_gamma_before_preset'
++printf '%s\n' "$preset_restore" | grep -Fq 'if (has_gamma) spi_uio_cmd8(UIO_SET_GAMMA, gamma_cfg[0]);'
 +printf '%s\n' "$preset_restore" | grep -Fq 'memcpy(scaler_flt, degauss_scaler_before_preset'
 +printf '%s\n' "$preset_restore" | grep -Fq 'memcpy(scaler_flt_data, degauss_scaler_data_before_preset'
 +printf '%s\n' "$preset_restore" | grep -Fq 'memcpy(shadow_mask_cfg, degauss_shadow_mask_before_preset'
@@ -2784,7 +2795,7 @@ index 0000000..e49ed64
 +printf '%s\n' "$deferred_mask" | grep -Fq 'Scripts/.config/degauss/masks/%s.txt'
 +printf '%s\n' "$deferred_mask" | grep -Fq 'if (!FileExists(path))'
 +printf '%s\n' "$deferred_mask" | grep -Fq 'degauss_mask_before_preset[0] = 0;'
-diff --git a/modified/tests/run-degauss-vt-test.py b/tests/run-degauss-vt-test.py
+diff --git a/tests/run-degauss-vt-test.py b/tests/run-degauss-vt-test.py
 new file mode 100644
 index 0000000..88931fd
 --- /dev/null
@@ -2830,7 +2841,7 @@ index 0000000..88931fd
 +    subprocess.run([str(path / 'test')], check=True)
 +print('Frontend completion restores VT1 before disabling script framebuffer')
 diff --git a/video.cpp b/video.cpp
-index 542ef71..3e16e09 100644
+index 542ef71..4c30e2f 100644
 --- a/video.cpp
 +++ b/video.cpp
 @@ -50,6 +50,8 @@
@@ -3181,7 +3192,7 @@ index 542ef71..3e16e09 100644
  }
  
  static void hdmi_packet_enable(uint8_t mask, bool enable)
-@@ -2653,6 +2905,62 @@ static void video_cfg_init()
+@@ -2653,6 +2905,63 @@ static void video_cfg_init()
  	loadShadowMaskCfg();
  }
  
@@ -3195,6 +3206,7 @@ index 542ef71..3e16e09 100644
 +	memcpy(shadow_mask_cfg, degauss_shadow_mask_before_preset, sizeof(shadow_mask_cfg));
 +	snprintf(degauss_display_mask, sizeof(degauss_display_mask), "%s", degauss_mask_before_preset);
 +	setGamma();
++	if (has_gamma) spi_uio_cmd8(UIO_SET_GAMMA, gamma_cfg[0]);
 +	setScaler();
 +	setShadowMask();
 +	if (reapply_framebuffer && video_fb_state()) video_fb_enable(1, fb_num);
@@ -3244,7 +3256,7 @@ index 542ef71..3e16e09 100644
  void video_cfg_reset()
  {
  	FileDeleteConfig(gamma_cfg_path);
-@@ -2668,6 +2976,7 @@ void video_cfg_reset()
+@@ -2668,6 +2977,7 @@ void video_cfg_reset()
  
  void video_init()
  {
@@ -3252,7 +3264,7 @@ index 542ef71..3e16e09 100644
  	yc_parse(yc_modes, sizeof(yc_modes) / sizeof(yc_modes[0]));
  
  	fb_init();
-@@ -2707,7 +3016,7 @@ void video_reinit()
+@@ -2707,7 +3017,7 @@ void video_reinit()
  	support_FHD = 0;
  	video_mode_load(true);
  
@@ -3261,7 +3273,7 @@ index 542ef71..3e16e09 100644
  	video_set_mode(&v_def, 0);
  	user_io_send_buttons(1);
  	video_mode_adjust(1);
-@@ -3085,20 +3394,58 @@ bool video_mode_select(uint32_t vtime, vmode_custom_t* out_mode)
+@@ -3085,20 +3395,58 @@ bool video_mode_select(uint32_t vtime, vmode_custom_t* out_mode)
  	return adjustable;
  }
  
@@ -3325,7 +3337,7 @@ index 542ef71..3e16e09 100644
  
  		int COLORBURST_START = (int)(3.7f * (CLK_VIDEO / CLK_REF));
  		int COLORBURST_END = (int)(9.0f * (CLK_VIDEO / CLK_REF)) + COLORBURST_START;
-@@ -3106,11 +3453,11 @@ static void set_yc_mode()
+@@ -3106,11 +3454,11 @@ static void set_yc_mode()
  
  		char yc_key[64];
  		char yc_key_expand[64];
@@ -3340,7 +3352,7 @@ index 542ef71..3e16e09 100644
  		{
  		if (!strcasecmp(yc_modes[i].key, yc_key) || !strcasecmp(yc_modes[i].key, yc_key_expand))
  			{
-@@ -3334,6 +3681,11 @@ static void fb_write_module_params()
+@@ -3334,6 +3682,11 @@ static void fb_write_module_params()
  	});
  }
  
@@ -3352,7 +3364,7 @@ index 542ef71..3e16e09 100644
  void video_fb_enable(int enable, int n)
  {
  	PROFILE_FUNCTION();
-@@ -3362,7 +3714,8 @@ void video_fb_enable(int enable, int n)
+@@ -3362,7 +3715,8 @@ void video_fb_enable(int enable, int n)
  				}
  
  				//printf("Switch to Linux frame buffer\n");
@@ -3362,7 +3374,7 @@ index 542ef71..3e16e09 100644
  				spi_w((uint16_t)fb_addr); // base address low word
  				spi_w(fb_addr >> 16);     // base address high word
  				spi_w(fb_width);          // frame width
-@@ -3400,7 +3753,18 @@ void video_fb_enable(int enable, int n)
+@@ -3400,7 +3754,18 @@ void video_fb_enable(int enable, int n)
  		}
  
  		DisableIO();
@@ -3382,7 +3394,7 @@ index 542ef71..3e16e09 100644
  		if (is_menu()) user_io_status_set("[8:5]", (fb_enabled && !fb_num) ? 0x160 : 0);
  	}
  }
-@@ -3419,6 +3783,7 @@ int video_fb_state()
+@@ -3419,6 +3784,7 @@ int video_fb_state()
  static void video_fb_config()
  {
  	PROFILE_FUNCTION();
@@ -3390,7 +3402,7 @@ index 542ef71..3e16e09 100644
  
  	int fb_scale = cfg.fb_size;
  
-@@ -3432,20 +3797,38 @@ static void video_fb_config()
+@@ -3432,20 +3798,38 @@ static void video_fb_config()
  	else if (fb_scale == 3) fb_scale = 2;
  	else if (fb_scale > 4) fb_scale = 4;
  
@@ -3435,7 +3447,7 @@ index 542ef71..3e16e09 100644
  static void draw_checkers()
  {
  	volatile uint32_t* buf = fb_base + (FB_SIZE*menu_bgn);
-@@ -3453,6 +3836,7 @@ static void draw_checkers()
+@@ -3453,6 +3837,7 @@ static void draw_checkers()
  	uint32_t col1 = 0x888888;
  	uint32_t col2 = 0x666666;
  	int sz = fb_width / 128;
@@ -3443,7 +3455,7 @@ index 542ef71..3e16e09 100644
  
  	for (int y = brd_y; y < fb_height - brd_y; y++)
  	{
-@@ -3760,6 +4144,8 @@ void video_menu_bg(int n, int idle)
+@@ -3760,6 +4145,8 @@ void video_menu_bg(int n, int idle)
  		imlib_context_set_image(bg1); imlib_free_image(); bg1 = 0;
  		imlib_context_set_image(bg2); imlib_free_image(); bg2 = 0;
  		imlib_context_set_image(curtain); imlib_free_image(); curtain = 0;
@@ -3452,7 +3464,7 @@ index 542ef71..3e16e09 100644
  	}
  	else
  	{
-@@ -4353,4 +4739,3 @@ int video_get_rotated()
+@@ -4353,4 +4740,3 @@ int video_get_rotated()
  {
    return current_video_info.rotated;
  }
