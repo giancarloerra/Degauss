@@ -706,7 +706,7 @@ impl Library {
                     .and_then(|contents| {
                         let mut supported = contents.entries.iter().filter(|entry| {
                             let member = Path::new(&entry.name);
-                            self.accepts_archive_member(member)
+                            self.accepts_archive_member(&path, member)
                                 && directory_depth.saturating_add(member.components().count())
                                     <= MAX_DEPTH
                         });
@@ -792,7 +792,7 @@ impl Library {
         };
         let supported: Vec<_> = entries
             .iter()
-            .filter(|entry| self.accepts_archive_member(Path::new(&entry.name)))
+            .filter(|entry| self.accepts_archive_member(archive, Path::new(&entry.name)))
             .collect();
         let legacy_metadata = supported.len() == 1;
         let root = self.root_for(archive);
@@ -952,8 +952,8 @@ impl Library {
     /// An archive member is eligible only when the system can launch its
     /// extension and it is not one of the support files ordinary directory
     /// browsing already excludes.
-    fn accepts_archive_member(&self, member: &Path) -> bool {
-        self.config.accepts(member)
+    fn accepts_archive_member(&self, archive: &Path, member: &Path) -> bool {
+        self.config.accepts(&archive.join(member))
             && member
                 .file_name()
                 .is_some_and(|name| !is_not_a_game(&name.to_string_lossy()))
@@ -1630,6 +1630,107 @@ mod tests {
             compatible_cores: Vec::new(),
             extra_paths: Vec::new(),
         }
+    }
+
+    #[test]
+    fn atari_2600_bin_roms_belong_to_its_dedicated_folder_even_with_an_old_table() {
+        let root = temp("atari-2600-bin");
+        let shared = root.join("ATARI7800");
+        let dedicated = root.join("Atari2600");
+        std::fs::create_dir_all(&shared).unwrap();
+        std::fs::create_dir_all(dedicated.join("Nested")).unwrap();
+        for file in [
+            shared.join("Shared 2600.a26"),
+            shared.join("7800 Game.bin"),
+            shared.join("7800 Game.a78"),
+            dedicated.join("Pitfall.BIN"),
+            dedicated.join("Combat.a26"),
+            dedicated.join("Nested/Berzerk.bin"),
+        ] {
+            std::fs::write(file, b"rom").unwrap();
+        }
+
+        for table in [
+            include_str!("../assets/systems.toml"),
+            include_str!("../tests/fixtures/v0.1.0-and-v0.2.0-systems.toml"),
+        ] {
+            let systems = crate::systems::parse_table(table, Path::new("systems.toml")).unwrap();
+            let atari2600 = systems
+                .iter()
+                .find(|system| system.id == "Atari2600")
+                .unwrap();
+            let config = crate::systems::FoundSystem {
+                def: atari2600.clone(),
+                paths: vec![shared.clone(), dedicated.clone()],
+                logo_dir: None,
+                menu_folder: None,
+            }
+            .to_config();
+            let library = Library::open(&config).unwrap();
+            let (shared_rows, _) = library.list(&Place::Dir(shared.clone()), false).unwrap();
+            assert_eq!(names_of(&shared_rows), vec!["Shared 2600.a26"]);
+            let (dedicated_rows, _) = library.list(&Place::Dir(dedicated.clone()), false).unwrap();
+            assert_eq!(
+                names_of(&dedicated_rows),
+                vec!["Nested", "Combat.a26", "Pitfall.BIN"]
+            );
+            let (nested_rows, _) = library
+                .list(&Place::Dir(dedicated.join("Nested")), false)
+                .unwrap();
+            assert_eq!(names_of(&nested_rows), vec!["Berzerk.bin"]);
+            assert_eq!(library.audit(false).games, 4);
+
+            let shared_zip = shared.join("Shared Bin.zip");
+            let dedicated_zip = dedicated.join("Dedicated Bin.zip");
+            std::fs::write(
+                &shared_zip,
+                crate::zip::tests_archive(&["Shared.bin"], false),
+            )
+            .unwrap();
+            std::fs::write(
+                &dedicated_zip,
+                crate::zip::tests_archive(&["Dedicated.bin"], false),
+            )
+            .unwrap();
+            assert!(library
+                .list(&Place::Archive(shared_zip.clone()), false)
+                .unwrap()
+                .0
+                .is_empty());
+            let (rows, _) = library
+                .list(&Place::Archive(dedicated_zip.clone()), false)
+                .unwrap();
+            assert_eq!(names_of(&rows), vec!["Dedicated.bin"]);
+            std::fs::remove_file(shared_zip).unwrap();
+            std::fs::remove_file(dedicated_zip).unwrap();
+
+            let plan = crate::launch::plan(
+                &config,
+                &dedicated.join("Pitfall.BIN"),
+                &root.join("launch.mgl"),
+            )
+            .unwrap();
+            assert!(plan.mgl.contains("<setname>Atari2600</setname>"));
+            assert!(plan
+                .mgl
+                .contains("<file delay=\"1\" type=\"f\" index=\"1\""));
+
+            let atari7800 = systems
+                .iter()
+                .find(|system| system.id == "Atari7800")
+                .unwrap();
+            let config = crate::systems::FoundSystem {
+                def: atari7800.clone(),
+                paths: vec![shared.clone()],
+                logo_dir: None,
+                menu_folder: None,
+            }
+            .to_config();
+            let library = Library::open(&config).unwrap();
+            let (rows, _) = library.list(&library.start(), false).unwrap();
+            assert_eq!(names_of(&rows), vec!["7800 Game.a78", "7800 Game.bin"]);
+        }
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

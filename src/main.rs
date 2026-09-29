@@ -22,6 +22,10 @@ mod display_mask;
 mod error;
 mod favorites;
 mod font;
+#[cfg(test)]
+#[path = "../build/font_data.rs"]
+mod font_data_tests;
+mod font_packs;
 mod frontend_session;
 mod game_filter;
 mod game_launch_cores;
@@ -29,6 +33,7 @@ mod gamelist;
 mod history;
 mod index_job;
 mod information_job;
+mod ini_profile;
 mod input;
 mod launch;
 mod launch_cores;
@@ -42,6 +47,7 @@ mod neogeo;
 mod network_wait;
 mod options;
 mod pack_health;
+mod physical_disc;
 mod provider_job;
 mod render;
 mod scraper;
@@ -54,6 +60,7 @@ mod surface;
 mod systems;
 mod theme;
 mod theme_editor;
+mod video_preset;
 mod zip;
 
 use std::path::{Path, PathBuf};
@@ -974,6 +981,8 @@ fn build_app(
     rotation_override: Option<ScreenRotation>,
 ) -> Result<App> {
     let window = render::install_platform(repaint)?;
+    font_packs::register()
+        .map_err(|e| DegaussError::unsupported("registering embedded text sizes", e.to_string()))?;
     let ui = DegaussWindow::new()
         .map_err(|e| DegaussError::unsupported("building the interface", e.to_string()))?;
     let rotation = rotation_override
@@ -1610,6 +1619,7 @@ fn run_on_framebuffer(
 struct DisplayMaskCleanup<'a> {
     fifo: &'a Path,
     armed: bool,
+    preset_armed: bool,
 }
 
 #[cfg(target_os = "linux")]
@@ -1617,21 +1627,37 @@ impl DisplayMaskCleanup<'_> {
     fn finish_reset(&mut self, result: &Result<()>) {
         self.armed = result.is_err();
     }
+
+    fn finish_preset_reset(&mut self, result: &Result<()>) {
+        self.preset_armed = result.is_err();
+    }
 }
 
 #[cfg(target_os = "linux")]
 fn prepare_display_mask_handoff(
     outcome: &Result<Outcome>,
     mask_active: bool,
+    preset_active: bool,
     cleanup: &mut DisplayMaskCleanup<'_>,
 ) -> Result<()> {
-    cleanup.armed = mask_active;
+    // Resetting a full preset can restore the mask that was active before it.
+    // Clear that restored mask too, even though the preset took precedence in
+    // the current Degauss settings.
+    cleanup.armed = mask_active || preset_active;
+    cleanup.preset_armed = preset_active;
     // Main clears this temporary mask when loading a core. Sending Off here
     // would put two commands in its unframed FIFO before it reads either one.
-    if matches!(outcome, Ok(Outcome::Launch { .. })) {
+    if matches!(outcome, Ok(Outcome::Launch { .. } | Outcome::SwitchIni(_))) {
         return Ok(());
     }
-    let reset = if mask_active {
+    let preset_reset = if preset_active {
+        video_preset::apply(None, cleanup.fifo)
+    } else {
+        Ok(())
+    };
+    cleanup.finish_preset_reset(&preset_reset);
+    preset_reset?;
+    let reset = if mask_active || preset_active {
         launch::set_display_mask(None, cleanup.fifo)
     } else {
         Ok(())
@@ -1643,6 +1669,11 @@ fn prepare_display_mask_handoff(
 #[cfg(target_os = "linux")]
 impl Drop for DisplayMaskCleanup<'_> {
     fn drop(&mut self) {
+        if self.preset_armed {
+            if let Err(error) = video_preset::apply(None, self.fifo) {
+                note(&format!("video preset could not be switched off: {error}"));
+            }
+        }
         if self.armed {
             if let Err(error) = launch::set_display_mask(None, self.fifo) {
                 note(&format!("display mask could not be switched off: {error}"));
@@ -1703,13 +1734,17 @@ fn run_on_framebuffer(
         RepaintBufferType::ReusedBuffer,
         args.rotation,
     )?;
+    app.apply_saved_video_preset();
+    // The preset request is acknowledged by Main before the separate mask
+    // command is written. MiSTer_cmd has no message framing between writes.
     let mask_selected_at_start = app.display_mask().is_some();
     app.apply_saved_display_mask();
     // A later startup error must not leave the Menu mask active. The normal
     // post-run reset below handles successful startup and disarms this guard.
     let mut mask_cleanup = DisplayMaskCleanup {
         fifo: Path::new(launch::CMD_FIFO),
-        armed: mask_selected_at_start,
+        armed: mask_selected_at_start || app.video_preset_active(),
+        preset_armed: app.video_preset_active(),
     };
     // Only when asked: without the flag the view saved in settings.toml,
     // which App::new already chose, is the one the user wants.
@@ -1798,8 +1833,12 @@ fn run_on_framebuffer(
     let outcome = app.run(&mut framebuffer, &mut input, &mut presenter, || {
         session.owner_alive()
     });
-    let mask_reset =
-        prepare_display_mask_handoff(&outcome, app.display_mask().is_some(), &mut mask_cleanup);
+    let mask_reset = prepare_display_mask_handoff(
+        &outcome,
+        app.display_mask().is_some(),
+        app.video_preset_active(),
+        &mut mask_cleanup,
+    );
 
     terminal.restore();
     if let Some(console) = console.as_mut() {
@@ -1838,6 +1877,28 @@ fn run_on_framebuffer(
     match outcome {
         Outcome::Quit => note("ended        user quit"),
         Outcome::LauncherReplaced => note("ended        MiSTer launcher was replaced"),
+        Outcome::SwitchIni(slot) => {
+            note(&format!("ended        switching MiSTer INI slot {slot}"));
+            let previous = ini_profile::current_slot()
+                .map_err(|e| DegaussError::io("reading active MiSTer INI", "/dev/mem", e))?;
+            ini_profile::select_slot_with_rollback(previous, slot)
+                .map_err(|e| DegaussError::io("selecting MiSTer INI profile", "/dev/mem", e))?;
+            if let Err(error) = ini_profile::reload_menu(Path::new(launch::CMD_FIFO)) {
+                if let Err(rollback) = ini_profile::select_slot(previous) {
+                    return Err(DegaussError::unsupported(
+                        "MiSTer INI switch",
+                        format!("Menu reload failed: {error}; restoring the previous INI also failed: {rollback}"),
+                    ));
+                }
+                return Err(DegaussError::io(
+                    "reloading MiSTer Menu after INI switch",
+                    Path::new(launch::CMD_FIFO),
+                    error,
+                ));
+            }
+            mask_cleanup.armed = false;
+            mask_cleanup.preset_armed = false;
+        }
         Outcome::Script(script) => {
             app.position().save(&state_path)?;
             state::mark_script_resuming(script.script())?;
@@ -1870,6 +1931,7 @@ fn run_on_framebuffer(
             // Main's core-load restart clears the mask. A failed FIFO write
             // leaves the guard armed so it still sends Off on this exit.
             mask_cleanup.armed = false;
+            mask_cleanup.preset_armed = false;
             if let Err(error) = launch::publish_active_game(
                 active_game.as_deref(),
                 Path::new(launch::ACTIVE_GAME_FILE),
@@ -2261,6 +2323,7 @@ mod tests {
             let _cleanup = DisplayMaskCleanup {
                 fifo: &fifo,
                 armed: true,
+                preset_armed: false,
             };
         }
         assert_eq!(std::fs::read_to_string(&fifo).unwrap(), "fb_mask off\n");
@@ -2269,6 +2332,7 @@ mod tests {
             let mut cleanup = DisplayMaskCleanup {
                 fifo: &fifo,
                 armed: true,
+                preset_armed: false,
             };
             cleanup.finish_reset(&Ok(()));
         }
@@ -2278,6 +2342,7 @@ mod tests {
         let mut cleanup = DisplayMaskCleanup {
             fifo: &fifo,
             armed: false,
+            preset_armed: false,
         };
         let failed_reset = launch::set_display_mask(None, &fifo);
         assert!(failed_reset.is_err());
@@ -2303,14 +2368,17 @@ mod tests {
             let mut cleanup = DisplayMaskCleanup {
                 fifo: &fifo,
                 armed: true,
+                preset_armed: true,
             };
-            prepare_display_mask_handoff(&core_launch, true, &mut cleanup).unwrap();
+            prepare_display_mask_handoff(&core_launch, false, true, &mut cleanup).unwrap();
+            assert!(cleanup.armed, "a preset may restore its previous mask");
             assert_eq!(std::fs::read_to_string(&fifo).unwrap(), "");
             let Ok(Outcome::Launch { plan, .. }) = &core_launch else {
                 unreachable!()
             };
             launch::execute(plan, &fifo).unwrap();
             cleanup.armed = false;
+            cleanup.preset_armed = false;
         }
         assert_eq!(
             std::fs::read_to_string(&fifo).unwrap(),
@@ -2321,8 +2389,27 @@ mod tests {
             let mut cleanup = DisplayMaskCleanup {
                 fifo: &fifo,
                 armed: true,
+                preset_armed: true,
             };
-            prepare_display_mask_handoff(&Ok(Outcome::Quit), true, &mut cleanup).unwrap();
+            prepare_display_mask_handoff(&Ok(Outcome::SwitchIni(1)), true, true, &mut cleanup)
+                .unwrap();
+            assert_eq!(std::fs::read_to_string(&fifo).unwrap(), "");
+            std::fs::write(&fifo, "load_core menu.rbf\n").unwrap();
+            cleanup.armed = false;
+            cleanup.preset_armed = false;
+        }
+        assert_eq!(
+            std::fs::read_to_string(&fifo).unwrap(),
+            "load_core menu.rbf\n"
+        );
+        std::fs::write(&fifo, "").unwrap();
+        {
+            let mut cleanup = DisplayMaskCleanup {
+                fifo: &fifo,
+                armed: true,
+                preset_armed: false,
+            };
+            prepare_display_mask_handoff(&Ok(Outcome::Quit), true, false, &mut cleanup).unwrap();
         }
         assert_eq!(std::fs::read_to_string(&fifo).unwrap(), "fb_mask off\n");
         std::fs::remove_file(fifo).unwrap();

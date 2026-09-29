@@ -1,8 +1,136 @@
+diff --git a/MiSTer.ini b/MiSTer.ini
+index 4967017..e895697 100644
+--- a/MiSTer.ini
++++ b/MiSTer.ini
+@@ -34,8 +34,10 @@ direct_video=0         ; 1 - enable core video timing over HDMI, use only with V
+ 
+ hdr=0                  ; 1 - enable HDR using HLG (recommended for most users)
+                        ; 2 - enable HDR using the DCI P3 color space (use color controls to tweak, suggestion: set saturation to 80).
+-fb_size=0              ; 0 - automatic, 1 - full size, 2 - 1/2 of resolution, 4 - 1/4 of resolution.
+-fb_terminal=1          ; 1 - enabled (default), 0 - disabled
++fb_size=0              ; 0 - automatic, 1 - full size, 2 - 1/2 of resolution, 4 - 1/4 of resolution.
++fb_hscale=1            ; 1 - default, divide framebuffer width by this value without changing output timing or height.
++degauss_native_analog=0 ; 1 - native CRT timing plus configured HDMI timing for Degauss. Requires vga_scaler=0.
++fb_terminal=1          ; 1 - enabled (default), 0 - disabled
+ osd_timeout=30         ; 5-3600 timeout (in seconds) for OSD to disappear in Menu core. 0 - never timeout.
+                        ; Background picture will get darker after double timeout
+ video_off=0            ; output black frame in Menu core after timeout (is seconds). Valid only if osd_timout is non zero.
+diff --git a/cfg.cpp b/cfg.cpp
+index f9ace49..3966eb2 100644
+--- a/cfg.cpp
++++ b/cfg.cpp
+@@ -69,6 +69,8 @@ static const ini_var_t ini_vars[] =
+ 	{ "BOOTCORE_TIMEOUT", (void*)(&(cfg.bootcore_timeout)), INT16, 2, 30 },
+ 	{ "FONT", (void*)(&(cfg.font)), STRING, 0, sizeof(cfg.font) - 1 },
+ 	{ "FB_SIZE", (void*)(&(cfg.fb_size)), UINT8, 0, 4 },
++	{ "FB_HSCALE", (void*)(&(cfg.fb_hscale)), UINT8, 1, 4 },
++	{ "DEGAUSS_NATIVE_ANALOG", (void*)(&(cfg.degauss_native_analog)), UINT8, 0, 1 },
+ 	{ "FB_TERMINAL", (void*)(&(cfg.fb_terminal)), UINT8, 0, 1 },
+ 	{ "OSD_TIMEOUT", (void*)(&(cfg.osd_timeout)), INT16, 0, 3600 },
+ 	{ "DIRECT_VIDEO", (void*)(&(cfg.direct_video)), UINT8, 0, 2 },
+@@ -593,6 +595,7 @@ void cfg_parse()
+ 	memset(&cfg, 0, sizeof(cfg));
+ 	cfg.csync = 1;
+ 	cfg.bootscreen = 1;
++	cfg.fb_hscale = 1;
+ 	cfg.fb_terminal = 1;
+ 	cfg.controller_info = 6;
+ 	cfg.browse_expand = 1;
+diff --git a/cfg.h b/cfg.h
+index f702f0f..65e0f16 100644
+--- a/cfg.h
++++ b/cfg.h
+@@ -40,6 +40,8 @@ typedef struct {
+ 	uint8_t menu_pal;
+ 	int16_t bootcore_timeout;
+ 	uint8_t fb_size;
++	uint8_t fb_hscale;
++	uint8_t degauss_native_analog;
+ 	uint8_t fb_terminal;
+ 	uint8_t osd_rotate;
+ 	uint16_t osd_timeout;
+diff --git a/fpga_io.cpp b/fpga_io.cpp
+index b64cfe5..e216cc9 100644
+--- a/fpga_io.cpp
++++ b/fpga_io.cpp
+@@ -48,6 +48,15 @@ static uint32_t *map_base;
+ /* Timeout count */
+ #define FPGA_TIMEOUT_CNT		0x1000000
+ 
++#define DEGAUSS_MENU_RBF "/media/fat/degauss/menu.rbf"
++
++int fpga_has_degauss_menu()
++{
++	struct stat st;
++	return stat(DEGAUSS_MENU_RBF, &st) == 0 &&
++		S_ISREG(st.st_mode) && access(DEGAUSS_MENU_RBF, R_OK) == 0;
++}
++
+ /* Set CD ratio */
+ static void fpgamgr_set_cd_ratio(unsigned long ratio)
+ {
+@@ -428,6 +437,11 @@ int fpga_load_rbf(const char *name, const char *cfg, const char *xml)
+ 	OsdDisable();
+ 	static char path[1024];
+ 	int ret = 0;
++	const int degauss_cold_boot = !strcmp(name, DEGAUSS_COLD_BOOT_MARKER);
++	const int menu_request = degauss_cold_boot || !strcasecmp(name, "menu.rbf");
++	const int degauss_menu = menu_request && fpga_has_degauss_menu();
++	const char *load_name = degauss_menu ? DEGAUSS_MENU_RBF :
++		(degauss_cold_boot ? "menu.rbf" : name);
+ 
+ 	if(cfg)
+ 	{
+@@ -437,10 +451,10 @@ int fpga_load_rbf(const char *name, const char *cfg, const char *xml)
+ 		reboot(0);
+ 	}
+ 
+-	printf("Loading RBF: %s\n", name);
++	printf("Loading RBF: %s\n", load_name);
+ 
+-	if(name[0] == '/') strcpy(path, name);
+-	else sprintf(path, "%s/%s", !strcasecmp(name, "menu.rbf") ? getStorageDir(0) : getRootDir(), name);
++	if(load_name[0] == '/') strcpy(path, load_name);
++	else sprintf(path, "%s/%s", menu_request ? getStorageDir(0) : getRootDir(), load_name);
+ 
+ 	int rbf = open(path, O_RDONLY);
+ 	if (rbf < 0)
+@@ -503,7 +517,8 @@ int fpga_load_rbf(const char *name, const char *cfg, const char *xml)
+ 	}
+ 	close(rbf);
+ 
+-	app_restart(!strcasecmp(name, "menu.rbf") ? "menu.rbf" : path, xml);
++	app_restart(degauss_cold_boot && degauss_menu ? DEGAUSS_COLD_BOOT_MARKER :
++		(menu_request && !degauss_menu ? "menu.rbf" : path), xml);
+ 	return ret;
+ }
+ 
+diff --git a/fpga_io.h b/fpga_io.h
+index b912439..19da867 100644
+--- a/fpga_io.h
++++ b/fpga_io.h
+@@ -4,6 +4,8 @@
+ #ifndef FPGAIO_H
+ #define FPGAIO_H
+ 
++#define DEGAUSS_COLD_BOOT_MARKER "@degauss-cold-boot"
++
+ #define BUTTON_OSD  1
+ #define BUTTON_USR  2
+ 
+@@ -35,6 +37,7 @@ int fpga_get_fio_size();
+ int fpga_get_io_version();
+ 
+ int fpga_load_rbf(const char *name, const char *cfg = 0, const char *xml = 0);
++int fpga_has_degauss_menu();
+ 
+ void reboot(int cold);
+ void app_restart(const char *path, const char *xml = 0, const char *exe = 0);
 diff --git a/input.cpp b/input.cpp
-index 50f1991..5f251ec 100644
+index 5493893..635753f 100644
 --- a/input.cpp
 +++ b/input.cpp
-@@ -36,10 +36,26 @@
+@@ -37,10 +37,26 @@
  #include "frame_timer.h"
  #include "scaler.h"
  #include "file_io.h"
@@ -29,7 +157,7 @@ index 50f1991..5f251ec 100644
  bool update_advanced_state(int devnum, uint16_t evcode, int evstate);
  
  char joy_bnames[NUMBUTTONS][32] = {};
-@@ -2971,6 +2987,20 @@ static void input_cb(struct input_event *ev, struct input_absinfo *absinfo, int
+@@ -2978,6 +2994,20 @@ static void input_cb(struct input_event *ev, struct input_absinfo *absinfo, int
  		}
  	}
  
@@ -50,8 +178,98 @@ index 50f1991..5f251ec 100644
  	if (ev->type == EV_KEY && ev->code < 256 && !(mapping && mapping_type == 2) && !input[dev].force_joy)
  	{
  		if (!input[dev].has_kbdmap)
+@@ -6264,6 +6294,64 @@ int input_test(int getchar)
+ 					cmd[len] = 0;
+ 					printf("MiSTer_cmd: %s\n", cmd);
+ 					if (!strncmp(cmd, "fb_cmd", 6)) video_cmd(cmd);
++					else if (!strcmp(cmd, "fb_mask off")) video_set_degauss_display_mask(nullptr);
++					else if (!strncmp(cmd, "fb_mask ", 8)) video_set_degauss_display_mask(cmd + 8);
++					else if (!strncmp(cmd, "fb_preset ", 10))
++					{
++						char *end;
++						const unsigned long requester = strtoul(cmd + 10, &end, 10);
++						if (requester >= 100000000 && requester < 1000000000 && *end == ' ')
++						{
++							char error[256] = {};
++							const bool applied = video_set_degauss_preset(!strcmp(end + 1, "off") ? NULL : end + 1, error, sizeof(error));
++							char status[128], temporary[136];
++							snprintf(status, sizeof(status), "/tmp/degauss-preset-%lu.status", requester);
++							snprintf(temporary, sizeof(temporary), "%s.part", status);
++							int fd = open(temporary, O_WRONLY | O_CREAT | O_TRUNC | O_NOFOLLOW, 0600);
++							if (fd >= 0)
++							{
++								char response[300];
++								const int length = snprintf(response, sizeof(response), "%s%s\n", applied ? "ok" : "error ", applied ? "" : error);
++								const ssize_t written = write(fd, response, length);
++								const int closed = close(fd);
++								if (written == length && !closed) rename(temporary, status);
++								else unlink(temporary);
++							}
++						}
++					}
++					else if (!strncmp(cmd, "ini_profiles ", 13))
++					{
++						char *end;
++						const unsigned long requester = strtoul(cmd + 13, &end, 10);
++						if (requester >= 100000000 && requester < 1000000000 && !*end)
++						{
++							uint8_t response[256] = { (uint8_t)altcfg(), 1, 0, 4, 'M', 'a', 'i', 'n' };
++							size_t length = 8;
++							for (uint8_t slot = 1; slot <= 3; slot++)
++							{
++								const char *filename = cfg_get_name(slot);
++								if (!filename[0] || !FileExists(filename)) continue;
++								const size_t size = strlen(filename);
++								if (size > 63) continue;
++								response[length++] = slot;
++								response[length++] = (uint8_t)size;
++								memcpy(response + length, filename, size);
++								length += size;
++								response[1]++;
++							}
++							char status[128], temporary[136];
++							snprintf(status, sizeof(status), "/tmp/degauss-ini-profiles-%lu.status", requester);
++							snprintf(temporary, sizeof(temporary), "%s.part", status);
++							int fd = open(temporary, O_WRONLY | O_CREAT | O_TRUNC | O_NOFOLLOW, 0600);
++							if (fd >= 0)
++							{
++								const ssize_t written = write(fd, response, length);
++								const int closed = close(fd);
++								if (written == (ssize_t)length && !closed) rename(temporary, status);
++								else unlink(temporary);
++							}
++						}
++					}
+ 					else if (!strncmp(cmd, "video_mode ", 11)) video_mode_cmd(cmd + 11);
+ 					else if (!strncmp(cmd, "load_core ", 10))
+ 					{
+diff --git a/main.cpp b/main.cpp
+index 60d94f5..81cc0ad 100644
+--- a/main.cpp
++++ b/main.cpp
+@@ -71,7 +71,19 @@ int main(int argc, char *argv[])
+ 	}
+ 
+ 	FindStorage();
+-	user_io_init((argc > 1) ? argv[1] : "",(argc > 2) ? argv[2] : NULL);
++	// Stock Main passes an empty core path when it hands a cold boot to the
++	// configured replacement Main binary.
++	const bool degauss_cold_boot = argc > 1 &&
++		!strcmp(argv[1], DEGAUSS_COLD_BOOT_MARKER);
++	const bool stock_menu = !degauss_cold_boot && (argc <= 1 || !argv[1][0] ||
++		!strcasecmp(argv[1], "menu.rbf") ||
++		!strcasecmp(argv[1], "/media/fat/menu.rbf"));
++	if (stock_menu && fpga_has_degauss_menu())
++	{
++		fpga_load_rbf(DEGAUSS_COLD_BOOT_MARKER);
++	}
++	user_io_init(degauss_cold_boot ? "" : ((argc > 1) ? argv[1] : ""),
++		(argc > 2) ? argv[2] : NULL);
+ 	achievements_init();
+ 
+ #ifdef USE_SCHEDULER
 diff --git a/menu.cpp b/menu.cpp
-index 0c74e21..879f4a8 100644
+index 981b47a..65739c1 100644
 --- a/menu.cpp
 +++ b/menu.cpp
 @@ -50,6 +50,13 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
@@ -68,7 +286,7 @@ index 0c74e21..879f4a8 100644
  #include "user_io.h"
  #include "debug.h"
  #include "fpga_io.h"
-@@ -80,6 +87,10 @@ enum MENU
+@@ -81,6 +88,10 @@ enum MENU
  	MENU_SYSTEM2,
  	MENU_COMMON1,
  	MENU_COMMON2,
@@ -79,7 +297,7 @@ index 0c74e21..879f4a8 100644
  	MENU_MISC1,
  	MENU_MISC2,
  
-@@ -567,6 +578,11 @@ void menu_key_set(unsigned int c)
+@@ -558,6 +569,11 @@ void menu_key_set(unsigned int c)
  	menu_key = c;
  }
  
@@ -91,7 +309,19 @@ index 0c74e21..879f4a8 100644
  // get key status
  static int hold_cnt = 0;
  static uint32_t menu_key_get(void)
-@@ -1107,6 +1123,17 @@ void HandleUI(void)
+@@ -850,9 +866,9 @@ const char* get_rbf_name_bootcore(char *str)
+ }
+ 
+ 
+-static void vga_nag()
++static void vga_nag(bool show_warning = true)
+ {
+-	if (video_fb_state())
++	if (show_warning && video_fb_state())
+ 	{
+ 		EnableOsd_on(OSD_VGA);
+ 		OsdSetSize(16);
+@@ -1098,6 +1114,17 @@ void HandleUI(void)
  {
  	PROFILE_FUNCTION();
  
@@ -109,7 +339,7 @@ index 0c74e21..879f4a8 100644
  	if (bt_timer >= 0)
  	{
  		if (!bt_timer) bt_timer = (int32_t)GetTimer(6000);
-@@ -1582,6 +1609,12 @@ void HandleUI(void)
+@@ -1593,6 +1620,12 @@ void HandleUI(void)
  		break;
  	}
  
@@ -122,7 +352,7 @@ index 0c74e21..879f4a8 100644
  	// Switch to current menu screen
  	switch (menustate)
  	{
-@@ -2862,6 +2895,14 @@ void HandleUI(void)
+@@ -2941,6 +2974,14 @@ void HandleUI(void)
  			helptext_idx = 0;
  			reboot_req = 0;
  
@@ -137,7 +367,7 @@ index 0c74e21..879f4a8 100644
  			OsdSetTitle("System", 0);
  			menustate = MENU_COMMON2;
  			parentstate = MENU_COMMON1;
-@@ -2875,6 +2916,19 @@ void HandleUI(void)
+@@ -2954,6 +2995,19 @@ void HandleUI(void)
  				if (!menusub) firstmenu = 0;
  				adjvisible = 0;
  
@@ -157,7 +387,7 @@ index 0c74e21..879f4a8 100644
  				MenuWrite(n++, " Core                      \x16", menusub == 0, 0);
  				MenuWrite(n++);
  
-@@ -3104,6 +3158,18 @@ void HandleUI(void)
+@@ -3183,6 +3237,18 @@ void HandleUI(void)
  				menusub = 0;
  				break;
  
@@ -176,7 +406,7 @@ index 0c74e21..879f4a8 100644
  			case 17:
  				{
  					reboot_req = 1;
-@@ -3168,6 +3234,126 @@ void HandleUI(void)
+@@ -3247,6 +3313,126 @@ void HandleUI(void)
  		if(!hold_cnt && reboot_req) fpga_load_rbf("menu.rbf");
  		break;
  
@@ -303,7 +533,7 @@ index 0c74e21..879f4a8 100644
  	case MENU_VIDEOPROC1:
  		helptext_idx = 0;
  		menumask = 0x7FFF;
-@@ -7412,10 +7598,21 @@ void HandleUI(void)
+@@ -7250,17 +7436,51 @@ void HandleUI(void)
  			static char cmd[1024 * 2];
  			const char *path = getFullPath(selPath);
  			menustate = MENU_SCRIPTS_FB2;
@@ -311,10 +541,12 @@ index 0c74e21..879f4a8 100644
 +			// reads. Remembered here because the state that ends the run
 +			// no longer knows which path started it.
 +			degauss_running = degauss_is_frontend_script(selPath);
++			video_set_degauss_native_fb(degauss_running);
  			video_chvt(2);
  			video_fb_enable(1);
- 			vga_nag();
+-			vga_nag();
 -			sprintf(cmd, "#!/bin/bash\nexport LC_ALL=en_US.UTF-8\nexport HOME=/root\ncd $(dirname %s)\n%s\necho \"Press any key to continue\"\n", path, path);
++			vga_nag(!degauss_running);
 +			if (degauss_running)
 +			{
 +				sprintf(cmd, "#!/bin/bash\nexport LC_ALL=en_US.UTF-8\nexport HOME=/root\ncd $(dirname %s)\n%s\n", path, path);
@@ -326,10 +558,25 @@ index 0c74e21..879f4a8 100644
  
  			unlink("/tmp/script");
  			FileSave("/tmp/script", cmd, strlen(cmd));
-@@ -7423,6 +7620,14 @@ void HandleUI(void)
+ 			ttystatus = 0;
  			ttypid = fork();
- 			if (!ttypid)
+-			if (!ttypid)
++			if (ttypid < 0)
  			{
++				perror("fork");
++				ttypid = 0;
++				degauss_running = false;
++				video_set_degauss_native_fb(false);
++				video_chvt(1);
++				video_menu_bg(user_io_status_get("[3:1]"));
++				video_fb_enable(0);
++				menustate = MENU_SYSTEM1;
++				menusub = 3;
++				OsdClear();
++				OsdEnable(DISABLE_KEYBOARD);
++			}
++			else if (!ttypid)
++			{
 +				if (degauss_running)
 +				{
 +					// -i drops the issue file, -n the login prompt: between
@@ -341,7 +588,7 @@ index 0c74e21..879f4a8 100644
  				execl("/sbin/agetty", "/sbin/agetty", "-a", "root", "-l", "/tmp/script", "--nohostname", "-L", "tty2", "linux", NULL);
  				exit(0); //should never be reached
  			}
-@@ -7440,6 +7645,19 @@ void HandleUI(void)
+@@ -7278,6 +7498,21 @@ void HandleUI(void)
  			{
  				ttypid = 0;
  				user_io_osd_key_enable(1);
@@ -351,6 +598,8 @@ index 0c74e21..879f4a8 100644
 +				if (degauss_running)
 +				{
 +					degauss_running = false;
++					video_set_degauss_native_fb(false);
++					video_chvt(1);
 +					video_menu_bg(user_io_status_get("[3:1]"));
 +					video_fb_enable(0);
 +					menustate = MENU_SYSTEM1;
@@ -362,7 +611,7 @@ index 0c74e21..879f4a8 100644
  		}
  		else
 diff --git a/menu.h b/menu.h
-index d85deb4..ce8767c 100644
+index e26ddd7..20ebcc1 100644
 --- a/menu.h
 +++ b/menu.h
 @@ -7,6 +7,7 @@ void SelectFile(const char* path, const char* pFileExt, int Options, unsigned ch
@@ -373,9 +622,29 @@ index d85deb4..ce8767c 100644
  void menu_process_save();
  void PrintDirectory(int expand = 0);
  void ScrollLongName(void);
+diff --git a/scheduler.cpp b/scheduler.cpp
+index 54b3e77..b7b055a 100644
+--- a/scheduler.cpp
++++ b/scheduler.cpp
+@@ -10,6 +10,7 @@
+ #include "profiling.h"
+ #include "achievements.h"
+ #include "video.h"
++#include "support/degauss/physical_cd_autorun.h"
+ 
+ static cothread_t co_scheduler = nullptr;
+ static cothread_t co_poll = nullptr;
+@@ -35,6 +36,7 @@ static void scheduler_co_poll(void)
+ 			user_io_poll();
+ 			frame_timer();
+ 			input_poll(0);
++			physical_cd_autorun_poll();
+ 			achievements_poll();
+ 			video_poll();
+ 		}
 diff --git a/support/degauss/README.md b/support/degauss/README.md
 new file mode 100644
-index 0000000..d601ce1
+index 0000000..343577e
 --- /dev/null
 +++ b/support/degauss/README.md
 @@ -0,0 +1,74 @@
@@ -393,7 +662,7 @@ index 0000000..d601ce1
 +  `Scripts/degauss.sh` once per Main process.
 +- The System menu contains **Frontend** when `fb_terminal=1` and that script
 +  exists.
-+- A on **Frontend** loads `menu.rbf`. Main then restarts and uses the same
++- Selecting **Frontend** loads `menu.rbf`. Main then restarts and uses the same
 +  handoff path.
 +- Starting `degauss.sh` from the Scripts menu uses the same framebuffer
 +  execution path without the console banner or final key prompt.
@@ -565,10 +834,10 @@ index 0000000..5fe1dd8
 +#endif
 diff --git a/support/degauss/degauss_shortcut.cpp b/support/degauss/degauss_shortcut.cpp
 new file mode 100644
-index 0000000..3615922
+index 0000000..9ebcbfa
 --- /dev/null
 +++ b/support/degauss/degauss_shortcut.cpp
-@@ -0,0 +1,188 @@
+@@ -0,0 +1,189 @@
 +// Degauss frontend shortcut integration for MiSTer Main.
 +//
 +// Copyright (C) 2026 Giancarlo Erra
@@ -723,6 +992,7 @@ index 0000000..3615922
 +
 +	if (!menu_event && capture_active)
 +	{
++		if (!value) return false;
 +		if (value == 1 && key)
 +		{
 +			capture_active = false;
@@ -980,6 +1250,1160 @@ index 0000000..bc47972
 +} // namespace degauss_shortcut_logic
 +
 +#endif
+diff --git a/support/degauss/physical_cd_autorun.cpp b/support/degauss/physical_cd_autorun.cpp
+new file mode 100644
+index 0000000..729bea1
+--- /dev/null
++++ b/support/degauss/physical_cd_autorun.cpp
+@@ -0,0 +1,835 @@
++#include "physical_cd_autorun.h"
++
++// Disc signatures and raw-read fallbacks come from Zaparoo Main's working
++// physical-disc implementation, itself adapted from
++// Anime0t4ku/Main_MiSTer_Physical_Disc.
++
++#include <errno.h>
++#include <fcntl.h>
++#include <linux/cdrom.h>
++#include <limits.h>
++#include <pthread.h>
++#include <scsi/sg.h>
++#include <signal.h>
++#include <stdint.h>
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#include <strings.h>
++#include <sys/ioctl.h>
++#include <unistd.h>
++
++#include "file_io.h"
++#include "hardware.h"
++#include "menu.h"
++#include "physical_cd_logic.h"
++#include "user_io.h"
++
++#define CD_RAW_SECTOR_SIZE 2352
++#define CD_USER_SECTOR_SIZE 2048
++#define CD_MAX_TRACKS 100
++#define CD_POLL_MS 1000
++#define CD_READ_TIMEOUT_MS 2000
++#define CD_UNREADABLE_FINGERPRINT 0xFFFFFFFFu
++#define CD_CONTROL_POLL_MS 100
++#define DEGAUSS_PHYSICAL_DISC_CONTROL_FILE "/tmp/degauss_physical_disc.pid"
++#define DEGAUSS_PHYSICAL_DISC_EVENT_FILE "/tmp/degauss_physical_disc_event"
++#define DEGAUSS_PHYSICAL_DISC_HANDLED_FILE "/tmp/degauss_physical_disc_handled"
++
++typedef struct
++{
++	int start;
++	int end;
++	bool data;
++} cd_track_t;
++
++typedef struct
++{
++	cd_track_t tracks[CD_MAX_TRACKS];
++	int count;
++	int leadout;
++	int first_data;
++} cd_toc_t;
++
++typedef struct
++{
++	bool present;
++	bool confirmed_absent;
++	bool media_changed;
++	bool readable;
++	bool classified;
++	uint32_t fingerprint;
++	uint32_t toc_fingerprint;
++	degauss_cd_disc_type_t type;
++} cd_detection_t;
++
++typedef struct
++{
++	unsigned int generation;
++	uint32_t handled_fingerprint;
++	uint32_t handled_toc_fingerprint;
++} cd_worker_args_t;
++
++typedef struct
++{
++	degauss_cd_provider_kind_t kind;
++	const char *name;
++	const char *binary;
++	const char *mgl_dir;
++} cd_provider_t;
++
++static const cd_provider_t s_providers[] =
++{
++	{DEGAUSS_CD_PROVIDER_ANIME, "Physical Disc Support",
++		"/media/fat/MiSTer_Physical-CD", "/media/fat/_Physical Disc Cores"},
++	{DEGAUSS_CD_PROVIDER_MISTER_DISC, "mister-disc",
++		"/media/fat/MiSTer-disc", "/media/fat/_Disc_Cores"},
++};
++
++static pthread_mutex_t s_lock = PTHREAD_MUTEX_INITIALIZER;
++static bool s_poll_active = false;
++static bool s_active = false;
++static bool s_worker_running = false;
++static bool s_result_ready = false;
++static unsigned int s_generation = 0;
++static cd_detection_t s_result;
++static uint32_t s_handled_fingerprint = 0;
++static uint32_t s_handled_toc_fingerprint = 0;
++static bool s_handled_loaded = false;
++static int s_retry_count = 0;
++static int s_absent_count = 0;
++static unsigned long s_poll_timer = 0;
++static unsigned long s_control_poll_timer = 0;
++
++static uint32_t read_le32(const uint8_t *p)
++{
++	return (uint32_t)p[0] | ((uint32_t)p[1] << 8) |
++		((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
++}
++
++static uint32_t hash_bytes(uint32_t hash, const uint8_t *data, size_t size)
++{
++	for (size_t i = 0; i < size; i++) hash = (hash ^ data[i]) * 16777619u;
++	return hash;
++}
++
++static bool control_process_alive(void)
++{
++	FILE *file = fopen(DEGAUSS_PHYSICAL_DISC_CONTROL_FILE, "r");
++	if (!file) return false;
++
++	unsigned int version = 0;
++	long pid = 0;
++	char trailing = 0;
++	int fields = fscanf(file, "%u %ld %c", &version, &pid, &trailing);
++	fclose(file);
++	if (fields != 2 || version != 1 || pid <= 1 || pid > INT_MAX) return false;
++	return kill((pid_t)pid, 0) == 0 || errno == EPERM;
++}
++
++static bool write_all(int fd, const char *data, size_t size)
++{
++	while (size)
++	{
++		ssize_t written = write(fd, data, size);
++		if (written < 0 && errno == EINTR) continue;
++		if (written <= 0) return false;
++		data += written;
++		size -= written;
++	}
++	return true;
++}
++
++static bool write_event(const char *kind, const char *value)
++{
++	if (!kind || !value || strchr(kind, '\n') || strchr(value, '\n')) return false;
++	if (access(DEGAUSS_PHYSICAL_DISC_EVENT_FILE, F_OK) == 0) return false;
++
++	char body[PATH_MAX + 64];
++	int length = snprintf(body, sizeof(body), "%s\n%s\n", kind, value);
++	if (length <= 0 || (size_t)length >= sizeof(body)) return false;
++
++	char temporary[PATH_MAX];
++	int temp_length = snprintf(temporary, sizeof(temporary), "%s.part.%ld",
++		DEGAUSS_PHYSICAL_DISC_EVENT_FILE, (long)getpid());
++	if (temp_length <= 0 || (size_t)temp_length >= sizeof(temporary)) return false;
++
++	int fd = open(temporary, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0600);
++	if (fd < 0) return false;
++	bool written = write_all(fd, body, (size_t)length);
++	if (close(fd)) written = false;
++	if (written && !rename(temporary, DEGAUSS_PHYSICAL_DISC_EVENT_FILE)) return true;
++	unlink(temporary);
++	return false;
++}
++
++static bool detection_current(unsigned int generation)
++{
++	pthread_mutex_lock(&s_lock);
++	bool current = s_active && generation == s_generation;
++	pthread_mutex_unlock(&s_lock);
++	return current;
++}
++
++static void load_handled_fingerprint(void)
++{
++	if (s_handled_loaded) return;
++	s_handled_loaded = true;
++
++	FILE *file = fopen(DEGAUSS_PHYSICAL_DISC_HANDLED_FILE, "r");
++	if (!file) return;
++	int fields = fscanf(file, "%x %x", &s_handled_fingerprint,
++		&s_handled_toc_fingerprint);
++	if (fields < 1) s_handled_fingerprint = 0;
++	if (fields < 2) s_handled_toc_fingerprint = 0;
++	fclose(file);
++}
++
++static bool save_handled_fingerprint(uint32_t fingerprint,
++	uint32_t toc_fingerprint)
++{
++	if (!fingerprint)
++	{
++		if (unlink(DEGAUSS_PHYSICAL_DISC_HANDLED_FILE) && errno != ENOENT) return false;
++		s_handled_fingerprint = 0;
++		s_handled_toc_fingerprint = 0;
++		return true;
++	}
++
++	FILE *file = fopen(DEGAUSS_PHYSICAL_DISC_HANDLED_FILE, "w");
++	if (!file) return false;
++	bool saved = fprintf(file, "%08x %08x\n", fingerprint,
++		toc_fingerprint) == 18;
++	if (fclose(file)) saved = false;
++	if (saved)
++	{
++		s_handled_fingerprint = fingerprint;
++		s_handled_toc_fingerprint = toc_fingerprint;
++	}
++	return saved;
++}
++
++static int open_disc_drive(bool *confirmed_absent)
++{
++	char path[32];
++	*confirmed_absent = false;
++	bool saw_no_disc = false;
++	bool saw_uncertain = false;
++
++	for (int i = 0; i < 8; i++)
++	{
++		snprintf(path, sizeof(path), "/dev/sr%d", i);
++		int fd = open(path, O_RDONLY | O_NONBLOCK | O_CLOEXEC);
++		if (fd < 0)
++		{
++			if (errno != ENOENT && errno != ENODEV) saw_uncertain = true;
++			continue;
++		}
++
++		int status = ioctl(fd, CDROM_DRIVE_STATUS, CDSL_CURRENT);
++		if (status == CDS_DISC_OK) return fd;
++		if (status == CDS_NO_DISC || status == CDS_TRAY_OPEN) saw_no_disc = true;
++		else saw_uncertain = true;
++		close(fd);
++	}
++
++	*confirmed_absent = saw_no_disc && !saw_uncertain;
++	return -1;
++}
++
++static int read_raw_scsi(int fd, int lba, uint8_t *dst)
++{
++	uint8_t cdb[12] = {};
++	uint8_t sense[32] = {};
++	struct sg_io_hdr io = {};
++
++	cdb[0] = 0xBE; // READ CD
++	cdb[2] = (lba >> 24) & 0xFF;
++	cdb[3] = (lba >> 16) & 0xFF;
++	cdb[4] = (lba >> 8) & 0xFF;
++	cdb[5] = lba & 0xFF;
++	cdb[8] = 1;
++	cdb[9] = 0xF8; // sync, header, user data and EDC/ECC
++
++	io.interface_id = 'S';
++	io.cmd_len = sizeof(cdb);
++	io.cmdp = cdb;
++	io.dxfer_direction = SG_DXFER_FROM_DEV;
++	io.dxfer_len = CD_RAW_SECTOR_SIZE;
++	io.dxferp = dst;
++	io.sbp = sense;
++	io.mx_sb_len = sizeof(sense);
++	io.timeout = CD_READ_TIMEOUT_MS;
++
++	if (ioctl(fd, SG_IO, &io) < 0) return -1;
++	if (io.status || io.host_status || io.driver_status || io.resid != 0) return -1;
++	if ((io.info & SG_INFO_OK_MASK) != SG_INFO_OK) return -1;
++	return 0;
++}
++
++static int read_raw_ioctl(int fd, int lba, uint8_t *dst)
++{
++	union
++	{
++		struct cdrom_msf msf;
++		uint8_t raw[CD_RAW_SECTOR_SIZE];
++	} req;
++
++	int frame = lba + 150;
++	memset(&req, 0, sizeof(req));
++	req.msf.cdmsf_min0 = frame / (75 * 60);
++	req.msf.cdmsf_sec0 = (frame / 75) % 60;
++	req.msf.cdmsf_frame0 = frame % 75;
++
++	if (ioctl(fd, CDROMREADRAW, &req) < 0) return -1;
++	memcpy(dst, req.raw, CD_RAW_SECTOR_SIZE);
++	return 0;
++}
++
++static int read_raw_sector(int fd, int lba, uint8_t *dst)
++{
++	if (!read_raw_scsi(fd, lba, dst)) return 0;
++	return read_raw_ioctl(fd, lba, dst);
++}
++
++static int read_user_sector(int fd, int lba, uint8_t *dst)
++{
++	uint8_t raw[CD_RAW_SECTOR_SIZE];
++	if (!read_raw_sector(fd, lba, raw))
++	{
++		int offset = raw[15] == 2 ? 24 : 16;
++		memcpy(dst, raw + offset, CD_USER_SECTOR_SIZE);
++		return 0;
++	}
++
++	ssize_t count = pread(fd, dst, CD_USER_SECTOR_SIZE,
++		(off_t)lba * CD_USER_SECTOR_SIZE);
++	return count == CD_USER_SECTOR_SIZE ? 0 : -1;
++}
++
++static int read_toc(int fd, cd_toc_t *toc)
++{
++	struct cdrom_tochdr hdr = {};
++	if (ioctl(fd, CDROMREADTOCHDR, &hdr) < 0) return -1;
++
++	memset(toc, 0, sizeof(*toc));
++	toc->first_data = -1;
++
++	for (int track = hdr.cdth_trk0;
++		track <= hdr.cdth_trk1 && toc->count < CD_MAX_TRACKS;
++		track++)
++	{
++		struct cdrom_tocentry entry = {};
++		entry.cdte_track = track;
++		entry.cdte_format = CDROM_LBA;
++		if (ioctl(fd, CDROMREADTOCENTRY, &entry) < 0) return -1;
++
++		cd_track_t *out = &toc->tracks[toc->count];
++		out->start = entry.cdte_addr.lba;
++		out->data = (entry.cdte_ctrl & CDROM_DATA_TRACK) != 0;
++		if (out->data && toc->first_data < 0) toc->first_data = out->start;
++		if (toc->count) toc->tracks[toc->count - 1].end = out->start;
++		toc->count++;
++	}
++
++	if (!toc->count) return -1;
++
++	struct cdrom_tocentry leadout = {};
++	leadout.cdte_track = CDROM_LEADOUT;
++	leadout.cdte_format = CDROM_LBA;
++	if (ioctl(fd, CDROMREADTOCENTRY, &leadout) < 0) return -1;
++
++	toc->leadout = leadout.cdte_addr.lba;
++	toc->tracks[toc->count - 1].end = toc->leadout;
++	return 0;
++}
++
++static uint32_t toc_fingerprint(const cd_toc_t *toc)
++{
++	uint32_t hash = 2166136261u;
++	hash = (hash ^ (uint32_t)toc->count) * 16777619u;
++	hash = (hash ^ (uint32_t)toc->leadout) * 16777619u;
++
++	for (int i = 0; i < toc->count; i++)
++	{
++		hash = (hash ^ (uint32_t)toc->tracks[i].start) * 16777619u;
++		hash = (hash ^ (uint32_t)toc->tracks[i].end) * 16777619u;
++		hash = (hash ^ (uint32_t)toc->tracks[i].data) * 16777619u;
++	}
++
++	return hash;
++}
++
++static int iso_root_features(int fd, int base, unsigned int generation,
++	bool *has_mdplus, bool *has_snes, uint32_t *fingerprint)
++{
++	uint8_t pvd[CD_USER_SECTOR_SIZE];
++	*has_mdplus = false;
++	*has_snes = false;
++
++	if (!detection_current(generation)) return -1;
++	if (read_user_sector(fd, base + 16, pvd)) return -1;
++	*fingerprint = hash_bytes(*fingerprint, pvd, sizeof(pvd));
++	if (pvd[0] != 1 || memcmp(pvd + 1, "CD001", 5)) return 0;
++
++	const uint8_t *root = pvd + 156;
++	if (root[0] < 34) return 1;
++	uint32_t extent = read_le32(root + 2);
++	uint32_t size = read_le32(root + 10);
++	if (!extent || !size) return 1;
++
++	char md_names[64][128];
++	char cue_names[64][128];
++	int md_count = 0;
++	int cue_count = 0;
++	uint32_t done = 0;
++
++	while (done < size && done < 1024 * 1024)
++	{
++		if (!detection_current(generation)) return -1;
++
++		uint8_t sector[CD_USER_SECTOR_SIZE];
++		if (read_user_sector(fd, base + extent + done / CD_USER_SECTOR_SIZE, sector)) return -1;
++		*fingerprint = hash_bytes(*fingerprint, sector, sizeof(sector));
++
++		int offset = 0;
++		while (offset < CD_USER_SECTOR_SIZE && done + offset < size)
++		{
++			int length = sector[offset];
++			if (!length) break;
++			if (length < 34 || offset + length > CD_USER_SECTOR_SIZE) break;
++
++			int name_length = sector[offset + 32];
++			if (name_length > 0 && name_length < 120 && offset + 33 + name_length <= CD_USER_SECTOR_SIZE)
++			{
++				char name[128];
++				memcpy(name, sector + offset + 33, name_length);
++				name[name_length] = 0;
++				char *version = strchr(name, ';');
++				if (version) *version = 0;
++				char *extension = strrchr(name, '.');
++
++				if (extension && (!strcasecmp(extension, ".sfc") || !strcasecmp(extension, ".smc")))
++					*has_snes = true;
++				else if (extension && !strcasecmp(extension, ".md") && md_count < 64)
++				{
++					*extension = 0;
++					snprintf(md_names[md_count++], sizeof(md_names[0]), "%s", name);
++				}
++				else if (extension && !strcasecmp(extension, ".cue") && cue_count < 64)
++				{
++					*extension = 0;
++					snprintf(cue_names[cue_count++], sizeof(cue_names[0]), "%s", name);
++				}
++			}
++
++			offset += length;
++		}
++
++		done += CD_USER_SECTOR_SIZE;
++	}
++
++	for (int i = 0; i < md_count; i++)
++	{
++		for (int j = 0; j < cue_count; j++)
++		{
++			if (!strcasecmp(md_names[i], cue_names[j]))
++			{
++				*has_mdplus = true;
++				return 1;
++			}
++		}
++	}
++
++	return 1;
++}
++
++static degauss_cd_disc_type_t identify_disc(int fd, const cd_toc_t *toc,
++	unsigned int generation, uint32_t *fingerprint, bool *complete)
++{
++	*complete = false;
++	degauss_cd_disc_type_t type = degauss_cd_initial_type(toc->first_data >= 0, false);
++	if (type != DEGAUSS_CD_NONE)
++	{
++		*complete = true;
++		return type;
++	}
++
++	int base = toc->first_data;
++	bool has_mdplus = false;
++	bool has_snes = false;
++	bool io_failed = iso_root_features(fd, base, generation,
++		&has_mdplus, &has_snes, fingerprint) < 0;
++	if (!detection_current(generation)) return DEGAUSS_CD_NONE;
++	type = degauss_cd_initial_type(true, has_mdplus);
++	if (type != DEGAUSS_CD_NONE)
++	{
++		*complete = true;
++		return type;
++	}
++
++	uint8_t sector[CD_USER_SECTOR_SIZE];
++	if (!read_user_sector(fd, base, sector))
++	{
++		*fingerprint = hash_bytes(*fingerprint, sector, sizeof(sector));
++		type = degauss_cd_sector_zero_type(sector, sizeof(sector));
++		if (type != DEGAUSS_CD_NONE)
++		{
++			*complete = true;
++			return type;
++		}
++	}
++	else
++	{
++		io_failed = true;
++	}
++
++	if (!detection_current(generation)) return DEGAUSS_CD_NONE;
++	if (!read_user_sector(fd, base + 16, sector))
++	{
++		*fingerprint = hash_bytes(*fingerprint, sector, sizeof(sector));
++		type = degauss_cd_pvd_type(sector, sizeof(sector));
++		if (type != DEGAUSS_CD_NONE)
++		{
++			*complete = true;
++			return type;
++		}
++	}
++	else
++	{
++		io_failed = true;
++	}
++
++	for (int offset = 16; offset <= 40; offset++)
++	{
++		if (!detection_current(generation)) return DEGAUSS_CD_NONE;
++		if (read_user_sector(fd, base + offset, sector))
++		{
++			io_failed = true;
++			continue;
++		}
++		*fingerprint = hash_bytes(*fingerprint, sector, sizeof(sector));
++		type = degauss_cd_directory_type(sector, sizeof(sector));
++		if (type != DEGAUSS_CD_NONE)
++		{
++			*complete = true;
++			return type;
++		}
++	}
++
++	if (!detection_current(generation)) return DEGAUSS_CD_NONE;
++	uint8_t raw[CD_RAW_SECTOR_SIZE * 2];
++	int raw_error = read_raw_sector(fd, base, raw);
++	if (!raw_error && !detection_current(generation)) return DEGAUSS_CD_NONE;
++	if (!raw_error)
++		raw_error = read_raw_sector(fd, base + 1, raw + CD_RAW_SECTOR_SIZE);
++	if (!raw_error)
++	{
++		*fingerprint = hash_bytes(*fingerprint, raw, sizeof(raw));
++		type = degauss_cd_raw_type(raw, sizeof(raw));
++		if (type != DEGAUSS_CD_NONE)
++		{
++			*complete = true;
++			return type;
++		}
++	}
++	else
++	{
++		io_failed = true;
++	}
++
++	type = degauss_cd_final_type(has_snes);
++	if (type == DEGAUSS_CD_SNES_MSU1)
++	{
++		*complete = true;
++		return type;
++	}
++	if (!io_failed) *complete = true;
++	return type;
++}
++
++static cd_detection_t detect_disc(unsigned int generation,
++	uint32_t handled_fingerprint, uint32_t handled_toc_fingerprint)
++{
++	cd_detection_t result = {};
++	if (!detection_current(generation)) return result;
++
++	int fd = open_disc_drive(&result.confirmed_absent);
++	if (fd < 0) return result;
++	result.present = true;
++
++	if (!detection_current(generation))
++	{
++		close(fd);
++		return result;
++	}
++
++	int media_changed = ioctl(fd, CDROM_MEDIA_CHANGED, CDSL_CURRENT);
++	result.media_changed = handled_fingerprint && media_changed > 0;
++
++	cd_toc_t toc;
++	if (!read_toc(fd, &toc))
++	{
++		result.readable = true;
++		result.toc_fingerprint = toc_fingerprint(&toc);
++		if (degauss_cd_can_reuse_handled(handled_fingerprint,
++			handled_toc_fingerprint, result.toc_fingerprint,
++			media_changed > 0))
++		{
++			result.classified = true;
++			result.fingerprint = handled_fingerprint;
++			close(fd);
++			return result;
++		}
++
++		result.fingerprint = result.toc_fingerprint;
++		result.type = identify_disc(fd, &toc, generation,
++			&result.fingerprint, &result.classified);
++	}
++
++	close(fd);
++	return result;
++}
++
++static void *detection_worker(void *arg)
++{
++	cd_worker_args_t args = *(cd_worker_args_t *)arg;
++	free(arg);
++	cd_detection_t result = detect_disc(args.generation,
++		args.handled_fingerprint, args.handled_toc_fingerprint);
++
++	pthread_mutex_lock(&s_lock);
++	if (s_active && args.generation == s_generation)
++	{
++		s_result = result;
++		s_result_ready = true;
++	}
++	s_worker_running = false;
++	pthread_mutex_unlock(&s_lock);
++	return NULL;
++}
++
++static void start_detection(void)
++{
++	cd_worker_args_t *args = (cd_worker_args_t *)malloc(sizeof(*args));
++	if (!args) return;
++
++	pthread_mutex_lock(&s_lock);
++	if (s_worker_running)
++	{
++		pthread_mutex_unlock(&s_lock);
++		free(args);
++		return;
++	}
++
++	s_worker_running = true;
++	args->generation = s_generation;
++	args->handled_fingerprint = s_handled_fingerprint;
++	args->handled_toc_fingerprint = s_handled_toc_fingerprint;
++	pthread_mutex_unlock(&s_lock);
++
++	pthread_t worker;
++	if (pthread_create(&worker, NULL, detection_worker, args))
++	{
++		pthread_mutex_lock(&s_lock);
++		s_worker_running = false;
++		pthread_mutex_unlock(&s_lock);
++		free(args);
++		return;
++	}
++	pthread_detach(worker);
++}
++
++static bool take_result(cd_detection_t *result)
++{
++	bool ready;
++	pthread_mutex_lock(&s_lock);
++	ready = s_result_ready;
++	if (ready)
++	{
++		*result = s_result;
++		s_result_ready = false;
++	}
++	pthread_mutex_unlock(&s_lock);
++	return ready;
++}
++
++static void set_active(bool active)
++{
++	if (s_poll_active == active) return;
++	s_poll_active = active;
++	if (active) load_handled_fingerprint();
++
++	pthread_mutex_lock(&s_lock);
++	s_active = active;
++	s_generation++;
++	s_result_ready = false;
++	pthread_mutex_unlock(&s_lock);
++
++	if (!active)
++	{
++		s_poll_timer = 0;
++		s_absent_count = 0;
++		s_retry_count = 0;
++	}
++}
++
++static bool resolve_disc_launcher(degauss_cd_disc_type_t type, char *path,
++	size_t path_size, const char **provider_name, bool *provider_installed)
++{
++	*provider_installed = false;
++	for (size_t i = 0; i < sizeof(s_providers) / sizeof(s_providers[0]); i++)
++	{
++		const cd_provider_t *provider = &s_providers[i];
++		if (!FileExists(provider->binary, 0)) continue;
++		*provider_installed = true;
++
++		const char *mgl = degauss_cd_provider_mgl_name(provider->kind, type);
++		if (!mgl) continue;
++		snprintf(path, path_size, "%s/%s", provider->mgl_dir, mgl);
++		if (!FileExists(path, 0)) continue;
++
++		*provider_name = provider->name;
++		return true;
++	}
++	return false;
++}
++
++static bool queue_handled_event(uint32_t fingerprint, uint32_t toc_fingerprint,
++	const char *kind, const char *value)
++{
++	if (!save_handled_fingerprint(fingerprint, toc_fingerprint)) return false;
++	if (write_event(kind, value)) return true;
++	if (!save_handled_fingerprint(0, 0))
++		printf("CD autorun: unable to clear handled state after event failure\n");
++	return false;
++}
++
++// Returns true when this poll cycle must not queue another worker.
++static bool consume_detection(const cd_detection_t *result)
++{
++	if (!result->present)
++	{
++		if (result->confirmed_absent)
++		{
++			if (++s_absent_count >= 2) save_handled_fingerprint(0, 0);
++		}
++		else s_absent_count = 0;
++		s_retry_count = 0;
++		return false;
++	}
++
++	s_absent_count = 0;
++	if (result->media_changed) save_handled_fingerprint(0, 0);
++
++	if (!result->readable || !result->classified || !result->fingerprint)
++	{
++		if (degauss_cd_should_hold_unreadable(
++			s_handled_fingerprint == CD_UNREADABLE_FINGERPRINT,
++			result->media_changed))
++		{
++			s_retry_count = 0;
++			return false;
++		}
++		if (s_retry_count >= 4)
++		{
++			uint32_t fingerprint = result->fingerprint ?
++				result->fingerprint : CD_UNREADABLE_FINGERPRINT;
++			save_handled_fingerprint(fingerprint, result->toc_fingerprint);
++			s_retry_count = 0;
++			printf("CD autorun: disc could not be identified; waiting for media change\n");
++			return false;
++		}
++
++		int delay = CD_POLL_MS << (s_retry_count < 2 ? s_retry_count : 2);
++		s_retry_count++;
++		s_poll_timer = GetTimer(delay);
++		return true;
++	}
++
++	s_retry_count = 0;
++	if (result->fingerprint == s_handled_fingerprint)
++	{
++		if (result->toc_fingerprint != s_handled_toc_fingerprint)
++			save_handled_fingerprint(result->fingerprint,
++				result->toc_fingerprint);
++		return false;
++	}
++	if (result->type == DEGAUSS_CD_AUDIO || result->type == DEGAUSS_CD_UNKNOWN)
++	{
++		save_handled_fingerprint(result->fingerprint,
++			result->toc_fingerprint);
++		printf("CD autorun: ignoring %s\n", degauss_cd_disc_type_name(result->type));
++		return false;
++	}
++
++	char path[512];
++	const char *provider_name = NULL;
++	bool provider_installed;
++	if (!resolve_disc_launcher(result->type, path, sizeof(path),
++		&provider_name, &provider_installed))
++	{
++		char message[256];
++		if (!provider_installed)
++		{
++			printf("CD autorun: no physical CD provider installed for %s\n",
++				degauss_cd_disc_type_name(result->type));
++			snprintf(message, sizeof(message),
++				"No physical CD provider is installed for %s.",
++				degauss_cd_disc_type_name(result->type));
++		}
++		else
++		{
++			printf("CD autorun: installed provider has no launcher for %s\n",
++				degauss_cd_disc_type_name(result->type));
++			snprintf(message, sizeof(message),
++				"The installed physical CD provider has no %s launcher.",
++				degauss_cd_disc_type_name(result->type));
++		}
++		if (!queue_handled_event(result->fingerprint,
++			result->toc_fingerprint, "error", message))
++			printf("CD autorun: unable to report provider error\n");
++		return false;
++	}
++
++	if (!queue_handled_event(result->fingerprint,
++		result->toc_fingerprint, "launch", path))
++	{
++		printf("CD autorun: unable to queue launch for %s\n", path);
++		if (access(DEGAUSS_PHYSICAL_DISC_EVENT_FILE, F_OK) != 0)
++			write_event("error", "Physical disc launch could not be prepared.");
++		s_poll_timer = GetTimer(CD_POLL_MS * 4);
++		return true;
++	}
++
++	printf("CD autorun: detected %s, launching %s provider: %s\n",
++		degauss_cd_disc_type_name(result->type), provider_name, path);
++	return true;
++}
++
++void physical_cd_autorun_poll(void)
++{
++	if (!is_menu())
++	{
++		set_active(false);
++		s_control_poll_timer = 0;
++		return;
++	}
++	if (!s_control_poll_timer || CheckTimer(s_control_poll_timer))
++	{
++		s_control_poll_timer = GetTimer(CD_CONTROL_POLL_MS);
++		set_active(control_process_alive());
++	}
++	if (!s_poll_active) return;
++
++	if (s_poll_timer && !CheckTimer(s_poll_timer)) return;
++	s_poll_timer = GetTimer(CD_POLL_MS);
++
++	cd_detection_t result;
++	if (take_result(&result))
++	{
++		if (consume_detection(&result) || !is_menu()) return;
++	}
++
++	start_detection();
++}
+diff --git a/support/degauss/physical_cd_autorun.h b/support/degauss/physical_cd_autorun.h
+new file mode 100644
+index 0000000..15e2286
+--- /dev/null
++++ b/support/degauss/physical_cd_autorun.h
+@@ -0,0 +1,6 @@
++#pragma once
++
++// Polls for newly inserted game CDs while Degauss is active. A matching MGL
++// from an installed physical-CD provider is returned to Degauss through the
++// normal frontend launch handoff.
++void physical_cd_autorun_poll(void);
+diff --git a/support/degauss/physical_cd_logic.cpp b/support/degauss/physical_cd_logic.cpp
+new file mode 100644
+index 0000000..24081c7
+--- /dev/null
++++ b/support/degauss/physical_cd_logic.cpp
+@@ -0,0 +1,133 @@
++#include "physical_cd_logic.h"
++
++#include <string.h>
++
++static bool contains_bytes(const uint8_t *haystack, size_t haystack_size,
++	const char *needle, size_t needle_size)
++{
++	if (!needle_size || needle_size > haystack_size) return false;
++	for (size_t i = 0; i + needle_size <= haystack_size; i++)
++	{
++		if (!memcmp(haystack + i, needle, needle_size)) return true;
++	}
++	return false;
++}
++
++degauss_cd_disc_type_t degauss_cd_initial_type(bool has_data_track,
++	bool has_mdplus)
++{
++	if (!has_data_track) return DEGAUSS_CD_AUDIO;
++	if (has_mdplus) return DEGAUSS_CD_MDPLUS;
++	return DEGAUSS_CD_NONE;
++}
++
++degauss_cd_disc_type_t degauss_cd_final_type(bool has_snes_rom)
++{
++	return has_snes_rom ? DEGAUSS_CD_SNES_MSU1 : DEGAUSS_CD_UNKNOWN;
++}
++
++degauss_cd_disc_type_t degauss_cd_sector_zero_type(const uint8_t *sector,
++	size_t size)
++{
++	if (size >= 14 && !memcmp(sector, "SEGADISCSYSTEM", 14))
++		return DEGAUSS_CD_MEGACD;
++	if (size >= 15 && !memcmp(sector, "SEGA SEGASATURN", 15))
++		return DEGAUSS_CD_SATURN;
++	if (size >= 6 && sector[0] == 0x01 && sector[1] == 0x5A &&
++		sector[2] == 0x5A && sector[3] == 0x5A && sector[4] == 0x5A &&
++		sector[5] == 0x5A)
++		return DEGAUSS_CD_3DO;
++	return DEGAUSS_CD_NONE;
++}
++
++degauss_cd_disc_type_t degauss_cd_pvd_type(const uint8_t *sector,
++	size_t size)
++{
++	if (size >= 19 && !memcmp(sector + 1, "CD001", 5))
++	{
++		if (!memcmp(sector + 8, "PLAYSTATION", 11)) return DEGAUSS_CD_PSX;
++		if (!memcmp(sector + 8, "NGCD", 4)) return DEGAUSS_CD_NEOGEOCD;
++	}
++	if (size >= 5 && !memcmp(sector + 1, "CD-I", 4)) return DEGAUSS_CD_CDI;
++	return DEGAUSS_CD_NONE;
++}
++
++degauss_cd_disc_type_t degauss_cd_directory_type(const uint8_t *sector,
++	size_t size)
++{
++	if (contains_bytes(sector, size, "IPL.TXT", 7)) return DEGAUSS_CD_NEOGEOCD;
++	if (contains_bytes(sector, size, "CDI_APPL", 8)) return DEGAUSS_CD_CDI;
++	return DEGAUSS_CD_NONE;
++}
++
++degauss_cd_disc_type_t degauss_cd_raw_type(const uint8_t *sectors,
++	size_t size)
++{
++	return contains_bytes(sectors, size, "PC Engine CD-ROM SYSTEM", 23) ?
++		DEGAUSS_CD_PCECD : DEGAUSS_CD_NONE;
++}
++
++bool degauss_cd_can_reuse_handled(uint32_t handled_fingerprint,
++	uint32_t handled_toc_fingerprint, uint32_t current_toc_fingerprint,
++	bool media_changed)
++{
++	return handled_fingerprint && handled_toc_fingerprint &&
++		handled_toc_fingerprint == current_toc_fingerprint && !media_changed;
++}
++
++bool degauss_cd_should_hold_unreadable(bool handled_unreadable,
++	bool media_changed)
++{
++	return handled_unreadable && !media_changed;
++}
++
++const char *degauss_cd_provider_mgl_name(degauss_cd_provider_kind_t provider,
++	degauss_cd_disc_type_t type)
++{
++	if (provider == DEGAUSS_CD_PROVIDER_ANIME)
++	{
++		switch (type)
++		{
++		case DEGAUSS_CD_MEGACD: return "MegaCD.mgl";
++		case DEGAUSS_CD_SATURN: return "Saturn.mgl";
++		case DEGAUSS_CD_PSX: return "PSX.mgl";
++		case DEGAUSS_CD_PCECD: return "TurboGrafx16-CD.mgl";
++		case DEGAUSS_CD_NEOGEOCD: return "NeoGeoCD.mgl";
++		case DEGAUSS_CD_3DO: return "3DO.mgl";
++		case DEGAUSS_CD_CDI: return "CDi.mgl";
++		case DEGAUSS_CD_MDPLUS: return "MDPlus.mgl";
++		case DEGAUSS_CD_SNES_MSU1: return "SNES-MSU1.mgl";
++		default: return NULL;
++		}
++	}
++
++	switch (type)
++	{
++	case DEGAUSS_CD_MEGACD: return "Mega CD.mgl";
++	case DEGAUSS_CD_SATURN: return "Saturn.mgl";
++	case DEGAUSS_CD_PSX: return "PlayStation.mgl";
++	case DEGAUSS_CD_PCECD: return "TurboGrafx-CD.mgl";
++	case DEGAUSS_CD_NEOGEOCD: return "Neo Geo CD.mgl";
++	case DEGAUSS_CD_3DO: return "3DO.mgl";
++	case DEGAUSS_CD_CDI: return "Philips CD-i.mgl";
++	default: return NULL;
++	}
++}
++
++const char *degauss_cd_disc_type_name(degauss_cd_disc_type_t type)
++{
++	switch (type)
++	{
++	case DEGAUSS_CD_MEGACD: return "Mega CD";
++	case DEGAUSS_CD_SATURN: return "Saturn";
++	case DEGAUSS_CD_PSX: return "PlayStation";
++	case DEGAUSS_CD_PCECD: return "PC Engine CD";
++	case DEGAUSS_CD_NEOGEOCD: return "Neo Geo CD";
++	case DEGAUSS_CD_3DO: return "3DO";
++	case DEGAUSS_CD_CDI: return "CD-i";
++	case DEGAUSS_CD_MDPLUS: return "MD+";
++	case DEGAUSS_CD_SNES_MSU1: return "SNES MSU-1";
++	case DEGAUSS_CD_AUDIO: return "Audio CD";
++	default: return "unknown CD";
++	}
++}
+diff --git a/support/degauss/physical_cd_logic.h b/support/degauss/physical_cd_logic.h
+new file mode 100644
+index 0000000..9472a15
+--- /dev/null
++++ b/support/degauss/physical_cd_logic.h
+@@ -0,0 +1,46 @@
++#pragma once
++
++#include <stddef.h>
++#include <stdint.h>
++
++typedef enum
++{
++	DEGAUSS_CD_NONE = 0,
++	DEGAUSS_CD_MEGACD,
++	DEGAUSS_CD_SATURN,
++	DEGAUSS_CD_PSX,
++	DEGAUSS_CD_PCECD,
++	DEGAUSS_CD_NEOGEOCD,
++	DEGAUSS_CD_3DO,
++	DEGAUSS_CD_CDI,
++	DEGAUSS_CD_MDPLUS,
++	DEGAUSS_CD_SNES_MSU1,
++	DEGAUSS_CD_AUDIO,
++	DEGAUSS_CD_UNKNOWN,
++} degauss_cd_disc_type_t;
++
++typedef enum
++{
++	DEGAUSS_CD_PROVIDER_ANIME,
++	DEGAUSS_CD_PROVIDER_MISTER_DISC,
++} degauss_cd_provider_kind_t;
++
++degauss_cd_disc_type_t degauss_cd_initial_type(bool has_data_track,
++	bool has_mdplus);
++degauss_cd_disc_type_t degauss_cd_final_type(bool has_snes_rom);
++degauss_cd_disc_type_t degauss_cd_sector_zero_type(const uint8_t *sector,
++	size_t size);
++degauss_cd_disc_type_t degauss_cd_pvd_type(const uint8_t *sector,
++	size_t size);
++degauss_cd_disc_type_t degauss_cd_directory_type(const uint8_t *sector,
++	size_t size);
++degauss_cd_disc_type_t degauss_cd_raw_type(const uint8_t *sectors,
++	size_t size);
++bool degauss_cd_can_reuse_handled(uint32_t handled_fingerprint,
++	uint32_t handled_toc_fingerprint, uint32_t current_toc_fingerprint,
++	bool media_changed);
++bool degauss_cd_should_hold_unreadable(bool handled_unreadable,
++	bool media_changed);
++const char *degauss_cd_provider_mgl_name(degauss_cd_provider_kind_t provider,
++	degauss_cd_disc_type_t type);
++const char *degauss_cd_disc_type_name(degauss_cd_disc_type_t type);
+diff --git a/tests/degauss_physical_cd_logic_test.cpp b/tests/degauss_physical_cd_logic_test.cpp
+new file mode 100644
+index 0000000..3fe0614
+--- /dev/null
++++ b/tests/degauss_physical_cd_logic_test.cpp
+@@ -0,0 +1,104 @@
++#include "support/degauss/physical_cd_logic.h"
++
++#include <assert.h>
++#include <stdint.h>
++#include <string.h>
++
++static void put(uint8_t *buffer, size_t offset, const char *text)
++{
++	memcpy(buffer + offset, text, strlen(text));
++}
++
++int main()
++{
++	uint8_t sector[2048] = {};
++	put(sector, 0, "SEGADISCSYSTEM");
++	assert(degauss_cd_sector_zero_type(sector, sizeof(sector)) == DEGAUSS_CD_MEGACD);
++	memset(sector, 0, sizeof(sector));
++	put(sector, 0, "SEGA SEGASATURN");
++	assert(degauss_cd_sector_zero_type(sector, sizeof(sector)) == DEGAUSS_CD_SATURN);
++	memset(sector, 0, sizeof(sector));
++	sector[0] = 0x01;
++	memset(sector + 1, 0x5A, 5);
++	assert(degauss_cd_sector_zero_type(sector, sizeof(sector)) == DEGAUSS_CD_3DO);
++
++	memset(sector, 0, sizeof(sector));
++	put(sector, 1, "CD001");
++	put(sector, 8, "PLAYSTATION");
++	assert(degauss_cd_pvd_type(sector, sizeof(sector)) == DEGAUSS_CD_PSX);
++	memset(sector, 0, sizeof(sector));
++	put(sector, 1, "CD001");
++	put(sector, 8, "NGCD");
++	assert(degauss_cd_pvd_type(sector, sizeof(sector)) == DEGAUSS_CD_NEOGEOCD);
++	memset(sector, 0, sizeof(sector));
++	put(sector, 1, "CD-I");
++	assert(degauss_cd_pvd_type(sector, sizeof(sector)) == DEGAUSS_CD_CDI);
++
++	memset(sector, 0, sizeof(sector));
++	put(sector, 100, "IPL.TXT");
++	assert(degauss_cd_directory_type(sector, sizeof(sector)) == DEGAUSS_CD_NEOGEOCD);
++	memset(sector, 0, sizeof(sector));
++	put(sector, 100, "CDI_APPL");
++	assert(degauss_cd_directory_type(sector, sizeof(sector)) == DEGAUSS_CD_CDI);
++
++	uint8_t raw[4704] = {};
++	put(raw, 300, "PC Engine CD-ROM SYSTEM");
++	assert(degauss_cd_raw_type(raw, sizeof(raw)) == DEGAUSS_CD_PCECD);
++	assert(degauss_cd_initial_type(false, false) == DEGAUSS_CD_AUDIO);
++	assert(degauss_cd_initial_type(true, true) == DEGAUSS_CD_MDPLUS);
++	assert(degauss_cd_initial_type(true, false) == DEGAUSS_CD_NONE);
++	assert(degauss_cd_final_type(true) == DEGAUSS_CD_SNES_MSU1);
++	assert(degauss_cd_final_type(false) == DEGAUSS_CD_UNKNOWN);
++	assert(degauss_cd_can_reuse_handled(0x11111111, 0x22222222,
++		0x22222222, false));
++	assert(!degauss_cd_can_reuse_handled(0x11111111, 0,
++		0x22222222, false));
++	assert(!degauss_cd_can_reuse_handled(0x11111111, 0x22222222,
++		0x33333333, false));
++	assert(!degauss_cd_can_reuse_handled(0x11111111, 0x22222222,
++		0x22222222, true));
++	assert(degauss_cd_should_hold_unreadable(true, false));
++	assert(!degauss_cd_should_hold_unreadable(false, false));
++	assert(!degauss_cd_should_hold_unreadable(true, true));
++
++	assert(!strcmp(degauss_cd_provider_mgl_name(DEGAUSS_CD_PROVIDER_ANIME,
++		DEGAUSS_CD_MEGACD), "MegaCD.mgl"));
++	assert(!strcmp(degauss_cd_provider_mgl_name(DEGAUSS_CD_PROVIDER_ANIME,
++		DEGAUSS_CD_SATURN), "Saturn.mgl"));
++	assert(!strcmp(degauss_cd_provider_mgl_name(DEGAUSS_CD_PROVIDER_ANIME,
++		DEGAUSS_CD_PSX), "PSX.mgl"));
++	assert(!strcmp(degauss_cd_provider_mgl_name(DEGAUSS_CD_PROVIDER_ANIME,
++		DEGAUSS_CD_PCECD), "TurboGrafx16-CD.mgl"));
++	assert(!strcmp(degauss_cd_provider_mgl_name(DEGAUSS_CD_PROVIDER_ANIME,
++		DEGAUSS_CD_NEOGEOCD), "NeoGeoCD.mgl"));
++	assert(!strcmp(degauss_cd_provider_mgl_name(DEGAUSS_CD_PROVIDER_ANIME,
++		DEGAUSS_CD_3DO), "3DO.mgl"));
++	assert(!strcmp(degauss_cd_provider_mgl_name(DEGAUSS_CD_PROVIDER_ANIME,
++		DEGAUSS_CD_CDI), "CDi.mgl"));
++	assert(!strcmp(degauss_cd_provider_mgl_name(DEGAUSS_CD_PROVIDER_ANIME,
++		DEGAUSS_CD_MDPLUS), "MDPlus.mgl"));
++	assert(!strcmp(degauss_cd_provider_mgl_name(DEGAUSS_CD_PROVIDER_ANIME,
++		DEGAUSS_CD_SNES_MSU1), "SNES-MSU1.mgl"));
++	assert(!strcmp(degauss_cd_provider_mgl_name(DEGAUSS_CD_PROVIDER_MISTER_DISC,
++		DEGAUSS_CD_MEGACD), "Mega CD.mgl"));
++	assert(!strcmp(degauss_cd_provider_mgl_name(DEGAUSS_CD_PROVIDER_MISTER_DISC,
++		DEGAUSS_CD_SATURN), "Saturn.mgl"));
++	assert(!strcmp(degauss_cd_provider_mgl_name(DEGAUSS_CD_PROVIDER_MISTER_DISC,
++		DEGAUSS_CD_PSX), "PlayStation.mgl"));
++	assert(!strcmp(degauss_cd_provider_mgl_name(DEGAUSS_CD_PROVIDER_MISTER_DISC,
++		DEGAUSS_CD_PCECD), "TurboGrafx-CD.mgl"));
++	assert(!strcmp(degauss_cd_provider_mgl_name(DEGAUSS_CD_PROVIDER_MISTER_DISC,
++		DEGAUSS_CD_NEOGEOCD), "Neo Geo CD.mgl"));
++	assert(!strcmp(degauss_cd_provider_mgl_name(DEGAUSS_CD_PROVIDER_MISTER_DISC,
++		DEGAUSS_CD_3DO), "3DO.mgl"));
++	assert(!strcmp(degauss_cd_provider_mgl_name(DEGAUSS_CD_PROVIDER_MISTER_DISC,
++		DEGAUSS_CD_CDI), "Philips CD-i.mgl"));
++	assert(degauss_cd_provider_mgl_name(DEGAUSS_CD_PROVIDER_MISTER_DISC,
++		DEGAUSS_CD_MDPLUS) == NULL);
++	assert(degauss_cd_provider_mgl_name(DEGAUSS_CD_PROVIDER_MISTER_DISC,
++		DEGAUSS_CD_SNES_MSU1) == NULL);
++	assert(degauss_cd_provider_mgl_name(DEGAUSS_CD_PROVIDER_ANIME,
++		DEGAUSS_CD_AUDIO) == NULL);
++	assert(!strcmp(degauss_cd_disc_type_name(DEGAUSS_CD_NEOGEOCD), "Neo Geo CD"));
++	return 0;
++}
 diff --git a/tests/degauss_shortcut_logic_test.cpp b/tests/degauss_shortcut_logic_test.cpp
 new file mode 100644
 index 0000000..e627958
@@ -1131,12 +2555,44 @@ index 0000000..e627958
 +	test_keyboard_runtime();
 +	return 0;
 +}
+diff --git a/tests/run-degauss-physical-cd-tests.sh b/tests/run-degauss-physical-cd-tests.sh
+new file mode 100644
+index 0000000..842db34
+--- /dev/null
++++ b/tests/run-degauss-physical-cd-tests.sh
+@@ -0,0 +1,26 @@
++#!/usr/bin/env bash
++set -euo pipefail
++
++cd "$(dirname "$0")/.."
++
++test_binary="$(mktemp -t degauss-physical-cd-test.XXXXXX)"
++trap 'rm -f "$test_binary"' EXIT
++
++${CXX:-c++} -std=c++14 -Wall -Wextra -Werror -I. \
++	tests/degauss_physical_cd_logic_test.cpp \
++	support/degauss/physical_cd_logic.cpp -o "$test_binary"
++"$test_binary"
++
++grep -q 'for (int i = 0; i < 8; i++)' support/degauss/physical_cd_autorun.cpp
++grep -q 'O_RDONLY | O_NONBLOCK | O_CLOEXEC' support/degauss/physical_cd_autorun.cpp
++grep -q 'pthread_create' support/degauss/physical_cd_autorun.cpp
++grep -q 'detection_current(generation)' support/degauss/physical_cd_autorun.cpp
++grep -q 'DEGAUSS_PHYSICAL_DISC_CONTROL_FILE' support/degauss/physical_cd_autorun.cpp
++grep -q 'DEGAUSS_PHYSICAL_DISC_EVENT_FILE' support/degauss/physical_cd_autorun.cpp
++grep -q 'access(DEGAUSS_PHYSICAL_DISC_EVENT_FILE, F_OK) != 0' support/degauss/physical_cd_autorun.cpp
++grep -q 'GetTimer(CD_POLL_MS \* 4)' support/degauss/physical_cd_autorun.cpp
++if grep -q 'xml_load' support/degauss/physical_cd_autorun.cpp; then
++	echo "Physical-disc detection bypasses the Degauss launch handoff" >&2
++	exit 1
++fi
++grep -q 'physical_cd_autorun_poll();' scheduler.cpp
 diff --git a/tests/run-degauss-shortcut-tests.sh b/tests/run-degauss-shortcut-tests.sh
-new file mode 100755
-index 0000000..64a4e88
+new file mode 100644
+index 0000000..ea6d84b
 --- /dev/null
 +++ b/tests/run-degauss-shortcut-tests.sh
-@@ -0,0 +1,64 @@
+@@ -0,0 +1,85 @@
 +#!/usr/bin/env bash
 +set -euo pipefail
 +
@@ -1163,6 +2619,11 @@ index 0000000..64a4e88
 +grep -B8 'degauss_shortcut_handle_keyboard_event' input.cpp | grep -q 'valid_keyboard_key(ev->code)'
 +grep -B8 'degauss_shortcut_handle_keyboard_event' input.cpp | grep -q '!input\[dev\]\.force_joy'
 +grep -q 'uint8_t  kbdmap\[256\]' input.cpp
++
++# The Enter release that opened capture must reach Main's ordinary keyboard
++# path, otherwise the next Enter press remains latched and is ignored.
++capture_handler="$(sed -n '/bool degauss_shortcut_handle_keyboard_event/,/^}/p' support/degauss/degauss_shortcut.cpp)"
++printf '%s\n' "$capture_handler" | grep -Fq 'if (!value) return false;'
 +
 +# The two Degauss rows must follow their visible order when Up or Down changes
 +# menusub. They stay above every stock System-menu index, with no controller
@@ -1201,27 +2662,145 @@ index 0000000..64a4e88
 +	echo "Frontend shortcut UI still uses the ambiguous set/capture label" >&2
 +	exit 1
 +fi
---- a/menu.cpp
-+++ b/menu.cpp
-@@ -7489,6 +7489,7 @@
- 				if (degauss_running)
- 				{
- 					degauss_running = false;
-+					video_chvt(1);
- 					video_menu_bg(user_io_status_get("[3:1]"));
- 					video_fb_enable(0);
- 					menustate = MENU_SYSTEM1;
---- a/tests/run-degauss-shortcut-tests.sh
-+++ b/tests/run-degauss-shortcut-tests.sh
-@@ -62,3 +62,5 @@
- 	echo "Frontend shortcut UI still uses the ambiguous set/capture label" >&2
- 	exit 1
- fi
 +
-+python3 tests/run-degauss-vt-test.py
++# The custom Menu core supports Degauss's native analog framebuffer path.
++# Keep Main's stock vga_scaler warning for ordinary framebuffer scripts, but
++# suppress its text for Degauss while retaining the function's OSD shutdown.
++grep -A4 'degauss_running = degauss_is_frontend_script' menu.cpp \
++	| grep -q 'vga_nag(!degauss_running);'
++
++# A failed terminal fork must restore the Menu framebuffer immediately rather
++# than treating pid -1 as a running child and leaving Degauss video active.
++degauss_launch="$(sed -n '/degauss_running = degauss_is_frontend_script/,/case MENU_SCRIPTS_FB2:/p' menu.cpp)"
++printf '%s\n' "$degauss_launch" | grep -q 'if (ttypid < 0)'
++fork_failure="$(printf '%s\n' "$degauss_launch" | sed -n '/if (ttypid < 0)/,/else if (!ttypid)/p')"
++printf '%s\n' "$fork_failure" | grep -q 'video_set_degauss_native_fb(false);'
++printf '%s\n' "$fork_failure" | grep -q 'video_chvt(1);'
++printf '%s\n' "$fork_failure" | grep -q 'video_fb_enable(0);'
++printf '%s\n' "$fork_failure" | grep -q 'menustate = MENU_SYSTEM1;'
+diff --git a/tests/run-degauss-video-tests.sh b/tests/run-degauss-video-tests.sh
+new file mode 100644
+index 0000000..32ffdf3
+--- /dev/null
++++ b/tests/run-degauss-video-tests.sh
+@@ -0,0 +1,111 @@
++#!/usr/bin/env bash
++set -euo pipefail
++
++cd "$(dirname "$0")/.."
++
++main_startup="$(sed -n '/FindStorage();/,/user_io_init/p' main.cpp)"
++compact_startup="$(printf '%s\n' "$main_startup" | tr -d '[:space:]')"
++
++# Stock Main supplies an empty core path when it starts the configured custom
++# Main binary after a cold boot. That path must still select Degauss's private
++# Menu core; otherwise the stock core leaves scaler/framebuffer Y/C monochrome.
++printf '%s\n' "$compact_startup" \
++	| grep -Fq 'argc<=1||!argv[1][0]||!strcasecmp(argv[1],"menu.rbf")'
++printf '%s\n' "$compact_startup" \
++	| grep -Fq 'if(stock_menu&&fpga_has_degauss_menu()){fpga_load_rbf(DEGAUSS_COLD_BOOT_MARKER);}'
++printf '%s\n' "$compact_startup" \
++	| grep -Fq 'user_io_init(degauss_cold_boot?"":((argc>1)?argv[1]:""),'
++grep -Fq '#define DEGAUSS_COLD_BOOT_MARKER "@degauss-cold-boot"' fpga_io.h
++grep -Fq 'degauss_cold_boot && degauss_menu ? DEGAUSS_COLD_BOOT_MARKER' fpga_io.cpp
++
++framebuffer_enable="$(awk '
++  /^void video_fb_enable\(/ { capture = 1 }
++  capture { print }
++  /^int video_fb_state\(/ { exit }
++' video.cpp)"
++compact_enable="$(printf '%s\n' "$framebuffer_enable" | tr -d '[:space:]')"
++
++# Framebuffer activation is not the Menu-core selection boundary. Preserve the
++# existing Direct Video update without reprogramming scaler Y/C here.
++test "$(printf '%s\n' "$compact_enable" | grep -oF 'set_vga_fb(enable);' | wc -l | tr -d '[:space:]')" -eq 1
++printf '%s\n' "$compact_enable" \
++	| grep -Fq 'if(cfg.direct_video){set_vga_fb(enable);set_yc_mode();}'
++if printf '%s\n' "$compact_enable" | grep -Fq 'cfg.vga_scaler)set_yc_mode();'; then
++	exit 1
++fi
++
++# fb_hscale changes only the Linux framebuffer's horizontal divisor. Its
++# default preserves the released geometry; vertical scaling and output timing
++# remain controlled by their existing paths.
++grep -Fq 'uint8_t fb_hscale;' cfg.h
++grep -Fq '{ "FB_HSCALE", (void*)(&(cfg.fb_hscale)), UINT8, 1, 4 },' cfg.cpp
++grep -Fq 'cfg.fb_hscale = 1;' cfg.cpp
++grep -Fq 'const int fb_scale_x = fb_scale * cfg.fb_hscale;' video.cpp
++grep -Fq 'const int fb_scale_y = v_cur.param.pr == 0 ? fb_scale : fb_scale * 2;' video.cpp
++grep -Fq 'fb_width = v_cur.item[1] / fb_scale_x;' video.cpp
++grep -Fq 'fb_height = v_cur.item[5] / fb_scale_y;' video.cpp
++
++# Native CRT plus independently timed HDMI is opt-in. The default keeps the
++# released framebuffer path, while the enabled Degauss path uses a native-size
++# source and explicitly asks the paired Menu core for native analog output.
++grep -Fq 'uint8_t degauss_native_analog;' cfg.h
++grep -Fq '{ "DEGAUSS_NATIVE_ANALOG", (void*)(&(cfg.degauss_native_analog)), UINT8, 0, 1 },' cfg.cpp
++grep -Fq '#define FB_NATIVE   0x2000' video.cpp
++grep -Fq 'return degauss_native_fb && is_menu() && !cfg.vga_scaler;' video.cpp
++grep -Fq 'enable = enable && cfg.degauss_native_analog;' video.cpp
++grep -Fq '(video_degauss_native_fb_active() ? FB_NATIVE : 0)' video.cpp
++grep -Fq 'fb_width = 352;' video.cpp
++grep -Fq 'fb_height = cfg.menu_pal ? 288 : 240;' video.cpp
++
++# Very narrow test modes still need a non-zero checker size before the
++# framebuffer diagnostic divides coordinates by it.
++grep -A8 'static void draw_checkers()' video.cpp | grep -Fq 'if (!sz) sz = 1;'
++
++# Degauss uses native mask files only while its Menu framebuffer is active.
++# A malformed file switches the effect off, never restores the old effect.
++grep -Fq 'else if (!strcmp(cmd, "fb_mask off")) video_set_degauss_display_mask(nullptr);' input.cpp
++grep -Fq 'else if (!strncmp(cmd, "fb_mask ", 8)) video_set_degauss_display_mask(cmd + 8);' input.cpp
++mask_handler="$(sed -n '/^bool video_set_degauss_display_mask(/,/^}/p' video.cpp)"
++printf '%s\n' "$mask_handler" | grep -Fq 'if (!is_menu() || !video_fb_state())'
++printf '%s\n' "$mask_handler" | grep -Fq 'degauss_display_mask[0] = 0;'
++printf '%s\n' "$mask_handler" | grep -Fq 'setShadowMask();'
++invalid_name_handler="$(printf '%s\n' "$mask_handler" | sed -n '/if (!len || len >= sizeof(degauss_display_mask)/,/return false;/p')"
++printf '%s\n' "$invalid_name_handler" | grep -Fq 'degauss_display_mask[0] = 0;'
++printf '%s\n' "$invalid_name_handler" | grep -Fq 'setShadowMask();'
++if printf '%s\n' "$mask_handler" | grep -Fq 'video_save_shadow_mask_cfg'; then
++	exit 1
++fi
++grep -Fq 'Scripts/.config/degauss/masks/%s.txt' video.cpp
++grep -Fq 'const int fb_mask = (degauss_display_mask[0] || degauss_preset_active) ? SM_FLAG_FB : 0;' video.cpp
++grep -Fq 'case SM_MODE_1X: spi_w(SM_FLAG(SM_FLAG_ENABLED | fb_mask)); break;' video.cpp
++grep -Fq 'if (!video_fb_state() && degauss_display_mask[0])' video.cpp
++fb_enable="$(sed -n '/void video_fb_enable/,/^}/p' video.cpp)"
++printf '%s\n' "$fb_enable" | grep -Fq 'if (!video_fb_state() && degauss_preset_active)'
++printf '%s\n' "$fb_enable" | grep -Fq 'degauss_restore_preset_baseline(false);'
++
++# A temporary Degauss preset restores the exact live Menu state rather than
++# reloading saved/default configuration and losing unsaved OSD choices.
++preset_restore="$(sed -n '/static void degauss_restore_preset_baseline/,/^}/p' video.cpp)"
++if printf '%s\n' "$preset_restore" | grep -Fq 'video_cfg_init();'; then
++	exit 1
++fi
++printf '%s\n' "$preset_restore" | grep -Fq 'memcpy(gamma_cfg, degauss_gamma_before_preset'
++printf '%s\n' "$preset_restore" | grep -Fq 'if (has_gamma) spi_uio_cmd8(UIO_SET_GAMMA, gamma_cfg[0]);'
++printf '%s\n' "$preset_restore" | grep -Fq 'memcpy(scaler_flt, degauss_scaler_before_preset'
++printf '%s\n' "$preset_restore" | grep -Fq 'memcpy(scaler_flt_data, degauss_scaler_data_before_preset'
++printf '%s\n' "$preset_restore" | grep -Fq 'memcpy(shadow_mask_cfg, degauss_shadow_mask_before_preset'
++preset_apply="$(sed -n '/bool video_set_degauss_preset/,/^}/p' video.cpp)"
++printf '%s\n' "$preset_apply" | grep -Fq 'memcpy(degauss_gamma_before_preset, gamma_cfg'
++printf '%s\n' "$preset_apply" | grep -Fq 'memcpy(degauss_scaler_before_preset, scaler_flt'
++printf '%s\n' "$preset_apply" | grep -Fq 'memcpy(degauss_scaler_data_before_preset, scaler_flt_data'
++printf '%s\n' "$preset_apply" | grep -Fq 'memcpy(degauss_shadow_mask_before_preset, shadow_mask_cfg'
++printf '%s\n' "$preset_apply" | grep -Fq 'if (!video_loadPreset(path, false))'
++printf '%s\n' "$preset_apply" | grep -Fq 'degauss_restore_preset_baseline(true);'
++printf '%s\n' "$preset_apply" | grep -Fq 'return false;'
++
++# A mask selected while a full preset is active is parsed before it is
++# accepted as the state to restore later. A missing or malformed file resets it.
++deferred_mask="$(sed -n '/if (degauss_preset_active)/,/return true;/p' video.cpp | head -n 20)"
++printf '%s\n' "$deferred_mask" | grep -Fq 'Scripts/.config/degauss/masks/%s.txt'
++printf '%s\n' "$deferred_mask" | grep -Fq 'if (!degauss_validate_mask_path(path))'
++printf '%s\n' "$deferred_mask" | grep -Fq 'degauss_mask_before_preset[0] = 0;'
+diff --git a/tests/run-degauss-vt-test.py b/tests/run-degauss-vt-test.py
+new file mode 100644
+index 0000000..88931fd
 --- /dev/null
 +++ b/tests/run-degauss-vt-test.py
-@@ -0,0 +1,38 @@
+@@ -0,0 +1,39 @@
 +#!/usr/bin/env python3
 +"""Compile the actual frontend exit block and verify it leaves the script VT."""
 +import pathlib
@@ -1240,6 +2819,7 @@ index 0000000..64a4e88
 +static bool osd = false, framebuffer = true;
 +enum { MENU_SYSTEM1 = 1, DISABLE_KEYBOARD = 1 };
 +void video_chvt(int value) { vt = value; }
++void video_set_degauss_native_fb(bool) {}
 +int user_io_status_get(const char*) { return 0; }
 +void video_menu_bg(int) {}
 +void video_fb_enable(int value) { assert(vt == 1); framebuffer = value; }
@@ -1260,3 +2840,662 @@ index 0000000..64a4e88
 +    subprocess.run(['c++', '-std=c++11', '-Wall', '-Wextra', '-Werror', str(path / 'test.cpp'), '-o', str(path / 'test')], check=True)
 +    subprocess.run([str(path / 'test')], check=True)
 +print('Frontend completion restores VT1 before disabling script framebuffer')
+diff --git a/video.cpp b/video.cpp
+index 542ef71..d24188a 100644
+--- a/video.cpp
++++ b/video.cpp
+@@ -50,6 +50,8 @@
+ #define FB_FMT_PAL8 0b00011
+ #define FB_FMT_RxB  0b10000
+ #define FB_EN       0x8000
++#define FB_FILTER   0x4000
++#define FB_NATIVE   0x2000
+ 
+ #define FB_DV_LBRD  3
+ #define FB_DV_RBRD  6
+@@ -75,6 +77,7 @@ static int fb_enabled = 0;
+ static int fb_width = 0;
+ static int fb_height = 0;
+ static int fb_num = 0;
++static bool degauss_native_fb = false;
+ static int brd_x = 0;
+ static int brd_y = 0;
+ 
+@@ -800,10 +803,20 @@ static void loadGammaCfg()
+ 
+ static char shadow_mask_cfg[1024] = { 0 };
+ static bool has_shadow_mask = false;
++static char degauss_display_mask[129] = { 0 };
++static bool degauss_display_mask_loaded = false;
++static char degauss_mask_before_preset[129] = { 0 };
++static char degauss_gamma_before_preset[sizeof(gamma_cfg)] = { 0 };
++static ScalerFilter degauss_scaler_before_preset[4] = {};
++static VideoFilter degauss_scaler_data_before_preset[4] = {};
++static char degauss_shadow_mask_before_preset[sizeof(shadow_mask_cfg)] = { 0 };
++static bool degauss_preset_active = false;
++static bool degauss_preset_filter = false;
+ 
+ #define SM_FLAG_2X      ( 1 << 1 )
+ #define SM_FLAG_ROTATED ( 1 << 2 )
+ #define SM_FLAG_ENABLED ( 1 << 3 )
++#define SM_FLAG_FB      ( 1 << 4 )
+ 
+ #define SM_FLAG(v) ( ( 0x0 << 13 ) | (v) )
+ #define SM_VMAX(v) ( ( 0x1 << 13 ) | (v) )
+@@ -834,17 +847,22 @@ static void setShadowMask()
+ 	}
+ 
+ 	has_shadow_mask = 1;
+-	switch (video_get_shadow_mask_mode())
++	degauss_display_mask_loaded = false;
++	const int fb_mask = (degauss_display_mask[0] || degauss_preset_active) ? SM_FLAG_FB : 0;
++	switch (degauss_display_mask[0] ? SM_MODE_1X : video_get_shadow_mask_mode())
+ 	{
+ 		default: spi_w(SM_FLAG(0)); break;
+-		case SM_MODE_1X: spi_w(SM_FLAG(SM_FLAG_ENABLED)); break;
+-		case SM_MODE_2X: spi_w(SM_FLAG(SM_FLAG_ENABLED | SM_FLAG_2X)); break;
+-		case SM_MODE_1X_ROTATED: spi_w(SM_FLAG(SM_FLAG_ENABLED | SM_FLAG_ROTATED)); break;
+-		case SM_MODE_2X_ROTATED: spi_w(SM_FLAG(SM_FLAG_ENABLED | SM_FLAG_ROTATED | SM_FLAG_2X)); break;
++		case SM_MODE_1X: spi_w(SM_FLAG(SM_FLAG_ENABLED | fb_mask)); break;
++		case SM_MODE_2X: spi_w(SM_FLAG(SM_FLAG_ENABLED | SM_FLAG_2X | fb_mask)); break;
++		case SM_MODE_1X_ROTATED: spi_w(SM_FLAG(SM_FLAG_ENABLED | SM_FLAG_ROTATED | fb_mask)); break;
++		case SM_MODE_2X_ROTATED: spi_w(SM_FLAG(SM_FLAG_ENABLED | SM_FLAG_ROTATED | SM_FLAG_2X | fb_mask)); break;
+ 	}
+ 
+ 	int loaded = 0;
+-	snprintf(filename, sizeof(filename), SMASK_DIR"/%s", shadow_mask_cfg + 1);
++	if (degauss_display_mask[0])
++		snprintf(filename, sizeof(filename), "Scripts/.config/degauss/masks/%s.txt", degauss_display_mask);
++	else
++		snprintf(filename, sizeof(filename), SMASK_DIR"/%s", shadow_mask_cfg + 1);
+ 
+ 	fileTextReader reader;
+ 	if (FileOpenTextReader(&reader, filename))
+@@ -920,6 +938,7 @@ static void setShadowMask()
+ 	}
+ 
+ 	if (!loaded) spi_w(SM_FLAG(0));
++	if (degauss_display_mask[0]) degauss_display_mask_loaded = loaded;
+ 	DisableIO();
+ }
+ 
+@@ -980,6 +999,56 @@ void video_set_shadow_mask(const char *name)
+ 	video_save_shadow_mask_cfg();
+ }
+ 
++static bool degauss_validate_mask_path(const char *path);
++
++bool video_set_degauss_display_mask(const char *name)
++{
++	if (!is_menu() || !video_fb_state())
++	{
++		printf("Degauss display masks require the Menu framebuffer\n");
++		return false;
++	}
++
++	if (name)
++	{
++		size_t len = strlen(name);
++		if (!len || len >= sizeof(degauss_display_mask) || strstr(name, "..") || strpbrk(name, "/\\\r\n"))
++		{
++			degauss_display_mask[0] = 0;
++			setShadowMask();
++			printf("Degauss display mask: invalid file name\n");
++			return false;
++		}
++	}
++	if (degauss_preset_active)
++	{
++		if (name)
++		{
++			char path[1024];
++			snprintf(path, sizeof(path), "Scripts/.config/degauss/masks/%s.txt", name);
++			if (!degauss_validate_mask_path(path))
++			{
++				degauss_mask_before_preset[0] = 0;
++				printf("Degauss display mask was not applied; effect switched off. Check the mask file\n");
++				return false;
++			}
++		}
++		snprintf(degauss_mask_before_preset, sizeof(degauss_mask_before_preset), "%s", name ? name : "");
++		return true;
++	}
++
++	snprintf(degauss_display_mask, sizeof(degauss_display_mask), "%s", name ? name : "");
++	setShadowMask();
++	if (!has_shadow_mask || (name && !degauss_display_mask_loaded))
++	{
++		degauss_display_mask[0] = 0;
++		setShadowMask();
++		printf("Degauss display mask was not applied; effect switched off. Check Menu shadow-mask support and the mask file\n");
++		return false;
++	}
++	return true;
++}
++
+ static void loadShadowMaskCfg()
+ {
+ 	PROFILE_FUNCTION();
+@@ -1021,6 +1090,194 @@ static char* get_preset_arg(const char *str)
+ 	return par;
+ }
+ 
++static bool degauss_preset_path(const char *name)
++{
++	return name && name[0] && name[0] != '/' && !strstr(name, "..") &&
++		!strpbrk(name, "\\\r\n") && strlen(name) < 900;
++}
++
++static bool degauss_validate_gamma(const char *name)
++{
++	char path[1024];
++	snprintf(path, sizeof(path), GAMMA_DIR"/%s", name);
++	fileTextReader reader;
++	if (!FileOpenTextReader(&reader, path)) return false;
++	int count = 0;
++	const char *line;
++	while ((line = FileReadLine(&reader)))
++	{
++		if (!line[0] || line[0] == '#') continue;
++		int red, green, blue;
++		const int fields = sscanf(line, "%d,%d,%d", &red, &green, &blue);
++		if (fields != 1 && fields != 3) return false;
++		if (fields == 1) green = blue = red;
++		if (red < 0 || red > 255 || green < 0 || green > 255 || blue < 0 || blue > 255) return false;
++		if (++count > 256) return false;
++	}
++	return count == 256;
++}
++
++static bool degauss_validate_mask_path(const char *path)
++{
++	fileTextReader reader;
++	if (!FileOpenTextReader(&reader, path)) return false;
++	int width = -1, height = 0, row = 0, blocks = 0;
++	bool v2 = false;
++	const char *line;
++	while ((line = FileReadLine(&reader)))
++	{
++		if (!line[0] || line[0] == '#') continue;
++		if (!strncasecmp(line, "resolution=", 11))
++		{
++			unsigned threshold = 0;
++			if (width != -1 || sscanf(line + 11, "%u", &threshold) != 1 || !threshold) return false;
++			v2 = false;
++			continue;
++		}
++		if (width == -1)
++		{
++			if (!strcasecmp(line, "v2")) { v2 = true; continue; }
++			if (sscanf(line, "%d,%d", &width, &height) != 2 ||
++				width < 1 || width > 16 || height < 1 || height > 16) return false;
++			row = 0;
++			continue;
++		}
++		const char *part = line;
++		for (int x = 0; x < width; x++)
++		{
++			char *end;
++			const unsigned long value = strtoul(part, &end, 16);
++			if (end == part || value > (v2 ? 0x7FF : 7)) return false;
++			if (x + 1 < width)
++			{
++				if (*end != ',') return false;
++				part = end + 1;
++			}
++			else if (*end) return false;
++		}
++		if (++row == height)
++		{
++			blocks++;
++			width = -1;
++			v2 = false;
++		}
++	}
++	return blocks > 0 && width == -1;
++}
++
++static bool degauss_validate_mask(const char *name)
++{
++	char path[1024];
++	snprintf(path, sizeof(path), SMASK_DIR"/%s", name);
++	return degauss_validate_mask_path(path);
++}
++
++static bool degauss_validate_preset(const char *path, char *error, size_t size)
++{
++	fileTextReader reader;
++	if (!FileOpenTextReader(&reader, path))
++	{
++		snprintf(error, size, "Cannot read preset");
++		return false;
++	}
++	const char *line;
++	bool recognized = false;
++	while ((line = FileReadLine(&reader)))
++	{
++		const char *value = NULL;
++		int filter = -1;
++		const char *folder = NULL;
++		if (!strncasecmp(line, "hfilter=", 8)) { value = line + 8; filter = VFILTER_HORZ; folder = COEFF_DIR; }
++		else if (!strncasecmp(line, "vfilter=", 8)) { value = line + 8; filter = VFILTER_VERT; folder = COEFF_DIR; }
++		else if (!strncasecmp(line, "sfilter=", 8)) { value = line + 8; filter = VFILTER_SCAN; folder = COEFF_DIR; }
++		else if (!strncasecmp(line, "ifilter=", 8)) { value = line + 8; filter = VFILTER_ILACE; folder = COEFF_DIR; }
++		else if (!strncasecmp(line, "gamma=", 6)) { value = line + 6; folder = GAMMA_DIR; }
++		else if (!strncasecmp(line, "mask=", 5)) { value = line + 5; folder = SMASK_DIR; }
++		else if (!strncasecmp(line, "maskmode=", 9))
++		{
++			recognized = true;
++			if (!line[9])
++			{
++				snprintf(error, size, "Empty preset component");
++				return false;
++			}
++			const char *mode = get_preset_arg(line + 9);
++			if (strcasecmp(mode, "off") && strcasecmp(mode, "none") &&
++				strcasecmp(mode, "1x") && strcasecmp(mode, "2x") &&
++				strcasecmp(mode, "1x rotated") && strcasecmp(mode, "2x rotated"))
++			{
++				snprintf(error, size, "Invalid mask mode");
++				return false;
++			}
++			if (strcasecmp(mode, "off") && strcasecmp(mode, "none") && !spi_uio_cmd(UIO_SHADOWMASK))
++			{
++				snprintf(error, size, "Menu does not support shadow masks");
++				return false;
++			}
++			continue;
++		}
++		else continue;
++		recognized = true;
++		if (!value[0])
++		{
++			snprintf(error, size, "Empty preset component");
++			return false;
++		}
++		const char *name = get_preset_arg(value);
++		if (!name[0])
++		{
++			snprintf(error, size, "Empty preset component");
++			return false;
++		}
++		if (filter >= 0 && (!strcasecmp(name, "off") || !strcasecmp(name, "same"))) continue;
++		if (filter < 0 && (!strcasecmp(name, "off") || !strcasecmp(name, "none"))) continue;
++		if (!degauss_preset_path(name))
++		{
++			snprintf(error, size, "Invalid preset component name");
++			return false;
++		}
++		char component[1024];
++		snprintf(component, sizeof(component), "%s/%s", folder, name);
++		if (!FileExists(component))
++		{
++			snprintf(error, size, "Missing %s", component);
++			return false;
++		}
++		if (filter >= 0)
++		{
++			const int supported = spi_uio_cmd(UIO_SET_FLTNUM);
++			if (!supported)
++			{
++				snprintf(error, size, "Menu does not support video filters");
++				return false;
++			}
++			char saved[sizeof(scaler_flt[0].filename)];
++			snprintf(saved, sizeof(saved), "%s", scaler_flt[filter].filename);
++			snprintf(scaler_flt[filter].filename, sizeof(scaler_flt[filter].filename), "%s", name);
++			VideoFilter parsed;
++			const bool valid = read_video_filter(filter, &parsed);
++			snprintf(scaler_flt[filter].filename, sizeof(scaler_flt[filter].filename), "%s", saved);
++			if (!valid)
++			{
++				snprintf(error, size, "Malformed %s", component);
++				return false;
++			}
++		}
++		else if (!strcmp(folder, GAMMA_DIR) && (!has_gamma || !degauss_validate_gamma(name)))
++		{
++			snprintf(error, size, "Gamma unavailable or malformed: %s", component);
++			return false;
++		}
++		else if (!strcmp(folder, SMASK_DIR) && (!spi_uio_cmd(UIO_SHADOWMASK) || !degauss_validate_mask(name)))
++		{
++			snprintf(error, size, "Shadow mask unavailable or malformed: %s", component);
++			return false;
++		}
++	}
++	if (!recognized) snprintf(error, size, "Preset has no supported video settings");
++	return recognized;
++}
++
+ static void load_flt_pres(const char *str, int type)
+ {
+ 	char *arg = get_preset_arg(str);
+@@ -1038,7 +1295,7 @@ static void load_flt_pres(const char *str, int type)
+ 	}
+ }
+ 
+-void video_loadPreset(char *name, bool save)
++bool video_loadPreset(char *name, bool save)
+ {
+ 	char *arg;
+ 	fileTextReader reader;
+@@ -1046,8 +1303,9 @@ void video_loadPreset(char *name, bool save)
+ 	bool scaler_dirty = false;
+ 	bool mask_dirty = false;
+ 	bool gamma_dirty = false;
++	const bool opened = FileOpenTextReader(&reader, name);
+ 
+-	if (FileOpenTextReader(&reader, name))
++	if (opened)
+ 	{
+ 		const char *line;
+ 		while ((line = FileReadLine(&reader)))
+@@ -1118,6 +1376,7 @@ void video_loadPreset(char *name, bool save)
+ 		if (mask_dirty) video_save_shadow_mask_cfg();
+ 		if (gamma_dirty) video_save_gamma_cfg();
+ 	}
++	return opened;
+ }
+ 
+ static void hdmi_packet_enable(uint8_t mask, bool enable)
+@@ -2653,6 +2912,63 @@ static void video_cfg_init()
+ 	loadShadowMaskCfg();
+ }
+ 
++static void degauss_restore_preset_baseline(bool reapply_framebuffer)
++{
++	degauss_preset_active = false;
++	degauss_preset_filter = false;
++	memcpy(gamma_cfg, degauss_gamma_before_preset, sizeof(gamma_cfg));
++	memcpy(scaler_flt, degauss_scaler_before_preset, sizeof(scaler_flt));
++	memcpy(scaler_flt_data, degauss_scaler_data_before_preset, sizeof(scaler_flt_data));
++	memcpy(shadow_mask_cfg, degauss_shadow_mask_before_preset, sizeof(shadow_mask_cfg));
++	snprintf(degauss_display_mask, sizeof(degauss_display_mask), "%s", degauss_mask_before_preset);
++	setGamma();
++	if (has_gamma) spi_uio_cmd8(UIO_SET_GAMMA, gamma_cfg[0]);
++	setScaler();
++	setShadowMask();
++	if (reapply_framebuffer && video_fb_state()) video_fb_enable(1, fb_num);
++}
++
++bool video_set_degauss_preset(const char *name, char *error, size_t error_size)
++{
++	if (!is_menu() || !video_fb_state())
++	{
++		snprintf(error, error_size, "Degauss video presets require the Menu framebuffer");
++		return false;
++	}
++	if (!name || !name[0])
++	{
++		if (degauss_preset_active) degauss_restore_preset_baseline(true);
++		return true;
++	}
++	if (!degauss_preset_path(name))
++	{
++		snprintf(error, error_size, "Invalid preset name");
++		return false;
++	}
++	char path[1024];
++	snprintf(path, sizeof(path), PRESET_DIR"/%s", name);
++	if (!degauss_validate_preset(path, error, error_size)) return false;
++
++	if (degauss_preset_active) degauss_restore_preset_baseline(true);
++	snprintf(degauss_mask_before_preset, sizeof(degauss_mask_before_preset), "%s", degauss_display_mask);
++	memcpy(degauss_gamma_before_preset, gamma_cfg, sizeof(gamma_cfg));
++	memcpy(degauss_scaler_before_preset, scaler_flt, sizeof(scaler_flt));
++	memcpy(degauss_scaler_data_before_preset, scaler_flt_data, sizeof(scaler_flt_data));
++	memcpy(degauss_shadow_mask_before_preset, shadow_mask_cfg, sizeof(shadow_mask_cfg));
++	degauss_display_mask[0] = 0;
++	degauss_preset_active = true;
++	if (!video_loadPreset(path, false))
++	{
++		degauss_restore_preset_baseline(true);
++		snprintf(error, error_size, "Preset could not be opened");
++		return false;
++	}
++	degauss_preset_filter = scaler_flt[VFILTER_HORZ].mode || scaler_flt[VFILTER_VERT].mode ||
++		scaler_flt[VFILTER_SCAN].mode || scaler_flt[VFILTER_ILACE].mode;
++	if (video_fb_state()) video_fb_enable(1, fb_num);
++	return true;
++}
++
+ void video_cfg_reset()
+ {
+ 	FileDeleteConfig(gamma_cfg_path);
+@@ -2668,6 +2984,7 @@ void video_cfg_reset()
+ 
+ void video_init()
+ {
++	degauss_display_mask[0] = 0;
+ 	yc_parse(yc_modes, sizeof(yc_modes) / sizeof(yc_modes[0]));
+ 
+ 	fb_init();
+@@ -2707,7 +3024,7 @@ void video_reinit()
+ 	support_FHD = 0;
+ 	video_mode_load(true);
+ 
+-	video_cfg_init();
++	if (!degauss_preset_active) video_cfg_init();
+ 	video_set_mode(&v_def, 0);
+ 	user_io_send_buttons(1);
+ 	video_mode_adjust(1);
+@@ -3085,20 +3402,58 @@ bool video_mode_select(uint32_t vtime, vmode_custom_t* out_mode)
+ 	return adjustable;
+ }
+ 
++static bool get_scaler_yc_timing(double *pixel_clock, float *fps)
++{
++	const uint64_t htotal = (uint64_t)v_cur.param.hact + v_cur.param.hfp +
++		v_cur.param.hs + v_cur.param.hbp;
++	const uint64_t vtotal = (uint64_t)v_cur.param.vact + v_cur.param.vfp +
++		v_cur.param.vs + v_cur.param.vbp;
++	if (!htotal || !vtotal || v_cur.Fpix <= 0)
++	{
++		printf("ERROR: cannot calculate YC timing for the scaler output.\n");
++		return false;
++	}
++
++	*pixel_clock = v_cur.Fpix;
++	*fps = (float)((v_cur.Fpix * 1000000.0) / (htotal * vtotal));
++	return true;
++}
++
+ static void set_yc_mode()
+ {
+ 	// Enable YC for S-Video/CVBS modes, or subcarrier for CXA2075 encoders
+ 	if (cfg.vga_mode_int >= 2)
+ 	{
+-		float fps = current_video_info.vtime ? (100000000.f / current_video_info.vtime) : 0.f;
++		double scaler_clock = 0;
++		float fps = 0;
++		const bool scaler_timing = cfg.vga_scaler || get_vga_fb();
++		if (scaler_timing && !get_scaler_yc_timing(&scaler_clock, &fps))
++		{
++			spi_uio_cmd8(UIO_SET_YC_PAR, 0);
++			return;
++		}
++		if (!scaler_timing)
++			fps = current_video_info.vtime ? (100000000.f / current_video_info.vtime) : 0.f;
+ 		int pal = fps < 55.f;
+ 		double CLK_REF = (pal || (cfg.ntsc_mode == 1)) ? 4.43361875f : (cfg.ntsc_mode == 2) ? 3.575611f : 3.579545f;
+-		double CLK_VIDEO = current_video_info.ctime * 100.f / current_video_info.ptime;
++		double CLK_VIDEO;
+ 
+-		float prate = current_video_info.width * 100.f;
+-		prate /= current_video_info.ptime;
++		float prate;
+ 
+-		int64_t PHASE_INC = ((int64_t)((CLK_REF / CLK_VIDEO) * 1099511627776LL)) & 0xFFFFFFFFFFLL;
++		int64_t PHASE_INC;
++		if (scaler_timing)
++		{
++			CLK_VIDEO = scaler_clock;
++			prate = (float)CLK_VIDEO;
++			PHASE_INC = ((int64_t)((CLK_REF / CLK_VIDEO) * 1099511627776LL)) & 0xFFFFFFFFFFLL;
++		}
++		else
++		{
++			CLK_VIDEO = current_video_info.ctime * 100.f / current_video_info.ptime;
++			prate = current_video_info.width * 100.f;
++			prate /= current_video_info.ptime;
++			PHASE_INC = ((int64_t)((CLK_REF / CLK_VIDEO) * 1099511627776LL)) & 0xFFFFFFFFFFLL;
++		}
+ 
+ 		int COLORBURST_START = (int)(3.7f * (CLK_VIDEO / CLK_REF));
+ 		int COLORBURST_END = (int)(9.0f * (CLK_VIDEO / CLK_REF)) + COLORBURST_START;
+@@ -3106,11 +3461,11 @@ static void set_yc_mode()
+ 
+ 		char yc_key[64];
+ 		char yc_key_expand[64];
+-		sprintf(yc_key, "%s_%.1f%s%s", user_io_get_core_name(1), fps, current_video_info.interlaced ? "i" : "", (pal || !cfg.ntsc_mode) ? "" : (cfg.ntsc_mode == 1) ? "s" : "m");
++		sprintf(yc_key, "%s_%.1f%s%s", user_io_get_core_name(1), fps, (!scaler_timing && current_video_info.interlaced) ? "i" : "", (pal || !cfg.ntsc_mode) ? "" : (cfg.ntsc_mode == 1) ? "s" : "m");
+ 		snprintf(yc_key_expand, sizeof(yc_key_expand), "%s_%.2f", yc_key, prate);
+-		printf("Calculated YC parameters for '%s': %s PHASE_INC=%lld, COLORBURST_START=%d, COLORBURST_END=%d\n", yc_key, pal ? "PAL" : (cfg.ntsc_mode == 1) ? "PAL60" : (cfg.ntsc_mode == 2) ? "PAL-M" : "NTSC", PHASE_INC, COLORBURST_START, COLORBURST_END);
++		printf("Calculated %sYC parameters for '%s': %s PHASE_INC=%lld, COLORBURST_START=%d, COLORBURST_END=%d\n", scaler_timing ? "scaler " : "", yc_key, pal ? "PAL" : (cfg.ntsc_mode == 1) ? "PAL60" : (cfg.ntsc_mode == 2) ? "PAL-M" : "NTSC", PHASE_INC, COLORBURST_START, COLORBURST_END);
+ 
+-		for (uint i = 0; i < sizeof(yc_modes) / sizeof(yc_modes[0]); i++)
++		for (uint i = 0; !scaler_timing && i < sizeof(yc_modes) / sizeof(yc_modes[0]); i++)
+ 		{
+ 		if (!strcasecmp(yc_modes[i].key, yc_key) || !strcasecmp(yc_modes[i].key, yc_key_expand))
+ 			{
+@@ -3334,6 +3689,11 @@ static void fb_write_module_params()
+ 	});
+ }
+ 
++static bool video_degauss_native_fb_active()
++{
++	return degauss_native_fb && is_menu() && !cfg.vga_scaler;
++}
++
+ void video_fb_enable(int enable, int n)
+ {
+ 	PROFILE_FUNCTION();
+@@ -3362,7 +3722,8 @@ void video_fb_enable(int enable, int n)
+ 				}
+ 
+ 				//printf("Switch to Linux frame buffer\n");
+-				spi_w((uint16_t)(FB_EN | FB_FMT_RxB | FB_FMT_8888)); // format, enable flag
++				spi_w((uint16_t)(FB_EN | (degauss_preset_filter ? FB_FILTER : 0) |
++					(video_degauss_native_fb_active() ? FB_NATIVE : 0) | FB_FMT_RxB | FB_FMT_8888)); // format, enable flag
+ 				spi_w((uint16_t)fb_addr); // base address low word
+ 				spi_w(fb_addr >> 16);     // base address high word
+ 				spi_w(fb_width);          // frame width
+@@ -3400,7 +3761,18 @@ void video_fb_enable(int enable, int n)
+ 		}
+ 
+ 		DisableIO();
+-		if (cfg.direct_video) set_vga_fb(enable);
++		if (!video_fb_state() && degauss_preset_active)
++			degauss_restore_preset_baseline(false);
++		if (!video_fb_state() && degauss_display_mask[0])
++		{
++			degauss_display_mask[0] = 0;
++			setShadowMask();
++		}
++		if (cfg.direct_video)
++		{
++			set_vga_fb(enable);
++			set_yc_mode();
++		}
+ 		if (is_menu()) user_io_status_set("[8:5]", (fb_enabled && !fb_num) ? 0x160 : 0);
+ 	}
+ }
+@@ -3419,6 +3791,7 @@ int video_fb_state()
+ static void video_fb_config()
+ {
+ 	PROFILE_FUNCTION();
++	static_assert(FB_SIZE >= 352 * 288, "Degauss native framebuffer must fit");
+ 
+ 	int fb_scale = cfg.fb_size;
+ 
+@@ -3432,20 +3805,38 @@ static void video_fb_config()
+ 	else if (fb_scale == 3) fb_scale = 2;
+ 	else if (fb_scale > 4) fb_scale = 4;
+ 
+-	const int fb_scale_x = fb_scale;
+-	const int fb_scale_y = v_cur.param.pr == 0 ? fb_scale : fb_scale * 2;
++	if (video_degauss_native_fb_active())
++	{
++		fb_width = 352;
++		fb_height = cfg.menu_pal ? 288 : 240;
++		brd_x = 0;
++		brd_y = 0;
++	}
++	else
++	{
++		const int fb_scale_x = fb_scale * cfg.fb_hscale;
++		const int fb_scale_y = v_cur.param.pr == 0 ? fb_scale : fb_scale * 2;
+ 
+-	fb_width = v_cur.item[1] / fb_scale_x;
+-	fb_height = v_cur.item[5] / fb_scale_y;
++		fb_width = v_cur.item[1] / fb_scale_x;
++		fb_height = v_cur.item[5] / fb_scale_y;
+ 
+-	brd_x = cfg.vscale_border / fb_scale_x;
+-	brd_y = cfg.vscale_border / fb_scale_y;
++		brd_x = cfg.vscale_border / fb_scale_x;
++		brd_y = cfg.vscale_border / fb_scale_y;
++	}
+ 
+ 	if (fb_enabled) video_fb_enable(1, fb_num);
+ 
+ 	fb_write_module_params();
+ }
+ 
++void video_set_degauss_native_fb(bool enable)
++{
++	enable = enable && cfg.degauss_native_analog;
++	if (degauss_native_fb == enable) return;
++	degauss_native_fb = enable;
++	video_fb_config();
++}
++
+ static void draw_checkers()
+ {
+ 	volatile uint32_t* buf = fb_base + (FB_SIZE*menu_bgn);
+@@ -3453,6 +3844,7 @@ static void draw_checkers()
+ 	uint32_t col1 = 0x888888;
+ 	uint32_t col2 = 0x666666;
+ 	int sz = fb_width / 128;
++	if (!sz) sz = 1;
+ 
+ 	for (int y = brd_y; y < fb_height - brd_y; y++)
+ 	{
+@@ -3760,6 +4152,8 @@ void video_menu_bg(int n, int idle)
+ 		imlib_context_set_image(bg1); imlib_free_image(); bg1 = 0;
+ 		imlib_context_set_image(bg2); imlib_free_image(); bg2 = 0;
+ 		imlib_context_set_image(curtain); imlib_free_image(); curtain = 0;
++
++		if (video_fb_state()) return;
+ 	}
+ 	else
+ 	{
+@@ -4353,4 +4747,3 @@ int video_get_rotated()
+ {
+   return current_video_info.rotated;
+ }
+-
+diff --git a/video.h b/video.h
+index 0f02587..e0d8221 100644
+--- a/video.h
++++ b/video.h
+@@ -53,7 +53,9 @@ int   video_get_shadow_mask_mode();
+ void  video_set_shadow_mask_mode(int n);
+ char* video_get_shadow_mask(int only_name = 1);
+ void  video_set_shadow_mask(const char *name);
+-void  video_loadPreset(char *name, bool save);
++bool  video_set_degauss_display_mask(const char *name);
++bool  video_set_degauss_preset(const char *name, char *error, size_t error_size);
++bool  video_loadPreset(char *name, bool save);
+ 
+ int   video_get_rotated();
+ 
+@@ -65,6 +67,7 @@ int   hasAPI1_5();
+ 
+ void video_fb_enable(int enable, int n = 0);
+ int video_fb_state();
++void video_set_degauss_native_fb(bool enable);
+ void video_menu_bg(int n, int idle = 0);
+ int video_bg_has_picture();
+ int video_chvt(int num);

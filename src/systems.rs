@@ -1002,7 +1002,48 @@ fn system_for_core<'a>(table: &'a [SystemDef], identity: &str) -> Option<&'a Sys
         })
 }
 
-fn undated_core_stem(stem: &str) -> &str {
+fn db9_standard_parts(stem: &str) -> Option<(&str, &str)> {
+    let (before_marker, marker) = stem.rsplit_once('_')?;
+    if marker != "DB9" {
+        return None;
+    }
+    let (before_hash, hash) = before_marker.rsplit_once('_')?;
+    let (base, date) = before_hash.rsplit_once('_')?;
+    (!base.is_empty()
+        && !base
+            .rsplit_once('_')
+            .is_some_and(|(_, suffix)| suffix.eq_ignore_ascii_case("unstable"))
+        && date.len() == 8
+        && date.bytes().all(|byte| byte.is_ascii_digit())
+        && hash.len() == 7
+        && hash.bytes().all(|byte| byte.is_ascii_hexdigit()))
+    .then_some((base, date))
+}
+
+pub(crate) fn db9_unstable_parts(stem: &str) -> Option<(&str, &str)> {
+    let (before_marker, marker) = stem.rsplit_once('_')?;
+    if marker != "DB9" {
+        return None;
+    }
+    let (before_hash, hash) = before_marker.rsplit_once('_')?;
+    let (before_time, time) = before_hash.rsplit_once('_')?;
+    let (before_date, date) = before_time.rsplit_once('_')?;
+    let (base, unstable) = before_date.rsplit_once('_')?;
+    (!base.is_empty()
+        && unstable.eq_ignore_ascii_case("unstable")
+        && date.len() == 8
+        && date.bytes().all(|byte| byte.is_ascii_digit())
+        && time.len() == 4
+        && time.bytes().all(|byte| byte.is_ascii_digit())
+        && hash.len() == 7
+        && hash.bytes().all(|byte| byte.is_ascii_hexdigit()))
+    .then_some((base, date))
+}
+
+pub(crate) fn undated_core_stem(stem: &str) -> &str {
+    if let Some((base, _)) = db9_standard_parts(stem) {
+        return base;
+    }
     match stem.rsplit_once('_') {
         Some((before, after))
             if after.len() >= 8 && after.as_bytes()[..8].iter().all(u8::is_ascii_digit) =>
@@ -1011,6 +1052,20 @@ fn undated_core_stem(stem: &str) -> &str {
         }
         _ => stem,
     }
+}
+
+pub(crate) fn core_build_date(stem: &str) -> Option<&str> {
+    if let Some((_, date)) = db9_standard_parts(stem) {
+        return Some(date);
+    }
+    if let Some((_, date)) = db9_unstable_parts(stem) {
+        return Some(date);
+    }
+    let (_, suffix) = stem.rsplit_once('_')?;
+    let date = suffix.get(..8)?;
+    date.bytes()
+        .all(|byte| byte.is_ascii_digit())
+        .then_some(date)
 }
 
 fn unstable_core_name(stem: &str) -> String {
@@ -1090,18 +1145,7 @@ pub fn core_file_exists(menu_root: &Path, rbf: &str) -> bool {
 /// system is written `NeoGeoPocket-Color` as a file and `NeoGeoPocketColor`
 /// as an id, and they have to meet.
 pub(crate) fn core_name(stem: &str) -> String {
-    let trimmed = match stem.rsplit_once('_') {
-        // Compared as bytes, not sliced as a string. A date stamp is eight
-        // ASCII digits either way, and `&after[..8]` panics when byte 8 lands
-        // inside a multi-byte character, which a core named in anything but
-        // ASCII would do.
-        Some((before, after))
-            if after.len() >= 8 && after.as_bytes()[..8].iter().all(u8::is_ascii_digit) =>
-        {
-            before
-        }
-        _ => stem,
-    };
+    let trimmed = undated_core_stem(stem);
     trimmed
         .chars()
         .filter(|c| c.is_ascii_alphanumeric())
@@ -1212,6 +1256,30 @@ mod tests {
         assert_eq!(core_name("NeoGeo"), "neogeo");
         // Eight bytes but not eight digits: the stamp is not stripped.
         assert_eq!(core_name("Core_abcdefgh"), "coreabcdefgh");
+    }
+
+    #[test]
+    fn db9_names_are_recognized_only_in_the_published_forms() {
+        assert_eq!(core_name("NES_20260928_a1b2c3d_DB9"), "nes");
+        assert_eq!(
+            db9_unstable_parts("NES_unstable_20260928_2315_a1b2c3d_DB9"),
+            Some(("NES", "20260928"))
+        );
+        assert_eq!(
+            core_build_date("NES_unstable_20260928_2315_a1b2c3d_DB9"),
+            Some("20260928")
+        );
+        for malformed in [
+            "NES_20260928_a1b2c3_DB9",
+            "NES_20260928_a1b2c3d_db9",
+            "NES_unstable_20260928_a1b2c3d_DB9",
+            "NES_unstable_20260928_2315_a1b2c3_DB9",
+            "NES_custom_20260928_2315_a1b2c3d_DB9",
+        ] {
+            assert!(db9_unstable_parts(malformed).is_none(), "{malformed}");
+        }
+        assert_ne!(core_name("NES_20260928_a1b2c3_DB9"), "nes");
+        assert_ne!(core_name("NES_20260928_a1b2c3d_db9"), "nes");
     }
 
     use super::*;
@@ -1481,6 +1549,32 @@ extensions = ["md", "bin"]
             c64.launch.iter().any(|r| r.kind == "s" && r.index == 0),
             "the disk slot must survive generation"
         );
+        let adam = table
+            .iter()
+            .find(|system| system.id == "ColecoAdam")
+            .expect("Coleco Adam is in the table");
+        assert_eq!(adam.name, "Coleco Adam");
+        assert_eq!(adam.folders, ["Adam"]);
+        assert_eq!(adam.rbf, "_Computer/ColecoAdam");
+        assert_eq!(adam.category(), "Computer");
+        assert_eq!(adam.extensions, ["col", "bin", "rom", "dsk", "ddp", "mgl"]);
+        assert!(adam.launch.iter().any(|rule| {
+            rule.extensions == ["col", "bin", "rom"] && rule.kind == "f" && rule.index == 1
+        }));
+        assert!(adam
+            .launch
+            .iter()
+            .any(|rule| { rule.extensions == ["dsk"] && rule.kind == "s" && rule.index == 0 }));
+        assert!(adam
+            .launch
+            .iter()
+            .any(|rule| { rule.extensions == ["ddp"] && rule.kind == "s" && rule.index == 4 }));
+        let colecovision = table
+            .iter()
+            .find(|system| system.id == "ColecoVision")
+            .expect("ColecoVision remains in the table");
+        assert_eq!(colecovision.folders, ["Coleco"]);
+        assert_eq!(colecovision.rbf, "_Console/ColecoVision");
         let pocket = table
             .iter()
             .find(|system| system.id == "NeoGeoPocket")
@@ -1595,6 +1689,33 @@ extensions = ["md", "bin"]
         assert_eq!(found[0].name(), "Commodore 64");
         assert_eq!(found[0].path(), root.join("C64"));
         std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn coleco_adam_is_discovered_as_a_computer_from_its_standard_folder() {
+        let card = temp_dir("coleco-adam-discovery");
+        let games = card.join("games");
+        std::fs::create_dir_all(games.join("Adam")).unwrap();
+        std::fs::create_dir_all(card.join("_Computer")).unwrap();
+        std::fs::write(card.join("_Computer/ColecoAdam_20260922.rbf"), b"core").unwrap();
+
+        let adam = load_table(Path::new("assets/systems.toml"))
+            .unwrap()
+            .into_iter()
+            .find(|system| system.id == "ColecoAdam")
+            .expect("Coleco Adam definition");
+        let found = discover(
+            &[adam],
+            std::slice::from_ref(&games),
+            None,
+            &CoreIndex::read(&card),
+        );
+
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].name(), "Coleco Adam");
+        assert_eq!(found[0].path(), games.join("Adam"));
+        assert_eq!(found[0].category(), "Computer");
+        std::fs::remove_dir_all(card).ok();
     }
 
     #[test]
@@ -2110,6 +2231,61 @@ extensions = ["ngp"]
             assert_eq!(CoreIndex::read(&menu).folder_of("NES"), None);
             std::fs::remove_dir_all(menu).unwrap();
         }
+    }
+
+    #[test]
+    fn db9_builds_participate_in_discovery_and_the_core_catalogue() {
+        let menu = temp_dir("db9-core-catalogue");
+        for directory in ["_Console", "_Unstable"] {
+            std::fs::create_dir_all(menu.join(directory)).unwrap();
+        }
+        let standard = "_Console/NES_20260928_a1b2c3d_DB9.rbf";
+        let unstable = "_Unstable/NES_unstable_20260928_2315_a1b2c3d_DB9.rbf";
+        for file in [standard, unstable] {
+            std::fs::write(menu.join(file), b"fixture").unwrap();
+        }
+        std::fs::write(
+            menu.join("_Console/SNES_20260928_a1b2c3_DB9.rbf"),
+            b"malformed fixture",
+        )
+        .unwrap();
+        let table = parse_table(
+            r#"
+[[systems]]
+name = "Nintendo Entertainment System"
+id = "NES"
+folders = ["NES"]
+rbf = "_Console/NES"
+extensions = ["nes"]
+"#,
+            Path::new("DB9 core catalogue fixture"),
+        )
+        .unwrap();
+
+        let index = CoreIndex::read(&menu);
+        assert_eq!(index.folder_of("_Console/NES"), Some("Console"));
+        assert_eq!(index.folder_of("_Console/SNES"), None);
+        let catalogue = index.catalogue(&table);
+        assert_eq!(
+            catalogue
+                .in_category("Console")
+                .map(CoreEntry::label)
+                .collect::<Vec<_>>(),
+            vec![
+                "Nintendo Entertainment System [Standard]",
+                "Nintendo Entertainment System [Unstable: 20260928_2315_a1b2c3d_DB9]",
+                "SNES_20260928_a1b2c3_DB9 [Standard]",
+            ]
+        );
+        assert!(catalogue
+            .entries
+            .iter()
+            .any(|entry| entry.path == menu.join(standard)));
+        assert!(catalogue
+            .entries
+            .iter()
+            .any(|entry| entry.path == menu.join(unstable)));
+        std::fs::remove_dir_all(menu).unwrap();
     }
 
     #[test]

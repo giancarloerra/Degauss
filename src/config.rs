@@ -226,6 +226,26 @@ impl SystemConfig {
             return false;
         };
         let ext = ext.to_ascii_lowercase();
+        if self.setname.as_deref() == Some("Atari2600") && ext == "bin" {
+            let roots = std::iter::once(self.path.as_str())
+                .chain(self.extra_paths.iter().map(String::as_str))
+                .map(Path::new);
+            // The shared 7800 folder belongs to Atari 7800 for .bin files.
+            // A dedicated Atari2600 folder also works with older user-edited
+            // systems.toml files that do not list bin yet.
+            if let Some(root) = roots
+                .filter(|root| path.starts_with(root))
+                .max_by_key(|root| root.components().count())
+            {
+                let name = root.file_name().and_then(|name| name.to_str());
+                if name.is_some_and(|name| name.eq_ignore_ascii_case("ATARI7800")) {
+                    return false;
+                }
+                if name.is_some_and(|name| name.eq_ignore_ascii_case("Atari2600")) {
+                    return true;
+                }
+            }
+        }
         self.extensions.iter().any(|e| e.eq_ignore_ascii_case(&ext))
     }
 
@@ -577,6 +597,27 @@ favorite = "#fe2e1d"
         assert!(system.accepts(Path::new("/x/game.prg")));
         assert!(!system.accepts(Path::new("/x/game.zip")));
         assert!(!system.accepts(Path::new("/x/noextension")));
+    }
+
+    #[test]
+    fn atari_bin_uses_the_deepest_matching_configured_root() {
+        let mut system = SystemConfig {
+            preserve_rbf_stem: false,
+            name: "Atari 2600".into(),
+            path: "/games/Atari2600".into(),
+            extensions: vec!["a26".into()],
+            rbf: "_Console/Atari2600".into(),
+            launch: Vec::new(),
+            skip_folders: Vec::new(),
+            setname: Some("Atari2600".into()),
+            compatible_cores: Vec::new(),
+            extra_paths: vec!["/games/Atari2600/ATARI7800".into()],
+        };
+        assert!(!system.accepts(Path::new("/games/Atari2600/ATARI7800/Game.bin")));
+
+        system.path = "/games/ATARI7800".into();
+        system.extra_paths = vec!["/games/ATARI7800/Atari2600".into()];
+        assert!(system.accepts(Path::new("/games/ATARI7800/Atari2600/Game.bin")));
     }
 
     #[test]

@@ -32,6 +32,9 @@ pub(crate) fn nightly_matches(stem: &str, reference: &str) -> bool {
     if crate::systems::core_name(stem) == wanted {
         return true;
     }
+    if let Some((base, _)) = crate::systems::db9_unstable_parts(stem) {
+        return crate::systems::core_name(base) == wanted;
+    }
     // The official nightly suffix is bounded, not a loose core-name prefix.
     let lower = stem.to_ascii_lowercase();
     let Some(at) = lower.rfind("_unstable_") else {
@@ -480,6 +483,22 @@ mod tests {
         assert!(is_unstable_reference(&system, "_Unstable/NES_20260901.rbf"));
         assert!(!nightly_matches("日本語", "_Console/NES"));
         assert_eq!(core_stem("日本語"), "日本語");
+    }
+
+    #[test]
+    fn db9_unstable_names_match_only_the_exact_supported_shape() {
+        assert!(nightly_matches(
+            "NES_unstable_20260928_2315_a1b2c3d_DB9",
+            "_Console/NES"
+        ));
+        for malformed in [
+            "NES_unstable_20260928_a1b2c3d_DB9",
+            "NES_unstable_20260928_2315_a1b2c3_DB9",
+            "NES_unstable_20260928_2315_a1b2c3d_db9",
+            "SNES_unstable_20260928_2315_a1b2c3d_DB9",
+        ] {
+            assert!(!nightly_matches(malformed, "_Console/NES"), "{malformed}");
+        }
     }
 
     #[test]

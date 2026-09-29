@@ -154,22 +154,11 @@ pub(crate) fn ra_launcher_identity(path: &Path) -> Result<String> {
     Ok(crate::systems::core_name(core))
 }
 
-fn undated_name(stem: &str) -> &str {
-    match stem.rsplit_once('_') {
-        Some((before, date))
-            if date.len() >= 8 && date.as_bytes()[..8].iter().all(u8::is_ascii_digit) =>
-        {
-            before
-        }
-        _ => stem,
-    }
-}
-
 /// Preserve the released core-presence comparison, including dated references
 /// and punctuation aliases. The original configured reference is still emitted.
 pub(crate) fn same_core_identity(left: &str, right: &str) -> bool {
     let normalize = |value: &str| {
-        undated_name(value)
+        crate::systems::undated_core_stem(value)
             .chars()
             .filter(|c| c.is_ascii_alphanumeric())
             .map(|c| c.to_ascii_lowercase())
@@ -255,7 +244,7 @@ pub(crate) fn installed_ra(system: &SystemConfig, root: &Path) -> Result<Option<
         .file_name()
         .and_then(|s| s.to_str())
         .unwrap_or("");
-    let basename = undated_name(basename);
+    let basename = crate::systems::undated_core_stem(basename);
     let identity = basename;
     let folder = root.join("_RA_Cores");
     let mut matches = Vec::new();
@@ -411,7 +400,7 @@ fn recognized_family(
         .file_name()
         .and_then(|s| s.to_str())
         .unwrap_or("");
-    let base = undated_name(base);
+    let base = crate::systems::undated_core_stem(base);
     let identity = base;
     let rule_match = game
         .and_then(|game| system.rule_for(game))
@@ -697,6 +686,25 @@ extensions = ["nes", "mgl"]
             .unwrap_err()
             .to_string();
         assert!(invalid.contains("extensionless RBF reference"));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn a_stable_db9_build_satisfies_the_plain_main_reference() {
+        let (root, system) = setup("db9-standard");
+        std::fs::write(
+            root.join("_Console/NES_20260928_a1b2c3d_DB9.rbf"),
+            b"discovery fixture",
+        )
+        .unwrap();
+        assert!(core_present(&root, &system.rbf).unwrap());
+        assert_eq!(resolve(&system, &root, false).unwrap().rbf, "_Console/NES");
+        std::fs::write(root.join("_Console/NES.rbf"), b"stock fixture").unwrap();
+        assert_eq!(
+            resolve(&system, &root, false).unwrap().rbf,
+            "_Console/NES",
+            "Degauss leaves stock-versus-DB9 selection to MiSTer Main"
+        );
         std::fs::remove_dir_all(root).unwrap();
     }
 

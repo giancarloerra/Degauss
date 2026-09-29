@@ -17,6 +17,10 @@ pub enum OptionId {
     /// What left and right do while browsing: speed, letter, page or
     /// direction.
     LeftRight,
+    /// Swap the controller's physical A and B actions inside Degauss.
+    SwapAB,
+    /// Swap the controller's physical X and Y actions inside Degauss.
+    SwapXY,
     /// The scroll speed above which artwork stops being loaded per row.
     ArtLimit,
     Layout,
@@ -40,8 +44,8 @@ pub enum OptionId {
     ShowArt,
     /// Improve low-line artwork and logos with an area filter.
     CrtSmoothing,
-    /// A MiSTer shadow mask for Degauss's framebuffer output.
-    HdmiScanlines,
+    /// A Degauss mask or general MiSTer video preset, never both at once.
+    VideoPreset,
     /// Correct game artwork for the physical aspect ratio of a display
     /// whose framebuffer pixels are not square.
     ArtworkScale,
@@ -62,6 +66,8 @@ pub enum OptionId {
     CorePreference,
     /// Preferred available source for systems left on Automatic.
     AutomaticDataSource,
+    /// Watch supported physical game discs through an installed provider.
+    AutoRunPhysicalDiscs,
     /// Present recognised handheld systems in their own home category.
     SeparateHandheldCategory,
     /// The strip along the bottom of the screen, while browsing.
@@ -86,6 +92,8 @@ pub enum OptionId {
     ResetHidden,
     ShowStats,
     Present,
+    /// Select one of MiSTer Main's discovered INI profiles.
+    SwitchIni,
     /// Turn the complete frontend while leaving the MiSTer video mode alone.
     ScreenRotation,
     OverscanX,
@@ -115,6 +123,8 @@ pub const OPTIONS: &[OptionId] = &[
     OptionId::Speed,
     OptionId::ArtLimit,
     OptionId::LeftRight,
+    OptionId::SwapAB,
+    OptionId::SwapXY,
     OptionId::Spacer,
     OptionId::HoldA,
     OptionId::HoldB,
@@ -133,7 +143,7 @@ pub const OPTIONS: &[OptionId] = &[
     OptionId::Font,
     OptionId::ShowArt,
     OptionId::CrtSmoothing,
-    OptionId::HdmiScanlines,
+    OptionId::VideoPreset,
     OptionId::ArtworkScale,
     OptionId::ShowBar,
     OptionId::Spacer,
@@ -142,6 +152,7 @@ pub const OPTIONS: &[OptionId] = &[
     OptionId::FoldersLast,
     OptionId::CorePreference,
     OptionId::AutomaticDataSource,
+    OptionId::AutoRunPhysicalDiscs,
     OptionId::SeparateHandheldCategory,
     OptionId::Spacer,
     OptionId::ShowOther,
@@ -172,7 +183,7 @@ pub const OPTIONS: &[OptionId] = &[
 
 /// Tuning and diagnostics: things you set once, or only while measuring.
 /// Kept behind a door so the main list stays about using the thing.
-pub const ADVANCED: [OptionId; 2] = [OptionId::Present, OptionId::ShowStats];
+pub const ADVANCED: [OptionId; 3] = [OptionId::SwitchIni, OptionId::Present, OptionId::ShowStats];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OptionsPage {
@@ -248,6 +259,8 @@ impl OptionsPage {
                 OptionId::Speed,
                 OptionId::ArtLimit,
                 OptionId::LeftRight,
+                OptionId::SwapAB,
+                OptionId::SwapXY,
                 OptionId::RandomLaunches,
             ],
             Self::Shortcuts => &[
@@ -281,6 +294,7 @@ impl OptionsPage {
                 OptionId::FoldersLast,
                 OptionId::CorePreference,
                 OptionId::AutomaticDataSource,
+                OptionId::AutoRunPhysicalDiscs,
                 OptionId::SeparateHandheldCategory,
                 OptionId::ShowOther,
                 OptionId::ShowUtility,
@@ -295,7 +309,7 @@ impl OptionsPage {
                 OptionId::ScrapeAll,
             ],
             Self::Display => &[
-                OptionId::HdmiScanlines,
+                OptionId::VideoPreset,
                 OptionId::ScreenRotation,
                 OptionId::OverscanX,
                 OptionId::OverscanY,
@@ -312,6 +326,8 @@ impl OptionId {
         match self {
             OptionId::Speed => "Scroll Speed",
             OptionId::LeftRight => "Left and Right Behaviour",
+            OptionId::SwapAB => "Swap A and B",
+            OptionId::SwapXY => "Swap X and Y",
             OptionId::ArtLimit => "Skip Artwork Faster Than",
             OptionId::Layout => "View",
             OptionId::StartFolder => "Start Folder",
@@ -324,7 +340,7 @@ impl OptionId {
             OptionId::Theme => "Theme",
             OptionId::ShowArt => "Artwork",
             OptionId::CrtSmoothing => "CRT Image Smoothing",
-            OptionId::HdmiScanlines => "Shadow Mask Effects",
+            OptionId::VideoPreset => "Video Effects",
             OptionId::ArtworkScale => "Artwork Scale Factor",
             OptionId::ShowHidden => "Show What You Hid",
             OptionId::ShowEmpty => "Show Systems with No Games",
@@ -336,6 +352,7 @@ impl OptionId {
             OptionId::ShowScripts => "Show Scripts Folder",
             OptionId::CorePreference => "Core Preference",
             OptionId::AutomaticDataSource => "Automatic Data Source",
+            OptionId::AutoRunPhysicalDiscs => "Auto-run Physical Discs",
             OptionId::SeparateHandheldCategory => "Separate Handheld Category",
             OptionId::ShowBar => "Bottom Bar While Browsing",
             OptionId::RebuildCache => "Rebuild All System Lists",
@@ -351,6 +368,7 @@ impl OptionId {
             OptionId::ResetHidden => "Unhide Everything",
             OptionId::ShowStats => "Performance Readout",
             OptionId::Present => "Drawing Path",
+            OptionId::SwitchIni => "Switch INI",
             OptionId::ScreenRotation => "Screen Rotation",
             OptionId::OverscanX => "Edge Margin, Sides",
             OptionId::OverscanY => "Edge Margin, Top and Bottom",
@@ -372,6 +390,12 @@ impl OptionId {
             OptionId::Speed => "Set how quickly the selection moves while a direction is held.",
             OptionId::LeftRight => {
                 "Choose speed changes, letter jumps, page jumps or movement. Direction uses rows in grids."
+            }
+            OptionId::SwapAB => {
+                "Swap controller A and B inside Degauss. Keyboard controls, games and cores are unchanged."
+            }
+            OptionId::SwapXY => {
+                "Swap controller X and Y inside Degauss. Keyboard controls, games and cores are unchanged."
             }
             OptionId::ArtLimit => {
                 "Above this speed, artwork waits until scrolling stops."
@@ -407,8 +431,8 @@ impl OptionId {
             OptionId::CrtSmoothing => {
                 "Smooth artwork and logos at 240p/288p. Off restores the faster original scaling; higher-resolution modes are unchanged."
             }
-            OptionId::HdmiScanlines => {
-                "Choose Off or a MiSTer mask from the Degauss masks folder. It affects HDMI and scaled analog output while Degauss is open, not games."
+            OptionId::VideoPreset => {
+                "Choose Off, a Degauss mask, or a general MiSTer video preset. Effects apply only while Degauss is open."
             }
             OptionId::ArtworkScale => {
                 "Match game artwork to the display shape. Logos and screensaver images are unchanged."
@@ -432,6 +456,9 @@ impl OptionId {
             OptionId::CorePreference => "Choose the preferred core when standard and RetroAchievements versions are both installed.",
             OptionId::AutomaticDataSource => {
                 "Choose which available source systems left on Automatic try first when they are entered."
+            }
+            OptionId::AutoRunPhysicalDiscs => {
+                "Launch a supported inserted disc through an installed physical-disc provider."
             }
             OptionId::SeparateHandheldCategory => {
                 "Show recognised handheld systems in a separate Handheld category. Off keeps MiSTer's Console grouping."
@@ -463,6 +490,7 @@ impl OptionId {
             }
             OptionId::ShowStats => "Replace button hints with rendering and frame-time measurements.",
             OptionId::Present => "Direct draws into the framebuffer. Staged draws into memory before copying the frame.",
+            OptionId::SwitchIni => "Choose a MiSTer INI profile. Switching reloads the current core and may leave this display without a signal.",
             OptionId::ScreenRotation => {
                 "Rotate the complete frontend for a vertical CRT. This does not change MiSTer video modes or game rotation."
             }
@@ -484,7 +512,7 @@ impl OptionId {
             OptionId::ScreensaverSpeed => {
                 "Move the screensaver pictures at Normal, 2x or 4x speed. This does not change when it starts."
             }
-            OptionId::Advanced => "Press A for diagnostics: the drawing path and the readout.",
+            OptionId::Advanced => "Press A for INI profiles, the drawing path and the readout.",
             OptionId::Spacer => "",
         }
     }
@@ -622,10 +650,11 @@ mod tests {
             .ids()
             .contains(&OptionId::FavoritesFirst));
         assert!(OptionsPage::Library.ids().contains(&OptionId::FoldersLast));
-        assert!(OptionsPage::Library.ids().windows(3).any(|ids| ids
+        assert!(OptionsPage::Library.ids().windows(4).any(|ids| ids
             == [
                 OptionId::CorePreference,
                 OptionId::AutomaticDataSource,
+                OptionId::AutoRunPhysicalDiscs,
                 OptionId::SeparateHandheldCategory,
             ]));
         assert_eq!(OptionsPage::Developer.ids(), &ADVANCED);
@@ -661,6 +690,16 @@ mod tests {
     }
 
     #[test]
+    fn display_has_one_effect_choice() {
+        let effects: Vec<_> = OptionsPage::Display
+            .ids()
+            .iter()
+            .filter(|id| id.label() == "Video Effects")
+            .collect();
+        assert_eq!(effects.len(), 1);
+    }
+
+    #[test]
     fn every_hold_row_maps_to_its_face_button() {
         for (option, button, label) in [
             (OptionId::HoldA, HoldButton::A, "Hold A"),
@@ -672,6 +711,16 @@ mod tests {
             assert_eq!(option.label(), label);
         }
         assert_eq!(OptionId::FavoritesFirst.hold_button(), None);
+    }
+
+    #[test]
+    fn controller_swaps_are_independent_navigation_settings() {
+        let navigation = OptionsPage::Navigation.ids();
+        assert!(navigation
+            .windows(2)
+            .any(|ids| { ids == [OptionId::SwapAB, OptionId::SwapXY] }));
+        assert_eq!(OptionId::SwapAB.label(), "Swap A and B");
+        assert_eq!(OptionId::SwapXY.label(), "Swap X and Y");
     }
 
     #[test]

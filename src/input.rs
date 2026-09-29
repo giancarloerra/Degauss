@@ -30,9 +30,38 @@
 //! pair is dropped by the [`DuplicateGuard`] before anything else sees it,
 //! so one press moves once.
 
+use std::collections::{BTreeMap, BTreeSet};
+use std::path::PathBuf;
 use std::time::{Duration, Instant, SystemTime};
 
 use crate::settings::{HoldButton, HoldShortcut};
+
+/// Compare the input paths already open with the keyboard-capable paths found
+/// by a later scan. Sorted, deduplicated results keep hotplug reconciliation
+/// deterministic without changing the order of the live device readers.
+fn input_path_changes(
+    existing: &[PathBuf],
+    discovered: &[PathBuf],
+    missing_scans: &mut BTreeMap<PathBuf, u8>,
+) -> (Vec<PathBuf>, Vec<PathBuf>) {
+    let existing = existing.iter().cloned().collect::<BTreeSet<_>>();
+    let discovered = discovered.iter().cloned().collect::<BTreeSet<_>>();
+    let added = discovered.difference(&existing).cloned().collect();
+    missing_scans.retain(|path, _| existing.contains(path) && !discovered.contains(path));
+    let mut removed = Vec::new();
+    for path in existing.difference(&discovered) {
+        let count = missing_scans.entry(path.clone()).or_default();
+        *count = count.saturating_add(1);
+        if *count >= 2 {
+            removed.push(path.clone());
+        }
+    }
+    for path in &removed {
+        missing_scans.remove(path);
+    }
+    (added, removed)
+}
+
 /// What Degauss does, independent of which key or button produced it.
 ///
 /// Only the device build turns real key codes into these; a development
@@ -68,6 +97,144 @@ pub enum Action {
     Context,
     /// Run the configured browsing action after a face button is held.
     HoldShortcut(HoldShortcut),
+}
+
+/// Optional remapping applied only to MiSTer's translated controller device.
+/// Direct keyboards keep their established keys.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ControllerMapping {
+    swap_a_b: bool,
+    swap_x_y: bool,
+}
+
+impl ControllerMapping {
+    pub const fn new(swap_a_b: bool, swap_x_y: bool) -> Self {
+        Self { swap_a_b, swap_x_y }
+    }
+
+    pub const fn map_action(self, action: Action) -> Action {
+        match action {
+            Action::Accept if self.swap_a_b => Action::Quit,
+            Action::Quit if self.swap_a_b => Action::Accept,
+            Action::Context if self.swap_x_y => Action::Menu,
+            Action::Menu if self.swap_x_y => Action::Context,
+            other => other,
+        }
+    }
+
+    pub const fn map_edge(self, edge: KeyEdge) -> KeyEdge {
+        match edge {
+            KeyEdge::Down(action) => KeyEdge::Down(self.map_action(action)),
+            KeyEdge::Up(action) => KeyEdge::Up(self.map_action(action)),
+        }
+    }
+
+    /// Transform only standalone face-button tokens in text already known to
+    /// be a control hint or prompt. Ordinary titles and descriptions never
+    /// pass through this function.
+    pub fn map_hint(self, text: &str) -> String {
+        if !self.swap_a_b && !self.swap_x_y {
+            return text.to_string();
+        }
+        let characters = text.chars().collect::<Vec<_>>();
+        characters
+            .iter()
+            .enumerate()
+            .map(|(index, character)| {
+                let standalone = index
+                    .checked_sub(1)
+                    .and_then(|before| characters.get(before))
+                    .is_none_or(|before| !before.is_ascii_alphanumeric())
+                    && characters
+                        .get(index + 1)
+                        .is_none_or(|after| !after.is_ascii_alphanumeric());
+                if !standalone {
+                    return *character;
+                }
+                match (*character, self.swap_a_b, self.swap_x_y) {
+                    ('A', true, _) => 'B',
+                    ('B', true, _) => 'A',
+                    ('X', _, true) => 'Y',
+                    ('Y', _, true) => 'X',
+                    _ => *character,
+                }
+            })
+            .collect()
+    }
+}
+
+#[cfg(test)]
+fn device_action(
+    mapping: ControllerMapping,
+    action: Action,
+    controller: bool,
+) -> (Action, Option<HoldButton>) {
+    let physical_button = button_for_action(action);
+    let action = if controller {
+        mapping.map_action(action)
+    } else {
+        action
+    };
+    (action, physical_button)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IniChordResult {
+    Forward,
+    Consume,
+    Switch(u8),
+}
+
+/// Back is delayed until release so a direction can select an INI even when
+/// the current video mode leaves the display invisible.
+#[derive(Default)]
+pub struct IniChord {
+    back_down: bool,
+    used: bool,
+}
+
+impl IniChord {
+    pub fn intercept(&mut self, edge: KeyEdge) -> IniChordResult {
+        match edge {
+            KeyEdge::Down(Action::Quit) => {
+                self.back_down = true;
+                self.used = false;
+            }
+            KeyEdge::Down(direction) if self.back_down => {
+                let slot = match direction {
+                    Action::Faster => Some(0),
+                    Action::Slower => Some(1),
+                    Action::Up => Some(2),
+                    Action::Down => Some(3),
+                    _ => None,
+                };
+                if let Some(slot) = slot {
+                    if self.used {
+                        return IniChordResult::Consume;
+                    }
+                    self.used = true;
+                    return IniChordResult::Switch(slot);
+                }
+            }
+            KeyEdge::Up(Action::Quit) => {
+                self.back_down = false;
+                if self.used {
+                    self.used = false;
+                    return IniChordResult::Consume;
+                }
+            }
+            _ => {}
+        }
+        IniChordResult::Forward
+    }
+
+    pub fn back_hold_fired(&mut self) {
+        self.back_down = false;
+    }
+
+    pub fn reset_for_device_loss(&mut self) {
+        *self = Self::default();
+    }
 }
 
 impl Action {
@@ -171,6 +338,8 @@ impl Default for RepeatConfig {
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 struct Held {
     action: Action,
+    /// The physical face button, before an optional controller swap.
+    button: Option<HoldButton>,
     pressed_at: Instant,
     last_fired: Instant,
     repeating: bool,
@@ -213,28 +382,35 @@ impl Repeater {
         for button in HoldButton::ALL {
             let at = button.index();
             if self.hold_shortcuts[at] != shortcuts[at] {
-                let action = action_for_button(button);
-                self.held.retain(|held| held.action != action);
+                self.held.retain(|held| held.button != Some(button));
             }
         }
         self.hold_shortcuts = shortcuts;
     }
 
-    /// Consume every pending face-button gesture when its browse target
-    /// changes, even if the same shortcut remains available on the next row.
+    /// Consume every selection-scoped face-button gesture when its browse
+    /// target changes. Back without a hold shortcut remains pending because
+    /// its release is the ordinary Back action, not an action on that target.
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     pub fn set_hold_context(&mut self, context: u64) {
         if self.hold_context == context {
             return;
         }
         self.hold_context = context;
-        self.held
-            .retain(|held| button_for_action(held.action).is_none());
+        let hold_shortcuts = self.hold_shortcuts;
+        self.held.retain(|held| {
+            held.button.is_none()
+                || (held.action == Action::Quit
+                    && held
+                        .button
+                        .and_then(|button| hold_shortcuts[button.index()])
+                        .is_none())
+        });
     }
 
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
-    fn hold_action(&self, action: Action) -> Option<Action> {
-        button_for_action(action)
+    fn hold_action(&self, button: Option<HoldButton>) -> Option<Action> {
+        button
             .and_then(|button| self.hold_shortcuts[button.index()])
             .map(Action::HoldShortcut)
     }
@@ -252,7 +428,9 @@ impl Repeater {
             let hold_shortcuts = self.hold_shortcuts;
             self.held.retain(|held| {
                 held.action.repeats()
-                    || button_for_action(held.action)
+                    || held.action == Action::Quit
+                    || held
+                        .button
                         .and_then(|button| hold_shortcuts[button.index()])
                         .is_some()
             });
@@ -272,61 +450,103 @@ impl Repeater {
     }
 
     /// A key went down. Returns the action to perform immediately.
-    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    #[cfg(test)]
     pub fn press(&mut self, action: Action, now: Instant) -> Option<Action> {
+        self.press_with_button(action, button_for_action(action), now)
+    }
+
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    pub fn press_with_button(
+        &mut self,
+        action: Action,
+        button: Option<HoldButton>,
+        now: Instant,
+    ) -> Option<Action> {
         // Every shortcut acts on the exact selection and screen where its
         // button went down. Any other input cancels every pending face-button
         // hold before that input can change the target.
-        for button in HoldButton::ALL {
-            let held_action = action_for_button(button);
-            if action != held_action && self.hold_action(held_action).is_some() {
-                self.held.retain(|held| held.action != held_action);
+        for candidate in HoldButton::ALL {
+            if button != Some(candidate) && self.hold_action(Some(candidate)).is_some() {
+                self.held.retain(|held| held.button != Some(candidate));
             }
         }
-        if self.hold_action(action).is_some() && self.held.iter().any(|held| held.action != action)
+        let hold_action = self.hold_action(button);
+        if hold_action.is_some()
+            && self
+                .held
+                .iter()
+                .any(|held| held.action != action || held.button != button)
         {
             // A direction already held can change the shortcut's scope.
             // Keep the ordinary menu action immediate in that case.
             return Some(action);
         }
-        if self.held.iter().any(|h| h.action == action) {
+        if self
+            .held
+            .iter()
+            .any(|held| held.action == action && held.button == button)
+        {
             return None;
         }
         let retained = action.repeats()
             || (self.horizontal_repeats && matches!(action, Action::Slower | Action::Faster))
-            || self.hold_action(action).is_some();
+            || hold_action.is_some()
+            || action == Action::Quit;
         if retained {
             self.held.push(Held {
                 action,
+                button,
                 pressed_at: now,
                 last_fired: now,
                 repeating: false,
             });
         }
-        if self.hold_action(action).is_some() {
+        if hold_action.is_some() || action == Action::Quit {
             None
         } else {
             Some(action)
         }
     }
 
-    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    #[cfg(test)]
     pub fn release(&mut self, action: Action, now: Instant) -> Option<Action> {
+        self.release_with_button(action, button_for_action(action), now)
+    }
+
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    pub fn release_with_button(
+        &mut self,
+        action: Action,
+        button: Option<HoldButton>,
+        now: Instant,
+    ) -> Option<Action> {
         let held = self
             .held
             .iter()
-            .position(|held| held.action == action)
+            .position(|held| held.action == action && held.button == button)
             .map(|at| self.held.remove(at));
         let held = held?;
-        if let Some(shortcut) = self.hold_action(action).filter(|_| !held.repeating) {
+        if let Some(shortcut) = self.hold_action(held.button).filter(|_| !held.repeating) {
             if now.duration_since(held.pressed_at) >= SHORTCUT_HOLD {
                 Some(shortcut)
             } else {
                 Some(action)
             }
+        } else if action == Action::Quit && self.hold_action(held.button).is_none() {
+            Some(Action::Quit)
         } else {
             None
         }
+    }
+
+    /// A Back+direction INI chord consumes Back rather than navigating.
+    pub fn cancel(&mut self, action: Action) {
+        self.held.retain(|held| held.action != action);
+    }
+
+    /// A removed input device cannot deliver releases for its held keys.
+    pub fn clear_all(&mut self) {
+        self.held.clear();
     }
 
     /// Actions due because a key is still held.
@@ -334,7 +554,8 @@ impl Repeater {
     pub fn tick(&mut self, now: Instant) -> Vec<Action> {
         let mut due = Vec::new();
         for held in &mut self.held {
-            let shortcut = button_for_action(held.action)
+            let shortcut = held
+                .button
                 .and_then(|button| self.hold_shortcuts[button.index()])
                 .map(Action::HoldShortcut);
             if let Some(shortcut) = shortcut {
@@ -342,6 +563,11 @@ impl Repeater {
                     held.repeating = true;
                     due.push(shortcut);
                 }
+                continue;
+            }
+            if held.action == Action::Quit {
+                // Back alone acts on release so a following direction can
+                // form a chord. It is never a repeating navigation action.
                 continue;
             }
             let ready = if held.repeating {
@@ -361,15 +587,6 @@ impl Repeater {
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     pub fn anything_held(&self) -> bool {
         !self.held.is_empty()
-    }
-}
-
-fn action_for_button(button: HoldButton) -> Action {
-    match button {
-        HoldButton::A => Action::Accept,
-        HoldButton::B => Action::Quit,
-        HoldButton::X => Action::Context,
-        HoldButton::Y => Action::Menu,
     }
 }
 
@@ -438,6 +655,16 @@ pub enum KeyEdge {
     Up(Action),
 }
 
+/// A raw key transition and the device facts needed before controller-only
+/// mapping is applied.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct InputEdge {
+    pub edge: KeyEdge,
+    pub physical_button: Option<HoldButton>,
+    pub controller: bool,
+}
+
 /// The edge a Linux key event value means. 1 is a press and 0 a release;
 /// 2 is the kernel's own auto-repeat, ignored because Degauss times its
 /// own repeats.
@@ -461,7 +688,7 @@ pub fn key_edge(action: Action, value: i32) -> Option<KeyEdge> {
 /// them and leave the key held. Nothing is allocated unless both sides
 /// hold edges.
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
-pub fn merge_by_stamp(edges: &mut Vec<(KeyEdge, SystemTime)>, split: usize) {
+pub fn merge_by_stamp<T>(edges: &mut Vec<(T, SystemTime)>, split: usize) {
     if split == 0 || split == edges.len() {
         return;
     }
@@ -469,7 +696,7 @@ pub fn merge_by_stamp(edges: &mut Vec<(KeyEdge, SystemTime)>, split: usize) {
     let earlier = std::mem::replace(edges, Vec::with_capacity(split + later.len()));
     let mut earlier = earlier.into_iter().peekable();
     let mut later = later.into_iter().peekable();
-    while let (Some(&(_, before)), Some(&(_, after))) = (earlier.peek(), later.peek()) {
+    while let (Some((_, before)), Some((_, after))) = (earlier.peek(), later.peek()) {
         if after < before {
             edges.extend(later.next());
         } else {
@@ -486,6 +713,8 @@ pub const DUPLICATE_WINDOW: Duration = Duration::from_millis(40);
 
 /// One slot for every branch in [`Action::duplicate_slot`].
 const ACTION_SLOTS: usize = 14;
+/// No physical face button, followed by A, B, X and Y.
+const INPUT_IDENTITIES: usize = 5;
 
 #[derive(Debug, Clone, Copy)]
 struct Slot {
@@ -513,7 +742,7 @@ struct Slot {
 #[derive(Debug)]
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 pub struct DuplicateGuard {
-    slots: [Slot; ACTION_SLOTS],
+    slots: [Slot; ACTION_SLOTS * INPUT_IDENTITIES],
 }
 
 impl DuplicateGuard {
@@ -523,21 +752,25 @@ impl DuplicateGuard {
             slots: [Slot {
                 accepted_at: None,
                 duplicates_down: 0,
-            }; ACTION_SLOTS],
+            }; ACTION_SLOTS * INPUT_IDENTITIES],
         }
+    }
+
+    fn slot(action: Action, button: Option<HoldButton>) -> usize {
+        action.duplicate_slot() * INPUT_IDENTITIES + button.map_or(0, |button| button.index() + 1)
     }
 
     /// Filter one key edge read from a device, `at` being the time the
     /// kernel stamped on it. `None` means drop it.
     ///
     /// A press inside [`DUPLICATE_WINDOW`] of the last accepted press of the
-    /// same action is a duplicate: rejected, and its eventual release is
-    /// swallowed too, one release per rejected press, so a press delivered
-    /// three times still ends its hold on the last release. A press exactly
-    /// at the window's end is accepted. A different action is never
-    /// affected, an opposite direction included. An accepted press clears
-    /// any releases still owed, so a duplicate whose release never arrives
-    /// cannot swallow a later genuine release.
+    /// same action and physical face button is a duplicate: rejected, and its
+    /// eventual release is swallowed too, one release per rejected press, so
+    /// a press delivered three times still ends its hold on the last release.
+    /// A press exactly at the window's end is accepted. A different action or
+    /// physical button is never affected, an opposite direction included. An
+    /// accepted press clears any releases still owed, so a duplicate whose
+    /// release never arrives cannot swallow a later genuine release.
     ///
     /// The window reaches both ways from the accepted press. A poll merges
     /// what it drained by stamp, but a copy injected on one device just
@@ -546,10 +779,15 @@ impl DuplicateGuard {
     /// clock, which can step. A step larger than the window lets one press
     /// through and the next accepted press re-anchors.
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
-    pub fn admit(&mut self, edge: KeyEdge, at: SystemTime) -> Option<KeyEdge> {
+    pub fn admit(
+        &mut self,
+        edge: KeyEdge,
+        button: Option<HoldButton>,
+        at: SystemTime,
+    ) -> Option<KeyEdge> {
         match edge {
             KeyEdge::Down(action) => {
-                let slot = &mut self.slots[action.duplicate_slot()];
+                let slot = &mut self.slots[Self::slot(action, button)];
                 if slot.accepted_at.is_some_and(|accepted| {
                     let apart = match at.duration_since(accepted) {
                         Ok(later) => later,
@@ -565,7 +803,7 @@ impl DuplicateGuard {
                 Some(edge)
             }
             KeyEdge::Up(action) => {
-                let slot = &mut self.slots[action.duplicate_slot()];
+                let slot = &mut self.slots[Self::slot(action, button)];
                 if slot.duplicates_down > 0 {
                     slot.duplicates_down -= 1;
                     return None;
@@ -584,12 +822,16 @@ pub use linux::{
 
 #[cfg(target_os = "linux")]
 mod linux {
+    use std::collections::BTreeMap;
+    use std::io::ErrorKind;
     use std::path::PathBuf;
-    use std::time::SystemTime;
+    use std::time::{Duration, Instant, SystemTime};
 
     use evdev::{Device, EventSummary};
 
-    use super::{action_for_key, key_edge, merge_by_stamp, KeyEdge};
+    use super::{
+        action_for_key, button_for_action, input_path_changes, key_edge, merge_by_stamp, InputEdge,
+    };
     use crate::error::{DegaussError, Result};
 
     /// What was opened, so Degauss can show whether it is actually
@@ -604,9 +846,14 @@ mod linux {
     }
 
     pub struct InputReader {
-        devices: Vec<(PathBuf, Device)>,
+        devices: Vec<(PathBuf, Device, bool)>,
         summaries: Vec<DeviceSummary>,
+        missing_scans: BTreeMap<PathBuf, u8>,
+        device_lost: bool,
+        last_scan: Instant,
     }
+
+    const INPUT_SCAN_INTERVAL: Duration = Duration::from_secs(1);
 
     impl InputReader {
         /// Open every keyboard-capable input device, without grabbing any.
@@ -630,18 +877,25 @@ mod linux {
                     .map_err(|e| DegaussError::io("setting input device non-blocking", &path, e))?;
 
                 let name = device.name().unwrap_or("unnamed").to_string();
+                let is_mister_virtual = name.contains("MiSTer virtual input");
                 summaries.push(DeviceSummary {
                     path: path.clone(),
                     // MiSTer names its translated-gamepad device this; unlike
                     // Main we deliberately keep it, because it is the only
                     // place controller input appears while a script runs.
-                    is_mister_virtual: name.contains("MiSTer virtual input"),
+                    is_mister_virtual,
                     name,
                 });
-                devices.push((path, device));
+                devices.push((path, device, is_mister_virtual));
             }
 
-            Ok(InputReader { devices, summaries })
+            Ok(InputReader {
+                devices,
+                summaries,
+                missing_scans: BTreeMap::new(),
+                device_lost: false,
+                last_scan: Instant::now(),
+            })
         }
 
         pub fn devices(&self) -> &[DeviceSummary] {
@@ -652,31 +906,133 @@ mod linux {
             self.summaries.iter().any(|d| d.is_mister_virtual)
         }
 
+        /// Reconcile direct keyboards that appeared or disappeared after
+        /// startup. MiSTer's gamepads continue to arrive through its existing
+        /// virtual input device, so this does not change controller mapping.
+        fn refresh_devices(&mut self) {
+            let mut discovered = Vec::new();
+            for (path, device) in evdev::enumerate() {
+                let useful = device
+                    .supported_keys()
+                    .is_some_and(|keys| keys.iter().any(|k| action_for_key(k.code()).is_some()));
+                if useful {
+                    discovered.push((path, device));
+                }
+            }
+
+            let existing_paths = self
+                .devices
+                .iter()
+                .map(|(path, _, _)| path.clone())
+                .collect::<Vec<_>>();
+            let discovered_paths = discovered
+                .iter()
+                .map(|(path, _)| path.clone())
+                .collect::<Vec<_>>();
+            let (added, removed) =
+                input_path_changes(&existing_paths, &discovered_paths, &mut self.missing_scans);
+
+            for path in &removed {
+                crate::note(&format!("input        disconnected {}", path.display()));
+            }
+            self.device_lost |= !removed.is_empty();
+            self.devices.retain(|(path, _, _)| !removed.contains(path));
+            self.summaries
+                .retain(|summary| !removed.contains(&summary.path));
+
+            for (path, device) in discovered {
+                if !added.contains(&path) {
+                    continue;
+                }
+                if let Err(error) = device.set_nonblocking(true) {
+                    crate::note(&format!(
+                        "input        {} could not be opened non-blocking: {error}",
+                        path.display()
+                    ));
+                    continue;
+                }
+
+                let name = device.name().unwrap_or("unnamed").to_string();
+                let is_mister_virtual = name.contains("MiSTer virtual input");
+                let summary = DeviceSummary {
+                    path: path.clone(),
+                    is_mister_virtual,
+                    name,
+                };
+                crate::note(&format!(
+                    "input        connected {} {}",
+                    path.display(),
+                    summary.name
+                ));
+                self.summaries.push(summary);
+                self.devices.push((path, device, is_mister_virtual));
+            }
+        }
+
         /// Drain whatever is waiting, each edge with the time the kernel
         /// stamped on its event, in stamp order. Never blocks.
-        pub fn poll(&mut self) -> Vec<(KeyEdge, SystemTime)> {
+        pub fn poll(&mut self) -> Vec<(InputEdge, SystemTime)> {
+            let now = Instant::now();
+            if now.duration_since(self.last_scan) >= INPUT_SCAN_INTERVAL {
+                self.refresh_devices();
+                self.last_scan = now;
+            }
+
             let mut edges = Vec::new();
-            for (_, device) in &mut self.devices {
+            let mut disconnected = Vec::new();
+            for (path, device, is_mister_virtual) in &mut self.devices {
                 let events = match device.fetch_events() {
                     Ok(events) => events,
-                    // WouldBlock simply means nothing is waiting.
-                    Err(_) => continue,
+                    // WouldBlock simply means nothing is waiting. Any other
+                    // error means this descriptor is no longer usable; drop
+                    // it so the next scan can reopen a reconnected device.
+                    Err(error) if error.kind() == ErrorKind::WouldBlock => continue,
+                    Err(error) => {
+                        crate::note(&format!(
+                            "input        {} stopped responding: {error}",
+                            path.display()
+                        ));
+                        disconnected.push(path.clone());
+                        continue;
+                    }
                 };
                 let drained = edges.len();
                 for event in events {
                     let at = event.timestamp();
                     if let EventSummary::Key(_, code, value) = event.destructure() {
-                        let Some(action) = action_for_key(code.code()) else {
+                        let Some(unmapped) = action_for_key(code.code()) else {
                             continue;
                         };
-                        if let Some(edge) = key_edge(action, value) {
-                            edges.push((edge, at));
+                        let physical_button = button_for_action(unmapped);
+                        if let Some(edge) = key_edge(unmapped, value) {
+                            edges.push((
+                                InputEdge {
+                                    edge,
+                                    physical_button,
+                                    controller: *is_mister_virtual,
+                                },
+                                at,
+                            ));
                         }
                     }
                 }
                 merge_by_stamp(&mut edges, drained);
             }
+            if !disconnected.is_empty() {
+                self.device_lost = true;
+                self.devices
+                    .retain(|(path, _, _)| !disconnected.contains(path));
+                self.summaries
+                    .retain(|summary| !disconnected.contains(&summary.path));
+                for path in disconnected {
+                    self.missing_scans.remove(&path);
+                }
+            }
             edges
+        }
+
+        pub fn take_device_loss(&mut self) -> bool {
+            std::mem::take(&mut self.device_lost)
         }
     }
 
@@ -961,7 +1317,7 @@ mod elsewhere {
     use std::path::PathBuf;
     use std::time::SystemTime;
 
-    use super::KeyEdge;
+    use super::InputEdge;
     use crate::error::Result;
 
     #[derive(Debug, Clone)]
@@ -983,8 +1339,11 @@ mod elsewhere {
         pub fn has_mister_virtual(&self) -> bool {
             false
         }
-        pub fn poll(&mut self) -> Vec<(KeyEdge, SystemTime)> {
+        pub fn poll(&mut self) -> Vec<(InputEdge, SystemTime)> {
             Vec::new()
+        }
+        pub fn take_device_loss(&mut self) -> bool {
+            false
         }
     }
 
@@ -1017,6 +1376,51 @@ mod elsewhere {
 mod tests {
     use super::*;
 
+    #[test]
+    fn input_device_reconciliation_adds_and_removes_each_path_once() {
+        let existing = [
+            PathBuf::from("/dev/input/event0"),
+            PathBuf::from("/dev/input/event2"),
+        ];
+        let discovered = [
+            PathBuf::from("/dev/input/event0"),
+            PathBuf::from("/dev/input/event1"),
+            PathBuf::from("/dev/input/event1"),
+        ];
+
+        let mut missing_scans = BTreeMap::new();
+        let (added, removed) = input_path_changes(&existing, &discovered, &mut missing_scans);
+
+        assert_eq!(added, [PathBuf::from("/dev/input/event1")]);
+        assert!(removed.is_empty());
+
+        let existing = [
+            PathBuf::from("/dev/input/event0"),
+            PathBuf::from("/dev/input/event1"),
+            PathBuf::from("/dev/input/event2"),
+        ];
+        let (added, removed) = input_path_changes(&existing, &discovered, &mut missing_scans);
+        assert!(added.is_empty());
+        assert_eq!(removed, [PathBuf::from("/dev/input/event2")]);
+    }
+
+    #[test]
+    fn one_omitted_scan_does_not_drop_an_open_input_device() {
+        let path = PathBuf::from("/dev/input/event2");
+        let mut missing_scans = BTreeMap::new();
+
+        let (_, removed) = input_path_changes(std::slice::from_ref(&path), &[], &mut missing_scans);
+        assert!(removed.is_empty());
+        let (_, removed) = input_path_changes(
+            std::slice::from_ref(&path),
+            std::slice::from_ref(&path),
+            &mut missing_scans,
+        );
+        assert!(removed.is_empty());
+        let (_, removed) = input_path_changes(std::slice::from_ref(&path), &[], &mut missing_scans);
+        assert!(removed.is_empty());
+    }
+
     fn shortcuts(entries: &[(HoldButton, HoldShortcut)]) -> [Option<HoldShortcut>; 4] {
         let mut shortcuts = [None; 4];
         for (button, shortcut) in entries {
@@ -1026,14 +1430,234 @@ mod tests {
     }
 
     #[test]
+    fn controller_face_button_swaps_are_independent_and_keyboard_is_unchanged() {
+        let ab = ControllerMapping::new(true, false);
+        assert_eq!(device_action(ab, Action::Accept, true).0, Action::Quit);
+        assert_eq!(device_action(ab, Action::Quit, true).0, Action::Accept);
+        assert_eq!(device_action(ab, Action::Context, true).0, Action::Context);
+        assert_eq!(device_action(ab, Action::Accept, false).0, Action::Accept);
+
+        let xy = ControllerMapping::new(false, true);
+        assert_eq!(device_action(xy, Action::Context, true).0, Action::Menu);
+        assert_eq!(device_action(xy, Action::Menu, true).0, Action::Context);
+        assert_eq!(device_action(xy, Action::Quit, true).0, Action::Quit);
+
+        let both = ControllerMapping::new(true, true);
+        assert_eq!(device_action(both, Action::Accept, true).0, Action::Quit);
+        assert_eq!(device_action(both, Action::Menu, true).0, Action::Context);
+        assert_eq!(both.map_action(Action::Down), Action::Down);
+        assert_eq!(
+            ControllerMapping::default().map_action(Action::Menu),
+            Action::Menu
+        );
+    }
+
+    #[test]
+    fn controller_hints_swap_only_standalone_button_tokens() {
+        let mapping = ControllerMapping::new(true, true);
+        assert_eq!(
+            mapping.map_hint("A Open   B Back   X Actions   Y Menu"),
+            "B Open   A Back   Y Actions   X Menu"
+        );
+        assert_eq!(mapping.map_hint("B/X Actions"), "A/Y Actions");
+        assert_eq!(
+            mapping.map_hint("Arcade BOX XYLOPHONE"),
+            "Arcade BOX XYLOPHONE",
+            "ordinary words are not button tokens"
+        );
+        assert_eq!(
+            ControllerMapping::default().map_hint("A Open   B Back"),
+            "A Open   B Back"
+        );
+    }
+
+    #[test]
+    fn duplicate_guard_keeps_distinct_physical_buttons_independent() {
+        let mut guard = DuplicateGuard::new();
+        let at = SystemTime::UNIX_EPOCH;
+        let keyboard = Some(HoldButton::A);
+        let swapped_controller = Some(HoldButton::B);
+        assert_eq!(
+            guard.admit(KeyEdge::Down(Action::Accept), keyboard, at),
+            Some(KeyEdge::Down(Action::Accept))
+        );
+        assert_eq!(
+            guard.admit(
+                KeyEdge::Down(Action::Accept),
+                swapped_controller,
+                at + Duration::from_millis(5),
+            ),
+            Some(KeyEdge::Down(Action::Accept))
+        );
+        assert_eq!(
+            guard.admit(
+                KeyEdge::Up(Action::Accept),
+                keyboard,
+                at + Duration::from_millis(10),
+            ),
+            Some(KeyEdge::Up(Action::Accept))
+        );
+        assert_eq!(
+            guard.admit(
+                KeyEdge::Up(Action::Accept),
+                swapped_controller,
+                at + Duration::from_millis(15),
+            ),
+            Some(KeyEdge::Up(Action::Accept))
+        );
+    }
+
+    #[test]
+    fn duplicate_guard_filters_mixed_devices_before_controller_mapping() {
+        let mut guard = DuplicateGuard::new();
+        let mapping = ControllerMapping::new(true, false);
+        let at = SystemTime::UNIX_EPOCH;
+        let button = Some(HoldButton::A);
+
+        let controller_down = guard
+            .admit(KeyEdge::Down(Action::Accept), button, at)
+            .map(|edge| mapping.map_edge(edge));
+        assert_eq!(controller_down, Some(KeyEdge::Down(Action::Quit)));
+        assert_eq!(
+            guard.admit(
+                KeyEdge::Down(Action::Accept),
+                button,
+                at + Duration::from_millis(5),
+            ),
+            None,
+            "the keyboard copy is a duplicate of the same raw button action"
+        );
+        assert_eq!(
+            guard.admit(
+                KeyEdge::Up(Action::Accept),
+                button,
+                at + Duration::from_millis(10),
+            ),
+            None,
+            "the duplicate keyboard release is swallowed"
+        );
+        let controller_up = guard
+            .admit(
+                KeyEdge::Up(Action::Accept),
+                button,
+                at + Duration::from_millis(15),
+            )
+            .map(|edge| mapping.map_edge(edge));
+        assert_eq!(controller_up, Some(KeyEdge::Up(Action::Quit)));
+    }
+
+    #[test]
+    fn swapped_controller_actions_keep_hold_shortcuts_on_physical_buttons() {
+        let mapping = ControllerMapping::new(true, true);
+        let mut repeater = Repeater::new(RepeatConfig::default());
+        repeater.set_hold_shortcuts(shortcuts(&[
+            (HoldButton::A, HoldShortcut::CycleView),
+            (HoldButton::X, HoldShortcut::GameInformation),
+        ]));
+        let now = Instant::now();
+
+        let (action, button) = device_action(mapping, Action::Accept, true);
+        assert_eq!((action, button), (Action::Quit, Some(HoldButton::A)));
+        assert_eq!(repeater.press_with_button(action, button, now), None);
+        assert_eq!(
+            repeater.tick(now + SHORTCUT_HOLD),
+            vec![Action::HoldShortcut(HoldShortcut::CycleView)]
+        );
+        assert_eq!(
+            repeater.release_with_button(action, button, now + SHORTCUT_HOLD),
+            None
+        );
+
+        let (action, button) = device_action(mapping, Action::Context, true);
+        assert_eq!((action, button), (Action::Menu, Some(HoldButton::X)));
+        assert_eq!(
+            repeater.press_with_button(action, button, now + Duration::from_secs(2)),
+            None
+        );
+        assert_eq!(
+            repeater.tick(now + Duration::from_secs(3)),
+            vec![Action::HoldShortcut(HoldShortcut::GameInformation)]
+        );
+    }
+
+    #[test]
     fn a_face_button_stays_immediate_without_an_available_hold_action() {
-        for action in [Action::Accept, Action::Quit, Action::Context, Action::Menu] {
+        for action in [Action::Accept, Action::Context, Action::Menu] {
             let mut repeater = Repeater::new(RepeatConfig::default());
             let now = Instant::now();
             assert_eq!(repeater.press(action, now), Some(action));
             assert!(repeater.tick(now + SHORTCUT_HOLD).is_empty());
             assert_eq!(repeater.release(action, now + SHORTCUT_HOLD), None);
         }
+    }
+
+    #[test]
+    fn back_alone_waits_for_release_but_its_hold_shortcut_still_fires() {
+        let now = Instant::now();
+        let mut ordinary = Repeater::new(RepeatConfig::default());
+        assert_eq!(ordinary.press(Action::Quit, now), None);
+        assert!(ordinary.tick(now + SHORTCUT_HOLD).is_empty());
+        assert_eq!(
+            ordinary.release(Action::Quit, now + SHORTCUT_HOLD),
+            Some(Action::Quit)
+        );
+
+        let mut held = Repeater::new(RepeatConfig::default());
+        held.set_hold_shortcuts(shortcuts(&[(HoldButton::B, HoldShortcut::RandomGame)]));
+        assert_eq!(held.press(Action::Quit, now), None);
+        assert_eq!(
+            held.tick(now + SHORTCUT_HOLD),
+            [Action::HoldShortcut(HoldShortcut::RandomGame)]
+        );
+        assert_eq!(held.release(Action::Quit, now + SHORTCUT_HOLD), None);
+    }
+
+    #[test]
+    fn back_direction_chords_map_to_main_slots_and_consume_back() {
+        for (direction, slot) in [
+            (Action::Faster, 0),
+            (Action::Slower, 1),
+            (Action::Up, 2),
+            (Action::Down, 3),
+        ] {
+            let mut chord = IniChord::default();
+            assert_eq!(
+                chord.intercept(KeyEdge::Down(Action::Quit)),
+                IniChordResult::Forward
+            );
+            assert_eq!(
+                chord.intercept(KeyEdge::Down(direction)),
+                IniChordResult::Switch(slot)
+            );
+            assert_eq!(
+                chord.intercept(KeyEdge::Down(direction)),
+                IniChordResult::Consume
+            );
+            assert_eq!(
+                chord.intercept(KeyEdge::Up(Action::Quit)),
+                IniChordResult::Consume
+            );
+            assert_eq!(
+                chord.intercept(KeyEdge::Down(direction)),
+                IniChordResult::Forward
+            );
+        }
+    }
+
+    #[test]
+    fn losing_the_keyboard_cancels_a_partly_held_ini_chord() {
+        let mut chord = IniChord::default();
+        assert_eq!(
+            chord.intercept(KeyEdge::Down(Action::Quit)),
+            IniChordResult::Forward
+        );
+
+        chord.reset_for_device_loss();
+
+        assert_eq!(
+            chord.intercept(KeyEdge::Down(Action::Up)),
+            IniChordResult::Forward
+        );
     }
 
     #[test]
@@ -1090,6 +1714,23 @@ mod tests {
         repeater.set_hold_context(11);
         assert!(repeater.tick(now + SHORTCUT_HOLD).is_empty());
         assert_eq!(repeater.release(Action::Context, now + SHORTCUT_HOLD), None);
+    }
+
+    #[test]
+    fn changing_the_browse_target_keeps_ordinary_back_pending() {
+        let mut repeater = Repeater::new(RepeatConfig::default());
+        let now = Instant::now();
+        repeater.set_hold_context(10);
+        assert_eq!(repeater.press(Action::Down, now), Some(Action::Down));
+        assert_eq!(
+            repeater.press(Action::Quit, now + Duration::from_millis(10)),
+            None
+        );
+        repeater.set_hold_context(11);
+        assert_eq!(
+            repeater.release(Action::Quit, now + Duration::from_millis(20)),
+            Some(Action::Quit)
+        );
     }
 
     #[test]
@@ -1380,6 +2021,17 @@ mod tests {
     }
 
     #[test]
+    fn losing_an_input_device_stops_every_held_repeat() {
+        let mut repeater = Repeater::new(RepeatConfig::default());
+        let t0 = Instant::now();
+        repeater.press(Action::Down, t0);
+        repeater.clear_all();
+
+        assert!(repeater.tick(t0 + Duration::from_secs(5)).is_empty());
+        assert!(!repeater.anything_held());
+    }
+
+    #[test]
     fn x_stays_immediate_without_an_available_shortcut() {
         // Off is the upgrade default. A user who never enables the setting
         // must keep the exact press-time contextual-menu behaviour.
@@ -1627,8 +2279,11 @@ mod tests {
             }
             let mut dispatched = Vec::new();
             for (edge, at) in edges {
+                let physical_button = match edge {
+                    KeyEdge::Down(action) | KeyEdge::Up(action) => button_for_action(action),
+                };
                 let edge = match &mut self.guard {
-                    Some(guard) => match guard.admit(edge, at) {
+                    Some(guard) => match guard.admit(edge, physical_button, at) {
                         Some(edge) => edge,
                         None => continue,
                     },
@@ -1929,12 +2584,8 @@ mod tests {
     #[test]
     fn a_different_action_inside_the_window_is_immediate() {
         // The guard is per action. A reversal of direction, a speed change
-        // either way, or launching then backing out must never wait.
-        for (first, second) in [
-            (Action::Down, Action::Up),
-            (Action::Slower, Action::Faster),
-            (Action::Accept, Action::Quit),
-        ] {
+        // either way must never wait.
+        for (first, second) in [(Action::Down, Action::Up), (Action::Slower, Action::Faster)] {
             let mut guarded = Pipeline::guarded(Repeater::new(RepeatConfig::default()));
             assert_eq!(
                 guarded.feed(&[(KeyEdge::Down(first), 0), (KeyEdge::Down(second), 2)]),
@@ -1947,6 +2598,26 @@ mod tests {
             );
             assert!(!guarded.repeater.anything_held());
         }
+    }
+
+    #[test]
+    fn launching_then_backing_out_keeps_both_actions() {
+        let mut guarded = Pipeline::guarded(Repeater::new(RepeatConfig::default()));
+        assert_eq!(
+            guarded.feed(&[
+                (KeyEdge::Down(Action::Accept), 0),
+                (KeyEdge::Down(Action::Quit), 2)
+            ]),
+            vec![Action::Accept],
+            "Back waits for a possible INI chord"
+        );
+        assert_eq!(
+            guarded.feed(&[
+                (KeyEdge::Up(Action::Accept), 4),
+                (KeyEdge::Up(Action::Quit), 6)
+            ]),
+            vec![Action::Quit],
+        );
     }
 
     #[test]

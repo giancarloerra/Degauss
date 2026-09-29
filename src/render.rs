@@ -445,6 +445,7 @@ mod tests {
     #[test]
     fn the_software_renderer_writes_the_bytes_each_framebuffer_format_expects() {
         let window = install_platform(RepaintBufferType::ReusedBuffer).expect("platform installs");
+        crate::font_packs::register().expect("optional text sizes register");
         let ui = crate::DegaussWindow::new().expect("component builds");
         ui.show().expect("shown");
 

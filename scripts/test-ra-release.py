@@ -50,6 +50,36 @@ class ReleaseTests(unittest.TestCase):
         actual = hashlib.sha256((menu_dir / 'menu.rbf').read_bytes()).hexdigest()
         self.assertEqual(actual, expected)
 
+    def test_degauss_menu_native_framebuffer_window_uses_inclusive_bounds(self):
+        patch = (ROOT / 'support/menu-core/degauss-menu-0.9.1.patch').read_text()
+        self.assertIn("+\t.hdisp(12'd1058),", patch)
+        self.assertIn("+\t.hmax(12'd1057),", patch)
+        self.assertIn("+\t.vdisp(menu_pal ? 12'd288 : 12'd240),", patch)
+        self.assertIn("+\t.vmax(menu_pal ? 12'd287 : 12'd239),", patch)
+        self.assertNotIn("+\t.hmax(12'd1058),", patch)
+        self.assertNotIn("+\t.vmax(menu_pal ? 12'd300 : 12'd240),", patch)
+
+    def test_degauss_menu_arbiter_holds_each_read_until_its_burst_completes(self):
+        patch = (ROOT / 'support/menu-core/degauss-menu-0.9.1.patch').read_text()
+        self.assertIn('+localparam [2:0] RAM_MENU_READ', patch)
+        self.assertIn('+localparam [2:0] RAM_NATIVE_READ', patch)
+        self.assertIn('+reg [7:0] ram_reads_remaining = 0;', patch)
+        self.assertIn('+assign menu_ram_readdatavalid = ram_readdatavalid &', patch)
+        self.assertIn('+assign native_fb_readdatavalid = ram_readdatavalid &', patch)
+        self.assertIn('+\t.avl_readdatavalid(native_fb_readdatavalid),', patch)
+        self.assertIn('+\t.DDRAM_DOUT_READY(menu_ram_readdatavalid),', patch)
+        self.assertIn('+set_global_assignment -name SEED 5', patch)
+        source = (ROOT / 'support/menu-core/Degauss_Menu.SOURCE.txt').read_text()
+        self.assertIn('Quartus fitter seed: 5', source)
+
+    def test_ra_preset_load_failure_restores_the_previous_video_state(self):
+        patch = (ROOT / 'support/ra-main/frontend.patch').read_text()
+        self.assertIn('+bool video_loadPreset(char *name, bool save)', patch)
+        self.assertIn('+\tif (!video_loadPreset(path, false))', patch)
+        self.assertIn('+\t\tdegauss_restore_preset_baseline(true);', patch)
+        self.assertIn('+\t\tsnprintf(error, error_size, "Preset could not be opened");', patch)
+        self.assertIn('+\t\treturn false;', patch)
+
     def test_workflow_rejects_upstream_ra_at_any_card_path(self):
         workflow = (ROOT / '.github/workflows/release.yml').read_text()
         start = workflow.index('          import posixpath\n')

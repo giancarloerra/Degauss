@@ -18,3 +18,6 @@ favorite = "#fe2e1d"
 # Uncomment this line to draw the Degauss wordmark as a flat colour.
 # Leave it commented to retain the original three-colour wordmark.
 # logo = "#ffcd09"
+
+# Optional list and menu text size: smaller, small, default, large or larger.
+# text_size = "default"

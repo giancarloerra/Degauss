@@ -42,6 +42,7 @@ fn built_in(system: &str) -> Option<u32> {
         "CasioPV1000" => 74,
         "CDI" => 133,
         "ChannelF" => 80,
+        "ColecoAdam" => 89,
         "ColecoVision" => 48,
         "C16" => 99,
         "C64" => 66,
@@ -135,6 +136,7 @@ mod tests {
         assert_eq!(id_for("NeoGeoMVS", &none), Some(142));
         assert_eq!(id_for("Lynx48", &none), Some(88));
         assert_eq!(id_for("AliceMC10", &none), Some(311));
+        assert_eq!(id_for("ColecoAdam", &none), Some(89));
     }
 
     #[test]

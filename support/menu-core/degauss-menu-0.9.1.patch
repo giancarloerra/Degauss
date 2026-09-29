@@ -1,0 +1,572 @@
+diff --git a/menu.qsf b/menu.qsf
+index 577fcc3..66bce68 100644
+--- a/menu.qsf
++++ b/menu.qsf
+@@ -15,11 +15,11 @@ set_global_assignment -name PARTITION_NETLIST_TYPE SOURCE -section_id Top
+ set_global_assignment -name PARTITION_FITTER_PRESERVATION_LEVEL PLACEMENT_AND_ROUTING -section_id Top
+ set_global_assignment -name PARTITION_COLOR 16764057 -section_id Top
+ 
+-set_global_assignment -name LAST_QUARTUS_VERSION "17.0.2 Standard Edition"
++set_global_assignment -name LAST_QUARTUS_VERSION "17.0.2 Lite Edition"
+ 
+ set_global_assignment -name GENERATE_RBF_FILE ON
+ set_global_assignment -name PROJECT_OUTPUT_DIRECTORY output_files
+-set_global_assignment -name NUM_PARALLEL_PROCESSORS ALL
++set_global_assignment -name NUM_PARALLEL_PROCESSORS 1
+ set_global_assignment -name SAVE_DISK_SPACE OFF
+ set_global_assignment -name SMART_RECOMPILE ON
+ set_global_assignment -name MIN_CORE_JUNCTION_TEMP "-40"
+@@ -54,7 +54,7 @@ set_global_assignment -name ALM_REGISTER_PACKING_EFFORT LOW
+ set_global_assignment -name OPTIMIZE_POWER_DURING_SYNTHESIS OFF
+ set_global_assignment -name ROUTER_REGISTER_DUPLICATION ON
+ set_global_assignment -name FITTER_AGGRESSIVE_ROUTABILITY_OPTIMIZATION ALWAYS
+-set_global_assignment -name SEED 1
++set_global_assignment -name SEED 5
+ 
+ source sys/sys.tcl
+ source sys/sys_analog.tcl
+diff --git a/menu.sv b/menu.sv
+index 7ac4c3b..9f5b047 100644
+--- a/menu.sv
++++ b/menu.sv
+@@ -22,7 +22,8 @@
+ 
+ module emu
+ (
+-	`include "sys/emu_ports.vh"
++	`include "sys/emu_ports.vh",
++	output MENU_PAL
+ );
+ 
+ assign ADC_BUS  = 'Z;
+@@ -325,7 +326,8 @@ end
+ 
+ localparam lfsr_n = 63;
+ 
+-wire PAL = status[4];
++wire PAL = status[4];
++assign MENU_PAL = PAL;
+ wire FB  = status[5];
+ wire [2:0] led = status[8:6];
+ 
+diff --git a/sys/sys_top.v b/sys/sys_top.v
+index a416879..1ba5e80 100644
+--- a/sys/sys_top.v
++++ b/sys/sys_top.v
+@@ -326,6 +326,14 @@ wire[12:0] ARX, ARY;
+ reg [11:0] VSET = 0, HSET = 0;
+ reg        FREESCALE = 0;
+ reg  [2:0] scaler_flt;
++reg        fb_shadowmask_enable = 0;
++reg        gamma_en = 0;
++reg        gamma_wr = 0;
++reg  [9:0] gamma_wr_addr;
++reg  [7:0] gamma_value;
++reg  [1:0] gamma_channel = 0;
++wire [21:0] gamma_bus;
++assign gamma_bus[20:0] = {clk_sys, gamma_en, gamma_wr, gamma_wr_addr, gamma_value};
+ reg        lowlat = 0;
+ reg        cfg_done = 0;
+ 
+@@ -361,6 +369,7 @@ always@(posedge clk_sys) begin
+ 	reg  [1:0] sl_r;
+ 
+ 	coef_wr <= 0;
++	gamma_wr <= 0;
+ 	sl_r <= FB_EN ? 2'b00 : scanlines;
+ 
+ `ifndef MISTER_DEBUG_NOHDMI
+@@ -402,6 +411,10 @@ always@(posedge clk_sys) begin
+ 			if(io_din[7:0] == 'h2B) io_dout_sys <= {fb_en, sl_r, 4'b0111};
+ `endif
+ 			if(io_din[7:0] == 'h2F) io_dout_sys <= 1;
++`ifndef MISTER_DEBUG_NOHDMI
++			if(io_din[7:0] == 'h32) io_dout_sys <= gamma_bus[21];
++`endif
++			if(io_din[7:0] == 'h33) gamma_channel <= 0;
+ 			if(io_din[7:0] == 'h3E) io_dout_sys <= 1;
+ `ifndef MISTER_DEBUG_NOHDMI
+ 			if(io_din[7:0] == 'h40) io_dout_sys <= fb_crc;
+@@ -450,7 +463,7 @@ always@(posedge clk_sys) begin
+ 			end
+ 			if(cmd == 'h2F) begin
+ 				case(cnt[3:0])
+-					0: {LFB_EN,LFB_FLT,LFB_FMT} <= {io_din[15], io_din[14], io_din[5:0]};
++					0: {LFB_EN,LFB_FLT,LFB_NATIVE,LFB_FMT} <= {io_din[15], io_din[14], io_din[13], io_din[5:0]};
+ 					1: LFB_BASE[15:0]  <= io_din[15:0];
+ 					2: LFB_BASE[31:16] <= io_din[15:0];
+ 					3: LFB_WIDTH       <= io_din[11:0];
+@@ -470,6 +483,13 @@ always@(posedge clk_sys) begin
+ 				else coef_addr <= io_din[11:0];
+ 			end
+ 			if(cmd == 'h2B) scaler_flt <= io_din[2:0];
++			if(cmd == 'h32) gamma_en <= io_din[0];
++			if(cmd == 'h33) begin
++				gamma_wr <= 1;
++				gamma_wr_addr <= {gamma_channel, io_din[15:8]};
++				gamma_value <= io_din[7:0];
++				gamma_channel <= gamma_channel == 2 ? 0 : gamma_channel + 1'd1;
++			end
+ 			if(cmd == 'h37) {FREESCALE,HSET} <= {io_din[15],io_din[11:0]};
+ 			if(cmd == 'h38) vs_line <= io_din[11:0];
+ 			if(cmd == 'h39) begin
+@@ -500,7 +520,10 @@ always@(posedge clk_sys) begin
+ 				endcase
+ 			end
+ `ifndef MISTER_DEBUG_NOHDMI
+-			if(cmd == 'h3E) {shadowmask_wr,shadowmask_data} <= {1'b1, io_din};
++			if(cmd == 'h3E) begin
++				{shadowmask_wr,shadowmask_data} <= {1'b1, io_din};
++				if(cnt == 0 && io_din[15:13] == 0) fb_shadowmask_enable <= io_din[4];
++			end
+ 			if(cmd == 'h40) begin
+ 				case(cnt[3:0])
+ 					0: io_dout_sys <= {arxy, arx};
+@@ -702,6 +725,94 @@ wire         vbuf_read;
+ wire [127:0] vbuf_writedata;
+ wire  [15:0] vbuf_byteenable;
+ wire         vbuf_write;
++wire         menu_pal;
++
++// The Menu's ordinary DDR clearing writer and the native framebuffer reader
++// share the 64-bit port. Framebuffer reads take priority; clearing continues
++// in the gaps, including while Degauss is on screen.
++wire [28:0] menu_ram_address;
++wire  [7:0] menu_ram_burstcount;
++wire  [7:0] menu_ram_byteenable;
++wire [63:0] menu_ram_writedata;
++wire         menu_ram_read, menu_ram_write, menu_ram_waitrequest;
++wire [28:0] native_fb_address;
++wire  [7:0] native_fb_burstcount;
++wire         native_fb_read, native_fb_waitrequest;
++wire         native_fb_write;
++wire [63:0] native_fb_writedata;
++wire  [7:0] native_fb_byteenable;
++wire         native_fb_active = LFB_EN & LFB_NATIVE & ~vga_scaler;
++wire         menu_ram_readdatavalid;
++wire         native_fb_readdatavalid;
++
++localparam [2:0] RAM_IDLE           = 3'd0;
++localparam [2:0] RAM_MENU_REQUEST   = 3'd1;
++localparam [2:0] RAM_MENU_READ      = 3'd2;
++localparam [2:0] RAM_NATIVE_REQUEST = 3'd3;
++localparam [2:0] RAM_NATIVE_READ    = 3'd4;
++reg [2:0] ram_owner = RAM_IDLE;
++reg [7:0] ram_reads_remaining = 0;
++
++wire ram_menu_selected = ram_owner == RAM_MENU_REQUEST;
++wire ram_native_selected = ram_owner == RAM_NATIVE_REQUEST;
++
++assign ram_address = ram_native_selected ? native_fb_address : menu_ram_address;
++assign ram_burstcount = ram_native_selected ? native_fb_burstcount : menu_ram_burstcount;
++assign ram_byteenable = ram_native_selected ? native_fb_byteenable : menu_ram_byteenable;
++assign ram_writedata = menu_ram_writedata;
++assign ram_read = ram_native_selected ? native_fb_read :
++                  ram_menu_selected ? menu_ram_read : 1'b0;
++assign ram_write = ram_menu_selected & menu_ram_write;
++assign menu_ram_waitrequest = ram_waitrequest | ~ram_menu_selected;
++assign native_fb_waitrequest = ram_waitrequest | ~ram_native_selected;
++assign menu_ram_readdatavalid = ram_readdatavalid & (ram_owner == RAM_MENU_READ);
++assign native_fb_readdatavalid = ram_readdatavalid & (ram_owner == RAM_NATIVE_READ);
++
++always @(posedge ram_clk) begin
++	if(reset) begin
++		ram_owner <= RAM_IDLE;
++		ram_reads_remaining <= 0;
++	end
++	else begin
++		case(ram_owner)
++			RAM_IDLE: begin
++				if(native_fb_active && native_fb_read) ram_owner <= RAM_NATIVE_REQUEST;
++				else if(menu_ram_read || menu_ram_write) ram_owner <= RAM_MENU_REQUEST;
++			end
++
++			RAM_MENU_REQUEST: begin
++				if(!(menu_ram_read || menu_ram_write)) ram_owner <= RAM_IDLE;
++				else if(!ram_waitrequest) begin
++					if(menu_ram_read) begin
++						ram_reads_remaining <= menu_ram_burstcount;
++						ram_owner <= RAM_MENU_READ;
++					end
++					else ram_owner <= RAM_IDLE;
++				end
++			end
++
++			RAM_MENU_READ: if(ram_readdatavalid) begin
++				if(ram_reads_remaining <= 1) ram_owner <= RAM_IDLE;
++				else ram_reads_remaining <= ram_reads_remaining - 1'd1;
++			end
++
++			RAM_NATIVE_REQUEST: begin
++				if(!native_fb_active || !native_fb_read) ram_owner <= RAM_IDLE;
++				else if(!ram_waitrequest) begin
++					ram_reads_remaining <= native_fb_burstcount;
++					ram_owner <= RAM_NATIVE_READ;
++				end
++			end
++
++			RAM_NATIVE_READ: if(ram_readdatavalid) begin
++				if(ram_reads_remaining <= 1) ram_owner <= RAM_IDLE;
++				else ram_reads_remaining <= ram_reads_remaining - 1'd1;
++			end
++
++			default: ram_owner <= RAM_IDLE;
++		endcase
++	end
++end
+ 
+ wire  [23:0] hdmi_data;
+ wire         hdmi_vs, hdmi_hs, hdmi_de, hdmi_vbl, hdmi_brd;
+@@ -830,8 +941,72 @@ wire         bob_deint;
+ 	);
+ `endif
+ 
++// A second hardware reader presents the same Linux framebuffer at native
++// Menu timing. HDMI retains the existing scaler and its independent mode.
++wire [23:0] native_fb_rgb;
++wire native_fb_hs, native_fb_vs, native_fb_de;
++ascal #(
++	.RAMBASE(32'h20000000),
++	.PALETTE("false"),
++	.PALETTE2("false"),
++	.ADAPTIVE("false"),
++	.N_DW(64),
++	.N_AW(29)
++) native_fb_scaler (
++	.reset_na(~reset_req),
++	.run(native_fb_active),
++	.freeze(1'b1),
++	.i_clk(clk_vid),
++	.i_ce(1'b0),
++	.i_r(8'd0), .i_g(8'd0), .i_b(8'd0),
++	.i_hs(1'b0), .i_vs(1'b0), .i_fl(1'b0), .i_de(1'b0),
++	.iauto(1'b0),
++	.o_clk(clk_vid),
++	.o_ce(1'b1),
++	.o_r(native_fb_rgb[23:16]),
++	.o_g(native_fb_rgb[15:8]),
++	.o_b(native_fb_rgb[7:0]),
++	.o_hs(native_fb_hs),
++	.o_vs(native_fb_vs),
++	.o_de(native_fb_de),
++	.o_fb_ena(native_fb_active),
++	.o_fb_hsize(FB_WIDTH),
++	.o_fb_vsize(FB_HEIGHT),
++	.o_fb_format(FB_FMT),
++	.o_fb_base(FB_BASE),
++	.o_fb_stride(FB_STRIDE),
++	.mode(5'd0),
++	.poly_clk(clk_sys),
++	.poly_a(coef_addr),
++	.poly_dw(coef_data),
++	.poly_wr(1'b0),
++	.htotal(12'd1276),
++	.hsstart(12'd1088),
++	.hsend(12'd1180),
++	.hdisp(12'd1058),
++	.hmin(12'd0),
++	.hmax(12'd1057),
++	.vtotal(menu_pal ? 12'd312 : 12'd262),
++	.vsstart(menu_pal ? 12'd304 : 12'd245),
++	.vsend(menu_pal ? 12'd308 : 12'd248),
++	.vdisp(menu_pal ? 12'd288 : 12'd240),
++	.vmin(12'd0),
++	.vmax(menu_pal ? 12'd287 : 12'd239),
++	.avl_clk(ram_clk),
++	.avl_waitrequest(native_fb_waitrequest),
++	.avl_readdata(ram_readdata),
++	.avl_readdatavalid(native_fb_readdatavalid),
++	.avl_burstcount(native_fb_burstcount),
++	.avl_writedata(native_fb_writedata),
++	.avl_address(native_fb_address),
++	.avl_write(native_fb_write),
++	.avl_read(native_fb_read),
++	.avl_byteenable(native_fb_byteenable)
++);
++
+ reg        LFB_EN     = 0;
+ reg        LFB_FLT    = 0;
++reg        LFB_NATIVE = 0;
+ reg  [5:0] LFB_FMT    = 0;
+ reg [11:0] LFB_WIDTH  = 0;
+ reg [11:0] LFB_HEIGHT = 0;
+@@ -1152,6 +1327,32 @@ cyclonev_hps_interface_peripheral_i2c hdmi_i2c
+ 
+ 	wire [23:0] hdmi_data_mask;
+ 	wire        hdmi_de_mask, hdmi_vs_mask, hdmi_hs_mask;
++	wire [23:0] hdmi_data_gamma;
++	wire        hdmi_de_gamma, hdmi_vs_gamma, hdmi_hs_gamma;
++	reg         hdmi_brd_gamma_0, hdmi_brd_gamma_1;
++	always @(posedge clk_hdmi) if (scaler_out) begin
++		hdmi_brd_gamma_0 <= hdmi_brd;
++		hdmi_brd_gamma_1 <= hdmi_brd_gamma_0;
++	end
++
++	gamma_fast HDMI_gamma
++	(
++		.clk_vid(clk_hdmi),
++		.ce_pix(scaler_out),
++		.gamma_bus(gamma_bus),
++		.HSync(hdmi_hs),
++		.VSync(hdmi_vs),
++		.HBlank(~hdmi_de),
++		.VBlank(~hdmi_de),
++		.DE(hdmi_de),
++		.RGB_in(hdmi_data),
++		.HSync_out(hdmi_hs_gamma),
++		.VSync_out(hdmi_vs_gamma),
++		.HBlank_out(),
++		.VBlank_out(),
++		.DE_out(hdmi_de_gamma),
++		.RGB_out(hdmi_data_gamma)
++	);
+ 
+ 	reg [15:0] shadowmask_data;
+ 	reg        shadowmask_wr = 0;
+@@ -1164,12 +1365,12 @@ cyclonev_hps_interface_peripheral_i2c hdmi_i2c
+ 		.cmd_wr(shadowmask_wr),
+ 		.cmd_in(shadowmask_data),
+ 
+-		.din(dis_output ? 24'd0 : hdmi_data),
+-		.hs_in(hdmi_hs),
+-		.vs_in(hdmi_vs),
+-		.de_in(hdmi_de),
+-		.brd_in(hdmi_brd),
+-		.enable(~LFB_EN),
++		.din(dis_output ? 24'd0 : hdmi_data_gamma),
++		.hs_in(hdmi_hs_gamma),
++		.vs_in(hdmi_vs_gamma),
++		.de_in(hdmi_de_gamma),
++		.brd_in(hdmi_brd_gamma_1),
++		.enable(~LFB_EN | fb_shadowmask_enable),
+ 
+ 		.dout(hdmi_data_mask),
+ 		.hs_out(hdmi_hs_mask),
+@@ -1318,6 +1519,18 @@ always @(posedge hdmi_tx_clk) begin
+ 	vs <= (~vga_fb & direct_video) ? hdmi_dv_vs   : hdmi_vs_osd;
+ 	de <= (~vga_fb & direct_video) ? hdmi_dv_de   : hdmi_de_osd;
+ 	d  <= (~vga_fb & direct_video) ? hdmi_dv_data : hdmi_data_osd;
++	// IO Direct carries the framebuffer Menu image over the HDMI pins.
++	// Route the existing Y/C-encoded scaler output there when Y/C is active.
++`ifndef MISTER_DUAL_SDRAM
++`ifndef MISTER_DISABLE_YC
++	if(vga_fb && direct_video && yc_en) begin
++		hs <= csync_en ? vgas_yc_cs : vgas_yc_hs;
++		vs <= vgas_yc_vs;
++		de <= vgas_yc_de;
++		d  <= vgas_yc_o;
++	end
++`endif
++`endif
+ `else
+ 	hs <= hdmi_dv_hs;
+ 	vs <= hdmi_dv_vs;
+@@ -1343,7 +1556,7 @@ assign HDMI_TX_D  = hdmi_out_d;
+ 	`ifndef MISTER_DEBUG_NOHDMI
+ 		cyclonev_clkselect vga_clk_sw
+ 		( 
+-			.clkselect({1'b1, ~vga_fb & ~vga_scaler}),
++			.clkselect({1'b1, native_fb_active | (~vga_fb & ~vga_scaler)}),
+ 			.inclk({clk_vid, hdmi_clk_out, 2'b00}),
+ 			.outclk(vga_tx_clk)
+ 		);
+@@ -1385,11 +1598,12 @@ scanlines #(0) VGA_scanlines
+ 	.clk(clk_vid),
+ 
+ 	.scanlines(scanlines),
+-	.din(de_emu ? {r_out, g_out, b_out} : 24'd0),
+-	.hs_in(hs_fix),
+-	.vs_in(vs_fix),
+-	.de_in(de_emu),
+-	.ce_in(ce_pix),
++	.din(native_fb_active ? (native_fb_de ? native_fb_rgb : 24'd0) :
++		(de_emu ? {r_out, g_out, b_out} : 24'd0)),
++	.hs_in(native_fb_active ? native_fb_hs : hs_fix),
++	.vs_in(native_fb_active ? native_fb_vs : vs_fix),
++	.de_in(native_fb_active ? native_fb_de : de_emu),
++	.ce_in(native_fb_active ? 1'b1 : ce_pix),
+ 
+ 	.dout(vga_data_sl),
+ 	.hs_out(vga_hs_sl),
+@@ -1489,6 +1703,42 @@ reg  [39:0] PhaseInc;
+ 		assign {vgas_o, vgas_hs, vgas_vs, vgas_cs, vgas_de} = 0;
+ 	`endif
+ 
++	`ifndef MISTER_DISABLE_YC
++		wire [23:0] vgas_yc_o;
++		wire vgas_yc_hs, vgas_yc_vs, vgas_yc_cs, vgas_yc_de;
++
++		yc_out yc_scaler_out
++		(
++			.clk(clk_hdmi),
++			.PAL_EN(pal_en),
++			.CVBS(cvbs),
++			.PHASE_INC(PhaseInc),
++			.COLORBURST_RANGE(ColorBurst_Range),
++			.hsync(vgas_hs),
++			.vsync(vgas_vs),
++			.csync(vgas_cs),
++			.de(vgas_de),
++			.dout(vgas_yc_o),
++			.din(vgas_o),
++			.hsync_o(vgas_yc_hs),
++			.vsync_o(vgas_yc_vs),
++			.csync_o(vgas_yc_cs),
++			.de_o(vgas_yc_de)
++		);
++
++		wire [23:0] vgas_out = yc_en ? vgas_yc_o : vgas_o;
++		wire vgas_hs_out = yc_en ? vgas_yc_hs : vgas_hs;
++		wire vgas_vs_out = yc_en ? vgas_yc_vs : vgas_vs;
++		wire vgas_cs_out = yc_en ? vgas_yc_cs : vgas_cs;
++		wire vgas_de_out = yc_en ? vgas_yc_de : vgas_de;
++	`else
++		wire [23:0] vgas_out = vgas_o;
++		wire vgas_hs_out = vgas_hs;
++		wire vgas_vs_out = vgas_vs;
++		wire vgas_cs_out = vgas_cs;
++		wire vgas_de_out = vgas_de;
++	`endif
++
+ 	wire [23:0] vga_o, vga_o_t;
+ 	wire vga_hs, vga_vs, vga_cs, vga_de, vga_hs_t, vga_vs_t, vga_cs_t, vga_de_t;
+ 	vga_out vga_out
+@@ -1513,20 +1763,20 @@ reg  [39:0] PhaseInc;
+ 		assign {vga_o, vga_hs, vga_vs, vga_cs, vga_de } =  {vga_o_t, vga_hs_t, vga_vs_t, vga_cs_t, vga_de_t } ;
+ 	`endif
+ 
+-	wire vgas_en = vga_fb | vga_scaler;
++	wire vgas_en = (vga_fb | vga_scaler) & ~native_fb_active;
+ 
+-	wire cs1 = vgas_en ? vgas_cs : vga_cs;
+-	wire de1 = vgas_en ? vgas_de : vga_de;
++	wire cs1 = vgas_en ? vgas_cs_out : vga_cs;
++	wire de1 = vgas_en ? vgas_de_out : vga_de;
+ 
+-	assign VGA_VS = av_dis ? 1'bZ      :(((vgas_en ? (~vgas_vs ^ VS[12])                         : VGA_DISABLE ? 1'd1 : ~vga_vs) | csync_en) & subcarrier_out);
+-	assign VGA_HS = av_dis ? 1'bZ      :  (vgas_en ? ((csync_en ? ~vgas_cs : ~vgas_hs) ^ HS[12]) : VGA_DISABLE ? 1'd1 : (csync_en ? ~vga_cs : ~vga_hs));
+-	assign VGA_R  = av_dis ? 6'bZZZZZZ :   vgas_en ? vgas_o[23:18]                               : VGA_DISABLE ? 6'd0 : vga_o[23:18];
+-	assign VGA_G  = av_dis ? 6'bZZZZZZ :   vgas_en ? vgas_o[15:10]                               : VGA_DISABLE ? 6'd0 : vga_o[15:10];
+-	assign VGA_B  = av_dis ? 6'bZZZZZZ :   vgas_en ? vgas_o[7:2]                                 : VGA_DISABLE ? 6'd0 : vga_o[7:2]  ;
++	assign VGA_VS = av_dis ? 1'bZ      :(((vgas_en ? (~vgas_vs_out ^ VS[12])                                 : VGA_DISABLE ? 1'd1 : ~vga_vs) | csync_en) & subcarrier_out);
++	assign VGA_HS = av_dis ? 1'bZ      :  (vgas_en ? ((csync_en ? ~vgas_cs_out : ~vgas_hs_out) ^ HS[12])     : VGA_DISABLE ? 1'd1 : (csync_en ? ~vga_cs : ~vga_hs));
++	assign VGA_R  = av_dis ? 6'bZZZZZZ :   vgas_en ? vgas_out[23:18]                                           : VGA_DISABLE ? 6'd0 : vga_o[23:18];
++	assign VGA_G  = av_dis ? 6'bZZZZZZ :   vgas_en ? vgas_out[15:10]                                           : VGA_DISABLE ? 6'd0 : vga_o[15:10];
++	assign VGA_B  = av_dis ? 6'bZZZZZZ :   vgas_en ? vgas_out[7:2]                                             : VGA_DISABLE ? 6'd0 : vga_o[7:2]  ;
+ 
+-	wire [1:0] vga_r  = vgas_en ? vgas_o[17:16] : VGA_DISABLE ? 2'd0 : vga_o[17:16];
+-	wire [1:0] vga_g  = vgas_en ? vgas_o[9:8]   : VGA_DISABLE ? 2'd0 : vga_o[9:8];
+-	wire [1:0] vga_b  = vgas_en ? vgas_o[1:0]   : VGA_DISABLE ? 2'd0 : vga_o[1:0];
++	wire [1:0] vga_r  = vgas_en ? vgas_out[17:16] : VGA_DISABLE ? 2'd0 : vga_o[17:16];
++	wire [1:0] vga_g  = vgas_en ? vgas_out[9:8]   : VGA_DISABLE ? 2'd0 : vga_o[9:8];
++	wire [1:0] vga_b  = vgas_en ? vgas_out[1:0]   : VGA_DISABLE ? 2'd0 : vga_o[1:0];
+ `endif
+ 
+ reg video_sync = 0;
+@@ -1757,6 +2007,7 @@ emu emu
+ (
+ 	.CLK_50M(FPGA_CLK2_50),
+ 	.RESET(reset),
++	.MENU_PAL(menu_pal),
+ 	.HPS_BUS({f1, HDMI_TX_VS, 
+ 				 clk_100m, clk_ihdmi,
+ 				 ce_hpix, hde_emu, hhs_fix, hvs_fix, 
+@@ -1821,15 +2072,15 @@ emu emu
+ 	.ADC_BUS({ADC_SCK,ADC_SDO,ADC_SDI,ADC_CONVST}),
+ 
+ 	.DDRAM_CLK(ram_clk),
+-	.DDRAM_ADDR(ram_address),
+-	.DDRAM_BURSTCNT(ram_burstcount),
+-	.DDRAM_BUSY(ram_waitrequest),
++	.DDRAM_ADDR(menu_ram_address),
++	.DDRAM_BURSTCNT(menu_ram_burstcount),
++	.DDRAM_BUSY(menu_ram_waitrequest),
+ 	.DDRAM_DOUT(ram_readdata),
+-	.DDRAM_DOUT_READY(ram_readdatavalid),
+-	.DDRAM_RD(ram_read),
+-	.DDRAM_DIN(ram_writedata),
+-	.DDRAM_BE(ram_byteenable),
+-	.DDRAM_WE(ram_write),
++	.DDRAM_DOUT_READY(menu_ram_readdatavalid),
++	.DDRAM_RD(menu_ram_read),
++	.DDRAM_DIN(menu_ram_writedata),
++	.DDRAM_BE(menu_ram_byteenable),
++	.DDRAM_WE(menu_ram_write),
+ 
+ 	.SDRAM_DQ(SDRAM_DQ),
+ 	.SDRAM_A(SDRAM_A),
+diff --git a/sys/yc_out.sv b/sys/yc_out.sv
+index 04e5f0d..ded7f47 100644
+--- a/sys/yc_out.sv
++++ b/sys/yc_out.sv
+@@ -124,11 +124,9 @@ wire data_de = de_dly6;
+ // during active video only, so blanking is not lifted with the black level.
+ wire [7:0] luma_raw = luma_d4;
+ 
+-wire [15:0] luma_setup_scaled =
+-	{luma_raw, 8'd0} -
+-	{4'd0, luma_raw, 4'd0} -
+-	{7'd0, luma_raw, 1'd0} -
+-	{8'd0, luma_raw};
++logic [15:0] luma_setup_main;
++logic [9:0] luma_setup_trim;
++logic [15:0] luma_setup_scaled;
+ 
+ wire [7:0] yc_luma_setup = luma_setup_scaled[15:8] + 8'd19;
+ 
+@@ -254,6 +252,9 @@ always_ff @(posedge clk) begin
+ 	hsync_o <= hsync_dly[6]; vsync_o <= vsync_dly[6]; csync_o <= csync_dly[6]; de_o <= de_dly6;
+ 
+ 	luma_d0 <= phase[0].y[17:10];luma_d1 <= luma_d0; luma_d2 <= luma_d1;	luma_d3 <= luma_d2;	luma_d4 <= luma_d3;
++	luma_setup_main <= {luma_d2, 8'd0} - {4'd0, luma_d2, 4'd0};
++	luma_setup_trim <= {1'b0, luma_d2, 1'd0} + {2'b0, luma_d2};
++	luma_setup_scaled <= luma_setup_main - {6'd0, luma_setup_trim};
+ 
+ 	// Select separate Y/C or packed CVBS output.
+ 	C <= CVBS ? 8'd0 : chroma;
+@@ -262,4 +263,4 @@ end
+ 
+ assign dout = {C, Y, 8'd0};
+ 
+-endmodule
+\ No newline at end of file
++endmodule
+diff --git a/tests/yc_luma_setup_tb.sv b/tests/yc_luma_setup_tb.sv
+new file mode 100644
+index 0000000..c4242e5
+--- /dev/null
++++ b/tests/yc_luma_setup_tb.sv
+@@ -0,0 +1,33 @@
++module yc_luma_setup_tb;
++	reg clk = 0;
++	always #5 clk = ~clk;
++
++	reg [23:0] din = 0;
++	wire [23:0] dout;
++	wire hsync_o, vsync_o, csync_o, de_o;
++
++	yc_out dut (
++		.clk(clk), .PHASE_INC(40'd0), .PAL_EN(1'b0), .CVBS(1'b0),
++		.COLORBURST_RANGE(17'd0), .hsync(1'b0), .vsync(1'b0),
++		.csync(1'b0), .de(1'b1), .din(din), .dout(dout),
++		.hsync_o(hsync_o), .vsync_o(vsync_o), .csync_o(csync_o), .de_o(de_o)
++	);
++
++	integer sample;
++	reg [15:0] expected;
++	initial begin
++		for (sample = 0; sample < 1024; sample = sample + 1) begin
++			@(negedge clk);
++			din = {8'(sample), 8'(sample * 73), 8'(sample * 149)};
++			@(posedge clk);
++			#1;
++			if (sample > 12) begin
++				expected = dut.luma_d4 * 16'd237;
++				if (dut.luma_setup_scaled !== expected)
++					$fatal(1, "Luma setup changed value or pipeline alignment");
++			end
++		end
++		$display("Luma setup pipeline passed");
++		$finish;
++	end
++endmodule

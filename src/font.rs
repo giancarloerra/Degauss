@@ -9,6 +9,66 @@
 
 include!("font_sizes.rs");
 
+/// Size of text in menu and game/system list rows. Other UI text and row
+/// geometry remain unchanged.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum TextSize {
+    Smaller,
+    Small,
+    #[default]
+    Default,
+    Large,
+    Larger,
+}
+
+impl TextSize {
+    pub const ALL: [Self; 5] = [
+        Self::Smaller,
+        Self::Small,
+        Self::Default,
+        Self::Large,
+        Self::Larger,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Smaller => "smaller",
+            Self::Small => "small",
+            Self::Default => "default",
+            Self::Large => "large",
+            Self::Larger => "larger",
+        }
+    }
+
+    pub fn shown(self) -> &'static str {
+        match self {
+            Self::Smaller => "Smaller",
+            Self::Small => "Small",
+            Self::Default => "Default",
+            Self::Large => "Large",
+            Self::Larger => "Larger",
+        }
+    }
+
+    pub fn parse(text: &str) -> Option<Self> {
+        Self::ALL
+            .into_iter()
+            .find(|size| size.label().eq_ignore_ascii_case(text))
+    }
+
+    pub fn next(self) -> Self {
+        Self::ALL[(self.index() + 1) % Self::ALL.len()]
+    }
+
+    pub fn prev(self) -> Self {
+        Self::ALL[(self.index() + Self::ALL.len() - 1) % Self::ALL.len()]
+    }
+
+    fn index(self) -> usize {
+        Self::ALL.iter().position(|size| *size == self).unwrap()
+    }
+}
+
 /// Which typeface the interface is set in.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Font {
@@ -62,6 +122,46 @@ impl Font {
             Font::Pixel => "Px437 DOS/V re. JPN12",
             Font::Smooth2 => "Roboto Condensed",
             Font::Pixel2 => "Tamzen",
+        }
+    }
+
+    /// The separately embedded family for a list/menu preset. The default
+    /// keeps the released family and size exactly as before.
+    pub fn text_family(self, size: TextSize) -> &'static str {
+        match (self, size) {
+            (Font::Smooth, TextSize::Smaller) => "DejaVu Sans Smaller",
+            (Font::Smooth, TextSize::Small) => "DejaVu Sans Small",
+            (Font::Smooth, TextSize::Large) => "DejaVu Sans Large",
+            (Font::Smooth, TextSize::Larger) => "DejaVu Sans Larger",
+            (Font::Smooth2, TextSize::Smaller) => "Roboto Condensed Smaller",
+            (Font::Smooth2, TextSize::Small) => "Roboto Condensed Small",
+            (Font::Smooth2, TextSize::Large) => "Roboto Condensed Large",
+            (Font::Smooth2, TextSize::Larger) => "Roboto Condensed Larger",
+            (Font::Pixel, TextSize::Smaller) => "Px437 DOS/V re. JPN12 8",
+            (Font::Pixel, TextSize::Small) => "Px437 DOS/V re. JPN12 10",
+            (Font::Pixel, TextSize::Large) => "Px437 DOS/V re. JPN12 14",
+            (Font::Pixel, TextSize::Larger) => "Px437 DOS/V re. JPN12 16",
+            (Font::Pixel2, TextSize::Smaller) => "Tamzen 8",
+            (Font::Pixel2, TextSize::Small) => "Tamzen 10",
+            (Font::Pixel2, TextSize::Large) => "Tamzen 14",
+            (Font::Pixel2, TextSize::Larger) => "Tamzen 16",
+            _ => self.family(),
+        }
+    }
+
+    /// Quantise to the released rung first, then choose the corresponding
+    /// preset size. This preserves the exact default and the existing
+    /// resolution-dependent text scale without changing row geometry.
+    pub fn text_glyph(self, request: f32, size: TextSize) -> f32 {
+        let baseline = self.quantise(request);
+        let rung = self
+            .sizes()
+            .iter()
+            .position(|value| *value == baseline)
+            .unwrap();
+        match self {
+            Font::Smooth | Font::Smooth2 => SMOOTH_TEXT_SIZES[rung][size.index()],
+            Font::Pixel | Font::Pixel2 => PIXEL_TEXT_BASE_SIZES[size.index()] * (rung + 1) as f32,
         }
     }
 
@@ -191,6 +291,43 @@ mod tests {
     }
 
     #[test]
+    fn list_size_presets_preserve_default_and_order_for_every_typeface() {
+        for font in Font::ALL {
+            for &request in font.sizes() {
+                let rendered: Vec<_> = TextSize::ALL
+                    .into_iter()
+                    .map(|size| font.text_glyph(request, size))
+                    .collect();
+                assert_eq!(rendered[2], font.quantise(request));
+                assert!(rendered.windows(2).all(|pair| pair[0] < pair[1]));
+                assert_eq!(font.text_family(TextSize::Default), font.family());
+                for size in TextSize::ALL {
+                    if size != TextSize::Default {
+                        assert_ne!(font.text_family(size), font.family());
+                    }
+                }
+            }
+        }
+        for size in TextSize::ALL {
+            assert_eq!(TextSize::parse(size.shown()), Some(size));
+            assert_eq!(size.next().prev(), size);
+            assert_eq!(size.prev().next(), size);
+        }
+        assert_eq!(TextSize::parse("anything else"), None);
+    }
+
+    #[test]
+    fn pixel_preset_requests_use_an_integer_pixel_grid() {
+        for font in [Font::Pixel, Font::Pixel2] {
+            for &request in font.sizes() {
+                for size in TextSize::ALL {
+                    assert_eq!(font.text_glyph(request, size).fract(), 0.0);
+                }
+            }
+        }
+    }
+
+    #[test]
     fn the_two_typefaces_are_not_the_same_one() {
         assert_ne!(Font::Smooth.family(), Font::Pixel.family());
         assert_ne!(Font::Smooth.label(), Font::Pixel.label());
@@ -233,6 +370,29 @@ mod tests {
                     font
                 );
             }
+        }
+    }
+
+    #[test]
+    fn smooth_size_packs_embed_distinct_families() {
+        // The renderer selects its embedded glyphs by this name. DejaVu's
+        // typographic family must differ for every preset, not only the
+        // visible default-font-family property in the Slint component.
+        for (preset, family) in [
+            ("smaller", "DejaVu Sans Smaller"),
+            ("small", "DejaVu Sans Small"),
+            ("large", "DejaVu Sans Large"),
+            ("larger", "DejaVu Sans Larger"),
+        ] {
+            let generated =
+                std::fs::read_to_string(format!("{}/smooth_{preset}.rs", env!("OUT_DIR")))
+                    .expect("the build writes each smooth font pack");
+            assert!(
+                generated.contains(&format!(
+                    "family_name : sp :: Slice :: from_slice (\"{family}\""
+                )),
+                "{preset} must embed glyphs under {family:?}"
+            );
         }
     }
 

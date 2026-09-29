@@ -129,6 +129,7 @@ Click the image to watch Degauss on YouTube.
   - [Why does Update All warn that Degauss replaces MiSTer firmware with a fork?](#why-does-update-all-warn-that-degauss-replaces-mister-firmware-with-a-fork)
   - [How do I install Degauss on an SS1 currently using Console Mode?](#how-do-i-install-degauss-on-an-ss1-currently-using-console-mode)
   - [Degauss appears over HDMI but not on an analog CRT](#degauss-appears-over-hdmi-but-not-on-an-analog-crt)
+  - [Coloured vertical stripes appear over S-Video or composite](#coloured-vertical-stripes-appear-over-s-video-or-composite)
   - [Update All enabled Degauss, but its files are missing](#update-all-enabled-degauss-but-its-files-are-missing)
   - [Can Degauss reuse artwork from Zaparoo Frontend or Console Mode?](#can-degauss-reuse-artwork-from-zaparoo-frontend-or-console-mode)
   - [My problem is not listed here](#my-problem-is-not-listed-here)
@@ -195,6 +196,10 @@ owns the screen, MiSTer sends the d-pad as arrows and the face buttons as
 Enter, Escape, Space and Tab. One physical press counts once even when a
 controller or the input stack delivers it as two press and release pairs
 within 40 ms; held scrolling and deliberate repeated taps are not affected.
+**Options → Navigation → Swap A and B / Swap X and Y** can independently swap
+the controller actions inside Degauss. Keyboard controls, MiSTer's controller
+mapping and launched games remain unchanged. On-screen control hints follow
+the selected swaps; the **Hold A/B/X/Y** rows always name the physical buttons.
 
 ### Running MiSTer scripts
 
@@ -230,6 +235,19 @@ run, so they can identify the launcher without inspecting the MiSTer setup.
 hides the Home entry without changing any script files; the choice is saved
 with the other Options settings. Missing or unreadable script folders and
 scripts report their underlying error.
+
+### Automatically launching physical discs
+
+**Options → Library → Auto-run Physical Discs** is Off by default. When enabled,
+inserting a supported disc launches it through an installed
+`MiSTer_Physical-CD` or `MiSTer-disc` provider. PlayStation, Saturn, Mega CD,
+PC Engine CD, Neo Geo CD, 3DO, CD-i, MD+ and SNES MSU-1 media are recognised.
+
+Degauss uses the provider's existing MGL and the same launch handoff as any
+other game. A disc is handled once and is not launched again until it has been
+ejected. Unknown and audio-only discs are ignored. If the matching provider or
+launcher is missing, Degauss reports that instead of changing the disc or the
+MiSTer installation.
 
 ### Browsing core updates
 
@@ -440,22 +458,28 @@ add these settings under `[Menu]` in the active `MiSTer.ini`:
 ```ini
 [Menu]
 fb_terminal=1
-vga_scaler=1
+vga_scaler=0
+degauss_native_analog=1
 ```
 
 The `[Menu]` section applies these settings to Degauss without changing the
-video configuration used by game cores. The scaler also needs a 15 kHz
-`video_mode` supported by the CRT. A mode already known to work with MiSTer's
-Menu on that display is the best choice. If none is configured, this common
-MiSTer Menu mode is a reasonable starting point:
+video configuration used by game cores. With Degauss's bundled Menu core,
+`degauss_native_analog=1` sends the framebuffer to analog at native 15 kHz
+while HDMI keeps its configured `video_mode`. It is off by default, so existing
+HDMI-only and shared-scaler setups do not change.
+
+To retain the older shared-scaler route, use `vga_scaler=1`. In that mode the
+scaler needs a 15 kHz `video_mode` supported by the CRT. A mode already known
+to work with MiSTer's Menu on that display is the best choice. If none is
+configured, this common MiSTer Menu mode is a reasonable starting point:
 
 ```ini
 video_mode=640,54,56,106,224,16,0,28,13764
 ```
 
 That is a custom timing rather than a universal setting, so some displays may
-need a different compatible mode. When HDMI and CRT are connected together,
-both receive the same scaler timing and both must support it. See MiSTer's
+need a different compatible mode. With `vga_scaler=1`, both connected displays
+receive the same scaler timing and both must support it. See MiSTer's
 [INI settings](https://mister-devel.github.io/MkDocs_MiSTer/advanced/ini/)
 for more detail.
 
@@ -711,6 +735,8 @@ Favourite; self-describing MGL, MRA and RBF launches and formats with a fixed
 core do not offer it.
 
 The **Unstable** group browses installed `_Unstable` cores by their full build names.
+MiSTer-DB9 builds ending in `_YYYYMMDD_<hash>_DB9.rbf` are recognized as the
+corresponding Standard core; matching unstable DB9 builds are recognized too.
 RetroAchievements requires a compatible RA installation, including its Main profile.
 Degauss releases include a separate RA Main that retains Frontend and the saved
 shortcut without being overwritten by the upstream RA updater. Select it in the
@@ -849,6 +875,8 @@ require **A** and confirmation, never a sideways press.
 | Navigation | Scroll Speed | How fast a held direction moves through the list. 3x out of the box |
 | Navigation | Skip Artwork Faster Than | Above this speed, pictures wait until the list stops. 6x out of the box |
 | Navigation | Left and Right Behaviour | What left and right do while browsing: Scroll Speed Change (the default), Letter, Page or Direction. Letter and Page repeat while held; in Direction, left and right move one entry and up and down move a whole row in Tiled, Multi List and Gallery |
+| Navigation | Swap A and B | Off by default. Swap the controller's A and B actions inside Degauss only; keyboard controls and launched software are unchanged |
+| Navigation | Swap X and Y | Off by default. Swap the controller's X and Y actions inside Degauss only; keyboard controls and launched software are unchanged |
 | Navigation | Random Game Behaviour | Whether either random action starts the game, or only moves to it so you can look first |
 | Shortcuts | Hold A / Hold B / Hold X / Hold Y | Off by default. Assign None, Cycle View, Random Game, Random Favourite, Add/Remove Favourite, Game Information, Search This Folder, Jump to Letter, Actions, Menu or Start Attract Mode to each one-second hold. Assign Actions and Menu to A/B for two-button controllers. Short presses retain their normal action. Holds work only while browsing and only where the chosen command is available; otherwise the normal press is immediate |
 | Appearance | Theme | Left and right choose a palette. Press A to open the editor. Standard uses the colours in `degauss.toml`. See [Themes and colours](#themes-and-colours) |
@@ -868,11 +896,12 @@ require **A** and confirmation, never a sideways press.
 | Appearance | Attract Mode | Off by default. When on, A launches the game pictured at the centre and Left/Right moves between systems |
 | Appearance | Show Attract Mode on Home | Off by default. Add an immediate Attract Mode entry to the main browser, independently of idle screensaver settings |
 | Appearance | Screensaver Speed | Normal (default), 2x or 4x picture movement, independent of the idle time |
-| Display | Shadow Mask Effects | Off by default. Choose supplied scanlines or aperture grille, or put a MiSTer shadow-mask `.txt` file in `Scripts/.config/degauss/masks/` to select it by name. A malformed file switches the effect Off and is logged. The mask affects Degauss on HDMI and scaled analog output, not games |
+| Display | Video Effects | Off by default. Choose a supplied or custom Degauss mask, one of the general MiSTer presets, or a user-created preset in `Presets/Degauss`. Core-specific and incomplete presets are not offered. Off removes both kinds of Degauss effect. Effects apply only while Degauss is open, on HDMI and scaled analog output, not games |
 | Library | Favourites First | Show favourites first in each folder, keeping them in alphabetical order |
 | Library | Folders Before Games | On, folders lead a system's listing; off, the games come first |
 | Library | Core Preference | Standard First (default) or RetroAchievements First. Used by systems whose Core Version is Default; the other version is used only when the preferred version is absent |
 | Library | Automatic Data Source | Gamelist First (default) or Artwork Pack First. Applies only to systems whose Game Data Source remains Automatic; explicit per-system choices always win |
+| Library | Auto-run Physical Discs | Off by default. Launch supported inserted discs through an installed `MiSTer_Physical-CD` or `MiSTer-disc` provider |
 | Library | Separate Handheld Category | Off by default. When On, recognised handheld systems appear in a Handheld category after Console. This is a display-only grouping and does not change core or game launching |
 | Library | Show Other Folder | Show the Other group, the cores that are not games |
 | Library | Show Utility Folder | Show the Utility group, test patterns and measurement cores |
@@ -889,6 +918,7 @@ require **A** and confirmation, never a sideways press.
 | Display | Screen Position, Sideways | Nudge the picture, for a screen that sits off centre |
 | Display | Screen Position, Up and Down | The same, vertically |
 | Display | Screen Rotation | Off by default. Rotate the complete Degauss interface 90° Clockwise or Counterclockwise for a vertical display. A keeps the preview; B or the 15-second timeout reverts it. This does not change MiSTer video modes or game rotation |
+| Developer | Switch INI | Choose Main or an available alternate MiSTer INI profile, then confirm. This reloads Menu and uses the selected profile's `main=` frontend. If video is invisible while Degauss remains running, hold B/Back and press Right for Main, Left for the first alternate, Up for the second or Down for the third. Unavailable slots do nothing |
 | Developer | Drawing Path | Draw into the screen directly, or into memory first |
 | Developer | Performance Readout | Replace the key hints with frame timings |
 
@@ -942,6 +972,12 @@ before it. An unrecognised value is also reported. After selecting a theme,
 **Text** remains an independent option: changing it overrides the current
 theme default and that choice continues across restarts.
 
+The optional top-level `text_size` sets list and menu text to `smaller`,
+`small`, `default`, `large` or `larger`. It does not change the number of
+rows, artwork, the bottom bar, dialogs or Theme Editor controls. Themes
+without this key retain the original Default size. The same setting is
+available as **List text size** in the Theme Editor, with a live preview.
+
 A theme can be five lines. `themes/Night.toml`:
 
 ```toml
@@ -989,7 +1025,7 @@ currently selected palette and previews every change immediately.
 | Control | Does |
 |---|---|
 | **up / down** | choose a colour role or control; in the continuous picker, choose the red, green or blue channel; in hexadecimal editing, change the selected digit with an immediate preview |
-| **left / right** | choose another starting point, change the theme's Default text, change the selected RGB channel through its smooth gradient in five-unit steps (hold to repeat), switch logo colour between Original and Selection, change logo colour mix in five-percent steps, or select a hexadecimal digit |
+| **left / right** | choose another starting point, change the theme's Default text or List text size, change the selected RGB channel through its smooth gradient in five-unit steps (hold to repeat), switch logo colour between Original and Selection, change logo colour mix in five-percent steps, or select a hexadecimal digit |
 | **A** | open the continuous colour picker, apply the already-live colour, or activate Save changes, Save as and other controls |
 | **X** | choose another palette role and swap its exact colour with the selected role; switch between the continuous picker and exact hexadecimal editing; in the name grid, delete one character |
 | **Y** | restore the colour that was present when the picker opened; in the name grid, cycle lowercase, uppercase and symbol pages |
@@ -1006,7 +1042,7 @@ lowercase, uppercase and symbol pages, **X** deletes one character, **SP**
 enters a space and **Clear** clears the complete name. Its green checkmark
 saves and its red X cancels. Saving writes a complete
 `.toml` file into `Scripts/.config/degauss/themes/`, selects it, and stores
-its name in `settings.toml`; the default text choice remains part of the theme
+its name in `settings.toml`; the default text and list-size choices remain part of the theme
 file. Names use the characters shown on the grid; `\`, `/`, `:`, `*`, `?`,
 `"`, `<`, `>` and `|` are excluded because they cannot be used in these
 filenames. An existing theme is never overwritten. A save error remains on
@@ -1738,6 +1774,9 @@ system resolved on your own card, which is the answer for that card.
 
 </details>
 
+Atari 2600 `.bin` games belong in `games/Atari2600`. In the shared
+`games/ATARI7800` folder, `.bin` remains an Atari 7800 format.
+
 System logos are read from the `logos` folder beside `degauss.toml`,
 named after the system. The 89 files in `assets/logos/` are copied from
 lehcimcramtrebor/es-theme-forever (`CUSTOMIZE/logos`). The marks themselves 
@@ -2008,21 +2047,39 @@ Current Update All replaces Console Mode's existing `main=` value, so it does no
 
 Seeing MiSTer's OSD on a CRT does not necessarily mean that its Linux framebuffer is routed there. This is especially relevant when using an SS1's analog output.
 
-Inside the active `[Menu]` section of `MiSTer.ini`, enable the framebuffer terminal and VGA scaler:
+Inside the active `[Menu]` section of `MiSTer.ini`, enable the framebuffer terminal and native analog output:
 
 ```ini
 [Menu]
 fb_terminal=1
-vga_scaler=1
+vga_scaler=0
+degauss_native_analog=1
 ```
 
-The scaler also needs a 15 kHz `video_mode` supported by that CRT. A mode already known to work with MiSTer's Menu on the same display is the best choice. This common mode can be used as a starting point:
+With Degauss's bundled Menu core, this sends the framebuffer to analog at native 15 kHz while HDMI keeps its own configured `video_mode`. The native analog option is off by default. If you instead use `vga_scaler=1`, both outputs use the scaler. That route needs a 15 kHz `video_mode` supported by the CRT; this common mode can be used as a starting point:
 
 ```ini
 video_mode=640,54,56,106,224,16,0,28,13764
 ```
 
-That timing is not universal. If HDMI and CRT are connected together, both receive the same scaler timing and both must support it.
+That timing is not universal. With `vga_scaler=1`, both connected displays must support the same scaler timing.
+
+### Coloured vertical stripes appear over S-Video or composite
+
+At a 352-pixel Menu timing, the Y/C encoder does not receive enough samples per
+colour-carrier cycle. Use a 13.5 MHz output and double only the framebuffer width:
+
+```ini
+[Menu]
+fb_terminal=1
+vga_scaler=1
+video_mode=704,24,62,68,240,4,3,15,13500
+fb_hscale=2
+```
+
+Degauss still renders at 352×240 while the encoder runs at 13.5 MHz. This is
+the validated NTSC setup. A PAL timing is not supplied because it has not yet
+been validated on the target display path.
 
 ### Update All enabled Degauss, but its files are missing
 
@@ -2050,9 +2107,11 @@ Artwork stored only inside Zaparoo's database or Console Mode's central image fo
 
 ### Can I add or customise Degauss's scanline and shadow-mask effects?
 
-Open **Options → Display → Shadow Mask Effects** to choose **Off** or an included preset. To change a preset, copy its `.txt` file under a new name and edit the copy. You can also use another MiSTer-compatible shadow-mask `.txt` file. Place it in `/media/fat/Scripts/.config/degauss/masks/`, then reopen **Display** and select the new name. MiSTer's [Shadow Mask guide](https://github.com/MiSTer-devel/ShadowMasks_MiSTer) explains the format and links to an editor.
+Open **Options → Display → Video Effects** to choose **Off**, an included mask, or a general MiSTer video preset with its required files installed. Core-specific and incomplete presets are not offered. To change a mask, copy its `.txt` file under a new name and edit the copy. You can also use another MiSTer-compatible shadow-mask `.txt` file. Place it in `/media/fat/Scripts/.config/degauss/masks/`, then reopen **Display** and select the new name. MiSTer's [Shadow Mask guide](https://github.com/MiSTer-devel/ShadowMasks_MiSTer) explains the format and links to an editor.
 
-These are mask presets, not general-purpose shaders. They affect Degauss on HDMI and scaled analog output while it is open, not games.
+To make a full video preset, create `/media/fat/Presets/Degauss/` if needed, copy an installed MiSTer `.ini` preset there, give the copy your own name, and edit it. Reopen **Display** and it appears as **Custom/Your Name**. A preset can combine MiSTer's horizontal, vertical and scanline filters, gamma and shadow masks. Referenced filter, gamma and mask files must already be installed in MiSTer's `/media/fat/filters/`, `/media/fat/gamma/` and `/media/fat/shadow_masks/` folders. Presets with missing components are not listed; Main reports an error if a selected file is malformed. The standard [MiSTer preset format](https://github.com/MiSTer-devel/Presets_MiSTer#creating-presets) documents the keys and example combinations.
+
+The mask files are not general-purpose shaders. All Video Effects choices affect Degauss on HDMI and scaled analog output while it is open, not games.
 
 ### My problem is not listed here
 
@@ -2178,20 +2237,22 @@ its source at
 Four typefaces are baked into the binary:
 
 - [DejaVu Sans](https://dejavu-fonts.github.io), under the Bitstream Vera and
-  Arev licences ([text](assets/fonts/DejaVuSans-LICENSE.txt)).
+  Arev licences ([text](assets/fonts/DejaVuSans-LICENSE.txt)). The original is
+  unmodified; size variants have distinct family names.
 - [Px437 DOS/V re. JPN12](https://int10h.org/oldschool-pc-fonts/), from The
   Ultimate Oldschool PC Font Pack, © 2016-2020 VileR, under
   [CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/)
-  ([text](assets/fonts/Px437-LICENSE.txt)). Unmodified; its glyphs are
-  rasterised at fixed sizes.
+  ([text](assets/fonts/Px437-LICENSE.txt)). The original is unmodified;
+  size variants are derived from it for crisp list text.
 - [Roboto Condensed Bold](https://github.com/googlefonts/roboto-2) v2.138,
   © Google, under the
   [Apache License 2.0](https://www.apache.org/licenses/LICENSE-2.0)
-  ([text](assets/fonts/RobotoCondensed-LICENSE.txt)). Unmodified.
+  ([text](assets/fonts/RobotoCondensed-LICENSE.txt)). The original is
+  unmodified; size variants have distinct family names.
 - [Tamzen 6x12 Bold](https://github.com/sunaku/tamzen-font), © 2011 Suraj
   N. Kurapati, derived from Tamsyn © 2010 Scott Fial, free to use, copy,
   modify and distribute ([text](assets/fonts/Tamzen-LICENSE.txt)).
-  Unmodified.
+  The original is unmodified; size variants are derived from it.
 
 Names are drawn in the Latin, Greek and Cyrillic alphabets, with the accents
 and marks of each. A name in Japanese or Chinese draws as a gap: neither

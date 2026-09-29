@@ -1547,22 +1547,14 @@ fn validate_hash(value: &str) -> bool {
 }
 
 fn undated_stem(stem: &str) -> &str {
-    match stem.rsplit_once('_') {
-        Some((before, after))
-            if after.len() >= 8 && after.as_bytes()[..8].iter().all(u8::is_ascii_digit) =>
-        {
-            before
-        }
-        _ => stem,
-    }
+    crate::systems::db9_unstable_parts(stem)
+        .map(|(base, _)| base)
+        .unwrap_or_else(|| crate::systems::undated_core_stem(stem))
 }
 
 fn build_date(stem: &str) -> Option<String> {
-    let (_, suffix) = stem.rsplit_once('_')?;
-    let date = suffix.get(..8)?;
-    date.bytes()
-        .all(|byte| byte.is_ascii_digit())
-        .then(|| format!("{}-{}-{}", &date[..4], &date[4..6], &date[6..8]))
+    crate::systems::core_build_date(stem)
+        .map(|date| format!("{}-{}-{}", &date[..4], &date[4..6], &date[6..8]))
 }
 
 fn title_from_stem(stem: &str) -> String {
@@ -1595,7 +1587,10 @@ fn remote_core(
         .file_stem()
         .and_then(|stem| stem.to_str())
         .ok_or_else(|| format!("core {path:?} has no usable name"))?;
-    let identity = crate::systems::core_name(stem.trim_start_matches("RA_"));
+    let plain_stem = stem.trim_start_matches("RA_");
+    let identity = crate::systems::db9_unstable_parts(plain_stem)
+        .map(|(base, _)| crate::systems::core_name(base))
+        .unwrap_or_else(|| crate::systems::core_name(plain_stem));
     if identity.is_empty() {
         return Err(format!("core {path:?} has no usable identity"));
     }
@@ -2232,7 +2227,11 @@ fn catalogue_identity(entry: &CoreEntry) -> String {
             .path
             .file_stem()
             .and_then(|stem| stem.to_str())
-            .map(crate::systems::core_name)
+            .map(|stem| {
+                crate::systems::db9_unstable_parts(stem)
+                    .map(|(base, _)| crate::systems::core_name(base))
+                    .unwrap_or_else(|| crate::systems::core_name(stem))
+            })
             .unwrap_or_else(|| crate::systems::core_name(&entry.name)),
     }
 }
@@ -2556,6 +2555,8 @@ fn assign_local_cores(remotes: &[RemoteCore], locals: &[LocalCore]) -> Vec<Optio
                     .and_then(|candidates| {
                         candidates.iter().copied().find(|&local_index| {
                             !matched[local_index]
+                                && remote_paths[remote_index].ends_with("_db9.rbf")
+                                    == local_paths[local_index].ends_with("_db9.rbf")
                                 && path_match_rank(
                                     &remote_paths[remote_index],
                                     &local_paths[local_index],
@@ -3217,6 +3218,38 @@ mod tests {
         }
     }
 
+    #[test]
+    fn db9_core_names_keep_their_system_identity_and_build_date() {
+        let source = database("db9", "https://example.test/db9.json");
+        let description = FileDescription {
+            hash: "0123456789abcdef0123456789abcdef".into(),
+            size: 1,
+            tags: Vec::new(),
+            overwrite: true,
+        };
+        for (path, expected_title) in [
+            ("_Console/NES_20260928_a1b2c3d_DB9.rbf", "NES"),
+            (
+                "_Unstable/NES_unstable_20260928_2315_a1b2c3d_DB9.rbf",
+                "NES",
+            ),
+        ] {
+            let remote = remote_core(&source, path, &description)
+                .unwrap()
+                .expect("DB9 core should be included");
+            assert_eq!(remote.identity, "nes");
+            assert_eq!(remote.title, expected_title);
+            assert_eq!(remote.build, "2026-09-28");
+        }
+
+        let installed = core(
+            PathBuf::from("/_Console/NES_20260928_a1b2c3d_DB9.rbf"),
+            "Nintendo Entertainment System",
+            "Console",
+        );
+        assert_eq!(catalogue_identity(&installed), "nes");
+    }
+
     fn run_events<F>(request: Request, mut fetch: F) -> Vec<Event>
     where
         F: FnMut(&str, u64, Duration, &AtomicBool) -> std::result::Result<Vec<u8>, FetchError>,
@@ -3572,6 +3605,64 @@ db_url = https://example.test/two.json
             logo_id: None,
         }];
         assert_eq!(assign_local_cores(&remotes, &locals), vec![None, Some(0)]);
+    }
+
+    #[test]
+    fn db9_and_stock_updates_match_only_their_installed_variant() {
+        const URL: &str = "https://example.test/distribution.json";
+        for update_date in ["20260927", "20260928"] {
+            let stock_name = "_Console/NES_20260927.rbf".to_string();
+            let db9_name = stock_name.replace(".rbf", "_a1b2c3d_DB9.rbf");
+            let stock_update = stock_name.replace("20260927", update_date);
+            let db9_update = db9_name.replace("20260927", update_date);
+            for (stock_installed, db9_installed) in [(true, false), (false, true), (true, true)] {
+                let root = TestRoot::new("db9-stock-matching");
+                root.write(
+                    "downloader.ini",
+                    format!("[MiSTer]\nfilter = all\n\n[distribution_mister]\ndb_url = {URL}\n"),
+                );
+                let mut entries = Vec::new();
+                for (name, installed) in
+                    [(&stock_name, stock_installed), (&db9_name, db9_installed)]
+                {
+                    if installed {
+                        entries.push(core(root.write(name, b"old core"), "NES", "Console"));
+                    }
+                }
+                let data = manifest(
+                    "distribution_mister",
+                    &[
+                        (&stock_update, b"new core", &[], true),
+                        (&db9_update, b"new core", &[], true),
+                    ],
+                );
+                let (snapshot, notice) = ready(run_events(
+                    request(&root, entries, false),
+                    |url, _, _, _| {
+                        assert_eq!(url, URL);
+                        Ok(data.clone())
+                    },
+                ));
+                assert!(notice.is_none());
+                for (remote, local, installed) in [
+                    (&stock_update, &stock_name, stock_installed),
+                    (&db9_update, &db9_name, db9_installed),
+                ] {
+                    let item = snapshot
+                        .items
+                        .iter()
+                        .find(|item| item.remote_path == *remote)
+                        .unwrap();
+                    assert_eq!(item.installed, installed, "{remote}");
+                    assert_eq!(
+                        item.launch_path,
+                        installed.then(|| root.path().join(local)),
+                        "{remote}"
+                    );
+                    assert_eq!(item.core_identity.as_deref(), Some("nes"));
+                }
+            }
+        }
     }
 
     #[test]

@@ -4,7 +4,7 @@
 //! testable without a framebuffer, and saving remains a separate transaction.
 
 use crate::config::{Color, Colors};
-use crate::font::Font;
+use crate::font::{Font, TextSize};
 use crate::name_keyboard::{self, Key as NameKey, Page as NamePage};
 use crate::theme::{validate_name, Theme, ThemeFile};
 
@@ -95,12 +95,14 @@ pub struct ThemeDraft {
     pub logo: Option<Color>,
     pub logo_opacity: u8,
     pub font: Font,
+    pub text_size: TextSize,
 }
 
 impl ThemeDraft {
     pub fn file(&self) -> ThemeFile {
         let mut file = ThemeFile::complete(&self.palette, self.logo, self.logo_opacity);
         file.font = Some(self.font);
+        file.text_size = Some(self.text_size);
         file
     }
 }
@@ -188,6 +190,7 @@ impl ThemeEditor {
                 logo: None,
                 logo_opacity: 100,
                 font: system_font,
+                text_size: TextSize::Default,
             },
             created_by_editor: false,
         }];
@@ -205,6 +208,7 @@ impl ThemeEditor {
                 } else {
                     theme.file.selected_font(system_font)
                 },
+                text_size: theme.file.selected_text_size(),
             },
             created_by_editor: theme.file.created_by_editor,
         }));
@@ -251,26 +255,26 @@ impl ThemeEditor {
     }
 
     fn save_changes_row(&self) -> Option<usize> {
-        self.source_is_custom().then_some(14)
+        self.source_is_custom().then_some(15)
     }
 
     fn save_as_row(&self) -> usize {
         if self.source_is_custom() {
-            15
+            16
         } else {
-            14
+            15
         }
     }
 
     fn delete_row(&self) -> Option<usize> {
-        self.source_is_custom().then_some(16)
+        self.source_is_custom().then_some(17)
     }
 
     fn cancel_row(&self) -> usize {
         if self.source_is_custom() {
-            17
+            18
         } else {
-            15
+            16
         }
     }
 
@@ -338,6 +342,10 @@ impl ThemeEditor {
                 rows.push((
                     "Default text".to_string(),
                     self.draft.font.shown().to_string(),
+                ));
+                rows.push((
+                    "List text size".to_string(),
+                    self.draft.text_size.shown().to_string(),
                 ));
                 if self.source_is_custom() {
                     rows.push(("Save changes".to_string(), ">".to_string()));
@@ -466,6 +474,14 @@ impl ThemeEditor {
                 };
                 EditorEffect::PreviewChanged
             }
+            14 => {
+                self.draft.text_size = if delta < 0 {
+                    self.draft.text_size.prev()
+                } else {
+                    self.draft.text_size.next()
+                };
+                EditorEffect::PreviewChanged
+            }
             _ => EditorEffect::None,
         }
     }
@@ -490,7 +506,7 @@ impl ThemeEditor {
                         EditorEffect::None
                     }
                     12 => self.change_browse_value(1),
-                    13 => self.change_browse_value(1),
+                    13 | 14 => self.change_browse_value(1),
                     selected if Some(selected) == self.save_changes_row() => {
                         EditorEffect::SaveChanges(self.source_name().to_string())
                     }
@@ -908,6 +924,18 @@ mod tests {
     }
 
     #[test]
+    fn list_size_is_live_and_kept_in_the_saved_theme() {
+        let mut editor = editor();
+        editor.selected = 14;
+        assert_eq!(editor.rows()[14].1, "Default");
+        assert_eq!(editor.horizontal(1), EditorEffect::PreviewChanged);
+        assert_eq!(editor.rows()[14].1, "Large");
+        assert_eq!(editor.draft.file().selected_text_size(), TextSize::Large);
+        assert_eq!(editor.horizontal(-1), EditorEffect::PreviewChanged);
+        assert_eq!(editor.rows()[14].1, "Default");
+    }
+
+    #[test]
     fn accept_advances_logo_colour_mix_as_advertised() {
         let mut editor = editor();
         editor.selected = 12;
@@ -920,7 +948,7 @@ mod tests {
     fn save_changes_and_delete_are_only_available_for_editor_saved_sources() {
         let external = editor();
         assert!(!external.source_is_custom());
-        assert_eq!(external.rows().len(), EDITOR_ROWS);
+        assert_eq!(external.rows().len(), EDITOR_ROWS + 1);
         assert!(!external.rows().iter().any(|row| row.0 == "Save changes"));
         assert!(!external.rows().iter().any(|row| row.0 == "Delete theme"));
 
@@ -938,20 +966,20 @@ mod tests {
             Font::Smooth,
         );
         assert!(custom.source_is_custom());
-        assert_eq!(custom.rows().len(), EDITOR_ROWS + 2);
-        assert_eq!(custom.rows()[14].0, "Save changes");
-        assert_eq!(custom.rows()[15].0, "Save as");
-        assert_eq!(custom.rows()[16].0, "Delete theme");
-        custom.selected = 14;
+        assert_eq!(custom.rows().len(), EDITOR_ROWS + 3);
+        assert_eq!(custom.rows()[15].0, "Save changes");
+        assert_eq!(custom.rows()[16].0, "Save as");
+        assert_eq!(custom.rows()[17].0, "Delete theme");
+        custom.selected = 15;
         assert_eq!(
             custom.accept(),
             EditorEffect::SaveChanges("My Theme".to_string())
         );
-        custom.selected = 15;
+        custom.selected = 16;
         assert_eq!(custom.accept(), EditorEffect::None);
         assert_eq!(custom.mode, EditorMode::Name);
         custom.back();
-        custom.selected = 16;
+        custom.selected = 17;
         assert_eq!(custom.accept(), EditorEffect::None);
         assert_eq!(custom.mode, EditorMode::Delete);
         assert_eq!(
@@ -960,7 +988,7 @@ mod tests {
             "Keep theme is the default"
         );
         assert_eq!(custom.mode, EditorMode::Browse);
-        custom.selected = 16;
+        custom.selected = 17;
         custom.accept();
         custom.sub_selected = 1;
         assert_eq!(
@@ -1079,7 +1107,7 @@ mod tests {
     #[test]
     fn name_grid_back_cancels_x_deletes_y_pages_and_clear_is_a_cell() {
         let mut editor = editor();
-        editor.selected = 14;
+        editor.selected = 15;
         editor.accept();
         editor.accept();
         assert_eq!(editor.name, "a");

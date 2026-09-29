@@ -248,7 +248,7 @@ id = "Atari2600"
 folders = ["ATARI7800", "Atari2600"]
 rbf = "_Console/Atari7800"
 setname = "Atari2600"
-extensions = ["a26", "mgl"]
+extensions = ["a26", "bin", "mgl"]
 
 [[systems.launch]]
 extensions = ["a26", "bin"]
@@ -492,6 +492,31 @@ extensions = ["col", "bin", "rom", "mgl"]
 extensions = ["col", "bin", "rom"]
 type = "f"
 index = 1
+delay = 1
+
+[[systems]]
+name = "Coleco Adam"
+id = "ColecoAdam"
+folders = ["Adam"]
+rbf = "_Computer/ColecoAdam"
+extensions = ["col", "bin", "rom", "dsk", "ddp", "mgl"]
+
+[[systems.launch]]
+extensions = ["col", "bin", "rom"]
+type = "f"
+index = 1
+delay = 1
+
+[[systems.launch]]
+extensions = ["dsk"]
+type = "s"
+index = 0
+delay = 1
+
+[[systems.launch]]
+extensions = ["ddp"]
+type = "s"
+index = 4
 delay = 1
 
 [[systems]]

@@ -1,4 +1,6 @@
 include!("src/font_sizes.rs");
+#[path = "build/font_data.rs"]
+mod font_data;
 
 fn valid_screenscraper_credential(value: Option<&str>, max: usize) -> bool {
     value.is_some_and(|value| {
@@ -64,11 +66,63 @@ fn main() {
     let out = std::path::PathBuf::from(std::env::var_os("OUT_DIR").expect("cargo sets OUT_DIR"));
     std::fs::write(out.join("charset.slint"), charset_slint()).expect("writing charset.slint");
 
+    // Slint's font-size list applies to every font in one compiled component.
+    // Separate tiny components keep each optional preset to only the five
+    // smooth or four pixel sizes it uses. Creating them once on Degauss's
+    // existing software window registers their embedded bitmaps; there is no
+    // runtime font loader or additional process.
+    for (label, index) in [("smaller", 0), ("small", 1), ("large", 3), ("larger", 4)] {
+        for kind in ["smooth", "pixel"] {
+            let sizes = if kind == "smooth" {
+                SMOOTH_TEXT_SIZES
+                    .iter()
+                    .map(|rung| rung[index])
+                    .collect::<Vec<_>>()
+            } else {
+                (1..=PIXEL_SIZES.len())
+                    .map(|multiple| PIXEL_TEXT_BASE_SIZES[index] * multiple as f32)
+                    .collect::<Vec<_>>()
+            };
+            std::env::set_var(
+                "SLINT_FONT_SIZES",
+                sizes
+                    .iter()
+                    .map(f32::to_string)
+                    .collect::<Vec<_>>()
+                    .join(","),
+            );
+            let default_font = if kind == "smooth" {
+                format!("DejaVuSans-{label}.ttf")
+            } else {
+                format!("Px437_JPN12-{}.ttf", PIXEL_TEXT_BASE_SIZES[index] as u8)
+            };
+            std::env::set_var(
+                "SLINT_DEFAULT_FONT",
+                format!("{}/assets/fonts/{default_font}", env!("CARGO_MANIFEST_DIR")),
+            );
+            let path = format!("ui/font-packs/{kind}_{label}.slint");
+            let config = slint_build::CompilerConfiguration::new()
+                .embed_resources(slint_build::EmbedResourcesKind::EmbedForSoftwareRenderer)
+                .with_include_paths(vec![out.clone()]);
+            slint_build::compile_with_config(&path, config)
+                .unwrap_or_else(|error| panic!("compiling {path}: {error}"));
+            font_data::compact_file(&out.join(format!("{kind}_{label}.rs")));
+        }
+    }
+
+    // slint::include_modules! reads the path emitted by the final compile,
+    // so the main window must be compiled last.
+    std::env::set_var("SLINT_FONT_SIZES", sizes.join(","));
+    std::env::set_var(
+        "SLINT_DEFAULT_FONT",
+        concat!(env!("CARGO_MANIFEST_DIR"), "/assets/fonts/DejaVuSans.ttf"),
+    );
     let config = slint_build::CompilerConfiguration::new()
         .embed_resources(slint_build::EmbedResourcesKind::EmbedForSoftwareRenderer)
-        .with_include_paths(vec![out]);
+        .with_include_paths(vec![out.clone()]);
     slint_build::compile_with_config("ui/degauss.slint", config)
         .expect("compiling ui/degauss.slint");
+    font_data::compact_file(&out.join("degauss.rs"));
 }
 
 /// The scripts a name on a card can be spelled in.

@@ -43,12 +43,12 @@ the pinned backend and validate it before shipping another Degauss release.
 
 ## Sources and compatibility
 
-- RA Main v1.12.2: commit `48e32b43ed85b046c7cd41bce756b7bb1679782b`
-  from https://github.com/odelot/Main_MiSTer/tree/48e32b43ed85b046c7cd41bce756b7bb1679782b.
+- RA Main v1.13.0: commit `687d5dba7600fa7295aab9b967ff9923573332c9`
+  from https://github.com/odelot/Main_MiSTer/tree/687d5dba7600fa7295aab9b967ff9923573332c9.
 - Source archive SHA-256:
-  `77b2f284a675f4217be27b3fb700c06536e07f3600e14149f2231f2dceb95edb`.
-- Degauss integration: commit `0651979d53f570c29f8772e124ae603297830954`
-  relative to `0a8fb44`, from https://github.com/giancarloerra/Degauss-Main.
+  `94c738309112228e13e70cee02f2a070ce11dbf4437bb60a1e5ad667aafe10d3`.
+- Degauss integration: commit `96a7ff35819f9e216810005418dd2e8f62fe1970`
+  from https://github.com/giancarloerra/Degauss-Main.
   The patch omits its unrelated input.cpp blank-line removal.
 - rcheevos 12.4.0 is already bundled in this exact RA source. Its bytes remain
   unchanged; the build fails if the dependency or its compiled object is missing.
@@ -98,7 +98,8 @@ startup, Start, release, player swaps and unchanged polls.
 
 Host tests validate persisted shortcut records, disabled and invalid settings,
 key consumption, repeat/release handling, extended Linux keys, runtime gates,
-and placement before keyboard remapping. The build checks that achievement
+placement before keyboard remapping, and the Degauss framebuffer video path.
+The build checks that achievement
 support was enabled and that achievement and frontend implementations were
 linked into the final executable. Real host curl tests exercise trusted TLS,
 hostname rejection even with an insecure curlrc, plaintext/redirect rejection,
