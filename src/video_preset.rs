@@ -1,6 +1,8 @@
 //! General MiSTer video presets offered for Degauss's framebuffer.
 
 use std::fs;
+#[cfg(any(target_os = "linux", all(test, unix)))]
+use std::io::Write;
 use std::path::Path;
 #[cfg(target_os = "linux")]
 use std::path::PathBuf;
@@ -40,6 +42,18 @@ fn remove_if_present(path: &Path) -> std::io::Result<()> {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(error) => Err(error),
     }
+}
+
+#[cfg(any(target_os = "linux", all(test, unix)))]
+fn send_request(fifo: &Path, request: &[u8]) -> std::io::Result<()> {
+    let mut options = fs::OpenOptions::new();
+    options.write(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NONBLOCK);
+    }
+    options.open(fifo)?.write_all(request)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -175,7 +189,7 @@ pub fn apply(relative_path: Option<&str>, fifo: &Path) -> Result<()> {
         DegaussError::io("cleaning stale MiSTer video preset status", &status, error)
     })?;
     let name = relative_path.unwrap_or("off");
-    fs::write(fifo, format!("fb_preset {token} {name}\n"))
+    send_request(fifo, format!("fb_preset {token} {name}\n").as_bytes())
         .map_err(|error| DegaussError::io("requesting MiSTer video preset", fifo, error))?;
     let deadline = std::time::Instant::now() + Duration::from_secs(3);
     while std::time::Instant::now() < deadline {
@@ -277,6 +291,31 @@ mod tests {
         assert_ne!(first, second);
         assert!((100_000_000..1_000_000_000).contains(&first));
         assert!((100_000_000..1_000_000_000).contains(&second));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn request_does_not_block_when_fifo_has_no_reader() {
+        use std::ffi::CString;
+        use std::os::unix::ffi::OsStrExt;
+        use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+        let path = std::env::temp_dir().join(format!(
+            "degauss-preset-no-reader-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let native = CString::new(path.as_os_str().as_bytes()).unwrap();
+        assert_eq!(unsafe { libc::mkfifo(native.as_ptr(), 0o600) }, 0);
+        let started = std::time::Instant::now();
+        let error = send_request(&path, b"fb_preset 123456789 off\n").unwrap_err();
+        fs::remove_file(&path).unwrap();
+
+        assert_eq!(error.raw_os_error(), Some(libc::ENXIO));
+        assert!(started.elapsed() < Duration::from_secs(1));
     }
 
     #[test]

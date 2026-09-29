@@ -20909,6 +20909,7 @@ impl App {
             let edges = input.poll();
             if input.take_device_loss() {
                 ini_chord.reset_for_device_loss();
+                repeater.clear_all();
             }
             for (input_edge, at) in edges {
                 // Some controllers deliver one press as two very fast press

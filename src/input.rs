@@ -535,6 +535,11 @@ impl Repeater {
         self.held.retain(|held| held.action != action);
     }
 
+    /// A removed input device cannot deliver releases for its held keys.
+    pub fn clear_all(&mut self) {
+        self.held.clear();
+    }
+
     /// Actions due because a key is still held.
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     pub fn tick(&mut self, now: Instant) -> Vec<Action> {
@@ -1985,6 +1990,17 @@ mod tests {
             repeater.release(Action::Down, t0 + Duration::from_millis(1)),
             None
         );
+        assert!(repeater.tick(t0 + Duration::from_secs(5)).is_empty());
+        assert!(!repeater.anything_held());
+    }
+
+    #[test]
+    fn losing_an_input_device_stops_every_held_repeat() {
+        let mut repeater = Repeater::new(RepeatConfig::default());
+        let t0 = Instant::now();
+        repeater.press(Action::Down, t0);
+        repeater.clear_all();
+
         assert!(repeater.tick(t0 + Duration::from_secs(5)).is_empty());
         assert!(!repeater.anything_held());
     }
