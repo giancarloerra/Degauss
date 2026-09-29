@@ -252,7 +252,7 @@ index 60d94f5..85ea0df 100644
  	achievements_init();
  
 diff --git a/menu.cpp b/menu.cpp
-index 981b47a..396110f 100644
+index 981b47a..65739c1 100644
 --- a/menu.cpp
 +++ b/menu.cpp
 @@ -50,6 +50,13 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
@@ -516,7 +516,7 @@ index 981b47a..396110f 100644
  	case MENU_VIDEOPROC1:
  		helptext_idx = 0;
  		menumask = 0x7FFF;
-@@ -7250,17 +7436,50 @@ void HandleUI(void)
+@@ -7250,17 +7436,51 @@ void HandleUI(void)
  			static char cmd[1024 * 2];
  			const char *path = getFullPath(selPath);
  			menustate = MENU_SCRIPTS_FB2;
@@ -550,6 +550,7 @@ index 981b47a..396110f 100644
 +				ttypid = 0;
 +				degauss_running = false;
 +				video_set_degauss_native_fb(false);
++				video_chvt(1);
 +				video_menu_bg(user_io_status_get("[3:1]"));
 +				video_fb_enable(0);
 +				menustate = MENU_SYSTEM1;
@@ -570,7 +571,7 @@ index 981b47a..396110f 100644
  				execl("/sbin/agetty", "/sbin/agetty", "-a", "root", "-l", "/tmp/script", "--nohostname", "-L", "tty2", "linux", NULL);
  				exit(0); //should never be reached
  			}
-@@ -7278,6 +7497,21 @@ void HandleUI(void)
+@@ -7278,6 +7498,21 @@ void HandleUI(void)
  			{
  				ttypid = 0;
  				user_io_osd_key_enable(1);
@@ -1364,10 +1365,10 @@ index 0000000..e627958
 +}
 diff --git a/tests/run-degauss-shortcut-tests.sh b/tests/run-degauss-shortcut-tests.sh
 new file mode 100755
-index 0000000..15b7aa5
+index 0000000..b0aca3a
 --- /dev/null
 +++ b/tests/run-degauss-shortcut-tests.sh
-@@ -0,0 +1,78 @@
+@@ -0,0 +1,80 @@
 +#!/usr/bin/env bash
 +set -euo pipefail
 +
@@ -1443,9 +1444,11 @@ index 0000000..15b7aa5
 +# than treating pid -1 as a running child and leaving Degauss video active.
 +degauss_launch="$(sed -n '/degauss_running = degauss_is_frontend_script/,/case MENU_SCRIPTS_FB2:/p' menu.cpp)"
 +printf '%s\n' "$degauss_launch" | grep -q 'if (ttypid < 0)'
-+printf '%s\n' "$degauss_launch" | grep -q 'video_set_degauss_native_fb(false);'
-+printf '%s\n' "$degauss_launch" | grep -q 'video_fb_enable(0);'
-+printf '%s\n' "$degauss_launch" | grep -q 'menustate = MENU_SYSTEM1;'
++fork_failure="$(printf '%s\n' "$degauss_launch" | sed -n '/if (ttypid < 0)/,/else if (!ttypid)/p')"
++printf '%s\n' "$fork_failure" | grep -q 'video_set_degauss_native_fb(false);'
++printf '%s\n' "$fork_failure" | grep -q 'video_chvt(1);'
++printf '%s\n' "$fork_failure" | grep -q 'video_fb_enable(0);'
++printf '%s\n' "$fork_failure" | grep -q 'menustate = MENU_SYSTEM1;'
 diff --git a/tests/run-degauss-video-tests.sh b/tests/run-degauss-video-tests.sh
 new file mode 100755
 index 0000000..44cde35

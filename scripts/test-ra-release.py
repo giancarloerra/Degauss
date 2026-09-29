@@ -50,6 +50,15 @@ class ReleaseTests(unittest.TestCase):
         actual = hashlib.sha256((menu_dir / 'menu.rbf').read_bytes()).hexdigest()
         self.assertEqual(actual, expected)
 
+    def test_degauss_menu_native_framebuffer_window_uses_inclusive_bounds(self):
+        patch = (ROOT / 'support/menu-core/degauss-menu-0.9.1.patch').read_text()
+        self.assertIn("+\t.hdisp(12'd1058),", patch)
+        self.assertIn("+\t.hmax(12'd1057),", patch)
+        self.assertIn("+\t.vdisp(menu_pal ? 12'd288 : 12'd240),", patch)
+        self.assertIn("+\t.vmax(menu_pal ? 12'd287 : 12'd239),", patch)
+        self.assertNotIn("+\t.hmax(12'd1058),", patch)
+        self.assertNotIn("+\t.vmax(menu_pal ? 12'd300 : 12'd240),", patch)
+
     def test_workflow_rejects_upstream_ra_at_any_card_path(self):
         workflow = (ROOT / '.github/workflows/release.yml').read_text()
         start = workflow.index('          import posixpath\n')

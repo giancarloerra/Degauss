@@ -50,7 +50,7 @@ index 7ac4c3b..9f5b047 100644
  wire [2:0] led = status[8:6];
  
 diff --git a/sys/sys_top.v b/sys/sys_top.v
-index a416879..6cb6a69 100644
+index a416879..84b335a 100644
 --- a/sys/sys_top.v
 +++ b/sys/sys_top.v
 @@ -326,6 +326,14 @@ wire[12:0] ARX, ARY;
@@ -203,13 +203,13 @@ index a416879..6cb6a69 100644
 +	.hsend(12'd1180),
 +	.hdisp(12'd1058),
 +	.hmin(12'd0),
-+	.hmax(12'd1058),
++	.hmax(12'd1057),
 +	.vtotal(menu_pal ? 12'd312 : 12'd262),
 +	.vsstart(menu_pal ? 12'd304 : 12'd245),
 +	.vsend(menu_pal ? 12'd308 : 12'd248),
-+	.vdisp(menu_pal ? 12'd300 : 12'd240),
++	.vdisp(menu_pal ? 12'd288 : 12'd240),
 +	.vmin(12'd0),
-+	.vmax(menu_pal ? 12'd300 : 12'd240),
++	.vmax(menu_pal ? 12'd287 : 12'd239),
 +	.avl_clk(ram_clk),
 +	.avl_waitrequest(native_fb_waitrequest),
 +	.avl_readdata(ram_readdata),
