@@ -1,7 +1,7 @@
 //! The INI slots reported by the running MiSTer Main.
 
 use std::fs;
-use std::io;
+use std::io::{self, Write};
 use std::path::Path;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -22,6 +22,17 @@ fn invalid_response() -> io::Error {
         io::ErrorKind::InvalidData,
         "invalid INI profile reply from MiSTer Main",
     )
+}
+
+fn send_request(fifo: &Path, request: &[u8]) -> io::Result<()> {
+    let mut options = fs::OpenOptions::new();
+    options.write(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NONBLOCK);
+    }
+    options.open(fifo)?.write_all(request)
 }
 
 fn parse_reply(bytes: &[u8]) -> io::Result<Snapshot> {
@@ -83,7 +94,7 @@ pub fn discover(fifo: &Path) -> io::Result<Snapshot> {
             "INI profile reply path is already in use",
         ));
     }
-    fs::write(fifo, format!("ini_profiles {token}\n"))?;
+    send_request(fifo, format!("ini_profiles {token}\n").as_bytes())?;
     let deadline = Instant::now() + Duration::from_secs(3);
     while Instant::now() < deadline {
         match fs::read(&status) {
@@ -192,6 +203,30 @@ pub fn current_slot() -> io::Result<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn request_does_not_block_when_fifo_has_no_reader() {
+        use std::ffi::CString;
+        use std::os::unix::ffi::OsStrExt;
+
+        let path = std::env::temp_dir().join(format!(
+            "degauss-ini-no-reader-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let native = CString::new(path.as_os_str().as_bytes()).unwrap();
+        assert_eq!(unsafe { libc::mkfifo(native.as_ptr(), 0o600) }, 0);
+        let started = Instant::now();
+        let error = send_request(&path, b"ini_profiles 123456789\n").unwrap_err();
+        fs::remove_file(&path).unwrap();
+
+        assert_eq!(error.raw_os_error(), Some(libc::ENXIO));
+        assert!(started.elapsed() < Duration::from_secs(1));
+    }
 
     #[test]
     fn marker_matches_main_semantics() {
