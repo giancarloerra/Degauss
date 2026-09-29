@@ -33,6 +33,7 @@ def nearest_pixel(value: int, units_per_pixel: int) -> int:
 def smaller_glyphs(font: TTFont, source: Path, size: int, unit: int) -> None:
     """Reduce 6x12 cells by coverage, retaining one-pixel strokes and dots."""
     native = ImageFont.truetype(str(source), 12)
+    source_unit = UNITS_PER_EM // 12
     ascent = round(font["hhea"].ascent * size / UNITS_PER_EM)
     glyphs = font["glyf"]
     done = set()
@@ -40,18 +41,26 @@ def smaller_glyphs(font: TTFont, source: Path, size: int, unit: int) -> None:
         if name in done:
             continue
         done.add(name)
-        source_bitmap = Image.new("L", (6, 12))
-        ImageDraw.Draw(source_bitmap).text((0, 0), chr(codepoint), font=native, fill=255)
-        reduced = source_bitmap.resize((size // 2, size), Image.Resampling.BOX)
+        advance, _ = font["hmtx"][name]
+        source_advance = max(1, (advance + source_unit // 2) // source_unit)
+        bounds = native.getbbox(chr(codepoint))
+        source_left = min(0, bounds[0]) if bounds else 0
+        source_right = max(source_advance, bounds[2]) if bounds else source_advance
+        source_bitmap = Image.new("L", (source_right - source_left, 12))
+        ImageDraw.Draw(source_bitmap).text(
+            (-source_left, 0), chr(codepoint), font=native, fill=255
+        )
+        target_width = max(1, (advance + unit // 2) // unit)
+        reduced = source_bitmap.resize((target_width, size), Image.Resampling.BOX)
         pen = TTGlyphPen(None)
         for row in range(size):
             column = 0
-            while column < size // 2:
+            while column < target_width:
                 if reduced.getpixel((column, row)) == 0:
                     column += 1
                     continue
                 start = column
-                while column < size // 2 and reduced.getpixel((column, row)):
+                while column < target_width and reduced.getpixel((column, row)):
                     column += 1
                 left, right = start * unit, column * unit
                 bottom, top = (ascent - row - 1) * unit, (ascent - row) * unit
@@ -64,7 +73,6 @@ def smaller_glyphs(font: TTFont, source: Path, size: int, unit: int) -> None:
         glyphs[name] = glyph
         if glyph.numberOfContours > 0:
             glyph.recalcBounds(glyphs)
-            advance, _ = font["hmtx"][name]
             font["hmtx"][name] = (advance, glyph.xMin)
 
 

@@ -2036,7 +2036,7 @@ That timing is not universal. With `vga_scaler=1`, both connected displays must 
 ### Coloured vertical stripes appear over S-Video or composite
 
 At a 352-pixel Menu timing, the Y/C encoder does not receive enough samples per
-colour-carrier cycle. Use a 13.5 MHz output and halve only the framebuffer width:
+colour-carrier cycle. Use a 13.5 MHz output and double only the framebuffer width:
 
 ```ini
 [Menu]

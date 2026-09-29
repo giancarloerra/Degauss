@@ -20688,7 +20688,11 @@ impl App {
             repeater.set_horizontal_repeats(self.horizontal_scrolls());
             repeater.set_hold_context(self.selection_revision);
             repeater.set_hold_shortcuts(self.available_hold_shortcuts());
-            for (edge, at) in input.poll() {
+            let edges = input.poll();
+            if input.take_device_loss() {
+                ini_chord.reset_for_device_loss();
+            }
+            for (edge, at) in edges {
                 // Some controllers deliver one press as two very fast press
                 // and release pairs. The second pair is dropped here, before
                 // the repeater, so the held-scroll cadence is not touched.

@@ -152,6 +152,10 @@ impl IniChord {
     pub fn back_hold_fired(&mut self) {
         self.back_down = false;
     }
+
+    pub fn reset_for_device_loss(&mut self) {
+        *self = Self::default();
+    }
 }
 
 impl Action {
@@ -707,6 +711,7 @@ mod linux {
         devices: Vec<(PathBuf, Device)>,
         summaries: Vec<DeviceSummary>,
         missing_scans: BTreeMap<PathBuf, u8>,
+        device_lost: bool,
         last_scan: Instant,
     }
 
@@ -749,6 +754,7 @@ mod linux {
                 devices,
                 summaries,
                 missing_scans: BTreeMap::new(),
+                device_lost: false,
                 last_scan: Instant::now(),
             })
         }
@@ -790,6 +796,7 @@ mod linux {
             for path in &removed {
                 crate::note(&format!("input        disconnected {}", path.display()));
             }
+            self.device_lost |= !removed.is_empty();
             self.devices.retain(|(path, _)| !removed.contains(path));
             self.summaries
                 .retain(|summary| !removed.contains(&summary.path));
@@ -864,6 +871,7 @@ mod linux {
                 merge_by_stamp(&mut edges, drained);
             }
             if !disconnected.is_empty() {
+                self.device_lost = true;
                 self.devices
                     .retain(|(path, _)| !disconnected.contains(path));
                 self.summaries
@@ -873,6 +881,10 @@ mod linux {
                 }
             }
             edges
+        }
+
+        pub fn take_device_loss(&mut self) -> bool {
+            std::mem::take(&mut self.device_lost)
         }
     }
 
@@ -1182,6 +1194,9 @@ mod elsewhere {
         pub fn poll(&mut self) -> Vec<(KeyEdge, SystemTime)> {
             Vec::new()
         }
+        pub fn take_device_loss(&mut self) -> bool {
+            false
+        }
     }
 
     pub struct TerminalGuard;
@@ -1328,6 +1343,22 @@ mod tests {
                 IniChordResult::Forward
             );
         }
+    }
+
+    #[test]
+    fn losing_the_keyboard_cancels_a_partly_held_ini_chord() {
+        let mut chord = IniChord::default();
+        assert_eq!(
+            chord.intercept(KeyEdge::Down(Action::Quit)),
+            IniChordResult::Forward
+        );
+
+        chord.reset_for_device_loss();
+
+        assert_eq!(
+            chord.intercept(KeyEdge::Down(Action::Up)),
+            IniChordResult::Forward
+        );
     }
 
     #[test]
