@@ -388,15 +388,24 @@ impl Repeater {
         self.hold_shortcuts = shortcuts;
     }
 
-    /// Consume every pending face-button gesture when its browse target
-    /// changes, even if the same shortcut remains available on the next row.
+    /// Consume every selection-scoped face-button gesture when its browse
+    /// target changes. Back without a hold shortcut remains pending because
+    /// its release is the ordinary Back action, not an action on that target.
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     pub fn set_hold_context(&mut self, context: u64) {
         if self.hold_context == context {
             return;
         }
         self.hold_context = context;
-        self.held.retain(|held| held.button.is_none());
+        let hold_shortcuts = self.hold_shortcuts;
+        self.held.retain(|held| {
+            held.button.is_none()
+                || (held.action == Action::Quit
+                    && held
+                        .button
+                        .and_then(|button| hold_shortcuts[button.index()])
+                        .is_none())
+        });
     }
 
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
@@ -1705,6 +1714,23 @@ mod tests {
         repeater.set_hold_context(11);
         assert!(repeater.tick(now + SHORTCUT_HOLD).is_empty());
         assert_eq!(repeater.release(Action::Context, now + SHORTCUT_HOLD), None);
+    }
+
+    #[test]
+    fn changing_the_browse_target_keeps_ordinary_back_pending() {
+        let mut repeater = Repeater::new(RepeatConfig::default());
+        let now = Instant::now();
+        repeater.set_hold_context(10);
+        assert_eq!(repeater.press(Action::Down, now), Some(Action::Down));
+        assert_eq!(
+            repeater.press(Action::Quit, now + Duration::from_millis(10)),
+            None
+        );
+        repeater.set_hold_context(11);
+        assert_eq!(
+            repeater.release(Action::Quit, now + Duration::from_millis(20)),
+            Some(Action::Quit)
+        );
     }
 
     #[test]

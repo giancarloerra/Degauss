@@ -73,7 +73,7 @@ const LAST_PLAYED_CATEGORY: &str = "Last Played";
 const LAST_PLAYED_PLACE: &str = "last-played:";
 const LAST_PLAYED_SYSTEM: &str = "@LastPlayed";
 const NETWORK_CACHE_PRESERVED: &str = "Required game storage is unavailable, so the complete library cache was preserved. Restart Degauss after the mount is ready to rebuild system lists.";
-const INI_PROFILE_READING: &str = "Reading MiSTer INI profiles...";
+const INI_PROFILE_READING: &str = "Reading MiSTer INI profiles...\n\nB Cancel";
 
 /// The category shown by the frontend. The system's own category remains
 /// unchanged because launch, cache and library ownership follow MiSTer.

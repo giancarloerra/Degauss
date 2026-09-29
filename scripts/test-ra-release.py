@@ -59,6 +59,14 @@ class ReleaseTests(unittest.TestCase):
         self.assertNotIn("+\t.hmax(12'd1058),", patch)
         self.assertNotIn("+\t.vmax(menu_pal ? 12'd300 : 12'd240),", patch)
 
+    def test_degauss_menu_arbiter_forwards_both_readers(self):
+        patch = (ROOT / 'support/menu-core/degauss-menu-0.9.1.patch').read_text()
+        self.assertIn('+assign ram_read = native_fb_read | menu_ram_read;', patch)
+        self.assertNotIn('+assign ram_read = native_fb_read;', patch)
+        self.assertIn('+set_global_assignment -name SEED 5', patch)
+        source = (ROOT / 'support/menu-core/Degauss_Menu.SOURCE.txt').read_text()
+        self.assertIn('Quartus fitter seed: 5', source)
+
     def test_ra_preset_load_failure_restores_the_previous_video_state(self):
         patch = (ROOT / 'support/ra-main/frontend.patch').read_text()
         self.assertIn('+bool video_loadPreset(char *name, bool save)', patch)

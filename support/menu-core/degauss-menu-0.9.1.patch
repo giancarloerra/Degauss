@@ -1,5 +1,5 @@
 diff --git a/menu.qsf b/menu.qsf
-index 577fcc3..85e05b7 100644
+index 577fcc3..66bce68 100644
 --- a/menu.qsf
 +++ b/menu.qsf
 @@ -15,11 +15,11 @@ set_global_assignment -name PARTITION_NETLIST_TYPE SOURCE -section_id Top
@@ -21,7 +21,7 @@ index 577fcc3..85e05b7 100644
  set_global_assignment -name ROUTER_REGISTER_DUPLICATION ON
  set_global_assignment -name FITTER_AGGRESSIVE_ROUTABILITY_OPTIMIZATION ALWAYS
 -set_global_assignment -name SEED 1
-+set_global_assignment -name SEED 3
++set_global_assignment -name SEED 5
  
  source sys/sys.tcl
  source sys/sys_analog.tcl
@@ -50,7 +50,7 @@ index 7ac4c3b..9f5b047 100644
  wire [2:0] led = status[8:6];
  
 diff --git a/sys/sys_top.v b/sys/sys_top.v
-index a416879..84b335a 100644
+index a416879..a980964 100644
 --- a/sys/sys_top.v
 +++ b/sys/sys_top.v
 @@ -326,6 +326,14 @@ wire[12:0] ARX, ARY;
@@ -148,7 +148,7 @@ index a416879..84b335a 100644
 +assign ram_burstcount = native_fb_read ? native_fb_burstcount : menu_ram_burstcount;
 +assign ram_byteenable = native_fb_read ? native_fb_byteenable : menu_ram_byteenable;
 +assign ram_writedata = menu_ram_writedata;
-+assign ram_read = native_fb_read;
++assign ram_read = native_fb_read | menu_ram_read;
 +assign ram_write = menu_ram_write & ~native_fb_read;
 +assign menu_ram_waitrequest = ram_waitrequest | native_fb_read;
 +assign native_fb_waitrequest = ram_waitrequest | ~native_fb_active;
