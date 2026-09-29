@@ -196,6 +196,10 @@ owns the screen, MiSTer sends the d-pad as arrows and the face buttons as
 Enter, Escape, Space and Tab. One physical press counts once even when a
 controller or the input stack delivers it as two press and release pairs
 within 40 ms; held scrolling and deliberate repeated taps are not affected.
+**Options → Navigation → Swap A and B / Swap X and Y** can independently swap
+the controller actions inside Degauss. Keyboard controls, MiSTer's controller
+mapping and launched games remain unchanged. On-screen control hints follow
+the selected swaps; the **Hold A/B/X/Y** rows always name the physical buttons.
 
 ### Running MiSTer scripts
 
@@ -231,6 +235,19 @@ run, so they can identify the launcher without inspecting the MiSTer setup.
 hides the Home entry without changing any script files; the choice is saved
 with the other Options settings. Missing or unreadable script folders and
 scripts report their underlying error.
+
+### Automatically launching physical discs
+
+**Options → Library → Auto-run Physical Discs** is Off by default. When enabled,
+inserting a supported disc launches it through an installed
+`MiSTer_Physical-CD` or `MiSTer-disc` provider. PlayStation, Saturn, Mega CD,
+PC Engine CD, Neo Geo CD, 3DO, CD-i, MD+ and SNES MSU-1 media are recognised.
+
+Degauss uses the provider's existing MGL and the same launch handoff as any
+other game. A disc is handled once and is not launched again until it has been
+ejected. Unknown and audio-only discs are ignored. If the matching provider or
+launcher is missing, Degauss reports that instead of changing the disc or the
+MiSTer installation.
 
 ### Browsing core updates
 
@@ -858,6 +875,8 @@ require **A** and confirmation, never a sideways press.
 | Navigation | Scroll Speed | How fast a held direction moves through the list. 3x out of the box |
 | Navigation | Skip Artwork Faster Than | Above this speed, pictures wait until the list stops. 6x out of the box |
 | Navigation | Left and Right Behaviour | What left and right do while browsing: Scroll Speed Change (the default), Letter, Page or Direction. Letter and Page repeat while held; in Direction, left and right move one entry and up and down move a whole row in Tiled, Multi List and Gallery |
+| Navigation | Swap A and B | Off by default. Swap the controller's A and B actions inside Degauss only; keyboard controls and launched software are unchanged |
+| Navigation | Swap X and Y | Off by default. Swap the controller's X and Y actions inside Degauss only; keyboard controls and launched software are unchanged |
 | Navigation | Random Game Behaviour | Whether either random action starts the game, or only moves to it so you can look first |
 | Shortcuts | Hold A / Hold B / Hold X / Hold Y | Off by default. Assign None, Cycle View, Random Game, Random Favourite, Add/Remove Favourite, Game Information, Search This Folder, Jump to Letter, Actions, Menu or Start Attract Mode to each one-second hold. Assign Actions and Menu to A/B for two-button controllers. Short presses retain their normal action. Holds work only while browsing and only where the chosen command is available; otherwise the normal press is immediate |
 | Appearance | Theme | Left and right choose a palette. Press A to open the editor. Standard uses the colours in `degauss.toml`. See [Themes and colours](#themes-and-colours) |
@@ -882,6 +901,7 @@ require **A** and confirmation, never a sideways press.
 | Library | Folders Before Games | On, folders lead a system's listing; off, the games come first |
 | Library | Core Preference | Standard First (default) or RetroAchievements First. Used by systems whose Core Version is Default; the other version is used only when the preferred version is absent |
 | Library | Automatic Data Source | Gamelist First (default) or Artwork Pack First. Applies only to systems whose Game Data Source remains Automatic; explicit per-system choices always win |
+| Library | Auto-run Physical Discs | Off by default. Launch supported inserted discs through an installed `MiSTer_Physical-CD` or `MiSTer-disc` provider |
 | Library | Separate Handheld Category | Off by default. When On, recognised handheld systems appear in a Handheld category after Console. This is a display-only grouping and does not change core or game launching |
 | Library | Show Other Folder | Show the Other group, the cores that are not games |
 | Library | Show Utility Folder | Show the Utility group, test patterns and measurement cores |

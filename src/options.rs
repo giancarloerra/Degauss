@@ -17,6 +17,10 @@ pub enum OptionId {
     /// What left and right do while browsing: speed, letter, page or
     /// direction.
     LeftRight,
+    /// Swap the controller's physical A and B actions inside Degauss.
+    SwapAB,
+    /// Swap the controller's physical X and Y actions inside Degauss.
+    SwapXY,
     /// The scroll speed above which artwork stops being loaded per row.
     ArtLimit,
     Layout,
@@ -62,6 +66,8 @@ pub enum OptionId {
     CorePreference,
     /// Preferred available source for systems left on Automatic.
     AutomaticDataSource,
+    /// Watch supported physical game discs through an installed provider.
+    AutoRunPhysicalDiscs,
     /// Present recognised handheld systems in their own home category.
     SeparateHandheldCategory,
     /// The strip along the bottom of the screen, while browsing.
@@ -117,6 +123,8 @@ pub const OPTIONS: &[OptionId] = &[
     OptionId::Speed,
     OptionId::ArtLimit,
     OptionId::LeftRight,
+    OptionId::SwapAB,
+    OptionId::SwapXY,
     OptionId::Spacer,
     OptionId::HoldA,
     OptionId::HoldB,
@@ -144,6 +152,7 @@ pub const OPTIONS: &[OptionId] = &[
     OptionId::FoldersLast,
     OptionId::CorePreference,
     OptionId::AutomaticDataSource,
+    OptionId::AutoRunPhysicalDiscs,
     OptionId::SeparateHandheldCategory,
     OptionId::Spacer,
     OptionId::ShowOther,
@@ -250,6 +259,8 @@ impl OptionsPage {
                 OptionId::Speed,
                 OptionId::ArtLimit,
                 OptionId::LeftRight,
+                OptionId::SwapAB,
+                OptionId::SwapXY,
                 OptionId::RandomLaunches,
             ],
             Self::Shortcuts => &[
@@ -283,6 +294,7 @@ impl OptionsPage {
                 OptionId::FoldersLast,
                 OptionId::CorePreference,
                 OptionId::AutomaticDataSource,
+                OptionId::AutoRunPhysicalDiscs,
                 OptionId::SeparateHandheldCategory,
                 OptionId::ShowOther,
                 OptionId::ShowUtility,
@@ -314,6 +326,8 @@ impl OptionId {
         match self {
             OptionId::Speed => "Scroll Speed",
             OptionId::LeftRight => "Left and Right Behaviour",
+            OptionId::SwapAB => "Swap A and B",
+            OptionId::SwapXY => "Swap X and Y",
             OptionId::ArtLimit => "Skip Artwork Faster Than",
             OptionId::Layout => "View",
             OptionId::StartFolder => "Start Folder",
@@ -338,6 +352,7 @@ impl OptionId {
             OptionId::ShowScripts => "Show Scripts Folder",
             OptionId::CorePreference => "Core Preference",
             OptionId::AutomaticDataSource => "Automatic Data Source",
+            OptionId::AutoRunPhysicalDiscs => "Auto-run Physical Discs",
             OptionId::SeparateHandheldCategory => "Separate Handheld Category",
             OptionId::ShowBar => "Bottom Bar While Browsing",
             OptionId::RebuildCache => "Rebuild All System Lists",
@@ -375,6 +390,12 @@ impl OptionId {
             OptionId::Speed => "Set how quickly the selection moves while a direction is held.",
             OptionId::LeftRight => {
                 "Choose speed changes, letter jumps, page jumps or movement. Direction uses rows in grids."
+            }
+            OptionId::SwapAB => {
+                "Swap controller A and B inside Degauss. Keyboard controls, games and cores are unchanged."
+            }
+            OptionId::SwapXY => {
+                "Swap controller X and Y inside Degauss. Keyboard controls, games and cores are unchanged."
             }
             OptionId::ArtLimit => {
                 "Above this speed, artwork waits until scrolling stops."
@@ -435,6 +456,9 @@ impl OptionId {
             OptionId::CorePreference => "Choose the preferred core when standard and RetroAchievements versions are both installed.",
             OptionId::AutomaticDataSource => {
                 "Choose which available source systems left on Automatic try first when they are entered."
+            }
+            OptionId::AutoRunPhysicalDiscs => {
+                "Launch a supported inserted disc through an installed physical-disc provider."
             }
             OptionId::SeparateHandheldCategory => {
                 "Show recognised handheld systems in a separate Handheld category. Off keeps MiSTer's Console grouping."
@@ -626,10 +650,11 @@ mod tests {
             .ids()
             .contains(&OptionId::FavoritesFirst));
         assert!(OptionsPage::Library.ids().contains(&OptionId::FoldersLast));
-        assert!(OptionsPage::Library.ids().windows(3).any(|ids| ids
+        assert!(OptionsPage::Library.ids().windows(4).any(|ids| ids
             == [
                 OptionId::CorePreference,
                 OptionId::AutomaticDataSource,
+                OptionId::AutoRunPhysicalDiscs,
                 OptionId::SeparateHandheldCategory,
             ]));
         assert_eq!(OptionsPage::Developer.ids(), &ADVANCED);
@@ -686,6 +711,16 @@ mod tests {
             assert_eq!(option.label(), label);
         }
         assert_eq!(OptionId::FavoritesFirst.hold_button(), None);
+    }
+
+    #[test]
+    fn controller_swaps_are_independent_navigation_settings() {
+        let navigation = OptionsPage::Navigation.ids();
+        assert!(navigation
+            .windows(2)
+            .any(|ids| { ids == [OptionId::SwapAB, OptionId::SwapXY] }));
+        assert_eq!(OptionId::SwapAB.label(), "Swap A and B");
+        assert_eq!(OptionId::SwapXY.label(), "Swap X and Y");
     }
 
     #[test]

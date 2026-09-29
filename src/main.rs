@@ -44,6 +44,7 @@ mod neogeo;
 mod network_wait;
 mod options;
 mod pack_health;
+mod physical_disc;
 mod provider_job;
 mod render;
 mod scraper;

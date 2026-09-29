@@ -270,6 +270,14 @@ pub struct Settings {
     /// behaved.
     #[serde(default)]
     pub left_right: Option<String>,
+    /// Swap the controller's physical A/B actions inside Degauss. Direct
+    /// keyboard controls and launched software are unchanged. Absent is Off.
+    #[serde(default)]
+    pub swap_a_b: Option<bool>,
+    /// Swap the controller's physical X/Y actions inside Degauss. Direct
+    /// keyboard controls and launched software are unchanged. Absent is Off.
+    #[serde(default)]
+    pub swap_x_y: Option<bool>,
     /// Which typeface the interface is set in. Absent means whatever the
     /// shipped configuration says.
     #[serde(default)]
@@ -395,6 +403,11 @@ pub struct Settings {
     /// the Gamelist-first behaviour shipped before this setting existed.
     #[serde(default)]
     pub automatic_data_source: Option<AutomaticDataSource>,
+    /// Watch supported physical game discs through an installed provider.
+    /// Absent is off, preserving startup and launch behaviour from releases
+    /// before physical-disc detection existed.
+    #[serde(default)]
+    pub auto_run_physical_discs: Option<bool>,
     /// Present handheld systems in their own category. Absent is off, so
     /// existing installations retain MiSTer's Console grouping.
     #[serde(default)]
@@ -727,6 +740,9 @@ mod tests {
             AutomaticDataSource::GamelistFirst
         );
         assert_eq!(settings.separate_handheld_category, None);
+        assert!(!settings.auto_run_physical_discs.unwrap_or(false));
+        assert!(!settings.swap_a_b.unwrap_or(false));
+        assert!(!settings.swap_x_y.unwrap_or(false));
         assert_eq!(settings.show_cores, None);
         assert!(!settings.show_cores.unwrap_or(false));
         assert_eq!(settings.last_played, None);
@@ -737,6 +753,7 @@ mod tests {
         );
         assert_eq!(settings.show_misterzine, None);
         assert!(!settings.show_misterzine.unwrap_or(false));
+        assert!(!settings.auto_run_physical_discs.unwrap_or(false));
         assert!(!settings.attract_mode_menu.unwrap_or(false));
         assert!(!settings.hdmi_scanlines.unwrap_or(false));
         assert_eq!(settings.display_mask, None);
@@ -791,6 +808,8 @@ mod tests {
         );
         assert_eq!(settings.show_misterzine, None);
         assert!(!settings.show_misterzine.unwrap_or(false));
+        assert!(!settings.swap_a_b.unwrap_or(false));
+        assert!(!settings.swap_x_y.unwrap_or(false));
     }
 
     fn temp_path(tag: &str) -> std::path::PathBuf {
@@ -823,7 +842,10 @@ mod tests {
             show_game_position: Some(false),
             hdmi_scanlines: Some(true),
             attract_mode_menu: Some(true),
+            auto_run_physical_discs: Some(true),
             left_right: Some("letter".into()),
+            swap_a_b: Some(true),
+            swap_x_y: Some(true),
             font: Some("pixel".into()),
             theme_font_override: Some(true),
             theme: Some("amber".into()),

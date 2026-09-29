@@ -99,6 +99,85 @@ pub enum Action {
     HoldShortcut(HoldShortcut),
 }
 
+/// Optional remapping applied only to MiSTer's translated controller device.
+/// Direct keyboards keep their established keys.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ControllerMapping {
+    swap_a_b: bool,
+    swap_x_y: bool,
+}
+
+impl ControllerMapping {
+    pub const fn new(swap_a_b: bool, swap_x_y: bool) -> Self {
+        Self { swap_a_b, swap_x_y }
+    }
+
+    pub const fn map_action(self, action: Action) -> Action {
+        match action {
+            Action::Accept if self.swap_a_b => Action::Quit,
+            Action::Quit if self.swap_a_b => Action::Accept,
+            Action::Context if self.swap_x_y => Action::Menu,
+            Action::Menu if self.swap_x_y => Action::Context,
+            other => other,
+        }
+    }
+
+    pub const fn map_edge(self, edge: KeyEdge) -> KeyEdge {
+        match edge {
+            KeyEdge::Down(action) => KeyEdge::Down(self.map_action(action)),
+            KeyEdge::Up(action) => KeyEdge::Up(self.map_action(action)),
+        }
+    }
+
+    /// Transform only standalone face-button tokens in text already known to
+    /// be a control hint or prompt. Ordinary titles and descriptions never
+    /// pass through this function.
+    pub fn map_hint(self, text: &str) -> String {
+        if !self.swap_a_b && !self.swap_x_y {
+            return text.to_string();
+        }
+        let characters = text.chars().collect::<Vec<_>>();
+        characters
+            .iter()
+            .enumerate()
+            .map(|(index, character)| {
+                let standalone = index
+                    .checked_sub(1)
+                    .and_then(|before| characters.get(before))
+                    .is_none_or(|before| !before.is_ascii_alphanumeric())
+                    && characters
+                        .get(index + 1)
+                        .is_none_or(|after| !after.is_ascii_alphanumeric());
+                if !standalone {
+                    return *character;
+                }
+                match (*character, self.swap_a_b, self.swap_x_y) {
+                    ('A', true, _) => 'B',
+                    ('B', true, _) => 'A',
+                    ('X', _, true) => 'Y',
+                    ('Y', _, true) => 'X',
+                    _ => *character,
+                }
+            })
+            .collect()
+    }
+}
+
+#[cfg(test)]
+fn device_action(
+    mapping: ControllerMapping,
+    action: Action,
+    controller: bool,
+) -> (Action, Option<HoldButton>) {
+    let physical_button = button_for_action(action);
+    let action = if controller {
+        mapping.map_action(action)
+    } else {
+        action
+    };
+    (action, physical_button)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IniChordResult {
     Forward,
@@ -259,6 +338,8 @@ impl Default for RepeatConfig {
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 struct Held {
     action: Action,
+    /// The physical face button, before an optional controller swap.
+    button: Option<HoldButton>,
     pressed_at: Instant,
     last_fired: Instant,
     repeating: bool,
@@ -301,8 +382,7 @@ impl Repeater {
         for button in HoldButton::ALL {
             let at = button.index();
             if self.hold_shortcuts[at] != shortcuts[at] {
-                let action = action_for_button(button);
-                self.held.retain(|held| held.action != action);
+                self.held.retain(|held| held.button != Some(button));
             }
         }
         self.hold_shortcuts = shortcuts;
@@ -316,13 +396,12 @@ impl Repeater {
             return;
         }
         self.hold_context = context;
-        self.held
-            .retain(|held| button_for_action(held.action).is_none());
+        self.held.retain(|held| held.button.is_none());
     }
 
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
-    fn hold_action(&self, action: Action) -> Option<Action> {
-        button_for_action(action)
+    fn hold_action(&self, button: Option<HoldButton>) -> Option<Action> {
+        button
             .and_then(|button| self.hold_shortcuts[button.index()])
             .map(Action::HoldShortcut)
     }
@@ -341,7 +420,8 @@ impl Repeater {
             self.held.retain(|held| {
                 held.action.repeats()
                     || held.action == Action::Quit
-                    || button_for_action(held.action)
+                    || held
+                        .button
                         .and_then(|button| hold_shortcuts[button.index()])
                         .is_some()
             });
@@ -361,60 +441,89 @@ impl Repeater {
     }
 
     /// A key went down. Returns the action to perform immediately.
-    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    #[cfg(test)]
     pub fn press(&mut self, action: Action, now: Instant) -> Option<Action> {
+        self.press_with_button(action, button_for_action(action), now)
+    }
+
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    pub fn press_with_button(
+        &mut self,
+        action: Action,
+        button: Option<HoldButton>,
+        now: Instant,
+    ) -> Option<Action> {
         // Every shortcut acts on the exact selection and screen where its
         // button went down. Any other input cancels every pending face-button
         // hold before that input can change the target.
-        for button in HoldButton::ALL {
-            let held_action = action_for_button(button);
-            if action != held_action && self.hold_action(held_action).is_some() {
-                self.held.retain(|held| held.action != held_action);
+        for candidate in HoldButton::ALL {
+            if button != Some(candidate) && self.hold_action(Some(candidate)).is_some() {
+                self.held.retain(|held| held.button != Some(candidate));
             }
         }
-        if self.hold_action(action).is_some() && self.held.iter().any(|held| held.action != action)
+        let hold_action = self.hold_action(button);
+        if hold_action.is_some()
+            && self
+                .held
+                .iter()
+                .any(|held| held.action != action || held.button != button)
         {
             // A direction already held can change the shortcut's scope.
             // Keep the ordinary menu action immediate in that case.
             return Some(action);
         }
-        if self.held.iter().any(|h| h.action == action) {
+        if self
+            .held
+            .iter()
+            .any(|held| held.action == action && held.button == button)
+        {
             return None;
         }
         let retained = action.repeats()
             || (self.horizontal_repeats && matches!(action, Action::Slower | Action::Faster))
-            || self.hold_action(action).is_some()
+            || hold_action.is_some()
             || action == Action::Quit;
         if retained {
             self.held.push(Held {
                 action,
+                button,
                 pressed_at: now,
                 last_fired: now,
                 repeating: false,
             });
         }
-        if self.hold_action(action).is_some() || action == Action::Quit {
+        if hold_action.is_some() || action == Action::Quit {
             None
         } else {
             Some(action)
         }
     }
 
-    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    #[cfg(test)]
     pub fn release(&mut self, action: Action, now: Instant) -> Option<Action> {
+        self.release_with_button(action, button_for_action(action), now)
+    }
+
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    pub fn release_with_button(
+        &mut self,
+        action: Action,
+        button: Option<HoldButton>,
+        now: Instant,
+    ) -> Option<Action> {
         let held = self
             .held
             .iter()
-            .position(|held| held.action == action)
+            .position(|held| held.action == action && held.button == button)
             .map(|at| self.held.remove(at));
         let held = held?;
-        if let Some(shortcut) = self.hold_action(action).filter(|_| !held.repeating) {
+        if let Some(shortcut) = self.hold_action(held.button).filter(|_| !held.repeating) {
             if now.duration_since(held.pressed_at) >= SHORTCUT_HOLD {
                 Some(shortcut)
             } else {
                 Some(action)
             }
-        } else if action == Action::Quit && self.hold_action(action).is_none() {
+        } else if action == Action::Quit && self.hold_action(held.button).is_none() {
             Some(Action::Quit)
         } else {
             None
@@ -431,7 +540,8 @@ impl Repeater {
     pub fn tick(&mut self, now: Instant) -> Vec<Action> {
         let mut due = Vec::new();
         for held in &mut self.held {
-            let shortcut = button_for_action(held.action)
+            let shortcut = held
+                .button
                 .and_then(|button| self.hold_shortcuts[button.index()])
                 .map(Action::HoldShortcut);
             if let Some(shortcut) = shortcut {
@@ -463,15 +573,6 @@ impl Repeater {
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     pub fn anything_held(&self) -> bool {
         !self.held.is_empty()
-    }
-}
-
-fn action_for_button(button: HoldButton) -> Action {
-    match button {
-        HoldButton::A => Action::Accept,
-        HoldButton::B => Action::Quit,
-        HoldButton::X => Action::Context,
-        HoldButton::Y => Action::Menu,
     }
 }
 
@@ -540,6 +641,16 @@ pub enum KeyEdge {
     Up(Action),
 }
 
+/// A raw key transition and the device facts needed before controller-only
+/// mapping is applied.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct InputEdge {
+    pub edge: KeyEdge,
+    pub physical_button: Option<HoldButton>,
+    pub controller: bool,
+}
+
 /// The edge a Linux key event value means. 1 is a press and 0 a release;
 /// 2 is the kernel's own auto-repeat, ignored because Degauss times its
 /// own repeats.
@@ -563,7 +674,7 @@ pub fn key_edge(action: Action, value: i32) -> Option<KeyEdge> {
 /// them and leave the key held. Nothing is allocated unless both sides
 /// hold edges.
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
-pub fn merge_by_stamp(edges: &mut Vec<(KeyEdge, SystemTime)>, split: usize) {
+pub fn merge_by_stamp<T>(edges: &mut Vec<(T, SystemTime)>, split: usize) {
     if split == 0 || split == edges.len() {
         return;
     }
@@ -571,7 +682,7 @@ pub fn merge_by_stamp(edges: &mut Vec<(KeyEdge, SystemTime)>, split: usize) {
     let earlier = std::mem::replace(edges, Vec::with_capacity(split + later.len()));
     let mut earlier = earlier.into_iter().peekable();
     let mut later = later.into_iter().peekable();
-    while let (Some(&(_, before)), Some(&(_, after))) = (earlier.peek(), later.peek()) {
+    while let (Some((_, before)), Some((_, after))) = (earlier.peek(), later.peek()) {
         if after < before {
             edges.extend(later.next());
         } else {
@@ -588,6 +699,8 @@ pub const DUPLICATE_WINDOW: Duration = Duration::from_millis(40);
 
 /// One slot for every branch in [`Action::duplicate_slot`].
 const ACTION_SLOTS: usize = 14;
+/// No physical face button, followed by A, B, X and Y.
+const INPUT_IDENTITIES: usize = 5;
 
 #[derive(Debug, Clone, Copy)]
 struct Slot {
@@ -615,7 +728,7 @@ struct Slot {
 #[derive(Debug)]
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 pub struct DuplicateGuard {
-    slots: [Slot; ACTION_SLOTS],
+    slots: [Slot; ACTION_SLOTS * INPUT_IDENTITIES],
 }
 
 impl DuplicateGuard {
@@ -625,21 +738,25 @@ impl DuplicateGuard {
             slots: [Slot {
                 accepted_at: None,
                 duplicates_down: 0,
-            }; ACTION_SLOTS],
+            }; ACTION_SLOTS * INPUT_IDENTITIES],
         }
+    }
+
+    fn slot(action: Action, button: Option<HoldButton>) -> usize {
+        action.duplicate_slot() * INPUT_IDENTITIES + button.map_or(0, |button| button.index() + 1)
     }
 
     /// Filter one key edge read from a device, `at` being the time the
     /// kernel stamped on it. `None` means drop it.
     ///
     /// A press inside [`DUPLICATE_WINDOW`] of the last accepted press of the
-    /// same action is a duplicate: rejected, and its eventual release is
-    /// swallowed too, one release per rejected press, so a press delivered
-    /// three times still ends its hold on the last release. A press exactly
-    /// at the window's end is accepted. A different action is never
-    /// affected, an opposite direction included. An accepted press clears
-    /// any releases still owed, so a duplicate whose release never arrives
-    /// cannot swallow a later genuine release.
+    /// same action and physical face button is a duplicate: rejected, and its
+    /// eventual release is swallowed too, one release per rejected press, so
+    /// a press delivered three times still ends its hold on the last release.
+    /// A press exactly at the window's end is accepted. A different action or
+    /// physical button is never affected, an opposite direction included. An
+    /// accepted press clears any releases still owed, so a duplicate whose
+    /// release never arrives cannot swallow a later genuine release.
     ///
     /// The window reaches both ways from the accepted press. A poll merges
     /// what it drained by stamp, but a copy injected on one device just
@@ -648,10 +765,15 @@ impl DuplicateGuard {
     /// clock, which can step. A step larger than the window lets one press
     /// through and the next accepted press re-anchors.
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
-    pub fn admit(&mut self, edge: KeyEdge, at: SystemTime) -> Option<KeyEdge> {
+    pub fn admit(
+        &mut self,
+        edge: KeyEdge,
+        button: Option<HoldButton>,
+        at: SystemTime,
+    ) -> Option<KeyEdge> {
         match edge {
             KeyEdge::Down(action) => {
-                let slot = &mut self.slots[action.duplicate_slot()];
+                let slot = &mut self.slots[Self::slot(action, button)];
                 if slot.accepted_at.is_some_and(|accepted| {
                     let apart = match at.duration_since(accepted) {
                         Ok(later) => later,
@@ -667,7 +789,7 @@ impl DuplicateGuard {
                 Some(edge)
             }
             KeyEdge::Up(action) => {
-                let slot = &mut self.slots[action.duplicate_slot()];
+                let slot = &mut self.slots[Self::slot(action, button)];
                 if slot.duplicates_down > 0 {
                     slot.duplicates_down -= 1;
                     return None;
@@ -693,7 +815,9 @@ mod linux {
 
     use evdev::{Device, EventSummary};
 
-    use super::{action_for_key, input_path_changes, key_edge, merge_by_stamp, KeyEdge};
+    use super::{
+        action_for_key, button_for_action, input_path_changes, key_edge, merge_by_stamp, InputEdge,
+    };
     use crate::error::{DegaussError, Result};
 
     /// What was opened, so Degauss can show whether it is actually
@@ -708,7 +832,7 @@ mod linux {
     }
 
     pub struct InputReader {
-        devices: Vec<(PathBuf, Device)>,
+        devices: Vec<(PathBuf, Device, bool)>,
         summaries: Vec<DeviceSummary>,
         missing_scans: BTreeMap<PathBuf, u8>,
         device_lost: bool,
@@ -739,15 +863,16 @@ mod linux {
                     .map_err(|e| DegaussError::io("setting input device non-blocking", &path, e))?;
 
                 let name = device.name().unwrap_or("unnamed").to_string();
+                let is_mister_virtual = name.contains("MiSTer virtual input");
                 summaries.push(DeviceSummary {
                     path: path.clone(),
                     // MiSTer names its translated-gamepad device this; unlike
                     // Main we deliberately keep it, because it is the only
                     // place controller input appears while a script runs.
-                    is_mister_virtual: name.contains("MiSTer virtual input"),
+                    is_mister_virtual,
                     name,
                 });
-                devices.push((path, device));
+                devices.push((path, device, is_mister_virtual));
             }
 
             Ok(InputReader {
@@ -784,7 +909,7 @@ mod linux {
             let existing_paths = self
                 .devices
                 .iter()
-                .map(|(path, _)| path.clone())
+                .map(|(path, _, _)| path.clone())
                 .collect::<Vec<_>>();
             let discovered_paths = discovered
                 .iter()
@@ -797,7 +922,7 @@ mod linux {
                 crate::note(&format!("input        disconnected {}", path.display()));
             }
             self.device_lost |= !removed.is_empty();
-            self.devices.retain(|(path, _)| !removed.contains(path));
+            self.devices.retain(|(path, _, _)| !removed.contains(path));
             self.summaries
                 .retain(|summary| !removed.contains(&summary.path));
 
@@ -814,9 +939,10 @@ mod linux {
                 }
 
                 let name = device.name().unwrap_or("unnamed").to_string();
+                let is_mister_virtual = name.contains("MiSTer virtual input");
                 let summary = DeviceSummary {
                     path: path.clone(),
-                    is_mister_virtual: name.contains("MiSTer virtual input"),
+                    is_mister_virtual,
                     name,
                 };
                 crate::note(&format!(
@@ -825,13 +951,13 @@ mod linux {
                     summary.name
                 ));
                 self.summaries.push(summary);
-                self.devices.push((path, device));
+                self.devices.push((path, device, is_mister_virtual));
             }
         }
 
         /// Drain whatever is waiting, each edge with the time the kernel
         /// stamped on its event, in stamp order. Never blocks.
-        pub fn poll(&mut self) -> Vec<(KeyEdge, SystemTime)> {
+        pub fn poll(&mut self) -> Vec<(InputEdge, SystemTime)> {
             let now = Instant::now();
             if now.duration_since(self.last_scan) >= INPUT_SCAN_INTERVAL {
                 self.refresh_devices();
@@ -840,7 +966,7 @@ mod linux {
 
             let mut edges = Vec::new();
             let mut disconnected = Vec::new();
-            for (path, device) in &mut self.devices {
+            for (path, device, is_mister_virtual) in &mut self.devices {
                 let events = match device.fetch_events() {
                     Ok(events) => events,
                     // WouldBlock simply means nothing is waiting. Any other
@@ -860,11 +986,19 @@ mod linux {
                 for event in events {
                     let at = event.timestamp();
                     if let EventSummary::Key(_, code, value) = event.destructure() {
-                        let Some(action) = action_for_key(code.code()) else {
+                        let Some(unmapped) = action_for_key(code.code()) else {
                             continue;
                         };
-                        if let Some(edge) = key_edge(action, value) {
-                            edges.push((edge, at));
+                        let physical_button = button_for_action(unmapped);
+                        if let Some(edge) = key_edge(unmapped, value) {
+                            edges.push((
+                                InputEdge {
+                                    edge,
+                                    physical_button,
+                                    controller: *is_mister_virtual,
+                                },
+                                at,
+                            ));
                         }
                     }
                 }
@@ -873,7 +1007,7 @@ mod linux {
             if !disconnected.is_empty() {
                 self.device_lost = true;
                 self.devices
-                    .retain(|(path, _)| !disconnected.contains(path));
+                    .retain(|(path, _, _)| !disconnected.contains(path));
                 self.summaries
                     .retain(|summary| !disconnected.contains(&summary.path));
                 for path in disconnected {
@@ -1169,7 +1303,7 @@ mod elsewhere {
     use std::path::PathBuf;
     use std::time::SystemTime;
 
-    use super::KeyEdge;
+    use super::InputEdge;
     use crate::error::Result;
 
     #[derive(Debug, Clone)]
@@ -1191,7 +1325,7 @@ mod elsewhere {
         pub fn has_mister_virtual(&self) -> bool {
             false
         }
-        pub fn poll(&mut self) -> Vec<(KeyEdge, SystemTime)> {
+        pub fn poll(&mut self) -> Vec<(InputEdge, SystemTime)> {
             Vec::new()
         }
         pub fn take_device_loss(&mut self) -> bool {
@@ -1279,6 +1413,157 @@ mod tests {
             shortcuts[button.index()] = Some(*shortcut);
         }
         shortcuts
+    }
+
+    #[test]
+    fn controller_face_button_swaps_are_independent_and_keyboard_is_unchanged() {
+        let ab = ControllerMapping::new(true, false);
+        assert_eq!(device_action(ab, Action::Accept, true).0, Action::Quit);
+        assert_eq!(device_action(ab, Action::Quit, true).0, Action::Accept);
+        assert_eq!(device_action(ab, Action::Context, true).0, Action::Context);
+        assert_eq!(device_action(ab, Action::Accept, false).0, Action::Accept);
+
+        let xy = ControllerMapping::new(false, true);
+        assert_eq!(device_action(xy, Action::Context, true).0, Action::Menu);
+        assert_eq!(device_action(xy, Action::Menu, true).0, Action::Context);
+        assert_eq!(device_action(xy, Action::Quit, true).0, Action::Quit);
+
+        let both = ControllerMapping::new(true, true);
+        assert_eq!(device_action(both, Action::Accept, true).0, Action::Quit);
+        assert_eq!(device_action(both, Action::Menu, true).0, Action::Context);
+        assert_eq!(both.map_action(Action::Down), Action::Down);
+        assert_eq!(
+            ControllerMapping::default().map_action(Action::Menu),
+            Action::Menu
+        );
+    }
+
+    #[test]
+    fn controller_hints_swap_only_standalone_button_tokens() {
+        let mapping = ControllerMapping::new(true, true);
+        assert_eq!(
+            mapping.map_hint("A Open   B Back   X Actions   Y Menu"),
+            "B Open   A Back   Y Actions   X Menu"
+        );
+        assert_eq!(mapping.map_hint("B/X Actions"), "A/Y Actions");
+        assert_eq!(
+            mapping.map_hint("Arcade BOX XYLOPHONE"),
+            "Arcade BOX XYLOPHONE",
+            "ordinary words are not button tokens"
+        );
+        assert_eq!(
+            ControllerMapping::default().map_hint("A Open   B Back"),
+            "A Open   B Back"
+        );
+    }
+
+    #[test]
+    fn duplicate_guard_keeps_distinct_physical_buttons_independent() {
+        let mut guard = DuplicateGuard::new();
+        let at = SystemTime::UNIX_EPOCH;
+        let keyboard = Some(HoldButton::A);
+        let swapped_controller = Some(HoldButton::B);
+        assert_eq!(
+            guard.admit(KeyEdge::Down(Action::Accept), keyboard, at),
+            Some(KeyEdge::Down(Action::Accept))
+        );
+        assert_eq!(
+            guard.admit(
+                KeyEdge::Down(Action::Accept),
+                swapped_controller,
+                at + Duration::from_millis(5),
+            ),
+            Some(KeyEdge::Down(Action::Accept))
+        );
+        assert_eq!(
+            guard.admit(
+                KeyEdge::Up(Action::Accept),
+                keyboard,
+                at + Duration::from_millis(10),
+            ),
+            Some(KeyEdge::Up(Action::Accept))
+        );
+        assert_eq!(
+            guard.admit(
+                KeyEdge::Up(Action::Accept),
+                swapped_controller,
+                at + Duration::from_millis(15),
+            ),
+            Some(KeyEdge::Up(Action::Accept))
+        );
+    }
+
+    #[test]
+    fn duplicate_guard_filters_mixed_devices_before_controller_mapping() {
+        let mut guard = DuplicateGuard::new();
+        let mapping = ControllerMapping::new(true, false);
+        let at = SystemTime::UNIX_EPOCH;
+        let button = Some(HoldButton::A);
+
+        let controller_down = guard
+            .admit(KeyEdge::Down(Action::Accept), button, at)
+            .map(|edge| mapping.map_edge(edge));
+        assert_eq!(controller_down, Some(KeyEdge::Down(Action::Quit)));
+        assert_eq!(
+            guard.admit(
+                KeyEdge::Down(Action::Accept),
+                button,
+                at + Duration::from_millis(5),
+            ),
+            None,
+            "the keyboard copy is a duplicate of the same raw button action"
+        );
+        assert_eq!(
+            guard.admit(
+                KeyEdge::Up(Action::Accept),
+                button,
+                at + Duration::from_millis(10),
+            ),
+            None,
+            "the duplicate keyboard release is swallowed"
+        );
+        let controller_up = guard
+            .admit(
+                KeyEdge::Up(Action::Accept),
+                button,
+                at + Duration::from_millis(15),
+            )
+            .map(|edge| mapping.map_edge(edge));
+        assert_eq!(controller_up, Some(KeyEdge::Up(Action::Quit)));
+    }
+
+    #[test]
+    fn swapped_controller_actions_keep_hold_shortcuts_on_physical_buttons() {
+        let mapping = ControllerMapping::new(true, true);
+        let mut repeater = Repeater::new(RepeatConfig::default());
+        repeater.set_hold_shortcuts(shortcuts(&[
+            (HoldButton::A, HoldShortcut::CycleView),
+            (HoldButton::X, HoldShortcut::GameInformation),
+        ]));
+        let now = Instant::now();
+
+        let (action, button) = device_action(mapping, Action::Accept, true);
+        assert_eq!((action, button), (Action::Quit, Some(HoldButton::A)));
+        assert_eq!(repeater.press_with_button(action, button, now), None);
+        assert_eq!(
+            repeater.tick(now + SHORTCUT_HOLD),
+            vec![Action::HoldShortcut(HoldShortcut::CycleView)]
+        );
+        assert_eq!(
+            repeater.release_with_button(action, button, now + SHORTCUT_HOLD),
+            None
+        );
+
+        let (action, button) = device_action(mapping, Action::Context, true);
+        assert_eq!((action, button), (Action::Menu, Some(HoldButton::X)));
+        assert_eq!(
+            repeater.press_with_button(action, button, now + Duration::from_secs(2)),
+            None
+        );
+        assert_eq!(
+            repeater.tick(now + Duration::from_secs(3)),
+            vec![Action::HoldShortcut(HoldShortcut::GameInformation)]
+        );
     }
 
     #[test]
@@ -1952,8 +2237,11 @@ mod tests {
             }
             let mut dispatched = Vec::new();
             for (edge, at) in edges {
+                let physical_button = match edge {
+                    KeyEdge::Down(action) | KeyEdge::Up(action) => button_for_action(action),
+                };
                 let edge = match &mut self.guard {
-                    Some(guard) => match guard.admit(edge, at) {
+                    Some(guard) => match guard.admit(edge, physical_button, at) {
                         Some(edge) => edge,
                         None => continue,
                     },

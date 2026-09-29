@@ -4,6 +4,7 @@ use std::fs;
 use std::io::{self, Write};
 use std::path::Path;
 use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::mpsc;
 use std::time::{Duration, Instant};
 #[cfg(test)]
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -39,6 +40,43 @@ pub struct Profile {
 pub struct Snapshot {
     pub current: u8,
     pub profiles: Vec<Profile>,
+}
+
+/// One profile discovery request running away from the interface thread.
+pub struct Job {
+    result: mpsc::Receiver<Result<Snapshot, String>>,
+}
+
+impl Job {
+    pub fn start(fifo: &Path) -> io::Result<Self> {
+        let fifo = fifo.to_path_buf();
+        Self::start_with(move || discover(&fifo).map_err(|error| error.to_string()))
+    }
+
+    fn start_with(
+        read: impl FnOnce() -> Result<Snapshot, String> + Send + 'static,
+    ) -> io::Result<Self> {
+        let (sender, result) = mpsc::sync_channel(1);
+        std::thread::Builder::new()
+            .name("degauss-ini-profiles".to_string())
+            .spawn(move || {
+                let response = std::panic::catch_unwind(std::panic::AssertUnwindSafe(read))
+                    .map_err(|_| "INI profile reader stopped unexpectedly".to_string())
+                    .and_then(|result| result);
+                let _ = sender.send(response);
+            })?;
+        Ok(Self { result })
+    }
+
+    pub fn try_recv(&self) -> Option<Result<Snapshot, String>> {
+        match self.result.try_recv() {
+            Ok(result) => Some(result),
+            Err(mpsc::TryRecvError::Empty) => None,
+            Err(mpsc::TryRecvError::Disconnected) => {
+                Some(Err("INI profile reader disconnected".to_string()))
+            }
+        }
+    }
 }
 
 fn invalid_response() -> io::Error {
@@ -243,6 +281,34 @@ pub fn current_slot() -> io::Result<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn profile_job_does_not_wait_for_discovery_on_the_caller() {
+        let (release, wait) = mpsc::sync_channel(0);
+        let job = Job::start_with(move || {
+            wait.recv().unwrap();
+            Ok(Snapshot {
+                current: 0,
+                profiles: vec![Profile {
+                    slot: 0,
+                    name: "Main".to_string(),
+                }],
+            })
+        })
+        .unwrap();
+
+        assert!(job.try_recv().is_none());
+        release.send(()).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(1);
+        loop {
+            if let Some(result) = job.try_recv() {
+                assert_eq!(result.unwrap().profiles[0].name, "Main");
+                break;
+            }
+            assert!(Instant::now() < deadline);
+            std::thread::yield_now();
+        }
+    }
 
     #[cfg(unix)]
     #[test]

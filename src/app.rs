@@ -44,8 +44,8 @@ use crate::game_filter::{
     Choice as GameFilterChoice, Field as GameFilterField, Filters as GameFilters,
 };
 use crate::input::{
-    Action, DuplicateGuard, IniChord, IniChordResult, InputReader, KeyEdge, RepeatConfig, Repeater,
-    SPEED_START, SPEED_STEPS,
+    Action, ControllerMapping, DuplicateGuard, IniChord, IniChordResult, InputReader, KeyEdge,
+    RepeatConfig, Repeater, SPEED_START, SPEED_STEPS,
 };
 use crate::list_state::ListState;
 use crate::metrics::{FrameTimer, StartupTimings};
@@ -73,6 +73,7 @@ const LAST_PLAYED_CATEGORY: &str = "Last Played";
 const LAST_PLAYED_PLACE: &str = "last-played:";
 const LAST_PLAYED_SYSTEM: &str = "@LastPlayed";
 const NETWORK_CACHE_PRESERVED: &str = "Required game storage is unavailable, so the complete library cache was preserved. Restart Degauss after the mount is ready to rebuild system lists.";
+const INI_PROFILE_READING: &str = "Reading MiSTer INI profiles...";
 
 /// The category shown by the frontend. The system's own category remains
 /// unchanged because launch, cache and library ownership follow MiSTer.
@@ -244,6 +245,12 @@ enum Pending {
     },
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum IniProfileAction {
+    Confirm(u8),
+    Switch(u8),
+}
+
 /// What an Artwork Pack question is about: the system, the root and the
 /// state of the source as it was found, so a No is remembered for exactly
 /// that state and a Yes prepares exactly that root.
@@ -338,6 +345,8 @@ fn option_operation(option: OptionId, input: OptionInput) -> OptionOperation {
         },
         OptionId::Speed
         | OptionId::LeftRight
+        | OptionId::SwapAB
+        | OptionId::SwapXY
         | OptionId::ArtLimit
         | OptionId::Layout
         | OptionId::StartFolder
@@ -360,6 +369,7 @@ fn option_operation(option: OptionId, input: OptionInput) -> OptionOperation {
         | OptionId::ShowScripts
         | OptionId::CorePreference
         | OptionId::AutomaticDataSource
+        | OptionId::AutoRunPhysicalDiscs
         | OptionId::SeparateHandheldCategory
         | OptionId::ShowBar
         | OptionId::FavoritesFirst
@@ -3950,6 +3960,8 @@ pub struct App {
     ini_profiles: Vec<crate::ini_profile::Profile>,
     ini_current: Option<u8>,
     ini_selected: usize,
+    ini_profile_job: Option<crate::ini_profile::Job>,
+    ini_profile_action: Option<IniProfileAction>,
     theme_editor_list: ListState,
     help_list: ListState,
     about_list: ListState,
@@ -4733,6 +4745,8 @@ impl App {
             ini_profiles: Vec::new(),
             ini_current: None,
             ini_selected: 0,
+            ini_profile_job: None,
+            ini_profile_action: None,
             theme_editor_list: ListState::new(EDITOR_ROWS, geometry.visible),
             about_list: ListState::new(1, geometry.visible),
             help_list: ListState::new(HELP.len(), geometry.visible),
@@ -5327,12 +5341,15 @@ impl App {
             (self.screen == Screen::Find && self.find_mode == FindMode::Search)
                 || self.screen == Screen::NameKeyboard,
         );
+        let grid_explanation = if self.screen == Screen::NameKeyboard {
+            "B Uses This Name"
+        } else if self.screen == Screen::Find && self.find_mode == FindMode::Search {
+            "Live Filter · B Keeps the Search"
+        } else {
+            ""
+        };
         self.ui
-            .set_grid_explanation(SharedString::from(if self.screen == Screen::NameKeyboard {
-                "B Uses This Name"
-            } else {
-                ""
-            }));
+            .set_grid_explanation(SharedString::from(self.control_hint(grid_explanation)));
         if self.screen == Screen::Find {
             // The grid sizes itself from the screen rather than from the
             // list geometry, which is measured for rows of text.
@@ -5368,7 +5385,7 @@ impl App {
                 .set_grid_rows(cells.div_ceil(SCRAPER_KEYBOARD_COLUMNS).max(1) as i32);
             self.ui.set_find_search(false);
         }
-        self.ui.set_grid_help(SharedString::from(match self.screen {
+        let grid_help = match self.screen {
             Screen::NameKeyboard => "A Type  B Done  X Del  Y Page",
             Screen::ScraperKeyboard if self.scraper_keyboard_field == ScraperField::SearchTerm => {
                 "A Type  B Search  X Del  Y Page"
@@ -5377,42 +5394,43 @@ impl App {
             Screen::Find if self.find_mode == FindMode::Search => "A Type B Back X Del Y Clear",
             Screen::Find => "A Pick   B Back",
             _ => "",
-        }));
+        };
         self.ui
-            .set_plain_help(SharedString::from(match self.screen {
-                Screen::Context | Screen::Scraper | Screen::Options | Screen::Advanced => {
-                    self.menu_controls()
-                }
-                Screen::ScraperProgress => "Up/Down Scroll   B Overview",
-                Screen::ScraperMatches if self.scraper_search_job.is_some() => {
-                    "Searching   B Cancel"
-                }
-                Screen::ScraperMatches if self.scraper_matches.is_empty() => "B Back   X Search",
-                Screen::ScraperMatches => "A Use   B Back   X Search",
-                Screen::LaunchCore | Screen::GameDataSource | Screen::ArtworkPackLocation
-                    if self.width < 480 =>
-                {
-                    "↑↓ Choose  A Select  B Back"
-                }
-                Screen::LaunchCore | Screen::GameDataSource | Screen::ArtworkPackLocation => {
-                    "Up/Down Choose   A Select   B Back"
-                }
-                Screen::ArtworkPackDirectory if self.width < 480 => "↑↓ Choose  A Use  B Parent",
-                Screen::ArtworkPackDirectory => "Up/Down Choose   A Open/Use   B Parent",
-                Screen::SourceProgress if self.source_cancelling || self.provider_cancelling => {
-                    "Stopping safely   Please wait"
-                }
-                Screen::SourceProgress => "B Cancel",
-                Screen::OptionsRoot => "A Open   B Back",
-                Screen::Scripts => "A Open/Run   B Parent",
-                Screen::Menu
-                | Screen::FavoriteFolder
-                | Screen::GameFilters
-                | Screen::GameFilterValues => "A Select   B Back",
-                Screen::Help => "↑↓ Read   B Back",
-                Screen::Information => "↑↓ Read   ←→ Page   B/X Actions",
-                _ => "",
-            }));
+            .set_grid_help(SharedString::from(self.control_hint(grid_help)));
+        let plain_help = match self.screen {
+            Screen::Context | Screen::Scraper | Screen::Options | Screen::Advanced => {
+                self.menu_controls()
+            }
+            Screen::ScraperProgress => "Up/Down Scroll   B Overview",
+            Screen::ScraperMatches if self.scraper_search_job.is_some() => "Searching   B Cancel",
+            Screen::ScraperMatches if self.scraper_matches.is_empty() => "B Back   X Search",
+            Screen::ScraperMatches => "A Use   B Back   X Search",
+            Screen::LaunchCore | Screen::GameDataSource | Screen::ArtworkPackLocation
+                if self.width < 480 =>
+            {
+                "↑↓ Choose  A Select  B Back"
+            }
+            Screen::LaunchCore | Screen::GameDataSource | Screen::ArtworkPackLocation => {
+                "Up/Down Choose   A Select   B Back"
+            }
+            Screen::ArtworkPackDirectory if self.width < 480 => "↑↓ Choose  A Use  B Parent",
+            Screen::ArtworkPackDirectory => "Up/Down Choose   A Open/Use   B Parent",
+            Screen::SourceProgress if self.source_cancelling || self.provider_cancelling => {
+                "Stopping safely   Please wait"
+            }
+            Screen::SourceProgress => "B Cancel",
+            Screen::OptionsRoot => "A Open   B Back",
+            Screen::Scripts => "A Open/Run   B Parent",
+            Screen::Menu
+            | Screen::FavoriteFolder
+            | Screen::GameFilters
+            | Screen::GameFilterValues => "A Select   B Back",
+            Screen::Help => "↑↓ Read   B Back",
+            Screen::Information => "↑↓ Read   ←→ Page   B/X Actions",
+            _ => "",
+        };
+        self.ui
+            .set_plain_help(SharedString::from(self.control_hint(plain_help)));
         // The margin, then the nudge: one side gains what the other gives
         // up, so the picture moves without changing size. Clamped so a
         // nudge larger than the margin cannot push an edge off the screen.
@@ -5558,15 +5576,14 @@ impl App {
                     self.dirty = true;
                 }
             }
-        } else if page == OptionsPage::Developer {
-            if let Err(error) = self.refresh_ini_profiles() {
-                crate::note(&error);
-            }
         }
         self.options_page = page;
         self.options_root_list.select(page.index());
         self.screen = Screen::Options;
         self.apply_geometry();
+        if page == OptionsPage::Developer {
+            self.start_ini_profile_refresh(None);
+        }
     }
 
     fn open_information(&mut self) {
@@ -9961,7 +9978,7 @@ impl App {
             self.ui
                 .set_operation_problem(self.network_problem.as_deref().unwrap_or_default().into());
             self.ui.set_operation_controls(
-                if active {
+                self.control_hint(if active {
                     if cancelling {
                         "Stopping Safely"
                     } else {
@@ -9971,7 +9988,7 @@ impl App {
                     "A Retry   B Exit"
                 } else {
                     "A Retry   B Continue Local"
-                }
+                })
                 .into(),
             );
             return;
@@ -10031,13 +10048,13 @@ impl App {
                 ])));
             self.ui.set_operation_problem(view.problem.into());
             self.ui.set_operation_controls(
-                if self.index_details {
+                self.control_hint(if self.index_details {
                     "Up/Down Scroll   B Overview"
                 } else if active {
                     "A Details   B Cancel"
                 } else {
                     "A Details   B Back"
-                }
+                })
                 .into(),
             );
             return;
@@ -10120,11 +10137,11 @@ impl App {
                 ])));
             self.ui.set_operation_problem(SharedString::default());
             self.ui.set_operation_controls(
-                if progress.cancelling {
+                self.control_hint(if progress.cancelling {
                     "Stopping Safely"
                 } else {
                     "B Cancel"
-                }
+                })
                 .into(),
             );
             return;
@@ -10221,7 +10238,7 @@ impl App {
             ])));
         self.ui.set_operation_problem(problem.into());
         self.ui.set_operation_controls(
-            if self.scraper_details {
+            self.control_hint(if self.scraper_details {
                 "Up/Down Scroll   B Overview"
             } else if finishing || self.scraper_cancelling {
                 "A Details   Finishing Safely"
@@ -10229,7 +10246,7 @@ impl App {
                 "A Details   B Cancel"
             } else {
                 "A Details   B Back"
-            }
+            })
             .into(),
         );
     }
@@ -12236,12 +12253,10 @@ impl App {
                 self.open_scraper(crate::scraper::Scope::All, Screen::Options)
             }
             OptionOperation::OpenAdvanced => {
-                if let Err(error) = self.refresh_ini_profiles() {
-                    self.message = Some(error);
-                }
                 self.screen = Screen::Advanced;
                 self.apply_geometry();
                 self.dirty = true;
+                self.start_ini_profile_refresh(None);
             }
             OptionOperation::CycleIni(delta) => {
                 if !self.ini_profiles.is_empty() {
@@ -12253,64 +12268,105 @@ impl App {
             }
             OptionOperation::ConfirmSwitchIni => {
                 if self.ini_profiles.is_empty() {
-                    if let Err(error) = self.refresh_ini_profiles() {
-                        self.message = Some(error);
-                        self.dirty = true;
-                        return;
-                    }
+                    self.start_ini_profile_refresh(None);
+                    self.message = Some(INI_PROFILE_READING.to_string());
+                    self.dirty = true;
+                    return;
                 }
                 if let Some(profile) = self.ini_profiles.get(self.ini_selected).cloned() {
-                    if self.ini_slot_available(profile.slot) {
-                        self.pending = Some(Pending::SwitchIni(profile.slot));
-                        self.message = Some(format!(
-                            "Switch to {}?\n\nThis reloads the current core or frontend. The selected video settings may leave this display without a signal.\n\nA Switch   B Cancel",
-                            profile.name
-                        ));
-                        self.dirty = true;
-                    }
+                    self.start_ini_profile_refresh(Some(IniProfileAction::Confirm(profile.slot)));
                 }
             }
         }
     }
 
-    fn refresh_ini_profiles(&mut self) -> std::result::Result<(), String> {
-        match crate::ini_profile::discover(Path::new(crate::launch::CMD_FIFO)) {
-            Ok(snapshot) => {
-                self.ini_current = Some(snapshot.current);
-                self.ini_profiles = snapshot.profiles;
-                self.ini_selected = self
-                    .ini_profiles
-                    .iter()
-                    .position(|profile| profile.slot == snapshot.current)
-                    .unwrap_or(0);
-                Ok(())
-            }
-            Err(error) => {
-                self.ini_profiles.clear();
-                self.ini_current = None;
-                Err(format!("Cannot read MiSTer INI profiles: {error}"))
-            }
+    fn start_ini_profile_refresh(&mut self, action: Option<IniProfileAction>) {
+        if let Some(action) = action {
+            self.ini_profile_action = Some(action);
+            self.message = Some(INI_PROFILE_READING.to_string());
+            self.dirty = true;
+        }
+        if self.ini_profile_job.is_some() {
+            return;
+        }
+        match crate::ini_profile::Job::start(Path::new(crate::launch::CMD_FIFO)) {
+            Ok(job) => self.ini_profile_job = Some(job),
+            Err(error) => self.finish_ini_profile_error(error.to_string()),
         }
     }
 
-    fn ini_slot_available(&mut self, slot: u8) -> bool {
-        let snapshot = match crate::ini_profile::discover(Path::new(crate::launch::CMD_FIFO)) {
-            Ok(snapshot) => snapshot,
-            Err(error) => {
-                self.message = Some(format!("Cannot read MiSTer INI profiles: {error}"));
-                self.dirty = true;
-                return false;
-            }
-        };
-        if snapshot.current == slot {
-            self.message = Some("That INI profile is already active.".to_string());
-        } else if !snapshot.profiles.iter().any(|profile| profile.slot == slot) {
-            self.message = Some("That INI profile is unavailable.".to_string());
-        } else {
-            return true;
+    fn finish_ini_profile_error(&mut self, error: String) {
+        let error = format!("Cannot read MiSTer INI profiles: {error}");
+        crate::note(&error);
+        self.ini_profiles.clear();
+        self.ini_current = None;
+        self.ini_selected = 0;
+        self.ini_profile_job = None;
+        let requested = self.ini_profile_action.take().is_some();
+        if requested
+            || self.screen == Screen::Advanced
+            || (self.screen == Screen::Options && self.options_page == OptionsPage::Developer)
+        {
+            self.message = Some(error);
         }
         self.dirty = true;
-        false
+    }
+
+    fn poll_ini_profiles(&mut self) -> Option<Outcome> {
+        let result = self
+            .ini_profile_job
+            .as_ref()
+            .and_then(crate::ini_profile::Job::try_recv)?;
+        self.ini_profile_job = None;
+        let snapshot = match result {
+            Ok(snapshot) => snapshot,
+            Err(error) => {
+                self.finish_ini_profile_error(error);
+                return None;
+            }
+        };
+        self.ini_current = Some(snapshot.current);
+        self.ini_profiles = snapshot.profiles;
+        self.ini_selected = self
+            .ini_profiles
+            .iter()
+            .position(|profile| profile.slot == snapshot.current)
+            .unwrap_or(0);
+        let Some(action) = self.ini_profile_action.take() else {
+            if self.message.as_deref() == Some(INI_PROFILE_READING) {
+                self.message = None;
+            }
+            self.dirty = true;
+            return None;
+        };
+        let slot = match action {
+            IniProfileAction::Confirm(slot) | IniProfileAction::Switch(slot) => slot,
+        };
+        if let Some(problem) = ini_slot_problem(self.ini_current, &self.ini_profiles, slot) {
+            self.message = Some(problem.to_string());
+            self.dirty = true;
+            return None;
+        }
+        match action {
+            IniProfileAction::Confirm(slot) => {
+                let name = self
+                    .ini_profiles
+                    .iter()
+                    .find(|profile| profile.slot == slot)
+                    .map(|profile| profile.name.as_str())
+                    .unwrap_or("INI profile");
+                self.pending = Some(Pending::SwitchIni(slot));
+                self.message = Some(format!(
+                    "Switch to {name}?\n\nThis reloads the current core or frontend. The selected video settings may leave this display without a signal.\n\nA Switch   B Cancel"
+                ));
+                self.dirty = true;
+                None
+            }
+            IniProfileAction::Switch(slot) if self.save_settings() => {
+                Some(Outcome::SwitchIni(slot))
+            }
+            IniProfileAction::Switch(_) => None,
+        }
     }
 
     /// Reclassify only the visible navigation tree. If the option changes
@@ -12419,6 +12475,12 @@ impl App {
                 let at = step(self.horizontal.index(), delta, Horizontal::ALL.len());
                 self.horizontal = Horizontal::ALL[at];
                 self.settings.left_right = Some(self.horizontal.label().to_string());
+            }
+            OptionId::SwapAB => {
+                self.settings.swap_a_b = Some(!self.settings.swap_a_b.unwrap_or(false));
+            }
+            OptionId::SwapXY => {
+                self.settings.swap_x_y = Some(!self.settings.swap_x_y.unwrap_or(false));
             }
             OptionId::Font => {
                 self.font = if delta < 0 {
@@ -12693,6 +12755,10 @@ impl App {
                         .next(),
                 );
             }
+            OptionId::AutoRunPhysicalDiscs => {
+                self.settings.auto_run_physical_discs =
+                    Some(!self.settings.auto_run_physical_discs.unwrap_or(false));
+            }
             OptionId::SeparateHandheldCategory => {
                 let enabled = !self.settings.separate_handheld_category.unwrap_or(false);
                 self.set_separate_handheld_category(enabled);
@@ -12851,6 +12917,8 @@ impl App {
                 count => format!("{count} set"),
             },
             OptionId::LeftRight => self.horizontal.shown().to_string(),
+            OptionId::SwapAB => on_off(self.settings.swap_a_b.unwrap_or(false)),
+            OptionId::SwapXY => on_off(self.settings.swap_x_y.unwrap_or(false)),
             OptionId::Font => self.font.shown().to_string(),
             // The names are file names, shown as the user wrote them; only
             // the built-in state has a word of its own.
@@ -12887,7 +12955,13 @@ impl App {
                         profile.name.clone()
                     }
                 })
-                .unwrap_or_else(|| "Unavailable".to_string()),
+                .unwrap_or_else(|| {
+                    if self.ini_profile_job.is_some() {
+                        "Reading...".to_string()
+                    } else {
+                        "Unavailable".to_string()
+                    }
+                }),
             OptionId::ScreenRotation => self.screen_rotation.label().to_string(),
             OptionId::ShowHidden => on_off(self.show_hidden),
             OptionId::ShowEmpty => on_off(self.show_empty),
@@ -12909,6 +12983,9 @@ impl App {
                 .unwrap_or_default()
                 .label()
                 .to_string(),
+            OptionId::AutoRunPhysicalDiscs => {
+                on_off(self.settings.auto_run_physical_discs.unwrap_or(false))
+            }
             OptionId::SeparateHandheldCategory => {
                 on_off(self.settings.separate_handheld_category.unwrap_or(false))
             }
@@ -18331,6 +18408,15 @@ impl App {
             return None;
         }
 
+        if self.ini_profile_action.is_some() {
+            if action == Action::Quit {
+                self.ini_profile_action = None;
+                self.message = None;
+                self.dirty = true;
+            }
+            return None;
+        }
+
         if self.build.is_some() || self.index_terminal.is_some() {
             match action {
                 Action::Accept if !self.index_details => {
@@ -18387,9 +18473,7 @@ impl App {
                     match pending {
                         Pending::Exit => return Some(Outcome::Quit),
                         Pending::SwitchIni(slot) => {
-                            if self.ini_slot_available(slot) {
-                                return Some(Outcome::SwitchIni(slot));
-                            }
+                            self.start_ini_profile_refresh(Some(IniProfileAction::Switch(slot)));
                         }
                         Pending::RunScript(launch) => {
                             if let Err(error) = launch.validate() {
@@ -20003,7 +20087,7 @@ impl App {
                     } else {
                         HELP[index]
                     };
-                    rows.push(plain_row(line, ""));
+                    rows.push(plain_row(&self.control_hint(line), ""));
                 }
             }
         }
@@ -20102,7 +20186,8 @@ impl App {
         } else {
             "X Actions for Info".to_string()
         };
-        self.ui.set_compact_info(SharedString::from(info));
+        self.ui
+            .set_compact_info(SharedString::from(self.control_hint(&info)));
     }
 
     /// How much room the lines under the picture take, if any.
@@ -20390,7 +20475,8 @@ impl App {
                 (heading, help.to_string())
             }
             Screen::Context => {
-                self.ui.set_plain_help(self.menu_controls().into());
+                self.ui
+                    .set_plain_help(self.control_hint(self.menu_controls()).into());
                 let selected = self
                     .menu
                     .get(self.menu_list.selected())
@@ -20419,7 +20505,8 @@ impl App {
             ),
             Screen::Information => ("Game Information".to_string(), String::new()),
             Screen::Scraper => {
-                self.ui.set_plain_help(self.menu_controls().into());
+                self.ui
+                    .set_plain_help(self.control_hint(self.menu_controls()).into());
                 (
                     "ScreenScraper".to_string(),
                     self.scraper_selected_help().to_string(),
@@ -20552,7 +20639,8 @@ impl App {
                 },
             ),
             Screen::Options | Screen::Advanced => {
-                self.ui.set_plain_help(self.menu_controls().into());
+                self.ui
+                    .set_plain_help(self.control_hint(self.menu_controls()).into());
                 (
                     if self.screen == Screen::Advanced {
                         "Options / Developer".to_string()
@@ -20580,7 +20668,51 @@ impl App {
         };
 
         self.ui.set_heading(SharedString::from(heading));
-        self.ui.set_status(SharedString::from(status));
+        let displayed_status = if matches!(
+            self.screen,
+            Screen::Scripts | Screen::CategoryImage | Screen::ThemeEditor | Screen::SourceProgress
+        ) {
+            self.control_hint(&status)
+        } else {
+            status.clone()
+        };
+        self.ui.set_status(SharedString::from(displayed_status));
+        let controls_are_mapped = matches!(self.screen.ui_index(), 1 | 4);
+        let bottom_controls = match self.screen.ui_index() {
+            0 => {
+                let action = if self.ui.get_browse_playable() {
+                    "Play"
+                } else {
+                    "Open"
+                };
+                if self.width >= 480 {
+                    format!(
+                        "↑↓ Choose   ←→ {}   A {action}   B Back   X Actions   Y Menu",
+                        self.horizontal.legend_word()
+                    )
+                } else {
+                    format!("A {action}  B Back  X Actions  Y Menu")
+                }
+            }
+            1 => self.ui.get_plain_help().to_string(),
+            4 => self.ui.get_grid_help().to_string(),
+            5 => status.clone(),
+            6 => "↑↓ Scroll   B Back".to_string(),
+            _ => String::new(),
+        };
+        let bottom_controls = if controls_are_mapped {
+            bottom_controls
+        } else {
+            self.control_hint(&bottom_controls)
+        };
+        self.ui
+            .set_bottom_controls(SharedString::from(bottom_controls));
+        self.ui
+            .set_overlay_close_controls(self.control_hint("B Close").into());
+        self.ui
+            .set_overlay_read_close_controls(self.control_hint("↑↓ Read   B Close").into());
+        self.ui
+            .set_saver_controls(self.control_hint("A Launch  ←→ System").into());
         if self.screen == Screen::Find && self.find_mode == FindMode::Search {
             self.ui.set_find_query(self.filter.clone().into());
         } else if self.screen == Screen::NameKeyboard {
@@ -20594,11 +20726,17 @@ impl App {
         // B no" and build progress replaces itself every frame, so neither
         // takes the hint.
         let overlay = self.message.as_deref().unwrap_or_default();
+        let overlay = if self.pending.is_some() || self.rotation_preview_deadline.is_some() {
+            self.control_hint(overlay)
+        } else {
+            overlay.to_string()
+        };
         if self.ui.get_overlay().as_str() != overlay {
             self.ui.set_overlay_offset(0.0);
         }
-        self.ui
-            .set_overlay_dismissible(self.pending.is_none() && self.build.is_none());
+        self.ui.set_overlay_dismissible(
+            self.pending.is_none() && self.build.is_none() && self.ini_profile_action.is_none(),
+        );
         self.ui.set_overlay(SharedString::from(overlay));
     }
     fn stats_line(&self) -> String {
@@ -20626,6 +20764,17 @@ impl App {
         self.screen_rotation
     }
 
+    fn controller_mapping(&self) -> ControllerMapping {
+        ControllerMapping::new(
+            self.settings.swap_a_b.unwrap_or(false),
+            self.settings.swap_x_y.unwrap_or(false),
+        )
+    }
+
+    fn control_hint(&self, text: &str) -> String {
+        self.controller_mapping().map_hint(text)
+    }
+
     /// Resolve startup presentation without persisting an implicit device default.
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     pub fn initialize_presentation(
@@ -20636,6 +20785,37 @@ impl App {
         let mode = initial_present_mode(self.settings.present.as_deref(), default, explicit);
         self.present_label = mode.label();
         mode
+    }
+
+    fn handle_physical_disc_event(
+        &mut self,
+        event: crate::physical_disc::Event,
+    ) -> Option<Outcome> {
+        match event {
+            crate::physical_disc::Event::Error(message) => {
+                crate::note(&format!("physical disc  {message}"));
+                self.message = Some(message);
+                self.dirty = true;
+                None
+            }
+            crate::physical_disc::Event::Launch(path) => {
+                match crate::launch::plan_core(&path, Path::new(&self.config.menu_root)) {
+                    Ok(plan) => Some(Outcome::Launch {
+                        plan: Box::new(plan),
+                        name: "Physical Disc".to_string(),
+                        history: None,
+                        active_game: None,
+                    }),
+                    Err(error) => {
+                        let message = format!("Physical disc could not be launched: {error}");
+                        crate::note(&format!("physical disc  {message}"));
+                        self.message = Some(message);
+                        self.dirty = true;
+                        None
+                    }
+                }
+            }
+        }
     }
 
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
@@ -20656,6 +20836,8 @@ impl App {
         // Dropped for good if the device ever declines, so a framebuffer
         // without the ioctl costs one failed call rather than one per frame.
         let mut vsync_usable = true;
+        let mut physical_discs = crate::physical_disc::Session::new();
+        let mut physical_disc_error = None;
 
         loop {
             if !owner_alive()? {
@@ -20663,6 +20845,38 @@ impl App {
                 return Ok(Outcome::LauncherReplaced);
             }
             let now = Instant::now();
+
+            let physical_discs_enabled = self.settings.auto_run_physical_discs.unwrap_or(false);
+            if !physical_discs_enabled {
+                physical_disc_error = None;
+            }
+            if let Err(error) = physical_discs.sync_enabled(physical_discs_enabled) {
+                let message = format!("Physical disc detection could not be changed: {error}");
+                crate::note(&format!("physical disc  {message}"));
+                self.message = Some(message);
+                self.dirty = true;
+            }
+            match physical_discs.poll(now) {
+                Ok(crate::physical_disc::Poll::Idle) => {}
+                Ok(crate::physical_disc::Poll::Checked(event)) => {
+                    physical_disc_error = None;
+                    if let Some(event) = event {
+                        if let Some(outcome) = self.handle_physical_disc_event(event) {
+                            self.save_settings();
+                            return Ok(outcome);
+                        }
+                    }
+                }
+                Err(error) => {
+                    let message = format!("Physical disc detection failed: {error}");
+                    if physical_disc_error.as_deref() != Some(message.as_str()) {
+                        crate::note(&format!("physical disc  {message}"));
+                        self.message = Some(message.clone());
+                        self.dirty = true;
+                    }
+                    physical_disc_error = Some(message);
+                }
+            }
 
             slint::platform::update_timers_and_animations();
             self.poll_network_startup();
@@ -20677,6 +20891,9 @@ impl App {
             self.poll_misterzine();
             self.maintain_misterzine_games(now);
             self.open_deferred_network_system();
+            if let Some(outcome) = self.poll_ini_profiles() {
+                return Ok(outcome);
+            }
 
             self.expire_rotation_preview(now);
 
@@ -20688,34 +20905,43 @@ impl App {
             repeater.set_horizontal_repeats(self.horizontal_scrolls());
             repeater.set_hold_context(self.selection_revision);
             repeater.set_hold_shortcuts(self.available_hold_shortcuts());
+            let controller_mapping = self.controller_mapping();
             let edges = input.poll();
             if input.take_device_loss() {
                 ini_chord.reset_for_device_loss();
             }
-            for (edge, at) in edges {
+            for (input_edge, at) in edges {
                 // Some controllers deliver one press as two very fast press
                 // and release pairs. The second pair is dropped here, before
                 // the repeater, so the held-scroll cadence is not touched.
                 // Judged on the kernel's stamp for each event rather than
                 // this frame's `now`: a frame stalled on a system read
                 // drains every press queued behind it in one poll.
-                let Some(edge) = duplicates.admit(edge, at) else {
+                let Some(edge) = duplicates.admit(input_edge.edge, input_edge.physical_button, at)
+                else {
                     continue;
+                };
+                let edge = if input_edge.controller {
+                    controller_mapping.map_edge(edge)
+                } else {
+                    edge
                 };
                 match ini_chord.intercept(edge) {
                     IniChordResult::Forward => {}
                     IniChordResult::Consume => continue,
                     IniChordResult::Switch(slot) => {
                         repeater.cancel(Action::Quit);
-                        if self.ini_slot_available(slot) && self.save_settings() {
-                            return Ok(Outcome::SwitchIni(slot));
-                        }
+                        self.start_ini_profile_refresh(Some(IniProfileAction::Switch(slot)));
                         continue;
                     }
                 }
                 let action = match edge {
-                    KeyEdge::Down(action) => repeater.press(action, now),
-                    KeyEdge::Up(action) => repeater.release(action, now),
+                    KeyEdge::Down(action) => {
+                        repeater.press_with_button(action, input_edge.physical_button, now)
+                    }
+                    KeyEdge::Up(action) => {
+                        repeater.release_with_button(action, input_edge.physical_button, now)
+                    }
                 };
                 if let Some(action) = action {
                     if let Some(outcome) = self.handle(action) {
@@ -21596,6 +21822,20 @@ fn plain_row(title: &str, value: &str) -> Row {
 
 fn on_off(value: bool) -> String {
     if value { "On" } else { "Off" }.to_string()
+}
+
+fn ini_slot_problem(
+    current: Option<u8>,
+    profiles: &[crate::ini_profile::Profile],
+    slot: u8,
+) -> Option<&'static str> {
+    if current == Some(slot) {
+        Some("That INI profile is already active.")
+    } else if profiles.iter().any(|profile| profile.slot == slot) {
+        None
+    } else {
+        Some("That INI profile is unavailable.")
+    }
 }
 
 /// Apply display correction only to real game artwork. System and category
@@ -22812,6 +23052,66 @@ pub(crate) fn test_library_launch_flow(window: Rc<MinimalSoftwareWindow>) {
         app.saver_attract_candidates.is_none(),
         "newly discovered systems replace the old Attract Mode shortlist"
     );
+
+    assert_eq!(app.option_value(OptionId::AutoRunPhysicalDiscs), "Off");
+    app.adjust_option_value(OptionId::AutoRunPhysicalDiscs, 1);
+    assert_eq!(app.option_value(OptionId::AutoRunPhysicalDiscs), "On");
+    app.adjust_option_value(OptionId::AutoRunPhysicalDiscs, -1);
+    assert_eq!(app.option_value(OptionId::AutoRunPhysicalDiscs), "Off");
+
+    assert_eq!(app.option_value(OptionId::SwapAB), "Off");
+    assert_eq!(app.option_value(OptionId::SwapXY), "Off");
+    app.adjust_option_value(OptionId::SwapAB, 1);
+    assert_eq!(app.option_value(OptionId::SwapAB), "On");
+    assert_eq!(app.option_value(OptionId::SwapXY), "Off");
+    app.adjust_option_value(OptionId::SwapXY, 1);
+    assert_eq!(app.option_value(OptionId::SwapAB), "On");
+    assert_eq!(app.option_value(OptionId::SwapXY), "On");
+    assert_eq!(
+        app.control_hint("A Open   B Back   X Actions   Y Menu"),
+        "B Open   A Back   Y Actions   X Menu"
+    );
+
+    let disc_launcher = root.join("_Disc_Cores/Saturn.mgl");
+    std::fs::create_dir_all(disc_launcher.parent().unwrap()).unwrap();
+    std::fs::write(root.join("_Console/Saturn.rbf"), b"core").unwrap();
+    std::fs::write(
+        &disc_launcher,
+        b"<mistergamedescription><rbf>_Console/Saturn</rbf><setname same_dir=\"1\">Saturn</setname></mistergamedescription>",
+    )
+    .unwrap();
+    let disc_outcome = app
+        .handle_physical_disc_event(crate::physical_disc::Event::Launch(disc_launcher.clone()))
+        .expect("a provider MGL uses the normal launch outcome");
+    match disc_outcome {
+        Outcome::Launch {
+            plan,
+            name,
+            history,
+            active_game,
+        } => {
+            assert_eq!(name, "Physical Disc");
+            assert_eq!(
+                plan.command,
+                format!(
+                    "load_core {}\n",
+                    disc_launcher.canonicalize().unwrap().display()
+                )
+            );
+            assert!(history.is_none());
+            assert!(active_game.is_none());
+        }
+        other => panic!("unexpected physical-disc outcome: {other:?}"),
+    }
+    assert!(app
+        .handle_physical_disc_event(crate::physical_disc::Event::Error(
+            "No physical CD provider is installed for Saturn.".to_string()
+        ))
+        .is_none());
+    assert_eq!(
+        app.message.as_deref(),
+        Some("No physical CD provider is installed for Saturn.")
+    );
     drop(app);
     std::fs::remove_dir_all(root).unwrap();
 }
@@ -23612,6 +23912,29 @@ mod tests {
         );
         assert_eq!(resolved_font(None, "pixel"), Font::Pixel);
         assert_eq!(resolved_font(Some("not a font"), "also bad"), Font::Smooth);
+    }
+
+    #[test]
+    fn ini_switch_requires_a_fresh_available_non_current_slot() {
+        let profiles = [
+            crate::ini_profile::Profile {
+                slot: 0,
+                name: "Main".to_string(),
+            },
+            crate::ini_profile::Profile {
+                slot: 2,
+                name: "CRT".to_string(),
+            },
+        ];
+        assert_eq!(
+            ini_slot_problem(Some(0), &profiles, 0),
+            Some("That INI profile is already active.")
+        );
+        assert_eq!(ini_slot_problem(Some(0), &profiles, 2), None);
+        assert_eq!(
+            ini_slot_problem(Some(0), &profiles, 1),
+            Some("That INI profile is unavailable.")
+        );
     }
 
     #[test]
