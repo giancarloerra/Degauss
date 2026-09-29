@@ -49,8 +49,73 @@ index f702f0f..65e0f16 100644
  	uint8_t fb_terminal;
  	uint8_t osd_rotate;
  	uint16_t osd_timeout;
+diff --git a/fpga_io.cpp b/fpga_io.cpp
+index b64cfe5..b0001f6 100644
+--- a/fpga_io.cpp
++++ b/fpga_io.cpp
+@@ -48,6 +48,15 @@ static uint32_t *map_base;
+ /* Timeout count */
+ #define FPGA_TIMEOUT_CNT		0x1000000
+ 
++#define DEGAUSS_MENU_RBF "/media/fat/degauss/menu.rbf"
++
++int fpga_has_degauss_menu()
++{
++	struct stat st;
++	return stat(DEGAUSS_MENU_RBF, &st) == 0 &&
++		S_ISREG(st.st_mode) && access(DEGAUSS_MENU_RBF, R_OK) == 0;
++}
++
+ /* Set CD ratio */
+ static void fpgamgr_set_cd_ratio(unsigned long ratio)
+ {
+@@ -428,6 +437,9 @@ int fpga_load_rbf(const char *name, const char *cfg, const char *xml)
+ 	OsdDisable();
+ 	static char path[1024];
+ 	int ret = 0;
++	const int menu_request = !strcasecmp(name, "menu.rbf");
++	const int degauss_menu = menu_request && fpga_has_degauss_menu();
++	const char *load_name = degauss_menu ? DEGAUSS_MENU_RBF : name;
+ 
+ 	if(cfg)
+ 	{
+@@ -437,10 +449,10 @@ int fpga_load_rbf(const char *name, const char *cfg, const char *xml)
+ 		reboot(0);
+ 	}
+ 
+-	printf("Loading RBF: %s\n", name);
++	printf("Loading RBF: %s\n", load_name);
+ 
+-	if(name[0] == '/') strcpy(path, name);
+-	else sprintf(path, "%s/%s", !strcasecmp(name, "menu.rbf") ? getStorageDir(0) : getRootDir(), name);
++	if(load_name[0] == '/') strcpy(path, load_name);
++	else sprintf(path, "%s/%s", menu_request ? getStorageDir(0) : getRootDir(), load_name);
+ 
+ 	int rbf = open(path, O_RDONLY);
+ 	if (rbf < 0)
+@@ -503,7 +515,7 @@ int fpga_load_rbf(const char *name, const char *cfg, const char *xml)
+ 	}
+ 	close(rbf);
+ 
+-	app_restart(!strcasecmp(name, "menu.rbf") ? "menu.rbf" : path, xml);
++	app_restart(menu_request && !degauss_menu ? "menu.rbf" : path, xml);
+ 	return ret;
+ }
+ 
+diff --git a/fpga_io.h b/fpga_io.h
+index b912439..266bdf0 100644
+--- a/fpga_io.h
++++ b/fpga_io.h
+@@ -35,6 +35,7 @@ int fpga_get_fio_size();
+ int fpga_get_io_version();
+ 
+ int fpga_load_rbf(const char *name, const char *cfg = 0, const char *xml = 0);
++int fpga_has_degauss_menu();
+ 
+ void reboot(int cold);
+ void app_restart(const char *path, const char *xml = 0, const char *exe = 0);
 diff --git a/input.cpp b/input.cpp
-index 5493893..ffccd94 100644
+index 5493893..635753f 100644
 --- a/input.cpp
 +++ b/input.cpp
 @@ -37,10 +37,26 @@
@@ -101,8 +166,93 @@ index 5493893..ffccd94 100644
  	if (ev->type == EV_KEY && ev->code < 256 && !(mapping && mapping_type == 2) && !input[dev].force_joy)
  	{
  		if (!input[dev].has_kbdmap)
+@@ -6264,6 +6294,64 @@ int input_test(int getchar)
+ 					cmd[len] = 0;
+ 					printf("MiSTer_cmd: %s\n", cmd);
+ 					if (!strncmp(cmd, "fb_cmd", 6)) video_cmd(cmd);
++					else if (!strcmp(cmd, "fb_mask off")) video_set_degauss_display_mask(nullptr);
++					else if (!strncmp(cmd, "fb_mask ", 8)) video_set_degauss_display_mask(cmd + 8);
++					else if (!strncmp(cmd, "fb_preset ", 10))
++					{
++						char *end;
++						const unsigned long requester = strtoul(cmd + 10, &end, 10);
++						if (requester >= 100000000 && requester < 1000000000 && *end == ' ')
++						{
++							char error[256] = {};
++							const bool applied = video_set_degauss_preset(!strcmp(end + 1, "off") ? NULL : end + 1, error, sizeof(error));
++							char status[128], temporary[136];
++							snprintf(status, sizeof(status), "/tmp/degauss-preset-%lu.status", requester);
++							snprintf(temporary, sizeof(temporary), "%s.part", status);
++							int fd = open(temporary, O_WRONLY | O_CREAT | O_TRUNC | O_NOFOLLOW, 0600);
++							if (fd >= 0)
++							{
++								char response[300];
++								const int length = snprintf(response, sizeof(response), "%s%s\n", applied ? "ok" : "error ", applied ? "" : error);
++								const ssize_t written = write(fd, response, length);
++								const int closed = close(fd);
++								if (written == length && !closed) rename(temporary, status);
++								else unlink(temporary);
++							}
++						}
++					}
++					else if (!strncmp(cmd, "ini_profiles ", 13))
++					{
++						char *end;
++						const unsigned long requester = strtoul(cmd + 13, &end, 10);
++						if (requester >= 100000000 && requester < 1000000000 && !*end)
++						{
++							uint8_t response[256] = { (uint8_t)altcfg(), 1, 0, 4, 'M', 'a', 'i', 'n' };
++							size_t length = 8;
++							for (uint8_t slot = 1; slot <= 3; slot++)
++							{
++								const char *filename = cfg_get_name(slot);
++								if (!filename[0] || !FileExists(filename)) continue;
++								const size_t size = strlen(filename);
++								if (size > 63) continue;
++								response[length++] = slot;
++								response[length++] = (uint8_t)size;
++								memcpy(response + length, filename, size);
++								length += size;
++								response[1]++;
++							}
++							char status[128], temporary[136];
++							snprintf(status, sizeof(status), "/tmp/degauss-ini-profiles-%lu.status", requester);
++							snprintf(temporary, sizeof(temporary), "%s.part", status);
++							int fd = open(temporary, O_WRONLY | O_CREAT | O_TRUNC | O_NOFOLLOW, 0600);
++							if (fd >= 0)
++							{
++								const ssize_t written = write(fd, response, length);
++								const int closed = close(fd);
++								if (written == (ssize_t)length && !closed) rename(temporary, status);
++								else unlink(temporary);
++							}
++						}
++					}
+ 					else if (!strncmp(cmd, "video_mode ", 11)) video_mode_cmd(cmd + 11);
+ 					else if (!strncmp(cmd, "load_core ", 10))
+ 					{
+diff --git a/main.cpp b/main.cpp
+index 60d94f5..85ea0df 100644
+--- a/main.cpp
++++ b/main.cpp
+@@ -71,6 +71,15 @@ int main(int argc, char *argv[])
+ 	}
+ 
+ 	FindStorage();
++	// Stock Main passes an empty core path when it hands a cold boot to the
++	// configured replacement Main binary.
++	const bool stock_menu = argc <= 1 || !argv[1][0] ||
++		!strcasecmp(argv[1], "menu.rbf") ||
++		!strcasecmp(argv[1], "/media/fat/menu.rbf");
++	if (stock_menu && fpga_has_degauss_menu())
++	{
++		fpga_load_rbf("menu.rbf");
++	}
+ 	user_io_init((argc > 1) ? argv[1] : "",(argc > 2) ? argv[2] : NULL);
+ 	achievements_init();
+ 
 diff --git a/menu.cpp b/menu.cpp
-index 981b47a..75c58c8 100644
+index 981b47a..396110f 100644
 --- a/menu.cpp
 +++ b/menu.cpp
 @@ -50,6 +50,13 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
@@ -142,6 +292,18 @@ index 981b47a..75c58c8 100644
  // get key status
  static int hold_cnt = 0;
  static uint32_t menu_key_get(void)
+@@ -850,9 +866,9 @@ const char* get_rbf_name_bootcore(char *str)
+ }
+ 
+ 
+-static void vga_nag()
++static void vga_nag(bool show_warning = true)
+ {
+-	if (video_fb_state())
++	if (show_warning && video_fb_state())
+ 	{
+ 		EnableOsd_on(OSD_VGA);
+ 		OsdSetSize(16);
 @@ -1098,6 +1114,17 @@ void HandleUI(void)
  {
  	PROFILE_FUNCTION();
@@ -354,7 +516,7 @@ index 981b47a..75c58c8 100644
  	case MENU_VIDEOPROC1:
  		helptext_idx = 0;
  		menumask = 0x7FFF;
-@@ -7250,10 +7436,22 @@ void HandleUI(void)
+@@ -7250,17 +7436,50 @@ void HandleUI(void)
  			static char cmd[1024 * 2];
  			const char *path = getFullPath(selPath);
  			menustate = MENU_SCRIPTS_FB2;
@@ -365,8 +527,9 @@ index 981b47a..75c58c8 100644
 +			video_set_degauss_native_fb(degauss_running);
  			video_chvt(2);
  			video_fb_enable(1);
- 			vga_nag();
+-			vga_nag();
 -			sprintf(cmd, "#!/bin/bash\nexport LC_ALL=en_US.UTF-8\nexport HOME=/root\ncd $(dirname %s)\n%s\necho \"Press any key to continue\"\n", path, path);
++			vga_nag(!degauss_running);
 +			if (degauss_running)
 +			{
 +				sprintf(cmd, "#!/bin/bash\nexport LC_ALL=en_US.UTF-8\nexport HOME=/root\ncd $(dirname %s)\n%s\n", path, path);
@@ -378,10 +541,24 @@ index 981b47a..75c58c8 100644
  
  			unlink("/tmp/script");
  			FileSave("/tmp/script", cmd, strlen(cmd));
-@@ -7261,6 +7459,14 @@ void HandleUI(void)
+ 			ttystatus = 0;
  			ttypid = fork();
- 			if (!ttypid)
+-			if (!ttypid)
++			if (ttypid < 0)
  			{
++				perror("fork");
++				ttypid = 0;
++				degauss_running = false;
++				video_set_degauss_native_fb(false);
++				video_menu_bg(user_io_status_get("[3:1]"));
++				video_fb_enable(0);
++				menustate = MENU_SYSTEM1;
++				menusub = 3;
++				OsdClear();
++				OsdEnable(DISABLE_KEYBOARD);
++			}
++			else if (!ttypid)
++			{
 +				if (degauss_running)
 +				{
 +					// -i drops the issue file, -n the login prompt: between
@@ -393,7 +570,7 @@ index 981b47a..75c58c8 100644
  				execl("/sbin/agetty", "/sbin/agetty", "-a", "root", "-l", "/tmp/script", "--nohostname", "-L", "tty2", "linux", NULL);
  				exit(0); //should never be reached
  			}
-@@ -7278,6 +7484,21 @@ void HandleUI(void)
+@@ -7278,6 +7497,21 @@ void HandleUI(void)
  			{
  				ttypid = 0;
  				user_io_osd_key_enable(1);
@@ -1186,11 +1363,11 @@ index 0000000..e627958
 +	return 0;
 +}
 diff --git a/tests/run-degauss-shortcut-tests.sh b/tests/run-degauss-shortcut-tests.sh
-new file mode 100644
-index 0000000..2395f72
+new file mode 100755
+index 0000000..15b7aa5
 --- /dev/null
 +++ b/tests/run-degauss-shortcut-tests.sh
-@@ -0,0 +1,66 @@
+@@ -0,0 +1,78 @@
 +#!/usr/bin/env bash
 +set -euo pipefail
 +
@@ -1256,20 +1433,60 @@ index 0000000..2395f72
 +	exit 1
 +fi
 +
-+python3 tests/run-degauss-vt-test.py
++# The custom Menu core supports Degauss's native analog framebuffer path.
++# Keep Main's stock vga_scaler warning for ordinary framebuffer scripts, but
++# suppress its text for Degauss while retaining the function's OSD shutdown.
++grep -A4 'degauss_running = degauss_is_frontend_script' menu.cpp \
++	| grep -q 'vga_nag(!degauss_running);'
++
++# A failed terminal fork must restore the Menu framebuffer immediately rather
++# than treating pid -1 as a running child and leaving Degauss video active.
++degauss_launch="$(sed -n '/degauss_running = degauss_is_frontend_script/,/case MENU_SCRIPTS_FB2:/p' menu.cpp)"
++printf '%s\n' "$degauss_launch" | grep -q 'if (ttypid < 0)'
++printf '%s\n' "$degauss_launch" | grep -q 'video_set_degauss_native_fb(false);'
++printf '%s\n' "$degauss_launch" | grep -q 'video_fb_enable(0);'
++printf '%s\n' "$degauss_launch" | grep -q 'menustate = MENU_SYSTEM1;'
 diff --git a/tests/run-degauss-video-tests.sh b/tests/run-degauss-video-tests.sh
 new file mode 100755
-index 0000000..25418ff
+index 0000000..44cde35
 --- /dev/null
 +++ b/tests/run-degauss-video-tests.sh
-@@ -0,0 +1,28 @@
+@@ -0,0 +1,100 @@
 +#!/usr/bin/env bash
 +set -euo pipefail
 +
 +cd "$(dirname "$0")/.."
 +
-+# The optional Y/C divisor changes only framebuffer width. Its default keeps
-+# existing geometry, while output timing and vertical scaling stay unchanged.
++main_startup="$(sed -n '/FindStorage();/,/user_io_init/p' main.cpp)"
++compact_startup="$(printf '%s\n' "$main_startup" | tr -d '[:space:]')"
++
++# Stock Main supplies an empty core path when it starts the configured custom
++# Main binary after a cold boot. That path must still select Degauss's private
++# Menu core; otherwise the stock core leaves scaler/framebuffer Y/C monochrome.
++printf '%s\n' "$compact_startup" \
++	| grep -Fq 'argc<=1||!argv[1][0]||!strcasecmp(argv[1],"menu.rbf")'
++printf '%s\n' "$compact_startup" \
++	| grep -Fq 'if(stock_menu&&fpga_has_degauss_menu()){fpga_load_rbf("menu.rbf");}'
++
++framebuffer_enable="$(awk '
++  /^void video_fb_enable\(/ { capture = 1 }
++  capture { print }
++  /^int video_fb_state\(/ { exit }
++' video.cpp)"
++compact_enable="$(printf '%s\n' "$framebuffer_enable" | tr -d '[:space:]')"
++
++# Framebuffer activation is not the Menu-core selection boundary. Preserve the
++# existing Direct Video update without reprogramming scaler Y/C here.
++test "$(printf '%s\n' "$compact_enable" | grep -oF 'set_vga_fb(enable);' | wc -l | tr -d '[:space:]')" -eq 1
++printf '%s\n' "$compact_enable" \
++	| grep -Fq 'if(cfg.direct_video){set_vga_fb(enable);set_yc_mode();}'
++if printf '%s\n' "$compact_enable" | grep -Fq 'cfg.vga_scaler)set_yc_mode();'; then
++	exit 1
++fi
++
++# fb_hscale changes only the Linux framebuffer's horizontal divisor. Its
++# default preserves the released geometry; vertical scaling and output timing
++# remain controlled by their existing paths.
 +grep -Fq 'uint8_t fb_hscale;' cfg.h
 +grep -Fq '{ "FB_HSCALE", (void*)(&(cfg.fb_hscale)), UINT8, 1, 4 },' cfg.cpp
 +grep -Fq 'cfg.fb_hscale = 1;' cfg.cpp
@@ -1278,9 +1495,9 @@ index 0000000..25418ff
 +grep -Fq 'fb_width = v_cur.item[1] / fb_scale_x;' video.cpp
 +grep -Fq 'fb_height = v_cur.item[5] / fb_scale_y;' video.cpp
 +
-+# Native analog output is opt-in and scoped to the Degauss terminal
-+# framebuffer. The paired Menu core receives the native-output flag only for
-+# that path, so Main backgrounds remain on their existing route.
++# Native CRT plus independently timed HDMI is opt-in. The default keeps the
++# released framebuffer path, while the enabled Degauss path uses a native-size
++# source and explicitly asks the paired Menu core for native analog output.
 +grep -Fq 'uint8_t degauss_native_analog;' cfg.h
 +grep -Fq '{ "DEGAUSS_NATIVE_ANALOG", (void*)(&(cfg.degauss_native_analog)), UINT8, 0, 1 },' cfg.cpp
 +grep -Fq '#define FB_NATIVE   0x2000' video.cpp
@@ -1289,8 +1506,52 @@ index 0000000..25418ff
 +grep -Fq '(video_degauss_native_fb_active() ? FB_NATIVE : 0)' video.cpp
 +grep -Fq 'fb_width = 352;' video.cpp
 +grep -Fq 'fb_height = cfg.menu_pal ? 288 : 240;' video.cpp
-+grep -Fq 'video_set_degauss_native_fb(degauss_running);' menu.cpp
-+grep -Fq 'video_set_degauss_native_fb(false);' menu.cpp
++
++# Very narrow test modes still need a non-zero checker size before the
++# framebuffer diagnostic divides coordinates by it.
++grep -A8 'static void draw_checkers()' video.cpp | grep -Fq 'if (!sz) sz = 1;'
++
++# Degauss uses native mask files only while its Menu framebuffer is active.
++# A malformed file switches the effect off, never restores the old effect.
++grep -Fq 'else if (!strcmp(cmd, "fb_mask off")) video_set_degauss_display_mask(nullptr);' input.cpp
++grep -Fq 'else if (!strncmp(cmd, "fb_mask ", 8)) video_set_degauss_display_mask(cmd + 8);' input.cpp
++mask_handler="$(sed -n '/^bool video_set_degauss_display_mask(/,/^}/p' video.cpp)"
++printf '%s\n' "$mask_handler" | grep -Fq 'if (!is_menu() || !video_fb_state())'
++printf '%s\n' "$mask_handler" | grep -Fq 'degauss_display_mask[0] = 0;'
++printf '%s\n' "$mask_handler" | grep -Fq 'setShadowMask();'
++invalid_name_handler="$(printf '%s\n' "$mask_handler" | sed -n '/if (!len || len >= sizeof(degauss_display_mask)/,/return false;/p')"
++printf '%s\n' "$invalid_name_handler" | grep -Fq 'degauss_display_mask[0] = 0;'
++printf '%s\n' "$invalid_name_handler" | grep -Fq 'setShadowMask();'
++if printf '%s\n' "$mask_handler" | grep -Fq 'video_save_shadow_mask_cfg'; then
++	exit 1
++fi
++grep -Fq 'Scripts/.config/degauss/masks/%s.txt' video.cpp
++grep -Fq 'const int fb_mask = (degauss_display_mask[0] || degauss_preset_active) ? SM_FLAG_FB : 0;' video.cpp
++grep -Fq 'case SM_MODE_1X: spi_w(SM_FLAG(SM_FLAG_ENABLED | fb_mask)); break;' video.cpp
++grep -Fq 'if (!video_fb_state() && degauss_display_mask[0])' video.cpp
++
++# A temporary Degauss preset restores the exact live Menu state rather than
++# reloading saved/default configuration and losing unsaved OSD choices.
++preset_restore="$(sed -n '/static void degauss_restore_preset_baseline/,/^}/p' video.cpp)"
++if printf '%s\n' "$preset_restore" | grep -Fq 'video_cfg_init();'; then
++	exit 1
++fi
++printf '%s\n' "$preset_restore" | grep -Fq 'memcpy(gamma_cfg, degauss_gamma_before_preset'
++printf '%s\n' "$preset_restore" | grep -Fq 'memcpy(scaler_flt, degauss_scaler_before_preset'
++printf '%s\n' "$preset_restore" | grep -Fq 'memcpy(scaler_flt_data, degauss_scaler_data_before_preset'
++printf '%s\n' "$preset_restore" | grep -Fq 'memcpy(shadow_mask_cfg, degauss_shadow_mask_before_preset'
++preset_apply="$(sed -n '/bool video_set_degauss_preset/,/^}/p' video.cpp)"
++printf '%s\n' "$preset_apply" | grep -Fq 'memcpy(degauss_gamma_before_preset, gamma_cfg'
++printf '%s\n' "$preset_apply" | grep -Fq 'memcpy(degauss_scaler_before_preset, scaler_flt'
++printf '%s\n' "$preset_apply" | grep -Fq 'memcpy(degauss_scaler_data_before_preset, scaler_flt_data'
++printf '%s\n' "$preset_apply" | grep -Fq 'memcpy(degauss_shadow_mask_before_preset, shadow_mask_cfg'
++
++# A mask selected while a full preset is active is checked before it is
++# accepted as the state to restore later. A missing file resets that state.
++deferred_mask="$(sed -n '/if (degauss_preset_active)/,/return true;/p' video.cpp | head -n 20)"
++printf '%s\n' "$deferred_mask" | grep -Fq 'Scripts/.config/degauss/masks/%s.txt'
++printf '%s\n' "$deferred_mask" | grep -Fq 'if (!FileExists(path))'
++printf '%s\n' "$deferred_mask" | grep -Fq 'degauss_mask_before_preset[0] = 0;'
 diff --git a/tests/run-degauss-vt-test.py b/tests/run-degauss-vt-test.py
 new file mode 100644
 index 0000000..88931fd
@@ -1337,18 +1598,19 @@ index 0000000..88931fd
 +    subprocess.run([str(path / 'test')], check=True)
 +print('Frontend completion restores VT1 before disabling script framebuffer')
 diff --git a/video.cpp b/video.cpp
-index 542ef71..fc38629 100644
+index 542ef71..0a3b8dc 100644
 --- a/video.cpp
 +++ b/video.cpp
-@@ -50,6 +50,7 @@
+@@ -50,6 +50,8 @@
  #define FB_FMT_PAL8 0b00011
  #define FB_FMT_RxB  0b10000
  #define FB_EN       0x8000
++#define FB_FILTER   0x4000
 +#define FB_NATIVE   0x2000
  
  #define FB_DV_LBRD  3
  #define FB_DV_RBRD  6
-@@ -75,6 +76,7 @@ static int fb_enabled = 0;
+@@ -75,6 +77,7 @@ static int fb_enabled = 0;
  static int fb_width = 0;
  static int fb_height = 0;
  static int fb_num = 0;
@@ -1356,7 +1618,464 @@ index 542ef71..fc38629 100644
  static int brd_x = 0;
  static int brd_y = 0;
  
-@@ -3334,6 +3336,11 @@ static void fb_write_module_params()
+@@ -800,10 +803,20 @@ static void loadGammaCfg()
+ 
+ static char shadow_mask_cfg[1024] = { 0 };
+ static bool has_shadow_mask = false;
++static char degauss_display_mask[129] = { 0 };
++static bool degauss_display_mask_loaded = false;
++static char degauss_mask_before_preset[129] = { 0 };
++static char degauss_gamma_before_preset[sizeof(gamma_cfg)] = { 0 };
++static ScalerFilter degauss_scaler_before_preset[4] = {};
++static VideoFilter degauss_scaler_data_before_preset[4] = {};
++static char degauss_shadow_mask_before_preset[sizeof(shadow_mask_cfg)] = { 0 };
++static bool degauss_preset_active = false;
++static bool degauss_preset_filter = false;
+ 
+ #define SM_FLAG_2X      ( 1 << 1 )
+ #define SM_FLAG_ROTATED ( 1 << 2 )
+ #define SM_FLAG_ENABLED ( 1 << 3 )
++#define SM_FLAG_FB      ( 1 << 4 )
+ 
+ #define SM_FLAG(v) ( ( 0x0 << 13 ) | (v) )
+ #define SM_VMAX(v) ( ( 0x1 << 13 ) | (v) )
+@@ -834,17 +847,22 @@ static void setShadowMask()
+ 	}
+ 
+ 	has_shadow_mask = 1;
+-	switch (video_get_shadow_mask_mode())
++	degauss_display_mask_loaded = false;
++	const int fb_mask = (degauss_display_mask[0] || degauss_preset_active) ? SM_FLAG_FB : 0;
++	switch (degauss_display_mask[0] ? SM_MODE_1X : video_get_shadow_mask_mode())
+ 	{
+ 		default: spi_w(SM_FLAG(0)); break;
+-		case SM_MODE_1X: spi_w(SM_FLAG(SM_FLAG_ENABLED)); break;
+-		case SM_MODE_2X: spi_w(SM_FLAG(SM_FLAG_ENABLED | SM_FLAG_2X)); break;
+-		case SM_MODE_1X_ROTATED: spi_w(SM_FLAG(SM_FLAG_ENABLED | SM_FLAG_ROTATED)); break;
+-		case SM_MODE_2X_ROTATED: spi_w(SM_FLAG(SM_FLAG_ENABLED | SM_FLAG_ROTATED | SM_FLAG_2X)); break;
++		case SM_MODE_1X: spi_w(SM_FLAG(SM_FLAG_ENABLED | fb_mask)); break;
++		case SM_MODE_2X: spi_w(SM_FLAG(SM_FLAG_ENABLED | SM_FLAG_2X | fb_mask)); break;
++		case SM_MODE_1X_ROTATED: spi_w(SM_FLAG(SM_FLAG_ENABLED | SM_FLAG_ROTATED | fb_mask)); break;
++		case SM_MODE_2X_ROTATED: spi_w(SM_FLAG(SM_FLAG_ENABLED | SM_FLAG_ROTATED | SM_FLAG_2X | fb_mask)); break;
+ 	}
+ 
+ 	int loaded = 0;
+-	snprintf(filename, sizeof(filename), SMASK_DIR"/%s", shadow_mask_cfg + 1);
++	if (degauss_display_mask[0])
++		snprintf(filename, sizeof(filename), "Scripts/.config/degauss/masks/%s.txt", degauss_display_mask);
++	else
++		snprintf(filename, sizeof(filename), SMASK_DIR"/%s", shadow_mask_cfg + 1);
+ 
+ 	fileTextReader reader;
+ 	if (FileOpenTextReader(&reader, filename))
+@@ -920,6 +938,7 @@ static void setShadowMask()
+ 	}
+ 
+ 	if (!loaded) spi_w(SM_FLAG(0));
++	if (degauss_display_mask[0]) degauss_display_mask_loaded = loaded;
+ 	DisableIO();
+ }
+ 
+@@ -980,6 +999,54 @@ void video_set_shadow_mask(const char *name)
+ 	video_save_shadow_mask_cfg();
+ }
+ 
++bool video_set_degauss_display_mask(const char *name)
++{
++	if (!is_menu() || !video_fb_state())
++	{
++		printf("Degauss display masks require the Menu framebuffer\n");
++		return false;
++	}
++
++	if (name)
++	{
++		size_t len = strlen(name);
++		if (!len || len >= sizeof(degauss_display_mask) || strstr(name, "..") || strpbrk(name, "/\\\r\n"))
++		{
++			degauss_display_mask[0] = 0;
++			setShadowMask();
++			printf("Degauss display mask: invalid file name\n");
++			return false;
++		}
++	}
++	if (degauss_preset_active)
++	{
++		if (name)
++		{
++			char path[1024];
++			snprintf(path, sizeof(path), "Scripts/.config/degauss/masks/%s.txt", name);
++			if (!FileExists(path))
++			{
++				degauss_mask_before_preset[0] = 0;
++				printf("Degauss display mask was not applied; effect switched off. Check the mask file\n");
++				return false;
++			}
++		}
++		snprintf(degauss_mask_before_preset, sizeof(degauss_mask_before_preset), "%s", name ? name : "");
++		return true;
++	}
++
++	snprintf(degauss_display_mask, sizeof(degauss_display_mask), "%s", name ? name : "");
++	setShadowMask();
++	if (!has_shadow_mask || (name && !degauss_display_mask_loaded))
++	{
++		degauss_display_mask[0] = 0;
++		setShadowMask();
++		printf("Degauss display mask was not applied; effect switched off. Check Menu shadow-mask support and the mask file\n");
++		return false;
++	}
++	return true;
++}
++
+ static void loadShadowMaskCfg()
+ {
+ 	PROFILE_FUNCTION();
+@@ -1021,6 +1088,189 @@ static char* get_preset_arg(const char *str)
+ 	return par;
+ }
+ 
++static bool degauss_preset_path(const char *name)
++{
++	return name && name[0] && name[0] != '/' && !strstr(name, "..") &&
++		!strpbrk(name, "\\\r\n") && strlen(name) < 900;
++}
++
++static bool degauss_validate_gamma(const char *name)
++{
++	char path[1024];
++	snprintf(path, sizeof(path), GAMMA_DIR"/%s", name);
++	fileTextReader reader;
++	if (!FileOpenTextReader(&reader, path)) return false;
++	int count = 0;
++	const char *line;
++	while ((line = FileReadLine(&reader)))
++	{
++		if (!line[0] || line[0] == '#') continue;
++		int red, green, blue;
++		const int fields = sscanf(line, "%d,%d,%d", &red, &green, &blue);
++		if (fields != 1 && fields != 3) return false;
++		if (fields == 1) green = blue = red;
++		if (red < 0 || red > 255 || green < 0 || green > 255 || blue < 0 || blue > 255) return false;
++		if (++count > 256) return false;
++	}
++	return count == 256;
++}
++
++static bool degauss_validate_mask(const char *name)
++{
++	char path[1024];
++	snprintf(path, sizeof(path), SMASK_DIR"/%s", name);
++	fileTextReader reader;
++	if (!FileOpenTextReader(&reader, path)) return false;
++	int width = -1, height = 0, row = 0, blocks = 0;
++	bool v2 = false;
++	const char *line;
++	while ((line = FileReadLine(&reader)))
++	{
++		if (!line[0] || line[0] == '#') continue;
++		if (!strncasecmp(line, "resolution=", 11))
++		{
++			unsigned threshold = 0;
++			if (width != -1 || sscanf(line + 11, "%u", &threshold) != 1 || !threshold) return false;
++			v2 = false;
++			continue;
++		}
++		if (width == -1)
++		{
++			if (!strcasecmp(line, "v2")) { v2 = true; continue; }
++			if (sscanf(line, "%d,%d", &width, &height) != 2 ||
++				width < 1 || width > 16 || height < 1 || height > 16) return false;
++			row = 0;
++			continue;
++		}
++		const char *part = line;
++		for (int x = 0; x < width; x++)
++		{
++			char *end;
++			const unsigned long value = strtoul(part, &end, 16);
++			if (end == part || value > (v2 ? 0x7FF : 7)) return false;
++			if (x + 1 < width)
++			{
++				if (*end != ',') return false;
++				part = end + 1;
++			}
++			else if (*end) return false;
++		}
++		if (++row == height)
++		{
++			blocks++;
++			width = -1;
++			v2 = false;
++		}
++	}
++	return blocks > 0 && width == -1;
++}
++
++static bool degauss_validate_preset(const char *path, char *error, size_t size)
++{
++	fileTextReader reader;
++	if (!FileOpenTextReader(&reader, path))
++	{
++		snprintf(error, size, "Cannot read preset");
++		return false;
++	}
++	const char *line;
++	bool recognized = false;
++	while ((line = FileReadLine(&reader)))
++	{
++		const char *value = NULL;
++		int filter = -1;
++		const char *folder = NULL;
++		if (!strncasecmp(line, "hfilter=", 8)) { value = line + 8; filter = VFILTER_HORZ; folder = COEFF_DIR; }
++		else if (!strncasecmp(line, "vfilter=", 8)) { value = line + 8; filter = VFILTER_VERT; folder = COEFF_DIR; }
++		else if (!strncasecmp(line, "sfilter=", 8)) { value = line + 8; filter = VFILTER_SCAN; folder = COEFF_DIR; }
++		else if (!strncasecmp(line, "ifilter=", 8)) { value = line + 8; filter = VFILTER_ILACE; folder = COEFF_DIR; }
++		else if (!strncasecmp(line, "gamma=", 6)) { value = line + 6; folder = GAMMA_DIR; }
++		else if (!strncasecmp(line, "mask=", 5)) { value = line + 5; folder = SMASK_DIR; }
++		else if (!strncasecmp(line, "maskmode=", 9))
++		{
++			recognized = true;
++			if (!line[9])
++			{
++				snprintf(error, size, "Empty preset component");
++				return false;
++			}
++			const char *mode = get_preset_arg(line + 9);
++			if (strcasecmp(mode, "off") && strcasecmp(mode, "none") &&
++				strcasecmp(mode, "1x") && strcasecmp(mode, "2x") &&
++				strcasecmp(mode, "1x rotated") && strcasecmp(mode, "2x rotated"))
++			{
++				snprintf(error, size, "Invalid mask mode");
++				return false;
++			}
++			if (strcasecmp(mode, "off") && strcasecmp(mode, "none") && !spi_uio_cmd(UIO_SHADOWMASK))
++			{
++				snprintf(error, size, "Menu does not support shadow masks");
++				return false;
++			}
++			continue;
++		}
++		else continue;
++		recognized = true;
++		if (!value[0])
++		{
++			snprintf(error, size, "Empty preset component");
++			return false;
++		}
++		const char *name = get_preset_arg(value);
++		if (!name[0])
++		{
++			snprintf(error, size, "Empty preset component");
++			return false;
++		}
++		if (filter >= 0 && (!strcasecmp(name, "off") || !strcasecmp(name, "same"))) continue;
++		if (filter < 0 && (!strcasecmp(name, "off") || !strcasecmp(name, "none"))) continue;
++		if (!degauss_preset_path(name))
++		{
++			snprintf(error, size, "Invalid preset component name");
++			return false;
++		}
++		char component[1024];
++		snprintf(component, sizeof(component), "%s/%s", folder, name);
++		if (!FileExists(component))
++		{
++			snprintf(error, size, "Missing %s", component);
++			return false;
++		}
++		if (filter >= 0)
++		{
++			const int supported = spi_uio_cmd(UIO_SET_FLTNUM);
++			if (!supported)
++			{
++				snprintf(error, size, "Menu does not support video filters");
++				return false;
++			}
++			char saved[sizeof(scaler_flt[0].filename)];
++			snprintf(saved, sizeof(saved), "%s", scaler_flt[filter].filename);
++			snprintf(scaler_flt[filter].filename, sizeof(scaler_flt[filter].filename), "%s", name);
++			VideoFilter parsed;
++			const bool valid = read_video_filter(filter, &parsed);
++			snprintf(scaler_flt[filter].filename, sizeof(scaler_flt[filter].filename), "%s", saved);
++			if (!valid)
++			{
++				snprintf(error, size, "Malformed %s", component);
++				return false;
++			}
++		}
++		else if (!strcmp(folder, GAMMA_DIR) && (!has_gamma || !degauss_validate_gamma(name)))
++		{
++			snprintf(error, size, "Gamma unavailable or malformed: %s", component);
++			return false;
++		}
++		else if (!strcmp(folder, SMASK_DIR) && (!spi_uio_cmd(UIO_SHADOWMASK) || !degauss_validate_mask(name)))
++		{
++			snprintf(error, size, "Shadow mask unavailable or malformed: %s", component);
++			return false;
++		}
++	}
++	if (!recognized) snprintf(error, size, "Preset has no supported video settings");
++	return recognized;
++}
++
+ static void load_flt_pres(const char *str, int type)
+ {
+ 	char *arg = get_preset_arg(str);
+@@ -2653,6 +2903,57 @@ static void video_cfg_init()
+ 	loadShadowMaskCfg();
+ }
+ 
++static void degauss_restore_preset_baseline(bool reapply_framebuffer)
++{
++	degauss_preset_active = false;
++	degauss_preset_filter = false;
++	memcpy(gamma_cfg, degauss_gamma_before_preset, sizeof(gamma_cfg));
++	memcpy(scaler_flt, degauss_scaler_before_preset, sizeof(scaler_flt));
++	memcpy(scaler_flt_data, degauss_scaler_data_before_preset, sizeof(scaler_flt_data));
++	memcpy(shadow_mask_cfg, degauss_shadow_mask_before_preset, sizeof(shadow_mask_cfg));
++	snprintf(degauss_display_mask, sizeof(degauss_display_mask), "%s", degauss_mask_before_preset);
++	setGamma();
++	setScaler();
++	setShadowMask();
++	if (reapply_framebuffer && video_fb_state()) video_fb_enable(1, fb_num);
++}
++
++bool video_set_degauss_preset(const char *name, char *error, size_t error_size)
++{
++	if (!is_menu() || !video_fb_state())
++	{
++		snprintf(error, error_size, "Degauss video presets require the Menu framebuffer");
++		return false;
++	}
++	if (!name || !name[0])
++	{
++		if (degauss_preset_active) degauss_restore_preset_baseline(true);
++		return true;
++	}
++	if (!degauss_preset_path(name))
++	{
++		snprintf(error, error_size, "Invalid preset name");
++		return false;
++	}
++	char path[1024];
++	snprintf(path, sizeof(path), PRESET_DIR"/%s", name);
++	if (!degauss_validate_preset(path, error, error_size)) return false;
++
++	if (degauss_preset_active) degauss_restore_preset_baseline(true);
++	snprintf(degauss_mask_before_preset, sizeof(degauss_mask_before_preset), "%s", degauss_display_mask);
++	memcpy(degauss_gamma_before_preset, gamma_cfg, sizeof(gamma_cfg));
++	memcpy(degauss_scaler_before_preset, scaler_flt, sizeof(scaler_flt));
++	memcpy(degauss_scaler_data_before_preset, scaler_flt_data, sizeof(scaler_flt_data));
++	memcpy(degauss_shadow_mask_before_preset, shadow_mask_cfg, sizeof(shadow_mask_cfg));
++	degauss_display_mask[0] = 0;
++	degauss_preset_active = true;
++	video_loadPreset(path, false);
++	degauss_preset_filter = scaler_flt[VFILTER_HORZ].mode || scaler_flt[VFILTER_VERT].mode ||
++		scaler_flt[VFILTER_SCAN].mode || scaler_flt[VFILTER_ILACE].mode;
++	if (video_fb_state()) video_fb_enable(1, fb_num);
++	return true;
++}
++
+ void video_cfg_reset()
+ {
+ 	FileDeleteConfig(gamma_cfg_path);
+@@ -2668,6 +2969,7 @@ void video_cfg_reset()
+ 
+ void video_init()
+ {
++	degauss_display_mask[0] = 0;
+ 	yc_parse(yc_modes, sizeof(yc_modes) / sizeof(yc_modes[0]));
+ 
+ 	fb_init();
+@@ -2707,7 +3009,7 @@ void video_reinit()
+ 	support_FHD = 0;
+ 	video_mode_load(true);
+ 
+-	video_cfg_init();
++	if (!degauss_preset_active) video_cfg_init();
+ 	video_set_mode(&v_def, 0);
+ 	user_io_send_buttons(1);
+ 	video_mode_adjust(1);
+@@ -3085,20 +3387,58 @@ bool video_mode_select(uint32_t vtime, vmode_custom_t* out_mode)
+ 	return adjustable;
+ }
+ 
++static bool get_scaler_yc_timing(double *pixel_clock, float *fps)
++{
++	const uint64_t htotal = (uint64_t)v_cur.param.hact + v_cur.param.hfp +
++		v_cur.param.hs + v_cur.param.hbp;
++	const uint64_t vtotal = (uint64_t)v_cur.param.vact + v_cur.param.vfp +
++		v_cur.param.vs + v_cur.param.vbp;
++	if (!htotal || !vtotal || v_cur.Fpix <= 0)
++	{
++		printf("ERROR: cannot calculate YC timing for the scaler output.\n");
++		return false;
++	}
++
++	*pixel_clock = v_cur.Fpix;
++	*fps = (float)((v_cur.Fpix * 1000000.0) / (htotal * vtotal));
++	return true;
++}
++
+ static void set_yc_mode()
+ {
+ 	// Enable YC for S-Video/CVBS modes, or subcarrier for CXA2075 encoders
+ 	if (cfg.vga_mode_int >= 2)
+ 	{
+-		float fps = current_video_info.vtime ? (100000000.f / current_video_info.vtime) : 0.f;
++		double scaler_clock = 0;
++		float fps = 0;
++		const bool scaler_timing = cfg.vga_scaler || get_vga_fb();
++		if (scaler_timing && !get_scaler_yc_timing(&scaler_clock, &fps))
++		{
++			spi_uio_cmd8(UIO_SET_YC_PAR, 0);
++			return;
++		}
++		if (!scaler_timing)
++			fps = current_video_info.vtime ? (100000000.f / current_video_info.vtime) : 0.f;
+ 		int pal = fps < 55.f;
+ 		double CLK_REF = (pal || (cfg.ntsc_mode == 1)) ? 4.43361875f : (cfg.ntsc_mode == 2) ? 3.575611f : 3.579545f;
+-		double CLK_VIDEO = current_video_info.ctime * 100.f / current_video_info.ptime;
++		double CLK_VIDEO;
+ 
+-		float prate = current_video_info.width * 100.f;
+-		prate /= current_video_info.ptime;
++		float prate;
+ 
+-		int64_t PHASE_INC = ((int64_t)((CLK_REF / CLK_VIDEO) * 1099511627776LL)) & 0xFFFFFFFFFFLL;
++		int64_t PHASE_INC;
++		if (scaler_timing)
++		{
++			CLK_VIDEO = scaler_clock;
++			prate = (float)CLK_VIDEO;
++			PHASE_INC = ((int64_t)((CLK_REF / CLK_VIDEO) * 1099511627776LL)) & 0xFFFFFFFFFFLL;
++		}
++		else
++		{
++			CLK_VIDEO = current_video_info.ctime * 100.f / current_video_info.ptime;
++			prate = current_video_info.width * 100.f;
++			prate /= current_video_info.ptime;
++			PHASE_INC = ((int64_t)((CLK_REF / CLK_VIDEO) * 1099511627776LL)) & 0xFFFFFFFFFFLL;
++		}
+ 
+ 		int COLORBURST_START = (int)(3.7f * (CLK_VIDEO / CLK_REF));
+ 		int COLORBURST_END = (int)(9.0f * (CLK_VIDEO / CLK_REF)) + COLORBURST_START;
+@@ -3106,11 +3446,11 @@ static void set_yc_mode()
+ 
+ 		char yc_key[64];
+ 		char yc_key_expand[64];
+-		sprintf(yc_key, "%s_%.1f%s%s", user_io_get_core_name(1), fps, current_video_info.interlaced ? "i" : "", (pal || !cfg.ntsc_mode) ? "" : (cfg.ntsc_mode == 1) ? "s" : "m");
++		sprintf(yc_key, "%s_%.1f%s%s", user_io_get_core_name(1), fps, (!scaler_timing && current_video_info.interlaced) ? "i" : "", (pal || !cfg.ntsc_mode) ? "" : (cfg.ntsc_mode == 1) ? "s" : "m");
+ 		snprintf(yc_key_expand, sizeof(yc_key_expand), "%s_%.2f", yc_key, prate);
+-		printf("Calculated YC parameters for '%s': %s PHASE_INC=%lld, COLORBURST_START=%d, COLORBURST_END=%d\n", yc_key, pal ? "PAL" : (cfg.ntsc_mode == 1) ? "PAL60" : (cfg.ntsc_mode == 2) ? "PAL-M" : "NTSC", PHASE_INC, COLORBURST_START, COLORBURST_END);
++		printf("Calculated %sYC parameters for '%s': %s PHASE_INC=%lld, COLORBURST_START=%d, COLORBURST_END=%d\n", scaler_timing ? "scaler " : "", yc_key, pal ? "PAL" : (cfg.ntsc_mode == 1) ? "PAL60" : (cfg.ntsc_mode == 2) ? "PAL-M" : "NTSC", PHASE_INC, COLORBURST_START, COLORBURST_END);
+ 
+-		for (uint i = 0; i < sizeof(yc_modes) / sizeof(yc_modes[0]); i++)
++		for (uint i = 0; !scaler_timing && i < sizeof(yc_modes) / sizeof(yc_modes[0]); i++)
+ 		{
+ 		if (!strcasecmp(yc_modes[i].key, yc_key) || !strcasecmp(yc_modes[i].key, yc_key_expand))
+ 			{
+@@ -3334,9 +3674,15 @@ static void fb_write_module_params()
  	});
  }
  
@@ -1368,17 +2087,39 @@ index 542ef71..fc38629 100644
  void video_fb_enable(int enable, int n)
  {
  	PROFILE_FUNCTION();
-@@ -3362,7 +3369,8 @@ void video_fb_enable(int enable, int n)
++	if (!enable && degauss_preset_active) degauss_restore_preset_baseline(false);
+ 
+ 	if (fb_base)
+ 	{
+@@ -3362,7 +3708,8 @@ void video_fb_enable(int enable, int n)
  				}
  
  				//printf("Switch to Linux frame buffer\n");
 -				spi_w((uint16_t)(FB_EN | FB_FMT_RxB | FB_FMT_8888)); // format, enable flag
-+				spi_w((uint16_t)(FB_EN |
++				spi_w((uint16_t)(FB_EN | (degauss_preset_filter ? FB_FILTER : 0) |
 +					(video_degauss_native_fb_active() ? FB_NATIVE : 0) | FB_FMT_RxB | FB_FMT_8888)); // format, enable flag
  				spi_w((uint16_t)fb_addr); // base address low word
  				spi_w(fb_addr >> 16);     // base address high word
  				spi_w(fb_width);          // frame width
-@@ -3419,6 +3427,7 @@ int video_fb_state()
+@@ -3400,7 +3747,16 @@ void video_fb_enable(int enable, int n)
+ 		}
+ 
+ 		DisableIO();
+-		if (cfg.direct_video) set_vga_fb(enable);
++		if (!video_fb_state() && degauss_display_mask[0])
++		{
++			degauss_display_mask[0] = 0;
++			setShadowMask();
++		}
++		if (cfg.direct_video)
++		{
++			set_vga_fb(enable);
++			set_yc_mode();
++		}
+ 		if (is_menu()) user_io_status_set("[8:5]", (fb_enabled && !fb_num) ? 0x160 : 0);
+ 	}
+ }
+@@ -3419,6 +3775,7 @@ int video_fb_state()
  static void video_fb_config()
  {
  	PROFILE_FUNCTION();
@@ -1386,7 +2127,7 @@ index 542ef71..fc38629 100644
  
  	int fb_scale = cfg.fb_size;
  
-@@ -3432,20 +3441,38 @@ static void video_fb_config()
+@@ -3432,20 +3789,38 @@ static void video_fb_config()
  	else if (fb_scale == 3) fb_scale = 2;
  	else if (fb_scale > 4) fb_scale = 4;
  
@@ -1431,16 +2172,42 @@ index 542ef71..fc38629 100644
  static void draw_checkers()
  {
  	volatile uint32_t* buf = fb_base + (FB_SIZE*menu_bgn);
-@@ -4353,4 +4380,3 @@ int video_get_rotated()
+@@ -3453,6 +3828,7 @@ static void draw_checkers()
+ 	uint32_t col1 = 0x888888;
+ 	uint32_t col2 = 0x666666;
+ 	int sz = fb_width / 128;
++	if (!sz) sz = 1;
+ 
+ 	for (int y = brd_y; y < fb_height - brd_y; y++)
+ 	{
+@@ -3760,6 +4136,8 @@ void video_menu_bg(int n, int idle)
+ 		imlib_context_set_image(bg1); imlib_free_image(); bg1 = 0;
+ 		imlib_context_set_image(bg2); imlib_free_image(); bg2 = 0;
+ 		imlib_context_set_image(curtain); imlib_free_image(); curtain = 0;
++
++		if (video_fb_state()) return;
+ 	}
+ 	else
+ 	{
+@@ -4353,4 +4731,3 @@ int video_get_rotated()
  {
    return current_video_info.rotated;
  }
 -
 diff --git a/video.h b/video.h
-index 0f02587..39348a5 100644
+index 0f02587..f38c673 100644
 --- a/video.h
 +++ b/video.h
-@@ -65,6 +65,7 @@ int   hasAPI1_5();
+@@ -53,6 +53,8 @@ int   video_get_shadow_mask_mode();
+ void  video_set_shadow_mask_mode(int n);
+ char* video_get_shadow_mask(int only_name = 1);
+ void  video_set_shadow_mask(const char *name);
++bool  video_set_degauss_display_mask(const char *name);
++bool  video_set_degauss_preset(const char *name, char *error, size_t error_size);
+ void  video_loadPreset(char *name, bool save);
+ 
+ int   video_get_rotated();
+@@ -65,6 +67,7 @@ int   hasAPI1_5();
  
  void video_fb_enable(int enable, int n = 0);
  int video_fb_state();
