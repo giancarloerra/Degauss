@@ -1547,22 +1547,14 @@ fn validate_hash(value: &str) -> bool {
 }
 
 fn undated_stem(stem: &str) -> &str {
-    match stem.rsplit_once('_') {
-        Some((before, after))
-            if after.len() >= 8 && after.as_bytes()[..8].iter().all(u8::is_ascii_digit) =>
-        {
-            before
-        }
-        _ => stem,
-    }
+    crate::systems::db9_unstable_parts(stem)
+        .map(|(base, _)| base)
+        .unwrap_or_else(|| crate::systems::undated_core_stem(stem))
 }
 
 fn build_date(stem: &str) -> Option<String> {
-    let (_, suffix) = stem.rsplit_once('_')?;
-    let date = suffix.get(..8)?;
-    date.bytes()
-        .all(|byte| byte.is_ascii_digit())
-        .then(|| format!("{}-{}-{}", &date[..4], &date[4..6], &date[6..8]))
+    crate::systems::core_build_date(stem)
+        .map(|date| format!("{}-{}-{}", &date[..4], &date[4..6], &date[6..8]))
 }
 
 fn title_from_stem(stem: &str) -> String {
@@ -1595,7 +1587,10 @@ fn remote_core(
         .file_stem()
         .and_then(|stem| stem.to_str())
         .ok_or_else(|| format!("core {path:?} has no usable name"))?;
-    let identity = crate::systems::core_name(stem.trim_start_matches("RA_"));
+    let plain_stem = stem.trim_start_matches("RA_");
+    let identity = crate::systems::db9_unstable_parts(plain_stem)
+        .map(|(base, _)| crate::systems::core_name(base))
+        .unwrap_or_else(|| crate::systems::core_name(plain_stem));
     if identity.is_empty() {
         return Err(format!("core {path:?} has no usable identity"));
     }
@@ -2232,7 +2227,11 @@ fn catalogue_identity(entry: &CoreEntry) -> String {
             .path
             .file_stem()
             .and_then(|stem| stem.to_str())
-            .map(crate::systems::core_name)
+            .map(|stem| {
+                crate::systems::db9_unstable_parts(stem)
+                    .map(|(base, _)| crate::systems::core_name(base))
+                    .unwrap_or_else(|| crate::systems::core_name(stem))
+            })
             .unwrap_or_else(|| crate::systems::core_name(&entry.name)),
     }
 }
@@ -3215,6 +3214,38 @@ mod tests {
             path,
             logo_id: None,
         }
+    }
+
+    #[test]
+    fn db9_core_names_keep_their_system_identity_and_build_date() {
+        let source = database("db9", "https://example.test/db9.json");
+        let description = FileDescription {
+            hash: "0123456789abcdef0123456789abcdef".into(),
+            size: 1,
+            tags: Vec::new(),
+            overwrite: true,
+        };
+        for (path, expected_title) in [
+            ("_Console/NES_20260928_a1b2c3d_DB9.rbf", "NES"),
+            (
+                "_Unstable/NES_unstable_20260928_2315_a1b2c3d_DB9.rbf",
+                "NES",
+            ),
+        ] {
+            let remote = remote_core(&source, path, &description)
+                .unwrap()
+                .expect("DB9 core should be included");
+            assert_eq!(remote.identity, "nes");
+            assert_eq!(remote.title, expected_title);
+            assert_eq!(remote.build, "2026-09-28");
+        }
+
+        let installed = core(
+            PathBuf::from("/_Console/NES_20260928_a1b2c3d_DB9.rbf"),
+            "Nintendo Entertainment System",
+            "Console",
+        );
+        assert_eq!(catalogue_identity(&installed), "nes");
     }
 
     fn run_events<F>(request: Request, mut fetch: F) -> Vec<Event>
