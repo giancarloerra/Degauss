@@ -2,7 +2,7 @@
 """Build crisp, fixed-size variants of Degauss's two existing pixel fonts.
 
 This is a maintainer tool, not a release-build dependency. The generated TTFs
-are checked in. Install fonttools to regenerate them.
+are checked in. Install fonttools and Pillow to regenerate them.
 """
 
 from pathlib import Path
