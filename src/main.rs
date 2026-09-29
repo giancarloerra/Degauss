@@ -22,6 +22,9 @@ mod display_mask;
 mod error;
 mod favorites;
 mod font;
+#[cfg(test)]
+#[path = "../build/font_data.rs"]
+mod font_data_tests;
 mod font_packs;
 mod frontend_session;
 mod game_filter;

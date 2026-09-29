@@ -1,4 +1,6 @@
 include!("src/font_sizes.rs");
+#[path = "build/font_data.rs"]
+mod font_data;
 
 fn valid_screenscraper_credential(value: Option<&str>, max: usize) -> bool {
     value.is_some_and(|value| {
@@ -104,6 +106,7 @@ fn main() {
                 .with_include_paths(vec![out.clone()]);
             slint_build::compile_with_config(&path, config)
                 .unwrap_or_else(|error| panic!("compiling {path}: {error}"));
+            font_data::compact_file(&out.join(format!("{kind}_{label}.rs")));
         }
     }
 
@@ -116,9 +119,10 @@ fn main() {
     );
     let config = slint_build::CompilerConfiguration::new()
         .embed_resources(slint_build::EmbedResourcesKind::EmbedForSoftwareRenderer)
-        .with_include_paths(vec![out]);
+        .with_include_paths(vec![out.clone()]);
     slint_build::compile_with_config("ui/degauss.slint", config)
         .expect("compiling ui/degauss.slint");
+    font_data::compact_file(&out.join("degauss.rs"));
 }
 
 /// The scripts a name on a card can be spelled in.
