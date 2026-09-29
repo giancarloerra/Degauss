@@ -12304,8 +12304,9 @@ impl App {
         self.ini_profile_job = None;
         let requested = self.ini_profile_action.take().is_some();
         if requested
-            || self.screen == Screen::Advanced
-            || (self.screen == Screen::Options && self.options_page == OptionsPage::Developer)
+            || ((self.screen == Screen::Advanced
+                || (self.screen == Screen::Options && self.options_page == OptionsPage::Developer))
+                && (self.message.is_none() || self.message.as_deref() == Some(INI_PROFILE_READING)))
         {
             self.message = Some(error);
         }
@@ -22121,6 +22122,31 @@ pub(crate) fn test_library_launch_flow(window: Rc<MinimalSoftwareWindow>) {
         None,
     );
     app.finish_background_work_for_headless();
+
+    // An automatic profile refresh must not hide a settings or command error.
+    app.open_options_page(OptionsPage::Developer);
+    app.message = Some("Settings could not be saved".into());
+    app.finish_ini_profile_error("command timed out".into());
+    assert_eq!(app.message.as_deref(), Some("Settings could not be saved"));
+    app.message = None;
+    app.finish_ini_profile_error("command timed out".into());
+    assert_eq!(
+        app.message.as_deref(),
+        Some("Cannot read MiSTer INI profiles: command timed out")
+    );
+    app.message = Some(INI_PROFILE_READING.into());
+    app.finish_ini_profile_error("command unavailable".into());
+    assert_eq!(
+        app.message.as_deref(),
+        Some("Cannot read MiSTer INI profiles: command unavailable")
+    );
+    app.ini_profile_action = Some(IniProfileAction::Confirm(1));
+    app.finish_ini_profile_error("profile changed".into());
+    assert_eq!(
+        app.message.as_deref(),
+        Some("Cannot read MiSTer INI profiles: profile changed")
+    );
+    app.message = None;
 
     app.open_options_page(OptionsPage::Display);
     assert_eq!(app.option_value(OptionId::VideoPreset), "Off");

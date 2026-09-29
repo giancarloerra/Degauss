@@ -46,9 +46,13 @@ def smaller_glyphs(font: TTFont, source: Path, size: int, unit: int) -> None:
         bounds = native.getbbox(chr(codepoint))
         source_left = min(0, bounds[0]) if bounds else 0
         source_right = max(source_advance, bounds[2]) if bounds else source_advance
-        source_bitmap = Image.new("L", (source_right - source_left, 12))
+        source_top = min(0, bounds[1]) if bounds else 0
+        source_bottom = max(12, bounds[3]) if bounds else 12
+        source_bitmap = Image.new(
+            "L", (source_right - source_left, source_bottom - source_top)
+        )
         ImageDraw.Draw(source_bitmap).text(
-            (-source_left, 0), chr(codepoint), font=native, fill=255
+            (-source_left, -source_top), chr(codepoint), font=native, fill=255
         )
         target_width = max(1, (advance + unit // 2) // unit)
         reduced = source_bitmap.resize((target_width, size), Image.Resampling.BOX)

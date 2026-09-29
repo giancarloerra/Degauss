@@ -2555,6 +2555,8 @@ fn assign_local_cores(remotes: &[RemoteCore], locals: &[LocalCore]) -> Vec<Optio
                     .and_then(|candidates| {
                         candidates.iter().copied().find(|&local_index| {
                             !matched[local_index]
+                                && remote_paths[remote_index].ends_with("_db9.rbf")
+                                    == local_paths[local_index].ends_with("_db9.rbf")
                                 && path_match_rank(
                                     &remote_paths[remote_index],
                                     &local_paths[local_index],
@@ -3603,6 +3605,64 @@ db_url = https://example.test/two.json
             logo_id: None,
         }];
         assert_eq!(assign_local_cores(&remotes, &locals), vec![None, Some(0)]);
+    }
+
+    #[test]
+    fn db9_and_stock_updates_match_only_their_installed_variant() {
+        const URL: &str = "https://example.test/distribution.json";
+        for update_date in ["20260927", "20260928"] {
+            let stock_name = "_Console/NES_20260927.rbf".to_string();
+            let db9_name = stock_name.replace(".rbf", "_a1b2c3d_DB9.rbf");
+            let stock_update = stock_name.replace("20260927", update_date);
+            let db9_update = db9_name.replace("20260927", update_date);
+            for (stock_installed, db9_installed) in [(true, false), (false, true), (true, true)] {
+                let root = TestRoot::new("db9-stock-matching");
+                root.write(
+                    "downloader.ini",
+                    format!("[MiSTer]\nfilter = all\n\n[distribution_mister]\ndb_url = {URL}\n"),
+                );
+                let mut entries = Vec::new();
+                for (name, installed) in
+                    [(&stock_name, stock_installed), (&db9_name, db9_installed)]
+                {
+                    if installed {
+                        entries.push(core(root.write(name, b"old core"), "NES", "Console"));
+                    }
+                }
+                let data = manifest(
+                    "distribution_mister",
+                    &[
+                        (&stock_update, b"new core", &[], true),
+                        (&db9_update, b"new core", &[], true),
+                    ],
+                );
+                let (snapshot, notice) = ready(run_events(
+                    request(&root, entries, false),
+                    |url, _, _, _| {
+                        assert_eq!(url, URL);
+                        Ok(data.clone())
+                    },
+                ));
+                assert!(notice.is_none());
+                for (remote, local, installed) in [
+                    (&stock_update, &stock_name, stock_installed),
+                    (&db9_update, &db9_name, db9_installed),
+                ] {
+                    let item = snapshot
+                        .items
+                        .iter()
+                        .find(|item| item.remote_path == *remote)
+                        .unwrap();
+                    assert_eq!(item.installed, installed, "{remote}");
+                    assert_eq!(
+                        item.launch_path,
+                        installed.then(|| root.path().join(local)),
+                        "{remote}"
+                    );
+                    assert_eq!(item.core_identity.as_deref(), Some("nes"));
+                }
+            }
+        }
     }
 
     #[test]

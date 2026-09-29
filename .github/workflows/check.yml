@@ -27,12 +27,8 @@ jobs:
       - run: cargo fmt --check
       - name: Check RA release delivery compatibility
         run: python3 scripts/test-ra-release.py
-      # Four baked typefaces make the generated interface source about
-      # 258 MB, and one rustc peaks near 13 GB compiling it. The runner has
-      # 16 GB of memory plus its own 4 GB swapfile, and --all-targets runs
-      # several rustc jobs at once, so the ARM lint was killed with exit 143
-      # partway through. More swap goes on the runner's spare disk under its
-      # own name, because /swapfile is already active and cannot be grown.
+      # Embedded font packs need extra compiler memory. Use a separate
+      # swapfile rather than replacing the runner's existing swapfile.
       - name: Add swap for the big generated source
         run: |
           sudo fallocate -l 16G /mnt/degauss-swap
@@ -40,7 +36,13 @@ jobs:
           sudo mkswap /mnt/degauss-swap
           sudo swapon /mnt/degauss-swap
           free -h
-      - run: cargo test -j 1
+          df -h . /mnt
+      - name: Run tests
+        run: |
+          vmstat 60 &
+          monitor_pid=$!
+          trap 'kill "$monitor_pid" 2>/dev/null || true' EXIT
+          /usr/bin/time -v cargo test -j 1
         env:
           CARGO_PROFILE_TEST_DEBUG: 0
       # Every upgrade shape a card can arrive in, rehearsed against the
