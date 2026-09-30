@@ -18,6 +18,17 @@ spec.loader.exec_module(package_ra)
 
 
 class ReleaseTests(unittest.TestCase):
+    def test_ra_core_chooser_uses_root_only_for_the_private_menu(self):
+        patch = (ROOT / 'support/ra-main/frontend.patch').read_text()
+        menu = patch.split('diff --git a/menu.cpp b/menu.cpp\n', 1)[1].split('diff --git', 1)[0]
+        self.assertIn(
+            '+\t\tif (is_menu() && !strcmp(get_rbf_path(), "/media/fat/degauss/menu.rbf")) selPath[0] = 0;',
+            menu,
+        )
+        self.assertIn('diff --git a/tests/run-degauss-core-menu-tests.py', patch)
+        build = (ROOT / 'scripts/build-ra-main.sh').read_text()
+        self.assertIn('python3 tests/run-degauss-core-menu-tests.py\n', build)
+
     def test_database_maps_shipped_shadow_masks_to_repository_files(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
