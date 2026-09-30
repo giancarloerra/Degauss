@@ -468,6 +468,14 @@ video configuration used by game cores. With Degauss's bundled Menu core,
 while HDMI keeps its configured `video_mode`. It is off by default, so existing
 HDMI-only and shared-scaler setups do not change.
 
+To keep the CRT's existing picture width and position, set
+`degauss_analog_video_mode` in the same `[Menu]` section to that display's
+known-working progressive custom CRT modeline. It uses MiSTer's custom
+`video_mode` syntax, but controls only the analog framebuffer timing. Leave
+`video_mode` set to the desired HDMI mode. Without this optional key, native
+analog output uses the bundled Menu core's default timing. Both bundled Main
+choices support it; invalid modelines report an INI error.
+
 To retain the older shared-scaler route, use `vga_scaler=1`. In that mode the
 scaler needs a 15 kHz `video_mode` supported by the CRT. A mode already known
 to work with MiSTer's Menu on that display is the best choice. If none is
@@ -2056,7 +2064,7 @@ vga_scaler=0
 degauss_native_analog=1
 ```
 
-With Degauss's bundled Menu core, this sends the framebuffer to analog at native 15 kHz while HDMI keeps its own configured `video_mode`. The native analog option is off by default. If you instead use `vga_scaler=1`, both outputs use the scaler. That route needs a 15 kHz `video_mode` supported by the CRT; this common mode can be used as a starting point:
+With Degauss's bundled Menu core, this sends the framebuffer to analog at native 15 kHz while HDMI keeps its own configured `video_mode`. The native analog option is off by default. To retain a known-working CRT's width and position, put its progressive custom modeline in `degauss_analog_video_mode` under the same `[Menu]` section; leave `video_mode` for HDMI. If you instead use `vga_scaler=1`, both outputs use the scaler. That route needs a 15 kHz `video_mode` supported by the CRT; this common mode can be used as a starting point:
 
 ```ini
 video_mode=640,54,56,106,224,16,0,28,13764
