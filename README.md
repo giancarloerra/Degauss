@@ -52,7 +52,7 @@ separately. CRT presentation is applied for the README.
 | Multi List View | Carousel View | Tiled View |
 | <img src="docs/screenshots/0.8.0/02-core-selection.png" alt="Per-system Core Selection" height="200"> | <img src="docs/screenshots/0.6.0/08-options.png" alt="Extensive Options" height="200"> | <img src="docs/screenshots/0.7.0/02-shortcuts.png" alt="Configurable Hold Shortcuts" height="200"> |
 | Per-system Core Selection | Extensive Options | Configurable Hold Shortcuts |
-| <img src="docs/screenshots/0.6.0/10-appearance.png" alt="Appearance" height="200"> | <img src="docs/screenshots/0.8.1/02-library.png" alt="Library: optional Cores and Core Updates browsers" height="200"> | <img src="docs/screenshots/0.8.1/04-screen-rotation.png" alt="Complete interface rotated clockwise for a vertical display" height="200"> |
+| <img src="docs/screenshots/0.6.0/10-appearance.png" alt="Appearance" height="200"> | <img src="docs/screenshots/0.8.1/02-library.png" alt="Library: optional Cores and Core Updates browsers" height="200"> | <img src="docs/screenshots/0.9.1/02-screen-rotation.png" alt="Complete interface rotated clockwise for a vertical display" height="200"> |
 | Appearance Settings | Library Visibility | 90° Screen Rotation |
 | <img src="docs/screenshots/0.8.2/03-core-updates.png" alt="Core Updates" height="200"> | <img src="docs/screenshots/0.8.0/05-cores.png" alt="Installed Cores Browser" height="200"> | <img src="docs/screenshots/0.8.0/06-metadata-filters.png" alt="Metadata Filters" height="200"> |
 | Core Updates | Installed Cores Browser | Metadata Filters |
@@ -77,8 +77,8 @@ separately. CRT presentation is applied for the README.
 
 | | | |
 |---|---|---|
-| <img src="docs/screenshots/0.4.0/18-saved-custom-theme.png" alt="A Saved Custom Theme" height="200"> | <img src="docs/screenshots/0.9.0/01-attract-mode.png" alt="Attract Mode" height="200"> | <img src="docs/screenshots/0.9.0/02-display-effects.png" alt="Display settings with Scanlines and Grille selected" height="200"> |
-| A Saved Custom Theme | Attract Mode | Shadow Mask Effects |
+| <img src="docs/screenshots/0.4.0/18-saved-custom-theme.png" alt="A Saved Custom Theme" height="200"> | <img src="docs/screenshots/0.9.0/01-attract-mode.png" alt="Attract Mode" height="200"> | <img src="docs/screenshots/0.9.1/01-video-effects.png" alt="Display settings with Video Effects and Scanlines selected" height="200"> |
+| A Saved Custom Theme | Attract Mode | Video Effects |
 
 ## Watch Degauss in action
 
