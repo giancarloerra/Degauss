@@ -2578,10 +2578,10 @@ index 0000000..e627958
 +}
 diff --git a/tests/run-degauss-analog-timing-tests.py b/tests/run-degauss-analog-timing-tests.py
 new file mode 100644
-index 0000000..63d5860
+index 0000000..21032a2
 --- /dev/null
 +++ b/tests/run-degauss-analog-timing-tests.py
-@@ -0,0 +1,194 @@
+@@ -0,0 +1,207 @@
 +#!/usr/bin/env python3
 +"""Exercise the production analog modeline conversion independently of HDMI."""
 +
@@ -2660,6 +2660,7 @@ index 0000000..63d5860
 +} cfg = {};
 +static int capability = 0xD161;
 +static unsigned disable_calls = 0;
++static int vga_enable = -1;
 +static std::vector<uint16_t> words;
 +static bool is_menu() { return menu_active; }
 +static bool video_degauss_native_fb_active() { return native_active; }
@@ -2671,7 +2672,7 @@ index 0000000..63d5860
 +static int video_fb_state() { return fb_enabled && !fb_num; }
 +static void degauss_restore_preset_baseline(bool) {}
 +static void setShadowMask() {}
-+static void set_vga_fb(int) {}
++static void set_vga_fb(int enable) { vga_enable = enable; }
 +static void set_yc_mode() {}
 +static void user_io_status_set(const char *, unsigned) {}
 +'''
@@ -2749,6 +2750,18 @@ index 0000000..63d5860
 +    video_fb_enable(0, 0);
 +    assert(words.size() == 1 && words[0] == 0);
 +    assert(fb_enabled == 0);
++
++    // A core rejecting the framebuffer command must not enable Direct Video
++    // merely because a Menu background was requested.
++    words.clear();
++    menu_bg = 1;
++    capability = 0;
++    cfg.direct_video = 1;
++    video_fb_enable(0, 0);
++    assert(words.empty() && vga_enable == 0 && fb_enabled == 0);
++    cfg.direct_video = 0;
++    menu_bg = 0;
++    capability = 1;
 +
 +    // Rejected INI values must not change the stored framebuffer dimensions.
 +    strcpy(cfg.degauss_analog_video_mode, zero_clock);
@@ -3185,7 +3198,7 @@ index 0000000..88931fd
 +    subprocess.run([str(path / 'test')], check=True)
 +print('Frontend completion restores VT1 before disabling script framebuffer')
 diff --git a/video.cpp b/video.cpp
-index 542ef71..906970e 100644
+index 542ef71..d5790aa 100644
 --- a/video.cpp
 +++ b/video.cpp
 @@ -50,6 +50,8 @@
@@ -3730,7 +3743,7 @@ index 542ef71..906970e 100644
  		{
  		if (!strcasecmp(yc_modes[i].key, yc_key) || !strcasecmp(yc_modes[i].key, yc_key_expand))
  			{
-@@ -3334,21 +3691,77 @@ static void fb_write_module_params()
+@@ -3334,12 +3691,63 @@ static void fb_write_module_params()
  	});
  }
  
@@ -3788,27 +3801,23 @@ index 542ef71..906970e 100644
  
  	if (fb_base)
  	{
-+		if (is_menu() && !enable && menu_bg)
-+		{
-+			enable = 1;
-+			n = menu_bgn;
-+		}
 +		uint16_t native_timing[8] = {};
 +		const bool native = video_degauss_native_fb_active();
-+		if (enable && native && !prepare_degauss_native_timing(native_timing)) return;
++		if ((enable || menu_bg) && native && !prepare_degauss_native_timing(native_timing)) return;
  		int res = spi_uio_cmd_cont(UIO_SET_FBUF);
  		if (res)
  		{
--			if (is_menu() && !enable && menu_bg)
+@@ -3348,7 +3756,12 @@ void video_fb_enable(int enable, int n)
+ 				enable = 1;
+ 				n = menu_bgn;
+ 			}
+-
 +			if (enable && native && cfg.degauss_analog_video_mode[0] && res != 0xD161)
- 			{
--				enable = 1;
--				n = menu_bgn;
++			{
 +				DisableIO();
 +				cfg_error("DEGAUSS_ANALOG_VIDEO_MODE requires the matching Menu core");
 +				return;
- 			}
--
++			}
  			if (enable)
  			{
  				uint32_t fb_addr = FB_ADDR + (FB_SIZE * 4 * n) + (n ? 0 : 4096);
