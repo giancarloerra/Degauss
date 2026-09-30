@@ -2,6 +2,8 @@
 
 Degauss reads EmulationStation-compatible `gamelist.xml` files and image files directly from the MiSTer card. An AI coding agent can audit and maintain those files over SSH without using Degauss's interactive scraper. The card remains the source of truth.
 
+For the complete post-update sequence, including cores, ROM requirements and Linux checks, see [Managing MiSTer with AI after Update All](https://github.com/giancarloerra/Degauss/blob/main/docs/manage-mister-with-ai.md). This guide supplies its artwork step.
+
 The safe sequence is:
 
 1. Audit the live card without changing it.
@@ -155,7 +157,7 @@ Yes, when the complete kit is supplied. The distributable kit contains:
 
 The scripts contain no user or developer credentials. The ScreenScraper helper reads a separately protected developer TOML selected through `--developer-config` or `SCREENSCRAPER_DEVELOPER_CONFIG`, and reads the user's own protected Degauss ScreenScraper configuration on the MiSTer. Neither credential file belongs in the kit.
 
-The Arcade tools are intentionally limited to Arcade MRAs named by the latest Update All log. The bundled system tools implement complete-system adapters for Amiga, Commodore 64, Genesis, SNES, and Nintendo 64. `degauss_artwork_apply.py` is the generic final-write tool. It accepts only an explicit, hash-pinned, reviewed manifest; its default mode is a dry run.
+The default Arcade CLI scope is limited to MRAs named by the latest Update All log and their organised links. Archive-delivered or other indirectly affected MRAs require the [expanded audit below](#archive-delivered-and-other-indirect-changes); the CLI does not discover them automatically. The bundled system tools implement complete-system adapters for Amiga, Commodore 64, Genesis, SNES, and Nintendo 64. `degauss_artwork_apply.py` is the generic final-write tool. It accepts only an explicit, hash-pinned, reviewed manifest; its default mode is a dry run.
 
 Before use, install Pillow and run the bundled tests:
 
@@ -372,7 +374,7 @@ The reference workflow separates read/write auditing from external candidate dis
 - `arcade_artwork_audit.py` reads the live card, mirrors Degauss matching, checks image references, validates an approved manifest, performs a dry run, and applies only that pinned manifest.
 - `arcade_artwork_source.py` groups genuine title gaps, obtains candidate screenshots, validates downloads, records hashes and sources, and creates a manifest from reviewed approvals. It never changes the card.
 
-These bundled scripts are intentionally scoped to Arcade MRAs named by the latest Update All downloader log, plus organised MRA symlinks that resolve to those exact MRAs. They are not a generic whole-card scraper.
+The default CLI scope is Arcade MRAs named by the latest Update All downloader log, plus organised MRA symlinks that resolve to those exact MRAs. This is a subset, not a complete audit when the run also unpacked an MRA archive or changed a core used by other MRAs. The scripts are not a generic whole-card scraper.
 
 ### 1. Audit the current Update All Arcade scope
 
@@ -391,6 +393,26 @@ The audit records:
 - Parent-inherited artwork.
 - Existing candidate images on the card.
 - Broken or missing image references.
+
+### Archive-delivered and other indirect changes
+
+Before accepting this CLI result as the whole run's artwork result, identify changes installed inside archives and MRAs affected only by a changed core or launcher. The [post-Update All guide](https://github.com/giancarloerra/Degauss/blob/main/docs/manage-mister-with-ai.md#changes-delivered-inside-archives) describes how to establish that exact additional scope.
+
+For an archive, use the supplying run's pinned member summary, verify its declared hash and size, and correlate changed members with the run's write evidence and live hashes. Do not infer changes from a timestamp alone or substitute today's summary for an older run. Downloader documents this in its [archive specification](https://github.com/MiSTer-devel/Downloader_MiSTer/blob/main/docs/custom-databases-archives.md).
+
+The current CLI has no additional-scope flag. For those verified extra paths, an agent can reuse the bundled read-only functions:
+
+- `remote_mras(paths)` reads an explicit list of Arcade-relative MRA paths.
+- `remote_organized(mras)` identifies organised symlinks to those source MRAs. Resolve each link back to its verified source and include it in the affected paths.
+- `read_gamelist(xml_text)` and `degauss_lookup(path, tables)` apply the same matching and inheritance rules as the normal audit.
+
+Read the actual unchanged gamelist and log. Fully decode each effective image read from the card and inspect the game's identity before classifying a gap. Report the direct and additional path counts separately. Name missing/unreadable MRAs and images rather than dropping them.
+
+If repairs are needed for this expanded scope, prepare the explicit system manifest described in [Applying a reviewed manifest to any system](#applying-a-reviewed-manifest-to-any-system), using `system: "Arcade"` and the actual resolved root. Dry-run and apply it with `degauss_artwork_apply.py` only after review and approval. Then repeat the expanded path audit against the final card XML and images. The default Arcade `--manifest` CLI alone does not cover additional paths.
+
+Do not edit the card log, fabricate a replacement log, invent command-line flags, or include unchanged archive members to expand the scope. If the run's archive revision or changed members cannot be established, state the exact unknown coverage and leave the post-update task incomplete.
+
+For a completed-run maintenance task, artwork is mandatory for that same run's full affected scope. A zero-gap log-only result does not close unverified archive changes. Keep outstanding work across interruptions and later runs; do not report completion until every required artwork check and approved repair passes, unless the user explicitly accepts a named exception. A frontend list rebuild remains a separate authorised action.
 
 ### 2. List public titles that need candidates
 
@@ -757,6 +779,8 @@ Before a write, present a manifest pinned to the current inventory, gamelist has
 For an approved write, confirm no updater or scraper is running. Back up the gamelist. Upload images and XML to unique .part files, validate size and SHA-256, atomically rename, sync, and reread. Preserve existing XML structure and change only approved entries. Reparse the final XML, validate all affected images, rerun Degauss resolution, and ensure previously valid references still work.
 
 Do not rebuild Degauss automatically. Report which system needs Actions > Library > Rebuild This System List, or whether Options > Library > Rebuild All System Lists is required.
+
+For a post-Update All task, include verified archive-delivered members and indirectly affected MRAs, not only the default CLI's log-listed subset. Preserve the original logs. Keep the same-run artwork step outstanding across interruptions and later runs until every required affected-path check and approved repair passes, or the user explicitly accepts the exact remaining gap.
 ```
 
 ## What not to do

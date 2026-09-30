@@ -124,6 +124,7 @@ Click the image to watch Degauss on YouTube.
   - [Keeping the card in order (additional bonus!)](#keeping-the-card-in-order-additional-bonus)
 - [Troubleshooting and FAQ](#troubleshooting-and-faq)
   - [What MiSTer hardware has Degauss been reported working on?](#what-mister-hardware-has-degauss-been-reported-working-on)
+  - [Can an AI coding agent maintain my MiSTer after Update All?](#can-an-ai-coding-agent-maintain-my-mister-after-update-all)
   - [I installed an Artwork Pack, but its artwork is not showing](#i-installed-an-artwork-pack-but-its-artwork-is-not-showing)
   - [Degauss stays on “Starting Degauss frontend...”](#degauss-stays-on-starting-degauss-frontend)
   - [Why does Update All warn that Degauss replaces MiSTer firmware with a fork?](#why-does-update-all-warn-that-degauss-replaces-mister-firmware-with-a-fork)
@@ -2019,6 +2020,12 @@ Degauss has been reported working on:
 Yes. An agent with SSH access can audit the gamelists and artwork already on the MiSTer, identify genuine gaps, and prepare reviewed changes without replacing Degauss's own scraper. It should report what it found and wait for approval before writing to the card.
 
 Read [Managing Degauss artwork with an AI coding agent](tools/artwork-agent/DEGAUSS_AI_ARTWORK_FAQ.md), or [download the complete artwork agent kit](tools/artwork-agent/Degauss-AI-Artwork-Agent-Kit.zip) with its scripts, tests, requirements and licence.
+
+### Can an AI coding agent maintain my MiSTer after Update All?
+
+Yes. Start with the completed run's exact changes, including files delivered inside archives. Check affected cores, launchers, ROM requirements, Linux state and artwork; preserve manual content and perform only approved repairs. The same-run artwork pass is part of completion, not a separate optional follow-up.
+
+Read [Managing MiSTer with AI after Update All](docs/manage-mister-with-ai.md) and copy its [generic management instruction template](docs/mister-maintenance-AGENTS.example.md) into a separate local management folder. The guide links the existing SSH and artwork instructions, explains safe writes and validation, and includes a copyable agent brief. It does not grant permission to run Update All, reboot, download games or rebuild lists.
 
 ### I installed an Artwork Pack, but its artwork is not showing
 

@@ -45,6 +45,10 @@ developer_password = "..."
 
 It can instead be selected with `--developer-config /protected/path/file.toml` or the `SCREENSCRAPER_DEVELOPER_CONFIG` environment variable. The user's ScreenScraper account remains in Degauss's protected MiSTer configuration. Never include either credential file in this kit.
 
-The Arcade tools are deliberately limited to MRAs from the latest Update All run. The system tools implement complete-system adapters for Amiga, Commodore 64, Genesis, SNES, and Nintendo 64. `degauss_artwork_apply.py` is the reviewed-manifest installer used by both workflows. The FAQ defines the matching, review, import, and manifest requirements that must be completed before that installer is used.
+The default Arcade CLI covers MRAs listed in the latest Update All log and their organised links. It does not discover archive-delivered changes or MRAs affected only by a core update. The FAQ's [expanded-audit section](DEGAUSS_AI_ARTWORK_FAQ.md#archive-delivered-and-other-indirect-changes) explains how to audit verified additional paths with the existing functions and prepare an explicit manifest for `degauss_artwork_apply.py`. A log-only result must not be reported as a complete post-update artwork check when those paths remain unverified.
+
+The system tools implement complete-system adapters for Amiga, Commodore 64, Genesis, SNES, and Nintendo 64. `degauss_artwork_apply.py` is the reviewed-manifest installer used by both workflows. The FAQ defines the matching, review, import, and manifest requirements that must be completed before that installer is used.
+
+For the broader workflow, see [Managing MiSTer with AI after Update All](https://github.com/giancarloerra/Degauss/blob/main/docs/manage-mister-with-ai.md) and its generic instruction template. This artwork kit contains no ROM downloader or game data.
 
 The kit never launches an emulator or core to create artwork. It uses only pre-existing card art, user-owned frontend collections, and exact images from verified public online sources.
