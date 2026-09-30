@@ -47,7 +47,7 @@ the pinned backend and validate it before shipping another Degauss release.
   from https://github.com/odelot/Main_MiSTer/tree/687d5dba7600fa7295aab9b967ff9923573332c9.
 - Source archive SHA-256:
   `94c738309112228e13e70cee02f2a070ce11dbf4437bb60a1e5ad667aafe10d3`.
-- Degauss integration: commit `96a7ff35819f9e216810005418dd2e8f62fe1970`
+- Degauss integration: commit `3cdb9f57b65d7693d21023183cc71a525a3e32f7`
   from https://github.com/giancarloerra/Degauss-Main.
   The patch omits its unrelated input.cpp blank-line removal.
 - rcheevos 12.4.0 is already bundled in this exact RA source. Its bytes remain
@@ -74,6 +74,8 @@ shortcut setting. Frontend and the configured keyboard key load `menu.rbf`;
 normal Main profile selection determines the executable used after that load.
 When a frontend exits from RA Main Scripts mode, cleanup explicitly returns to
 VT1 before disabling its script framebuffer.
+With the private Degauss Menu core active, the native core chooser starts at
+the root. Ordinary core and MRA browsing retain their existing locations.
 
 Unstable cores using Degauss Main already use that integration. This build is
 needed for an RA Main executable selected through an RA profile. It does not
