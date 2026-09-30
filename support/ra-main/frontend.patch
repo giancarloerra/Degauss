@@ -16,19 +16,20 @@ index 4967017..e895697 100644
                         ; Background picture will get darker after double timeout
  video_off=0            ; output black frame in Menu core after timeout (is seconds). Valid only if osd_timout is non zero.
 diff --git a/cfg.cpp b/cfg.cpp
-index f9ace49..3966eb2 100644
+index f9ace49..291b34a 100644
 --- a/cfg.cpp
 +++ b/cfg.cpp
-@@ -69,6 +69,8 @@ static const ini_var_t ini_vars[] =
+@@ -69,6 +69,9 @@ static const ini_var_t ini_vars[] =
  	{ "BOOTCORE_TIMEOUT", (void*)(&(cfg.bootcore_timeout)), INT16, 2, 30 },
  	{ "FONT", (void*)(&(cfg.font)), STRING, 0, sizeof(cfg.font) - 1 },
  	{ "FB_SIZE", (void*)(&(cfg.fb_size)), UINT8, 0, 4 },
 +	{ "FB_HSCALE", (void*)(&(cfg.fb_hscale)), UINT8, 1, 4 },
 +	{ "DEGAUSS_NATIVE_ANALOG", (void*)(&(cfg.degauss_native_analog)), UINT8, 0, 1 },
++	{ "DEGAUSS_ANALOG_VIDEO_MODE", (void*)(cfg.degauss_analog_video_mode), STRING, 0, sizeof(cfg.degauss_analog_video_mode) - 1 },
  	{ "FB_TERMINAL", (void*)(&(cfg.fb_terminal)), UINT8, 0, 1 },
  	{ "OSD_TIMEOUT", (void*)(&(cfg.osd_timeout)), INT16, 0, 3600 },
  	{ "DIRECT_VIDEO", (void*)(&(cfg.direct_video)), UINT8, 0, 2 },
-@@ -593,6 +595,7 @@ void cfg_parse()
+@@ -593,6 +596,7 @@ void cfg_parse()
  	memset(&cfg, 0, sizeof(cfg));
  	cfg.csync = 1;
  	cfg.bootscreen = 1;
@@ -37,7 +38,7 @@ index f9ace49..3966eb2 100644
  	cfg.controller_info = 6;
  	cfg.browse_expand = 1;
 diff --git a/cfg.h b/cfg.h
-index f702f0f..65e0f16 100644
+index f702f0f..befd754 100644
 --- a/cfg.h
 +++ b/cfg.h
 @@ -40,6 +40,8 @@ typedef struct {
@@ -49,6 +50,14 @@ index f702f0f..65e0f16 100644
  	uint8_t fb_terminal;
  	uint8_t osd_rotate;
  	uint16_t osd_timeout;
+@@ -67,6 +69,7 @@ typedef struct {
+ 	char video_conf[1024];
+ 	char video_conf_pal[1024];
+ 	char video_conf_ntsc[1024];
++	char degauss_analog_video_mode[1024];
+ 	char font[1024];
+ 	char shared_folder[1024];
+ 	char waitmount[1024];
 diff --git a/fpga_io.cpp b/fpga_io.cpp
 index b64cfe5..e216cc9 100644
 --- a/fpga_io.cpp
@@ -269,7 +278,7 @@ index 60d94f5..81cc0ad 100644
  
  #ifdef USE_SCHEDULER
 diff --git a/menu.cpp b/menu.cpp
-index 981b47a..65739c1 100644
+index 981b47a..87abb2d 100644
 --- a/menu.cpp
 +++ b/menu.cpp
 @@ -50,6 +50,13 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
@@ -297,7 +306,7 @@ index 981b47a..65739c1 100644
  	MENU_MISC1,
  	MENU_MISC2,
  
-@@ -440,6 +451,8 @@ void SelectFile(const char* path, const char* pFileExt, int Options, unsigned char MenuSelect, unsigned char MenuCancel)
+@@ -440,6 +451,8 @@ void SelectFile(const char* path, const char* pFileExt, int Options, unsigned ch
  			strcat(selPath, get_rbf_name());
  		}
  		ResolveExistingCorePath(selPath);
@@ -318,7 +327,7 @@ index 981b47a..65739c1 100644
  // get key status
  static int hold_cnt = 0;
  static uint32_t menu_key_get(void)
-@@ -850,9 +866,9 @@ const char* get_rbf_name_bootcore(char *str)
+@@ -850,9 +868,9 @@ const char* get_rbf_name_bootcore(char *str)
  }
  
  
@@ -330,7 +339,7 @@ index 981b47a..65739c1 100644
  	{
  		EnableOsd_on(OSD_VGA);
  		OsdSetSize(16);
-@@ -1098,6 +1114,17 @@ void HandleUI(void)
+@@ -1098,6 +1116,17 @@ void HandleUI(void)
  {
  	PROFILE_FUNCTION();
  
@@ -348,7 +357,7 @@ index 981b47a..65739c1 100644
  	if (bt_timer >= 0)
  	{
  		if (!bt_timer) bt_timer = (int32_t)GetTimer(6000);
-@@ -1593,6 +1620,12 @@ void HandleUI(void)
+@@ -1593,6 +1622,12 @@ void HandleUI(void)
  		break;
  	}
  
@@ -361,7 +370,7 @@ index 981b47a..65739c1 100644
  	// Switch to current menu screen
  	switch (menustate)
  	{
-@@ -2941,6 +2974,14 @@ void HandleUI(void)
+@@ -2941,6 +2976,14 @@ void HandleUI(void)
  			helptext_idx = 0;
  			reboot_req = 0;
  
@@ -376,7 +385,7 @@ index 981b47a..65739c1 100644
  			OsdSetTitle("System", 0);
  			menustate = MENU_COMMON2;
  			parentstate = MENU_COMMON1;
-@@ -2954,6 +2995,19 @@ void HandleUI(void)
+@@ -2954,6 +2997,19 @@ void HandleUI(void)
  				if (!menusub) firstmenu = 0;
  				adjvisible = 0;
  
@@ -396,7 +405,7 @@ index 981b47a..65739c1 100644
  				MenuWrite(n++, " Core                      \x16", menusub == 0, 0);
  				MenuWrite(n++);
  
-@@ -3183,6 +3237,18 @@ void HandleUI(void)
+@@ -3183,6 +3239,18 @@ void HandleUI(void)
  				menusub = 0;
  				break;
  
@@ -415,7 +424,7 @@ index 981b47a..65739c1 100644
  			case 17:
  				{
  					reboot_req = 1;
-@@ -3247,6 +3313,126 @@ void HandleUI(void)
+@@ -3247,6 +3315,126 @@ void HandleUI(void)
  		if(!hold_cnt && reboot_req) fpga_load_rbf("menu.rbf");
  		break;
  
@@ -542,7 +551,7 @@ index 981b47a..65739c1 100644
  	case MENU_VIDEOPROC1:
  		helptext_idx = 0;
  		menumask = 0x7FFF;
-@@ -7250,17 +7436,51 @@ void HandleUI(void)
+@@ -7250,17 +7438,51 @@ void HandleUI(void)
  			static char cmd[1024 * 2];
  			const char *path = getFullPath(selPath);
  			menustate = MENU_SCRIPTS_FB2;
@@ -597,7 +606,7 @@ index 981b47a..65739c1 100644
  				execl("/sbin/agetty", "/sbin/agetty", "-a", "root", "-l", "/tmp/script", "--nohostname", "-L", "tty2", "linux", NULL);
  				exit(0); //should never be reached
  			}
-@@ -7278,6 +7498,21 @@ void HandleUI(void)
+@@ -7278,6 +7500,21 @@ void HandleUI(void)
  			{
  				ttypid = 0;
  				user_io_osd_key_enable(1);
@@ -653,7 +662,7 @@ index 54b3e77..b7b055a 100644
  		}
 diff --git a/support/degauss/README.md b/support/degauss/README.md
 new file mode 100644
-index 0000000..343577e
+index 0000000..cf5b5b7
 --- /dev/null
 +++ b/support/degauss/README.md
 @@ -0,0 +1,77 @@
@@ -2567,129 +2576,219 @@ index 0000000..e627958
 +	test_keyboard_runtime();
 +	return 0;
 +}
-diff --git a/tests/run-degauss-physical-cd-tests.sh b/tests/run-degauss-physical-cd-tests.sh
+diff --git a/tests/run-degauss-analog-timing-tests.py b/tests/run-degauss-analog-timing-tests.py
 new file mode 100644
-index 0000000..842db34
+index 0000000..21032a2
 --- /dev/null
-+++ b/tests/run-degauss-physical-cd-tests.sh
-@@ -0,0 +1,26 @@
-+#!/usr/bin/env bash
-+set -euo pipefail
++++ b/tests/run-degauss-analog-timing-tests.py
+@@ -0,0 +1,207 @@
++#!/usr/bin/env python3
++"""Exercise the production analog modeline conversion independently of HDMI."""
 +
-+cd "$(dirname "$0")/.."
++from pathlib import Path
++import subprocess
++import tempfile
 +
-+test_binary="$(mktemp -t degauss-physical-cd-test.XXXXXX)"
-+trap 'rm -f "$test_binary"' EXIT
++root = Path(__file__).resolve().parents[1]
++video = (root / "video.cpp").read_text()
++start = video.index("static bool degauss_native_timing(")
++end = video.index("\n}\n", start) + 3
++production = video[start:end]
++parser_start = video.index("static int parse_custom_video_mode(")
++parser_end = video.index("\n}\n", parser_start) + 3
++production = video[parser_start:parser_end] + production
++prepare_start = video.index("static bool prepare_degauss_native_timing(")
++prepare_end = video.index("\n}\n", prepare_start) + 3
++enable_start = video.index("void video_fb_enable(")
++enable_end = video.index("\n}\n", enable_start) + 3
++config_start = video.index("static void video_fb_config()\n{")
++config_end = video.index("\n}\n", config_start) + 3
++harness = r'''
++#include <cassert>
++#include <cmath>
++using std::isfinite;
++#include <cstdint>
++#include <cstdio>
++#include <cstring>
++#include <limits>
++#include <cstdlib>
++#include <strings.h>
++#include <vector>
++#define FB_SIZE (1920*1080)
++struct vmode_custom_t {
++    uint32_t item[32];
++    struct { unsigned pr, rb, hpol, vpol; } param;
++    double Fpix;
++};
++static unsigned pll_calls = 0;
++static unsigned cfg_errors = 0;
++static unsigned cvt_calls = 0;
++static void setPLL(double, vmode_custom_t *) { ++pll_calls; }
++static void cfg_error(const char *, ...) { ++cfg_errors; }
++static void video_calculate_cvt(int, int, float, int, vmode_custom_t *) { ++cvt_calls; }
++static char *strcpyz(char *out, const char *in) { return strcpy(out,in); }
++static int str_tokenize(char *text, const char *separator, char **tokens, int max) {
++    int count = 0;
++    for (char *token = strtok(text,separator); token && count < max;
++         token = strtok(nullptr,separator)) tokens[count++] = token;
++    return count;
++}
++'''
++framebuffer = r'''
++#define PROFILE_FUNCTION()
++#define UIO_SET_FBUF 0x2f
++#define FB_ADDR 0x22000000
++#define FB_EN 0x8000
++#define FB_FILTER 0x4000
++#define FB_NATIVE 0x2000
++#define FB_FMT_RxB 0x10
++#define FB_FMT_8888 6
++#define FB_DV_LBRD 3
++#define FB_DV_UBRD 2
++static uint32_t framebuffer_storage;
++static uint32_t *fb_base = &framebuffer_storage;
++static bool native_active = true, menu_active = true;
++static int menu_bg = 0, menu_bgn = 1, fb_num = 0, fb_enabled = 0;
++static int fb_width = 320, fb_height = 240;
++static int brd_x = 0, brd_y = 0;
++static bool degauss_preset_filter = false, degauss_preset_active = false;
++static char degauss_display_mask[1024] = {};
++static vmode_custom_t v_cur = {};
++static struct {
++    char degauss_analog_video_mode[1024];
++    int direct_video, fb_size, fb_hscale, menu_pal, vscale_border;
++} cfg = {};
++static int capability = 0xD161;
++static unsigned disable_calls = 0;
++static int vga_enable = -1;
++static std::vector<uint16_t> words;
++static bool is_menu() { return menu_active; }
++static bool video_degauss_native_fb_active() { return native_active; }
++static int spi_uio_cmd_cont(int) { return capability; }
++static void spi_w(uint16_t value) { words.push_back(value); }
++static void DisableIO() { ++disable_calls; }
++static void fb_write_module_params() {}
++static void input_switch(int) {}
++static int video_fb_state() { return fb_enabled && !fb_num; }
++static void degauss_restore_preset_baseline(bool) {}
++static void setShadowMask() {}
++static void set_vga_fb(int enable) { vga_enable = enable; }
++static void set_yc_mode() {}
++static void user_io_status_set(const char *, unsigned) {}
++'''
++production += framebuffer + video[prepare_start:prepare_end] + video[enable_start:enable_end] + video[config_start:config_end]
++checks = r'''
++int main() {
++    vmode_custom_t mode = {};
++    char modeline[] = "320,16,32,32,240,3,3,16,8000";
++    assert(parse_custom_video_mode(modeline, &mode, false) == -2);
++    assert(pll_calls == 0);
++    assert(mode.Fpix == 8.0);
++    assert(parse_custom_video_mode(modeline, &mode) == -2);
++    assert(pll_calls == 1);
++    char cvt_nan[] = "320,240,nan";
++    assert(parse_custom_video_mode(cvt_nan, &mode, false) == -1);
++    assert(cvt_calls == 0 && pll_calls == 1);
++    char zero_clock[] = "320,16,32,32,240,3,3,16,0";
++    assert(parse_custom_video_mode(zero_clock, &mode, false) == -2);
++    uint16_t timing[8];
++    assert(!degauss_native_timing(mode, timing));
++    assert(pll_calls == 1);
++    uint32_t source[] = {1,320,16,32,32,240,3,3,16};
++    memcpy(mode.item, source, sizeof(source));
++    mode.Fpix = 8.0;
++    assert(degauss_native_timing(mode, timing));
++    const uint16_t expected[] = {1000,840,920,800,262,243,246,240};
++    assert(!memcmp(timing, expected, sizeof(expected)));
++    mode.item[1] = 4096;
++    mode.Fpix = 32.0;
++    assert(!degauss_native_timing(mode, timing));
++    memcpy(mode.item, source, sizeof(source));
++    mode.Fpix = 8.0;
++    // Equivalent modelines must retain the same real picture width and sync.
++    for (unsigned i = 1; i <= 4; ++i) mode.item[i] *= 2;
++    mode.Fpix *= 2;
++    assert(degauss_native_timing(mode, timing));
++    assert(!memcmp(timing, expected, sizeof(expected)));
++    mode.Fpix = 0;
++    assert(!degauss_native_timing(mode, timing));
++    mode.Fpix = std::numeric_limits<double>::infinity();
++    assert(!degauss_native_timing(mode, timing));
++    mode.Fpix = 16.0;
++    mode.param.pr = 1;
++    assert(!degauss_native_timing(mode, timing));
++    mode.param.pr = 0;
++    mode.item[3] = 0;
++    assert(!degauss_native_timing(mode, timing));
++    mode.item[3] = 64;
++    mode.item[8] = 0;
++    assert(!degauss_native_timing(mode, timing));
++    mode.item[8] = 4095;
++    assert(!degauss_native_timing(mode, timing));
 +
-+${CXX:-c++} -std=c++14 -Wall -Wextra -Werror -I. \
-+	tests/degauss_physical_cd_logic_test.cpp \
-+	support/degauss/physical_cd_logic.cpp -o "$test_binary"
-+"$test_binary"
++    strcpy(cfg.degauss_analog_video_mode, modeline);
++    // A background framebuffer request is effectively enabled and needs the
++    // same configured native timing and capability check as the frontend.
++    menu_bg = 1;
++    video_fb_enable(0, 0);
++    assert(fb_enabled == 1 && fb_num == menu_bgn);
++    assert(words.size() == 18);
++    assert(!memcmp(words.data() + 10, expected, sizeof(expected)));
++    words.clear();
++    capability = 1;
++    const unsigned errors_before = cfg_errors;
++    video_fb_enable(0, 0);
++    assert(words.empty() && cfg_errors == errors_before + 1);
++    assert(disable_calls == 2);
 +
-+grep -q 'for (int i = 0; i < 8; i++)' support/degauss/physical_cd_autorun.cpp
-+grep -q 'O_RDONLY | O_NONBLOCK | O_CLOEXEC' support/degauss/physical_cd_autorun.cpp
-+grep -q 'pthread_create' support/degauss/physical_cd_autorun.cpp
-+grep -q 'detection_current(generation)' support/degauss/physical_cd_autorun.cpp
-+grep -q 'DEGAUSS_PHYSICAL_DISC_CONTROL_FILE' support/degauss/physical_cd_autorun.cpp
-+grep -q 'DEGAUSS_PHYSICAL_DISC_EVENT_FILE' support/degauss/physical_cd_autorun.cpp
-+grep -q 'access(DEGAUSS_PHYSICAL_DISC_EVENT_FILE, F_OK) != 0' support/degauss/physical_cd_autorun.cpp
-+grep -q 'GetTimer(CD_POLL_MS \* 4)' support/degauss/physical_cd_autorun.cpp
-+if grep -q 'xml_load' support/degauss/physical_cd_autorun.cpp; then
-+	echo "Physical-disc detection bypasses the Degauss launch handoff" >&2
-+	exit 1
-+fi
-+grep -q 'physical_cd_autorun_poll();' scheduler.cpp
-diff --git a/tests/run-degauss-shortcut-tests.sh b/tests/run-degauss-shortcut-tests.sh
-new file mode 100644
-index 0000000..ea6d84b
---- /dev/null
-+++ b/tests/run-degauss-shortcut-tests.sh
-@@ -0,0 +1,85 @@
-+#!/usr/bin/env bash
-+set -euo pipefail
++    // Old Menu cores retain the original command when no override is set.
++    cfg.degauss_analog_video_mode[0] = 0;
++    menu_bg = 0;
++    video_fb_enable(1, 0);
++    assert(words.size() == 10);
++    words.clear();
++    video_fb_enable(0, 0);
++    assert(words.size() == 1 && words[0] == 0);
++    assert(fb_enabled == 0);
 +
-+cd "$(dirname "$0")/.."
++    // A core rejecting the framebuffer command must not enable Direct Video
++    // merely because a Menu background was requested.
++    words.clear();
++    menu_bg = 1;
++    capability = 0;
++    cfg.direct_video = 1;
++    video_fb_enable(0, 0);
++    assert(words.empty() && vga_enable == 0 && fb_enabled == 0);
++    cfg.direct_video = 0;
++    menu_bg = 0;
++    capability = 1;
 +
-+test_binary="$(mktemp -t degauss-shortcut-test.XXXXXX)"
-+trap 'rm -f "$test_binary"' EXIT
-+
-+${CXX:-c++} -std=c++14 -Wall -Wextra -Werror \
-+	-I. tests/degauss_shortcut_logic_test.cpp -o "$test_binary"
-+"$test_binary"
-+
-+# The shortcut must use the physical Linux key. Moving its hook below either
-+# transformation makes a saved assignment depend on the active keyboard map.
-+shortcut_hook_line="$(grep -n 'degauss_shortcut_handle_keyboard_event' input.cpp | cut -d: -f1)"
-+keyboard_map_guard_line="$(grep -n 'if (ev->type == EV_KEY && ev->code < 256' input.cpp | head -1 | cut -d: -f1)"
-+keyboard_map_line="$(grep -n 'kbdmap\[ev->code\]' input.cpp | cut -d: -f1)"
-+keyrah_line="$(grep -n 'ev->code = keyrah_trans' input.cpp | cut -d: -f1)"
-+
-+test -n "$shortcut_hook_line"
-+test "$shortcut_hook_line" -lt "$keyboard_map_guard_line"
-+test "$shortcut_hook_line" -lt "$keyboard_map_line"
-+test "$shortcut_hook_line" -lt "$keyrah_line"
-+grep -B8 'degauss_shortcut_handle_keyboard_event' input.cpp | grep -q 'valid_keyboard_key(ev->code)'
-+grep -B8 'degauss_shortcut_handle_keyboard_event' input.cpp | grep -q '!input\[dev\]\.force_joy'
-+grep -q 'uint8_t  kbdmap\[256\]' input.cpp
-+
-+# The Enter release that opened capture must reach Main's ordinary keyboard
-+# path, otherwise the next Enter press remains latched and is ignored.
-+capture_handler="$(sed -n '/bool degauss_shortcut_handle_keyboard_event/,/^}/p' support/degauss/degauss_shortcut.cpp)"
-+printf '%s\n' "$capture_handler" | grep -Fq 'if (!value) return false;'
-+
-+# The two Degauss rows must follow their visible order when Up or Down changes
-+# menusub. They stay above every stock System-menu index, with no controller
-+# direction required to open the shortcut settings.
-+frontend_menusub="$(awk '$2 == "DEGAUSS_MENUSUB" { print $3 }' support/degauss/degauss_launcher.h)"
-+shortcut_menusub="$(awk '$2 == "DEGAUSS_SHORTCUT_MENUSUB" { print $3 }' support/degauss/degauss_launcher.h)"
-+test "$frontend_menusub" -eq 30
-+test "$shortcut_menusub" -eq 31
-+
-+frontend_row_line="$(grep -n 'MenuWrite(n++, " Frontend ' menu.cpp | head -1 | cut -d: -f1)"
-+shortcut_row_line="$(grep -n 'MenuWrite(n++, " Frontend shortcut' menu.cpp | cut -d: -f1)"
-+core_row_line="$(grep -n 'MenuWrite(n++, " Core ' menu.cpp | head -1 | cut -d: -f1)"
-+test "$frontend_row_line" -lt "$shortcut_row_line"
-+test "$shortcut_row_line" -lt "$core_row_line"
-+
-+if grep -q 'right && menusub == DEGAUSS_MENUSUB' menu.cpp; then
-+	echo "Frontend shortcut still depends on Right from the Frontend row" >&2
-+	exit 1
-+fi
-+grep -A4 'case DEGAUSS_SHORTCUT_MENUSUB:' menu.cpp \
-+	| grep -q 'menustate = MENU_DEGAUSS_SHORTCUT1'
-+
-+# The release UI and input path are keyboard-only. Version 1 keeps a legacy
-+# byte solely so files written by local pre-release builds remain readable.
-+if grep -q ' Controller:' menu.cpp; then
-+	echo "Frontend shortcut UI still exposes a controller assignment" >&2
-+	exit 1
-+fi
-+if grep -q 'degauss_shortcut_handle_controller_event' input.cpp; then
-+	echo "Frontend shortcut input still handles controller events" >&2
-+	exit 1
-+fi
-+grep -q 'legacy_controller_button' support/degauss/degauss_shortcut_logic.h
-+grep -q ' A: Capture   X: Disable' menu.cpp
-+if grep -q 'set/capture' menu.cpp; then
-+	echo "Frontend shortcut UI still uses the ambiguous set/capture label" >&2
-+	exit 1
-+fi
-+
-+# The custom Menu core supports Degauss's native analog framebuffer path.
-+# Keep Main's stock vga_scaler warning for ordinary framebuffer scripts, but
-+# suppress its text for Degauss while retaining the function's OSD shutdown.
-+grep -A4 'degauss_running = degauss_is_frontend_script' menu.cpp \
-+	| grep -q 'vga_nag(!degauss_running);'
-+
-+# A failed terminal fork must restore the Menu framebuffer immediately rather
-+# than treating pid -1 as a running child and leaving Degauss video active.
-+degauss_launch="$(sed -n '/degauss_running = degauss_is_frontend_script/,/case MENU_SCRIPTS_FB2:/p' menu.cpp)"
-+printf '%s\n' "$degauss_launch" | grep -q 'if (ttypid < 0)'
-+fork_failure="$(printf '%s\n' "$degauss_launch" | sed -n '/if (ttypid < 0)/,/else if (!ttypid)/p')"
-+printf '%s\n' "$fork_failure" | grep -q 'video_set_degauss_native_fb(false);'
-+printf '%s\n' "$fork_failure" | grep -q 'video_chvt(1);'
-+printf '%s\n' "$fork_failure" | grep -q 'video_fb_enable(0);'
-+printf '%s\n' "$fork_failure" | grep -q 'menustate = MENU_SYSTEM1;'
++    // Rejected INI values must not change the stored framebuffer dimensions.
++    strcpy(cfg.degauss_analog_video_mode, zero_clock);
++    fb_width = 321; fb_height = 241;
++    const unsigned config_errors_before = cfg_errors;
++    video_fb_config();
++    assert(cfg_errors == config_errors_before + 1);
++    assert(fb_width == 321 && fb_height == 241);
++    strcpy(cfg.degauss_analog_video_mode, modeline);
++    video_fb_config();
++    assert(fb_width == 320 && fb_height == 240 && brd_x == 0 && brd_y == 0);
++    cfg.degauss_analog_video_mode[0] = 0;
++    video_fb_config();
++    assert(fb_width == 352 && fb_height == 240);
++    cfg.menu_pal = 1;
++    video_fb_config();
++    assert(fb_width == 352 && fb_height == 288);
++    puts("Analog timing conversion passed");
++}
++'''
++with tempfile.TemporaryDirectory(prefix="degauss-analog-timing-") as temporary:
++    source = Path(temporary) / "timing.cpp"
++    binary = Path(temporary) / "timing"
++    source.write_text(harness + production + checks)
++    subprocess.run(["c++", "-std=c++14", "-Wall", "-Wextra", "-Werror",
++                    str(source), "-o", str(binary)], check=True)
++    subprocess.run([str(binary)], check=True)
 diff --git a/tests/run-degauss-core-menu-tests.py b/tests/run-degauss-core-menu-tests.py
 new file mode 100644
 index 0000000..18d637b
@@ -2814,12 +2913,135 @@ index 0000000..18d637b
 +        str(source), "-o", str(binary),
 +    ], check=True)
 +    subprocess.run([str(binary)], check=True)
+diff --git a/tests/run-degauss-physical-cd-tests.sh b/tests/run-degauss-physical-cd-tests.sh
+new file mode 100644
+index 0000000..842db34
+--- /dev/null
++++ b/tests/run-degauss-physical-cd-tests.sh
+@@ -0,0 +1,26 @@
++#!/usr/bin/env bash
++set -euo pipefail
++
++cd "$(dirname "$0")/.."
++
++test_binary="$(mktemp -t degauss-physical-cd-test.XXXXXX)"
++trap 'rm -f "$test_binary"' EXIT
++
++${CXX:-c++} -std=c++14 -Wall -Wextra -Werror -I. \
++	tests/degauss_physical_cd_logic_test.cpp \
++	support/degauss/physical_cd_logic.cpp -o "$test_binary"
++"$test_binary"
++
++grep -q 'for (int i = 0; i < 8; i++)' support/degauss/physical_cd_autorun.cpp
++grep -q 'O_RDONLY | O_NONBLOCK | O_CLOEXEC' support/degauss/physical_cd_autorun.cpp
++grep -q 'pthread_create' support/degauss/physical_cd_autorun.cpp
++grep -q 'detection_current(generation)' support/degauss/physical_cd_autorun.cpp
++grep -q 'DEGAUSS_PHYSICAL_DISC_CONTROL_FILE' support/degauss/physical_cd_autorun.cpp
++grep -q 'DEGAUSS_PHYSICAL_DISC_EVENT_FILE' support/degauss/physical_cd_autorun.cpp
++grep -q 'access(DEGAUSS_PHYSICAL_DISC_EVENT_FILE, F_OK) != 0' support/degauss/physical_cd_autorun.cpp
++grep -q 'GetTimer(CD_POLL_MS \* 4)' support/degauss/physical_cd_autorun.cpp
++if grep -q 'xml_load' support/degauss/physical_cd_autorun.cpp; then
++	echo "Physical-disc detection bypasses the Degauss launch handoff" >&2
++	exit 1
++fi
++grep -q 'physical_cd_autorun_poll();' scheduler.cpp
+diff --git a/tests/run-degauss-shortcut-tests.sh b/tests/run-degauss-shortcut-tests.sh
+new file mode 100644
+index 0000000..ea6d84b
+--- /dev/null
++++ b/tests/run-degauss-shortcut-tests.sh
+@@ -0,0 +1,85 @@
++#!/usr/bin/env bash
++set -euo pipefail
++
++cd "$(dirname "$0")/.."
++
++test_binary="$(mktemp -t degauss-shortcut-test.XXXXXX)"
++trap 'rm -f "$test_binary"' EXIT
++
++${CXX:-c++} -std=c++14 -Wall -Wextra -Werror \
++	-I. tests/degauss_shortcut_logic_test.cpp -o "$test_binary"
++"$test_binary"
++
++# The shortcut must use the physical Linux key. Moving its hook below either
++# transformation makes a saved assignment depend on the active keyboard map.
++shortcut_hook_line="$(grep -n 'degauss_shortcut_handle_keyboard_event' input.cpp | cut -d: -f1)"
++keyboard_map_guard_line="$(grep -n 'if (ev->type == EV_KEY && ev->code < 256' input.cpp | head -1 | cut -d: -f1)"
++keyboard_map_line="$(grep -n 'kbdmap\[ev->code\]' input.cpp | cut -d: -f1)"
++keyrah_line="$(grep -n 'ev->code = keyrah_trans' input.cpp | cut -d: -f1)"
++
++test -n "$shortcut_hook_line"
++test "$shortcut_hook_line" -lt "$keyboard_map_guard_line"
++test "$shortcut_hook_line" -lt "$keyboard_map_line"
++test "$shortcut_hook_line" -lt "$keyrah_line"
++grep -B8 'degauss_shortcut_handle_keyboard_event' input.cpp | grep -q 'valid_keyboard_key(ev->code)'
++grep -B8 'degauss_shortcut_handle_keyboard_event' input.cpp | grep -q '!input\[dev\]\.force_joy'
++grep -q 'uint8_t  kbdmap\[256\]' input.cpp
++
++# The Enter release that opened capture must reach Main's ordinary keyboard
++# path, otherwise the next Enter press remains latched and is ignored.
++capture_handler="$(sed -n '/bool degauss_shortcut_handle_keyboard_event/,/^}/p' support/degauss/degauss_shortcut.cpp)"
++printf '%s\n' "$capture_handler" | grep -Fq 'if (!value) return false;'
++
++# The two Degauss rows must follow their visible order when Up or Down changes
++# menusub. They stay above every stock System-menu index, with no controller
++# direction required to open the shortcut settings.
++frontend_menusub="$(awk '$2 == "DEGAUSS_MENUSUB" { print $3 }' support/degauss/degauss_launcher.h)"
++shortcut_menusub="$(awk '$2 == "DEGAUSS_SHORTCUT_MENUSUB" { print $3 }' support/degauss/degauss_launcher.h)"
++test "$frontend_menusub" -eq 30
++test "$shortcut_menusub" -eq 31
++
++frontend_row_line="$(grep -n 'MenuWrite(n++, " Frontend ' menu.cpp | head -1 | cut -d: -f1)"
++shortcut_row_line="$(grep -n 'MenuWrite(n++, " Frontend shortcut' menu.cpp | cut -d: -f1)"
++core_row_line="$(grep -n 'MenuWrite(n++, " Core ' menu.cpp | head -1 | cut -d: -f1)"
++test "$frontend_row_line" -lt "$shortcut_row_line"
++test "$shortcut_row_line" -lt "$core_row_line"
++
++if grep -q 'right && menusub == DEGAUSS_MENUSUB' menu.cpp; then
++	echo "Frontend shortcut still depends on Right from the Frontend row" >&2
++	exit 1
++fi
++grep -A4 'case DEGAUSS_SHORTCUT_MENUSUB:' menu.cpp \
++	| grep -q 'menustate = MENU_DEGAUSS_SHORTCUT1'
++
++# The release UI and input path are keyboard-only. Version 1 keeps a legacy
++# byte solely so files written by local pre-release builds remain readable.
++if grep -q ' Controller:' menu.cpp; then
++	echo "Frontend shortcut UI still exposes a controller assignment" >&2
++	exit 1
++fi
++if grep -q 'degauss_shortcut_handle_controller_event' input.cpp; then
++	echo "Frontend shortcut input still handles controller events" >&2
++	exit 1
++fi
++grep -q 'legacy_controller_button' support/degauss/degauss_shortcut_logic.h
++grep -q ' A: Capture   X: Disable' menu.cpp
++if grep -q 'set/capture' menu.cpp; then
++	echo "Frontend shortcut UI still uses the ambiguous set/capture label" >&2
++	exit 1
++fi
++
++# The custom Menu core supports Degauss's native analog framebuffer path.
++# Keep Main's stock vga_scaler warning for ordinary framebuffer scripts, but
++# suppress its text for Degauss while retaining the function's OSD shutdown.
++grep -A4 'degauss_running = degauss_is_frontend_script' menu.cpp \
++	| grep -q 'vga_nag(!degauss_running);'
++
++# A failed terminal fork must restore the Menu framebuffer immediately rather
++# than treating pid -1 as a running child and leaving Degauss video active.
++degauss_launch="$(sed -n '/degauss_running = degauss_is_frontend_script/,/case MENU_SCRIPTS_FB2:/p' menu.cpp)"
++printf '%s\n' "$degauss_launch" | grep -q 'if (ttypid < 0)'
++fork_failure="$(printf '%s\n' "$degauss_launch" | sed -n '/if (ttypid < 0)/,/else if (!ttypid)/p')"
++printf '%s\n' "$fork_failure" | grep -q 'video_set_degauss_native_fb(false);'
++printf '%s\n' "$fork_failure" | grep -q 'video_chvt(1);'
++printf '%s\n' "$fork_failure" | grep -q 'video_fb_enable(0);'
++printf '%s\n' "$fork_failure" | grep -q 'menustate = MENU_SYSTEM1;'
 diff --git a/tests/run-degauss-video-tests.sh b/tests/run-degauss-video-tests.sh
 new file mode 100644
-index 0000000..32ffdf3
+index 0000000..2baf244
 --- /dev/null
 +++ b/tests/run-degauss-video-tests.sh
-@@ -0,0 +1,111 @@
+@@ -0,0 +1,110 @@
 +#!/usr/bin/env bash
 +set -euo pipefail
 +
@@ -2876,8 +3098,7 @@ index 0000000..32ffdf3
 +grep -Fq 'return degauss_native_fb && is_menu() && !cfg.vga_scaler;' video.cpp
 +grep -Fq 'enable = enable && cfg.degauss_native_analog;' video.cpp
 +grep -Fq '(video_degauss_native_fb_active() ? FB_NATIVE : 0)' video.cpp
-+grep -Fq 'fb_width = 352;' video.cpp
-+grep -Fq 'fb_height = cfg.menu_pal ? 288 : 240;' video.cpp
++grep -Fq 'int width = 352, height = cfg.menu_pal ? 288 : 240;' video.cpp
 +
 +# Very narrow test modes still need a non-zero checker size before the
 +# framebuffer diagnostic divides coordinates by it.
@@ -2977,7 +3198,7 @@ index 0000000..88931fd
 +    subprocess.run([str(path / 'test')], check=True)
 +print('Frontend completion restores VT1 before disabling script framebuffer')
 diff --git a/video.cpp b/video.cpp
-index 542ef71..d24188a 100644
+index 542ef71..d5790aa 100644
 --- a/video.cpp
 +++ b/video.cpp
 @@ -50,6 +50,8 @@
@@ -3335,7 +3556,34 @@ index 542ef71..d24188a 100644
  }
  
  static void hdmi_packet_enable(uint8_t mask, bool enable)
-@@ -2653,6 +2912,63 @@ static void video_cfg_init()
+@@ -2280,7 +2539,7 @@ static void video_set_mode(vmode_custom_t *v, double Fpix)
+ 	setShadowMask();
+ }
+ 
+-static int parse_custom_video_mode(char* vcfg, vmode_custom_t *v)
++static int parse_custom_video_mode(char* vcfg, vmode_custom_t *v, bool calculate_pll = true)
+ {
+ 	char *tokens[32];
+ 	uint32_t val[32];
+@@ -2338,6 +2597,8 @@ static int parse_custom_video_mode(char* vcfg, vmode_custom_t *v)
+ 	}
+ 	else if (cnt == 3)
+ 	{
++		// Analog overrides require explicit CRT timings, not calculated CVT modes.
++		if (!calculate_pll) return -1;
+ 		video_calculate_cvt(val[0], val[1], valf ? valf : val[2], v->param.rb, v);
+ 	}
+ 	else if (cnt >= 21)
+@@ -2366,7 +2627,7 @@ static int parse_custom_video_mode(char* vcfg, vmode_custom_t *v)
+ 		return -1;
+ 	}
+ 
+-	setPLL(v->Fpix, v);
++	if (calculate_pll) setPLL(v->Fpix, v);
+ 	return -2;
+ }
+ 
+@@ -2653,6 +2914,63 @@ static void video_cfg_init()
  	loadShadowMaskCfg();
  }
  
@@ -3399,7 +3647,7 @@ index 542ef71..d24188a 100644
  void video_cfg_reset()
  {
  	FileDeleteConfig(gamma_cfg_path);
-@@ -2668,6 +2984,7 @@ void video_cfg_reset()
+@@ -2668,6 +2986,7 @@ void video_cfg_reset()
  
  void video_init()
  {
@@ -3407,7 +3655,7 @@ index 542ef71..d24188a 100644
  	yc_parse(yc_modes, sizeof(yc_modes) / sizeof(yc_modes[0]));
  
  	fb_init();
-@@ -2707,7 +3024,7 @@ void video_reinit()
+@@ -2707,7 +3026,7 @@ void video_reinit()
  	support_FHD = 0;
  	video_mode_load(true);
  
@@ -3416,7 +3664,7 @@ index 542ef71..d24188a 100644
  	video_set_mode(&v_def, 0);
  	user_io_send_buttons(1);
  	video_mode_adjust(1);
-@@ -3085,20 +3402,58 @@ bool video_mode_select(uint32_t vtime, vmode_custom_t* out_mode)
+@@ -3085,20 +3404,58 @@ bool video_mode_select(uint32_t vtime, vmode_custom_t* out_mode)
  	return adjustable;
  }
  
@@ -3480,7 +3728,7 @@ index 542ef71..d24188a 100644
  
  		int COLORBURST_START = (int)(3.7f * (CLK_VIDEO / CLK_REF));
  		int COLORBURST_END = (int)(9.0f * (CLK_VIDEO / CLK_REF)) + COLORBURST_START;
-@@ -3106,11 +3461,11 @@ static void set_yc_mode()
+@@ -3106,11 +3463,11 @@ static void set_yc_mode()
  
  		char yc_key[64];
  		char yc_key_expand[64];
@@ -3495,7 +3743,7 @@ index 542ef71..d24188a 100644
  		{
  		if (!strcasecmp(yc_modes[i].key, yc_key) || !strcasecmp(yc_modes[i].key, yc_key_expand))
  			{
-@@ -3334,6 +3689,11 @@ static void fb_write_module_params()
+@@ -3334,12 +3691,63 @@ static void fb_write_module_params()
  	});
  }
  
@@ -3504,10 +3752,76 @@ index 542ef71..d24188a 100644
 +	return degauss_native_fb && is_menu() && !cfg.vga_scaler;
 +}
 +
++// The native Menu reader runs at 20 MHz. Preserve modeline durations by
++// translating horizontal edges to that clock, rather than changing HDMI's PLL.
++static bool degauss_native_timing(const vmode_custom_t &mode, uint16_t timing[8])
++{
++	if (!isfinite(mode.Fpix) || mode.Fpix <= 0 || mode.param.pr ||
++		!mode.item[1] || mode.item[1] > 4095 || !mode.item[3] || !mode.item[5] || !mode.item[7] ||
++		(uint64_t)mode.item[1] * mode.item[5] > FB_SIZE) return false;
++
++	const double scale = 20.0 / mode.Fpix;
++	const double hdisp = mode.item[1];
++	const double hsstart = hdisp + mode.item[2];
++	const double hsend = hsstart + mode.item[3];
++	const double edges[8] = {
++		(hsend + mode.item[4]) * scale, hsstart * scale, hsend * scale, hdisp * scale,
++		(double)mode.item[5] + mode.item[6] + mode.item[7] + mode.item[8],
++		(double)mode.item[5] + mode.item[6],
++		(double)mode.item[5] + mode.item[6] + mode.item[7], (double)mode.item[5]
++	};
++	for (unsigned i = 0; i < 8; i++)
++	{
++		if (!isfinite(edges[i]) || edges[i] < 1 || edges[i] > 4095) return false;
++		timing[i] = (uint16_t)lround(edges[i]);
++	}
++	return timing[3] <= timing[1] && timing[1] < timing[2] && timing[2] < timing[0] &&
++		timing[7] <= timing[5] && timing[5] < timing[6] && timing[6] < timing[4];
++}
++
++static bool prepare_degauss_native_timing(uint16_t timing[8], int *width = nullptr, int *height = nullptr)
++{
++	memset(timing, 0, 8 * sizeof(*timing));
++	if (!cfg.degauss_analog_video_mode[0]) return true;
++	vmode_custom_t mode = {};
++	if (parse_custom_video_mode(cfg.degauss_analog_video_mode, &mode, false) != -2 ||
++		!degauss_native_timing(mode, timing))
++	{
++		cfg_error("Invalid DEGAUSS_ANALOG_VIDEO_MODE: custom progressive CRT modeline required");
++		return false;
++	}
++	if (width) *width = mode.item[1];
++	if (height) *height = mode.item[5];
++	return true;
++}
++
  void video_fb_enable(int enable, int n)
  {
  	PROFILE_FUNCTION();
-@@ -3362,7 +3722,8 @@ void video_fb_enable(int enable, int n)
+ 
+ 	if (fb_base)
+ 	{
++		uint16_t native_timing[8] = {};
++		const bool native = video_degauss_native_fb_active();
++		if ((enable || menu_bg) && native && !prepare_degauss_native_timing(native_timing)) return;
+ 		int res = spi_uio_cmd_cont(UIO_SET_FBUF);
+ 		if (res)
+ 		{
+@@ -3348,7 +3756,12 @@ void video_fb_enable(int enable, int n)
+ 				enable = 1;
+ 				n = menu_bgn;
+ 			}
+-
++			if (enable && native && cfg.degauss_analog_video_mode[0] && res != 0xD161)
++			{
++				DisableIO();
++				cfg_error("DEGAUSS_ANALOG_VIDEO_MODE requires the matching Menu core");
++				return;
++			}
+ 			if (enable)
+ 			{
+ 				uint32_t fb_addr = FB_ADDR + (FB_SIZE * 4 * n) + (n ? 0 : 4096);
+@@ -3362,7 +3775,8 @@ void video_fb_enable(int enable, int n)
  				}
  
  				//printf("Switch to Linux frame buffer\n");
@@ -3517,7 +3831,22 @@ index 542ef71..d24188a 100644
  				spi_w((uint16_t)fb_addr); // base address low word
  				spi_w(fb_addr >> 16);     // base address high word
  				spi_w(fb_width);          // frame width
-@@ -3400,7 +3761,18 @@ void video_fb_enable(int enable, int n)
+@@ -3372,6 +3786,14 @@ void video_fb_enable(int enable, int n)
+ 				spi_w(yoff);                 // scaled top
+ 				spi_w(yoff + v_cur.item[5] - 1); // scaled bottom
+ 				spi_w(fb_width * 4);      // stride
++				if (native && res == 0xD161)
++				{
++					for (uint16_t value : native_timing) spi_w(value);
++					if (cfg.degauss_analog_video_mode[0])
++						printf("Degauss analog timing: H %u,%u,%u,%u V %u,%u,%u,%u; HDMI unchanged\n",
++							native_timing[0], native_timing[1], native_timing[2], native_timing[3],
++							native_timing[4], native_timing[5], native_timing[6], native_timing[7]);
++				}
+ 
+ 				//printf("Linux frame buffer: %dx%d, stride = %d bytes\n", fb_width, fb_height, fb_width * 4);
+ 				if (!fb_num)
+@@ -3400,7 +3822,18 @@ void video_fb_enable(int enable, int n)
  		}
  
  		DisableIO();
@@ -3537,7 +3866,7 @@ index 542ef71..d24188a 100644
  		if (is_menu()) user_io_status_set("[8:5]", (fb_enabled && !fb_num) ? 0x160 : 0);
  	}
  }
-@@ -3419,6 +3791,7 @@ int video_fb_state()
+@@ -3419,6 +3852,7 @@ int video_fb_state()
  static void video_fb_config()
  {
  	PROFILE_FUNCTION();
@@ -3545,7 +3874,7 @@ index 542ef71..d24188a 100644
  
  	int fb_scale = cfg.fb_size;
  
-@@ -3432,20 +3805,38 @@ static void video_fb_config()
+@@ -3432,20 +3866,41 @@ static void video_fb_config()
  	else if (fb_scale == 3) fb_scale = 2;
  	else if (fb_scale > 4) fb_scale = 4;
  
@@ -3553,8 +3882,11 @@ index 542ef71..d24188a 100644
 -	const int fb_scale_y = v_cur.param.pr == 0 ? fb_scale : fb_scale * 2;
 +	if (video_degauss_native_fb_active())
 +	{
-+		fb_width = 352;
-+		fb_height = cfg.menu_pal ? 288 : 240;
++		int width = 352, height = cfg.menu_pal ? 288 : 240;
++		uint16_t native_timing[8];
++		if (!prepare_degauss_native_timing(native_timing, &width, &height)) return;
++		fb_width = width;
++		fb_height = height;
 +		brd_x = 0;
 +		brd_y = 0;
 +	}
@@ -3590,7 +3922,7 @@ index 542ef71..d24188a 100644
  static void draw_checkers()
  {
  	volatile uint32_t* buf = fb_base + (FB_SIZE*menu_bgn);
-@@ -3453,6 +3844,7 @@ static void draw_checkers()
+@@ -3453,6 +3908,7 @@ static void draw_checkers()
  	uint32_t col1 = 0x888888;
  	uint32_t col2 = 0x666666;
  	int sz = fb_width / 128;
@@ -3598,7 +3930,7 @@ index 542ef71..d24188a 100644
  
  	for (int y = brd_y; y < fb_height - brd_y; y++)
  	{
-@@ -3760,6 +4152,8 @@ void video_menu_bg(int n, int idle)
+@@ -3760,6 +4216,8 @@ void video_menu_bg(int n, int idle)
  		imlib_context_set_image(bg1); imlib_free_image(); bg1 = 0;
  		imlib_context_set_image(bg2); imlib_free_image(); bg2 = 0;
  		imlib_context_set_image(curtain); imlib_free_image(); curtain = 0;
@@ -3607,7 +3939,7 @@ index 542ef71..d24188a 100644
  	}
  	else
  	{
-@@ -4353,4 +4747,3 @@ int video_get_rotated()
+@@ -4353,4 +4811,3 @@ int video_get_rotated()
  {
    return current_video_info.rotated;
  }

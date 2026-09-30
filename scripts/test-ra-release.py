@@ -63,12 +63,26 @@ class ReleaseTests(unittest.TestCase):
 
     def test_degauss_menu_native_framebuffer_window_uses_inclusive_bounds(self):
         patch = (ROOT / 'support/menu-core/degauss-menu-0.9.1.patch').read_text()
-        self.assertIn("+\t.hdisp(12'd1058),", patch)
-        self.assertIn("+\t.hmax(12'd1057),", patch)
-        self.assertIn("+\t.vdisp(menu_pal ? 12'd288 : 12'd240),", patch)
-        self.assertIn("+\t.vmax(menu_pal ? 12'd287 : 12'd239),", patch)
+        self.assertIn("+\t.hdisp(native_custom_timing ? native_hdisp : 12'd1058),", patch)
+        self.assertIn("+\t.hmax(native_custom_timing ? native_hdisp - 12'd1 : 12'd1057),", patch)
+        self.assertIn("+\t.vdisp(native_custom_timing ? native_vdisp : menu_pal ? 12'd288 : 12'd240),", patch)
+        self.assertIn("+\t.vmax(native_custom_timing ? native_vdisp - 12'd1 : menu_pal ? 12'd287 : 12'd239),", patch)
         self.assertNotIn("+\t.hmax(12'd1058),", patch)
         self.assertNotIn("+\t.vmax(menu_pal ? 12'd300 : 12'd240),", patch)
+
+    def test_both_main_and_menu_ship_the_extended_analog_timing_command(self):
+        main = (ROOT / 'support/ra-main/frontend.patch').read_text()
+        menu = (ROOT / 'support/menu-core/degauss-menu-0.9.1.patch').read_text()
+        self.assertIn('DEGAUSS_ANALOG_VIDEO_MODE', main)
+        self.assertIn('+\t\t\t\tif (native && res == 0xD161)', main)
+        self.assertIn('+\t\t\t\t\tfor (uint16_t value : native_timing) spi_w(value);', main)
+        self.assertIn('+\t\t\t\tcase(cnt[4:0])', menu)
+        self.assertIn("+\t\t\t\t\t10: native_htotal  <= io_din[11:0];", menu)
+        self.assertIn("+\t\t\t\t\t17: native_vdisp   <= io_din[11:0];", menu)
+        self.assertIn('diff --git a/tests/run-native-timing-tests.py', menu)
+        self.assertIn('diff --git a/tests/run-degauss-analog-timing-tests.py', main)
+        build = (ROOT / 'scripts/build-ra-main.sh').read_text()
+        self.assertIn('python3 tests/run-degauss-analog-timing-tests.py\n', build)
 
     def test_degauss_menu_arbiter_holds_each_read_until_its_burst_completes(self):
         patch = (ROOT / 'support/menu-core/degauss-menu-0.9.1.patch').read_text()

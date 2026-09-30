@@ -36,6 +36,7 @@ bash tests/run-degauss-physical-cd-tests.sh
 bash tests/run-degauss-shortcut-tests.sh
 bash tests/run-degauss-video-tests.sh
 python3 tests/run-degauss-core-menu-tests.py
+python3 tests/run-degauss-analog-timing-tests.py
 image=degauss-ra-main-build:bookworm-gcc10
 # Rebuild from the checked-in recipe (Docker may reuse matching layers), rather
 # than trusting whatever an existing local image tag happens to reference.
@@ -69,7 +70,7 @@ for namespace, limit in (("GLIBC", (2, 31)), ("GLIBCXX", (3, 4, 28))):
 PYABI
 cp bin/MiSTer "$build_root/MiSTer_RA_Degauss"
 shasum -a 256 "$build_root/MiSTer_RA_Degauss"
-printf 'RA Main source: %s\nDegauss integration: 3cdb9f57b65d7693d21023183cc71a525a3e32f7\n' \
+printf 'RA Main source: %s\nDegauss integration: 8b6520d90311161a90760816a4821b20c2c5e899\n' \
     "$source_pin" > "$build_root/SOURCE-PINS.txt"
 printf 'CA bundle: curl Mozilla 2026-08-13 (MPL-2.0), SHA256 %s\n' "$ca_sha" >> "$build_root/SOURCE-PINS.txt"
 # Keep corresponding patched source and its build instructions with the binary.

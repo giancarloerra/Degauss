@@ -50,7 +50,7 @@ index 7ac4c3b..9f5b047 100644
  wire [2:0] led = status[8:6];
  
 diff --git a/sys/sys_top.v b/sys/sys_top.v
-index a416879..1ba5e80 100644
+index a416879..764960c 100644
 --- a/sys/sys_top.v
 +++ b/sys/sys_top.v
 @@ -326,6 +326,14 @@ wire[12:0] ARX, ARY;
@@ -76,10 +76,12 @@ index a416879..1ba5e80 100644
  	sl_r <= FB_EN ? 2'b00 : scanlines;
  
  `ifndef MISTER_DEBUG_NOHDMI
-@@ -402,6 +411,10 @@ always@(posedge clk_sys) begin
+@@ -401,7 +410,11 @@ always@(posedge clk_sys) begin
+ `else
  			if(io_din[7:0] == 'h2B) io_dout_sys <= {fb_en, sl_r, 4'b0111};
  `endif
- 			if(io_din[7:0] == 'h2F) io_dout_sys <= 1;
+-			if(io_din[7:0] == 'h2F) io_dout_sys <= 1;
++			if(io_din[7:0] == 'h2F) io_dout_sys <= 16'hD161;
 +`ifndef MISTER_DEBUG_NOHDMI
 +			if(io_din[7:0] == 'h32) io_dout_sys <= gamma_bus[21];
 +`endif
@@ -87,16 +89,33 @@ index a416879..1ba5e80 100644
  			if(io_din[7:0] == 'h3E) io_dout_sys <= 1;
  `ifndef MISTER_DEBUG_NOHDMI
  			if(io_din[7:0] == 'h40) io_dout_sys <= fb_crc;
-@@ -450,7 +463,7 @@ always@(posedge clk_sys) begin
+@@ -449,8 +462,8 @@ always@(posedge clk_sys) begin
+ 				end
  			end
  			if(cmd == 'h2F) begin
- 				case(cnt[3:0])
+-				case(cnt[3:0])
 -					0: {LFB_EN,LFB_FLT,LFB_FMT} <= {io_din[15], io_din[14], io_din[5:0]};
++				case(cnt[4:0])
 +					0: {LFB_EN,LFB_FLT,LFB_NATIVE,LFB_FMT} <= {io_din[15], io_din[14], io_din[13], io_din[5:0]};
  					1: LFB_BASE[15:0]  <= io_din[15:0];
  					2: LFB_BASE[31:16] <= io_din[15:0];
  					3: LFB_WIDTH       <= io_din[11:0];
-@@ -470,6 +483,13 @@ always@(posedge clk_sys) begin
+@@ -460,6 +473,14 @@ always@(posedge clk_sys) begin
+ 					7: LFB_VMIN        <= io_din[11:0];
+ 					8: LFB_VMAX        <= io_din[11:0];
+ 					9: LFB_STRIDE      <= io_din[13:0];
++					10: native_htotal  <= io_din[11:0];
++					11: native_hsstart <= io_din[11:0];
++					12: native_hsend   <= io_din[11:0];
++					13: native_hdisp   <= io_din[11:0];
++					14: native_vtotal  <= io_din[11:0];
++					15: native_vsstart <= io_din[11:0];
++					16: native_vsend   <= io_din[11:0];
++					17: native_vdisp   <= io_din[11:0];
+ 				endcase
+ 			end
+ 			if(cmd == 'h25) {led_overtake, led_state} <= io_din;
+@@ -470,6 +491,13 @@ always@(posedge clk_sys) begin
  				else coef_addr <= io_din[11:0];
  			end
  			if(cmd == 'h2B) scaler_flt <= io_din[2:0];
@@ -110,7 +129,7 @@ index a416879..1ba5e80 100644
  			if(cmd == 'h37) {FREESCALE,HSET} <= {io_din[15],io_din[11:0]};
  			if(cmd == 'h38) vs_line <= io_din[11:0];
  			if(cmd == 'h39) begin
-@@ -500,7 +520,10 @@ always@(posedge clk_sys) begin
+@@ -500,7 +528,10 @@ always@(posedge clk_sys) begin
  				endcase
  			end
  `ifndef MISTER_DEBUG_NOHDMI
@@ -122,7 +141,7 @@ index a416879..1ba5e80 100644
  			if(cmd == 'h40) begin
  				case(cnt[3:0])
  					0: io_dout_sys <= {arxy, arx};
-@@ -702,6 +725,94 @@ wire         vbuf_read;
+@@ -702,6 +733,94 @@ wire         vbuf_read;
  wire [127:0] vbuf_writedata;
  wire  [15:0] vbuf_byteenable;
  wire         vbuf_write;
@@ -217,7 +236,7 @@ index a416879..1ba5e80 100644
  
  wire  [23:0] hdmi_data;
  wire         hdmi_vs, hdmi_hs, hdmi_de, hdmi_vbl, hdmi_brd;
-@@ -830,8 +941,72 @@ wire         bob_deint;
+@@ -830,8 +949,75 @@ wire         bob_deint;
  	);
  `endif
  
@@ -225,6 +244,9 @@ index a416879..1ba5e80 100644
 +// Menu timing. HDMI retains the existing scaler and its independent mode.
 +wire [23:0] native_fb_rgb;
 +wire native_fb_hs, native_fb_vs, native_fb_de;
++reg [11:0] native_htotal = 0, native_hsstart = 0, native_hsend = 0, native_hdisp = 0;
++reg [11:0] native_vtotal = 0, native_vsstart = 0, native_vsend = 0, native_vdisp = 0;
++wire native_custom_timing = |native_vtotal;
 +ascal #(
 +	.RAMBASE(32'h20000000),
 +	.PALETTE("false"),
@@ -260,18 +282,18 @@ index a416879..1ba5e80 100644
 +	.poly_a(coef_addr),
 +	.poly_dw(coef_data),
 +	.poly_wr(1'b0),
-+	.htotal(12'd1276),
-+	.hsstart(12'd1088),
-+	.hsend(12'd1180),
-+	.hdisp(12'd1058),
++	.htotal(native_custom_timing ? native_htotal : 12'd1276),
++	.hsstart(native_custom_timing ? native_hsstart : 12'd1088),
++	.hsend(native_custom_timing ? native_hsend : 12'd1180),
++	.hdisp(native_custom_timing ? native_hdisp : 12'd1058),
 +	.hmin(12'd0),
-+	.hmax(12'd1057),
-+	.vtotal(menu_pal ? 12'd312 : 12'd262),
-+	.vsstart(menu_pal ? 12'd304 : 12'd245),
-+	.vsend(menu_pal ? 12'd308 : 12'd248),
-+	.vdisp(menu_pal ? 12'd288 : 12'd240),
++	.hmax(native_custom_timing ? native_hdisp - 12'd1 : 12'd1057),
++	.vtotal(native_custom_timing ? native_vtotal : menu_pal ? 12'd312 : 12'd262),
++	.vsstart(native_custom_timing ? native_vsstart : menu_pal ? 12'd304 : 12'd245),
++	.vsend(native_custom_timing ? native_vsend : menu_pal ? 12'd308 : 12'd248),
++	.vdisp(native_custom_timing ? native_vdisp : menu_pal ? 12'd288 : 12'd240),
 +	.vmin(12'd0),
-+	.vmax(menu_pal ? 12'd287 : 12'd239),
++	.vmax(native_custom_timing ? native_vdisp - 12'd1 : menu_pal ? 12'd287 : 12'd239),
 +	.avl_clk(ram_clk),
 +	.avl_waitrequest(native_fb_waitrequest),
 +	.avl_readdata(ram_readdata),
@@ -290,7 +312,7 @@ index a416879..1ba5e80 100644
  reg  [5:0] LFB_FMT    = 0;
  reg [11:0] LFB_WIDTH  = 0;
  reg [11:0] LFB_HEIGHT = 0;
-@@ -1152,6 +1327,32 @@ cyclonev_hps_interface_peripheral_i2c hdmi_i2c
+@@ -1152,6 +1338,32 @@ cyclonev_hps_interface_peripheral_i2c hdmi_i2c
  
  	wire [23:0] hdmi_data_mask;
  	wire        hdmi_de_mask, hdmi_vs_mask, hdmi_hs_mask;
@@ -323,7 +345,7 @@ index a416879..1ba5e80 100644
  
  	reg [15:0] shadowmask_data;
  	reg        shadowmask_wr = 0;
-@@ -1164,12 +1365,12 @@ cyclonev_hps_interface_peripheral_i2c hdmi_i2c
+@@ -1164,12 +1376,12 @@ cyclonev_hps_interface_peripheral_i2c hdmi_i2c
  		.cmd_wr(shadowmask_wr),
  		.cmd_in(shadowmask_data),
  
@@ -342,7 +364,7 @@ index a416879..1ba5e80 100644
  
  		.dout(hdmi_data_mask),
  		.hs_out(hdmi_hs_mask),
-@@ -1318,6 +1519,18 @@ always @(posedge hdmi_tx_clk) begin
+@@ -1318,6 +1530,18 @@ always @(posedge hdmi_tx_clk) begin
  	vs <= (~vga_fb & direct_video) ? hdmi_dv_vs   : hdmi_vs_osd;
  	de <= (~vga_fb & direct_video) ? hdmi_dv_de   : hdmi_de_osd;
  	d  <= (~vga_fb & direct_video) ? hdmi_dv_data : hdmi_data_osd;
@@ -361,7 +383,7 @@ index a416879..1ba5e80 100644
  `else
  	hs <= hdmi_dv_hs;
  	vs <= hdmi_dv_vs;
-@@ -1343,7 +1556,7 @@ assign HDMI_TX_D  = hdmi_out_d;
+@@ -1343,7 +1567,7 @@ assign HDMI_TX_D  = hdmi_out_d;
  	`ifndef MISTER_DEBUG_NOHDMI
  		cyclonev_clkselect vga_clk_sw
  		( 
@@ -370,7 +392,7 @@ index a416879..1ba5e80 100644
  			.inclk({clk_vid, hdmi_clk_out, 2'b00}),
  			.outclk(vga_tx_clk)
  		);
-@@ -1385,11 +1598,12 @@ scanlines #(0) VGA_scanlines
+@@ -1385,11 +1609,12 @@ scanlines #(0) VGA_scanlines
  	.clk(clk_vid),
  
  	.scanlines(scanlines),
@@ -388,7 +410,7 @@ index a416879..1ba5e80 100644
  
  	.dout(vga_data_sl),
  	.hs_out(vga_hs_sl),
-@@ -1489,6 +1703,42 @@ reg  [39:0] PhaseInc;
+@@ -1489,6 +1714,42 @@ reg  [39:0] PhaseInc;
  		assign {vgas_o, vgas_hs, vgas_vs, vgas_cs, vgas_de} = 0;
  	`endif
  
@@ -431,7 +453,7 @@ index a416879..1ba5e80 100644
  	wire [23:0] vga_o, vga_o_t;
  	wire vga_hs, vga_vs, vga_cs, vga_de, vga_hs_t, vga_vs_t, vga_cs_t, vga_de_t;
  	vga_out vga_out
-@@ -1513,20 +1763,20 @@ reg  [39:0] PhaseInc;
+@@ -1513,20 +1774,20 @@ reg  [39:0] PhaseInc;
  		assign {vga_o, vga_hs, vga_vs, vga_cs, vga_de } =  {vga_o_t, vga_hs_t, vga_vs_t, vga_cs_t, vga_de_t } ;
  	`endif
  
@@ -463,7 +485,7 @@ index a416879..1ba5e80 100644
  `endif
  
  reg video_sync = 0;
-@@ -1757,6 +2007,7 @@ emu emu
+@@ -1757,6 +2018,7 @@ emu emu
  (
  	.CLK_50M(FPGA_CLK2_50),
  	.RESET(reset),
@@ -471,7 +493,7 @@ index a416879..1ba5e80 100644
  	.HPS_BUS({f1, HDMI_TX_VS, 
  				 clk_100m, clk_ihdmi,
  				 ce_hpix, hde_emu, hhs_fix, hvs_fix, 
-@@ -1821,15 +2072,15 @@ emu emu
+@@ -1821,15 +2083,15 @@ emu emu
  	.ADC_BUS({ADC_SCK,ADC_SDO,ADC_SDI,ADC_CONVST}),
  
  	.DDRAM_CLK(ram_clk),
@@ -531,6 +553,88 @@ index 04e5f0d..ded7f47 100644
 -endmodule
 \ No newline at end of file
 +endmodule
+diff --git a/tests/run-native-timing-tests.py b/tests/run-native-timing-tests.py
+new file mode 100644
+index 0000000..532285b
+--- /dev/null
++++ b/tests/run-native-timing-tests.py
+@@ -0,0 +1,76 @@
++#!/usr/bin/env python3
++"""Simulate the production framebuffer command, including its extra timing words."""
++
++from pathlib import Path
++import subprocess
++import tempfile
++
++root = Path(__file__).resolve().parents[1]
++source = (root / "sys/sys_top.v").read_text()
++start = source.index("case(cnt[4:0])", source.index("if(cmd == 'h2F)"))
++end = source.index("endcase", start) + len("endcase")
++production = source[start:end]
++prefix = r'''
++module timing_tb;
++reg clk = 0;
++always #5 clk = ~clk;
++reg [7:0] cnt = 0;
++reg [15:0] io_din = 0;
++reg LFB_EN = 0, LFB_FLT = 0, LFB_NATIVE = 0;
++reg [5:0] LFB_FMT = 0;
++reg [31:0] LFB_BASE = 0;
++reg [11:0] LFB_WIDTH = 0, LFB_HEIGHT = 0;
++reg [11:0] LFB_HMIN = 0, LFB_HMAX = 0, LFB_VMIN = 0, LFB_VMAX = 0;
++reg [13:0] LFB_STRIDE = 0;
++reg [11:0] native_htotal = 0, native_hsstart = 0, native_hsend = 0, native_hdisp = 0;
++reg [11:0] native_vtotal = 0, native_vsstart = 0, native_vsend = 0, native_vdisp = 0;
++always @(posedge clk) begin
++'''
++checks = r'''
++end
++task word(input [7:0] index, input [15:0] value);
++begin
++    @(negedge clk); cnt = index; io_din = value;
++    @(posedge clk); #1;
++end
++endtask
++integer i;
++initial begin
++    // The original ten-word command must keep its original meaning.
++    word(0, 16'ha005); word(1, 16'h1234); word(2, 16'h2200);
++    word(3,352); word(4,240); word(5,0); word(6,1919);
++    word(7,0); word(8,1079); word(9,1408);
++    if (!LFB_EN || !LFB_NATIVE || LFB_FMT != 5 ||
++        LFB_BASE != 32'h22001234 || LFB_WIDTH != 352 ||
++        LFB_HEIGHT != 240 || LFB_STRIDE != 1408 || native_vtotal != 0)
++        $fatal(1,"Legacy framebuffer command changed");
++    word(10,1000); word(11,840); word(12,920); word(13,800);
++    word(14,262); word(15,243); word(16,246); word(17,240);
++    if (native_htotal != 1000 || native_hsstart != 840 ||
++        native_hsend != 920 || native_hdisp != 800 ||
++        native_vtotal != 262 || native_vsstart != 243 ||
++        native_vsend != 246 || native_vdisp != 240)
++        $fatal(1,"Timing words did not reach the native reader");
++    if (!LFB_EN || !LFB_NATIVE || LFB_BASE != 32'h22001234)
++        $fatal(1,"Words 16/17 wrapped onto framebuffer control/address");
++    for (i = 10; i < 18; i = i + 1) word(i,0);
++    if (native_vtotal != 0 || native_htotal != 0)
++        $fatal(1,"Default native timing was not restored");
++    $display("Native timing command passed");
++    $finish;
++end
++endmodule
++'''
++with tempfile.TemporaryDirectory(prefix="degauss-native-timing-") as temporary:
++    bench = Path(temporary) / "timing.sv"
++    binary = Path(temporary) / "timing"
++    bench.write_text(prefix + production + checks)
++    subprocess.run(["iverilog", "-g2012", "-s", "timing_tb", "-o", str(binary),
++                    str(bench)], check=True)
++    subprocess.run(["vvp", str(binary)], check=True)
++    subprocess.run(["verilator", "--binary", "--timing", "-Wno-fatal",
++                    "--top-module", "yc_luma_setup_tb",
++                    "--Mdir", str(Path(temporary) / "yc"),
++                    str(root / "tests/yc_luma_setup_tb.sv"),
++                    str(root / "sys/yc_out.sv")], check=True)
++    subprocess.run([str(Path(temporary) / "yc/Vyc_luma_setup_tb")], check=True)
 diff --git a/tests/yc_luma_setup_tb.sv b/tests/yc_luma_setup_tb.sv
 new file mode 100644
 index 0000000..c4242e5
