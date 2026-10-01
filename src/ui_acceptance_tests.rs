@@ -1,6 +1,9 @@
 use super::*;
 use slint::Model;
 
+#[path = "explore_acceptance_tests.rs"]
+mod explore_acceptance_tests;
+
 fn information_row() -> browse::Row {
     browse::Row {
         name: "Example Game / 日本語".into(),
@@ -2083,7 +2086,7 @@ fn run_handheld_category_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
             .iter()
             .map(|(name, _)| name.as_str())
             .collect::<Vec<_>>(),
-        vec!["Console", SCRIPTS_CATEGORY]
+        vec![crate::explore::NAME, "Console", SCRIPTS_CATEGORY]
     );
     let saved = app.position();
     let selected_game = row_key(&app.here[app.game_list.selected()]);
@@ -2115,7 +2118,12 @@ fn run_handheld_category_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
             .iter()
             .map(|(name, _)| name.as_str())
             .collect::<Vec<_>>(),
-        vec!["Console", HANDHELD_CATEGORY, SCRIPTS_CATEGORY]
+        vec![
+            crate::explore::NAME,
+            "Console",
+            HANDHELD_CATEGORY,
+            SCRIPTS_CATEGORY
+        ]
     );
     assert_eq!(app.systems.len(), 1);
     assert_eq!(app.systems[0].def.id, "NES");
@@ -12684,6 +12692,7 @@ pub(super) fn run_ui_acceptance_flow(window: Rc<MinimalSoftwareWindow>) {
     let gamelist_path = root.join("games/NES/gamelist.xml");
     let gamelist_xml = format!("<gameList><game><path>First Game.nes</path><desc><![CDATA[{complete_description}]]></desc></game><game><path>Second Game.nes</path><desc><![CDATA[{complete_description}]]></desc></game></gameList>");
     std::fs::write(&gamelist_path, &gamelist_xml).unwrap();
+    explore_acceptance_tests::run(&root, window.clone());
     run_cores_browser_flow(&root, window.clone());
     run_empty_storage_rediscovery_flow(&root, window.clone());
     run_storage_rediscovery_flow(&root, window.clone());

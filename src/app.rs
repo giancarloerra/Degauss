@@ -48,6 +48,7 @@ use crate::input::{
     RepeatConfig, Repeater, SPEED_START, SPEED_STEPS,
 };
 use crate::list_state::ListState;
+include!("explore_app.rs");
 use crate::metrics::{FrameTimer, StartupTimings};
 use crate::name_display::GameNameDisplay;
 use crate::name_keyboard::{self, Key as NameKey, Page as NamePage};
@@ -371,6 +372,7 @@ fn option_operation(option: OptionId, input: OptionInput) -> OptionOperation {
         | OptionId::ShowMisterZine
         | OptionId::ShowUnstable
         | OptionId::ShowScripts
+        | OptionId::ShowExplore
         | OptionId::CorePreference
         | OptionId::AutomaticDataSource
         | OptionId::AutoRunPhysicalDiscs
@@ -2061,7 +2063,15 @@ impl ContextPage {
             ),
             Self::Find => matches!(
                 action,
-                JUMP | SEARCH | CLEAR_SEARCH | FILTER_GAMES | CLEAR_FILTERS | HIDE_THIS | SHOW_THIS
+                JUMP | SEARCH
+                    | CLEAR_SEARCH
+                    | FILTER_GAMES
+                    | CLEAR_FILTERS
+                    | HIDE_THIS
+                    | SHOW_THIS
+                    | MORE_DEVELOPER
+                    | MORE_PUBLISHER
+                    | SAME_GENRE
             ),
             Self::Library => matches!(
                 action,
@@ -2879,6 +2889,8 @@ enum FindMode {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum NamePurpose {
+    SaveCollection,
+    RenameCollection(String),
     /// Create the folder and finish the favourite addition that opened the
     /// destination chooser.
     NewFavoriteFolder,
@@ -3910,6 +3922,7 @@ impl CoreUpdateGames {
 }
 
 pub struct App {
+    explore: ExploreBrowser,
     config: Config,
     settings: Settings,
     settings_path: PathBuf,
@@ -4646,6 +4659,7 @@ impl App {
             .collect();
         let start_folder_pending = settings.start_folder.is_some();
         let mut app = App {
+            explore: ExploreBrowser::default(),
             speed: settings
                 .speed_step
                 .unwrap_or(SPEED_START)
@@ -5399,6 +5413,8 @@ impl App {
             && self.name_keyboard_purpose == NamePurpose::PackMatchSearch
         {
             "B Searches the Pack"
+        } else if self.screen == Screen::NameKeyboard && self.name_keyboard_controls() {
+            "Select Save or Cancel"
         } else if self.screen == Screen::NameKeyboard {
             "B Uses This Name"
         } else if self.screen == Screen::Find && self.find_mode == FindMode::Search {
@@ -5417,7 +5433,8 @@ impl App {
                 .set_grid_rows(cells.div_ceil(FIND_COLUMNS).max(1) as i32);
             self.ui.set_find_search(self.find_mode == FindMode::Search);
         } else if self.screen == Screen::NameKeyboard {
-            let cells = name_keyboard::keys(self.name_keyboard_page, false).len();
+            let cells =
+                name_keyboard::keys(self.name_keyboard_page, self.name_keyboard_controls()).len();
             self.name_keyboard_list
                 .reshape(cells, name_keyboard::COLUMNS);
             self.ui.set_columns(name_keyboard::COLUMNS as i32);
@@ -5444,6 +5461,9 @@ impl App {
             self.ui.set_find_search(false);
         }
         let grid_help = match self.screen {
+            Screen::NameKeyboard if self.name_keyboard_controls() => {
+                "A Type  B Cancel  X Del  Y Page"
+            }
             Screen::NameKeyboard => "A Type  B Done  X Del  Y Page",
             Screen::ScraperKeyboard if self.scraper_keyboard_field == ScraperField::SearchTerm => {
                 "A Type  B Search  X Del  Y Page"
@@ -5664,7 +5684,7 @@ impl App {
             self.touch_selection();
             return;
         }
-        let Some(row) = self.here.get(self.game_list.selected()).filter(|row| {
+        let Some(row) = self.browse_row(self.game_list.selected()).filter(|row| {
             self.browsing == Browsing::Games && matches!(row.kind, browse::Kind::Play(_))
         }) else {
             return;
@@ -5702,7 +5722,9 @@ impl App {
         let browse::Kind::Play(mut launch) = row.kind.clone() else {
             return Err(DegaussError::unsupported("game information", "not a game"));
         };
-        let id = if self.last_played_open {
+        let id = if let Some(entry) = self.explore_selected() {
+            entry.system.clone()
+        } else if self.last_played_open {
             let entry = self.selected_last_played().ok_or_else(|| {
                 DegaussError::unsupported("game information", "history entry is unavailable")
             })?;
@@ -5755,8 +5777,12 @@ impl App {
         }
         let source = if self.pack_selected(&id) {
             let provider = self
-                .artwork_provider_cache
-                .get(&id)
+                .explore
+                .catalogue
+                .as_ref()
+                .filter(|_| self.explore.active)
+                .and_then(|catalogue| catalogue.providers.get(&id))
+                .or_else(|| self.artwork_provider_cache.get(&id))
                 .cloned()
                 .or_else(|| {
                     (self.open_system.as_deref() == Some(id.as_str()))
@@ -6048,6 +6074,9 @@ impl App {
     /// category image is therefore the visible image of that folder, unless
     /// a more specific custom system image was chosen.
     fn game_placeholder_logo(&self) -> Option<PathBuf> {
+        if let Some(entry) = self.explore_selected() {
+            return self.explore_logo(&entry.system);
+        }
         let system = self.open_system_ref()?;
         self.logo_dir
             .as_deref()
@@ -7288,6 +7317,9 @@ impl App {
     /// only unique within one system: every system's root shares the same
     /// key. Nothing to write when no folder is on screen or it is empty.
     fn remember_here(&mut self) {
+        if self.explore.active {
+            return;
+        }
         if self.browsing != Browsing::Games {
             return;
         }
@@ -7297,15 +7329,16 @@ impl App {
         let Some(crumb) = self.trail.last() else {
             return;
         };
-        let Some(row) = self.here.get(self.game_list.selected()) else {
+        let Some(row) = self.browse_row(self.game_list.selected()) else {
             return;
         };
+        let row = row_key(row);
         crate::state::remember_left_at(
             &mut self.left_at,
             crate::state::LeftAt {
                 system,
                 place: crumb.place.key(),
-                row: row_key(row),
+                row,
             },
         );
     }
@@ -7627,6 +7660,12 @@ impl App {
     /// a scraper may or may not have filled in.
     /// Identify the exact browse place under any menu currently covering it.
     fn current_view_place(&self) -> Option<ViewPlace> {
+        if self.explore.active {
+            return Some(ViewPlace::Games {
+                system: crate::explore::STATE_ID.into(),
+                place: "explore".into(),
+            });
+        }
         if self.in_misterzine_browser() {
             return Some(ViewPlace::Games {
                 system: MISTERZINE_SYSTEM_ID.to_string(),
@@ -7661,6 +7700,9 @@ impl App {
     }
 
     fn context_system_id(&self) -> Option<&str> {
+        if let Some(entry) = self.explore_selected() {
+            return Some(&entry.system);
+        }
         if self.in_cores_browser() || self.in_misterzine_browser() {
             return None;
         }
@@ -8029,6 +8071,11 @@ impl App {
     }
 
     fn invalidate_artwork_provider_group(&mut self, group: &str) {
+        if let Some(catalogue) = &mut self.explore.catalogue {
+            catalogue
+                .signatures
+                .retain(|id, _| crate::artwork_pack::source_group(id) != Some(group));
+        }
         self.invalidate_decoded_pack_group(group);
         if self.artwork_provider.as_ref().is_some_and(|provider| {
             crate::artwork_pack::source_group(&provider.system_id) == Some(group)
@@ -8852,7 +8899,7 @@ impl App {
         if !self.last_played_open {
             return None;
         }
-        let row = self.here.get(self.game_list.selected())?;
+        let row = self.browse_row(self.game_list.selected())?;
         self.last_played_rows.get(&row.sort_key)
     }
 
@@ -8960,7 +9007,7 @@ impl App {
         }
         match self.browsing {
             Browsing::Games => {
-                let row = self.here.get(self.game_list.selected())?;
+                let row = self.browse_row(self.game_list.selected())?;
                 Some(self.settings.hidden_paths.contains(&row_key(row)))
             }
             Browsing::Systems => {
@@ -8994,7 +9041,7 @@ impl App {
             self.dirty = true;
             return;
         }
-        let Some(row) = self.here.get(self.game_list.selected()) else {
+        let Some(row) = self.browse_row(self.game_list.selected()) else {
             return;
         };
         let key = row_key(row);
@@ -9051,7 +9098,24 @@ impl App {
     /// Re-project the rows already held in memory after an Appearance change.
     /// No library, metadata source or cache is opened here.
     fn refresh_name_presentation(&mut self) {
-        let selected = self.here.get(self.game_list.selected()).map(row_key);
+        if self.explore.active {
+            let selected = self.explore_selected().map(crate::explore::Entry::key);
+            if let Some(catalogue) = &mut self.explore.catalogue {
+                catalogue.present_names(self.game_name_display);
+            }
+            self.filter_explore(false);
+            if let Some(at) = self.explore.matches.iter().position(|at| {
+                self.explore
+                    .catalogue
+                    .as_ref()
+                    .is_some_and(|catalogue| Some(catalogue.entries[*at].key()) == selected)
+            }) {
+                self.game_list.select(at);
+            }
+            self.touch_selection();
+            return;
+        }
+        let selected = self.browse_row(self.game_list.selected()).map(row_key);
         if self.filter.is_empty() {
             sort_rows_for_display(&mut self.here, self.game_name_display);
             group_rows(&mut self.here, self.folders_last, self.favorites_first);
@@ -9153,10 +9217,15 @@ impl App {
     /// whatever slid into its place, not send it back to where the folder
     /// was entered.
     fn relist_here(&mut self) {
+        if self.explore.active {
+            self.explore.selection = self.game_list.selected();
+            self.refresh_explore_favourites();
+            self.filter_explore(true);
+            return;
+        }
         if self.last_played_open {
             let selected = self
-                .here
-                .get(self.game_list.selected())
+                .browse_row(self.game_list.selected())
                 .and_then(|row| self.last_played_rows.get(&row.sort_key))
                 .map(crate::history::entry_key);
             self.all_here.clear();
@@ -9195,7 +9264,11 @@ impl App {
     /// its established relist-and-clear behaviour. The rows are read afresh,
     /// then projected through the same metadata criteria.
     fn relist_here_preserving_game_filters(&mut self) {
-        let selected = self.here.get(self.game_list.selected()).map(row_key);
+        if self.explore.active {
+            self.relist_here();
+            return;
+        }
+        let selected = self.browse_row(self.game_list.selected()).map(row_key);
         let fallback = self.game_list.selected();
         let game_filters = self.game_filters.clone();
 
@@ -9219,6 +9292,9 @@ impl App {
     }
 
     fn selected_origin_system_id(&self) -> Option<String> {
+        if let Some(entry) = self.explore_selected() {
+            return Some(entry.system.clone());
+        }
         self.selected_last_played()
             .map(|entry| entry.system.clone())
             .or_else(|| self.open_system.clone())
@@ -9231,6 +9307,9 @@ impl App {
 
     /// Where browsing currently is, for the title bar.
     fn here_label(&self) -> String {
+        if self.explore.active {
+            return crate::explore::NAME.to_string();
+        }
         if self.in_misterzine_browser() {
             return MISTERZINE_CATEGORY.to_string();
         }
@@ -9271,6 +9350,9 @@ impl App {
     /// everything underneath, which would mean walking the whole subtree
     /// before answering: it picks a folder, then a game in it.
     fn random_here(&mut self, favorites_only: bool) -> Option<Outcome> {
+        if self.explore.active {
+            return self.random_visible_here(favorites_only);
+        }
         if self.last_played_open {
             if self.game_filters.is_active() {
                 return self.random_visible_here(favorites_only);
@@ -9407,8 +9489,7 @@ impl App {
     /// recursive path above remains byte-for-byte in charge.
     fn random_visible_here(&mut self, favorites_only: bool) -> Option<Outcome> {
         let games: Vec<usize> = self
-            .here
-            .iter()
+            .browse_rows()
             .enumerate()
             .filter(|(_, row)| matches!(row.kind, browse::Kind::Play(_)))
             .filter(|(_, row)| !favorites_only || row.favorite)
@@ -9447,7 +9528,26 @@ impl App {
     /// committed to leaving, and a missing core or a bad rule there would
     /// end Degauss instead of showing a line and staying.
     fn confirm_launch(&mut self) -> Option<Outcome> {
-        let row = self.here.get(self.game_list.selected())?;
+        if let Some(entry) = self.explore_selected() {
+            let entry = entry.clone();
+            let browse::Kind::Play(game) = entry.row.kind else {
+                return None;
+            };
+            let config = self
+                .all_systems
+                .iter()
+                .find(|system| system.def.id == entry.system)?
+                .to_config();
+            return self.launch_game(
+                entry.row.name,
+                game.clone(),
+                config,
+                Some(entry.system),
+                game.clone(),
+                game,
+            );
+        }
+        let row = self.browse_row(self.game_list.selected())?;
         let name = row.name.clone();
         let kind = row.kind.clone();
         let browse::Kind::Play(game) = kind else {
@@ -9673,7 +9773,7 @@ impl App {
     }
 
     fn confirm_core_launch(&mut self) -> Option<Outcome> {
-        let row = self.here.get(self.game_list.selected())?;
+        let row = self.browse_row(self.game_list.selected())?;
         let browse::Kind::Play(browse::Launch::File(path)) = &row.kind else {
             return None;
         };
@@ -10851,6 +10951,9 @@ impl App {
                         }
                     }
                     if let Some(system) = system {
+                        if let Some(catalogue) = &mut self.explore.catalogue {
+                            catalogue.signatures.remove(&system.def.id);
+                        }
                         crate::note(&format!(
                             "index {}: {:.3}s, {} games",
                             system.def.id,
@@ -11060,11 +11163,11 @@ impl App {
     }
 
     fn in_cores_browser(&self) -> bool {
-        self.open_category.as_deref() == Some(CORES_CATEGORY)
+        !self.explore.active && self.open_category.as_deref() == Some(CORES_CATEGORY)
     }
 
     fn in_misterzine_browser(&self) -> bool {
-        self.open_category.as_deref() == Some(MISTERZINE_CATEGORY)
+        !self.explore.active && self.open_category.as_deref() == Some(MISTERZINE_CATEGORY)
     }
 
     fn misterzine_request(&self, force_refresh: bool) -> crate::misterzine::Request {
@@ -11660,8 +11763,7 @@ impl App {
 
     fn rebuild_cores_catalogue(&mut self) {
         let selected = self
-            .here
-            .get(self.game_list.selected())
+            .browse_row(self.game_list.selected())
             .and_then(|row| match &row.kind {
                 browse::Kind::Play(browse::Launch::File(path)) => Some(path.clone()),
                 _ => None,
@@ -11830,6 +11932,10 @@ impl App {
         };
 
         self.categories = categories;
+        if self.settings.show_explore.unwrap_or(true) {
+            self.categories
+                .insert(0, (crate::explore::NAME.to_string(), 0));
+        }
         let selected_category = self
             .category_list
             .selected()
@@ -11975,6 +12081,10 @@ impl App {
             return;
         };
         let name = name.clone();
+        if name == crate::explore::NAME {
+            self.open_explore(None);
+            return;
+        }
         if name == LAST_PLAYED_CATEGORY {
             self.open_last_played();
             return;
@@ -13162,6 +13272,10 @@ impl App {
                 self.settings.show_unstable = Some(self.show_unstable);
                 self.rebuild_system_list();
             }
+            OptionId::ShowExplore => {
+                self.settings.show_explore = Some(!self.settings.show_explore.unwrap_or(true));
+                self.rebuild_system_list();
+            }
             OptionId::ShowScripts => {
                 self.settings.show_scripts = Some(!self.settings.show_scripts.unwrap_or(true));
                 self.rebuild_system_list();
@@ -13394,6 +13508,7 @@ impl App {
             OptionId::ShowMisterZine => on_off(self.show_misterzine),
             OptionId::ShowUnstable => on_off(self.show_unstable),
             OptionId::ShowScripts => on_off(self.settings.show_scripts.unwrap_or(true)),
+            OptionId::ShowExplore => on_off(self.settings.show_explore.unwrap_or(true)),
             OptionId::CorePreference => self
                 .settings
                 .core_preference
@@ -13575,6 +13690,9 @@ impl App {
     /// controller enough to reach everything, including exit.
     fn go_back(&mut self) -> Option<Outcome> {
         self.request_storage_check();
+        if self.explore.active && self.explore_back() {
+            return None;
+        }
         match self.screen {
             Screen::Screensaver => self.leave_screensaver(),
             Screen::GameFilters => {
@@ -13944,6 +14062,9 @@ impl App {
     /// What a contextual entry currently reads as, when it is a choice
     /// rather than an action.
     fn context_value(&self, index: usize) -> String {
+        if self.explore.active && !matches!(self.explore.menu, ExploreMenu::Actions) {
+            return self.explore_menu_value(index);
+        }
         if self.context_is_root() {
             return ">".to_string();
         }
@@ -14023,6 +14144,9 @@ impl App {
     }
 
     fn context_scope(&self) -> String {
+        if self.explore.active {
+            return format!("Explore Games / {} matches", self.explore.matches.len());
+        }
         if self.in_misterzine_browser() {
             return MISTERZINE_CATEGORY.to_string();
         }
@@ -14049,7 +14173,7 @@ impl App {
         ) {
             match self.browsing {
                 Browsing::Games => {
-                    if let Some(row) = self.here.get(self.game_list.selected()) {
+                    if let Some(row) = self.browse_row(self.game_list.selected()) {
                         return self.game_name_display.apply(&row.name).into_owned();
                     }
                 }
@@ -14128,11 +14252,13 @@ impl App {
         if self.browsing != Browsing::Games {
             return None;
         }
-        let row = self.here.get(self.game_list.selected())?;
+        let row = self.browse_row(self.game_list.selected())?;
         let browse::Kind::Play(row_launch) = &row.kind else {
             return None;
         };
-        let (system_id, launch) = if let Some(entry) = self.selected_last_played() {
+        let (system_id, launch) = if let Some(entry) = self.explore_selected() {
+            (entry.system.clone(), row_launch.clone())
+        } else if let Some(entry) = self.selected_last_played() {
             (entry.system.clone(), entry.launch.clone())
         } else if self.in_favorites() {
             let browse::Launch::File(path) = row_launch else {
@@ -14572,6 +14698,10 @@ impl App {
 
     /// Open the six metadata fields using only rows already held in memory.
     fn open_game_filters(&mut self) {
+        if self.explore.active {
+            self.explore_fields();
+            return;
+        }
         let rows = if self.filter.is_empty() && !self.game_filters.is_active() {
             &self.here
         } else {
@@ -14689,7 +14819,8 @@ impl App {
         self.name_keyboard_purpose = purpose;
         self.name_keyboard_page = NamePage::Lower;
         self.name_keyboard_draft = draft;
-        let cells = name_keyboard::keys(self.name_keyboard_page, false).len();
+        let cells =
+            name_keyboard::keys(self.name_keyboard_page, self.name_keyboard_controls()).len();
         self.name_keyboard_list = ListState::new(cells, cells);
         self.name_keyboard_list
             .reshape(cells, name_keyboard::COLUMNS);
@@ -14700,7 +14831,8 @@ impl App {
 
     fn cycle_name_keyboard(&mut self) {
         self.name_keyboard_page = self.name_keyboard_page.next();
-        let cells = name_keyboard::keys(self.name_keyboard_page, false).len();
+        let cells =
+            name_keyboard::keys(self.name_keyboard_page, self.name_keyboard_controls()).len();
         self.name_keyboard_list = ListState::new(cells, cells);
         self.name_keyboard_list
             .reshape(cells, name_keyboard::COLUMNS);
@@ -14709,7 +14841,7 @@ impl App {
     }
 
     fn pick_name_key(&mut self) {
-        let keys = name_keyboard::keys(self.name_keyboard_page, false);
+        let keys = name_keyboard::keys(self.name_keyboard_page, self.name_keyboard_controls());
         let Some(key) = keys.get(self.name_keyboard_list.selected()).copied() else {
             return;
         };
@@ -14739,6 +14871,8 @@ impl App {
                     self.pack_match_query.clone(),
                 ));
             }
+            NamePurpose::SaveCollection => self.save_explore_collection(None, &draft),
+            NamePurpose::RenameCollection(id) => self.save_explore_collection(Some(&id), &draft),
             NamePurpose::NewFavoriteFolder => {
                 match crate::favorites::make_folder(&self.favorites_root(), &draft) {
                     Ok(target) => self.add_favorite_in(&target),
@@ -14864,8 +14998,7 @@ impl App {
     fn letter_step(&mut self, delta: isize) {
         let letters: Vec<char> = match self.browsing {
             Browsing::Games => self
-                .here
-                .iter()
+                .browse_rows()
                 .map(|row| first_letter(self.game_name_display.apply(&row.name).as_ref()))
                 .collect(),
             Browsing::Systems if self.in_cores_browser() => self
@@ -14924,13 +15057,11 @@ impl App {
             && self.favorites_first
             && !self.in_favorites()
             && self
-                .here
-                .iter()
+                .browse_rows()
                 .any(|row| !row.is_folder() && !row.favorite);
         let entries: Vec<(char, bool, bool)> = match self.browsing {
             Browsing::Games => self
-                .here
-                .iter()
+                .browse_rows()
                 .map(|row| {
                     (
                         first_letter(self.game_name_display.apply(&row.name).as_ref()),
@@ -14966,6 +15097,11 @@ impl App {
     /// Spaces are dropped from both sides, because the grid has no space
     /// key and typing SUPERM should still find Super Mario.
     fn apply_filter(&mut self) {
+        if self.explore.active {
+            self.explore.query.title = self.filter.clone();
+            self.filter_explore(false);
+            return;
+        }
         if self.in_misterzine_browser() {
             self.rebuild_misterzine_rows();
             self.apply_geometry();
@@ -15016,6 +15152,14 @@ impl App {
 
     /// Clear metadata criteria without changing an active title search.
     fn clear_game_filters(&mut self) {
+        if self.explore.active {
+            self.explore.query.fields = Default::default();
+            self.explore.query.category = None;
+            self.explore.query.system = None;
+            self.explore.query.decade = None;
+            self.filter_explore(false);
+            return;
+        }
         if self.in_misterzine_browser() {
             if self.misterzine_filters.is_active() {
                 self.misterzine_filters.clear();
@@ -15038,7 +15182,7 @@ impl App {
         if self.browsing != Browsing::Games {
             return None;
         }
-        match &self.here.get(self.game_list.selected())?.kind {
+        match &self.browse_row(self.game_list.selected())?.kind {
             browse::Kind::Play(browse::Launch::File(path)) => Some(path.clone()),
             // Not a file: AmigaVision keeps its library inside one image
             // and picks a title by name. Answered under a name of its own
@@ -15057,7 +15201,7 @@ impl App {
         if self.browsing != Browsing::Games || !self.in_favorites() {
             return None;
         }
-        let path = match &self.here.get(self.game_list.selected())?.kind {
+        let path = match &self.browse_row(self.game_list.selected())?.kind {
             browse::Kind::Enter(Place::Dir(path)) => path.clone(),
             _ => return None,
         };
@@ -15224,8 +15368,7 @@ impl App {
             .selected_last_played()
             .map(|entry| entry.launch.clone())
             .or_else(|| {
-                self.here
-                    .get(self.game_list.selected())
+                self.browse_row(self.game_list.selected())
                     .and_then(|row| match &row.kind {
                         browse::Kind::Play(launch) => Some(launch.clone()),
                         browse::Kind::Enter(_) => None,
@@ -15242,8 +15385,7 @@ impl App {
         let ra_first = self.settings.core_preference.unwrap_or_default()
             == crate::settings::CorePreference::RetroAchievementsFirst;
         let name = self
-            .here
-            .get(self.game_list.selected())
+            .browse_row(self.game_list.selected())
             .map(|row| row.name.clone())
             .unwrap_or_default();
         let native_arcade_favourite = needs_native_arcade_core_link(Some(origin), &game);
@@ -15251,8 +15393,7 @@ impl App {
         // A title rather than a file: written as an MGL that starts
         // AmigaVision, carrying the title in an element Main ignores.
         let amiga = match &self
-            .here
-            .get(self.game_list.selected())
+            .browse_row(self.game_list.selected())
             .map(|row| row.kind.clone())
         {
             Some(browse::Kind::Play(browse::Launch::AmigaVision { install, title })) => {
@@ -17294,7 +17435,8 @@ impl App {
     }
 
     fn context_is_root(&self) -> bool {
-        !self.in_misterzine_browser()
+        !self.explore.active
+            && !self.in_misterzine_browser()
             && self.browsing != Browsing::Categories
             && self.context_page.is_none()
     }
@@ -17355,6 +17497,10 @@ impl App {
     }
 
     fn refresh_context(&mut self) {
+        if self.explore.active {
+            self.explore_actions();
+            return;
+        }
         if self.in_misterzine_browser() {
             let mut actions = vec![
                 GAME_INFORMATION.to_string(),
@@ -17417,8 +17563,7 @@ impl App {
         let scrape_game = scrape_scope
             && self.browsing == Browsing::Games
             && self
-                .here
-                .get(self.game_list.selected())
+                .browse_row(self.game_list.selected())
                 .is_some_and(|row| matches!(row.kind, browse::Kind::Play(_)));
         let image_override = self.selected_image_target().map(|target| {
             self.logo_dir
@@ -17461,6 +17606,7 @@ impl App {
                     && !self.in_cores_browser(),
             },
         );
+        self.context_actions.extend(self.explore_pivots());
         if self.context_actions.is_empty() {
             return;
         }
@@ -17490,7 +17636,7 @@ impl App {
                 if self.in_favorites() {
                     return None;
                 }
-                let (place, display_name) = match self.here.get(self.game_list.selected()) {
+                let (place, display_name) = match self.browse_row(self.game_list.selected()) {
                     Some(row) => match &row.kind {
                         browse::Kind::Enter(place) => (place.clone(), row.name.clone()),
                         browse::Kind::Play(_) => {
@@ -17510,7 +17656,7 @@ impl App {
                 if self.in_favorites() {
                     return None;
                 }
-                let row = self.here.get(self.game_list.selected())?;
+                let row = self.browse_row(self.game_list.selected())?;
                 let browse::Kind::Play(launch) = &row.kind else {
                     return None;
                 };
@@ -19001,6 +19147,9 @@ impl App {
     }
 
     pub fn handle(&mut self, action: Action) -> Option<Outcome> {
+        if self.handle_explore_input(action) {
+            return None;
+        }
         if self.network_plan.is_some() {
             if let Some(job) = &self.network_job {
                 if matches!(action, Action::Quit | Action::Context | Action::Menu) {
@@ -19493,7 +19642,7 @@ impl App {
                         if self.in_cores_browser() {
                             return self.confirm_core_launch();
                         }
-                        if let Some(row) = self.here.get(self.game_list.selected()) {
+                        if let Some(row) = self.browse_row(self.game_list.selected()) {
                             match &row.kind {
                                 browse::Kind::Enter(place) => {
                                     let place = place.clone();
@@ -19536,6 +19685,9 @@ impl App {
                 Screen::ArtworkPackMatch => self.choose_pack_match(),
                 Screen::Menu | Screen::Context => {
                     let was_context = self.screen == Screen::Context;
+                    if was_context && self.explore.active && self.accept_explore_menu() {
+                        return None;
+                    }
                     let choice = self
                         .menu
                         .get(self.menu_list.selected())
@@ -19564,7 +19716,12 @@ impl App {
                     {
                         return None;
                     }
-                    if choice == REFRESH_MISTERZINE {
+                    if matches!(
+                        choice.as_str(),
+                        MORE_DEVELOPER | MORE_PUBLISHER | SAME_GENRE
+                    ) {
+                        self.explore_pivot(&choice);
+                    } else if choice == REFRESH_MISTERZINE {
                         self.screen = Screen::Browse;
                         self.open_misterzine(true);
                     } else if choice == ABOUT_MISTERZINE {
@@ -19768,11 +19925,12 @@ impl App {
     /// Whether the favourites folder is what is being looked at, so the
     /// mark can stand in for a picture nothing here will ever have.
     fn in_favorites(&self) -> bool {
-        self.open_system.as_ref().is_some_and(|id| {
-            self.all_systems
-                .iter()
-                .any(|system| &system.def.id == id && is_favorites(system.category()))
-        })
+        !self.explore.active
+            && self.open_system.as_ref().is_some_and(|id| {
+                self.all_systems
+                    .iter()
+                    .any(|system| &system.def.id == id && is_favorites(system.category()))
+            })
     }
 
     /// The picture, the words under it, whether the heart should stand in
@@ -19797,7 +19955,7 @@ impl App {
                 category_image_preview(&self.category_image_choices, self.menu_list.selected())
             }
             (Screen::Browse | Screen::Information, Browsing::Games) => {
-                match self.here.get(self.game_list.selected()) {
+                match self.browse_row(self.game_list.selected()) {
                     Some(row) => {
                         if self.in_misterzine_browser() {
                             if let Some(cover) = self
@@ -20068,6 +20226,9 @@ impl App {
     }
 
     fn prefetch_folder(&self) -> Option<String> {
+        if self.explore.active {
+            return Some(format!("explore:{}", self.explore.revision));
+        }
         let system = self.open_system.as_ref()?;
         let place = &self.trail.last()?.place;
         Some(format!("{system}:{}", place.key()))
@@ -20076,7 +20237,7 @@ impl App {
     fn prefetch_nearby(&self, path: &Path, count: usize, moving: bool) -> bool {
         let selected = self.game_list.selected() as isize;
         let mut considered = 0;
-        for distance in 1..=count.min(self.here.len().saturating_sub(1)) {
+        for distance in 1..=count.min(self.browse_count().saturating_sub(1)) {
             for direction in [self.prefetch_direction, -self.prefetch_direction] {
                 if moving && direction != self.prefetch_direction {
                     continue;
@@ -20084,7 +20245,7 @@ impl App {
                 let index = selected + direction * distance as isize;
                 let Some(row) = usize::try_from(index)
                     .ok()
-                    .and_then(|index| self.here.get(index))
+                    .and_then(|index| self.browse_row(index))
                 else {
                     continue;
                 };
@@ -20131,16 +20292,15 @@ impl App {
                     let job = self.cover_prefetch.take().expect("prefetch finished");
                     if nearby && !job.cancel.load(Ordering::Relaxed) {
                         let selected_path = self
-                            .here
-                            .get(self.game_list.selected())
-                            .and_then(|row| row.cover.as_deref());
+                            .browse_row(self.game_list.selected())
+                            .and_then(|row| row.cover.clone());
                         let cache = if job.gallery {
                             &mut self.gallery_covers
                         } else {
                             &mut self.covers
                         };
                         if let Some(path) = selected_path {
-                            cache.touch(path);
+                            cache.touch(&path);
                         }
                         cache.accept_prepared(job.path, job.spec, prepared);
                         self.dirty = true;
@@ -20184,8 +20344,7 @@ impl App {
             // Gallery already decodes its visible page under a frame budget.
             if moving
                 && self
-                    .here
-                    .get(self.game_list.selected())
+                    .browse_row(self.game_list.selected())
                     .and_then(|row| row.cover.as_deref())
                     .is_none_or(|path| !self.gallery_covers.knows(path))
             {
@@ -20205,8 +20364,7 @@ impl App {
             self.covers.set_ground(ground);
             if moving
                 && self
-                    .here
-                    .get(self.game_list.selected())
+                    .browse_row(self.game_list.selected())
                     .and_then(|row| row.cover.as_deref())
                     .is_none_or(|path| !self.covers.knows(path))
             {
@@ -20223,7 +20381,7 @@ impl App {
         let lookahead = cache
             .capacity()
             .saturating_sub(1)
-            .min(self.here.len().saturating_sub(1));
+            .min(self.browse_count().saturating_sub(1));
         let spec = cache.spec();
         let selected = self.game_list.selected() as isize;
         let mut candidate = None;
@@ -20236,7 +20394,7 @@ impl App {
                 let index = selected + direction * distance as isize;
                 let Some(row) = usize::try_from(index)
                     .ok()
-                    .and_then(|index| self.here.get(index))
+                    .and_then(|index| self.browse_row(index))
                 else {
                     continue;
                 };
@@ -20371,7 +20529,7 @@ impl App {
         if !self.art_pending
             || self.screen != Screen::Browse
             || self.browsing != Browsing::Games
-            || self.open_system.is_none()
+            || (!self.explore.active && self.open_system.is_none())
             || self.layout != Layout::Details
             || !self.show_art
             || self.speed <= self.art_limit()
@@ -20425,7 +20583,9 @@ impl App {
                 }
             }
             Screen::NameKeyboard => {
-                for key in name_keyboard::keys(self.name_keyboard_page, false) {
+                for key in
+                    name_keyboard::keys(self.name_keyboard_page, self.name_keyboard_controls())
+                {
                     rows.push(plain_row(&key.label(), ""));
                 }
             }
@@ -20590,7 +20750,25 @@ impl App {
                             None
                         };
                         for index in range {
-                            let game_art = with_art && self.here[index].cover.is_some();
+                            let logo = if self.explore.active && with_art {
+                                let at = self.explore.matches[index];
+                                let id = &self
+                                    .explore
+                                    .catalogue
+                                    .as_ref()
+                                    .expect("Explore catalogue")
+                                    .entries[at]
+                                    .system;
+                                self.explore_logo(id)
+                            } else {
+                                logo.clone()
+                            };
+                            let game_art = with_art
+                                && self
+                                    .browse_row(index)
+                                    .expect("visible game row")
+                                    .cover
+                                    .is_some();
                             let art_scale_x = artwork_horizontal(
                                 self.artwork_scale,
                                 self.width,
@@ -20603,14 +20781,16 @@ impl App {
                                 // user made, and the panel marks it with a
                                 // heart rather than a logo: no stand-in here
                                 // either, so the two views agree.
-                                let bare = inside_favorites && self.here[index].is_folder();
-                                self.here[index].cover.clone().or_else(|| {
-                                    if bare {
-                                        None
-                                    } else {
-                                        logo.clone()
-                                    }
-                                })
+                                let bare = inside_favorites
+                                    && self
+                                        .browse_row(index)
+                                        .expect("visible game row")
+                                        .is_folder();
+                                self.browse_row(index)
+                                    .expect("visible game row")
+                                    .cover
+                                    .clone()
+                                    .or_else(|| if bare { None } else { logo.clone() })
                             } else {
                                 None
                             };
@@ -20621,7 +20801,7 @@ impl App {
                                 game_art,
                             );
                             gallery_pending |= deferred;
-                            let row = &self.here[index];
+                            let row = self.browse_row(index).expect("visible game row");
                             let shown_name = self.game_name_display.apply(&row.name);
                             rows.push(Row {
                                 // A folder is marked as one. Nothing else in
@@ -20629,6 +20809,16 @@ impl App {
                                 title: SharedString::from(
                                     if row.is_folder() && self.folder_brackets {
                                         format!("[ {shown_name} ]")
+                                    } else if self.explore.active && self.layout.rows_have_art() {
+                                        let at = self.explore.matches[index];
+                                        let owner = &self
+                                            .explore
+                                            .catalogue
+                                            .as_ref()
+                                            .expect("Explore catalogue")
+                                            .entries[at]
+                                            .system_name;
+                                        format!("{shown_name} ({owner})")
                                     } else {
                                         shown_name.into_owned()
                                     },
@@ -20643,7 +20833,18 @@ impl App {
                                 art_scale_x,
                                 // How much is in there, where somebody has
                                 // counted. Folders only: a game is one game.
-                                value: if self.in_misterzine_browser() {
+                                value: if self.explore.active {
+                                    let at = self.explore.matches[index];
+                                    SharedString::from(
+                                        self.explore
+                                            .catalogue
+                                            .as_ref()
+                                            .expect("Explore catalogue")
+                                            .entries[at]
+                                            .system_name
+                                            .clone(),
+                                    )
+                                } else if self.in_misterzine_browser() {
                                     SharedString::new()
                                 } else {
                                     match row.below {
@@ -20855,8 +21056,7 @@ impl App {
             .collect();
         }
         let details = self
-            .here
-            .get(self.game_list.selected())
+            .browse_row(self.game_list.selected())
             .filter(|row| !row.is_folder())
             .map(|row| row.details.clone())
             .unwrap_or_default();
@@ -20873,8 +21073,7 @@ impl App {
 
     fn update_compact_details(&self) {
         let row = self
-            .here
-            .get(self.game_list.selected())
+            .browse_row(self.game_list.selected())
             .filter(|row| !row.is_folder())
             .filter(|_| {
                 self.screen == Screen::Browse
@@ -20927,8 +21126,7 @@ impl App {
             && self.browsing == Browsing::Games
             && !self.in_cores_browser()
             && self
-                .here
-                .get(self.game_list.selected())
+                .browse_row(self.game_list.selected())
                 .is_some_and(|row| !row.is_folder());
         // Not the carousel: it is a row of pictures, and six lines of text
         // under them leaves the picture too small to be the point of it.
@@ -20994,8 +21192,7 @@ impl App {
         self.ui.set_browse_playable(
             self.browsing == Browsing::Games
                 && self
-                    .here
-                    .get(self.game_list.selected())
+                    .browse_row(self.game_list.selected())
                     .is_some_and(|row| matches!(row.kind, browse::Kind::Play(_)))
                 && (!self.in_misterzine_browser()
                     || self
@@ -21126,7 +21323,7 @@ impl App {
                 FindMode::Jump => ("Jump to letter".to_string(), String::new()),
                 FindMode::Search => (
                     "Search This Folder".to_string(),
-                    format!("{} found", self.here.len()),
+                    format!("{} found", self.browse_count()),
                 ),
             },
             Screen::GameFilters => (
@@ -21152,6 +21349,8 @@ impl App {
             ),
             Screen::NameKeyboard => (
                 match self.name_keyboard_purpose {
+                    NamePurpose::SaveCollection => "Save Collection".to_string(),
+                    NamePurpose::RenameCollection(_) => "Rename Collection".to_string(),
                     NamePurpose::NewFavoriteFolder => "New Favourite Folder".to_string(),
                     NamePurpose::RenameFavoriteFolder(_) => "Rename Favourite Folder".to_string(),
                     NamePurpose::PackMatchSearch => "Search Artwork Pack".to_string(),
@@ -21167,7 +21366,14 @@ impl App {
                         .unwrap_or_else(|| "Systems".to_string()),
                     Browsing::Games => self.here_label(),
                 };
-                (name, speed_badge(self.speed))
+                (
+                    name,
+                    if self.explore.active {
+                        format!("{} matches", self.explore.matches.len())
+                    } else {
+                        speed_badge(self.speed)
+                    },
+                )
             }
             Screen::Menu => ("Menu".to_string(), String::new()),
             Screen::Scripts => {
@@ -21642,6 +21848,7 @@ impl App {
             self.poll_scraper_search();
             self.poll_scraper_preview();
             self.poll_information();
+            self.poll_explore();
             self.poll_misterzine();
             self.maintain_misterzine_games(now);
             self.open_deferred_network_system();
@@ -21765,6 +21972,7 @@ impl App {
                 && self.index_terminal.is_none()
                 && self.scraper_refresh_job.is_none()
                 && self.information.is_none()
+                && self.explore.job.is_none()
                 && !matches!(
                     self.screen,
                     Screen::Screensaver
@@ -22040,6 +22248,27 @@ impl App {
     /// Where the user is standing, in a form that can be written down.
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     pub fn position(&self) -> crate::state::State {
+        if self.explore.active {
+            let mut saved = crate::state::State::record(
+                crate::explore::STATE_ID,
+                crate::explore::NAME,
+                &[],
+                self.game_list.selected(),
+                &self.left_at,
+                &self.category_system,
+            );
+            saved.selected_row = self.explore_selected().map(crate::explore::Entry::key);
+            saved.explore = Some(crate::explore::Resume {
+                query: self.explore.query.clone(),
+                origin: self
+                    .explore
+                    .origin
+                    .as_ref()
+                    .map(|origin| Box::new(origin.position.clone())),
+                pivots: self.explore.pivots.clone(),
+            });
+            return saved;
+        }
         if self.in_cores_browser() && self.browsing == Browsing::Games {
             let mut saved = crate::state::State::record(
                 CORES_SYSTEM_ID,
@@ -22049,7 +22278,7 @@ impl App {
                 &self.left_at,
                 &self.category_system,
             );
-            saved.selected_row = self.here.get(self.game_list.selected()).map(row_key);
+            saved.selected_row = self.browse_row(self.game_list.selected()).map(row_key);
             return saved;
         }
         if self.last_played_open {
@@ -22078,7 +22307,7 @@ impl App {
             &self.left_at,
             &self.category_system,
         );
-        saved.selected_row = self.here.get(self.game_list.selected()).map(row_key);
+        saved.selected_row = self.browse_row(self.game_list.selected()).map(row_key);
         saved
     }
 
@@ -22089,6 +22318,15 @@ impl App {
     /// going back would have led anyway, rather than refusing to start.
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     pub fn restore_position(&mut self, saved: &crate::state::State) {
+        if saved.system == crate::explore::STATE_ID {
+            if let Some(resume) = &saved.explore {
+                if let Some(origin) = &resume.origin {
+                    self.restore_position(origin);
+                }
+                self.explore.pending_resume = Some(saved.clone());
+            }
+            return;
+        }
         if saved.system.is_empty() {
             self.resolve_view();
             self.apply_geometry();
@@ -22314,6 +22552,7 @@ impl App {
     fn finish_background_work_for_headless(&mut self) {
         loop {
             self.poll_storage();
+            self.poll_explore();
             self.poll_artwork_sources();
             if self.source_resolution.is_some() {
                 std::thread::sleep(Duration::from_millis(1));
@@ -22349,6 +22588,8 @@ impl App {
                 && self.provider_requests.is_empty()
                 && self.misterzine_job.is_none()
                 && self.misterzine_game_job.is_none()
+                && self.explore.job.is_none()
+                && self.explore.pending_resume.is_none()
             {
                 break;
             }

@@ -397,6 +397,12 @@ pub struct Settings {
     /// Nightly cores are visible unless explicitly switched off.
     pub show_unstable: Option<bool>,
     pub show_scripts: Option<bool>,
+    #[serde(default)]
+    pub show_explore: Option<bool>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub collections: BTreeMap<String, crate::explore::Collection>,
+    #[serde(default)]
+    pub next_collection: u64,
     /// Absent preserves standard-first launches.
     pub core_preference: Option<CorePreference>,
     /// Preferred source for systems left on Automatic. Absent preserves

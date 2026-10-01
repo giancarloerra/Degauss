@@ -20,6 +20,7 @@ mod core_variants;
 mod covers;
 mod display_mask;
 mod error;
+mod explore;
 mod favorites;
 mod font;
 #[cfg(test)]

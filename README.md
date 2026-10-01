@@ -94,6 +94,7 @@ Click the image to watch Degauss on YouTube.
 ## Table of contents
 
 - [Using it](#using-it)
+  - [Explore Games and saved collections](#explore-games-and-saved-collections)
   - [Running MiSTer scripts](#running-mister-scripts)
   - [Browsing core updates](#browsing-core-updates)
 - [Why Degauss](#why-degauss)
@@ -201,6 +202,28 @@ within 40 ms; held scrolling and deliberate repeated taps are not affected.
 the controller actions inside Degauss. Keyboard controls, MiSTer's controller
 mapping and launched games remain unchanged. On-screen control hints follow
 the selected swaps; the **Hold A/B/X/Y** rows always name the physical buttons.
+
+### Explore Games and saved collections
+
+**Explore Games** on Home browses the visible games in already indexed systems.
+It does not scan ROM folders, prepare an Artwork Pack or contact a game service.
+Unavailable or unindexed sources are reported; **Actions → Indexed Coverage**
+shows the complete report. Rebuild an affected system through its ordinary
+Library actions before reopening Explore if it has not yet been indexed.
+
+Combine title search, category, system, decade and the existing six metadata
+fields. Filters combine together; each value's count respects the other chosen
+filters. **Unknown** selects games without that field. Identically named games
+retain their owning systems and exact launch targets. Existing views, artwork,
+Game Information, favourites and core choices remain available.
+
+**Actions → Save Collection** saves the current criteria under a name.
+**Saved Collections** opens, renames or deletes those saved searches without
+copying games. **More by Developer**, **More by Publisher** and **Same Genre**
+start a cross-system search using the selected game's existing metadata.
+Back returns to the previous query or originating browser location. Returning
+from a game restores the query and selection; a fresh start begins unfiltered.
+**Options → Library → Show Explore Games** hides the Home entry.
 
 ### Running MiSTer scripts
 

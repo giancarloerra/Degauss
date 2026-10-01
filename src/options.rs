@@ -62,6 +62,7 @@ pub enum OptionId {
     /// Show the collection of nightly cores.
     ShowUnstable,
     ShowScripts,
+    ShowExplore,
     /// Preferred installed variant for ordinary game launches.
     CorePreference,
     /// Preferred available source for systems left on Automatic.
@@ -161,6 +162,7 @@ pub const OPTIONS: &[OptionId] = &[
     OptionId::ShowMisterZine,
     OptionId::ShowUnstable,
     OptionId::ShowScripts,
+    OptionId::ShowExplore,
     OptionId::ShowEmpty,
     OptionId::ShowHidden,
     OptionId::ResetHidden,
@@ -302,6 +304,7 @@ impl OptionsPage {
                 OptionId::ShowMisterZine,
                 OptionId::ShowUnstable,
                 OptionId::ShowScripts,
+                OptionId::ShowExplore,
                 OptionId::ShowEmpty,
                 OptionId::ShowHidden,
                 OptionId::ResetHidden,
@@ -350,6 +353,7 @@ impl OptionId {
             OptionId::ShowMisterZine => "Show Core Updates",
             OptionId::ShowUnstable => "Show Unstable Folder",
             OptionId::ShowScripts => "Show Scripts Folder",
+            OptionId::ShowExplore => "Show Explore Games",
             OptionId::CorePreference => "Core Preference",
             OptionId::AutomaticDataSource => "Automatic Data Source",
             OptionId::AutoRunPhysicalDiscs => "Auto-run Physical Discs",
@@ -453,6 +457,7 @@ impl OptionId {
             }
             OptionId::ShowUnstable => "Show the Unstable category for nightly core builds.",
             OptionId::ShowScripts => "Show Scripts on Home. Run installed scripts and return to Degauss when they finish.",
+            OptionId::ShowExplore => "Show Explore Games on Home. Search across indexed systems without scanning game folders.",
             OptionId::CorePreference => "Choose the preferred core when standard and RetroAchievements versions are both installed.",
             OptionId::AutomaticDataSource => {
                 "Choose which available source systems left on Automatic try first when they are entered."

@@ -40,7 +40,7 @@ impl Field {
         }
     }
 
-    fn value(self, row: &Row) -> Option<&str> {
+    pub fn value(self, row: &Row) -> Option<&str> {
         let value = match self {
             Self::Genre => row.genre.as_deref()?,
             Self::Year => presented_year(&row.details.released)?,
@@ -55,7 +55,7 @@ impl Field {
 }
 
 /// The exact value selected for one field.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Criterion {
     Known { label: String, key: String },
     Unknown,
