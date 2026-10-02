@@ -134,6 +134,8 @@ pub enum Screen {
     ArtworkPackLocation,
     /// A bounded directory-only browser for a Pack installation.
     ArtworkPackDirectory,
+    /// Choose a Pack index name for the selected game, without altering it.
+    ArtworkPackMatch,
     /// Blocking progress while the newly selected source cache is built.
     SourceProgress,
 }
@@ -159,6 +161,7 @@ impl Screen {
             | Screen::GameDataSource
             | Screen::ArtworkPackLocation
             | Screen::ArtworkPackDirectory
+            | Screen::ArtworkPackMatch
             | Screen::SourceProgress
             | Screen::GameFilters
             | Screen::GameFilterValues => 1,
@@ -1262,6 +1265,9 @@ const SOURCE_AUTOMATIC: &str = "Automatic";
 const SOURCE_ARTWORK_PACK: &str = "Artwork Pack";
 const CHOOSE_PACK_DIRECTORY: &str = "Choose Another Directory...";
 const USE_PACK_DIRECTORY: &str = "Use This Directory";
+const ARTWORK_PACK_MATCH: &str = "Artwork Pack Match";
+const AUTOMATIC_PACK_MATCH: &str = "Automatic Match";
+const SEARCH_PACK_MATCH: &str = "Search Pack...";
 
 fn source_choice_rows(mode: crate::artwork_source::Mode) -> Vec<String> {
     [SOURCE_AUTOMATIC, SOURCE_GAMELIST, SOURCE_ARTWORK_PACK]
@@ -1952,6 +1958,7 @@ struct ContextActions {
     image_override: Option<bool>,
     game_data_source: bool,
     game_launch_core: bool,
+    artwork_pack_match: bool,
     launch_core: bool,
     core_version: bool,
     core_version_override: bool,
@@ -1991,6 +1998,7 @@ impl Default for ContextActions {
             image_override: None,
             game_data_source: false,
             game_launch_core: false,
+            artwork_pack_match: false,
             launch_core: false,
             core_version: false,
             core_version_override: false,
@@ -2042,6 +2050,7 @@ impl ContextPage {
                 action,
                 GAME_INFORMATION
                     | GAME_LAUNCH_CORE
+                    | ARTWORK_PACK_MATCH
                     | RANDOM
                     | RANDOM_FAVORITE
                     | ADD_FAVORITE
@@ -2076,6 +2085,9 @@ impl ContextPage {
 fn context_help(action: &str) -> &'static str {
     match action {
         GAME_INFORMATION => "Read the selected game's complete metadata and description.",
+        ARTWORK_PACK_MATCH => {
+            "Choose a Pack entry for this game's artwork and metadata. The game file is unchanged."
+        }
         RANDOM => "Pick a game from the open folder using Random Game Behaviour.",
         RANDOM_FAVORITE => {
             "Pick only from favourites under the open folder, using Random Game Behaviour."
@@ -2156,13 +2168,16 @@ fn context_entries(
 ) -> Vec<String> {
     let mut groups: Vec<Vec<String>> = Vec::new();
 
-    if favorite.is_some() || actions.game_launch_core {
+    if favorite.is_some() || actions.game_launch_core || actions.artwork_pack_match {
         let mut game = Vec::new();
         if favorite.is_some() {
             game.push(GAME_INFORMATION.to_string());
         }
         if actions.game_launch_core {
             game.push(GAME_LAUNCH_CORE.to_string());
+        }
+        if actions.artwork_pack_match {
+            game.push(ARTWORK_PACK_MATCH.to_string());
         }
         groups.push(game);
     }
@@ -2549,6 +2564,7 @@ enum ProviderJobPurpose {
     /// Validate structurally detected locations before offering them to the
     /// user. This never reads or prepares a source cache.
     LocationDiscovery,
+    Matching,
 }
 
 /// One picture in the screensaver's ring, with what to call it.
@@ -2866,6 +2882,7 @@ enum NamePurpose {
     NewFavoriteFolder,
     /// Rename this real folder in its current parent.
     RenameFavoriteFolder(PathBuf),
+    PackMatchSearch,
 }
 
 /// The grid, in reading order. Nine across and four down fills a screen
@@ -4199,6 +4216,10 @@ pub struct App {
     /// a cheap source fingerprint check and reuses the parsed TSV snapshot
     /// only while its root, language and Pack files are unchanged.
     artwork_provider_cache: HashMap<String, crate::artwork_pack::Provider>,
+    pack_match_target: Option<GameLaunchCoreTarget>,
+    pack_match_provider: Option<crate::artwork_pack::Provider>,
+    pack_match_choices: Vec<crate::artwork_pack::MatchChoice>,
+    pack_match_query: String,
     /// The Pack root in use, keyed by system id: an explicit choice is
     /// spelled out for every member of its group, an Automatic acceptance
     /// belongs to the one system that made it.
@@ -4689,6 +4710,10 @@ impl App {
             system_cache: None,
             artwork_provider: None,
             artwork_provider_cache: HashMap::new(),
+            pack_match_target: None,
+            pack_match_provider: None,
+            pack_match_choices: Vec::new(),
+            pack_match_query: String::new(),
             effective_artwork_pack_roots,
             artwork_source_errors: std::collections::BTreeMap::new(),
             pack_candidate_bases: crate::artwork_source::production_bases(),
@@ -5113,6 +5138,7 @@ impl App {
             | Screen::GameDataSource
             | Screen::ArtworkPackLocation
             | Screen::ArtworkPackDirectory
+            | Screen::ArtworkPackMatch
             | Screen::SourceProgress => true,
             Screen::Browse => self.show_bar,
             Screen::About | Screen::Splash | Screen::Screensaver => false,
@@ -5211,7 +5237,12 @@ impl App {
                 .floor()
                 .max(1.0) as usize;
         }
-        if portrait && matches!(self.screen, Screen::CategoryImage | Screen::ScraperMatches) {
+        if portrait
+            && matches!(
+                self.screen,
+                Screen::CategoryImage | Screen::ScraperMatches | Screen::ArtworkPackMatch
+            )
+        {
             geometry.visible = ((geometry.visible as f32 * 0.55).floor() as usize).max(1);
         }
         self.ui.set_plain_help_height(help_height);
@@ -5281,8 +5312,10 @@ impl App {
         self.ui.set_screen(self.screen.ui_index());
         self.ui.set_portrait(portrait);
         self.ui.set_layout(self.layout.index());
-        self.ui
-            .set_category_image_picker(self.screen == Screen::CategoryImage);
+        self.ui.set_category_image_picker(matches!(
+            self.screen,
+            Screen::CategoryImage | Screen::ArtworkPackMatch
+        ));
         self.ui
             .set_compact_separators(compact_separators(self.screen));
         self.ui.set_row_height(geometry.row_height);
@@ -5341,7 +5374,11 @@ impl App {
             (self.screen == Screen::Find && self.find_mode == FindMode::Search)
                 || self.screen == Screen::NameKeyboard,
         );
-        let grid_explanation = if self.screen == Screen::NameKeyboard {
+        let grid_explanation = if self.screen == Screen::NameKeyboard
+            && self.name_keyboard_purpose == NamePurpose::PackMatchSearch
+        {
+            "B Searches the Pack"
+        } else if self.screen == Screen::NameKeyboard {
             "B Uses This Name"
         } else if self.screen == Screen::Find && self.find_mode == FindMode::Search {
             "Live Filter · B Keeps the Search"
@@ -5405,6 +5442,7 @@ impl App {
             Screen::ScraperMatches if self.scraper_search_job.is_some() => "Searching   B Cancel",
             Screen::ScraperMatches if self.scraper_matches.is_empty() => "B Back   X Search",
             Screen::ScraperMatches => "A Use   B Back   X Search",
+            Screen::ArtworkPackMatch => "A Use   B Back   X Search",
             Screen::LaunchCore | Screen::GameDataSource | Screen::ArtworkPackLocation
                 if self.width < 480 =>
             {
@@ -5474,6 +5512,7 @@ impl App {
             | Screen::GameDataSource
             | Screen::ArtworkPackLocation
             | Screen::ArtworkPackDirectory
+            | Screen::ArtworkPackMatch
             | Screen::SourceProgress => &self.menu_list,
             Screen::Scraper => &self.scraper_list,
             Screen::ScraperKeyboard => &self.scraper_keyboard_list,
@@ -5509,6 +5548,7 @@ impl App {
             | Screen::GameDataSource
             | Screen::ArtworkPackLocation
             | Screen::ArtworkPackDirectory
+            | Screen::ArtworkPackMatch
             | Screen::SourceProgress => &mut self.menu_list,
             Screen::Scraper => &mut self.scraper_list,
             Screen::ScraperKeyboard => &mut self.scraper_keyboard_list,
@@ -8136,6 +8176,13 @@ impl App {
             cached_provider: self.artwork_provider_cache.get(system_id).cloned(),
             homes: self.homes(),
             write_state: true,
+            manual_matches: self
+                .settings
+                .artwork_pack_matches
+                .get(system_id)
+                .cloned()
+                .unwrap_or_default(),
+            matching: None,
         };
         if first {
             self.provider_requests.insert(0, request);
@@ -13216,6 +13263,7 @@ impl App {
             }
             Screen::ArtworkPackLocation => self.open_game_data_source(),
             Screen::ArtworkPackDirectory => self.leave_artwork_pack_directory(),
+            Screen::ArtworkPackMatch => self.leave_pack_matches(),
             Screen::Scripts => self.leave_scripts(),
             Screen::SourceProgress => {
                 if let Some(job) = &self.source_job {
@@ -13616,6 +13664,7 @@ impl App {
             action,
             GAME_INFORMATION
                 | GAME_LAUNCH_CORE
+                | ARTWORK_PACK_MATCH
                 | ADD_FAVORITE
                 | REMOVE_FAVORITE
                 | HIDE_THIS
@@ -13698,7 +13747,7 @@ impl App {
             .map(|_| id)
     }
 
-    fn selected_game_launch_core_target(&self) -> Option<GameLaunchCoreTarget> {
+    fn selected_game_target(&self, favorite_cache_target: bool) -> Option<GameLaunchCoreTarget> {
         if self.browsing != Browsing::Games {
             return None;
         }
@@ -13722,7 +13771,13 @@ impl App {
             let system_id = owner_of_favorite(&self.all_systems, &reference)?;
             let launch = crate::launch::amiga_marker(path)
                 .map(|(install, title)| browse::Launch::AmigaVision { install, title })
-                .unwrap_or_else(|| browse::Launch::File(reference.owner_target));
+                .unwrap_or_else(|| {
+                    browse::Launch::File(if favorite_cache_target {
+                        reference.cache_target
+                    } else {
+                        reference.owner_target
+                    })
+                });
             (system_id, launch)
         } else {
             (self.open_system.clone()?, row_launch.clone())
@@ -13730,26 +13785,162 @@ impl App {
         let system = self
             .all_systems
             .iter()
-            .find(|system| system.def.id == system_id && !system.def.rbf.is_empty())?;
-        let config = system.to_config();
-        if !crate::launch::game_core_selectable(&config, &launch) {
-            return None;
-        }
+            .find(|system| system.def.id == system_id)?;
         let key = crate::game_launch_cores::key(&launch);
-        let saved = self
-            .settings
-            .game_launch_cores
-            .get(&system_id)
-            .is_some_and(|games| games.contains_key(&key));
-        if !crate::launch_cores::has_alternatives(&config) && !saved {
-            return None;
-        }
         Some(GameLaunchCoreTarget {
-            system_id,
+            system_id: system.def.id.clone(),
             key,
             launch,
             name: row.name.clone(),
         })
+    }
+
+    fn selected_game_launch_core_target(&self) -> Option<GameLaunchCoreTarget> {
+        let target = self.selected_game_target(false)?;
+        let config = self
+            .all_systems
+            .iter()
+            .find(|system| system.def.id == target.system_id && !system.def.rbf.is_empty())?
+            .to_config();
+        if !crate::launch::game_core_selectable(&config, &target.launch) {
+            return None;
+        }
+        let saved = self
+            .settings
+            .game_launch_cores
+            .get(&target.system_id)
+            .is_some_and(|games| games.contains_key(&target.key));
+        if !crate::launch_cores::has_alternatives(&config) && !saved {
+            return None;
+        }
+        Some(target)
+    }
+
+    fn selected_pack_match_target(&self) -> Option<GameLaunchCoreTarget> {
+        self.selected_game_target(true)
+            .filter(|target| self.pack_selected(&target.system_id))
+    }
+
+    fn open_pack_matches(&mut self) {
+        let Some(target) = self.selected_pack_match_target() else {
+            return;
+        };
+        self.pack_match_query = target.name.clone();
+        self.pack_match_target = Some(target);
+        self.pack_match_provider = None;
+        self.pack_match_choices.clear();
+        self.begin_pack_matching(crate::provider_job::Matching::Search(
+            self.pack_match_query.clone(),
+        ));
+    }
+
+    fn begin_pack_matching(&mut self, matching: crate::provider_job::Matching) {
+        if self.provider_job.is_some()
+            || self.source_job.is_some()
+            || self.build.is_some()
+            || self.refreshing.is_some()
+        {
+            self.message = Some("Wait for the current library update to finish.".to_string());
+            self.dirty = true;
+            return;
+        }
+        let Some(target) = &self.pack_match_target else {
+            return;
+        };
+        let Some(root) = self.effective_artwork_pack_roots.get(&target.system_id) else {
+            return;
+        };
+        let request = crate::provider_job::Request {
+            system_id: target.system_id.clone(),
+            system_name: target.name.clone(),
+            docs_root: PathBuf::from(root),
+            synopsis_language: self.scraper_settings.language.clone(),
+            cache_dir: self.cache_dir.clone(),
+            validate_location_only: false,
+            cached_provider: self.pack_match_provider.clone(),
+            homes: self.homes(),
+            write_state: false,
+            manual_matches: Default::default(),
+            matching: Some(matching),
+        };
+        match crate::provider_job::start(vec![request]) {
+            Ok(job) => {
+                self.provider_job = Some(job);
+                self.provider_job_purpose = ProviderJobPurpose::Matching;
+                self.provider_cancelling = false;
+                self.source_progress = Default::default();
+                self.show_source_progress();
+            }
+            Err(error) => {
+                self.message = Some(error.to_string());
+                self.dirty = true;
+            }
+        }
+    }
+
+    fn show_pack_matches(&mut self) {
+        self.menu = vec![
+            AUTOMATIC_PACK_MATCH.to_string(),
+            SEARCH_PACK_MATCH.to_string(),
+        ];
+        self.menu.extend(
+            self.pack_match_choices
+                .iter()
+                .map(|choice| choice.label.clone()),
+        );
+        self.menu_list = ListState::new(self.menu.len(), self.geometry.visible);
+        self.menu_list
+            .select(if self.pack_match_choices.is_empty() {
+                1
+            } else {
+                2
+            });
+        self.screen = Screen::ArtworkPackMatch;
+        self.message = None;
+        self.apply_geometry();
+        self.touch_selection();
+        self.dirty = true;
+    }
+
+    fn search_pack_matches(&mut self) {
+        self.open_name_keyboard(NamePurpose::PackMatchSearch, self.pack_match_query.clone());
+    }
+
+    fn choose_pack_match(&mut self) {
+        let at = self.menu_list.selected();
+        if at == 1 {
+            self.search_pack_matches();
+            return;
+        }
+        let Some(target) = &self.pack_match_target else {
+            return;
+        };
+        let selected = if at == 0 {
+            None
+        } else {
+            let Some(choice) = self.pack_match_choices.get(at - 2) else {
+                return;
+            };
+            Some(choice.reference.clone())
+        };
+        self.begin_pack_matching(crate::provider_job::Matching::Save(Box::new(
+            crate::provider_job::MatchSave {
+                launch: target.launch.clone(),
+                selected,
+                settings: self.settings.clone(),
+                settings_path: self.settings_path.clone(),
+            },
+        )));
+    }
+
+    fn leave_pack_matches(&mut self) {
+        self.pack_match_target = None;
+        self.pack_match_provider = None;
+        self.pack_match_choices.clear();
+        self.screen = Screen::Browse;
+        self.reopen_context_for(ARTWORK_PACK_MATCH);
+        self.apply_geometry();
+        self.dirty = true;
     }
 
     fn show_launch_core_choices(
@@ -14165,6 +14356,12 @@ impl App {
     fn finish_name_keyboard(&mut self) {
         let draft = self.name_keyboard_draft.clone();
         match self.name_keyboard_purpose.clone() {
+            NamePurpose::PackMatchSearch => {
+                self.pack_match_query = draft;
+                self.begin_pack_matching(crate::provider_job::Matching::Search(
+                    self.pack_match_query.clone(),
+                ));
+            }
             NamePurpose::NewFavoriteFolder => {
                 match crate::favorites::make_folder(&self.favorites_root(), &draft) {
                     Ok(target) => self.add_favorite_in(&target),
@@ -14983,7 +15180,10 @@ impl App {
 
     fn compact_provider_progress(&self) -> bool {
         self.provider_pending_open.is_some()
-            || self.provider_job_purpose == ProviderJobPurpose::LocationDiscovery
+            || matches!(
+                self.provider_job_purpose,
+                ProviderJobPurpose::LocationDiscovery | ProviderJobPurpose::Matching
+            )
     }
 
     fn source_progress_subject(&self) -> &'static str {
@@ -15046,6 +15246,8 @@ impl App {
                 cached_provider: None,
                 homes: homes.clone(),
                 write_state: false,
+                manual_matches: Default::default(),
+                matching: None,
             })
             .collect();
         match crate::provider_job::start(requests) {
@@ -15755,6 +15957,7 @@ impl App {
             cache_dir: self.cache_dir.clone(),
             require_usable_provider,
             homes: self.homes(),
+            manual_matches: self.settings.artwork_pack_matches.clone(),
         };
         match crate::source_cache::start(request) {
             Ok(job) => {
@@ -15878,13 +16081,70 @@ impl App {
             match event {
                 crate::provider_job::Event::Progress(progress) => {
                     if self.provider_pending_open.is_some()
-                        || self.provider_job_purpose == ProviderJobPurpose::LocationDiscovery
+                        || matches!(
+                            self.provider_job_purpose,
+                            ProviderJobPurpose::LocationDiscovery | ProviderJobPurpose::Matching
+                        )
                     {
                         self.source_progress.current = progress.current;
                         self.source_progress.system = progress.system;
                         self.source_progress.systems = progress.systems;
                         self.dirty = true;
                     }
+                }
+                crate::provider_job::Event::MatchChoices { provider, choices } => {
+                    self.provider_job = None;
+                    self.provider_job_purpose = ProviderJobPurpose::Runtime;
+                    if !self.provider_cancelling {
+                        self.pack_match_provider = Some(*provider);
+                        self.pack_match_choices = choices;
+                    }
+                    self.provider_cancelling = false;
+                    self.show_pack_matches();
+                    break;
+                }
+                crate::provider_job::Event::MatchStaged {
+                    provider,
+                    prepared,
+                    settings,
+                } => {
+                    self.provider_job = None;
+                    self.provider_job_purpose = ProviderJobPurpose::Runtime;
+                    if self.provider_cancelling {
+                        self.provider_cancelling = false;
+                        self.show_pack_matches();
+                        break;
+                    }
+                    match prepared.install() {
+                        Ok((_, warnings)) => {
+                            self.settings = *settings;
+                            let provider = *provider;
+                            if self.open_system.as_deref() == Some(&provider.system_id) {
+                                self.artwork_provider = Some(provider.clone());
+                            }
+                            self.artwork_provider_cache
+                                .insert(provider.system_id.clone(), provider);
+                            self.invalidate_saver_candidates();
+                            self.saver_pool.clear();
+                            self.saver_queue.clear();
+                            self.pack_match_provider = None;
+                            self.pack_match_choices.clear();
+                            self.pack_match_target = None;
+                            self.screen = Screen::Browse;
+                            self.apply_geometry();
+                            self.relist_here_preserving_game_filters();
+                            if !warnings.is_empty() {
+                                self.message = Some(warnings.join("\n"));
+                            }
+                        }
+                        Err(error) => {
+                            self.show_pack_matches();
+                            self.message =
+                                Some(format!("Artwork Pack Match was not saved: {error}"));
+                        }
+                    }
+                    self.dirty = true;
+                    break;
                 }
                 crate::provider_job::Event::Loaded {
                     snapshots,
@@ -15968,6 +16228,11 @@ impl App {
                     let purpose = self.provider_job_purpose;
                     self.provider_job = None;
                     self.provider_job_purpose = ProviderJobPurpose::Runtime;
+                    if purpose == ProviderJobPurpose::Matching {
+                        self.provider_cancelling = false;
+                        self.show_pack_matches();
+                        break;
+                    }
                     let loading = std::mem::take(&mut self.provider_loading);
                     self.invalidate_provider_ids(&loading);
                     self.provider_requests.clear();
@@ -15990,6 +16255,13 @@ impl App {
                     let purpose = self.provider_job_purpose;
                     self.provider_job = None;
                     self.provider_job_purpose = ProviderJobPurpose::Runtime;
+                    if purpose == ProviderJobPurpose::Matching {
+                        self.provider_cancelling = false;
+                        self.pack_match_provider = None;
+                        self.show_pack_matches();
+                        self.message = Some(format!("Artwork Pack Match failed: {error}"));
+                        break;
+                    }
                     let loading = std::mem::take(&mut self.provider_loading);
                     self.invalidate_provider_ids(&loading);
                     self.provider_cancelling = false;
@@ -16777,6 +17049,7 @@ impl App {
                 image_override,
                 game_data_source,
                 game_launch_core,
+                artwork_pack_match: self.selected_pack_match_target().is_some(),
                 launch_core: !self.last_played_open && launch_core,
                 core_version: !self.last_played_open && core_system.is_some(),
                 core_version_override: !self.last_played_open
@@ -18628,6 +18901,10 @@ impl App {
             self.handle_scraper_matches(action);
             return None;
         }
+        if self.screen == Screen::ArtworkPackMatch && action == Action::Context {
+            self.search_pack_matches();
+            return None;
+        }
         if self.screen == Screen::SourceProgress {
             if matches!(action, Action::Quit | Action::Context | Action::Menu) {
                 if let Some(job) = &self.source_job {
@@ -18843,6 +19120,7 @@ impl App {
                     }
                 }
                 Screen::CategoryImage => self.choose_category_image(),
+                Screen::ArtworkPackMatch => self.choose_pack_match(),
                 Screen::Menu | Screen::Context => {
                     let was_context = self.screen == Screen::Context;
                     let choice = self
@@ -18898,6 +19176,8 @@ impl App {
                         self.use_default_core_version();
                     } else if choice == GAME_LAUNCH_CORE {
                         self.open_game_launch_core();
+                    } else if choice == ARTWORK_PACK_MATCH {
+                        self.open_pack_matches();
                     } else if choice == SYSTEM_LAUNCH_CORE {
                         self.open_system_launch_core();
                     } else if choice == USE_GLOBAL_VIEW {
@@ -19056,8 +19336,10 @@ impl App {
         // the scrolling being smooth, so the pictures wait for it to stop.
         // Explicit pickers show the image being chosen, so every highlighted
         // item is previewed immediately regardless of the browse speed.
-        let debounce = if matches!(self.screen, Screen::CategoryImage | Screen::ScraperMatches)
-            || self.speed <= self.art_limit()
+        let debounce = if matches!(
+            self.screen,
+            Screen::CategoryImage | Screen::ScraperMatches | Screen::ArtworkPackMatch
+        ) || self.speed <= self.art_limit()
         {
             Duration::ZERO
         } else {
@@ -19084,6 +19366,20 @@ impl App {
     /// for both, and whether the picture is game artwork rather than a logo.
     fn current_art(&self) -> (Option<PathBuf>, String, bool, bool) {
         match (self.screen, self.browsing) {
+            (Screen::ArtworkPackMatch, _) => self
+                .menu_list
+                .selected()
+                .checked_sub(2)
+                .and_then(|at| self.pack_match_choices.get(at))
+                .map(|choice| {
+                    (
+                        choice.presentation.cover.clone(),
+                        choice.label.clone(),
+                        false,
+                        true,
+                    )
+                })
+                .unwrap_or_else(|| (None, String::new(), false, false)),
             (Screen::CategoryImage, _) => {
                 category_image_preview(&self.category_image_choices, self.menu_list.selected())
             }
@@ -19251,7 +19547,7 @@ impl App {
             return None;
         }
         let landscape_fraction = match self.screen {
-            Screen::CategoryImage => 0.44,
+            Screen::CategoryImage | Screen::ArtworkPackMatch => 0.44,
             Screen::ScraperMatches => 0.42,
             _ => return None,
         };
@@ -19591,14 +19887,16 @@ impl App {
         }
         // The screensaver is nothing but a picture, so it wants one whatever
         // the browse layout happens to be.
-        let wanted = self.screen == Screen::CategoryImage
-            || (self.show_art
-                && match self.screen {
-                    Screen::Screensaver => true,
-                    Screen::Browse => self.layout == Layout::Details,
-                    Screen::Information => true,
-                    _ => false,
-                });
+        let wanted = matches!(
+            self.screen,
+            Screen::CategoryImage | Screen::ArtworkPackMatch
+        ) || (self.show_art
+            && match self.screen {
+                Screen::Screensaver => true,
+                Screen::Browse => self.layout == Layout::Details,
+                Screen::Information => true,
+                _ => false,
+            });
         if !wanted {
             self.ui.set_art(slint::Image::default());
             self.ui.set_has_art(false);
@@ -19990,7 +20288,8 @@ impl App {
             | Screen::LaunchCore
             | Screen::GameDataSource
             | Screen::ArtworkPackLocation
-            | Screen::ArtworkPackDirectory => {
+            | Screen::ArtworkPackDirectory
+            | Screen::ArtworkPackMatch => {
                 for index in range {
                     rows.push(plain_row(&self.menu[index], ""));
                 }
@@ -20442,6 +20741,7 @@ impl App {
                 match self.name_keyboard_purpose {
                     NamePurpose::NewFavoriteFolder => "New Favourite Folder".to_string(),
                     NamePurpose::RenameFavoriteFolder(_) => "Rename Favourite Folder".to_string(),
+                    NamePurpose::PackMatchSearch => "Search Artwork Pack".to_string(),
                 },
                 self.name_keyboard_page.label().to_string(),
             ),
@@ -20516,6 +20816,22 @@ impl App {
             Screen::ScraperMatches => (
                 format!("Match {}", self.scraper_scope_label()),
                 self.scraper_search_status.clone(),
+            ),
+            Screen::ArtworkPackMatch => (
+                ARTWORK_PACK_MATCH.to_string(),
+                match self.menu_list.selected() {
+                    0 => "Remove this game's saved match and use automatic matching.".to_string(),
+                    1 => {
+                        if self.pack_match_choices.is_empty() {
+                            "No matching entries with artwork. Search by the original game title."
+                                .to_string()
+                        } else {
+                            "Search by game title. No game is selected automatically.".to_string()
+                        }
+                    }
+                    _ => "Use this entry's artwork and metadata. The game file is unchanged."
+                        .to_string(),
+                },
             ),
             Screen::ScraperKeyboard => {
                 let field = match self.scraper_keyboard_field {
@@ -20618,7 +20934,9 @@ impl App {
                 String::new(),
             ),
             Screen::SourceProgress => (
-                if self.provider_job_purpose == ProviderJobPurpose::LocationDiscovery {
+                if self.provider_job_purpose == ProviderJobPurpose::Matching {
+                    ARTWORK_PACK_MATCH.to_string()
+                } else if self.provider_job_purpose == ProviderJobPurpose::LocationDiscovery {
                     "Checking Artwork Pack Locations".to_string()
                 } else if self.provider_pending_open.is_some() {
                     "Reading Artwork Pack Database".to_string()
@@ -20671,7 +20989,11 @@ impl App {
         self.ui.set_heading(SharedString::from(heading));
         let displayed_status = if matches!(
             self.screen,
-            Screen::Scripts | Screen::CategoryImage | Screen::ThemeEditor | Screen::SourceProgress
+            Screen::Scripts
+                | Screen::CategoryImage
+                | Screen::ArtworkPackMatch
+                | Screen::ThemeEditor
+                | Screen::SourceProgress
         ) {
             self.control_hint(&status)
         } else {

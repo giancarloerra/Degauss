@@ -424,6 +424,10 @@ pub struct Settings {
     /// Missing systems and games inherit the per-system Launch Core setting.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub game_launch_cores: BTreeMap<String, BTreeMap<String, String>>,
+    /// Manual Artwork Pack index names, keyed by owning system and logical
+    /// game launch. Empty on existing installations; ignored by Gamelist.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub artwork_pack_matches: BTreeMap<String, crate::artwork_pack::ManualMatches>,
     /// The browse strip is visible by default. Both On and Off are explicit
     /// saved choices; only an absent value follows the default.
     pub show_bar: Option<bool>,
@@ -537,6 +541,11 @@ impl Settings {
         path: &Path,
         sync_directory: impl FnOnce(&Path) -> std::io::Result<()>,
     ) -> Result<SaveOutcome> {
+        let body = self.encode(path)?;
+        install_with_directory_sync(&SETTINGS_LABELS, path, &body, sync_directory)
+    }
+
+    pub(crate) fn encode(&self, path: &Path) -> Result<String> {
         let settings = self.with_resolved_hold_shortcuts();
         let text = toml::to_string_pretty(&settings)
             .map_err(|e| DegaussError::malformed("settings", path, e.to_string()))?;
@@ -545,7 +554,7 @@ impl Settings {
              # The documented defaults live in degauss.toml; delete this file\n\
              # to go back to them.\n\n{text}"
         );
-        install_with_directory_sync(&SETTINGS_LABELS, path, &body, sync_directory)
+        Ok(body)
     }
 }
 
@@ -1297,6 +1306,35 @@ mod tests {
         let decoded: Settings = toml::from_str(&toml::to_string(&settings).unwrap()).unwrap();
         assert_eq!(decoded.game_launch_cores, settings.game_launch_cores);
         assert!(decoded.launch_cores.is_empty());
+    }
+
+    #[test]
+    fn artwork_pack_matches_are_sparse_names_outside_the_pack_and_preserve_old_settings() {
+        let old: Settings =
+            toml::from_str(include_str!("../tests/fixtures/v0.2.0-settings.toml")).unwrap();
+        assert!(old.artwork_pack_matches.is_empty());
+        assert!(!toml::to_string(&Settings::default())
+            .unwrap()
+            .contains("artwork_pack_matches"));
+        let mut settings = old.clone();
+        settings.artwork_pack_matches.insert(
+            "NES".into(),
+            [(
+                "f:/media/fat/games/NES/Game.zip/Fan Translation.nes".into(),
+                crate::artwork_pack::ManualMatch {
+                    folder: "NES".into(),
+                    name: "Original (USA)".into(),
+                },
+            )]
+            .into(),
+        );
+        let encoded = settings.encode(Path::new("settings.toml")).unwrap();
+        let mut decoded: Settings = toml::from_str(&encoded).unwrap();
+        assert_eq!(decoded.artwork_pack_matches, settings.artwork_pack_matches);
+        decoded.artwork_pack_matches.clear();
+        // Saving already writes resolved legacy hold bindings. Every other
+        // existing setting must survive adding and removing a Pack choice.
+        assert_eq!(decoded, old.with_resolved_hold_shortcuts());
     }
 
     #[test]

@@ -1563,6 +1563,41 @@ pub fn save_pack_state(
     save_pack_source_state(dir, id, state)
 }
 
+/// Stage a manual match and its settings using the existing rollback group.
+/// No source-neutral cache is rebuilt and no cache format is changed.
+pub fn prepare_pack_match(
+    dir: &Path,
+    id: &str,
+    map: &PackPreparedMap,
+    settings_path: &Path,
+    settings: &crate::settings::Settings,
+) -> Result<PreparedCacheGroup> {
+    let mut staged = PreparedCacheGroup {
+        caches: Vec::new(),
+        markers: Vec::new(),
+        files: Vec::new(),
+        finished: false,
+    };
+    staged.stage_extra_file(
+        artwork_pack_prepared_path(dir, id),
+        &encode_pack_prepared(map)?,
+        "prepared",
+        false,
+        |written| matches!(decode_pack_prepared(written), Ok(Some(_))),
+    )?;
+    staged.stage_extra_file(
+        settings_path.to_path_buf(),
+        settings.encode(settings_path)?.as_bytes(),
+        "match-settings",
+        false,
+        |written| {
+            std::str::from_utf8(written)
+                .is_ok_and(|text| toml::from_str::<crate::settings::Settings>(text).is_ok())
+        },
+    )?;
+    Ok(staged)
+}
+
 /// When a folder itself last changed, seconds since the epoch, or 0.
 ///
 /// A directory's own mtime moves when an entry is added or removed from it,
@@ -3289,6 +3324,84 @@ mod tests {
         assert!(cache.get(&Place::Archive(archive)).is_some());
 
         std::fs::remove_dir_all(games).unwrap();
+    }
+
+    #[test]
+    fn manual_match_install_failure_restores_settings_and_prepared_presentation() {
+        let store = temp("manual-match-rollback");
+        std::fs::create_dir_all(store.join("artwork-pack")).unwrap();
+        let state = PackSourceState::default();
+        let launch = crate::browse::Launch::File(PathBuf::from("/games/Game.nes"));
+        let old = PackPreparedMap::from([(
+            launch.clone(),
+            crate::artwork_pack::PackPresentation {
+                name: Some("Old".into()),
+                ..Default::default()
+            },
+        )]);
+        save_pack_state(&store, "NES", &state, &old).unwrap();
+        let settings_path = store.join("settings.toml");
+        crate::settings::Settings::default()
+            .save(&settings_path)
+            .unwrap();
+        let paths = [
+            artwork_pack_prepared_path(&store, "NES"),
+            artwork_pack_source_path(&store, "NES"),
+            settings_path.clone(),
+        ];
+        let before: Vec<_> = paths
+            .iter()
+            .map(|path| std::fs::read(path).unwrap())
+            .collect();
+        let next = PackPreparedMap::from([(
+            launch.clone(),
+            crate::artwork_pack::PackPresentation {
+                name: Some("New".into()),
+                ..Default::default()
+            },
+        )]);
+        let mut settings = crate::settings::Settings::default();
+        settings.artwork_pack_matches.insert(
+            "NES".into(),
+            [(
+                crate::game_launch_cores::key(&launch),
+                crate::artwork_pack::ManualMatch {
+                    folder: "NES".into(),
+                    name: "new index name".into(),
+                },
+            )]
+            .into(),
+        );
+        let staged = prepare_pack_match(&store, "NES", &next, &settings_path, &settings).unwrap();
+        // Fail the actual final rename after the prepared map was replaced.
+        std::fs::remove_file(&staged.files.last().unwrap().new_path).unwrap();
+        let error = staged.install().unwrap_err();
+        assert!(
+            error.to_string().contains("installing the staged cache"),
+            "{error}"
+        );
+        assert_eq!(
+            paths
+                .iter()
+                .map(|path| std::fs::read(path).unwrap())
+                .collect::<Vec<_>>(),
+            before
+        );
+        let staged = prepare_pack_match(&store, "NES", &next, &settings_path, &settings).unwrap();
+        staged.install().unwrap();
+        assert_eq!(
+            load_pack_prepared_map(&store, "NES").unwrap().unwrap()[&launch]
+                .name
+                .as_deref(),
+            Some("New")
+        );
+        assert_eq!(
+            crate::settings::Settings::load(&settings_path)
+                .unwrap()
+                .artwork_pack_matches,
+            settings.artwork_pack_matches
+        );
+        std::fs::remove_dir_all(store).unwrap();
     }
 
     #[test]

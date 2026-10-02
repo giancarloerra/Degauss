@@ -249,6 +249,7 @@ fn every_existing_action_remains_reachable_without_a_placeholder_submenu() {
         image_override: None,
         game_data_source: true,
         game_launch_core: true,
+        artwork_pack_match: false,
         launch_core: true,
         core_version: true,
         core_version_override: true,
@@ -3931,6 +3932,7 @@ fn capture_every_menu_row(app: &mut App, directory: &Path) {
         image_override: None,
         game_data_source: true,
         game_launch_core: true,
+        artwork_pack_match: false,
         launch_core: true,
         core_version: true,
         core_version_override: true,
@@ -5298,6 +5300,381 @@ fn leave_system(app: &mut App) {
         app.open_system.is_none(),
         "B on the top folder leaves the system"
     );
+}
+
+fn run_manual_pack_match_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
+    let root = root.join("manual-pack-match");
+    let games = root.join("games/NES");
+    let docs = root.join("docs");
+    let art = docs.join("NES/Artwork");
+    std::fs::create_dir_all(&games).unwrap();
+    std::fs::create_dir_all(&art).unwrap();
+    for name in ["Known.nes", "Unmatched.nes"] {
+        std::fs::write(games.join(name), name.as_bytes()).unwrap();
+    }
+    let descriptor = games.join("Alternate.mgl");
+    std::fs::write(&descriptor, format!("<mistergamedescription><rbf>_Console/NES</rbf><file path=\"{}\"/></mistergamedescription>", games.join("Unmatched.nes").display())).unwrap();
+    std::fs::write(
+        art.join("manifest.tsv"),
+        "#key\tstyle\tss_system_id\nKnown\tbox-2D\t3\nOther\tbox-2D\t3\n",
+    )
+    .unwrap();
+    std::fs::write(
+        art.join("index.tsv"),
+        "#name\tcrc\tsize\tkey\nKnown (USA)\t\t\tKnown\nOther Stable Name (USA)\t\t\tOther\n",
+    )
+    .unwrap();
+    std::fs::write(art.join("gameinfo.tsv"), "#key\tname\tyear\tgenre\tdeveloper\tplayers\nKnown\tPack Known\t1990\tAction\tStudio\t1\nOther\tChosen Pack Title\t1992\tPuzzle\tOther Studio\t2\n").unwrap();
+    for key in ["Known", "Other"] {
+        std::fs::write(art.join(format!("{key}.jpg")), crate::covers::JPEG_16).unwrap();
+    }
+    let pack_before: Vec<_> = std::fs::read_dir(&art)
+        .unwrap()
+        .map(|entry| {
+            let path = entry.unwrap().path();
+            let bytes = std::fs::read(&path).unwrap();
+            (path, bytes)
+        })
+        .collect();
+    let settings = Settings {
+        artwork_pack_roots: [("NES".into(), docs.to_string_lossy().into_owned())].into(),
+        show_art: Some(false),
+        ..Default::default()
+    };
+    let mut app = unopened_fixture_app(&root, window.clone(), settings);
+    app.leave_splash();
+    app.open_system_by_index(0);
+    app.finish_background_work_for_headless();
+    app.message = None;
+    app.enter(Place::Dir(games.clone()));
+    assert_eq!(app.here.len(), 3, "{:?}", app.message);
+    select_row_named(&mut app, "Unmatched.nes");
+    let launch = app.here[app.game_list.selected()].kind.clone();
+    let before = pack_files(&app.cache_dir, "NES");
+    app.reopen_context_for(ARTWORK_PACK_MATCH);
+    assert_eq!(app.menu[app.menu_list.selected()], ARTWORK_PACK_MATCH);
+    app.handle(Action::Accept);
+    assert_eq!(app.screen, Screen::SourceProgress);
+    app.finish_background_work_for_headless();
+    assert_eq!(app.screen, Screen::ArtworkPackMatch, "{:?}", app.message);
+    app.handle(Action::Context);
+    assert_eq!(app.screen, Screen::NameKeyboard);
+    app.name_keyboard_draft = "Other Stable Name".into();
+    app.handle(Action::Quit);
+    app.finish_background_work_for_headless();
+    assert_eq!(app.screen, Screen::ArtworkPackMatch);
+    let selected = app.menu.iter().position(|label| label == "Other").unwrap();
+    app.menu_list.select(selected);
+    app.touch_selection();
+    assert!(
+        app.art_has_settled(Instant::now()),
+        "picker previews do not wait for the browsing debounce"
+    );
+    app.load_art();
+    app.refresh();
+    assert!(
+        app.ui.get_category_image_picker(),
+        "the existing image picker layout is reused"
+    );
+    assert!(
+        app.ui.get_has_art(),
+        "the picker preview works even when browse artwork is disabled"
+    );
+    assert_eq!(app.current_art().0, Some(art.join("Other.jpg")));
+    if let Some(directory) = std::env::var_os("DEGAUSS_PACK_MATCH_CAPTURE_DIR") {
+        for (width, height) in [(352, 240), (1280, 720), (240, 352)] {
+            capture_live_frame(
+                &mut app,
+                Path::new(&directory),
+                "manual-pack-picker",
+                width,
+                height,
+            );
+        }
+    }
+    assert_eq!(
+        pack_files(&app.cache_dir, "NES"),
+        before,
+        "search/preview changes no persisted data"
+    );
+    app.handle(Action::Quit);
+    assert_eq!(app.screen, Screen::Context);
+    assert!(
+        app.settings.artwork_pack_matches.is_empty(),
+        "leaving the picker saves nothing"
+    );
+    app.handle(Action::Accept);
+    app.finish_background_work_for_headless();
+    app.handle(Action::Context);
+    app.name_keyboard_draft = "Other Stable Name".into();
+    app.handle(Action::Quit);
+    app.finish_background_work_for_headless();
+    app.menu_list
+        .select(app.menu.iter().position(|label| label == "Other").unwrap());
+    app.handle(Action::Accept);
+    app.finish_background_work_for_headless();
+    assert_eq!(app.screen, Screen::Browse, "{:?}", app.message);
+    let key = crate::game_launch_cores::key(&browse::Launch::File(games.join("Unmatched.nes")));
+    assert_eq!(
+        app.settings.artwork_pack_matches["NES"][&key].name,
+        "other stable name (usa)"
+    );
+    select_row_named(&mut app, "Chosen Pack Title");
+    assert_eq!(
+        app.here[app.game_list.selected()].kind,
+        launch,
+        "matching changes presentation, not launch"
+    );
+    assert_eq!(
+        app.here[app.game_list.selected()].cover,
+        Some(art.join("Other.jpg"))
+    );
+    assert_eq!(
+        app.here[app.game_list.selected()].details.developer,
+        "Other Studio"
+    );
+    assert_eq!(
+        pack_files(&app.cache_dir, "NES")[0],
+        before[0],
+        "the source-neutral cache is not rebuilt"
+    );
+    assert_eq!(
+        app.saver_pool.len(),
+        0,
+        "the old Attract Mode pool cannot retain stale artwork"
+    );
+    app.refill_saver();
+    assert!(app
+        .saver_pool
+        .iter()
+        .any(|picture| picture.path == art.join("Other.jpg")));
+    let favorite = root.join("Unmatched.mgl");
+    std::fs::write(
+        &favorite,
+        crate::launch::favorite_mgl(
+            &app.all_systems[0].to_config(),
+            &games.join("Unmatched.nes"),
+        )
+        .unwrap()
+        .unwrap(),
+    )
+    .unwrap();
+    let mut favorite_rows = [browse::Row {
+        kind: browse::Kind::Play(browse::Launch::File(favorite)),
+        ..information_row()
+    }];
+    enrich_favorite_rows(
+        &mut favorite_rows,
+        &app.all_systems,
+        &app.homes(),
+        &app.effective_artwork_pack_roots,
+        &app.cache_dir,
+        |id, _, _| app.artwork_provider_cache.get(id).cloned(),
+    );
+    assert_eq!(favorite_rows[0].name, "Chosen Pack Title");
+    assert_eq!(favorite_rows[0].cover, Some(art.join("Other.jpg")));
+
+    #[cfg(unix)]
+    {
+        let favorites = root.join("_@Favorites");
+        std::fs::create_dir_all(&favorites).unwrap();
+        let linked = favorites.join("Alternate.mgl");
+        std::os::unix::fs::symlink(&descriptor, &linked).unwrap();
+        app.all_systems
+            .push(fixture_system(&root, "Favorites", "_@Favorites"));
+        app.open_system_by_index(1);
+        select_row_named(&mut app, "Alternate");
+        assert_eq!(
+            app.selected_game_target(false).unwrap().launch,
+            browse::Launch::File(games.join("Unmatched.nes")),
+            "Game Launch Core still targets the underlying ROM"
+        );
+        assert_eq!(
+            app.selected_pack_match_target().unwrap().launch,
+            browse::Launch::File(descriptor.clone()),
+            "artwork follows the exact cache target of a linked MGL"
+        );
+        app.reopen_context_for(ARTWORK_PACK_MATCH);
+        app.handle(Action::Accept);
+        app.finish_background_work_for_headless();
+        app.handle(Action::Context);
+        app.name_keyboard_draft = "Other Stable Name".into();
+        app.handle(Action::Quit);
+        app.finish_background_work_for_headless();
+        app.menu_list
+            .select(app.menu.iter().position(|label| label == "Other").unwrap());
+        app.handle(Action::Accept);
+        app.finish_background_work_for_headless();
+        select_row_named(&mut app, "Chosen Pack Title");
+        assert_eq!(
+            app.here[app.game_list.selected()].kind,
+            browse::Kind::Play(browse::Launch::File(linked))
+        );
+        assert_eq!(app.settings.artwork_pack_matches["NES"].len(), 2);
+        app.reopen_context_for(ARTWORK_PACK_MATCH);
+        app.handle(Action::Accept);
+        app.finish_background_work_for_headless();
+        app.menu_list.select(0);
+        app.handle(Action::Accept);
+        app.finish_background_work_for_headless();
+        assert_eq!(
+            app.settings.artwork_pack_matches["NES"].len(),
+            1,
+            "Automatic clears only this selection"
+        );
+        assert!(app.settings.artwork_pack_matches["NES"].contains_key(&key));
+        app.open_system_by_index(0);
+        select_row_named(&mut app, "Chosen Pack Title");
+    }
+
+    app.settings.last_played = Some(2);
+    app.last_played.remember(crate::history::Entry {
+        system: "NES".into(),
+        launch: browse::Launch::File(games.join("Unmatched.nes")),
+        name: "Recorded name".into(),
+    });
+    app.open_last_played();
+    app.finish_background_work_for_headless();
+    select_row_named(&mut app, "Chosen Pack Title");
+    assert_eq!(app.selected_pack_match_target().unwrap().key, key);
+    assert_eq!(
+        app.here[app.game_list.selected()].cover,
+        Some(art.join("Other.jpg"))
+    );
+    let information = app
+        .information_request(&app.here[app.game_list.selected()])
+        .unwrap();
+    assert_eq!(
+        information.launch,
+        browse::Launch::File(games.join("Unmatched.nes"))
+    );
+
+    let saved = Settings::load(&app.settings_path).unwrap();
+    drop(app);
+    let mut restarted = unopened_fixture_app(&root, window.clone(), saved);
+    restarted.leave_splash();
+    restarted.open_system_by_index(0);
+    restarted.finish_background_work_for_headless();
+    restarted.message = None;
+    restarted.enter(Place::Dir(games.clone()));
+    select_row_named(&mut restarted, "Chosen Pack Title");
+    assert!(
+        restarted.provider_job.is_none() && restarted.source_job.is_none(),
+        "restart uses the existing prepared cache"
+    );
+    restarted.rebuild_open_system();
+    restarted.finish_background_work_for_headless();
+    assert_eq!(restarted.message.as_deref(), Some("NES list rebuilt."));
+    assert!(restarted.source_job.is_none() && restarted.build.is_none());
+    restarted.handle(Action::Quit);
+    restarted.enter(Place::Dir(games.clone()));
+    select_row_named(&mut restarted, "Chosen Pack Title");
+    assert_eq!(restarted.here[restarted.game_list.selected()].kind, launch);
+    // Gamelist remains exclusive while chosen; returning to Pack reapplies
+    // the saved reference using the same source-switch worker as before.
+    restarted.source_system_id = Some("NES".into());
+    restarted.begin_source_switch(crate::source_cache::Target::Gamelist);
+    restarted.finish_background_work_for_headless();
+    restarted.message = None;
+    restarted.screen = Screen::Browse;
+    restarted.enter(Place::Dir(games.clone()));
+    select_row_named(&mut restarted, "Unmatched.nes");
+    assert_eq!(restarted.here[restarted.game_list.selected()].cover, None);
+    assert!(restarted.selected_pack_match_target().is_none());
+    assert!(restarted.settings.artwork_pack_matches.contains_key("NES"));
+    restarted.source_system_id = Some("NES".into());
+    restarted.begin_source_switch(crate::source_cache::Target::ArtworkPack {
+        docs_root: docs.clone(),
+    });
+    restarted.finish_background_work_for_headless();
+    restarted.message = None;
+    restarted.screen = Screen::Browse;
+    restarted.enter(Place::Dir(games.clone()));
+    select_row_named(&mut restarted, "Chosen Pack Title");
+    restarted.reopen_context_for(ARTWORK_PACK_MATCH);
+    restarted.handle(Action::Accept);
+    restarted.handle(Action::Quit);
+    restarted.finish_background_work_for_headless();
+    assert_eq!(restarted.screen, Screen::ArtworkPackMatch);
+    assert_eq!(
+        restarted.settings.artwork_pack_matches["NES"][&key].name, "other stable name (usa)",
+        "cancelled search retains the saved match"
+    );
+    restarted.menu_list.select(0);
+    restarted.handle(Action::Accept);
+    restarted.finish_background_work_for_headless();
+    assert_eq!(restarted.screen, Screen::Browse);
+    assert!(restarted.settings.artwork_pack_matches.is_empty());
+    select_row_named(&mut restarted, "Unmatched.nes");
+    assert_eq!(restarted.here[restarted.game_list.selected()].cover, None);
+    select_row_named(&mut restarted, "Pack Known");
+    assert_eq!(
+        restarted.here[restarted.game_list.selected()].cover,
+        Some(art.join("Known.jpg")),
+        "another game's automatic match is unchanged"
+    );
+    for (path, bytes) in pack_before {
+        assert_eq!(std::fs::read(path).unwrap(), bytes);
+    }
+    assert_eq!(std::fs::read_dir(&art).unwrap().count(), 5);
+
+    // Arcade has no system-wide RBF: the descriptor chooses it. That must
+    // not hide artwork matching or enable the unrelated Game Launch Core.
+    let arcade_root = root.join("arcade");
+    let arcade = arcade_root.join("_Arcade");
+    let docs = arcade_root.join("docs");
+    let art = docs.join("Arcade/Artwork");
+    std::fs::create_dir_all(&arcade).unwrap();
+    std::fs::create_dir_all(&art).unwrap();
+    let mra = arcade.join("Descriptor.mra");
+    std::fs::write(
+        &mra,
+        "<misterromdescription><setname>known</setname></misterromdescription>",
+    )
+    .unwrap();
+    std::fs::write(
+        art.join("manifest.tsv"),
+        "#key\tstyle\tss_system_id\nknown\tbox-2D\t75\n",
+    )
+    .unwrap();
+    std::fs::write(
+        art.join("index.tsv"),
+        "#name\tcrc\tsize\tkey\nknown\t\t\tknown\n",
+    )
+    .unwrap();
+    std::fs::write(art.join("gameinfo.tsv"), "#key\tname\tyear\tgenre\tdeveloper\tplayers\nknown\tKnown Arcade\t1990\tAction\tStudio\t1\n").unwrap();
+    std::fs::write(art.join("known.jpg"), crate::covers::JPEG_16).unwrap();
+    let mut arcade_app = unopened_fixture_app_with_systems(
+        &arcade_root,
+        window,
+        Settings {
+            artwork_pack_roots: [("Arcade".into(), docs.to_string_lossy().into_owned())].into(),
+            ..Default::default()
+        },
+        &["Arcade"],
+        "_Arcade",
+    );
+    arcade_app.leave_splash();
+    arcade_app.open_system_by_index(0);
+    arcade_app.message = None;
+    arcade_app.enter(Place::Dir(arcade));
+    select_row_named(&mut arcade_app, "Known Arcade");
+    assert!(arcade_app.selected_game_launch_core_target().is_none());
+    assert_eq!(
+        arcade_app.selected_pack_match_target().unwrap().launch,
+        browse::Launch::File(mra.clone())
+    );
+    arcade_app.reopen_context_for(ARTWORK_PACK_MATCH);
+    arcade_app.handle(Action::Accept);
+    arcade_app.finish_background_work_for_headless();
+    assert_eq!(arcade_app.screen, Screen::ArtworkPackMatch);
+    assert_eq!(arcade_app.menu[2], "known");
+    arcade_app.menu_list.select(2);
+    arcade_app.handle(Action::Accept);
+    arcade_app.finish_background_work_for_headless();
+    assert_eq!(arcade_app.screen, Screen::Browse);
+    assert!(arcade_app.settings.artwork_pack_matches["Arcade"]
+        .contains_key(&crate::game_launch_cores::key(&browse::Launch::File(mra))));
 }
 
 /// An Automatic system with an installed Pack is prepared when its user
@@ -11448,6 +11825,7 @@ pub(super) fn run_ui_acceptance_flow(window: Rc<MinimalSoftwareWindow>) {
     run_neogeo_romset_flow(&root, window.clone());
     run_artwork_matte_flow(&root, window.clone());
     run_automatic_pack_consent_flow(&root, window.clone());
+    run_manual_pack_match_flow(&root, window.clone());
     run_legacy_pack_cache_adoption_flow(&root, window.clone());
     #[cfg(unix)]
     run_arcade_descriptor_failures_flow(&root, window.clone());

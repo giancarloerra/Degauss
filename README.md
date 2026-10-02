@@ -1424,6 +1424,29 @@ Pack is selected, that system's scrape entries in Actions are hidden and
 **Scrape All Systems** reports it as skipped before checking scraper login or
 making a request.
 
+#### Correct a missing or wrong Pack match
+
+While a game uses Artwork Pack data, open **X Actions → Game → Artwork Pack
+Match**. Choose from up to eight nearby names with picture previews, or use
+**Search Pack...** (X) to enter a title. A applies that entry's artwork and
+metadata to the selected game; B leaves without saving.
+
+The choice is saved in Degauss's `settings.toml`, outside the pack. No pack
+file is edited and no image is copied. The game's launch target is unchanged,
+and the same choice appears in Favourites, Last Played and Attract Mode.
+**Automatic Match** removes the choice and restores normal matching.
+
+Choices refer to the pack's index names. When accepting a normal pack update
+or rebuilding the system list, they resolve against the updated data, including
+corrected pictures. If a saved name disappears, Degauss reports the unavailable
+match rather than choosing a different game. Select another entry or Automatic
+Match to clear it. Switching to Gamelist keeps saved Pack choices but does not
+use them until Pack is selected again.
+
+This matches games to pictures already in the pack. It does not scrape new
+pictures or fill Pack gaps from a gamelist. To use scraped pictures for a
+system, select **Gamelist** as its Game Data Source.
+
 Degauss rechecks a selected database when the system is entered, with the
 lightweight signature described above. After Update All replaces a style or
 updates the database, leave and reopen the system: it asks whether to update
