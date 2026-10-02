@@ -8,9 +8,14 @@ pub(super) fn run(root: &Path, window: Rc<MinimalSoftwareWindow>) {
     for name in ["First Game.nes", "Second Game.nes"] {
         std::fs::write(games.join(name), b"fixture").unwrap();
     }
+    std::fs::write(
+        games.join("art.png"),
+        include_bytes!("../assets/logos/NES.png"),
+    )
+    .unwrap();
     let description = "Complete selected-game description. ".repeat(120);
     let gamelist = games.join("gamelist.xml");
-    std::fs::write(&gamelist, format!("<gameList><game><path>First Game.nes</path><name>First Game</name><publisher>First Publisher</publisher><desc>{description}</desc></game><game><path>Second Game.nes</path><name>Second Game</name><publisher>Second Publisher</publisher><desc>Second description.</desc></game></gameList>")).unwrap();
+    std::fs::write(&gamelist, format!("<gameList><game><path>First Game.nes</path><name>First Game</name><image>art.png</image><publisher>First Publisher</publisher><desc>{description}</desc></game><game><path>Second Game.nes</path><name>Second Game</name><publisher>Second Publisher</publisher><desc>Second description.</desc></game></gameList>")).unwrap();
     let mut app = fixture_app(&root, window.clone(), Settings::default());
     app.leave_splash();
     app.finish_background_work_for_headless();
@@ -91,8 +96,12 @@ pub(super) fn run(root: &Path, window: Rc<MinimalSoftwareWindow>) {
     );
     assert!(app.ui.get_custom_short_text().contains("First Publisher"));
     assert!(app.ui.get_custom_information_max_scroll() > 0.0);
+    app.load_art();
+    assert!(app.ui.get_has_art());
     app.open_context();
     app.show_context_page(Some(ContextPage::Game));
+    app.load_art();
+    assert!(!app.ui.get_has_art(), "Actions does not draw artwork");
     let focus = app
         .menu
         .iter()
@@ -102,6 +111,15 @@ pub(super) fn run(root: &Path, window: Rc<MinimalSoftwareWindow>) {
     app.handle(Action::Accept);
     assert_eq!(app.screen, Screen::Browse);
     assert!(app.custom_view.information_focus);
+    assert!(
+        app.art_pending,
+        "returning to the browser must reload its artwork"
+    );
+    app.load_art();
+    assert!(
+        app.ui.get_has_art(),
+        "information focus must retain the selected game's picture"
+    );
     let selected = app.game_list.selected();
     app.handle(Action::Down);
     assert_eq!(app.game_list.selected(), selected);

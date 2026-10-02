@@ -568,6 +568,7 @@ impl App {
                 self.screen = Screen::Browse;
                 self.custom_view.information_focus = true;
                 self.apply_geometry();
+                self.touch_selection();
                 self.dirty = true;
                 return true;
             }

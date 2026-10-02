@@ -21456,15 +21456,16 @@ impl App {
                 .map_or(0.0, |build| build.done as f32 / build.total.max(1) as f32),
         );
         self.ui.set_browse_playable(
-            self.browsing == Browsing::Games
-                && self
-                    .browse_row(self.game_list.selected())
-                    .is_some_and(|row| matches!(row.kind, browse::Kind::Play(_)))
-                && (!self.in_misterzine_browser()
-                    || self
-                        .misterzine_visible
-                        .get(self.game_list.selected())
-                        .is_some_and(|item| item.installed())),
+            self.home_selected_game().is_some()
+                || (self.browsing == Browsing::Games
+                    && self
+                        .browse_row(self.game_list.selected())
+                        .is_some_and(|row| matches!(row.kind, browse::Kind::Play(_)))
+                    && (!self.in_misterzine_browser()
+                        || self
+                            .misterzine_visible
+                            .get(self.game_list.selected())
+                            .is_some_and(|item| item.installed()))),
         );
         self.ui
             .set_plain_scope(SharedString::from(match self.screen {

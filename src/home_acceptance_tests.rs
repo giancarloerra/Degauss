@@ -184,6 +184,20 @@ pub(super) fn run(root: &Path, window: Rc<MinimalSoftwareWindow>) {
             .position(|key| key == &entry_key(&game))
             .unwrap(),
     );
+    app.touch_selection();
+    app.finish_background_work_for_headless();
+    paint_index_frame(&mut app);
+    assert!(
+        app.ui.get_browse_playable(),
+        "a pinned game must say Play, not Open"
+    );
+    app.category_list.select(1);
+    paint_index_frame(&mut app);
+    assert!(
+        !app.ui.get_browse_playable(),
+        "a pinned system must still say Open"
+    );
+    app.category_list.select(0);
     std::fs::remove_file(&path).unwrap();
     assert!(app
         .home_problem(&entry_key(&game))
