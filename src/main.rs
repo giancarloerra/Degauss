@@ -443,13 +443,20 @@ fn load_everything(args: &Args) -> Result<Loaded> {
     // actually is on this card, not from what the table guessed.
     let cores = systems::CoreIndex::read(Path::new(&config.menu_root));
     let core_cache_dir = cache::dir_for(&settings_path);
-    let core_catalogue = cache::load_core_catalogue(&core_cache_dir).unwrap_or_else(|| {
-        if settings.show_cores.unwrap_or(false) || settings.show_misterzine.unwrap_or(false) {
-            cores.catalogue(&table)
-        } else {
-            systems::CoreCatalogue::default()
-        }
-    });
+    let cached_catalogue = cache::load_core_catalogue(&core_cache_dir);
+    let core_catalogue = if cores.has_dual_sdram()
+        && (settings.show_cores.unwrap_or(false) || settings.show_misterzine.unwrap_or(false))
+    {
+        cores.catalogue(&table)
+    } else {
+        cached_catalogue.unwrap_or_else(|| {
+            if settings.show_cores.unwrap_or(false) || settings.show_misterzine.unwrap_or(false) {
+                cores.catalogue(&table)
+            } else {
+                systems::CoreCatalogue::default()
+            }
+        })
+    };
     let network_boot = if args.interactive_startup() {
         network_wait::detect(&config.wait_for_mounts)?
     } else {

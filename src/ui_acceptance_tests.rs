@@ -921,6 +921,105 @@ fn run_cores_browser_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
     std::fs::remove_dir_all(root).unwrap();
 }
 
+fn run_dual_sdram_choices_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
+    let root = root.join("dual-sdram-choices");
+    let games = root.join("games/NES");
+    std::fs::create_dir_all(&games).unwrap();
+    let game = games.join("Game.nes");
+    std::fs::write(&game, b"fixture").unwrap();
+    std::fs::write(games.join("Other.nes"), b"fixture").unwrap();
+    for file in [
+        "_Console/NES_20260901.rbf",
+        "_Console (Dual SDRAM)/NES_20260901.rbf",
+        "_Console/NES_DualSDRAM_20260901.rbf",
+    ] {
+        let path = root.join(file);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, b"fixture").unwrap();
+    }
+    let mut app = fixture_app(
+        &root,
+        window,
+        Settings {
+            last_played: Some(1),
+            ..Settings::default()
+        },
+    );
+    let cores = crate::systems::CoreIndex::read_checked(&root).unwrap();
+    let found =
+        crate::systems::discover_checked(&app.table, &[root.join("games")], None, &cores).unwrap();
+    app.apply_discovered_systems(found);
+    let at = app
+        .all_systems
+        .iter()
+        .position(|system| system.def.id == "NES")
+        .unwrap();
+    app.open_system_by_index(at);
+    app.finish_background_work_for_headless();
+    select_row_named(&mut app, "Game.nes");
+    app.reopen_context_for(SYSTEM_LAUNCH_CORE);
+    app.handle(Action::Accept);
+    assert_eq!(app.screen, Screen::LaunchCore);
+    assert_eq!(
+        app.launch_core_choices.len(),
+        4,
+        "Automatic, primary and both dual layouts"
+    );
+    let folder = app
+        .launch_core_choices
+        .iter()
+        .position(|choice| choice.id.contains("(Dual SDRAM)/NES"))
+        .unwrap();
+    app.menu_list.select(folder);
+    app.refresh();
+    assert!(app
+        .rows
+        .row_data(folder)
+        .unwrap()
+        .title
+        .contains("Dual SDRAM"));
+    app.handle(Action::Accept);
+    assert!(app.settings.launch_cores["NES"].contains("(Dual SDRAM)/NES"));
+    let Some(Outcome::Launch { plan, .. }) = app.confirm_launch() else {
+        panic!("{:?}", app.message);
+    };
+    assert!(plan.mgl.contains("<rbf>_Console (Dual SDRAM)/NES</rbf>"));
+    app.reopen_context_for(GAME_LAUNCH_CORE);
+    app.handle(Action::Accept);
+    let named = app
+        .launch_core_choices
+        .iter()
+        .position(|choice| choice.id.ends_with("/NES_DualSDRAM"))
+        .unwrap();
+    app.menu_list.select(named);
+    app.handle(Action::Accept);
+    let Some(Outcome::Launch {
+        plan,
+        history: Some(history),
+        ..
+    }) = app.confirm_launch()
+    else {
+        panic!("{:?}", app.message);
+    };
+    assert!(plan.mgl.contains("<rbf>_Console/NES_DualSDRAM</rbf>"));
+    app.last_played.entries = vec![history.entry];
+    app.settings.last_played = Some(1);
+    app.open_last_played();
+    let Some(Outcome::Launch { plan, .. }) = app.confirm_launch() else {
+        panic!("{:?}", app.message);
+    };
+    assert!(
+        plan.mgl.contains("<rbf>_Console/NES_DualSDRAM</rbf>"),
+        "Last Played keeps the per-game family"
+    );
+    let saved = Settings::load(&app.settings_path).unwrap();
+    assert_eq!(saved.launch_cores, app.settings.launch_cores);
+    assert_eq!(saved.game_launch_cores, app.settings.game_launch_cores);
+    app.ui.hide().unwrap();
+    drop(app);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
 fn run_misterzine_browser_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
     let root = root.join("misterzine-browser");
     std::fs::create_dir_all(root.join("games/NES")).unwrap();
@@ -11437,6 +11536,7 @@ pub(super) fn run_ui_acceptance_flow(window: Rc<MinimalSoftwareWindow>) {
     let gamelist_xml = format!("<gameList><game><path>First Game.nes</path><desc><![CDATA[{complete_description}]]></desc></game><game><path>Second Game.nes</path><desc><![CDATA[{complete_description}]]></desc></game></gameList>");
     std::fs::write(&gamelist_path, &gamelist_xml).unwrap();
     run_cores_browser_flow(&root, window.clone());
+    run_dual_sdram_choices_flow(&root, window.clone());
     run_misterzine_browser_flow(&root, window.clone());
     run_browse_bar_settings_flow(&root, window.clone());
     run_start_folder_and_game_position_flow(&root, window.clone());

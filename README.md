@@ -774,6 +774,16 @@ also applies when the same game is opened through Last Played or a Degauss
 Favourite; self-describing MGL, MRA and RBF launches and formats with a fixed
 core do not offer it.
 
+Installed Dual SDRAM builds are labelled **Dual SDRAM** in the Cores browser
+and offered in **System Launch Core** and the per-game **Launch Core** chooser.
+The supported layouts are `_Console (Dual SDRAM)/Core_YYYYMMDD.rbf` and
+`Core_DualSDRAM_YYYYMMDD.rbf` (including the published MiSTer-DB9 suffix).
+Existing core choices and custom systems tables are preserved. These builds
+require two SDRAM modules; selecting one does not detect or change the hardware.
+Core Version stays within the selected family: folder-distributed Dual SDRAM
+builds do not borrow a single-RAM RA or Unstable build. Other filenames or
+locations can still be declared explicitly through `compatible_cores`.
+
 The **Unstable** group browses installed `_Unstable` cores by their full build names.
 MiSTer-DB9 builds ending in `_YYYYMMDD_<hash>_DB9.rbf` are recognized as the
 corresponding Standard core; matching unstable DB9 builds are recognized too.
