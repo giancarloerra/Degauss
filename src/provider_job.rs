@@ -32,6 +32,24 @@ pub struct Request {
     /// the one-time adoption of a system prepared before the state existed.
     /// Off for location discovery, which prepares nothing.
     pub write_state: bool,
+    pub manual_matches: crate::artwork_pack::ManualMatches,
+    /// An explicit picker operation, never part of startup or discovery.
+    pub matching: Option<Matching>,
+}
+
+#[derive(Debug, Clone)]
+pub enum Matching {
+    Search(String),
+    Save(Box<MatchSave>),
+}
+
+#[derive(Debug, Clone)]
+pub struct MatchSave {
+    pub launch: crate::browse::Launch,
+    /// None restores the existing automatic matcher for this game.
+    pub selected: Option<crate::artwork_pack::ManualMatch>,
+    pub settings: crate::settings::Settings,
+    pub settings_path: PathBuf,
 }
 
 #[derive(Debug)]
@@ -58,6 +76,15 @@ pub struct Progress {
 #[derive(Debug)]
 pub enum Event {
     Progress(Progress),
+    MatchChoices {
+        provider: Box<crate::artwork_pack::Provider>,
+        choices: Vec<crate::artwork_pack::MatchChoice>,
+    },
+    MatchStaged {
+        provider: Box<crate::artwork_pack::Provider>,
+        prepared: crate::cache::PreparedCacheGroup,
+        settings: Box<crate::settings::Settings>,
+    },
     Loaded {
         snapshots: Vec<Snapshot>,
         progress: Progress,
@@ -193,6 +220,22 @@ fn run(
             return;
         };
         provider.clear_prepared();
+        if let Some(matching) = request.matching {
+            let outcome = run_matching(
+                provider,
+                matching,
+                &request.cache_dir,
+                &request.homes,
+                cancelled,
+            );
+            let event = match outcome {
+                Ok(Some(event)) => event,
+                Ok(None) => Event::Cancelled(progress),
+                Err(error) => Event::Failed { error, progress },
+            };
+            let _ = events.send(event);
+            return;
+        }
         if request.validate_location_only {
             provider.discard_catalogue();
             snapshots.push(Snapshot {
@@ -255,12 +298,13 @@ fn run(
                 });
                 return;
             };
-            match provider.prepare_for_cache(
+            match provider.prepare_for_cache_with_matches(
                 &cached.cache,
                 &fingerprints,
                 &request.homes,
                 cancelled,
                 &mut skipped,
+                &request.manual_matches,
             ) {
                 Ok(Some(_)) => {}
                 Ok(None) => {
@@ -331,6 +375,146 @@ fn run(
             progress,
         });
     }
+}
+
+fn run_matching(
+    mut provider: crate::artwork_pack::Provider,
+    matching: Matching,
+    cache_dir: &std::path::Path,
+    homes: &crate::mgl::Homes,
+    cancelled: &AtomicBool,
+) -> Result<Option<Event>> {
+    if !provider.health.usable() {
+        return Err(DegaussError::unsupported(
+            "Artwork Pack match",
+            provider.status_line(),
+        ));
+    }
+    let save = match matching {
+        Matching::Search(query) => {
+            return provider.match_choices(&query, cancelled).map(|choices| {
+                choices.map(|choices| Event::MatchChoices {
+                    provider: Box::new(provider),
+                    choices,
+                })
+            });
+        }
+        Matching::Save(save) => save,
+    };
+    let id = provider.system_id.clone();
+    let state = crate::cache::load_pack_source_state(cache_dir, &id)?.ok_or_else(|| {
+        DegaussError::unsupported(
+            "Artwork Pack match",
+            "Reopen the system to prepare its Artwork Pack first.",
+        )
+    })?;
+    let accepted = state.accepted.as_ref().ok_or_else(|| {
+        DegaussError::unsupported(
+            "Artwork Pack match",
+            "Reopen the system to prepare its Artwork Pack first.",
+        )
+    })?;
+    if !provider.configuration_matches(
+        std::path::Path::new(&accepted.docs_root),
+        accepted.language.as_deref(),
+    ) || provider.snapshot() != accepted.signature.as_ref()
+    {
+        return Err(DegaussError::unsupported(
+            "Artwork Pack match",
+            "Artwork Pack changed. Reopen the system and update its prepared data before matching.",
+        ));
+    }
+    let (cached, marker) = crate::cache::load_artwork_pack_data_marked(cache_dir, &id)?
+        .ok_or_else(|| {
+            DegaussError::unsupported(
+                "Artwork Pack match",
+                "The system cache is missing. Rebuild this system list first.",
+            )
+        })?;
+    if marker != accepted.cache_marker {
+        return Err(DegaussError::unsupported(
+            "Artwork Pack match",
+            "The system list changed. Reopen the system before matching.",
+        ));
+    }
+    let mut map = crate::cache::load_pack_prepared_map(cache_dir, &id)?.ok_or_else(|| {
+        DegaussError::unsupported(
+            "Artwork Pack match",
+            "The prepared artwork is missing. Reopen the system to prepare it first.",
+        )
+    })?;
+    let key = crate::game_launch_cores::key(&save.launch);
+    let presentation = if let Some(selected) = &save.selected {
+        Some(provider.presentation_for_match(selected)?)
+    } else {
+        let mut fingerprints = cached.fingerprints;
+        // Restore Automatic using the current ROM, not a possibly old CRC.
+        if let Some((path, fingerprint)) =
+            provider.fingerprint_for_launch(&save.launch, homes, cancelled, &mut |_| {})?
+        {
+            fingerprints.insert(path, fingerprint);
+        }
+        provider.presentation_for_launch_with_fingerprints(&save.launch, &fingerprints, homes)?
+    };
+    if cancelled.load(Ordering::Relaxed) {
+        return Ok(None);
+    }
+    let targets: Vec<_> = cached
+        .cache
+        .folders
+        .values()
+        .flat_map(|folder| &folder.rows)
+        .filter_map(|row| match &row.kind {
+            crate::browse::Kind::Play(launch) if crate::game_launch_cores::key(launch) == key => {
+                Some(launch.clone())
+            }
+            _ => None,
+        })
+        .collect();
+    if targets.is_empty() {
+        return Err(DegaussError::unsupported(
+            "Artwork Pack match",
+            "The game is no longer in this system's cache. Rebuild this system list.",
+        ));
+    }
+    for launch in targets {
+        if let Some(presentation) = &presentation {
+            map.insert(launch, presentation.clone());
+        } else {
+            map.remove(&launch);
+        }
+    }
+    let mut settings = save.settings;
+    if let Some(selected) = save.selected {
+        settings
+            .artwork_pack_matches
+            .entry(id.clone())
+            .or_default()
+            .insert(key, selected);
+    } else if let Some(matches) = settings.artwork_pack_matches.get_mut(&id) {
+        matches.remove(&key);
+        if matches.is_empty() {
+            settings.artwork_pack_matches.remove(&id);
+        }
+    }
+    if !provider.still_current(&provider.docs_root, provider.synopsis_language()) {
+        return Err(DegaussError::unsupported(
+            "Artwork Pack match",
+            "Artwork Pack changed while matching. Reopen the system before retrying.",
+        ));
+    }
+    let prepared =
+        crate::cache::prepare_pack_match(cache_dir, &id, &map, &save.settings_path, &settings)?;
+    if cancelled.load(Ordering::Relaxed) {
+        return Ok(None);
+    }
+    provider.set_prepared_map(map);
+    provider.discard_catalogue();
+    Ok(Some(Event::MatchStaged {
+        provider: Box::new(provider),
+        prepared,
+        settings: Box::new(settings),
+    }))
 }
 
 #[cfg(test)]
@@ -425,6 +609,8 @@ mod tests {
                 cached_provider: None,
                 homes: Arc::new(crate::mgl::Homes::default()),
                 write_state: false,
+                manual_matches: Default::default(),
+                matching: None,
             },
             Request {
                 system_id: "NES".to_string(),
@@ -436,6 +622,8 @@ mod tests {
                 cached_provider: None,
                 homes: Arc::new(crate::mgl::Homes::default()),
                 write_state: false,
+                manual_matches: Default::default(),
+                matching: None,
             },
         ])
         .unwrap();
@@ -490,6 +678,8 @@ mod tests {
             cached_provider: None,
             homes: Arc::new(crate::mgl::Homes::default()),
             write_state: false,
+            manual_matches: Default::default(),
+            matching: None,
         };
         let mut job = start(vec![request(ready_docs.clone()), request(invalid_docs)]).unwrap();
         let Event::Loaded { snapshots, .. } = terminal(&mut job) else {
@@ -535,6 +725,8 @@ mod tests {
             cached_provider: None,
             homes: Arc::new(crate::mgl::Homes::default()),
             write_state: false,
+            manual_matches: Default::default(),
+            matching: None,
         }])
         .unwrap();
         let Event::Loaded { mut snapshots, .. } = terminal(&mut job) else {
@@ -566,6 +758,8 @@ mod tests {
                 cached_provider: None,
                 homes: Arc::new(crate::mgl::Homes::default()),
                 write_state: false,
+                manual_matches: Default::default(),
+                matching: None,
             }],
             &sender,
             &cancelled,
@@ -643,6 +837,8 @@ mod tests {
             cached_provider,
             homes: Arc::new(crate::mgl::Homes::default()),
             write_state: false,
+            manual_matches: Default::default(),
+            matching: None,
         };
         let mut job = start(vec![request(None)]).unwrap();
         let Event::Loaded { mut snapshots, .. } = terminal(&mut job) else {
@@ -802,7 +998,265 @@ mod tests {
             cached_provider: None,
             homes: Arc::new(crate::mgl::Homes::default()),
             write_state,
+            manual_matches: Default::default(),
+            matching: None,
         }
+    }
+
+    #[test]
+    fn manual_match_worker_stages_persists_restores_and_preserves_pack_and_source_cache() {
+        let (root, docs, cache_dir) = legacy_arcade("manual-worker");
+        let art = docs.join("Arcade/Artwork");
+        std::fs::write(
+            art.join("manifest.tsv"),
+            "#key\tstyle\tss_system_id\nhealthy\tbox-2D\t75\nsecond\tbox-2D\t75\n",
+        )
+        .unwrap();
+        std::fs::write(
+            art.join("index.tsv"),
+            "#name\tcrc\tsize\tkey\nhealthy\t\t\thealthy\nSecond Stable Name\t\t\tsecond\n",
+        )
+        .unwrap();
+        std::fs::write(art.join("gameinfo.tsv"), "#key\tname\tyear\tgenre\tdeveloper\tplayers\nhealthy\tPack Healthy\t1990\tShooter\tStudio\t2\nsecond\tManual title\t1992\tPuzzle\tOther Studio\t1\n").unwrap();
+        std::fs::write(art.join("second.jpg"), b"second jpeg").unwrap();
+        let settings_path = root.join("settings.toml");
+        let mut settings = crate::settings::Settings::default();
+        settings.launch_cores.insert("NES".into(), "nes".into());
+        settings.save(&settings_path).unwrap();
+        let pack_before: BTreeMap<_, _> = std::fs::read_dir(&art)
+            .unwrap()
+            .map(|entry| {
+                let path = entry.unwrap().path();
+                let bytes = std::fs::read(&path).unwrap();
+                (path, bytes)
+            })
+            .collect();
+        let mut job = start(vec![adoption(&docs, &cache_dir, true)]).unwrap();
+        assert!(matches!(terminal(&mut job), Event::Loaded { .. }));
+        let files = [
+            crate::cache::artwork_pack_system_path(&cache_dir, "Arcade"),
+            cache_dir.join("artwork-pack/Arcade.source.bin"),
+            cache_dir.join("artwork-pack/Arcade.prepared.bin"),
+            settings_path.clone(),
+        ];
+        let before: Vec<_> = files
+            .iter()
+            .map(|path| std::fs::read(path).unwrap())
+            .collect();
+        let launch = Launch::File(root.join("_Arcade/Healthy.mra"));
+        let selected = crate::artwork_pack::ManualMatch {
+            folder: "Arcade".into(),
+            name: "second stable name".into(),
+        };
+        let request = |selected, settings, settings_path| {
+            let mut request = adoption(&docs, &cache_dir, false);
+            request.matching = Some(Matching::Save(Box::new(MatchSave {
+                launch: launch.clone(),
+                selected,
+                settings,
+                settings_path,
+            })));
+            request
+        };
+        let mut search = adoption(&docs, &cache_dir, false);
+        search.matching = Some(Matching::Search("Second".into()));
+        let mut job = start(vec![search]).unwrap();
+        let Event::MatchChoices { choices, .. } = terminal(&mut job) else {
+            panic!("search did not return choices");
+        };
+        assert_eq!(choices[0].reference, selected);
+        assert_eq!(
+            before,
+            files
+                .iter()
+                .map(|path| std::fs::read(path).unwrap())
+                .collect::<Vec<_>>(),
+            "search changes no files"
+        );
+        let mut job = start(vec![request(
+            Some(selected.clone()),
+            settings.clone(),
+            settings_path.clone(),
+        )])
+        .unwrap();
+        let Event::MatchStaged { prepared, .. } = terminal(&mut job) else {
+            panic!("match was not staged");
+        };
+        assert_eq!(
+            before,
+            files
+                .iter()
+                .map(|path| std::fs::read(path).unwrap())
+                .collect::<Vec<_>>()
+        );
+        drop(prepared); // Late cancellation never publishes the worker's staged files.
+        assert_eq!(
+            before,
+            files
+                .iter()
+                .map(|path| std::fs::read(path).unwrap())
+                .collect::<Vec<_>>()
+        );
+
+        let mut job = start(vec![request(
+            Some(selected.clone()),
+            settings.clone(),
+            root.join("missing/settings.toml"),
+        )])
+        .unwrap();
+        let Event::Failed { error, .. } = terminal(&mut job) else {
+            panic!("a settings write failure was concealed");
+        };
+        assert!(
+            error.to_string().contains("creating staged cache"),
+            "{error}"
+        );
+        assert_eq!(
+            before,
+            files
+                .iter()
+                .map(|path| std::fs::read(path).unwrap())
+                .collect::<Vec<_>>(),
+            "failed save preserves installed files"
+        );
+
+        let mut job = start(vec![request(
+            Some(selected.clone()),
+            settings,
+            settings_path.clone(),
+        )])
+        .unwrap();
+        let Event::MatchStaged {
+            prepared,
+            provider,
+            settings: updated,
+        } = terminal(&mut job)
+        else {
+            panic!("retry was not staged");
+        };
+        assert!(
+            !provider.catalogue_available(),
+            "only compact presentation returns after saving"
+        );
+        assert_eq!(
+            provider.prepared_map().unwrap()[&launch].name.as_deref(),
+            Some("Manual title")
+        );
+        prepared.install().unwrap();
+        assert_eq!(
+            std::fs::read(&files[0]).unwrap(),
+            before[0],
+            "no full reindex for a manual match"
+        );
+        let persisted = crate::settings::Settings::load(&settings_path).unwrap();
+        assert_eq!(persisted.artwork_pack_matches, updated.artwork_pack_matches);
+        assert_eq!(persisted.launch_cores["NES"], "nes");
+        assert_eq!(
+            persisted.artwork_pack_matches["Arcade"][&crate::game_launch_cores::key(&launch)],
+            selected
+        );
+        assert_eq!(
+            crate::cache::load_pack_prepared_map(&cache_dir, "Arcade")
+                .unwrap()
+                .unwrap()[&launch]
+                .cover,
+            Some(art.join("second.jpg"))
+        );
+        let mut reopen = adoption(&docs, &cache_dir, true);
+        reopen.manual_matches = persisted.artwork_pack_matches["Arcade"].clone();
+        let mut job = start(vec![reopen]).unwrap();
+        let Event::Loaded { snapshots, .. } = terminal(&mut job) else {
+            panic!("saved choice could not be reapplied");
+        };
+        assert_eq!(
+            snapshots[0].provider.prepared_map().unwrap()[&launch]
+                .name
+                .as_deref(),
+            Some("Manual title")
+        );
+        let mut job = start(vec![request(None, persisted, settings_path.clone())]).unwrap();
+        let Event::MatchStaged { prepared, .. } = terminal(&mut job) else {
+            panic!("Automatic could not be restored");
+        };
+        prepared.install().unwrap();
+        assert!(crate::settings::Settings::load(&settings_path)
+            .unwrap()
+            .artwork_pack_matches
+            .is_empty());
+        assert_eq!(
+            crate::cache::load_pack_prepared_map(&cache_dir, "Arcade")
+                .unwrap()
+                .unwrap()[&launch]
+                .name
+                .as_deref(),
+            Some("Pack Healthy")
+        );
+        for (path, bytes) in pack_before {
+            assert_eq!(std::fs::read(path).unwrap(), bytes, "the Pack is read-only");
+        }
+        assert_eq!(
+            std::fs::read_dir(&art).unwrap().count(),
+            5,
+            "no image copies"
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn manual_match_refuses_unprepared_changed_or_corrupt_data_and_honours_cancellation() {
+        let (root, docs, cache_dir) = legacy_arcade("manual-worker-failures");
+        let request = || {
+            let mut request = adoption(&docs, &cache_dir, false);
+            request.matching = Some(Matching::Save(Box::new(MatchSave {
+                launch: Launch::File(root.join("_Arcade/Healthy.mra")),
+                selected: Some(crate::artwork_pack::ManualMatch {
+                    folder: "Arcade".into(),
+                    name: "healthy".into(),
+                }),
+                settings: Default::default(),
+                settings_path: root.join("settings.toml"),
+            })));
+            request
+        };
+        let mut job = start(vec![request()]).unwrap();
+        let Event::Failed { error, .. } = terminal(&mut job) else {
+            panic!("unprepared source accepted");
+        };
+        assert!(
+            error.to_string().contains("prepare its Artwork Pack"),
+            "{error}"
+        );
+        let mut job = start(vec![adoption(&docs, &cache_dir, true)]).unwrap();
+        assert!(matches!(terminal(&mut job), Event::Loaded { .. }));
+        let provider = crate::artwork_pack::Provider::load("Arcade", &docs, Some("EN"));
+        assert!(run_matching(
+            provider.clone(),
+            request().matching.unwrap(),
+            &cache_dir,
+            &crate::mgl::Homes::default(),
+            &AtomicBool::new(true)
+        )
+        .unwrap()
+        .is_none());
+        assert!(!root.join("settings.toml").exists());
+        let prepared = cache_dir.join("artwork-pack/Arcade.prepared.bin");
+        let bytes = std::fs::read(&prepared).unwrap();
+        std::fs::write(&prepared, b"broken prepared data").unwrap();
+        let mut job = start(vec![request()]).unwrap();
+        assert!(matches!(terminal(&mut job), Event::Failed { .. }));
+        assert_eq!(std::fs::read(&prepared).unwrap(), b"broken prepared data");
+        std::fs::write(&prepared, bytes).unwrap();
+        std::fs::write(docs.join("Arcade/Artwork/gameinfo.tsv"), "#key\tname\tyear\tgenre\tdeveloper\tplayers\nhealthy\tChanged Title\t1990\tShooter\tStudio\t2\n").unwrap();
+        let mut job = start(vec![request()]).unwrap();
+        let Event::Failed { error, .. } = terminal(&mut job) else {
+            panic!("changed Pack accepted without preparation");
+        };
+        assert!(
+            error.to_string().contains("Artwork Pack changed"),
+            "{error}"
+        );
+        assert!(!root.join("settings.toml").exists());
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     /// The one-time adoption of a cache from before the state existed:
