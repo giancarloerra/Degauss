@@ -1091,6 +1091,74 @@ fn run_storage_rediscovery_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) 
     app.finish_background_work_for_headless();
     assert_eq!(app.pending, Some(Pending::StorageRebuild));
     app.handle(Action::Accept);
+    assert!(app.source_resolution.is_some());
+    app.handle(Action::Quit);
+    app.finish_background_work_for_headless();
+    let cancellation_kept_sources =
+        app.source_problem("NES").is_none() && app.source_problem("SNES").is_none();
+    assert_eq!(std::fs::read(&cache_path).unwrap(), before);
+    assert_eq!(std::fs::read(&unchanged_cache).unwrap(), unchanged_before);
+    assert_eq!(
+        app.all_systems
+            .iter()
+            .find(|system| system.def.id == "NES")
+            .unwrap()
+            .paths
+            .as_slice(),
+        std::slice::from_ref(&card),
+        "cancelling source preparation keeps the prior usable folder"
+    );
+    assert!(!app.all_systems.iter().any(|system| system.def.id == "SNES"));
+    app.handle(Action::Quit);
+    app.request_storage_check();
+    app.finish_background_work_for_headless();
+    assert!(
+        app.pending.is_none(),
+        "cancellation does not repeat the offer"
+    );
+    std::fs::rename(root.join("usb"), root.join("detached")).unwrap();
+    std::fs::write(&mountinfo, base).unwrap();
+    app.request_storage_check();
+    app.finish_background_work_for_headless();
+    std::fs::rename(root.join("detached"), root.join("usb")).unwrap();
+    std::fs::write(&mountinfo, mounted(2)).unwrap();
+    app.request_storage_check();
+    app.finish_background_work_for_headless();
+    assert_eq!(app.pending, Some(Pending::StorageRebuild));
+    app.handle(Action::Accept);
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while app.source_resolution.is_some() {
+        assert!(
+            Instant::now() < deadline,
+            "storage source resolution did not finish"
+        );
+        app.poll_artwork_sources();
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    let details_name_changed_systems = app
+        .index_message(0)
+        .unwrap()
+        .starts_with("Indexing Changed Systems\n");
+    let offers = app.storage.as_mut().unwrap().rebuilding.take();
+    assert!(app
+        .index_message(0)
+        .unwrap()
+        .starts_with("Indexing All Systems\n"));
+    app.build.as_mut().unwrap().single = true;
+    assert!(app
+        .index_message(0)
+        .unwrap()
+        .starts_with("Indexing This System\n"));
+    app.build.as_mut().unwrap().single = false;
+    app.storage.as_mut().unwrap().rebuilding = offers;
+    app.handle(Action::Accept);
+    app.refresh();
+    assert!(app.ui.get_operation_details());
+    assert!(app
+        .ui
+        .get_overlay()
+        .starts_with("Indexing Changed Systems\n"));
+    app.handle(Action::Quit);
     app.finish_background_work_for_headless();
     assert!(app.build.is_none());
     assert_eq!(app.index_terminal.as_ref().unwrap().state, "Complete");
@@ -1253,6 +1321,10 @@ fn run_storage_rediscovery_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) 
     app.ui.hide().unwrap();
     drop(app);
     std::fs::remove_dir_all(root).unwrap();
+    assert!(
+        cancellation_kept_sources && details_name_changed_systems,
+        "cancellation_kept_sources={cancellation_kept_sources}; details_name_changed_systems={details_name_changed_systems}"
+    );
 }
 
 fn run_storage_pack_rebuild_flow(
@@ -1361,20 +1433,53 @@ fn run_storage_pack_rebuild_flow(
     );
     std::fs::create_dir_all(root.join("usb/games/NeoGeo")).unwrap();
     std::fs::write(root.join("usb/games/NeoGeo/New.neo"), b"fixture").unwrap();
-    std::fs::write(
-        &mountinfo,
-        format!(
-            "{base}2 1 0:2 / {} rw - cifs //server/games rw\n",
-            root.join("usb").display()
-        ),
-    )
-    .unwrap();
+    let mounted = format!(
+        "{base}2 1 0:2 / {} rw - cifs //server/games rw\n",
+        root.join("usb").display()
+    );
+    std::fs::write(&mountinfo, &mounted).unwrap();
     app.request_storage_check();
     app.finish_background_work_for_headless();
     assert_eq!(app.pending, Some(Pending::StorageRebuild));
     let offers = &app.storage.as_ref().unwrap().offer.as_ref().unwrap().offers;
     assert_eq!(offers.len(), 1);
     assert_eq!(offers[0].system.def.id, "NeoGeo");
+    let prior_files = pack_files(&app.cache_dir, "NeoGeo");
+    let prior_roots = app.effective_artwork_pack_roots.clone();
+    app.handle(Action::Accept);
+    assert!(app.source_resolution.is_some());
+    app.handle(Action::Quit);
+    app.finish_background_work_for_headless();
+    for id in ["NeoGeo", "NeoGeoMVS"] {
+        assert!(
+            app.source_problem(id).is_none(),
+            "cancelled storage preparation must not disable its prior source group"
+        );
+        assert_eq!(
+            app.all_systems
+                .iter()
+                .find(|system| system.def.id == id)
+                .unwrap()
+                .paths,
+            [root.join("games").join(id)]
+        );
+    }
+    assert_eq!(app.effective_artwork_pack_roots, prior_roots);
+    assert_eq!(pack_files(&app.cache_dir, "NeoGeo"), prior_files);
+    assert_eq!(pack_files(&app.cache_dir, "NeoGeoMVS"), unchanged);
+    app.handle(Action::Quit);
+    app.request_storage_check();
+    app.finish_background_work_for_headless();
+    assert!(app.pending.is_none());
+    std::fs::rename(root.join("usb"), root.join("detached")).unwrap();
+    std::fs::write(&mountinfo, base).unwrap();
+    app.request_storage_check();
+    app.finish_background_work_for_headless();
+    std::fs::rename(root.join("detached"), root.join("usb")).unwrap();
+    std::fs::write(&mountinfo, &mounted).unwrap();
+    app.request_storage_check();
+    app.finish_background_work_for_headless();
+    assert_eq!(app.pending, Some(Pending::StorageRebuild));
     app.handle(Action::Accept);
     app.finish_background_work_for_headless();
     assert_eq!(app.index_terminal.as_ref().unwrap().state, "Complete");

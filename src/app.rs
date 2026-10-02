@@ -7786,11 +7786,13 @@ impl App {
                 if matches!(action, SourceResolutionAction::OpenSystem) {
                     self.pending_restore = None;
                 }
-                for group in &self.source_resolution_groups {
-                    self.artwork_source_errors.insert(
-                        group.clone(),
-                        "Game data source check cancelled; reopen the system to retry".into(),
-                    );
+                if !matches!(action, SourceResolutionAction::StorageRebuild) {
+                    for group in &self.source_resolution_groups {
+                        self.artwork_source_errors.insert(
+                            group.clone(),
+                            "Game data source check cancelled; reopen the system to retry".into(),
+                        );
+                    }
                 }
                 self.build = None;
                 if matches!(action, SourceResolutionAction::StorageRebuild) {
@@ -10167,7 +10169,13 @@ impl App {
             .and_then(|index| self.all_systems.get(index))
             .map(|system| system.name())
             .unwrap_or("Preparing");
-        let scope = if build.single {
+        let scope = if self
+            .storage
+            .as_ref()
+            .is_some_and(|storage| storage.rebuilding.is_some())
+        {
+            "Indexing Changed Systems"
+        } else if build.single {
             "Indexing This System"
         } else {
             "Indexing All Systems"
