@@ -21411,10 +21411,13 @@ impl App {
                 } else {
                     context_help(selected)
                 };
-                let heading = self
-                    .context_page
-                    .map(|page| format!("Actions / {}", page.label()))
-                    .unwrap_or_else(|| "Actions".to_string());
+                let heading = if self.explore.active {
+                    self.explore_menu_heading()
+                } else {
+                    self.context_page
+                        .map(|page| format!("Actions / {}", page.label()))
+                        .unwrap_or_else(|| "Actions".to_string())
+                };
                 (heading, help.to_string())
             }
             Screen::OptionsRoot => (

@@ -93,6 +93,21 @@ pub(super) fn run(root: &Path, window: Rc<MinimalSoftwareWindow>) {
     app.game_list.select(1);
     let selected = app.explore_selected().unwrap().key();
     assert_eq!(app.context_system_id(), Some("SNES"));
+    app.explore_fields();
+    assert_eq!(app.explore_menu_heading(), "Explore / Filters");
+    app.menu_list.select(1);
+    app.accept_explore_menu();
+    assert_eq!(app.explore_menu_heading(), "Explore / System");
+    app.explore_actions();
+    assert!(app.menu.iter().any(|entry| entry == CLEAR_SEARCH));
+    app.filter = "no such title".into();
+    app.apply_filter();
+    app.explore_actions();
+    assert!(!app.menu.iter().any(|entry| entry == GAME_INFORMATION));
+    assert!(!app.menu.iter().any(|entry| entry == GAME_LAUNCH_CORE));
+    app.filter = "beta".into();
+    app.apply_filter();
+    app.game_list.select(1);
     app.open_name_keyboard(NamePurpose::SaveCollection, "Do not save".into());
     app.handle(Action::Quit);
     assert!(
@@ -106,6 +121,7 @@ pub(super) fn run(root: &Path, window: Rc<MinimalSoftwareWindow>) {
         .unwrap();
     app.name_keyboard_list.select(save);
     app.handle(Action::Accept);
+    assert_eq!(app.explore_menu_heading(), "Saved Collections");
     let (id, collection) = app.settings.collections.iter().next().unwrap();
     let id = id.clone();
     assert_eq!(collection.query.title, "beta");

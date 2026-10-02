@@ -410,9 +410,14 @@ impl App {
             SAVE_COLLECTION.into(),
             OPEN_COLLECTION.into(),
             EXPLORE_COVERAGE.into(),
-            GAME_INFORMATION.into(),
-            CHANGE_VIEW.into(),
         ];
+        if !self.filter.is_empty() {
+            actions.push(CLEAR_SEARCH.into());
+        }
+        if self.explore_selected().is_some() {
+            actions.push(GAME_INFORMATION.into());
+        }
+        actions.push(CHANGE_VIEW.into());
         if self.selected_game_launch_core_target().is_some() {
             actions.push(GAME_LAUNCH_CORE.into());
         }
@@ -431,6 +436,16 @@ impl App {
         actions.extend(self.explore_pivots());
         self.context_actions = actions.clone();
         self.explore_menu(ExploreMenu::Actions, actions);
+    }
+
+    fn explore_menu_heading(&self) -> String {
+        match &self.explore.menu {
+            ExploreMenu::Actions => "Actions".into(),
+            ExploreMenu::Fields => "Explore / Filters".into(),
+            ExploreMenu::Values(facet) => format!("Explore / {}", facet.label()),
+            ExploreMenu::Collections => "Saved Collections".into(),
+            ExploreMenu::Collection(_) => "Collection Actions".into(),
+        }
     }
 
     fn explore_fields(&mut self) {
