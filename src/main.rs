@@ -236,9 +236,9 @@ impl Default for Args {
 }
 
 impl Args {
-    /// Only the real interactive launcher waits for a boot mount. Diagnostic,
-    /// render and import commands keep their existing immediate snapshot of
-    /// the filesystem and never take over the screen to ask a question.
+    /// Only the interactive launcher waits for boot mounts or tracks browse
+    /// storage. Diagnostic, render and import commands keep their existing
+    /// snapshot and never take over the screen to ask a question.
     fn interactive_startup(&self) -> bool {
         !self.version
             && !self.check_install
@@ -462,11 +462,15 @@ fn load_everything(args: &Args) -> Result<Loaded> {
         systems::discover_checked(&table, &roots, logo_dir.as_deref(), &cores)?
     };
     #[cfg(target_os = "linux")]
-    let storage = Some(storage::State::new(
-        cores,
-        "/proc/self/mountinfo".into(),
-        &systems,
-    )?);
+    let storage = if args.interactive_startup() {
+        Some(storage::State::new(
+            cores,
+            "/proc/self/mountinfo".into(),
+            &systems,
+        )?)
+    } else {
+        None
+    };
     #[cfg(not(target_os = "linux"))]
     let storage = None;
     // The names the stock menu shows for cores, arcade boards and
@@ -2566,6 +2570,50 @@ category = "Favorites"
             storage: None,
         };
         (root, loaded)
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn diagnostic_modes_do_not_initialize_browse_storage() {
+        let (root, _) = diagnostic_fixture("storage-mode");
+        let config = root.join("degauss.toml");
+        std::fs::write(
+            &config,
+            format!(
+                "game_roots=[{:?}]\nmenu_root={:?}\n[app]\n",
+                root.join("games").to_string_lossy(),
+                root.to_string_lossy()
+            ),
+        )
+        .unwrap();
+        let table = Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/systems.toml");
+        let mut modes = Vec::new();
+        for words in [
+            vec!["--list-systems"],
+            vec!["--report"],
+            vec!["--audit"],
+            vec!["--dry-run-launch"],
+            vec!["--render", "unused.bmp"],
+            vec!["--bench", "1"],
+            vec!["--selftest"],
+            vec!["--import-favorites", "unused.tsv"],
+        ] {
+            let mut args = parse(&words);
+            args.config = Some(config.clone());
+            args.systems = Some(table.clone());
+            modes.push((words[0], load_everything(&args).unwrap().storage.is_some()));
+        }
+        let interactive = Args {
+            config: Some(config),
+            systems: Some(table),
+            ..Default::default()
+        };
+        let interactive_storage = load_everything(&interactive).unwrap().storage.is_some();
+        std::fs::remove_dir_all(root).unwrap();
+        for (mode, has_storage) in modes {
+            assert!(!has_storage, "{mode} initialized unused browse storage");
+        }
+        assert!(interactive_storage);
     }
 
     #[test]
