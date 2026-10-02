@@ -217,6 +217,7 @@ const SPLASH_MS: u64 = 1400;
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Pending {
     Exit,
+    StorageRebuild,
     SwitchIni(u8),
     RunScript(Box<crate::scripts::Launch>),
     Hide(usize),
@@ -2526,6 +2527,7 @@ enum SourceResolutionAction {
     Startup,
     OpenSystem,
     Rebuild(Instant),
+    StorageRebuild,
 }
 
 /// What the entry check into a system settled on.
@@ -4092,6 +4094,7 @@ pub struct App {
     /// Every system found, before hiding is applied. `systems` is the
     /// visible projection of this.
     all_systems: Vec<FoundSystem>,
+    storage: Option<crate::storage::State>,
     /// The full table of known systems, kept so a rebuild can ask the
     /// card again which of them are there.
     table: Vec<SystemDef>,
@@ -4368,6 +4371,9 @@ pub struct Loaded {
     /// Explicitly required game storage that has not mounted yet.
     /// Ordinary startup leaves this absent and retains the released path.
     pub network_boot: Option<crate::network_wait::Plan>,
+    /// Linux mount identity and the already-read core index. Host-only renders
+    /// do not support MiSTer storage attachment discovery.
+    pub storage: Option<crate::storage::State>,
 }
 
 fn needs_native_arcade_core_link(system: Option<&FoundSystem>, game: &Path) -> bool {
@@ -4418,6 +4424,7 @@ impl App {
             themes_dir,
             themes,
             network_boot,
+            storage,
         } = loaded;
         let ThemeSet {
             themes,
@@ -4630,6 +4637,7 @@ impl App {
             show_stats: settings.show_stats.unwrap_or(config.app.show_stats),
             show_hidden: settings.show_hidden.unwrap_or(false),
             all_systems: Vec::new(),
+            storage,
             table,
             logo_dir,
             network_plan: network_boot,
@@ -5021,6 +5029,7 @@ impl App {
                     crate::note(&format!("cores        catalogue not saved: {error}"));
                 }
                 self.core_catalogue = discovered.cores;
+                self.refresh_storage_baseline(discovered.core_index, &discovered.systems);
                 self.apply_discovered_systems(discovered.systems);
                 self.restore_configured_pack_roots();
                 migrate_legacy_views(&mut self.settings, &self.all_systems);
@@ -6583,6 +6592,7 @@ impl App {
     /// still screen with no explanation, so the message is drawn first and
     /// the work happens after it is on screen.
     fn open_selected_system(&mut self) {
+        self.invalidate_storage_check();
         self.pending_restore = None;
         self.remember_system_here();
         let Some(system) = self.systems.get(self.system_list.selected()) else {
@@ -7678,7 +7688,24 @@ impl App {
         if self.source_resolution.is_some() {
             return;
         }
-        let systems: Vec<_> = self.all_systems.clone();
+        let systems: Vec<_> =
+            self.all_systems
+                .iter()
+                .filter(|system| {
+                    !matches!(action, SourceResolutionAction::StorageRebuild)
+                        || self.storage.as_ref().is_some_and(|storage| {
+                            storage.rebuilding.iter().flatten().any(|offer| {
+                                offer.system.def.id == system.def.id
+                                    || crate::artwork_pack::source_group(&system.def.id)
+                                        .is_some_and(|group| {
+                                            crate::artwork_pack::source_group(&offer.system.def.id)
+                                                == Some(group)
+                                        })
+                            })
+                        })
+                })
+                .cloned()
+                .collect();
         self.source_resolution_groups = systems
             .iter()
             .filter_map(|system| {
@@ -7701,6 +7728,9 @@ impl App {
                         .insert(group.clone(), error.to_string());
                 }
                 self.build = None;
+                if matches!(action, SourceResolutionAction::StorageRebuild) {
+                    self.restore_unfinished_storage();
+                }
                 self.ui.set_index_active(false);
                 self.report_source_check(action, Some(error.to_string()));
             }
@@ -7756,6 +7786,9 @@ impl App {
                     );
                 }
                 self.build = None;
+                if matches!(action, SourceResolutionAction::StorageRebuild) {
+                    self.restore_unfinished_storage();
+                }
                 self.ui.set_index_active(false);
                 self.report_source_check(action, Some("Game data source check cancelled".into()));
                 self.dirty = true;
@@ -7770,6 +7803,9 @@ impl App {
                         .insert(group.clone(), error.to_string());
                 }
                 self.build = None;
+                if matches!(action, SourceResolutionAction::StorageRebuild) {
+                    self.restore_unfinished_storage();
+                }
                 self.ui.set_index_active(false);
                 self.report_source_check(action, Some(error.to_string()));
                 self.dirty = true;
@@ -7802,6 +7838,7 @@ impl App {
                     build.started = started;
                 }
             }
+            SourceResolutionAction::StorageRebuild => self.start_storage_rebuild(),
         }
         self.dirty = true;
     }
@@ -9675,6 +9712,290 @@ impl App {
         }
     }
 
+    fn refresh_storage_baseline(
+        &mut self,
+        cores: std::sync::Arc<crate::systems::CoreIndex>,
+        systems: &[FoundSystem],
+    ) {
+        let Some(storage) = &mut self.storage else {
+            return;
+        };
+        match crate::storage::State::new(cores, storage.mountinfo.clone(), systems) {
+            Ok(baseline) => {
+                storage.observed_mounts(baseline.mounts);
+                storage.cores = baseline.cores;
+                storage.active = baseline.active;
+                storage.requested = false;
+                storage.job = None;
+                storage.offer = None;
+            }
+            Err(error) => self.build_warning(error.to_string()),
+        }
+    }
+
+    fn request_storage_check(&mut self) {
+        if let Some(storage) = &mut self.storage {
+            storage.requested = true;
+        }
+    }
+
+    fn invalidate_storage_check(&mut self) {
+        if let Some(storage) = &mut self.storage {
+            if storage.job.is_some() {
+                storage.stale = true;
+                storage.requested = true;
+            }
+        }
+    }
+
+    fn storage_check_ready(&self) -> bool {
+        self.screen == Screen::Browse
+            && self.browsing != Browsing::Games
+            && self.network_plan.is_none()
+            && !self.network_local_only
+            && self.browse_shortcuts_ready()
+    }
+
+    fn poll_storage(&mut self) {
+        // Never replace the configuration of a game being browsed or the
+        // indices in an active build. Reads do not block normal navigation.
+        if !self.storage_check_ready() {
+            return;
+        }
+        let Some(storage) = &mut self.storage else {
+            return;
+        };
+        if storage.rebuilding.is_some() {
+            return;
+        }
+        if storage.job.is_none() && std::mem::take(&mut storage.requested) {
+            let request = crate::storage::Request {
+                mountinfo: storage.mountinfo.clone(),
+                roots: self.config.game_roots.iter().map(PathBuf::from).collect(),
+                table: self.table.clone(),
+                logo_dir: self.logo_dir.clone(),
+                cores: storage.cores.clone(),
+                previous: self.all_systems.clone(),
+                active: storage.active.clone(),
+                declined: storage.declined.clone(),
+                settings: self.settings.clone(),
+                cache_dir: self.cache_dir.clone(),
+            };
+            match crate::storage::Job::start(request) {
+                Ok(job) => storage.job = Some(job),
+                Err(error) => {
+                    self.message = Some(error.to_string());
+                    self.dirty = true;
+                }
+            }
+        }
+        let Some(result) = storage.job.as_mut().and_then(crate::storage::Job::try_recv) else {
+            return;
+        };
+        storage.job = None;
+        if std::mem::take(&mut storage.stale) {
+            storage.requested = true;
+            return;
+        }
+        match result {
+            Ok(None) => {}
+            Err(error) => {
+                self.message = Some(error.to_string());
+                self.dirty = true;
+            }
+            Ok(Some(plan)) => {
+                storage.observed_mounts(plan.mounts.clone());
+                for (key, summary) in &plan.reused {
+                    let id = &key.id;
+                    if let Some(index) = &mut self.index {
+                        index.systems.insert(id.clone(), *summary);
+                    }
+                    storage.active.insert(id.clone(), key.attachment.clone());
+                    self.effective_artwork_pack_roots.remove(id);
+                    if let Some(root) = plan.sources.roots.get(id) {
+                        self.effective_artwork_pack_roots
+                            .insert(id.clone(), root.clone());
+                    }
+                }
+                let changed = !plan.reused.is_empty()
+                    || self.all_systems.len() != plan.systems.len()
+                    || self
+                        .all_systems
+                        .iter()
+                        .zip(&plan.systems)
+                        .any(|(old, new)| old.def.id != new.def.id || old.paths != new.paths);
+                if changed {
+                    self.all_systems = plan.systems.clone();
+                    self.invalidate_saver_candidates();
+                    self.apply_index();
+                    self.rebuild_system_list();
+                    self.apply_geometry();
+                    self.touch_selection();
+                }
+                if !plan.offers.is_empty() {
+                    let names = plan
+                        .offers
+                        .iter()
+                        .map(|offer| offer.system.name())
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    self.message =
+                        Some(format!("Newly available storage needs indexing:\n{names}"));
+                    self.pending = Some(Pending::StorageRebuild);
+                    self.storage.as_mut().expect("storage state").offer = Some(plan);
+                    self.dirty = true;
+                }
+            }
+        }
+    }
+
+    fn decline_storage_offer(&mut self) {
+        if let Some(storage) = &mut self.storage {
+            if let Some(plan) = storage.offer.take() {
+                storage
+                    .declined
+                    .extend(plan.offers.into_iter().map(|offer| offer.key));
+            }
+        }
+    }
+
+    fn accept_storage_offer(&mut self) {
+        let Some(storage) = &mut self.storage else {
+            return;
+        };
+        let Some(mut plan) = storage.offer.take() else {
+            return;
+        };
+        for offer in &mut plan.offers {
+            storage.declined.insert(offer.key.clone());
+            offer.previous_root = self
+                .effective_artwork_pack_roots
+                .get(&offer.system.def.id)
+                .cloned();
+            if let Some(existing) = self
+                .all_systems
+                .iter_mut()
+                .find(|system| system.def.id == offer.system.def.id)
+            {
+                *existing = offer.system.clone();
+            } else {
+                self.all_systems.push(offer.system.clone());
+            }
+        }
+        storage.rebuilding = Some(plan.offers);
+        self.index_terminal = None;
+        self.index_details = false;
+        self.index_return_screen = Screen::Browse;
+        self.message = Some("Checking game data sources...".into());
+        self.resolve_artwork_sources(SourceResolutionAction::StorageRebuild);
+    }
+
+    fn start_storage_rebuild(&mut self) {
+        let Some(offers) = self
+            .storage
+            .as_ref()
+            .and_then(|storage| storage.rebuilding.as_ref())
+        else {
+            return;
+        };
+        let mut left = Vec::new();
+        self.source_recovery_queue.clear();
+        self.source_recovery_warnings.clear();
+        self.source_recovery_storage_warnings.clear();
+        for offer in offers {
+            let id = &offer.system.def.id;
+            if self.source_problem(id).is_some() {
+                continue;
+            }
+            if let Some(at) = self
+                .all_systems
+                .iter()
+                .position(|system| system.def.id == *id)
+            {
+                left.push(at);
+            }
+            if crate::artwork_source::mode(&self.settings, id)
+                == crate::artwork_source::Mode::ArtworkPack
+                && self.pack_selected(id)
+            {
+                if let Some(group) = crate::artwork_pack::source_group(id) {
+                    if !self
+                        .source_recovery_queue
+                        .iter()
+                        .any(|queued| queued == group)
+                    {
+                        self.source_recovery_suppressed.remove(group);
+                        self.source_recovery_queue.push_back(group.to_string());
+                    }
+                }
+            }
+        }
+        let total = left.len();
+        left.reverse();
+        self.build = Some(Building {
+            left,
+            total,
+            done: 0,
+            index: self.index.clone().unwrap_or_default(),
+            forced: true,
+            current: None,
+            job: None,
+            discovery: None,
+            awaiting_frame: false,
+            displayed: None,
+            cancelling: false,
+            single: false,
+            folders: 0,
+            games: 0,
+            folders_done: 0,
+            games_done: 0,
+            folder: String::new(),
+            folder_revision: 0,
+            started: Instant::now(),
+        });
+        for problem in self
+            .artwork_source_errors
+            .values()
+            .cloned()
+            .collect::<Vec<_>>()
+        {
+            self.build_warning(problem);
+        }
+        self.message = None;
+        self.pause_index_marquees();
+        self.publish_index_progress();
+        self.dirty = true;
+    }
+
+    fn restore_unfinished_storage(&mut self) {
+        let Some(offers) = self
+            .storage
+            .as_mut()
+            .and_then(|storage| storage.rebuilding.take())
+        else {
+            return;
+        };
+        for offer in offers {
+            let id = offer.system.def.id;
+            self.all_systems.retain(|system| system.def.id != id);
+            if let Some(previous) = offer.previous {
+                self.all_systems.push(previous);
+            }
+            self.effective_artwork_pack_roots.remove(&id);
+            if let Some(root) = offer.previous_root {
+                self.effective_artwork_pack_roots.insert(id, root);
+            }
+        }
+        self.all_systems.sort_by_key(|system| {
+            self.table
+                .iter()
+                .position(|def| def.id == system.def.id)
+                .unwrap_or(usize::MAX)
+        });
+        self.invalidate_saver_candidates();
+        self.rebuild_system_list();
+    }
+
     /// Look at the card again for which systems and cores are there.
     ///
     /// Discovery normally happens once, before the interface exists. A
@@ -9733,6 +10054,7 @@ impl App {
     /// `forced` replaces each system only after a complete successful read.
     /// Without it an existing cache is reused, keeping a second run cheap.
     fn start_build(&mut self, forced: bool) {
+        self.invalidate_storage_check();
         // One at a time. Replacing a build in flight would lose its progress;
         // the existing progress message already explains the active work.
         if self.build.is_some() || self.source_job.is_some() || self.refreshing.is_some() {
@@ -9875,7 +10197,13 @@ impl App {
             return self.index_terminal.clone();
         };
         Some(IndexOverview {
-            title: if build.single {
+            title: if self
+                .storage
+                .as_ref()
+                .is_some_and(|storage| storage.rebuilding.is_some())
+            {
+                "Index Changed Systems"
+            } else if build.single {
                 "Index This System"
             } else {
                 "Index All Systems"
@@ -10335,6 +10663,7 @@ impl App {
                     self.build_warning(format!("Core catalogue not saved: {error}"));
                 }
                 self.core_catalogue = discovered.cores;
+                self.refresh_storage_baseline(discovered.core_index, &discovered.systems);
                 self.apply_discovered_systems(discovered.systems);
                 let started = preparation.started;
                 self.build = Some(preparation);
@@ -10436,6 +10765,9 @@ impl App {
                         self.library = None;
                     }
                     let system = current.and_then(|at| self.all_systems.get(at));
+                    if let (Some(storage), Some(system)) = (&mut self.storage, system) {
+                        storage.indexed(&system.def.id);
+                    }
                     if let Some(system) = system {
                         crate::note(&format!(
                             "index {}: {:.3}s, {} games",
@@ -10561,7 +10893,12 @@ impl App {
         }
 
         let mut overview = self.index_overview().expect("active build");
+        let storage_rebuild = self
+            .storage
+            .as_ref()
+            .is_some_and(|storage| storage.rebuilding.is_some());
         let finished = self.build.take().expect("active build");
+        self.restore_unfinished_storage();
         if let Err(error) = crate::cache::save_index(&self.cache_dir, &finished.index) {
             self.build_warning(format!("Cache index not written: {error}"));
         }
@@ -10604,6 +10941,8 @@ impl App {
                 .and_then(|id| self.all_systems.iter().find(|system| system.def.id == id))
                 .map(|system| system.name().to_string())
                 .unwrap_or_else(|| "System List".into())
+        } else if storage_rebuild {
+            "Affected Systems".into()
         } else {
             "All Systems".into()
         };
@@ -11549,6 +11888,7 @@ impl App {
 
     /// Open a group, showing the systems inside it.
     fn open_selected_category(&mut self) {
+        self.request_storage_check();
         let Some((name, _)) = self.categories.get(self.category_list.selected()) else {
             return;
         };
@@ -13152,6 +13492,7 @@ impl App {
     /// back, so it opens the menu instead: that is what makes a two-button
     /// controller enough to reach everything, including exit.
     fn go_back(&mut self) -> Option<Outcome> {
+        self.request_storage_check();
         match self.screen {
             Screen::Screensaver => self.leave_screensaver(),
             Screen::GameFilters => {
@@ -13382,6 +13723,7 @@ impl App {
     }
 
     fn open_menu(&mut self) {
+        self.invalidate_storage_check();
         self.menu = menu_entries();
         self.menu_list = ListState::new(self.menu.len(), self.geometry.visible);
         self.screen = Screen::Menu;
@@ -15738,6 +16080,15 @@ impl App {
                 SourceOperation::Switch(_) => true,
                 SourceOperation::Recover(SourceRecoveryPurpose::FullBuild) => {
                     self.pack_selected(&system.def.id)
+                        && self
+                            .storage
+                            .as_ref()
+                            .and_then(|storage| storage.rebuilding.as_ref())
+                            .is_none_or(|offers| {
+                                offers
+                                    .iter()
+                                    .any(|offer| offer.system.def.id == system.def.id)
+                            })
                 }
                 SourceOperation::Recover(_) => one_system.as_deref() == Some(&system.def.id),
             })
@@ -16319,6 +16670,17 @@ impl App {
         }
         self.store_source_providers(providers);
         if purpose == SourceRecoveryPurpose::FullBuild {
+            if let Some(storage) = &mut self.storage {
+                if storage.rebuilding.is_some() {
+                    for system in self
+                        .all_systems
+                        .iter()
+                        .filter(|system| staged_ids.contains(&system.def.id))
+                    {
+                        storage.indexed(&system.def.id);
+                    }
+                }
+            }
             if let Some(build) = self.build.as_mut() {
                 build.index = next_index;
                 for staged in caches {
@@ -16605,6 +16967,7 @@ impl App {
 
     /// What can be done with the folder on screen.
     fn open_context(&mut self) {
+        self.invalidate_storage_check();
         self.context_view_changed = false;
         self.context_page = None;
         self.refresh_context();
@@ -18270,6 +18633,7 @@ impl App {
 
     /// The ordinary single-system rebuild: read its folders again.
     fn rebuild_ordinary_system(&mut self, id: &str) {
+        self.invalidate_storage_check();
         if self.network_local_only {
             self.message = Some(NETWORK_CACHE_PRESERVED.to_string());
             self.dirty = true;
@@ -18473,6 +18837,7 @@ impl App {
                     self.dirty = true;
                     match pending {
                         Pending::Exit => return Some(Outcome::Quit),
+                        Pending::StorageRebuild => self.accept_storage_offer(),
                         Pending::SwitchIni(slot) => {
                             self.start_ini_profile_refresh(Some(IniProfileAction::Switch(slot)));
                         }
@@ -18569,6 +18934,17 @@ impl App {
                     {
                         self.decline_pack_offer(*offer);
                     }
+                    return None;
+                }
+                Action::Quit if pending == Pending::StorageRebuild => {
+                    self.decline_storage_offer();
+                    self.pending = None;
+                    self.message = None;
+                    self.dirty = true;
+                    return None;
+                }
+                _ if pending == Pending::StorageRebuild => {
+                    self.scroll_message(action);
                     return None;
                 }
                 // The rotation prompt advertises exactly A Keep and B Revert.
@@ -20708,10 +21084,23 @@ impl App {
         };
         self.ui
             .set_bottom_controls(SharedString::from(bottom_controls));
-        self.ui
-            .set_overlay_close_controls(self.control_hint("B Close").into());
-        self.ui
-            .set_overlay_read_close_controls(self.control_hint("↑↓ Read   B Close").into());
+        let storage_confirmation = self.pending == Some(Pending::StorageRebuild);
+        self.ui.set_overlay_close_controls(
+            self.control_hint(if storage_confirmation {
+                "A Rebuild   B Not Now"
+            } else {
+                "B Close"
+            })
+            .into(),
+        );
+        self.ui.set_overlay_read_close_controls(
+            self.control_hint(if storage_confirmation {
+                "↑↓ Read   A Rebuild   B Not Now"
+            } else {
+                "↑↓ Read   B Close"
+            })
+            .into(),
+        );
         self.ui
             .set_saver_controls(self.control_hint("A Launch  ←→ System").into());
         if self.screen == Screen::Find && self.find_mode == FindMode::Search {
@@ -20727,7 +21116,9 @@ impl App {
         // B no" and build progress replaces itself every frame, so neither
         // takes the hint.
         let overlay = self.message.as_deref().unwrap_or_default();
-        let overlay = if self.pending.is_some() || self.rotation_preview_deadline.is_some() {
+        let overlay = if (self.pending.is_some() && !storage_confirmation)
+            || self.rotation_preview_deadline.is_some()
+        {
             self.control_hint(overlay)
         } else {
             overlay.to_string()
@@ -20736,7 +21127,9 @@ impl App {
             self.ui.set_overlay_offset(0.0);
         }
         self.ui.set_overlay_dismissible(
-            self.pending.is_none() && self.build.is_none() && self.ini_profile_action.is_none(),
+            (self.pending.is_none() || storage_confirmation)
+                && self.build.is_none()
+                && self.ini_profile_action.is_none(),
         );
         self.ui.set_overlay(SharedString::from(overlay));
     }
@@ -20881,6 +21274,7 @@ impl App {
 
             slint::platform::update_timers_and_animations();
             self.poll_network_startup();
+            self.poll_storage();
             self.poll_artwork_sources();
             self.poll_source_cache();
             self.poll_provider_job();
@@ -21560,6 +21954,7 @@ impl App {
 
     fn finish_background_work_for_headless(&mut self) {
         loop {
+            self.poll_storage();
             self.poll_artwork_sources();
             if self.source_resolution.is_some() {
                 std::thread::sleep(Duration::from_millis(1));
@@ -21583,6 +21978,11 @@ impl App {
             // source resolution; that one has to finish as well before the
             // only frame is drawn.
             if self.build.is_none()
+                && (!self.storage_check_ready()
+                    || self
+                        .storage
+                        .as_ref()
+                        .is_none_or(|storage| storage.job.is_none() && !storage.requested))
                 && self.information.is_none()
                 && self.source_resolution.is_none()
                 && self.source_job.is_none()
@@ -22110,6 +22510,7 @@ pub(crate) fn test_library_launch_flow(window: Rc<MinimalSoftwareWindow>) {
         themes_dir: root.join("themes"),
         themes: Default::default(),
         network_boot: None,
+        storage: None,
     };
     let ui = DegaussWindow::new().unwrap();
     let mut app = App::new(
@@ -23212,6 +23613,7 @@ fn test_network_startup_flow(window: Rc<MinimalSoftwareWindow>) {
         themes_dir: root.join("themes"),
         themes: Default::default(),
         network_boot: Some(plan),
+        storage: None,
     };
     let ui = DegaussWindow::new().unwrap();
     let mut app = App::new(

@@ -56,6 +56,7 @@ mod settings;
 mod source_cache;
 mod state;
 mod status;
+mod storage;
 mod surface;
 mod systems;
 mod theme;
@@ -441,7 +442,7 @@ fn load_everything(args: &Args) -> Result<Loaded> {
     let themes = theme::load_available(&themes_dir);
     // Which group each system belongs to comes from where its core
     // actually is on this card, not from what the table guessed.
-    let cores = systems::CoreIndex::read(Path::new(&config.menu_root));
+    let cores = std::sync::Arc::new(systems::CoreIndex::read(Path::new(&config.menu_root)));
     let core_cache_dir = cache::dir_for(&settings_path);
     let core_catalogue = cache::load_core_catalogue(&core_cache_dir).unwrap_or_else(|| {
         if settings.show_cores.unwrap_or(false) || settings.show_misterzine.unwrap_or(false) {
@@ -460,6 +461,14 @@ fn load_everything(args: &Args) -> Result<Loaded> {
     } else {
         systems::discover_checked(&table, &roots, logo_dir.as_deref(), &cores)?
     };
+    #[cfg(target_os = "linux")]
+    let storage = Some(storage::State::new(
+        cores,
+        "/proc/self/mountinfo".into(),
+        &systems,
+    )?);
+    #[cfg(not(target_os = "linux"))]
+    let storage = None;
     // The names the stock menu shows for cores, arcade boards and
     // shortcuts, when the card carries the file that defines them.
     let names = browse::DisplayNames::read(&Path::new(&config.menu_root).join("names.txt"));
@@ -476,6 +485,7 @@ fn load_everything(args: &Args) -> Result<Loaded> {
         themes_dir,
         themes,
         network_boot,
+        storage,
     })
 }
 
@@ -2553,6 +2563,7 @@ category = "Favorites"
             themes_dir: root.join("themes"),
             themes: theme::ThemeSet::default(),
             network_boot: None,
+            storage: None,
         };
         (root, loaded)
     }

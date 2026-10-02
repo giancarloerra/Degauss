@@ -403,6 +403,7 @@ fn unopened_fixture_app_with_systems(
         themes_dir: root.join("themes"),
         themes: crate::theme::load_available(&root.join("themes")),
         network_boot: None,
+        storage: None,
     };
     App::new(
         loaded,
@@ -916,6 +917,461 @@ fn run_cores_browser_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
         .as_deref()
         .is_some_and(|message| message.contains("Cores list was not changed")));
     app.config.menu_root = menu_root;
+    app.ui.hide().unwrap();
+    drop(app);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+fn run_storage_rediscovery_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
+    let root = root.join("storage-rediscovery");
+    std::fs::create_dir_all(&root).unwrap();
+    let root = root.canonicalize().unwrap();
+    let card = root.join("games/NES");
+    std::fs::create_dir_all(&card).unwrap();
+    for game in ["First.nes", "Second.nes"] {
+        std::fs::write(card.join(game), b"fixture").unwrap();
+    }
+    let mut app = fixture_app(&root, window.clone(), Settings::default());
+    let table = crate::systems::parse_table(
+        include_str!("../assets/systems.toml"),
+        Path::new("systems.toml"),
+    )
+    .unwrap();
+    app.table.push(
+        table
+            .into_iter()
+            .find(|system| system.id == "SNES")
+            .unwrap(),
+    );
+    let mut unchanged_def = app.table[0].clone();
+    unchanged_def.id = "Unchanged".into();
+    unchanged_def.name = "Unchanged".into();
+    unchanged_def.folders = vec!["Unchanged".into()];
+    let unchanged_games = root.join("games/Unchanged");
+    std::fs::create_dir_all(&unchanged_games).unwrap();
+    std::fs::write(unchanged_games.join("Keep.nes"), b"fixture").unwrap();
+    let unchanged = FoundSystem {
+        def: unchanged_def.clone(),
+        paths: vec![unchanged_games],
+        logo_dir: None,
+        menu_folder: None,
+    };
+    let library = Library::open(&unchanged.to_config()).unwrap();
+    let cache = crate::cache::build_system(&library);
+    let index = app.index.as_mut().unwrap();
+    index.systems.insert(
+        unchanged.def.id.clone(),
+        cache.summary(&browse::start_for(&unchanged.to_config())),
+    );
+    crate::cache::save_system_with_index(
+        &app.cache_dir,
+        crate::cache::CacheKind::Gamelist,
+        &unchanged.def.id,
+        &cache,
+        index,
+    )
+    .unwrap();
+    let unchanged_cache = crate::cache::system_path(&app.cache_dir, &unchanged.def.id);
+    let unchanged_before = std::fs::read(&unchanged_cache).unwrap();
+    let unchanged_modified = std::fs::metadata(&unchanged_cache)
+        .unwrap()
+        .modified()
+        .unwrap();
+    app.table.push(unchanged_def);
+    app.all_systems.push(unchanged);
+    app.config.game_roots = vec![
+        root.join("usb/games").to_string_lossy().into_owned(),
+        root.join("games").to_string_lossy().into_owned(),
+    ];
+    let mountinfo = root.join("mountinfo");
+    let base = "1 0 8:1 / / rw - ext4 /dev/card rw\n";
+    std::fs::write(&mountinfo, base).unwrap();
+    app.storage = Some(
+        crate::storage::State::new(
+            std::sync::Arc::new(crate::systems::CoreIndex::default()),
+            mountinfo.clone(),
+            &app.all_systems,
+        )
+        .unwrap(),
+    );
+    let cache_path = crate::cache::system_path(&app.cache_dir, "NES");
+    let before = std::fs::read(&cache_path).unwrap();
+    let settings_before = std::fs::read(&app.settings_path).ok();
+    for (folder, game) in [("NES", "New.nes"), ("SNES", "New.sfc")] {
+        let directory = root.join("usb/games").join(folder);
+        std::fs::create_dir_all(&directory).unwrap();
+        std::fs::write(directory.join(game), b"fixture").unwrap();
+    }
+    let mounted = |id| {
+        format!(
+            "{base}{id} 1 0:{id} / {} rw - cifs //server/games rw\n",
+            root.join("usb").display()
+        )
+    };
+    std::fs::write(&mountinfo, mounted(2)).unwrap();
+    app.go_back();
+    app.finish_background_work_for_headless();
+    assert_eq!(app.pending, Some(Pending::StorageRebuild));
+    let mut offered_ids = app
+        .storage
+        .as_ref()
+        .unwrap()
+        .offer
+        .as_ref()
+        .unwrap()
+        .offers
+        .iter()
+        .map(|offer| offer.system.def.id.as_str())
+        .collect::<Vec<_>>();
+    offered_ids.sort_unstable();
+    assert_eq!(offered_ids, ["NES", "SNES"]);
+    assert!(
+        app.build.is_none(),
+        "discovery never indexes without consent"
+    );
+    assert_eq!(
+        app.all_systems
+            .iter()
+            .find(|system| system.def.id == "NES")
+            .unwrap()
+            .paths
+            .as_slice(),
+        std::slice::from_ref(&card)
+    );
+    capture_live_if_requested(&mut app, "storage-new-attachment-confirmation");
+    let original_message = app.message.clone();
+    let names = (0..40)
+        .map(|number| format!("Fixture Platform A {number:02}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    app.message = Some(format!("Newly available storage needs indexing:\n{names}"));
+    app.settings.swap_a_b = Some(true);
+    app.refresh();
+    assert_eq!(
+        app.ui.get_overlay().as_str(),
+        app.message.as_deref().unwrap()
+    );
+    assert!(app.ui.get_overlay_max_scroll() > 0.0);
+    assert!(app
+        .ui
+        .get_overlay_read_close_controls()
+        .contains("B Rebuild"));
+    assert!(app
+        .ui
+        .get_overlay_read_close_controls()
+        .contains("A Not Now"));
+    app.handle(Action::Down);
+    assert_eq!(app.pending, Some(Pending::StorageRebuild));
+    assert!(
+        app.ui.get_overlay_offset() > 0.0,
+        "long confirmations reuse the existing message scrolling without answering"
+    );
+    capture_live_if_requested(&mut app, "storage-long-confirmation");
+    app.message = original_message;
+    app.settings.swap_a_b = None;
+    app.refresh();
+    app.handle(Action::Quit);
+    assert!(app.pending.is_none());
+    assert_eq!(std::fs::read(&cache_path).unwrap(), before);
+    assert_eq!(std::fs::read(&app.settings_path).ok(), settings_before);
+    app.request_storage_check();
+    app.finish_background_work_for_headless();
+    assert!(
+        app.pending.is_none(),
+        "Not Now stays dismissed for this attachment"
+    );
+    std::fs::rename(root.join("usb"), root.join("detached")).unwrap();
+    std::fs::write(&mountinfo, base).unwrap();
+    app.request_storage_check();
+    app.finish_background_work_for_headless();
+    assert!(app.pending.is_none());
+    std::fs::rename(root.join("detached"), root.join("usb")).unwrap();
+    std::fs::write(&mountinfo, mounted(2)).unwrap();
+    app.request_storage_check();
+    app.finish_background_work_for_headless();
+    assert_eq!(app.pending, Some(Pending::StorageRebuild));
+    app.handle(Action::Accept);
+    app.finish_background_work_for_headless();
+    assert!(app.build.is_none());
+    assert_eq!(app.index_terminal.as_ref().unwrap().state, "Complete");
+    assert_eq!(app.index_terminal.as_ref().unwrap().done, 2);
+    assert_eq!(app.index_terminal.as_ref().unwrap().total, 2);
+    assert_eq!(std::fs::read(&unchanged_cache).unwrap(), unchanged_before);
+    assert_eq!(
+        std::fs::metadata(&unchanged_cache)
+            .unwrap()
+            .modified()
+            .unwrap(),
+        unchanged_modified,
+        "the unrelated system cache was not rebuilt"
+    );
+    assert_eq!(
+        app.all_systems
+            .iter()
+            .find(|system| system.def.id == "NES")
+            .unwrap()
+            .paths,
+        [root.join("usb/games/NES")]
+    );
+    assert_eq!(app.index.as_ref().unwrap().systems["NES"].games, 1);
+    assert_eq!(app.index.as_ref().unwrap().systems["SNES"].games, 1);
+    capture_live_if_requested(&mut app, "storage-affected-index-complete");
+    app.handle(Action::Quit);
+    std::fs::write(&mountinfo, mounted(4)).unwrap();
+    let completed = std::fs::read(&cache_path).unwrap();
+    app.request_storage_check();
+    app.finish_background_work_for_headless();
+    assert!(
+        app.pending.is_none(),
+        "an indexed attachment is reusable after reconnect"
+    );
+    assert_eq!(std::fs::read(&cache_path).unwrap(), completed);
+    app.all_systems.retain(|system| system.def.id != "SNES");
+    let snes_cache = crate::cache::system_path(&app.cache_dir, "SNES");
+    std::fs::rename(&snes_cache, snes_cache.with_extension("held")).unwrap();
+    app.index.as_mut().unwrap().systems.remove("SNES");
+    std::fs::write(&mountinfo, mounted(5)).unwrap();
+    app.request_storage_check();
+    app.finish_background_work_for_headless();
+    assert_eq!(app.pending, Some(Pending::StorageRebuild));
+    app.handle(Action::Accept);
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while app.source_resolution.is_some() {
+        assert!(
+            Instant::now() < deadline,
+            "storage source resolution did not finish"
+        );
+        app.poll_artwork_sources();
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    assert!(app.build.is_some());
+    app.saver_candidates = Some(vec![0]);
+    app.handle(Action::Quit);
+    app.finish_background_work_for_headless();
+    assert_eq!(app.index_terminal.as_ref().unwrap().state, "Cancelled");
+    assert!(
+        app.saver_candidates.is_none(),
+        "restoring source order invalidates cached screensaver system positions"
+    );
+    assert!(!app.all_systems.iter().any(|system| system.def.id == "SNES"));
+    assert!(!snes_cache.exists());
+    app.handle(Action::Quit);
+    app.request_storage_check();
+    app.finish_background_work_for_headless();
+    assert!(app.pending.is_none());
+
+    // Fail the real worker's cache publication after consent and source
+    // resolution, without modifying the cache or adopting the new system.
+    std::fs::write(&mountinfo, mounted(6)).unwrap();
+    app.request_storage_check();
+    app.finish_background_work_for_headless();
+    assert_eq!(app.pending, Some(Pending::StorageRebuild));
+    app.handle(Action::Accept);
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while app.source_resolution.is_some() {
+        assert!(
+            Instant::now() < deadline,
+            "storage source resolution did not finish"
+        );
+        app.poll_artwork_sources();
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    let held_cache = app.cache_dir.with_extension("held");
+    std::fs::rename(&app.cache_dir, &held_cache).unwrap();
+    std::fs::write(&app.cache_dir, b"not a directory").unwrap();
+    app.finish_background_work_for_headless();
+    assert_eq!(
+        app.index_terminal.as_ref().unwrap().state,
+        "Finished With Problems"
+    );
+    assert!(app
+        .index_terminal
+        .as_ref()
+        .unwrap()
+        .problem
+        .to_lowercase()
+        .contains("not a directory"));
+    assert!(!app.all_systems.iter().any(|system| system.def.id == "SNES"));
+    std::fs::remove_file(&app.cache_dir).unwrap();
+    std::fs::rename(&held_cache, &app.cache_dir).unwrap();
+    assert_eq!(std::fs::read(&cache_path).unwrap(), completed);
+    assert_eq!(std::fs::read(&unchanged_cache).unwrap(), unchanged_before);
+    assert!(!snes_cache.exists());
+    app.handle(Action::Quit);
+    app.request_storage_check();
+    app.finish_background_work_for_headless();
+    assert!(
+        app.pending.is_none(),
+        "a failed rebuild is not retried automatically"
+    );
+    app.storage = Some(
+        crate::storage::State::new(
+            std::sync::Arc::new(crate::systems::CoreIndex::default()),
+            mountinfo,
+            &app.all_systems,
+        )
+        .unwrap(),
+    );
+    app.request_storage_check();
+    app.finish_background_work_for_headless();
+    assert_eq!(
+        app.pending,
+        Some(Pending::StorageRebuild),
+        "restart forgets a decline"
+    );
+    app.handle(Action::Quit);
+    app.ui.hide().unwrap();
+    drop(app);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+fn run_storage_pack_rebuild_flow(
+    root: &Path,
+    window: Rc<MinimalSoftwareWindow>,
+    automatic_gamelist: bool,
+) {
+    let root = root.join(if automatic_gamelist {
+        "storage-automatic-group-rebuild"
+    } else {
+        "storage-pack-rebuild"
+    });
+    std::fs::create_dir_all(root.join("games/NES")).unwrap();
+    let root = root.canonicalize().unwrap();
+    for name in ["First.nes", "Second.nes"] {
+        std::fs::write(root.join("games/NES").join(name), b"fixture").unwrap();
+    }
+    let mut app = fixture_app(&root, window, Settings::default());
+    let table = crate::systems::parse_table(
+        include_str!("../assets/systems.toml"),
+        Path::new("systems.toml"),
+    )
+    .unwrap();
+    for id in ["NeoGeo", "NeoGeoMVS"] {
+        let mut def = table.iter().find(|def| def.id == id).unwrap().clone();
+        def.folders = vec![id.into()];
+        let games = root.join("games").join(id);
+        std::fs::create_dir_all(&games).unwrap();
+        std::fs::write(games.join("Keep.neo"), b"fixture").unwrap();
+        app.table.push(def.clone());
+        app.all_systems.push(FoundSystem {
+            def,
+            paths: vec![games],
+            logo_dir: None,
+            menu_folder: None,
+        });
+    }
+    let docs = root.join("docs");
+    let art = docs.join("NEOGEO/Artwork");
+    std::fs::create_dir_all(&art).unwrap();
+    std::fs::write(
+        art.join("manifest.tsv"),
+        "#key\tstyle\tss_system_id\nKeep\tbox-2D\t142\nNew\tbox-2D\t142\n",
+    )
+    .unwrap();
+    std::fs::write(
+        art.join("index.tsv"),
+        "#name\tcrc\tsize\tkey\nKeep\t\t\tKeep\nNew\t\t\tNew\n",
+    )
+    .unwrap();
+    for name in ["Keep.jpg", "New.jpg"] {
+        std::fs::write(art.join(name), crate::covers::JPEG_16).unwrap();
+    }
+    app.source_system_id = Some("NeoGeo".into());
+    app.begin_source_switch(crate::source_cache::Target::ArtworkPack {
+        docs_root: docs.clone(),
+    });
+    app.finish_background_work_for_headless();
+    assert!(
+        app.pack_selected("NeoGeo") && app.pack_selected("NeoGeoMVS"),
+        "initial Pack setup: {:?}, roots: {:?}, source: {:?}",
+        app.message,
+        app.effective_artwork_pack_roots,
+        app.source_system_id
+    );
+    if automatic_gamelist {
+        app.settings.artwork_pack_roots.remove("NeoGeo");
+        for id in ["NeoGeo", "NeoGeoMVS"] {
+            let mut state = crate::cache::load_pack_source_state(&app.cache_dir, id)
+                .unwrap()
+                .unwrap();
+            state.accepted = Some(crate::cache::AcceptedSource {
+                docs_root: docs.to_string_lossy().into_owned(),
+                language: None,
+                signature: None,
+                cache_marker: 0,
+                health: crate::artwork_pack::ProviderHealth::Ready,
+                diagnostics: Vec::new(),
+                skipped_entries: 0,
+            });
+            crate::cache::save_pack_source_state(&app.cache_dir, id, &state).unwrap();
+        }
+        std::fs::write(root.join("games/NeoGeoMVS/gamelist.xml"), "<gameList/>").unwrap();
+        app.settings.save(&app.settings_path).unwrap();
+    }
+    let unchanged = pack_files(&app.cache_dir, "NeoGeoMVS");
+    assert!(unchanged.iter().all(Option::is_some));
+    app.screen = Screen::Browse;
+    app.browsing = Browsing::Systems;
+    app.open_system = None;
+    app.message = None;
+    app.config.game_roots = vec![
+        root.join("usb/games").to_string_lossy().into_owned(),
+        root.join("games").to_string_lossy().into_owned(),
+    ];
+    let mountinfo = root.join("mountinfo");
+    let base = "1 0 8:1 / / rw - ext4 /dev/card rw\n";
+    std::fs::write(&mountinfo, base).unwrap();
+    app.storage = Some(
+        crate::storage::State::new(
+            std::sync::Arc::new(crate::systems::CoreIndex::default()),
+            mountinfo.clone(),
+            &app.all_systems,
+        )
+        .unwrap(),
+    );
+    std::fs::create_dir_all(root.join("usb/games/NeoGeo")).unwrap();
+    std::fs::write(root.join("usb/games/NeoGeo/New.neo"), b"fixture").unwrap();
+    std::fs::write(
+        &mountinfo,
+        format!(
+            "{base}2 1 0:2 / {} rw - cifs //server/games rw\n",
+            root.join("usb").display()
+        ),
+    )
+    .unwrap();
+    app.request_storage_check();
+    app.finish_background_work_for_headless();
+    assert_eq!(app.pending, Some(Pending::StorageRebuild));
+    let offers = &app.storage.as_ref().unwrap().offer.as_ref().unwrap().offers;
+    assert_eq!(offers.len(), 1);
+    assert_eq!(offers[0].system.def.id, "NeoGeo");
+    app.handle(Action::Accept);
+    app.finish_background_work_for_headless();
+    assert_eq!(app.index_terminal.as_ref().unwrap().state, "Complete");
+    assert_eq!(app.index_terminal.as_ref().unwrap().done, 1);
+    assert_eq!(
+        app.pack_selected("NeoGeo"),
+        !automatic_gamelist,
+        "a sibling's gamelist keeps the shared Automatic group on Gamelist"
+    );
+    assert_eq!(
+        app.all_systems
+            .iter()
+            .find(|system| system.def.id == "NeoGeo")
+            .unwrap()
+            .paths,
+        [root.join("usb/games/NeoGeo")],
+        "successful Pack publication adopts the indexed source"
+    );
+    assert_eq!(
+        pack_files(&app.cache_dir, "NeoGeoMVS"),
+        unchanged,
+        "a shared Artwork Pack does not expand the accepted indexing scope"
+    );
+    app.handle(Action::Quit);
+    app.request_storage_check();
+    app.finish_background_work_for_headless();
+    assert!(app.pending.is_none());
     app.ui.hide().unwrap();
     drop(app);
     std::fs::remove_dir_all(root).unwrap();
@@ -9910,6 +10366,7 @@ fn run_neogeo_romset_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
             themes_dir: root.join("themes"),
             themes: Default::default(),
             network_boot: None,
+            storage: None,
         };
         let mut app = App::new(
             loaded,
@@ -11437,6 +11894,9 @@ pub(super) fn run_ui_acceptance_flow(window: Rc<MinimalSoftwareWindow>) {
     let gamelist_xml = format!("<gameList><game><path>First Game.nes</path><desc><![CDATA[{complete_description}]]></desc></game><game><path>Second Game.nes</path><desc><![CDATA[{complete_description}]]></desc></game></gameList>");
     std::fs::write(&gamelist_path, &gamelist_xml).unwrap();
     run_cores_browser_flow(&root, window.clone());
+    run_storage_rediscovery_flow(&root, window.clone());
+    run_storage_pack_rebuild_flow(&root, window.clone(), false);
+    run_storage_pack_rebuild_flow(&root, window.clone(), true);
     run_misterzine_browser_flow(&root, window.clone());
     run_browse_bar_settings_flow(&root, window.clone());
     run_start_folder_and_game_position_flow(&root, window.clone());

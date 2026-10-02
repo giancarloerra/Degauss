@@ -26,6 +26,7 @@ pub struct DiscoveryRequest {
 pub struct Discovered {
     pub systems: Vec<crate::systems::FoundSystem>,
     pub cores: crate::systems::CoreCatalogue,
+    pub core_index: Arc<crate::systems::CoreIndex>,
 }
 
 type DiscoveryResult = Result<Option<Discovered>>;
@@ -48,7 +49,7 @@ impl DiscoveryJob {
                     if worker_cancelled.load(Ordering::Relaxed) {
                         return Ok(None);
                     }
-                    let cores = crate::systems::CoreIndex::read(&request.menu_root);
+                    let cores = Arc::new(crate::systems::CoreIndex::read(&request.menu_root));
                     if worker_cancelled.load(Ordering::Relaxed) {
                         return Ok(None);
                     }
@@ -63,6 +64,7 @@ impl DiscoveryJob {
                         (!worker_cancelled.load(Ordering::Relaxed)).then_some(Discovered {
                             systems: found,
                             cores: catalogue,
+                            core_index: cores,
                         }),
                     )
                 }))
