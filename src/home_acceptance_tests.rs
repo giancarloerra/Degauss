@@ -120,6 +120,175 @@ pub(super) fn run(root: &Path, window: Rc<MinimalSoftwareWindow>) {
     );
     app.message = None;
 
+    // The editor returns to the changed row, rather than silently staying
+    // in its action submenu. Cancel still discards ordering/visibility.
+    app.home_context();
+    paint_index_frame(&mut app);
+    assert_eq!(app.ui.get_heading(), "Home Folder / Actions");
+    assert!(app.menu.iter().any(|row| row == EDIT_HOME_FOLDER));
+    app.home_editor();
+    let before = app.home.edit.as_ref().unwrap().clone();
+    let key = entry_key(&system);
+    app.home_entry_actions(key.clone());
+    app.menu_list.select(0);
+    app.handle(Action::Accept);
+    assert!(matches!(app.home.menu, Some(HomeMenu::Editor)));
+    assert_eq!(app.home.menu_keys[app.menu_list.selected()], key);
+    assert_eq!(app.menu_list.selected(), 0);
+    paint_index_frame(&mut app);
+    assert_eq!(app.ui.get_heading(), "Edit Home Folder");
+    app.handle(Action::Accept);
+    assert!(app.menu.iter().any(|row| row == "Hide on Home Folder"));
+    app.menu_list.select(2);
+    app.handle(Action::Accept);
+    assert!(matches!(app.home.menu, Some(HomeMenu::Editor)));
+    assert_eq!(app.home.menu_keys[app.menu_list.selected()], key);
+    assert!(app.menu[app.menu_list.selected()].ends_with("Hidden"));
+    app.finish_home_edit(false);
+    assert_eq!(app.settings.home, before);
+
+    // Pinning from a normal game browser must save and populate Home
+    // before any editor is opened, including a second repeated addition.
+    let pinned = Entry {
+        name: "Immediate game".into(),
+        image: None,
+        target: Target::Game {
+            system: "NES".into(),
+            launch: browse::Launch::File(path.clone()),
+        },
+    };
+    app.browsing = Browsing::Games;
+    let saved_path = app.settings_path.clone();
+    let before_pin = app.settings.home.clone();
+    app.home.pending_entry = Some(pinned.clone());
+    app.home_destinations(None);
+    app.settings_path = root.clone();
+    app.menu_list.select(0);
+    app.handle(Action::Accept);
+    assert!(app.message.is_some());
+    assert_eq!(app.settings.home, before_pin);
+    assert_eq!(app.home.edit.as_ref().unwrap(), &before_pin);
+    assert!(
+        app.home.pending_entry.is_some(),
+        "a failed immediate add can be retried"
+    );
+    app.settings_path = saved_path;
+    app.message = None;
+    app.handle(Action::Accept);
+    assert_eq!(app.screen, Screen::Browse);
+    assert_eq!(
+        app.settings
+            .home
+            .entries
+            .values()
+            .filter(|entry| entry.name == "Immediate game")
+            .count(),
+        1
+    );
+    let id = app
+        .settings
+        .home
+        .entries
+        .iter()
+        .find(|(_, entry)| entry.name == "Immediate game")
+        .unwrap()
+        .0
+        .clone();
+    app.settings.home.remove(&id);
+    app.settings.save(&app.settings_path).unwrap();
+    for (name, parent) in [
+        ("Immediate game", None),
+        ("Second immediate game", Some(folder.as_str())),
+    ] {
+        let mut entry = pinned.clone();
+        entry.name = name.into();
+        app.home.pending_entry = Some(entry);
+        app.home_destinations(None);
+        let at = app
+            .home
+            .menu_keys
+            .iter()
+            .position(|key| key == parent.unwrap_or(""))
+            .unwrap();
+        app.menu_list.select(at);
+        app.handle(Action::Accept);
+        assert_eq!(app.screen, Screen::Browse);
+        assert!(app.home.edit.is_none());
+        assert!(app.home.menu.is_none());
+        assert!(Settings::load(&app.settings_path)
+            .unwrap()
+            .home
+            .entries
+            .values()
+            .any(|entry| entry.name == name));
+    }
+    app.restore_home(crate::home::Resume {
+        folder: None,
+        key: String::new(),
+        anchor: None,
+    });
+    assert!(app
+        .home
+        .rows
+        .iter()
+        .any(|key| app.home_label(key) == "Immediate game"));
+    app.home_context();
+    paint_index_frame(&mut app);
+    assert_eq!(app.ui.get_heading(), "Home / Actions");
+    assert!(app.menu.iter().any(|row| row == EDIT_HOME));
+    let added = app
+        .settings
+        .home
+        .entries
+        .iter()
+        .find(|(_, entry)| entry.name == "Immediate game")
+        .unwrap()
+        .0
+        .clone();
+    app.begin_home_edit();
+    app.home_entry_actions(entry_key(&added));
+    app.menu_list
+        .select(app.menu.iter().position(|row| row == "Remove").unwrap());
+    app.handle(Action::Accept);
+    assert_eq!(app.screen, Screen::Browse);
+    assert!(!app.settings.home.entries.contains_key(&added));
+    assert!(!app.home.rows.contains(&entry_key(&added)));
+    assert!(!Settings::load(&app.settings_path)
+        .unwrap()
+        .home
+        .entries
+        .contains_key(&added));
+    // Removing from an explicit editor remains immediate, but must not
+    // save unrelated draft edits or resurrect the entry on Cancel.
+    app.home.folder = Some(folder.clone());
+    app.rebuild_home_rows();
+    let added = app
+        .settings
+        .home
+        .entries
+        .iter()
+        .find(|(_, entry)| entry.name == "Second immediate game")
+        .unwrap()
+        .0
+        .clone();
+    app.home_editor();
+    app.home
+        .edit
+        .as_mut()
+        .unwrap()
+        .entries
+        .get_mut(&folder)
+        .unwrap()
+        .name = "Do not save".into();
+    app.home_entry_actions(entry_key(&added));
+    app.menu_list
+        .select(app.menu.iter().position(|row| row == "Remove").unwrap());
+    app.handle(Action::Accept);
+    assert!(matches!(app.home.menu, Some(HomeMenu::Editor)));
+    app.finish_home_edit(false);
+    assert!(!app.settings.home.entries.contains_key(&added));
+    assert_eq!(app.settings.home.entries[&folder].name, "Renamed");
+
     let settings_before = app.settings.clone();
     let settings_path = app.settings_path.clone();
     app.home_editor();

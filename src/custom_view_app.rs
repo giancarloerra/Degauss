@@ -15,6 +15,7 @@ struct ViewBrowser {
     description: Option<ReadingInformation>,
     description_key: Option<browse::Launch>,
     information_focus: bool,
+    return_to_options: Option<ListState>,
 }
 struct ViewEditor {
     original: Option<String>,
@@ -247,7 +248,12 @@ impl App {
     }
     fn leave_view_menu(&mut self) {
         self.custom_view.menu = None;
-        self.screen = Screen::Browse;
+        self.screen = if let Some(list) = self.custom_view.return_to_options.take() {
+            self.menu_list = list;
+            Screen::Options
+        } else {
+            Screen::Browse
+        };
         self.resolve_view();
         self.apply_geometry();
         self.touch_selection();

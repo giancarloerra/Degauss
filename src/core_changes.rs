@@ -21,9 +21,9 @@ pub struct Listing {
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Scope {
-    #[default]
     WhatsNew,
     UpdatesAvailable,
+    #[default]
     AllCores,
 }
 

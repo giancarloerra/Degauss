@@ -221,7 +221,7 @@ impl App {
         match crate::explore::Job::start(request) {
             Ok(job) => {
                 self.explore.job = Some(job);
-                self.message = Some("Reading indexed library...\nB Cancel".into());
+                self.message = Some("Reading indexed library...".into());
             }
             Err(error) => {
                 self.message = Some(error.to_string());
@@ -264,7 +264,7 @@ impl App {
             };
             match event {
                 crate::explore::Event::Progress(name) => {
-                    self.message = Some(format!("Reading indexed library\n{name}\nB Cancel"))
+                    self.message = Some(format!("Reading indexed library\n{name}"))
                 }
                 crate::explore::Event::Ready(mut catalogue) => {
                     for entry in &mut catalogue.entries {

@@ -305,6 +305,7 @@ enum OptionOperation {
     None,
     Adjust(isize),
     OpenThemeEditor,
+    OpenCustomViews,
     ConfirmResetCustomViews,
     ConfirmResetHidden,
     RebuildCache,
@@ -320,6 +321,10 @@ enum OptionOperation {
 fn option_operation(option: OptionId, input: OptionInput) -> OptionOperation {
     match option {
         OptionId::Spacer => OptionOperation::None,
+        OptionId::CustomViews => match input {
+            OptionInput::Activate => OptionOperation::OpenCustomViews,
+            OptionInput::Previous | OptionInput::Next => OptionOperation::None,
+        },
         OptionId::ResetCustomViews => match input {
             OptionInput::Activate => OptionOperation::ConfirmResetCustomViews,
             OptionInput::Previous | OptionInput::Next => OptionOperation::None,
@@ -1173,6 +1178,8 @@ const SAVER_ATTRACT_WANTED: usize = SAVER_POOL_MAX * 2;
 const SAVER_CHOICES: [u64; 5] = [0, 60, 120, 300, 600];
 
 const MARQUEE_WAIT_MS: u64 = 250;
+const INFORMATION_SCROLL_WAIT: Duration = Duration::from_secs(3);
+const INFORMATION_SCROLL_STEP: Duration = Duration::from_millis(125);
 
 /// The longest the lines under the picture are given to walk their width.
 /// They travel at half a title's pace, so they need their own clock: on
@@ -4267,6 +4274,7 @@ pub struct App {
     core_changes_visit: Option<crate::core_changes::Visit>,
     core_changes_error: Option<String>,
     core_changes_scope: crate::core_changes::Scope,
+    core_updates_sort_by_name: bool,
     /// Game rows for only the highlighted Core Updates entry. Reading them
     /// happens off the render loop; changing selection cancels and drops the
     /// previous set instead of turning Core Updates into a second library.
@@ -4327,6 +4335,7 @@ pub struct App {
     /// The same for the lines under the picture, which travel at half the
     /// pace and would be cut off half way on the title's clock.
     detail_marquee: Rc<slint::Timer>,
+    information_scroll_next_at: std::cell::Cell<Instant>,
     art_pending: bool,
     cover_prefetch: Option<CoverPrefetchJob>,
     prefetch_direction: isize,
@@ -4779,6 +4788,7 @@ impl App {
             core_changes_visit: None,
             core_changes_error: None,
             core_changes_scope: Default::default(),
+            core_updates_sort_by_name: false,
             misterzine_game_job: None,
             misterzine_game_job_key: None,
             misterzine_games: None,
@@ -4935,6 +4945,9 @@ impl App {
             selection_revision: 0,
             marquee: Rc::new(slint::Timer::default()),
             detail_marquee: Rc::new(slint::Timer::default()),
+            information_scroll_next_at: std::cell::Cell::new(
+                Instant::now() + INFORMATION_SCROLL_WAIT,
+            ),
             art_pending: true,
             cover_prefetch: None,
             prefetch_direction: 1,
@@ -5962,6 +5975,62 @@ impl App {
         true
     }
 
+    fn maintain_information_scroll(&mut self, now: Instant) {
+        if now < self.information_scroll_next_at.get() {
+            return;
+        }
+        let (offset, limit) = if self.message.is_some() && self.ui.get_overlay_dismissible() {
+            (
+                self.ui.get_overlay_offset(),
+                self.ui.get_overlay_max_scroll(),
+            )
+        } else if self.message.is_none()
+            && self.screen == Screen::Information
+            && self.information.is_none()
+        {
+            (
+                self.ui.get_information_offset(),
+                self.ui.get_information_max_scroll(),
+            )
+        } else if self.message.is_none()
+            && self.screen == Screen::Browse
+            && self.custom_definition().is_some()
+            && self.custom_view.editor.is_none()
+            && !self.custom_view.information_focus
+            && self.custom_view.description.is_none()
+        {
+            (
+                self.ui.get_custom_information_offset(),
+                self.ui.get_custom_information_max_scroll(),
+            )
+        } else {
+            return;
+        };
+        if limit <= 0.0 {
+            return;
+        }
+        let next = if offset >= limit {
+            0.0
+        } else {
+            (offset + 1.0).min(limit)
+        };
+        self.information_scroll_next_at.set(
+            now + if next == 0.0 || next == limit {
+                INFORMATION_SCROLL_WAIT
+            } else {
+                INFORMATION_SCROLL_STEP
+            },
+        );
+        if self.message.is_some() {
+            self.ui.set_overlay_offset(next);
+        } else if self.screen == Screen::Information {
+            self.ui.set_information_offset(next);
+        } else {
+            self.ui.set_custom_information_offset(next);
+        }
+        self.dirty = true;
+    }
+
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     fn speed_ms(&self) -> u64 {
         SPEED_STEPS[self.speed.min(SPEED_STEPS.len() - 1)].1
@@ -6101,6 +6170,8 @@ impl App {
         self.selection_revision = self.selection_revision.wrapping_add(1);
         let now = Instant::now();
         self.settled_since = Some(now);
+        self.information_scroll_next_at
+            .set(now + INFORMATION_SCROLL_WAIT);
         self.gallery_title_shown_at =
             if self.screen == Screen::Browse && self.layout == Layout::Gallery {
                 Some(now)
@@ -10783,7 +10854,8 @@ impl App {
         };
         self.ui.set_operation_kind(2);
         self.ui.set_operation_details(self.scraper_details);
-        self.ui.set_operation_title("ScreenScraper".into());
+        self.ui
+            .set_operation_title(self.scraper_settings.source.label().into());
         self.ui.set_operation_state(state.into());
         self.ui.set_operation_subject(subject.into());
         self.ui.set_operation_activity(activity.into());
@@ -11339,14 +11411,13 @@ impl App {
                     None
                 }
             };
-            // Only the worker can establish cache/configuration compatibility.
-            self.misterzine_items.clear();
+            self.core_updates_sort_by_name = false;
         }
         if let Some(visit) = &mut self.core_changes_visit {
             visit.begin_refresh();
         }
         self.prepare_misterzine_browser(!force_refresh);
-        match crate::misterzine::start(self.misterzine_request(true)) {
+        match crate::misterzine::start(self.misterzine_request(force_refresh)) {
             Ok(job) => self.misterzine_job = Some(job),
             Err(error) => {
                 crate::note(&format!("core updates  could not start: {error}"));
@@ -11735,9 +11806,7 @@ impl App {
             })
             .cloned()
             .collect();
-        if self.core_changes_visit.is_some()
-            && self.core_changes_scope != crate::core_changes::Scope::AllCores
-        {
+        if !self.core_updates_sort_by_name {
             self.misterzine_visible.sort_by(|left, right| {
                 right
                     .build()
@@ -11747,6 +11816,13 @@ impl App {
                             .to_ascii_lowercase()
                             .cmp(&right.title().to_ascii_lowercase())
                     })
+                    .then_with(|| left.key().cmp(right.key()))
+            });
+        } else {
+            self.misterzine_visible.sort_by(|left, right| {
+                left.title()
+                    .to_lowercase()
+                    .cmp(&right.title().to_lowercase())
                     .then_with(|| left.key().cmp(right.key()))
             });
         }
@@ -12974,6 +13050,10 @@ impl App {
             OptionOperation::None => (),
             OptionOperation::Adjust(delta) => self.adjust_option_value(option, delta),
             OptionOperation::OpenThemeEditor => self.open_theme_editor(),
+            OptionOperation::OpenCustomViews => {
+                self.custom_view.return_to_options = Some(self.menu_list.clone());
+                self.show_view_menu(ViewMenu::List);
+            }
             OptionOperation::ConfirmResetCustomViews => {
                 self.pending = Some(Pending::ResetCustomViews);
                 self.message = Some("Reset all custom views?\n\nA yes, B no".to_string());
@@ -13617,7 +13697,8 @@ impl App {
                 self.config.app.overscan_y = next;
                 self.apply_geometry();
             }
-            OptionId::ResetCustomViews
+            OptionId::CustomViews
+            | OptionId::ResetCustomViews
             | OptionId::RebuildCache
             | OptionId::ScrapeAll
             | OptionId::ResetHidden
@@ -13641,6 +13722,7 @@ impl App {
                 }
             }
             OptionId::Layout => self.global_view_label(),
+            OptionId::CustomViews => format!("{} saved", self.settings.view_definitions.len()),
             OptionId::StartFolder => self
                 .settings
                 .start_folder
@@ -14429,7 +14511,7 @@ impl App {
             }
         }
         match self.browsing {
-            Browsing::Categories => "Home".to_string(),
+            Browsing::Categories => self.home_location_label().to_string(),
             Browsing::Systems => self
                 .open_category
                 .clone()
@@ -17735,6 +17817,11 @@ impl App {
                 SEARCH.to_string(),
             ];
             actions.extend(crate::core_changes::Scope::ALL.map(|scope| scope.label().to_string()));
+            actions.push(if self.core_updates_sort_by_name {
+                "Sort by Latest Updated".into()
+            } else {
+                "Sort by Name".into()
+            });
             if !self.filter.is_empty() {
                 actions.push(CLEAR_SEARCH.to_string());
             }
@@ -19471,6 +19558,8 @@ impl App {
     }
 
     pub fn handle(&mut self, action: Action) -> Option<Outcome> {
+        self.information_scroll_next_at
+            .set(Instant::now() + INFORMATION_SCROLL_WAIT);
         if self.handle_custom_view_input(action) {
             return None;
         }
@@ -20082,6 +20171,13 @@ impl App {
                             self.rebuild_misterzine_rows();
                             self.apply_geometry();
                         }
+                    } else if self.in_misterzine_browser()
+                        && matches!(choice.as_str(), "Sort by Latest Updated" | "Sort by Name")
+                    {
+                        self.core_updates_sort_by_name = choice == "Sort by Name";
+                        self.screen = Screen::Browse;
+                        self.rebuild_misterzine_rows();
+                        self.apply_geometry();
                     } else if choice == CANCEL_CORE_REFRESH {
                         if let Some(job) = &self.misterzine_job {
                             job.cancel();
@@ -20096,7 +20192,7 @@ impl App {
                     } else if choice == ABOUT_MISTERZINE {
                         self.screen = Screen::Browse;
                         self.message = Some(
-                            "Core Updates\nWhat's New compares configured listings with the last complete check you viewed. First check has no previous history. Changes stay visible for this visit. Leaving after a complete fresh refresh saves the comparison; cancellation, failures and partial refreshes do not.\n\nReads only databases configured in Downloader. Installed local cores remain visible in All Cores, including manually installed cores without a configured source. Build dates are not first-release dates. Nothing is installed here."
+                            "Core Updates\nAll Cores opens with the latest build dates first. Actions changes the sort or selects What's New and Updates Available. These scopes can be empty after update_all. Reopening uses saved results; Refresh reads the configured sources again.\n\nWhat's New compares configured listings with the last complete check you viewed. First check has no previous history. Changes stay visible for this visit. Leaving after a complete fresh refresh saves the comparison; cancellation, failures and partial refreshes do not.\n\nReads only databases configured in Downloader. Installed local cores remain visible in All Cores, including manually installed cores without a configured source. Build dates are not first-release dates. Nothing is installed here."
                                 .to_string(),
                         );
                         self.apply_geometry();
@@ -21835,10 +21931,12 @@ impl App {
                 };
                 let heading = if self.home.menu.is_some() {
                     match self.home.menu.as_ref() {
-                        Some(HomeMenu::Entry(key)) => format!("Home / {}", self.home_label(key)),
+                        Some(HomeMenu::Entry(key)) => {
+                            format!("{} / {}", self.home_location_label(), self.home_label(key))
+                        }
                         Some(HomeMenu::Destination(_)) => "Add / Move to Home".into(),
-                        Some(HomeMenu::Editor) => "Edit Home".into(),
-                        _ => "Home / Actions".into(),
+                        Some(HomeMenu::Editor) => self.home_edit_label().into(),
+                        _ => format!("{} / Actions", self.home_location_label()),
                     }
                 } else if self.explore.active {
                     self.explore_menu_heading()
@@ -22070,6 +22168,7 @@ impl App {
         self.ui.set_status(SharedString::from(displayed_status));
         let controls_are_mapped = matches!(self.screen.ui_index(), 1 | 4);
         let bottom_controls = match self.screen.ui_index() {
+            0 if self.explore.job.is_some() => String::new(),
             0 if self.custom_view.editor.is_some() => "↑↓ Choose  ←→ Set  X Save  B Cancel".into(),
             0 if self.custom_view.information_focus => "↑↓ Scroll   B List".into(),
             0 => {
@@ -22104,6 +22203,8 @@ impl App {
         self.ui.set_overlay_close_controls(
             self.control_hint(if storage_confirmation {
                 "A Rebuild   B Not Now"
+            } else if self.explore.job.is_some() {
+                "B Cancel"
             } else {
                 "B Close"
             })
@@ -22141,6 +22242,8 @@ impl App {
         };
         if self.ui.get_overlay().as_str() != overlay {
             self.ui.set_overlay_offset(0.0);
+            self.information_scroll_next_at
+                .set(Instant::now() + INFORMATION_SCROLL_WAIT);
         }
         self.ui.set_overlay_dismissible(
             (self.pending.is_none() || storage_confirmation)
@@ -22302,6 +22405,7 @@ impl App {
             self.poll_explore();
             self.poll_home_preview();
             self.maintain_custom_information();
+            self.maintain_information_scroll(now);
             if let Some(outcome) = self.poll_home_open() {
                 return Ok(outcome);
             }
@@ -23923,8 +24027,8 @@ pub(crate) fn test_library_launch_flow(window: Rc<MinimalSoftwareWindow>) {
     );
     app.rebuild_misterzine_rows();
     assert_eq!(
-        app.game_list.selected(),
-        1,
+        app.misterzine_visible[app.game_list.selected()].key(),
+        "second-release",
         "refreshes preserve the release when its display metadata changes"
     );
     app.refresh();
@@ -25683,6 +25787,7 @@ mod tests {
     #[test]
     fn option_actions_are_reachable_only_through_a() {
         let actions = [
+            (OptionId::CustomViews, OptionOperation::OpenCustomViews),
             (
                 OptionId::ResetCustomViews,
                 OptionOperation::ConfirmResetCustomViews,
@@ -25742,6 +25847,7 @@ mod tests {
     #[test]
     fn every_value_uses_left_for_previous_and_right_or_a_for_next() {
         let actions = [
+            OptionId::CustomViews,
             OptionId::ResetCustomViews,
             OptionId::ResetHidden,
             OptionId::RebuildCache,

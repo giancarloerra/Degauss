@@ -4,6 +4,7 @@ struct HomeBrowser {
     folder: Option<String>,
     rows: Vec<String>,
     edit: Option<crate::home::Store>,
+    explicit_editor: bool,
     edit_origin: Option<crate::home::Resume>,
     edit_return: Option<(Screen, ListState)>,
     menu: Option<HomeMenu>,
@@ -28,12 +29,29 @@ enum HomeMenu {
     Destination(Option<String>),
 }
 const EDIT_HOME: &str = "Edit Home";
+const EDIT_HOME_FOLDER: &str = "Edit Home Folder";
 const ADD_HOME: &str = "Add to Home";
 const NEW_HOME_FOLDER: &str = "New Personal Folder";
 const SAVE_HOME: &str = "Save Changes";
 const CANCEL_HOME: &str = "Cancel Changes";
 
 impl App {
+    fn home_location_label(&self) -> &'static str {
+        if self.home.folder.is_some() {
+            "Home Folder"
+        } else {
+            "Home"
+        }
+    }
+
+    fn home_edit_label(&self) -> &'static str {
+        if self.home.folder.is_some() {
+            EDIT_HOME_FOLDER
+        } else {
+            EDIT_HOME
+        }
+    }
+
     fn home_store(&self) -> &crate::home::Store {
         self.home.edit.as_ref().unwrap_or(&self.settings.home)
     }
@@ -344,6 +362,7 @@ impl App {
         }
         self.home.origin = None;
         self.home.edit = None;
+        self.home.explicit_editor = false;
         self.home.edit_origin = None;
         self.home.edit_return = None;
         self.home.pending_open = None;
@@ -687,7 +706,7 @@ impl App {
             self.home.menu = None;
             return false;
         }
-        let mut rows = vec![EDIT_HOME.into(), NEW_HOME_FOLDER.into()];
+        let mut rows = vec![self.home_edit_label().into(), NEW_HOME_FOLDER.into()];
         if self
             .selected_home_key()
             .is_some_and(|key| key.starts_with("entry:"))
@@ -737,6 +756,7 @@ impl App {
 
     fn home_editor(&mut self) {
         self.begin_home_edit();
+        self.home.explicit_editor = true;
         let categories = self.home_editor_categories();
         let keys = self
             .home_store()
@@ -756,6 +776,13 @@ impl App {
             .collect::<Vec<_>>();
         rows.extend([NEW_HOME_FOLDER.into(), SAVE_HOME.into(), CANCEL_HOME.into()]);
         self.home_set_menu(HomeMenu::Editor, rows, keys);
+    }
+
+    fn home_editor_select(&mut self, key: &str) {
+        self.home_editor();
+        if let Some(at) = self.home.menu_keys.iter().position(|held| held == key) {
+            self.menu_list.select(at);
+        }
     }
 
     fn home_editor_categories(&self) -> Vec<String> {
@@ -792,9 +819,9 @@ impl App {
             "Move Up".into(),
             "Move Down".into(),
             if self.home_store().hidden.contains(&key) {
-                "Show on Home".into()
+                format!("Show on {}", self.home_location_label())
             } else {
-                "Hide on Home".into()
+                format!("Hide on {}", self.home_location_label())
             },
         ];
         if let Some(id) = key.strip_prefix("entry:") {
@@ -868,7 +895,11 @@ impl App {
                         self.message = Some(error);
                     }
                 }
-                self.home_editor();
+                if self.home.explicit_editor {
+                    self.home_editor_select(&crate::home::entry_key(&id));
+                } else {
+                    self.finish_home_edit(true);
+                }
             }
             Err(error) => self.message = Some(error),
         }
@@ -890,29 +921,37 @@ impl App {
         self.home_entry_actions(crate::home::entry_key(id));
     }
 
+    fn save_home_store(&mut self, store: crate::home::Store) -> bool {
+        if let Err(error) = store.validate() {
+            self.message = Some(error);
+            return false;
+        }
+        let mut settings = self.settings.clone();
+        settings.home = store;
+        match settings.save(&self.settings_path) {
+            Ok(outcome) => {
+                self.settings = settings;
+                self.explore_save_warning(outcome);
+                true
+            }
+            Err(error) => {
+                self.message = Some(error.to_string());
+                false
+            }
+        }
+    }
+
     fn finish_home_edit(&mut self, save: bool) {
         if save {
             let Some(store) = self.home.edit.clone() else {
                 return;
             };
-            if let Err(error) = store.validate() {
-                self.message = Some(error);
+            if !self.save_home_store(store) {
                 return;
-            }
-            let mut settings = self.settings.clone();
-            settings.home = store;
-            match settings.save(&self.settings_path) {
-                Ok(outcome) => {
-                    self.settings = settings;
-                    self.explore_save_warning(outcome);
-                }
-                Err(error) => {
-                    self.message = Some(error.to_string());
-                    return;
-                }
             }
         }
         self.home.edit = None;
+        self.home.explicit_editor = false;
         let origin = self.home.edit_origin.take();
         if let Some(origin) = &origin {
             self.home.folder = origin.folder.clone();
@@ -925,15 +964,17 @@ impl App {
             self.show_scripts_directory(self.scripts_directory.clone(), None);
             self.menu_list = list;
         }
-        if self.browsing == Browsing::Categories {
-            self.rebuild_home_rows();
-            self.category_list = ListState::new(self.home.rows.len(), self.geometry.visible);
-            if let Some(index) = origin
-                .as_ref()
-                .and_then(|origin| self.home.rows.iter().position(|key| key == &origin.key))
-            {
-                self.category_list.select(index);
-            }
+        let selected = origin
+            .as_ref()
+            .map(|origin| origin.key.clone())
+            .or_else(|| self.selected_home_key().map(str::to_string));
+        self.rebuild_home_rows();
+        self.category_list = ListState::new(self.home.rows.len(), self.geometry.visible);
+        if let Some(index) = selected
+            .as_ref()
+            .and_then(|selected| self.home.rows.iter().position(|key| key == selected))
+        {
+            self.category_list.select(index);
         }
         self.resolve_view();
         self.apply_geometry();
@@ -961,7 +1002,7 @@ impl App {
         }
         match mode {
             HomeMenu::Actions => match choice.as_str() {
-                EDIT_HOME => self.home_editor(),
+                EDIT_HOME | EDIT_HOME_FOLDER => self.home_editor(),
                 "Manage Entry" => {
                     self.begin_home_edit();
                     if let Some(key) = self.selected_home_key().map(str::to_string) {
@@ -982,7 +1023,8 @@ impl App {
             HomeMenu::Destination(moving) => {
                 if let Some(parent) = self.home.menu_keys.get(at).cloned() {
                     let parent = (!parent.is_empty()).then_some(parent);
-                    let store = self.home.edit.as_mut().expect("Home editor");
+                    let immediate = moving.is_none() || !self.home.explicit_editor;
+                    let mut store = self.home.edit.clone().expect("Home editor");
                     let result = if let Some(id) = moving {
                         store.move_to(&id, parent.as_deref())
                     } else if let Some(entry) = self.home.pending_entry.clone() {
@@ -992,8 +1034,15 @@ impl App {
                     };
                     match result {
                         Ok(()) => {
-                            self.home.pending_entry = None;
-                            self.home_editor();
+                            if immediate {
+                                if self.save_home_store(store) {
+                                    self.finish_home_edit(false);
+                                }
+                            } else {
+                                self.home.edit = Some(store);
+                                self.home.pending_entry = None;
+                                self.home_editor();
+                            }
                         }
                         Err(error) => self.message = Some(error),
                     }
@@ -1021,14 +1070,17 @@ impl App {
                                 .expect("Home editor")
                                 .reorder(self.home.folder.as_deref(), &keys);
                         }
-                        self.home_entry_actions(key);
+                        self.home_editor_select(&key);
                     }
-                    "Hide on Home" | "Show on Home" => {
+                    "Hide on Home"
+                    | "Show on Home"
+                    | "Hide on Home Folder"
+                    | "Show on Home Folder" => {
                         let store = self.home.edit.as_mut().expect("Home editor");
                         if !store.hidden.remove(&key) {
                             store.hidden.insert(key.clone());
                         }
-                        self.home_entry_actions(key);
+                        self.home_editor_select(&key);
                     }
                     "Rename" => {
                         if let Some(id) = id {
@@ -1039,9 +1091,18 @@ impl App {
                     "Move to Folder" => self.home_destinations(id),
                     "Remove" => {
                         if let Some(id) = id {
+                            let mut saved = self.settings.home.clone();
+                            saved.remove(&id);
+                            if !self.save_home_store(saved) {
+                                return true;
+                            }
                             self.home.edit.as_mut().expect("Home editor").remove(&id);
                         }
-                        self.home_editor();
+                        if self.home.explicit_editor {
+                            self.home_editor();
+                        } else {
+                            self.finish_home_edit(false);
+                        }
                     }
                     "Edit Folder" => {
                         self.home.folder = id;
@@ -1179,7 +1240,13 @@ impl App {
         }
         if self.screen == Screen::Context && self.home.menu.is_some() && action == Action::Quit {
             match self.home.menu.clone()? {
-                HomeMenu::Entry(_) | HomeMenu::Destination(_) => self.home_editor(),
+                HomeMenu::Entry(_) | HomeMenu::Destination(_) => {
+                    if self.home.explicit_editor {
+                        self.home_editor();
+                    } else {
+                        self.finish_home_edit(false);
+                    }
+                }
                 HomeMenu::Editor => {
                     if let Some(folder) = self.home.folder.clone() {
                         self.home.folder = self.home_store().parent(&folder);

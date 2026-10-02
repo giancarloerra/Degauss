@@ -24,6 +24,8 @@ pub enum OptionId {
     /// The scroll speed above which artwork stops being loaded per row.
     ArtLimit,
     Layout,
+    /// Create and manage named template-based views.
+    CustomViews,
     /// Which available top-level folder opens after the splash screen.
     StartFolder,
     /// Remove every place-specific view after confirmation.
@@ -135,8 +137,9 @@ pub const OPTIONS: &[OptionId] = &[
     OptionId::Spacer,
     OptionId::Theme,
     OptionId::Layout,
-    OptionId::StartFolder,
+    OptionId::CustomViews,
     OptionId::ResetCustomViews,
+    OptionId::StartFolder,
     OptionId::DetailsStyle,
     OptionId::GameNameDisplay,
     OptionId::FolderBrackets,
@@ -274,8 +277,9 @@ impl OptionsPage {
             Self::Appearance => &[
                 OptionId::Theme,
                 OptionId::Layout,
-                OptionId::StartFolder,
+                OptionId::CustomViews,
                 OptionId::ResetCustomViews,
+                OptionId::StartFolder,
                 OptionId::DetailsStyle,
                 OptionId::GameNameDisplay,
                 OptionId::FolderBrackets,
@@ -333,6 +337,7 @@ impl OptionId {
             OptionId::SwapXY => "Swap X and Y",
             OptionId::ArtLimit => "Skip Artwork Faster Than",
             OptionId::Layout => "View",
+            OptionId::CustomViews => "Custom Views",
             OptionId::StartFolder => "Start Folder",
             OptionId::ResetCustomViews => "Reset All Custom Views",
             OptionId::DetailsStyle => "Details Style",
@@ -407,6 +412,7 @@ impl OptionId {
             OptionId::Layout => {
                 "Default view for places without a custom view. Actions changes only the current place."
             }
+            OptionId::CustomViews => "Create, edit or choose a named view from the available templates.",
             OptionId::StartFolder => {
                 "Choose Home or an available top-level folder to open when Degauss starts. A missing folder safely opens Home."
             }

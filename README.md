@@ -232,14 +232,19 @@ from a game restores the query and selection; a fresh start begins unfiltered.
 **Actions → Add to Home** saves an exact shortcut to a game, system, library
 folder, saved collection, installed core, script or Home category/action.
 Choose Home, an existing personal folder or **New Personal Folder**.
-This does not copy games or change MiSTer Favourites.
+The shortcut is saved and appears immediately, without opening Edit Home.
+Removing a shortcut is also immediate. This does not copy games or change
+MiSTer Favourites.
 
 On Home, **Actions → Edit Home** lists standard and personal rows, including
 hidden ones. Select a row to move it up/down or hide/show it on Home.
+Inside a personal folder this is **Edit Home Folder**. Moving or hiding a row
+returns to the entries list with that row selected and its status updated.
 Personal entries can also be renamed, moved to another personal folder or
 removed. Folders can contain mixed shortcuts and other personal folders,
 up to three folder levels, and use images chosen from the existing logos
-folder. **Save Changes** keeps the edits; **Cancel Changes** discards them.
+folder. **Save Changes** keeps ordering, visibility and other draft edits;
+**Cancel Changes** discards those edits. Additions and removals are immediate.
 
 Existing Library visibility switches remain authoritative. Missing or hidden
 targets stay saved and visibly unavailable; they are not redirected to a
@@ -303,7 +308,10 @@ screen. It is Off by default. Degauss reads the same databases and filters that
 are configured for MiSTer's Downloader in `downloader.ini`, `downloader/*.ini`
 and `downloader_*.ini`.
 
-**What's New** is the initial view. **X Actions → Updates Available** shows
+**All Cores** is the initial view, sorted by the latest build date first.
+**X Actions → Sort by Name** changes the order; **Sort by Latest Updated**
+restores it. **What's New** compares listings with the previous complete check.
+**X Actions → Updates Available** shows
 installed cores with a newer configured build, and **All Cores** shows the
 complete list. In All Cores, every installed core remains visible, including one that has no configured
 database source. An uninstalled core appears only when one of this MiSTer's
@@ -326,8 +334,9 @@ cycles through the images once per second. Game data is read on demand for the
 selected core and then reused; Core Updates does not preload another copy of
 the library.
 
-Each entry shows compatible saved results while one background refresh reads
-the configured databases. **Refresh** checks again; **Cancel Refresh** stops
+Opening uses compatible saved results and rechecks installed cores without
+forcing a download. **Refresh** reads the configured databases again while
+saved rows remain browsable; **Cancel Refresh** stops
 the background check without leaving the saved rows. No check runs while this
 browser is unopened. If one source times out or returns unusable data, Degauss
 shows the results from the others and names the skipped source at the end;
@@ -924,6 +933,9 @@ browser list; the others can show artwork, short information or full
 information. Choosing a new list panel moves the existing list rather than
 creating a second selection.
 
+**Options → Appearance → Custom Views** opens the same manager from the
+general menu, immediately below View.
+
 In the editor, Up/Down chooses a panel or divider and Left/Right changes
 its content or proportion with a live preview. **X Save** stores the view;
 **B Cancel** leaves saved views unchanged. Saved names appear alongside the
@@ -934,7 +946,8 @@ Proportions adapt to the screen and its safe area, including portrait.
 Core Updates keeps its dedicated Details presentation.
 
 Full information is read only for the settled selected game, from its
-configured Gamelist or Artwork Pack. **Actions → Game → Focus Information**
+configured Gamelist or Artwork Pack. Long information scrolls slowly after a
+brief pause. **Actions → Game → Focus Information**
 gives Up/Down to text scrolling; **B** returns to list navigation. On Home
 and Explore this action is directly in Actions. Non-game rows do not show
 invented game metadata.
@@ -1030,8 +1043,9 @@ require **A** and confirmation, never a sideways press.
 | Shortcuts | Hold A / Hold B / Hold X / Hold Y | Off by default. Assign None, Cycle View, Random Game, Random Favourite, Add/Remove Favourite, Game Information, Search This Folder, Jump to Letter, Actions, Menu or Start Attract Mode to each one-second hold. Assign Actions and Menu to A/B for two-button controllers. Short presses retain their normal action. Holds work only while browsing and only where the chosen command is available; otherwise the normal press is immediate |
 | Appearance | Theme | Left and right choose a palette. Press A to open the editor. Standard uses the colours in `degauss.toml`. See [Themes and colours](#themes-and-colours) |
 | Appearance | View | The global default for places without a custom view: Details, Tiled, Carousel, List, Multi List or Gallery |
-| Appearance | Start Folder | Home by default, or any currently available top-level folder. If the saved folder is no longer present, Degauss safely starts at Home without replacing the choice |
+| Appearance | Custom Views | Create, edit or choose a named template-based view |
 | Appearance | Reset All Custom Views | With A and confirmation, remove every place-specific view without changing the global View setting |
+| Appearance | Start Folder | Home by default, or any currently available top-level folder. If the saved folder is no longer present, Degauss safely starts at Home without replacing the choice |
 | Appearance | Details Style | How Details shares the screen while browsing games. Information (default) keeps the list beside a picture of about 42% of the width, with the summary under it; Large Artwork gives the picture about 62% and the whole column height; Compact uses about 33% for the picture and shows more rows on higher-resolution screens |
 | Appearance | Game Name Display | Full (default), remove parenthesised tags, remove square-bracketed tags, remove both, or retain only recognised region and/or disc-index tags. This changes presentation, sorting and search only; names stored in files and caches are unchanged |
 | Appearance | Folder Brackets | On by default. Turn off only Degauss's outer `[ name ]` marker for folders; square brackets that are part of the underlying name still follow Game Name Display |

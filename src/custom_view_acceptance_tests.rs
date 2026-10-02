@@ -96,6 +96,27 @@ pub(super) fn run(root: &Path, window: Rc<MinimalSoftwareWindow>) {
     );
     assert!(app.ui.get_custom_short_text().contains("First Publisher"));
     assert!(app.ui.get_custom_information_max_scroll() > 0.0);
+    let now = Instant::now();
+    app.information_scroll_next_at
+        .set(now + INFORMATION_SCROLL_WAIT);
+    app.maintain_information_scroll(now);
+    assert_eq!(
+        app.ui.get_custom_information_offset(),
+        0.0,
+        "reading starts with a pause"
+    );
+    app.maintain_information_scroll(now + INFORMATION_SCROLL_WAIT);
+    assert_eq!(
+        app.ui.get_custom_information_offset(),
+        1.0,
+        "full information scrolls without requiring focus"
+    );
+    app.maintain_information_scroll(now + INFORMATION_SCROLL_WAIT + INFORMATION_SCROLL_STEP);
+    assert_eq!(
+        app.ui.get_custom_information_offset(),
+        2.0,
+        "long descriptions advance slowly at the same speed"
+    );
     app.load_art();
     assert!(app.ui.get_has_art());
     app.open_context();
@@ -121,6 +142,14 @@ pub(super) fn run(root: &Path, window: Rc<MinimalSoftwareWindow>) {
         "information focus must retain the selected game's picture"
     );
     let selected = app.game_list.selected();
+    app.information_scroll_next_at.set(now);
+    let offset = app.ui.get_custom_information_offset();
+    app.maintain_information_scroll(now + INFORMATION_SCROLL_WAIT * 2);
+    assert_eq!(
+        app.ui.get_custom_information_offset(),
+        offset,
+        "manual information focus owns scrolling"
+    );
     app.handle(Action::Down);
     assert_eq!(app.game_list.selected(), selected);
     assert!(app.ui.get_custom_information_offset() > 0.0);
@@ -196,6 +225,28 @@ pub(super) fn run(root: &Path, window: Rc<MinimalSoftwareWindow>) {
         .view_definitions
         .contains_key(&id));
     app.leave_view_menu();
+    select_option(&mut app, OptionsPage::Appearance, OptionId::CustomViews);
+    let selected = app.menu_list.selected();
+    app.handle(Action::Accept);
+    assert!(matches!(app.custom_view.menu, Some(ViewMenu::List)));
+    app.handle(Action::Quit);
+    assert_eq!(app.screen, Screen::Options);
+    assert_eq!(app.menu_list.selected(), selected);
+    let appearance = OptionsPage::Appearance.ids();
+    let view = appearance
+        .iter()
+        .position(|id| *id == OptionId::Layout)
+        .unwrap();
+    assert_eq!(
+        &appearance[view..view + 4],
+        &[
+            OptionId::Layout,
+            OptionId::CustomViews,
+            OptionId::ResetCustomViews,
+            OptionId::StartFolder
+        ]
+    );
+    app.screen = Screen::Browse;
     app.show_view_menu(ViewMenu::Definition(id.clone()));
     app.menu_list.select(1);
     app.handle(Action::Accept);

@@ -200,6 +200,7 @@ impl Transport for CurlTransport {
             ));
         }
         self.fetch(url, limit, None)
+            .map_err(libretro_transport_error)
     }
 
     fn get(&self, endpoint: &str, params: &[(String, String)], limit: u64) -> Result<HttpResponse> {
@@ -327,6 +328,11 @@ fn curl_spawn_error(error: std::io::Error) -> Error {
     } else {
         logged_transport_error(&format!("curl could not start: {error}"))
     }
+}
+
+fn libretro_transport_error(mut error: Error) -> Error {
+    error.detail = error.detail.replace("ScreenScraper", "Libretro");
+    error
 }
 
 fn logged_transport_error(diagnostic: &str) -> Error {
@@ -3416,6 +3422,25 @@ mod tests {
             None
         );
         std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn libretro_transport_failures_name_the_selected_provider_without_changing_the_cause() {
+        for code in [7, 28, 60, 56, 77, 63] {
+            let original = curl_exit_error(Some(code), None, 1024);
+            let converted = libretro_transport_error(original.clone());
+            assert_eq!(converted.kind, original.kind);
+            assert_eq!(
+                converted.detail,
+                original.detail.replace("ScreenScraper", "Libretro")
+            );
+            assert!(!converted.detail.contains("ScreenScraper"));
+        }
+        let missing = libretro_transport_error(curl_spawn_error(std::io::Error::from(
+            std::io::ErrorKind::NotFound,
+        )));
+        assert_eq!(missing.kind, ErrorKind::Configuration);
+        assert!(missing.detail.contains("cannot contact Libretro"));
     }
 
     #[test]

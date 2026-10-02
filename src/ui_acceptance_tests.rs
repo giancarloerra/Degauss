@@ -1854,7 +1854,8 @@ fn run_misterzine_browser_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
             "distribution_mister",
             crate::misterzine::LocalState::Current,
             Some(core.clone()),
-        ),
+        )
+        .with_fixture_build("2026-10-02"),
         crate::misterzine::Item::fixture_with(
             "Installed Arcade Release",
             "Arcade",
@@ -1866,6 +1867,18 @@ fn run_misterzine_browser_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
     app.misterzine_items[0].set_game_match(2, None);
     app.rebuild_misterzine_rows();
     assert_eq!(app.here.len(), 2);
+    assert_eq!(app.core_changes_scope, crate::core_changes::Scope::AllCores);
+    assert_eq!(
+        app.here[0].name, "Installed Release",
+        "All Cores starts with the latest build, not the alphabetically first name"
+    );
+    app.core_updates_sort_by_name = true;
+    app.rebuild_misterzine_rows();
+    assert_eq!(app.here[0].name, "Installed Arcade Release");
+    app.core_updates_sort_by_name = false;
+    app.game_list.select(0);
+    app.rebuild_misterzine_rows();
+    app.game_list.select(0);
     let first_cover = root.join("first.png");
     let second_cover = root.join("second.jpg");
     std::fs::copy(
@@ -1914,6 +1927,29 @@ fn run_misterzine_browser_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
     app.maintain_misterzine_games(slideshow_started + Duration::from_secs(CORE_UPDATE_ART_SECONDS));
     assert_eq!(app.current_art().0.as_deref(), Some(second_cover.as_path()));
     app.open_context();
+    app.menu_list.select(
+        app.menu
+            .iter()
+            .position(|row| row == "Sort by Name")
+            .unwrap(),
+    );
+    app.handle(Action::Accept);
+    assert!(app.core_updates_sort_by_name);
+    assert_eq!(app.screen, Screen::Browse);
+    assert_eq!(
+        app.misterzine_visible[0].title(),
+        "Installed Arcade Release"
+    );
+    app.open_context();
+    app.menu_list.select(
+        app.menu
+            .iter()
+            .position(|row| row == "Sort by Latest Updated")
+            .unwrap(),
+    );
+    app.handle(Action::Accept);
+    app.game_list.select(0);
+    app.open_context();
     assert_eq!(
         app.context_actions,
         [
@@ -1923,6 +1959,7 @@ fn run_misterzine_browser_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
             "What's New",
             "Updates Available",
             "All Cores",
+            "Sort by Name",
             FILTER_RELEASES,
             REFRESH_MISTERZINE,
             ABOUT_MISTERZINE,
@@ -4524,6 +4561,12 @@ fn run_libretro_scraper_source_flow(app: &mut App) {
         .iter()
         .any(|(title, value)| title == "Source" && value == "Libretro (no account)"));
     assert!(!progress.iter().any(|(title, _)| title.contains("Quota")));
+    app.screen = Screen::ScraperProgress;
+    app.scraper_terminal = Some(ScraperTerminal::Finished);
+    app.refresh();
+    assert_eq!(app.ui.get_operation_title(), "Libretro");
+    app.screen = Screen::Scraper;
+    app.apply_geometry();
     app.handle(Action::Quit);
     let saved = ScraperSettings::load(&app.scraper_settings_path).unwrap();
     assert_eq!(saved.source, ScraperSource::Libretro);
@@ -4532,6 +4575,11 @@ fn run_libretro_scraper_source_flow(app: &mut App) {
     app.handle(Action::Slower);
     assert_eq!(app.scraper_settings.source, ScraperSource::ScreenScraper);
     assert!(!app.scraper_settings.ready());
+    app.screen = Screen::ScraperProgress;
+    app.refresh();
+    assert_eq!(app.ui.get_operation_title(), "ScreenScraper");
+    app.screen = Screen::Scraper;
+    app.apply_geometry();
     app.handle(Action::Quit);
     assert!(app.replace_scraper_settings(original));
     assert!(app.scraper_job.is_none());
@@ -5713,7 +5761,8 @@ fn capture_ui_if_requested(root: &Path, window: Rc<MinimalSoftwareWindow>) {
         .into_iter()
         .map(|name| (name.to_string(), 1))
         .collect();
-    app.category_list = ListState::new(app.categories.len(), app.geometry.visible);
+    app.rebuild_home_rows();
+    app.category_list = ListState::new(app.home.rows.len(), app.geometry.visible);
     app.category_list.select(1);
     app.category_picks.insert("Console".into(), artwork.clone());
     app.touch_selection();
@@ -5739,7 +5788,8 @@ fn capture_ui_if_requested(root: &Path, window: Rc<MinimalSoftwareWindow>) {
         }
     }
     app.categories = original_categories;
-    app.category_list = ListState::new(app.categories.len(), app.geometry.visible);
+    app.rebuild_home_rows();
+    app.category_list = ListState::new(app.home.rows.len(), app.geometry.visible);
     app.browsing = Browsing::Games;
     for (width, height) in [(352, 240), (640, 480)] {
         for layout in Layout::ALL {
@@ -5820,6 +5870,11 @@ fn capture_ui_if_requested(root: &Path, window: Rc<MinimalSoftwareWindow>) {
     app.browsing = Browsing::Categories;
     app.set_screen(Screen::Context);
     capture_frame(&mut app, &directory, "actions-category", 352, 240);
+    app.handle(Action::Quit);
+    assert!(
+        app.home.menu.is_none(),
+        "leave Home Actions before returning to a game"
+    );
     app.browsing = Browsing::Games;
     app.game_list.select(5);
     app.set_screen(Screen::Information);
@@ -5833,6 +5888,16 @@ fn capture_ui_if_requested(root: &Path, window: Rc<MinimalSoftwareWindow>) {
     app.handle(Action::End);
     assert!(app.ui.get_information_offset() > 0.0);
     capture_frame(&mut app, &directory, "information-bottom", 352, 240);
+    let at = Instant::now();
+    app.information_scroll_next_at.set(at);
+    app.maintain_information_scroll(at);
+    assert_eq!(
+        app.ui.get_information_offset(),
+        0.0,
+        "automatic reading loops after the bottom pause"
+    );
+    app.maintain_information_scroll(at + INFORMATION_SCROLL_WAIT);
+    assert_eq!(app.ui.get_information_offset(), 1.0);
 
     app.set_screen(Screen::Browse);
     app.message = Some(format!(
@@ -5840,6 +5905,13 @@ fn capture_ui_if_requested(root: &Path, window: Rc<MinimalSoftwareWindow>) {
         "Detailed archive error.\n".repeat(30)
     ));
     capture_frame(&mut app, &directory, "long-error-top", 352, 240);
+    app.information_scroll_next_at.set(at);
+    app.maintain_information_scroll(at);
+    assert_eq!(
+        app.ui.get_overlay_offset(),
+        1.0,
+        "long notices are readable without manual scrolling"
+    );
     app.handle(Action::End);
     capture_frame(&mut app, &directory, "long-error-bottom", 352, 240);
     app.handle(Action::Quit);
@@ -6063,6 +6135,9 @@ fn capture_ui_if_requested(root: &Path, window: Rc<MinimalSoftwareWindow>) {
     assert_eq!(app.screen, Screen::CategoryImage);
     capture_frame(&mut app, &directory, "category-image", 352, 240);
     app.handle(Action::Quit);
+    assert!(matches!(app.home.menu, Some(HomeMenu::Actions)));
+    app.handle(Action::Quit);
+    assert!(app.home.menu.is_none());
     app.browsing = Browsing::Games;
     app.set_screen(Screen::Browse);
     app.saver_pool.push(SaverPicture {

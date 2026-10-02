@@ -256,6 +256,12 @@ impl Item {
     }
 
     #[cfg(test)]
+    pub(crate) fn with_fixture_build(mut self, build: &str) -> Self {
+        self.available_build = build.into();
+        self
+    }
+
+    #[cfg(test)]
     pub(crate) fn fixture_with(
         title: &str,
         base: &str,

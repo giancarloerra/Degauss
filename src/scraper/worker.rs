@@ -1437,8 +1437,10 @@ fn run_libretro_work(
     if let Some(error) = fatal {
         finish_error(events, error, progress);
     } else if cancelled.load(Ordering::Relaxed) {
+        log_scraper_summary("cancelled", &progress);
         let _ = events.send(Event::Cancelled(progress));
     } else {
+        log_scraper_summary("finished", &progress);
         let _ = events.send(Event::Finished(progress));
     }
 }

@@ -38,6 +38,16 @@ pub(super) fn run(root: &Path, window: Rc<MinimalSoftwareWindow>) {
     let source_snapshot = cache_snapshot(&app.cache_dir);
     let origin = app.position();
     app.open_explore(None);
+    paint_index_frame(&mut app);
+    assert!(
+        !app.ui.get_overlay().contains("B Cancel"),
+        "the body must not duplicate the control hint"
+    );
+    assert_eq!(app.ui.get_overlay_close_controls(), "B Cancel");
+    assert!(
+        app.ui.get_bottom_controls().is_empty(),
+        "indexing has one Back hint, not another browser Back row"
+    );
     app.finish_background_work_for_headless();
     assert!(app.explore.active);
     assert!(app.explore.job.is_none());
