@@ -353,6 +353,12 @@ impl Provider {
                     }
                     2_000 * common / (wanted_pairs.len() + pairs.len()).max(1)
                 };
+                let tie = format!("{}\0{key}\0{name}", directory.label);
+                if let Some((worst_score, worst_tie, _)) = best.get(7) {
+                    if *worst_score > score || (*worst_score == score && *worst_tie <= tie) {
+                        continue;
+                    }
+                }
                 let presentation = directory.presentation(key, MatchMethod::IndexName);
                 let label = directory.display_keys.get(key).unwrap_or(key).clone();
                 let choice = MatchChoice {
@@ -367,7 +373,6 @@ impl Provider {
                     },
                     presentation,
                 };
-                let tie = format!("{}\0{key}\0{name}", directory.label);
                 // Different regional aliases may name the same picture. Keep
                 // its best alias, deterministically, rather than duplicate it.
                 if let Some(at) = best.iter().position(|(_, _, existing)| {
@@ -3514,6 +3519,16 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(choices.len(), 8);
+        assert_eq!(
+            choices
+                .iter()
+                .map(|choice| choice.label.clone())
+                .collect::<Vec<_>>(),
+            (0..8)
+                .map(|n| format!("Chosen Game {n:02}"))
+                .collect::<Vec<_>>(),
+            "pruning retains the highest-ranked distinct entries"
+        );
         assert_eq!(
             choices,
             provider
