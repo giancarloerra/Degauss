@@ -1327,6 +1327,117 @@ fn run_storage_rediscovery_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) 
     );
 }
 
+fn run_storage_manual_refresh_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
+    let mut outcomes = Vec::new();
+    for (declined, synchronous, failed_snapshot) in [
+        (false, false, false),
+        (true, false, false),
+        (false, true, false),
+        (true, true, false),
+        (false, false, true),
+        (false, true, true),
+    ] {
+        let root = root.join(format!(
+            "storage-manual-{declined}-{synchronous}-{failed_snapshot}"
+        ));
+        std::fs::create_dir_all(root.join("games/NES")).unwrap();
+        let root = root.canonicalize().unwrap();
+        for name in ["First.nes", "Second.nes"] {
+            std::fs::write(root.join("games/NES").join(name), b"fixture").unwrap();
+        }
+        let mut app = fixture_app(&root, window.clone(), Settings::default());
+        app.config.game_roots = vec![
+            root.join("usb/games").to_string_lossy().into_owned(),
+            root.join("games").to_string_lossy().into_owned(),
+        ];
+        let mountinfo = root.join("mountinfo");
+        let base = "1 0 8:1 / / rw - ext4 /dev/card rw\n";
+        std::fs::write(&mountinfo, base).unwrap();
+        app.storage = Some(
+            crate::storage::State::new(
+                std::sync::Arc::new(crate::systems::CoreIndex::default()),
+                mountinfo.clone(),
+                &app.all_systems,
+            )
+            .unwrap(),
+        );
+        let games = root.join("usb/games/NES");
+        std::fs::create_dir_all(&games).unwrap();
+        if declined {
+            std::fs::write(games.join("New.nes"), b"fixture").unwrap();
+        }
+        std::fs::write(
+            &mountinfo,
+            format!(
+                "{base}2 1 0:2 / {} rw - cifs //server/games rw\n",
+                root.join("usb").display()
+            ),
+        )
+        .unwrap();
+        if declined {
+            app.go_back();
+            app.finish_background_work_for_headless();
+            assert_eq!(app.pending, Some(Pending::StorageRebuild));
+            app.handle(Action::Quit);
+            app.open_system_by_index(0);
+        }
+        let active_before = app.storage.as_ref().unwrap().active.clone();
+        if failed_snapshot {
+            std::fs::write(&mountinfo, "malformed\n").unwrap();
+        }
+        let reported_error = if synchronous {
+            app.refresh_system("NES")
+        } else {
+            app.rebuild_open_system();
+            assert!(app.build.as_ref().is_some_and(|build| build.single));
+            app.finish_background_work_for_headless();
+            let terminal = app.index_terminal.as_ref().unwrap();
+            assert_eq!(
+                terminal.state,
+                if failed_snapshot {
+                    "Finished With Problems"
+                } else {
+                    "Complete"
+                }
+            );
+            (!terminal.problem.is_empty()).then(|| terminal.problem.clone())
+        };
+        if failed_snapshot {
+            outcomes.push((
+                declined,
+                reported_error.is_some_and(|error| error.contains("missing separator")),
+                app.storage.as_ref().unwrap().active == active_before,
+            ));
+            app.ui.hide().unwrap();
+            drop(app);
+            std::fs::remove_dir_all(root).unwrap();
+            continue;
+        }
+        assert!(reported_error.is_none(), "{reported_error:?}");
+        let cache_path = crate::cache::system_path(&app.cache_dir, "NES");
+        let cache_before = std::fs::read(&cache_path).unwrap();
+        if !synchronous {
+            app.handle(Action::Quit);
+        }
+        app.go_back();
+        app.finish_background_work_for_headless();
+        let retained = app.all_systems.iter().any(|system| {
+            system.def.id == "NES" && system.paths.as_slice() == std::slice::from_ref(&games)
+        });
+        outcomes.push((declined, retained, app.pending.is_none()));
+        assert_eq!(std::fs::read(&cache_path).unwrap(), cache_before);
+        app.ui.hide().unwrap();
+        drop(app);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+    assert!(
+        outcomes
+            .iter()
+            .all(|(_, retained, no_offer)| *retained && *no_offer),
+        "an explicit successful rebuild remains adopted without another offer: {outcomes:?}"
+    );
+}
+
 fn run_storage_pack_rebuild_flow(
     root: &Path,
     window: Rc<MinimalSoftwareWindow>,
@@ -12032,6 +12143,7 @@ pub(super) fn run_ui_acceptance_flow(window: Rc<MinimalSoftwareWindow>) {
     run_storage_rediscovery_flow(&root, window.clone());
     run_storage_pack_rebuild_flow(&root, window.clone(), false);
     run_storage_pack_rebuild_flow(&root, window.clone(), true);
+    run_storage_manual_refresh_flow(&root, window.clone());
     run_misterzine_browser_flow(&root, window.clone());
     run_browse_bar_settings_flow(&root, window.clone());
     run_start_folder_and_game_position_flow(&root, window.clone());

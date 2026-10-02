@@ -7526,6 +7526,12 @@ impl App {
             Err(error) => return Some(format!("{name}: {error}")),
         }
         warnings.extend(crate::index_job::catalogue_warnings(&library));
+        if let Some(storage) = &mut self.storage {
+            if let Err(error) = storage.refreshed(&system) {
+                warnings.push(format!("Storage tracking not refreshed: {error}"));
+            }
+        }
+        self.invalidate_storage_check();
         // An archive or member the scan left out, and anything publication
         // had to say is named by the system here. Catalogue warnings already
         // carry that name. Every warning is said out loud and logged.
@@ -10761,7 +10767,7 @@ impl App {
                 crate::index_job::Event::Ready {
                     index,
                     cache,
-                    warnings,
+                    mut warnings,
                     folders,
                     games,
                     elapsed,
@@ -10783,6 +10789,11 @@ impl App {
                     let system = current.and_then(|at| self.all_systems.get(at));
                     if let (Some(storage), Some(system)) = (&mut self.storage, system) {
                         storage.indexed(&system.def.id);
+                        if build.single {
+                            if let Err(error) = storage.refreshed(system) {
+                                warnings.push(format!("Storage tracking not refreshed: {error}"));
+                            }
+                        }
                     }
                     if let Some(system) = system {
                         crate::note(&format!(

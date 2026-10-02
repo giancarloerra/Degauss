@@ -166,6 +166,16 @@ impl State {
         }
     }
 
+    pub fn refreshed(&mut self, system: &FoundSystem) -> Result<()> {
+        let baseline = Self::new(
+            self.cores.clone(),
+            self.mountinfo.clone(),
+            std::slice::from_ref(system),
+        )?;
+        self.active.extend(baseline.active);
+        Ok(())
+    }
+
     pub fn observed_mounts(&mut self, mounts: Mounts) {
         self.declined.retain(|key| {
             key.attachment
@@ -441,6 +451,34 @@ impl Drop for Job {
 mod tests {
     use super::*;
     use std::sync::atomic::AtomicUsize;
+
+    #[test]
+    fn manual_refresh_keeps_declines_until_a_browser_observes_disconnection() {
+        let fixture = Fixture::new();
+        fixture.game("card/games/NES/Old.rom");
+        let old = fixture.found();
+        let mut state =
+            State::new(Arc::new(CoreIndex::default()), fixture.mountinfo(), &old).unwrap();
+        fixture.game("usb/games/NES/New.rom");
+        fixture.mounts(&[(2, &fixture.path("usb"))]);
+        let offered = discover(
+            fixture.request(&state, old.clone()),
+            &AtomicBool::new(false),
+        )
+        .unwrap()
+        .unwrap();
+        state.observed_mounts(offered.mounts);
+        let key = offered.offers[0].key.clone();
+        state.declined.insert(key.clone());
+        fixture.mounts(&[]);
+        state.refreshed(&old[0]).unwrap();
+        assert!(
+            state.declined.contains(&key),
+            "a manual refresh must not reset another drive's declined prompt"
+        );
+        state.observed_mounts(Mounts::read(&fixture.mountinfo()).unwrap());
+        assert!(state.declined.is_empty());
+    }
 
     #[test]
     fn dropping_a_storage_check_does_not_wait_for_a_blocked_reader() {
@@ -1080,6 +1118,17 @@ mod tests {
                 before,
                 std::fs::read(crate::cache::system_path(&f.path("cache"), "NES")).unwrap()
             );
+            let refreshed = reconnected.offers[0].system.clone();
+            f.cached(&refreshed);
+            state.refreshed(&refreshed).unwrap();
+            assert_eq!(state.active["NES"], reconnected.offers[0].key.attachment);
+            let mut after_refresh = request(&state);
+            after_refresh.previous = vec![refreshed];
+            let after_refresh = discover(after_refresh, &AtomicBool::new(false))
+                .unwrap()
+                .unwrap();
+            assert!(after_refresh.offers.is_empty());
+            assert_eq!(after_refresh.systems[0].paths, [games.join("NES")]);
             mounted.unmount();
         }
     }
