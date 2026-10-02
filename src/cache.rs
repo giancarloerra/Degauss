@@ -872,8 +872,50 @@ struct StagedCacheFile {
     backup_path: PathBuf,
     had_old: bool,
     replace_if_appeared: bool,
+    keep_live_backup: bool,
     backup_moved: bool,
     installed: bool,
+}
+
+impl StagedCacheFile {
+    fn back_up_previous(&mut self) -> Result<()> {
+        if self.keep_live_backup {
+            let back_up = || -> std::io::Result<()> {
+                #[cfg(unix)]
+                if std::fs::symlink_metadata(&self.final_path)?
+                    .file_type()
+                    .is_symlink()
+                {
+                    let target = std::fs::read_link(&self.final_path)?;
+                    return std::os::unix::fs::symlink(target, &self.backup_path);
+                }
+                std::fs::copy(&self.final_path, &self.backup_path).map(|_| ())
+            };
+            if let Err(error) = back_up() {
+                let cause =
+                    DegaussError::io("backing up the previous settings", &self.final_path, error);
+                if let Err(cleanup) = std::fs::remove_file(&self.backup_path) {
+                    if cleanup.kind() != std::io::ErrorKind::NotFound {
+                        return Err(DegaussError::unsupported(
+                            "settings backup",
+                            format!(
+                                "{cause}; removing incomplete backup {} failed: {cleanup}",
+                                self.backup_path.display()
+                            ),
+                        ));
+                    }
+                }
+                return Err(cause);
+            }
+        } else {
+            std::fs::rename(&self.final_path, &self.backup_path).map_err(|error| {
+                DegaussError::io("backing up the previous cache", &self.final_path, error)
+            })?;
+        }
+        self.had_old = true;
+        self.backup_moved = true;
+        Ok(())
+    }
 }
 
 /// Complete, synced and decoded cache files that have not changed any live
@@ -993,6 +1035,7 @@ impl PreparedCacheGroup {
             new_path: new_path.clone(),
             backup_path,
             replace_if_appeared,
+            keep_live_backup: false,
             backup_moved: false,
             installed: false,
         });
@@ -1028,11 +1071,7 @@ impl PreparedCacheGroup {
             for entry in &mut self.files {
                 let appeared = !entry.had_old && path_exists(&entry.final_path)?;
                 if entry.had_old || (entry.replace_if_appeared && appeared) {
-                    std::fs::rename(&entry.final_path, &entry.backup_path).map_err(|error| {
-                        DegaussError::io("backing up the previous cache", &entry.final_path, error)
-                    })?;
-                    entry.had_old = true;
-                    entry.backup_moved = true;
+                    entry.back_up_previous()?;
                 } else if appeared {
                     return Err(DegaussError::unsupported(
                         "cache transaction",
@@ -1068,6 +1107,18 @@ impl PreparedCacheGroup {
 
         let mut warnings = Vec::new();
         for entry in &self.files {
+            if entry.keep_live_backup {
+                let parent = entry
+                    .final_path
+                    .parent()
+                    .filter(|parent| !parent.as_os_str().is_empty())
+                    .unwrap_or_else(|| Path::new("."));
+                if let Err(error) = std::fs::File::open(parent).and_then(|dir| dir.sync_all()) {
+                    warnings.push(
+                        DegaussError::io("flushing settings directory", parent, error).to_string(),
+                    );
+                }
+            }
             if entry.had_old {
                 if let Err(error) = std::fs::remove_file(&entry.backup_path) {
                     warnings.push(format!(
@@ -1097,17 +1148,29 @@ fn path_exists(path: &Path) -> Result<bool> {
 fn restore_staged(files: &mut [StagedCacheFile]) -> Option<String> {
     let mut restoration_problem = None;
     for entry in files.iter_mut().rev() {
+        let kept_previous = entry.keep_live_backup && !entry.installed;
         if entry.installed {
-            if let Err(problem) = std::fs::remove_file(&entry.final_path) {
-                restoration_problem = Some(format!(
-                    "removing newly installed {} failed: {problem}",
-                    entry.final_path.display()
-                ));
-                continue;
+            if !entry.keep_live_backup || !entry.backup_moved {
+                if let Err(problem) = std::fs::remove_file(&entry.final_path) {
+                    restoration_problem = Some(format!(
+                        "removing newly installed {} failed: {problem}",
+                        entry.final_path.display()
+                    ));
+                    continue;
+                }
             }
             entry.installed = false;
         }
-        if entry.backup_moved {
+        if entry.backup_moved && kept_previous {
+            if let Err(problem) = std::fs::remove_file(&entry.backup_path) {
+                restoration_problem = Some(format!(
+                    "removing unused settings backup {} failed: {problem}",
+                    entry.backup_path.display()
+                ));
+            } else {
+                entry.backup_moved = false;
+            }
+        } else if entry.backup_moved {
             if let Err(problem) = std::fs::rename(&entry.backup_path, &entry.final_path) {
                 restoration_problem = Some(format!(
                     "restoring {} failed: {problem}",
@@ -1278,6 +1341,7 @@ fn stage_transactional_with_tag_observed(
             new_path: new_path.clone(),
             backup_path,
             replace_if_appeared: false,
+            keep_live_backup: false,
             installed: false,
             backup_moved: false,
         });
@@ -1595,6 +1659,13 @@ pub fn prepare_pack_match(
                 .is_ok_and(|text| toml::from_str::<crate::settings::Settings>(text).is_ok())
         },
     )?;
+    // Keep the previous settings in place until the atomic replacement,
+    // rather than allowing interruption to leave every preference absent.
+    staged
+        .files
+        .last_mut()
+        .expect("staged settings")
+        .keep_live_backup = true;
     Ok(staged)
 }
 
@@ -3324,6 +3395,139 @@ mod tests {
         assert!(cache.get(&Place::Archive(archive)).is_some());
 
         std::fs::remove_dir_all(games).unwrap();
+    }
+
+    #[test]
+    fn manual_match_settings_stay_readable_until_atomic_replacement() {
+        let store = temp("manual-match-live-settings");
+        std::fs::create_dir_all(store.join("artwork-pack")).unwrap();
+        let settings_path = store.join("settings.toml");
+        let old = crate::settings::Settings {
+            last_played: Some(8),
+            ..Default::default()
+        };
+        old.save(&settings_path).unwrap();
+        let before = std::fs::read(&settings_path).unwrap();
+        let next = crate::settings::Settings {
+            last_played: Some(4),
+            ..old.clone()
+        };
+        let mut staged = prepare_pack_match(
+            &store,
+            "NES",
+            &PackPreparedMap::new(),
+            &settings_path,
+            &next,
+        )
+        .unwrap();
+        let settings_file = staged.files.last_mut().unwrap();
+        settings_file.back_up_previous().unwrap();
+        assert_eq!(
+            std::fs::read(&settings_path).unwrap(),
+            before,
+            "the old overlay remains installed while its rollback copy is made"
+        );
+        assert_eq!(
+            crate::settings::Settings::load(&settings_path)
+                .unwrap()
+                .last_played,
+            Some(8),
+            "interruption before replacement cannot reset unrelated preferences"
+        );
+        std::fs::rename(&settings_file.new_path, &settings_file.final_path).unwrap();
+        settings_file.installed = true;
+        assert_eq!(
+            crate::settings::Settings::load(&settings_path)
+                .unwrap()
+                .last_played,
+            Some(4)
+        );
+        drop(staged);
+        assert_eq!(std::fs::read(&settings_path).unwrap(), before);
+        std::fs::remove_dir_all(store).unwrap();
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn failed_manual_match_preserves_an_unreplaced_settings_symlink() {
+        let store = temp("manual-match-settings-link");
+        std::fs::create_dir_all(store.join("artwork-pack")).unwrap();
+        save_pack_state(
+            &store,
+            "NES",
+            &PackSourceState::default(),
+            &PackPreparedMap::new(),
+        )
+        .unwrap();
+        let original = store.join("linked-settings.toml");
+        let settings_path = store.join("settings.toml");
+        crate::settings::Settings::default()
+            .save(&original)
+            .unwrap();
+        std::os::unix::fs::symlink(&original, &settings_path).unwrap();
+        let before = std::fs::read(&original).unwrap();
+        let staged = prepare_pack_match(
+            &store,
+            "NES",
+            &PackPreparedMap::new(),
+            &settings_path,
+            &crate::settings::Settings::default(),
+        )
+        .unwrap();
+        std::fs::remove_file(&staged.files.last().unwrap().new_path).unwrap();
+        assert!(staged.install().is_err());
+        assert_eq!(std::fs::read_link(&settings_path).unwrap(), original);
+        assert_eq!(std::fs::read(&settings_path).unwrap(), before);
+        std::fs::remove_dir_all(store).unwrap();
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn failed_index_after_manual_match_restores_the_replaced_settings_symlink() {
+        let store = temp("manual-match-replaced-settings-link");
+        std::fs::create_dir_all(store.join("artwork-pack")).unwrap();
+        save_pack_state(
+            &store,
+            "NES",
+            &PackSourceState::default(),
+            &PackPreparedMap::new(),
+        )
+        .unwrap();
+        let original = store.join("linked-settings.toml");
+        let settings_path = store.join("settings.toml");
+        let old = crate::settings::Settings {
+            last_played: Some(8),
+            ..Default::default()
+        };
+        old.save(&original).unwrap();
+        let target = PathBuf::from("linked-settings.toml");
+        std::os::unix::fs::symlink(&target, &settings_path).unwrap();
+        let before = std::fs::read(&original).unwrap();
+        let next = crate::settings::Settings {
+            last_played: Some(4),
+            ..old
+        };
+        let staged = prepare_pack_match(
+            &store,
+            "NES",
+            &PackPreparedMap::new(),
+            &settings_path,
+            &next,
+        )
+        .unwrap()
+        .with_index(&store, &Index::default())
+        .unwrap();
+        // Fail after the new settings have replaced the symlink.
+        std::fs::remove_file(&staged.files.last().unwrap().new_path).unwrap();
+        assert!(staged.install().is_err());
+        assert_eq!(
+            std::fs::read_link(&settings_path).unwrap(),
+            target,
+            "rollback preserves the original relative symlink, not just its contents"
+        );
+        assert_eq!(std::fs::read(&original).unwrap(), before);
+        assert_eq!(std::fs::read(&settings_path).unwrap(), before);
+        std::fs::remove_dir_all(store).unwrap();
     }
 
     #[test]
