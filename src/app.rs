@@ -11205,6 +11205,25 @@ impl App {
         Ok(())
     }
 
+    fn core_changes_status(&self) -> &'static str {
+        let Some(visit) = self.core_changes_visit.as_ref() else {
+            return "";
+        };
+        if self.misterzine_job.is_some() {
+            "Refreshing"
+        } else if visit.baseline.is_none() {
+            "First check"
+        } else if visit.source_changed() {
+            "Source settings changed"
+        } else if self.core_changes_scope == crate::core_changes::Scope::WhatsNew
+            && self.misterzine_visible.is_empty()
+        {
+            "No changes"
+        } else {
+            ""
+        }
+    }
+
     fn misterzine_request(&self, force_refresh: bool) -> crate::misterzine::Request {
         crate::misterzine::Request {
             cache_dir: self.cache_dir.clone(),
@@ -21425,6 +21444,11 @@ impl App {
                     "Game Browser".to_string()
                 }
                 Screen::Browse
+                    if self.in_misterzine_browser() && !self.core_changes_status().is_empty() =>
+                {
+                    self.core_changes_status().to_string()
+                }
+                Screen::Browse
                     if self.browsing == Browsing::Games
                         && !self.in_cores_browser()
                         && !self.in_misterzine_browser()
@@ -21577,27 +21601,7 @@ impl App {
                     if self.explore.active {
                         format!("{} matches", self.explore.matches.len())
                     } else if self.in_misterzine_browser() && self.core_changes_visit.is_some() {
-                        if self.misterzine_job.is_some() {
-                            "Refreshing".into()
-                        } else if self
-                            .core_changes_visit
-                            .as_ref()
-                            .is_some_and(|visit| visit.baseline.is_none())
-                        {
-                            "First check".into()
-                        } else if self
-                            .core_changes_visit
-                            .as_ref()
-                            .is_some_and(crate::core_changes::Visit::source_changed)
-                        {
-                            "Source settings changed".into()
-                        } else if self.core_changes_scope == crate::core_changes::Scope::WhatsNew
-                            && self.misterzine_visible.is_empty()
-                        {
-                            "No changes".into()
-                        } else {
-                            String::new()
-                        }
+                        self.core_changes_status().into()
                     } else {
                         speed_badge(self.speed)
                     },
@@ -23780,6 +23784,12 @@ pub(crate) fn test_library_launch_flow(window: Rc<MinimalSoftwareWindow>) {
             .contains("Checked:"));
         app.misterzine_job = Some(crate::misterzine::Job::pending_fixture());
         app.update_operation_ui();
+        app.refresh();
+        assert_eq!(
+            app.ui.get_heading_detail().as_str(),
+            "Refreshing",
+            "browse hides ordinary status, so refresh must use its visible badge"
+        );
         assert_eq!(
             app.ui.get_operation_kind(),
             0,
@@ -23804,6 +23814,15 @@ pub(crate) fn test_library_launch_flow(window: Rc<MinimalSoftwareWindow>) {
             "manually installed cores remain in All Cores"
         );
         app.misterzine_job = None;
+        app.core_changes_visit.as_mut().unwrap().baseline = None;
+        app.refresh();
+        assert_eq!(app.ui.get_heading_detail().as_str(), "First check");
+        let current = app.core_changes_visit.as_ref().unwrap().current.clone();
+        app.core_changes_visit.as_mut().unwrap().baseline = Some(current);
+        app.core_changes_scope = Scope::WhatsNew;
+        app.rebuild_misterzine_rows();
+        app.refresh();
+        assert_eq!(app.ui.get_heading_detail().as_str(), "No changes");
         app.core_changes_visit = None;
         app.core_changes_scope = Default::default();
         app.misterzine_items.clear();
