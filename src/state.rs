@@ -246,7 +246,7 @@ pub fn take_position(resuming: bool, path: &Path) -> Option<State> {
         return None;
     }
     let saved = State::load(path);
-    (!saved.system.is_empty()).then_some(saved)
+    (!saved.system.is_empty() || saved.home.is_some()).then_some(saved)
 }
 
 /// In `/tmp` on purpose: it is gone after a power cycle, so a cold start
@@ -315,6 +315,40 @@ pub fn clear_resuming() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn personal_home_resume_does_not_require_an_open_game_system() {
+        let directory =
+            std::env::temp_dir().join(format!("degauss-home-resume-{}", std::process::id()));
+        std::fs::create_dir(&directory).unwrap();
+        let path = directory.join("state.toml");
+        let saved = State {
+            home: Some(crate::home::Resume {
+                folder: Some("1".into()),
+                key: "entry:8".into(),
+                anchor: None,
+            }),
+            ..Default::default()
+        };
+        saved.save(&path).unwrap();
+        assert_eq!(
+            take_position(true, &path).unwrap().home.unwrap().key,
+            "entry:8",
+            "a pinned script or core returns to its exact personal folder entry"
+        );
+        State::default().save(&path).unwrap();
+        assert!(
+            take_position(true, &path).is_none(),
+            "ordinary empty legacy state is still ignored"
+        );
+        saved.save(&path).unwrap();
+        assert!(
+            take_position(false, &path).is_none(),
+            "a genuine cold start retains its normal root behavior"
+        );
+        assert!(!path.exists());
+        std::fs::remove_dir(&directory).unwrap();
+    }
 
     #[cfg(unix)]
     #[test]
