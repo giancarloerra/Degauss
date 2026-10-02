@@ -434,12 +434,13 @@ pub(crate) fn discover_checked_excluding(
         if paths.is_empty() {
             continue;
         }
+        let def = cores.with_dual_sdram_profiles(def);
         found.push(FoundSystem {
             // The core the table names, or failing that a core named after
             // the system itself. A table entry can name a core this card
             // does not have: several systems run on more than one core, and
             // the table can only name one of them.
-            menu_folder: if direct_collection(def) {
+            menu_folder: if direct_collection(&def) {
                 None
             } else {
                 def.core_references()
@@ -447,7 +448,7 @@ pub(crate) fn discover_checked_excluding(
                     .or_else(|| cores.folder_of(&def.id))
                     .map(str::to_string)
             },
-            def: def.clone(),
+            def,
             paths,
             logo_dir: logo_dir.map(|d| d.to_path_buf()),
         });
@@ -475,6 +476,7 @@ fn discover(
 /// a similar name is an arcade board.
 #[derive(Debug, Default)]
 pub struct CoreIndex {
+    root: PathBuf,
     /// Lowercased core name, without its date stamp, to the menu folder
     /// holding it and how deep inside that folder it sits.
     folders: BTreeMap<String, Vec<CoreCandidate>>,
@@ -627,7 +629,10 @@ impl CoreIndex {
     }
 
     fn read_with(root: &Path, checked: bool) -> Result<Self> {
-        let mut index = CoreIndex::default();
+        let mut index = CoreIndex {
+            root: root.to_path_buf(),
+            ..CoreIndex::default()
+        };
         let listing = match std::fs::read_dir(root) {
             Ok(listing) => listing,
             Err(error) if checked => {
@@ -842,25 +847,120 @@ impl CoreIndex {
             .map(|candidate| candidate.folder.as_str())
     }
 
+    /// Add installed variants from the published folder and filename layouts.
+    /// These runtime profiles never rewrite a user's systems table or caches.
+    fn with_dual_sdram_profiles(&self, system: &SystemDef) -> SystemDef {
+        let mut result = system.clone();
+        let families = std::iter::once((system.rbf.as_str(), system.setname.as_ref())).chain(
+            system
+                .compatible_cores
+                .iter()
+                .map(|profile| (profile.rbf.as_str(), profile.setname.as_ref())),
+        );
+        for (rbf, setname) in families {
+            let reference = Path::new(rbf);
+            let Some(name) = reference.file_name().and_then(|name| name.to_str()) else {
+                continue;
+            };
+            let name = undated_core_stem(name);
+            if name.is_empty() || name.ends_with("_DualSDRAM") || dual_sdram_folder(rbf) {
+                continue;
+            }
+            let Some(parent) = reference.parent().and_then(Path::to_str) else {
+                continue;
+            };
+            let (menu_folder, nested) = parent.split_once('/').unwrap_or((parent, ""));
+            if !menu_folder.starts_with('_') || menu_folder == "_Unstable" {
+                continue;
+            }
+            let dual_folder = Path::new(&format!("{menu_folder} (Dual SDRAM)"))
+                .join(nested)
+                .join(name)
+                .to_string_lossy()
+                .into_owned();
+            let dual_name = reference
+                .with_file_name(format!("{name}_DualSDRAM"))
+                .to_string_lossy()
+                .into_owned();
+            for variant in [dual_folder, dual_name] {
+                if result.core_references().any(|existing| existing == variant) {
+                    continue;
+                }
+                let path = Path::new(&variant);
+                let basename = path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .unwrap_or("");
+                let installed = self.launchers.iter().any(|entry| {
+                    entry.kind == ScannedCoreKind::Standard
+                        && entry.path.parent()
+                            == Some(
+                                self.root
+                                    .join(path.parent().unwrap_or(Path::new("")))
+                                    .as_path(),
+                            )
+                        && crate::core_variants::same_core_identity(&entry.stem, basename)
+                }) || (!dual_sdram_folder(&variant)
+                    && (self.launchers.iter().any(|entry| {
+                        entry.kind == ScannedCoreKind::Unstable
+                            && crate::core_choices::nightly_matches(&entry.stem, &variant)
+                    }) || (self.ra_support.contains(&core_name(basename))
+                        && self.launchers.iter().any(|entry| {
+                            entry.kind == ScannedCoreKind::RetroAchievements
+                                && (entry.stem.eq_ignore_ascii_case(basename)
+                                    || entry.stem.eq_ignore_ascii_case(&format!("RA_{basename}")))
+                        }))));
+                if !installed {
+                    continue;
+                }
+                let id = format!("dual-sdram:{variant}");
+                if result
+                    .compatible_cores
+                    .iter()
+                    .any(|profile| profile.id == id)
+                {
+                    continue;
+                }
+                result.compatible_cores.push(CoreProfile {
+                    id,
+                    label: format!(
+                        "{name} (Dual SDRAM, {})",
+                        path.parent().unwrap_or(Path::new("")).display()
+                    ),
+                    rbf: variant,
+                    setname: setname.cloned(),
+                });
+            }
+        }
+        result
+    }
+
     /// Build the direct-launch catalogue from the files already seen by this
     /// index. No directory is opened here.
     pub fn catalogue(&self, table: &[SystemDef]) -> CoreCatalogue {
+        let table: Vec<_> = table
+            .iter()
+            .map(|system| self.with_dual_sdram_profiles(system))
+            .collect();
         let mut entries = Vec::new();
-        let mut standard_by_identity = BTreeMap::<String, Vec<&ScannedCore>>::new();
+        let mut standard_by_identity = BTreeMap::<(String, bool), Vec<&ScannedCore>>::new();
         for scanned in self
             .launchers
             .iter()
             .filter(|entry| entry.kind == ScannedCoreKind::Standard)
         {
             standard_by_identity
-                .entry(core_name(&scanned.stem))
+                .entry((
+                    core_name(&scanned.stem),
+                    scanned.folder.ends_with(" (Dual SDRAM)"),
+                ))
                 .or_default()
                 .push(scanned);
         }
 
         let mut installed_categories = BTreeMap::<String, String>::new();
-        for (identity, mut candidates) in standard_by_identity {
-            let system = system_for_core(table, &identity);
+        for ((identity, folder_variant), mut candidates) in standard_by_identity {
+            let system = system_for_core(&table, &identity);
             let declared = system
                 .and_then(|system| system.rbf.split_once('/').map(|(folder, _)| folder))
                 .map(|folder| folder.trim_start_matches('_'));
@@ -875,11 +975,22 @@ impl CoreIndex {
             let Some(chosen) = candidates.first() else {
                 continue;
             };
-            installed_categories.insert(identity, chosen.folder.clone());
+            if !folder_variant {
+                installed_categories.insert(identity, chosen.folder.clone());
+            }
+            let dual = folder_variant || undated_core_stem(&chosen.stem).ends_with("_DualSDRAM");
+            let name = system.map(|system| system.name.clone()).unwrap_or_else(|| {
+                undated_core_stem(&chosen.stem)
+                    .strip_suffix("_DualSDRAM")
+                    .unwrap_or_else(|| undated_core_stem(&chosen.stem))
+                    .to_string()
+            });
             entries.push(CoreEntry {
-                name: system
-                    .map(|system| system.name.clone())
-                    .unwrap_or_else(|| undated_core_stem(&chosen.stem).to_string()),
+                name: if dual {
+                    format!("{name} (Dual SDRAM)")
+                } else {
+                    name
+                },
                 category: chosen.folder.clone(),
                 variant: CoreVariant::Standard,
                 path: chosen.path.clone(),
@@ -909,7 +1020,7 @@ impl CoreIndex {
                 .or_insert(scanned);
         }
         for (identity, scanned) in ra_seen {
-            let system = system_for_core(table, &identity);
+            let system = system_for_core(&table, &identity);
             let category = installed_categories
                 .get(&identity)
                 .cloned()
@@ -917,7 +1028,13 @@ impl CoreIndex {
                 .unwrap_or_else(|| "Other".to_string());
             entries.push(CoreEntry {
                 name: system
-                    .map(|system| system.name.clone())
+                    .map(|system| {
+                        if scanned.stem.ends_with("_DualSDRAM") {
+                            format!("{} (Dual SDRAM)", system.name)
+                        } else {
+                            system.name.clone()
+                        }
+                    })
                     .unwrap_or_else(|| scanned.stem.trim_start_matches("RA_").to_string()),
                 category,
                 variant: CoreVariant::RetroAchievements,
@@ -948,13 +1065,22 @@ impl CoreIndex {
             let system = table
                 .iter()
                 .filter(|system| !system.rbf.is_empty())
-                .find(|system| crate::core_choices::nightly_matches(&scanned.stem, &system.rbf));
-            let identity = system.map(|system| {
-                core_name(system.rbf.rsplit('/').next().unwrap_or(system.rbf.as_str()))
-            });
+                .find(|system| {
+                    system
+                        .core_references()
+                        .any(|rbf| crate::core_choices::nightly_matches(&scanned.stem, rbf))
+                });
+            let base = unstable_core_name(&scanned.stem);
+            let identity = system.map(|_| core_name(&base));
             entries.push(CoreEntry {
                 name: system
-                    .map(|system| system.name.clone())
+                    .map(|system| {
+                        if base.ends_with("_DualSDRAM") {
+                            format!("{} (Dual SDRAM)", system.name)
+                        } else {
+                            system.name.clone()
+                        }
+                    })
                     .unwrap_or_else(|| unstable_core_name(&scanned.stem)),
                 category: identity
                     .as_ref()
@@ -983,6 +1109,16 @@ impl CoreIndex {
         }
     }
 
+    /// Old optional catalogues collapsed these targets. Refresh only that
+    /// affected catalogue from the shallow walk already completed at startup.
+    pub(crate) fn has_dual_sdram(&self) -> bool {
+        self.launchers.iter().any(|entry| {
+            entry.folder.ends_with(" (Dual SDRAM)")
+                || undated_core_stem(&entry.stem).ends_with("_DualSDRAM")
+                || unstable_core_name(&entry.stem).ends_with("_DualSDRAM")
+        })
+    }
+
     #[cfg_attr(not(test), allow(dead_code))]
     pub fn len(&self) -> usize {
         self.folders.len()
@@ -996,10 +1132,24 @@ fn system_for_core<'a>(table: &'a [SystemDef], identity: &str) -> Option<&'a Sys
         .or_else(|| {
             table.iter().find(|system| {
                 !system.rbf.is_empty()
-                    && core_name(system.rbf.rsplit('/').next().unwrap_or(system.rbf.as_str()))
-                        == identity
+                    && system
+                        .core_references()
+                        .any(|rbf| core_name(rbf.rsplit('/').next().unwrap_or(rbf)) == identity)
             })
         })
+}
+
+/// Folder-distributed dual builds keep the single-RAM filename, but must not
+/// inherit that filename's single-RAM RA or Unstable versions.
+pub(crate) fn dual_sdram_folder(reference: &str) -> bool {
+    Path::new(reference).parent().is_some_and(|parent| {
+        parent.components().any(|component| {
+            component
+                .as_os_str()
+                .to_str()
+                .is_some_and(|folder| folder.ends_with(" (Dual SDRAM)"))
+        })
+    })
 }
 
 fn db9_standard_parts(stem: &str) -> Option<(&str, &str)> {
@@ -1885,6 +2035,239 @@ extensions = ["md", "bin"]
     fn a_malformed_table_is_an_error_rather_than_an_empty_browser() {
         assert!(parse_table("systems = []", Path::new("t.toml")).is_err());
         assert!(parse_table("nonsense", Path::new("t.toml")).is_err());
+    }
+
+    fn dual_fixture(name: &str) -> SystemDef {
+        parse_table(&format!(
+            "[[systems]]\nname = \"{name}\"\nid = \"{name}\"\nfolders = [\"{name}\"]\nrbf = \"_Console/{name}\"\nextensions = [\"chd\"]\n"
+        ), Path::new("dual SDRAM fixture")).unwrap().remove(0)
+    }
+
+    fn dual_file(root: &Path, file: &str) {
+        let path = root.join(file);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, b"fixture").unwrap();
+    }
+
+    #[test]
+    fn dual_sdram_layouts_work_for_existing_and_future_core_families() {
+        let menu = temp_dir("dual-sdram-layouts");
+        let games = menu.join("games");
+        let table: Vec<_> = ["PSX", "Saturn", "FutureConsole"]
+            .into_iter()
+            .map(dual_fixture)
+            .collect();
+        for name in ["PSX", "Saturn", "FutureConsole"] {
+            std::fs::create_dir_all(games.join(name)).unwrap();
+            dual_file(&menu, &format!("_Console/{name}_20260901.rbf"));
+            dual_file(&menu, &format!("_Console (Dual SDRAM)/{name}_20260901.rbf"));
+            dual_file(
+                &menu,
+                &format!("_Console/{name}_DualSDRAM_20260929_a1b2c3d_DB9.rbf"),
+            );
+        }
+        let cores = CoreIndex::read_checked(&menu).unwrap();
+        let found = discover_checked(&table, &[games], None, &cores).unwrap();
+        for system in &found {
+            let config = system.to_config();
+            assert_eq!(config.compatible_cores.len(), 2);
+            assert_eq!(crate::launch_cores::resolve(&config, &menu, None).unwrap().rbf, system.def.rbf,
+                "installing dual variants does not change Automatic when the preferred family exists");
+            for profile in &config.compatible_cores {
+                let selected =
+                    crate::launch_cores::resolve(&config, &menu, Some(&profile.id)).unwrap();
+                assert_eq!(selected.rbf, profile.rbf);
+                assert_eq!(selected.path, config.path);
+                assert_eq!(selected.extensions, config.extensions);
+                assert!(crate::launch_cores::game_choices_for_version(
+                    &config,
+                    &menu,
+                    Some(&profile.id),
+                    None,
+                    None,
+                    false
+                )
+                .iter()
+                .any(|choice| choice.id == profile.id && choice.available));
+            }
+        }
+        let catalogue = cores.catalogue(&table);
+        assert_eq!(
+            catalogue.entries.len(),
+            9,
+            "single and both dual layouts are separate targets"
+        );
+        assert_eq!(
+            catalogue
+                .entries
+                .iter()
+                .filter(|entry| entry.label().contains("Dual SDRAM"))
+                .count(),
+            6
+        );
+        for entry in &catalogue.entries {
+            assert!(entry.path.is_file());
+        }
+        assert!(
+            table
+                .iter()
+                .all(|system| system.compatible_cores.is_empty()),
+            "no config migration"
+        );
+        crate::cache::save_core_catalogue(&menu.join("cache"), &catalogue).unwrap();
+        assert_eq!(
+            crate::cache::load_core_catalogue(&menu.join("cache")).unwrap(),
+            catalogue
+        );
+        assert_eq!(CoreCatalogue::FORMAT, 2);
+        std::fs::remove_dir_all(menu).unwrap();
+    }
+
+    #[test]
+    fn dual_only_and_removed_saved_choices_do_not_select_another_build() {
+        let menu = temp_dir("dual-sdram-missing");
+        let def = dual_fixture("PSX");
+        let filename = "_Console (Dual SDRAM)/PSX_20260901.rbf";
+        dual_file(&menu, filename);
+        let runtime = CoreIndex::read_checked(&menu)
+            .unwrap()
+            .with_dual_sdram_profiles(&def);
+        let profile = runtime.compatible_cores[0].clone();
+        let found = FoundSystem {
+            def: runtime,
+            paths: vec![menu.join("games/PSX")],
+            logo_dir: None,
+            menu_folder: None,
+        };
+        let config = found.to_config();
+        assert_eq!(
+            crate::launch_cores::resolve(&config, &menu, None)
+                .unwrap()
+                .rbf,
+            profile.rbf
+        );
+        std::fs::remove_file(menu.join(filename)).unwrap();
+        dual_file(&menu, "_Console/PSX_20260901.rbf");
+        assert!(crate::launch_cores::resolve(&config, &menu, Some(&profile.id)).is_err());
+        let after_restart = CoreIndex::read_checked(&menu)
+            .unwrap()
+            .with_dual_sdram_profiles(&def);
+        let mut restarted = found;
+        restarted.def = after_restart;
+        let config = restarted.to_config();
+        assert!(crate::launch_cores::resolve(&config, &menu, Some(&profile.id)).is_err());
+        assert!(
+            crate::launch_cores::choices(&config, &menu, Some(&profile.id))
+                .iter()
+                .any(|choice| choice.id == profile.id && !choice.available)
+        );
+        std::fs::remove_dir_all(menu).unwrap();
+    }
+
+    #[test]
+    fn dual_folder_never_borrows_single_ram_versions() {
+        let menu = temp_dir("dual-sdram-versions");
+        for filename in [
+            "_Console (Dual SDRAM)/PSX_20260901.rbf",
+            "_Unstable/PSX_unstable_20260901_a1.rbf",
+            "_RA_Cores/Cores/PSX.rbf",
+        ] {
+            dual_file(&menu, filename);
+        }
+        std::fs::write(menu.join("_RA_Cores/PSX.mgl"),
+            "<mistergamedescription><rbf>_RA_Cores/Cores/PSX</rbf><setname same_dir=\"1\">RA_PSX</setname></mistergamedescription>").unwrap();
+        let mut config = FoundSystem {
+            def: dual_fixture("PSX"),
+            paths: vec![menu.join("games/PSX")],
+            logo_dir: None,
+            menu_folder: None,
+        }
+        .to_config();
+        config.rbf = "_Console (Dual SDRAM)/PSX".into();
+        assert!(crate::core_variants::installed_ra(&config, &menu)
+            .unwrap()
+            .is_none());
+        assert!(!crate::core_choices::has_unstable_version(&config, &menu).unwrap());
+        assert!(crate::core_choices::resolve(&config, &menu, Some("ra"), false).is_err());
+        assert!(crate::core_choices::resolve(
+            &config,
+            &menu,
+            Some("_Unstable/PSX_unstable_20260901_a1.rbf"),
+            false
+        )
+        .is_err());
+        std::fs::remove_dir_all(menu).unwrap();
+    }
+
+    #[test]
+    fn named_dual_versions_and_explicit_profiles_remain_in_their_family() {
+        let menu = temp_dir("dual-sdram-named");
+        for filename in [
+            "_Console/PSX_DualSDRAM_20260929_a1b2c3d_DB9.rbf",
+            "_Unstable/_PSX_DualSDRAM/PSX_DualSDRAM_unstable_20260929_1200_a1b2c3d_DB9.rbf",
+            "_Unstable/PSX_unstable_20260929_a1.rbf",
+            "_RA_Cores/Cores/PSX_DualSDRAM.rbf",
+        ] {
+            dual_file(&menu, filename);
+        }
+        std::fs::write(menu.join("_RA_Cores/PSX_DualSDRAM.mgl"),
+            "<mistergamedescription><rbf>_RA_Cores/Cores/PSX_DualSDRAM</rbf><setname same_dir=\"1\">RA_PSX_DualSDRAM</setname></mistergamedescription>").unwrap();
+        let def = dual_fixture("PSX");
+        let index = CoreIndex::read_checked(&menu).unwrap();
+        let runtime = index.with_dual_sdram_profiles(&def);
+        assert_eq!(runtime.compatible_cores.len(), 1);
+        let profile = runtime.compatible_cores[0].clone();
+        let config = FoundSystem {
+            def: runtime.clone(),
+            paths: vec![menu.join("games/PSX")],
+            logo_dir: None,
+            menu_folder: None,
+        }
+        .to_config();
+        let family = crate::launch_cores::resolve(&config, &menu, Some(&profile.id)).unwrap();
+        let choices = crate::core_choices::available(&family, &menu).unwrap();
+        assert_eq!(
+            choices.len(),
+            3,
+            "Standard, matching RA and matching Unstable only"
+        );
+        assert!(!choices
+            .iter()
+            .any(|choice| choice.key == "_Unstable/PSX_unstable_20260929_a1.rbf"));
+        assert_eq!(
+            index.with_dual_sdram_profiles(&runtime).compatible_cores,
+            runtime.compatible_cores,
+            "explicit profiles are not duplicated or relabelled"
+        );
+        let catalogue = index.catalogue(&[def]);
+        assert_eq!(
+            catalogue
+                .entries
+                .iter()
+                .filter(|entry| entry.label().contains("Dual SDRAM"))
+                .count(),
+            3
+        );
+        std::fs::remove_dir_all(menu).unwrap();
+    }
+
+    #[test]
+    fn dual_profiles_do_not_guess_from_similar_or_malformed_names() {
+        let menu = temp_dir("dual-sdram-names");
+        for filename in [
+            "_Console/PSX_DualSDRAM_custom.rbf",
+            "_Console/PSX2_DualSDRAM_20260901.rbf",
+            "_Console/PSX_DualSDRAM_20260929_bad_DB9.rbf",
+            "_Console (Dual SDRAM extra)/PSX_20260901.rbf",
+        ] {
+            dual_file(&menu, filename);
+        }
+        assert!(CoreIndex::read_checked(&menu)
+            .unwrap()
+            .with_dual_sdram_profiles(&dual_fixture("PSX"))
+            .compatible_cores
+            .is_empty());
+        std::fs::remove_dir_all(menu).unwrap();
     }
 
     #[test]

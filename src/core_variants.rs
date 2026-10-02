@@ -240,6 +240,9 @@ pub fn resolve(system: &SystemConfig, root: &Path, ra_first: bool) -> Result<Eff
 }
 
 pub(crate) fn installed_ra(system: &SystemConfig, root: &Path) -> Result<Option<EffectiveCore>> {
+    if crate::systems::dual_sdram_folder(&system.rbf) {
+        return Ok(None);
+    }
     let basename = Path::new(&system.rbf)
         .file_name()
         .and_then(|s| s.to_str())

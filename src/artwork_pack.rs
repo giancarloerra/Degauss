@@ -73,6 +73,23 @@ pub struct ResolutionDiagnostic {
     pub synopsis_language: Option<String>,
 }
 
+/// A user-selected index name, not an image copy or an installation path.
+/// The index resolves it again when the Pack is updated or rebuilt.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ManualMatch {
+    pub folder: String,
+    pub name: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MatchChoice {
+    pub reference: ManualMatch,
+    pub label: String,
+    pub presentation: PackPresentation,
+}
+
+pub type ManualMatches = BTreeMap<String, ManualMatch>;
+
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PackPresentation {
     pub name: Option<String>,
@@ -274,6 +291,110 @@ pub struct Provider {
 }
 
 impl Provider {
+    /// Resolve only the saved name in its saved catalogue. Never guess another
+    /// game when a saved reference is unavailable.
+    pub fn presentation_for_match(&self, selected: &ManualMatch) -> Result<PackPresentation> {
+        let directory = self
+            .directories
+            .iter()
+            .find(|directory| directory.label == selected.folder);
+        let key = directory.and_then(|directory| directory.index_names.get(&fold(&selected.name)));
+        match (directory, key) {
+            (Some(directory), Some(key)) if directory.has_key(key) => {
+                Ok(directory.presentation(key, MatchMethod::IndexName))
+            }
+            _ => Err(DegaussError::unsupported(
+                "Artwork Pack match",
+                format!(
+                    "Saved entry {:?} in {} is unavailable. Choose another Artwork Pack Match or use Automatic Match.",
+                    selected.name, selected.folder
+                ),
+            )),
+        }
+    }
+
+    /// A short suggestion list from unambiguous index names with artwork.
+    /// Ranking is only for this chooser; it never changes automatic matching.
+    pub fn match_choices(
+        &self,
+        query: &str,
+        cancelled: &AtomicBool,
+    ) -> Result<Option<Vec<MatchChoice>>> {
+        if !self.health.usable() {
+            return Err(DegaussError::unsupported(
+                "Artwork Pack match",
+                self.status_line(),
+            ));
+        }
+        let wanted = search_title(query);
+        if wanted.is_empty() {
+            return Ok(Some(Vec::new()));
+        }
+        let wanted_pairs = title_pairs(&wanted);
+        let mut best: Vec<(usize, String, MatchChoice)> = Vec::new();
+        for directory in self.directories.iter() {
+            for (name, key) in &directory.index_names.values {
+                if cancelled.load(Ordering::Relaxed) {
+                    return Ok(None);
+                }
+                if !directory.images.contains_key(key) {
+                    continue;
+                }
+                let title = search_title(name);
+                let score = if title == wanted {
+                    3_000
+                } else if title.starts_with(&wanted) || title.contains(&wanted) {
+                    2_000 + wanted.len() * 1_000 / title.len().max(1)
+                } else {
+                    let pairs = title_pairs(&title);
+                    let common = wanted_pairs.intersection(&pairs).count();
+                    if common == 0 {
+                        continue;
+                    }
+                    2_000 * common / (wanted_pairs.len() + pairs.len()).max(1)
+                };
+                let tie = format!("{}\0{key}\0{name}", directory.label);
+                if let Some((worst_score, worst_tie, _)) = best.get(7) {
+                    if *worst_score > score || (*worst_score == score && *worst_tie <= tie) {
+                        continue;
+                    }
+                }
+                let presentation = directory.presentation(key, MatchMethod::IndexName);
+                let label = directory.display_keys.get(key).unwrap_or(key).clone();
+                let choice = MatchChoice {
+                    reference: ManualMatch {
+                        folder: directory.label.clone(),
+                        name: name.clone(),
+                    },
+                    label: if self.directories.len() > 1 {
+                        format!("{label} [{}]", directory.label)
+                    } else {
+                        label
+                    },
+                    presentation,
+                };
+                // Different regional aliases may name the same picture. Keep
+                // its best alias, deterministically, rather than duplicate it.
+                if let Some(at) = best.iter().position(|(_, _, existing)| {
+                    existing.reference.folder == choice.reference.folder
+                        && existing.presentation.diagnostic.as_ref().map(|d| &d.key)
+                            == choice.presentation.diagnostic.as_ref().map(|d| &d.key)
+                }) {
+                    if best[at].0 > score || (best[at].0 == score && best[at].1 <= tie) {
+                        continue;
+                    }
+                    best.remove(at);
+                }
+                best.push((score, tie, choice));
+                best.sort_by(|left, right| right.0.cmp(&left.0).then(left.1.cmp(&right.1)));
+                best.truncate(8);
+            }
+        }
+        Ok(Some(
+            best.into_iter().map(|(_, _, choice)| choice).collect(),
+        ))
+    }
+
     fn select_full_synopsis_path(selected: &mut Option<PathBuf>, candidate: PathBuf) -> Result<()> {
         if selected.is_some() {
             return Err(DegaussError::unsupported(
@@ -722,6 +843,7 @@ impl Provider {
     /// left out of the map, so it keeps its ordinary name and no Pack data;
     /// a row already in `skipped` from the fingerprint walk is not opened
     /// again. Only an error that is not about the row stops the walk.
+    #[cfg(test)]
     pub fn prepare_for_cache(
         &mut self,
         cache: &crate::cache::SystemCache,
@@ -729,6 +851,25 @@ impl Provider {
         homes: &crate::mgl::Homes,
         cancelled: &AtomicBool,
         skipped: &mut SkippedEntries,
+    ) -> Result<Option<usize>> {
+        self.prepare_for_cache_with_matches(
+            cache,
+            fingerprints,
+            homes,
+            cancelled,
+            skipped,
+            &ManualMatches::new(),
+        )
+    }
+
+    pub fn prepare_for_cache_with_matches(
+        &mut self,
+        cache: &crate::cache::SystemCache,
+        fingerprints: &crate::cache::ContentFingerprints,
+        homes: &crate::mgl::Homes,
+        cancelled: &AtomicBool,
+        skipped: &mut SkippedEntries,
+        manual: &ManualMatches,
     ) -> Result<Option<usize>> {
         let mut prepared = HashMap::new();
         let mut inspected = HashSet::new();
@@ -746,12 +887,23 @@ impl Provider {
                 if skipped.contains_key(launch) {
                     continue;
                 }
-                let presentation = match self.presentation_for_launch_controlled(
-                    launch,
-                    fingerprints,
-                    homes,
-                    cancelled,
-                ) {
+                let selected = if manual.is_empty() {
+                    None
+                } else {
+                    manual.get(&crate::game_launch_cores::key(launch))
+                };
+                let resolved = match selected {
+                    Some(selected) if self.health.usable() => {
+                        self.presentation_for_match(selected).map(Some)
+                    }
+                    _ => self.presentation_for_launch_controlled(
+                        launch,
+                        fingerprints,
+                        homes,
+                        cancelled,
+                    ),
+                };
+                let presentation = match resolved {
                     Ok(presentation) => presentation,
                     Err(error) => {
                         skip_entry(skipped, launch, error)?;
@@ -775,6 +927,10 @@ impl Provider {
     /// nothing has been prepared.
     pub fn prepared_map(&self) -> Option<&HashMap<Launch, PackPresentation>> {
         self.prepared.as_deref()
+    }
+
+    pub(crate) fn set_prepared_map(&mut self, prepared: crate::cache::PackPreparedMap) {
+        self.prepared = Some(Arc::new(prepared));
     }
 
     /// The source signature the catalogue was read against, if it was read
@@ -1217,6 +1373,9 @@ pub fn entry_failure(error: &DegaussError) -> Option<&'static str> {
             "invalid redirect chain"
         }
         DegaussError::Malformed { .. } => "malformed descriptor",
+        DegaussError::Unsupported { what, .. } if *what == "Artwork Pack match" => {
+            "unavailable manual match"
+        }
         DegaussError::Unsupported { what, .. } if *what == "archive lookup" => return None,
         DegaussError::Unsupported { what, .. } if *what == "MGL component" => {
             "ambiguous descriptor"
@@ -2796,6 +2955,22 @@ fn bare_title(value: &str) -> String {
     output.trim().to_string()
 }
 
+fn search_title(value: &str) -> String {
+    bare_title(value)
+        .chars()
+        .filter(|character| character.is_alphanumeric())
+        .flat_map(char::to_lowercase)
+        .collect()
+}
+
+fn title_pairs(value: &str) -> HashSet<(char, char)> {
+    let characters: Vec<_> = value.chars().collect();
+    characters
+        .windows(2)
+        .map(|pair| (pair[0], pair[1]))
+        .collect()
+}
+
 fn trailing_parenthesized(value: &str) -> Option<&str> {
     let trimmed = value.trim_end();
     let before = trimmed.strip_suffix(')')?;
@@ -3316,6 +3491,231 @@ mod tests {
             &format!("{alias}\t\t\t{key}\n"),
             &format!("{key}\t{title}\t1990\tTest\tStudio\t1\n"),
         );
+    }
+
+    #[test]
+    fn manual_match_suggestions_are_bounded_deterministic_and_cancellable() {
+        let (docs, art) = pack("manual-suggestions");
+        let mut manifest = "#key\tstyle\tss_system_id\n".to_string();
+        let mut index = String::new();
+        let mut info = String::new();
+        for n in 0..12 {
+            let key = format!("Chosen Game {n:02}");
+            manifest.push_str(&format!("{key}\tbox-2D\t105\n"));
+            index.push_str(&format!(
+                "{key} (USA)\t\t\t{key}\n{key} (Europe)\t\t\t{key}\n"
+            ));
+            info.push_str(&format!("{key}\t{key}\t1991\tAction\tStudio\t1\n"));
+            std::fs::write(art.join(format!("{key}.jpg")), b"jpeg").unwrap();
+        }
+        // No suggestion can point at absent artwork or an ambiguous alias.
+        index.push_str("Missing Game\t\t\tNo picture\nAmbiguous Game\t\t\tChosen Game 00\nAmbiguous Game\t\t\tChosen Game 01\n");
+        std::fs::write(art.join("manifest.tsv"), manifest).unwrap();
+        ready_tables(&art, &index, &info);
+        let provider = Provider::load("SuperGrafx", &docs, None);
+        let running = AtomicBool::new(false);
+        let choices = provider
+            .match_choices("CHOSEN Game", &running)
+            .unwrap()
+            .unwrap();
+        assert_eq!(choices.len(), 8);
+        assert_eq!(
+            choices
+                .iter()
+                .map(|choice| choice.label.clone())
+                .collect::<Vec<_>>(),
+            (0..8)
+                .map(|n| format!("Chosen Game {n:02}"))
+                .collect::<Vec<_>>(),
+            "pruning retains the highest-ranked distinct entries"
+        );
+        assert_eq!(
+            choices,
+            provider
+                .match_choices("CHOSEN Game", &running)
+                .unwrap()
+                .unwrap()
+        );
+        let keys: HashSet<_> = choices
+            .iter()
+            .map(|choice| &choice.presentation.diagnostic.as_ref().unwrap().key)
+            .collect();
+        assert_eq!(
+            keys.len(),
+            choices.len(),
+            "regional aliases share one choice"
+        );
+        let exact = provider
+            .match_choices("Chosen-Game 04 (Translation)", &running)
+            .unwrap()
+            .unwrap();
+        assert_eq!(exact[0].label, "Chosen Game 04");
+        assert!(!choices
+            .iter()
+            .any(|choice| choice.reference.name.contains("ambiguous")
+                || choice.reference.name.contains("missing")));
+        assert!(provider
+            .match_choices(" ", &running)
+            .unwrap()
+            .unwrap()
+            .is_empty());
+        assert!(provider
+            .match_choices("Chosen Game", &AtomicBool::new(true))
+            .unwrap()
+            .is_none());
+        std::fs::remove_dir_all(docs.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn manual_match_tracks_an_index_name_across_pack_key_corrections() {
+        let (docs, art) = pack("manual-index-update");
+        ready_tables(
+            &art,
+            "Stable Name (USA)\t\t\tChosen Game (USA)\n",
+            "Chosen Game (USA)\tOld title\t1991\tAction\tStudio\t1\n",
+        );
+        let selected = ManualMatch {
+            folder: "SuperGrafx".into(),
+            name: "stable name (usa)".into(),
+        };
+        assert_eq!(
+            Provider::load("SuperGrafx", &docs, None)
+                .presentation_for_match(&selected)
+                .unwrap()
+                .name
+                .as_deref(),
+            Some("Old title")
+        );
+        ready_directory(
+            &docs,
+            "SuperGrafx",
+            "Corrected Key",
+            "Stable Name (USA)",
+            "Corrected title",
+        );
+        let updated = Provider::load("SuperGrafx", &docs, None);
+        let presentation = updated.presentation_for_match(&selected).unwrap();
+        assert_eq!(presentation.name.as_deref(), Some("Corrected title"));
+        assert_eq!(presentation.cover, Some(art.join("Corrected Key.jpg")));
+        let unavailable = ManualMatch {
+            name: "removed name".into(),
+            ..selected
+        };
+        assert!(updated
+            .presentation_for_match(&unavailable)
+            .unwrap_err()
+            .to_string()
+            .contains("Automatic Match"));
+        std::fs::remove_dir_all(docs.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn manual_matches_override_only_selected_launches_without_changing_launch_or_cache_schema() {
+        let (docs, art) = pack("manual-preparation");
+        ready_tables(
+            &art,
+            "Chosen Game (USA)\t\t\tChosen Game (USA)\n",
+            "Chosen Game (USA)\tPack title\t1991\tAction\tStudio\t1\n",
+        );
+        let launches = [
+            Launch::File(PathBuf::from("/games/Unmatched.nes")),
+            Launch::File(PathBuf::from("/games/Collection.zip/Folder/Unmatched.nes")),
+            Launch::File(PathBuf::from("/_Arcade/Unmatched.mra")),
+            Launch::File(PathBuf::from("/_Console/Unmatched.mgl")),
+            Launch::AmigaVision {
+                install: PathBuf::from("/games/Amiga"),
+                title: "Unmatched".into(),
+            },
+        ];
+        let row = |launch: &Launch| Row {
+            kind: Kind::Play(launch.clone()),
+            ..mgl_row(Path::new("Unmatched.mgl"))
+        };
+        let mut cache = one_row_cache(row(&launches[0]));
+        cache.folders.get_mut("root").unwrap().rows = launches.iter().map(row).collect();
+        let before = postcard::to_allocvec(&cache).unwrap();
+        let selected = ManualMatch {
+            folder: "SuperGrafx".into(),
+            name: "chosen game (usa)".into(),
+        };
+        let manual = launches
+            .iter()
+            .map(|launch| (crate::game_launch_cores::key(launch), selected.clone()))
+            .collect();
+        let mut provider = Provider::load("SuperGrafx", &docs, None);
+        let running = AtomicBool::new(false);
+        let fingerprints = Default::default();
+        let homes = Default::default();
+        let mut skipped = SkippedEntries::new();
+        assert_eq!(
+            provider
+                .prepare_for_cache_with_matches(
+                    &cache,
+                    &fingerprints,
+                    &homes,
+                    &running,
+                    &mut skipped,
+                    &manual
+                )
+                .unwrap(),
+            Some(5)
+        );
+        let mut rows = cache.folders["root"].rows.clone();
+        assert_eq!(provider.apply_prepared(&mut rows), 5);
+        for (row, launch) in rows.iter().zip(&launches) {
+            assert_eq!(row.name, "Pack title");
+            assert_eq!(row.cover, Some(art.join("Chosen Game (USA).jpg")));
+            assert_eq!(row.kind, Kind::Play(launch.clone()));
+        }
+        assert_eq!(
+            postcard::to_allocvec(&cache).unwrap(),
+            before,
+            "manual matches never change source-neutral caches"
+        );
+        let unavailable = ManualMatch {
+            folder: "SuperGrafx".into(),
+            name: "absent".into(),
+        };
+        let wrong = [(crate::game_launch_cores::key(&launches[0]), unavailable)].into();
+        provider
+            .prepare_for_cache_with_matches(
+                &one_row_cache(row(&launches[0])),
+                &fingerprints,
+                &homes,
+                &running,
+                &mut skipped,
+                &wrong,
+            )
+            .unwrap();
+        assert!(
+            provider.prepared_map().unwrap().is_empty(),
+            "a missing manual name must not silently rematch"
+        );
+        assert_eq!(skipped[&launches[0]].category, "unavailable manual match");
+        std::fs::remove_dir_all(docs.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn manual_choices_keep_ordered_catalogues_distinct() {
+        let root = temp("manual-catalogues");
+        // FDS may use its own catalogue and the NES pack.
+        ready_directory(&root, "FDS", "Shared", "Shared (USA)", "First");
+        ready_directory(&root, "NES", "Shared", "Shared (USA)", "Second");
+        let provider = Provider::load("FDS", &root, None);
+        let choices = provider
+            .match_choices("Shared", &AtomicBool::new(false))
+            .unwrap()
+            .unwrap();
+        assert_eq!(choices.len(), 2, "{:?}", provider.diagnostics);
+        assert_ne!(choices[0].reference.folder, choices[1].reference.folder);
+        for choice in choices {
+            assert_eq!(
+                provider.presentation_for_match(&choice.reference).unwrap(),
+                choice.presentation
+            );
+            assert!(choice.label.contains(&choice.reference.folder));
+        }
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

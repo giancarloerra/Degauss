@@ -44,6 +44,7 @@ pub struct Request {
     pub require_usable_provider: bool,
     /// Where the paths inside an `.mgl` point, for the Pack match.
     pub homes: Arc<crate::mgl::Homes>,
+    pub manual_matches: std::collections::BTreeMap<String, crate::artwork_pack::ManualMatches>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -301,12 +302,16 @@ fn run(request: Request, events: &SyncSender<Event>, cancelled: &Arc<AtomicBool>
             .as_ref()
             .is_some_and(|provider| provider.health.usable());
         if let Some(provider) = provider.as_mut() {
-            match provider.prepare_for_cache(
+            match provider.prepare_for_cache_with_matches(
                 &cache,
                 &fingerprints,
                 &request.homes,
                 cancelled,
                 &mut skipped,
+                request
+                    .manual_matches
+                    .get(&system.id)
+                    .unwrap_or(&crate::artwork_pack::ManualMatches::new()),
             ) {
                 Ok(Some(_)) => {}
                 Ok(None) => {
@@ -490,6 +495,7 @@ mod tests {
             cache_dir: temp("empty-cache"),
             require_usable_provider: true,
             homes: Arc::new(crate::mgl::Homes::default()),
+            manual_matches: Default::default(),
         })
         .err()
         .expect("empty group is invalid");
@@ -534,6 +540,7 @@ mod tests {
             cache_dir: root.join("cache"),
             require_usable_provider: true,
             homes: Arc::new(crate::mgl::Homes::default()),
+            manual_matches: Default::default(),
         })
         .unwrap();
         let Event::Staged {
@@ -644,6 +651,7 @@ mod tests {
             cache_dir: root.join("cache"),
             require_usable_provider: true,
             homes: Arc::new(crate::mgl::Homes::default()),
+            manual_matches: Default::default(),
         })
         .unwrap();
         let Event::Staged {
@@ -725,6 +733,7 @@ mod tests {
             cache_dir: root.join("cache"),
             require_usable_provider: true,
             homes: Arc::new(crate::mgl::Homes::default()),
+            manual_matches: Default::default(),
         })
         .unwrap();
         let Event::Staged {
@@ -784,6 +793,7 @@ mod tests {
             cache_dir: root.join("cache"),
             require_usable_provider: true,
             homes: Arc::new(crate::mgl::Homes::default()),
+            manual_matches: Default::default(),
         })
         .unwrap();
         let Event::Failed { progress, .. } = terminal(&mut job) else {
@@ -819,6 +829,7 @@ mod tests {
             cache_dir: cache_dir.clone(),
             require_usable_provider,
             homes: Arc::new(crate::mgl::Homes::default()),
+            manual_matches: Default::default(),
         };
 
         let mut selection = start(request(true)).unwrap();
@@ -935,6 +946,7 @@ mod tests {
                 cache_dir,
                 require_usable_provider: true,
                 homes: Arc::new(crate::mgl::Homes::default()),
+                manual_matches: Default::default(),
             })
             .unwrap();
             let Event::Staged {
@@ -994,6 +1006,7 @@ mod tests {
                 cache_dir: root.join("cache"),
                 require_usable_provider: true,
                 homes: Arc::new(crate::mgl::Homes::default()),
+                manual_matches: Default::default(),
             },
             &sender,
             &cancelled,
@@ -1062,6 +1075,7 @@ mod tests {
             cache_dir: cache_dir.to_path_buf(),
             require_usable_provider,
             homes: Arc::new(crate::mgl::Homes::default()),
+            manual_matches: Default::default(),
         }
     }
 
@@ -1121,6 +1135,7 @@ mod tests {
             cache_dir: cache_dir.clone(),
             require_usable_provider: true,
             homes: Arc::new(crate::mgl::Homes::default()),
+            manual_matches: Default::default(),
         })
         .unwrap();
         let Event::Staged {
@@ -1196,6 +1211,7 @@ mod tests {
             cache_dir: gamelist_store.clone(),
             require_usable_provider: true,
             homes: Arc::new(crate::mgl::Homes::default()),
+            manual_matches: Default::default(),
         })
         .unwrap();
         let Event::Staged { prepared, .. } = terminal(&mut job) else {
