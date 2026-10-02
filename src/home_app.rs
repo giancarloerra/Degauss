@@ -333,6 +333,15 @@ impl App {
     }
 
     fn restore_home(&mut self, resume: crate::home::Resume) {
+        if self.in_misterzine_browser() {
+            if let Err(error) = self.acknowledge_core_changes() {
+                self.message = Some(error.to_string());
+                self.dirty = true;
+                return;
+            }
+            self.misterzine_job = None;
+            self.clear_misterzine_games();
+        }
         self.home.origin = None;
         self.home.edit = None;
         self.home.edit_origin = None;

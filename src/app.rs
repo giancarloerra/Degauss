@@ -1228,6 +1228,7 @@ const MISTERZINE_VIEW_PLACE: &str = "MiSTerZine";
 const REFRESH_MISTERZINE: &str = "Refresh";
 const FILTER_RELEASES: &str = "Filter Core Updates";
 const ABOUT_MISTERZINE: &str = "About Core Updates";
+const CANCEL_CORE_REFRESH: &str = "Cancel Refresh";
 const CORE_UPDATE_GAMES_AFTER_SCROLL_MS: u64 = 180;
 const CORE_UPDATE_ART_SECONDS: u64 = 1;
 
@@ -4221,6 +4222,9 @@ pub struct App {
     misterzine_filters: crate::misterzine::Filters,
     misterzine_filter_options: [Vec<crate::misterzine::FilterChoice>; 2],
     misterzine_filter_field: Option<crate::misterzine::FilterField>,
+    core_changes_visit: Option<crate::core_changes::Visit>,
+    core_changes_error: Option<String>,
+    core_changes_scope: crate::core_changes::Scope,
     /// Game rows for only the highlighted Core Updates entry. Reading them
     /// happens off the render loop; changing selection cancels and drops the
     /// previous set instead of turning Core Updates into a second library.
@@ -4730,6 +4734,9 @@ impl App {
             misterzine_filters: Default::default(),
             misterzine_filter_options: std::array::from_fn(|_| Vec::new()),
             misterzine_filter_field: None,
+            core_changes_visit: None,
+            core_changes_error: None,
+            core_changes_scope: Default::default(),
             misterzine_game_job: None,
             misterzine_game_job_key: None,
             misterzine_games: None,
@@ -10581,7 +10588,7 @@ impl App {
             );
             return;
         }
-        if self.misterzine_job.is_some() {
+        if self.misterzine_job.is_some() && self.misterzine_items.is_empty() {
             let progress = &self.misterzine_progress;
             let determinate = !matches!(progress.phase, crate::misterzine::Phase::Checking);
             let installed = self
@@ -11191,6 +11198,13 @@ impl App {
         !self.explore.active && self.open_category.as_deref() == Some(MISTERZINE_CATEGORY)
     }
 
+    pub fn acknowledge_core_changes(&mut self) -> Result<()> {
+        if let Some(visit) = &mut self.core_changes_visit {
+            visit.acknowledge(&self.cache_dir)?;
+        }
+        Ok(())
+    }
+
     fn misterzine_request(&self, force_refresh: bool) -> crate::misterzine::Request {
         crate::misterzine::Request {
             cache_dir: self.cache_dir.clone(),
@@ -11225,12 +11239,29 @@ impl App {
         if self.misterzine_job.is_some() {
             return;
         }
+        if !force_refresh {
+            self.core_changes_scope = Default::default();
+            self.core_changes_error = None;
+            self.core_changes_visit = match crate::core_changes::load(&self.cache_dir) {
+                Ok(baseline) => Some(crate::core_changes::Visit::new(baseline)),
+                Err(error) => {
+                    self.core_changes_error = Some(error.to_string());
+                    self.core_changes_scope = crate::core_changes::Scope::AllCores;
+                    None
+                }
+            };
+            // Only the worker can establish cache/configuration compatibility.
+            self.misterzine_items.clear();
+        }
+        if let Some(visit) = &mut self.core_changes_visit {
+            visit.begin_refresh();
+        }
         self.prepare_misterzine_browser(!force_refresh);
-        match crate::misterzine::start(self.misterzine_request(force_refresh)) {
+        match crate::misterzine::start(self.misterzine_request(true)) {
             Ok(job) => self.misterzine_job = Some(job),
             Err(error) => {
                 crate::note(&format!("core updates  could not start: {error}"));
-                self.message = Some("Core Updates could not be opened. Try again.".to_string());
+                self.message = Some(format!("Core Updates could not be opened: {error}"));
                 self.open_category = None;
                 self.browsing = Browsing::Categories;
                 self.rebuild_system_list();
@@ -11282,6 +11313,19 @@ impl App {
     fn misterzine_information_text(&self) -> Option<String> {
         let item = self.selected_misterzine_item()?;
         let mut text = item.information_with_games(self.selected_misterzine_games());
+        if let Some(visit) = &self.core_changes_visit {
+            text.push_str(&format!(
+                "\n\n{}\nChecked: {}",
+                visit.message(),
+                crate::core_changes::checked_label(visit.current.checked)
+            ));
+            if let Some(label) = visit.label(item.key()) {
+                text.push_str(&format!("\n\n{label}"));
+            }
+        }
+        if let Some(error) = &self.core_changes_error {
+            text.push_str(&format!("\n\nWhat's New unavailable: {error}"));
+        }
         if self.misterzine_game_job_key.as_deref() == Some(item.key()) {
             text.push_str("\n\nReading game titles...");
         }
@@ -11595,8 +11639,28 @@ impl App {
             .iter()
             .filter(|item| self.filter.is_empty() || squashed(item.title()).contains(&self.filter))
             .filter(|item| self.misterzine_filters.matches(item))
+            .filter(|item| {
+                self.core_changes_visit
+                    .as_ref()
+                    .is_none_or(|visit| visit.matches(self.core_changes_scope, item))
+            })
             .cloned()
             .collect();
+        if self.core_changes_visit.is_some()
+            && self.core_changes_scope != crate::core_changes::Scope::AllCores
+        {
+            self.misterzine_visible.sort_by(|left, right| {
+                right
+                    .build()
+                    .cmp(left.build())
+                    .then_with(|| {
+                        left.title()
+                            .to_ascii_lowercase()
+                            .cmp(&right.title().to_ascii_lowercase())
+                    })
+                    .then_with(|| left.key().cmp(right.key()))
+            });
+        }
         let covers: Vec<Option<PathBuf>> = self
             .misterzine_visible
             .iter()
@@ -11606,7 +11670,17 @@ impl App {
             .misterzine_visible
             .iter()
             .zip(covers)
-            .map(|(item, cover)| item.row(cover))
+            .map(|(item, cover)| {
+                let mut row = item.row(cover);
+                if let Some(label) = self
+                    .core_changes_visit
+                    .as_ref()
+                    .and_then(|visit| visit.label(item.key()))
+                {
+                    row.genre = Some(format!("{} · {label}", row.genre.unwrap_or_default()));
+                }
+                row
+            })
             .collect();
         let at = selected
             .as_ref()
@@ -11622,6 +11696,9 @@ impl App {
     }
 
     fn apply_misterzine_snapshot(&mut self, mut snapshot: crate::misterzine::Snapshot) {
+        if let Some(visit) = &mut self.core_changes_visit {
+            visit.observe(snapshot.catalogue, snapshot.complete_refresh);
+        }
         self.clear_misterzine_games();
         self.enrich_misterzine_games(&mut snapshot.items);
         self.misterzine_items = snapshot.items;
@@ -11648,10 +11725,17 @@ impl App {
                 }
                 crate::misterzine::Event::Ready { snapshot, notice } => {
                     self.apply_misterzine_snapshot(snapshot);
-                    self.message = notice;
+                    self.message = match (notice, self.core_changes_error.as_ref()) {
+                        (Some(notice), Some(error)) => Some(format!("{notice}\n\nWhat's New unavailable: {error}")),
+                        (None, Some(error)) => Some(format!("What's New unavailable: {error}\n\nAll Cores remains available. Repair or remove core-updates-seen.json to start a new comparison.")),
+                        (notice, None) => notice,
+                    };
                     terminal = true;
                 }
                 crate::misterzine::Event::Cancelled => {
+                    if let Some(visit) = &mut self.core_changes_visit {
+                        visit.begin_refresh();
+                    }
                     if self.misterzine_items.is_empty() {
                         self.open_category = None;
                         self.browsing = Browsing::Categories;
@@ -11660,6 +11744,9 @@ impl App {
                     terminal = true;
                 }
                 crate::misterzine::Event::Failed { message } => {
+                    if let Some(visit) = &mut self.core_changes_visit {
+                        visit.begin_refresh();
+                    }
                     self.message = Some(message);
                     if self.misterzine_items.is_empty() {
                         self.open_category = None;
@@ -13717,6 +13804,13 @@ impl App {
     /// controller enough to reach everything, including exit.
     fn go_back(&mut self) -> Option<Outcome> {
         self.request_storage_check();
+        if self.screen == Screen::Browse && self.in_misterzine_browser() {
+            if let Err(error) = self.acknowledge_core_changes() {
+                self.message = Some(error.to_string());
+                self.dirty = true;
+                return None;
+            }
+        }
         if self.explore.active && self.explore_back() {
             return None;
         }
@@ -17551,6 +17645,7 @@ impl App {
                 JUMP.to_string(),
                 SEARCH.to_string(),
             ];
+            actions.extend(crate::core_changes::Scope::ALL.map(|scope| scope.label().to_string()));
             if !self.filter.is_empty() {
                 actions.push(CLEAR_SEARCH.to_string());
             }
@@ -17559,6 +17654,9 @@ impl App {
                 actions.push(CLEAR_FILTERS.to_string());
             }
             actions.extend([REFRESH_MISTERZINE.to_string(), ABOUT_MISTERZINE.to_string()]);
+            if self.misterzine_job.is_some() {
+                actions.push(CANCEL_CORE_REFRESH.into());
+            }
             self.context_actions = actions;
             self.show_context_page(None);
             return;
@@ -19216,9 +19314,18 @@ impl App {
             // Dropping the job cancels its network work. Leave this browser
             // now, so a slow source cannot hold Back or redraw Home later.
             self.misterzine_job = None;
+            if let Some(origin) = self.home.origin.clone() {
+                self.restore_home(origin);
+                self.dirty = true;
+                return None;
+            }
             return self.go_back();
         }
-        if let Some(job) = &self.misterzine_job {
+        if let Some(job) = self
+            .misterzine_job
+            .as_ref()
+            .filter(|_| self.misterzine_items.is_empty())
+        {
             if matches!(action, Action::Quit | Action::Context | Action::Menu) {
                 job.cancel();
                 self.misterzine_progress.cancelling = true;
@@ -19772,13 +19879,39 @@ impl App {
                         MORE_DEVELOPER | MORE_PUBLISHER | SAME_GENRE
                     ) {
                         self.explore_pivot(&choice);
+                    } else if self.in_misterzine_browser()
+                        && crate::core_changes::Scope::ALL
+                            .iter()
+                            .any(|scope| scope.label() == choice)
+                    {
+                        if choice == crate::core_changes::Scope::WhatsNew.label()
+                            && self.core_changes_error.is_some()
+                        {
+                            self.message = self.core_changes_error.clone();
+                        } else {
+                            self.core_changes_scope = crate::core_changes::Scope::ALL
+                                .into_iter()
+                                .find(|scope| scope.label() == choice)
+                                .expect("scope choice");
+                            self.screen = Screen::Browse;
+                            self.rebuild_misterzine_rows();
+                            self.apply_geometry();
+                        }
+                    } else if choice == CANCEL_CORE_REFRESH {
+                        if let Some(job) = &self.misterzine_job {
+                            job.cancel();
+                        }
+                        if let Some(visit) = &mut self.core_changes_visit {
+                            visit.begin_refresh();
+                        }
+                        self.screen = Screen::Browse;
                     } else if choice == REFRESH_MISTERZINE {
                         self.screen = Screen::Browse;
                         self.open_misterzine(true);
                     } else if choice == ABOUT_MISTERZINE {
                         self.screen = Screen::Browse;
                         self.message = Some(
-                            "Core Updates\nReads only databases configured in Downloader.\nInstalled local cores remain visible without a configured source."
+                            "Core Updates\nWhat's New compares configured listings with the last complete check you viewed. First check has no previous history. Changes stay visible for this visit. Leaving after a complete fresh refresh saves the comparison; cancellation, failures and partial refreshes do not.\n\nReads only databases configured in Downloader. Installed local cores remain visible in All Cores, including manually installed cores without a configured source. Build dates are not first-release dates. Nothing is installed here."
                                 .to_string(),
                         );
                         self.apply_geometry();
@@ -21434,9 +21567,37 @@ impl App {
                     Browsing::Games => self.here_label(),
                 };
                 (
-                    name,
+                    if self.in_misterzine_browser()
+                        && (self.core_changes_visit.is_some() || self.core_changes_error.is_some())
+                    {
+                        format!("Core Updates / {}", self.core_changes_scope.label())
+                    } else {
+                        name
+                    },
                     if self.explore.active {
                         format!("{} matches", self.explore.matches.len())
+                    } else if self.in_misterzine_browser() && self.core_changes_visit.is_some() {
+                        if self.misterzine_job.is_some() {
+                            "Refreshing".into()
+                        } else if self
+                            .core_changes_visit
+                            .as_ref()
+                            .is_some_and(|visit| visit.baseline.is_none())
+                        {
+                            "First check".into()
+                        } else if self
+                            .core_changes_visit
+                            .as_ref()
+                            .is_some_and(crate::core_changes::Visit::source_changed)
+                        {
+                            "Source settings changed".into()
+                        } else if self.core_changes_scope == crate::core_changes::Scope::WhatsNew
+                            && self.misterzine_visible.is_empty()
+                        {
+                            "No changes".into()
+                        } else {
+                            String::new()
+                        }
                     } else {
                         speed_badge(self.speed)
                     },
@@ -22116,6 +22277,15 @@ impl App {
             let drew = if let Some(work) = presenter.draw(&self.window, surface)? {
                 surface.present()?;
                 self.index_frame_presented();
+                if self.screen == Screen::Browse
+                    && self.in_misterzine_browser()
+                    && self.message.is_none()
+                    && self.misterzine_job.is_none()
+                {
+                    if let Some(visit) = &mut self.core_changes_visit {
+                        visit.presented();
+                    }
+                }
                 self.last_work = work;
                 self.timer.record(frame_start.elapsed());
                 if !first_frame_done {
@@ -23554,6 +23724,91 @@ pub(crate) fn test_library_launch_flow(window: Rc<MinimalSoftwareWindow>) {
     app.misterzine_job = None;
     app.misterzine_items.clear();
     app.misterzine_visible.clear();
+
+    // The comparison is additional to local install state, not a new updater.
+    {
+        use crate::core_changes::{Catalogue, Listing, Scope, Visit};
+        let mut baseline = Catalogue::default();
+        baseline.sources.insert("source".into(), "1".repeat(32));
+        baseline.listings.insert(
+            "exact".into(),
+            Listing {
+                source: "source".into(),
+                fingerprint: "a".repeat(32),
+            },
+        );
+        let mut current = baseline.clone();
+        current.checked = 1_800_000_000;
+        current.listings.get_mut("exact").unwrap().fingerprint = "b".repeat(32);
+        app.core_changes_visit = Some(Visit::new(Some(baseline)));
+        app.core_changes_visit
+            .as_mut()
+            .unwrap()
+            .observe(current, false);
+        app.core_changes_scope = Scope::WhatsNew;
+        app.misterzine_items = vec![
+            crate::misterzine::Item::fixture_with_key(
+                "local",
+                "Manual",
+                "Console",
+                "local",
+                crate::misterzine::LocalState::LocalOnly,
+                None,
+            ),
+            crate::misterzine::Item::fixture_with_key(
+                "exact",
+                "Configured",
+                "Console",
+                "source",
+                crate::misterzine::LocalState::UpdateAvailable,
+                None,
+            ),
+        ];
+        app.screen = Screen::Browse;
+        app.prepare_misterzine_browser(true);
+        assert_eq!(app.here.len(), 1);
+        assert!(app.here[0]
+            .genre
+            .as_deref()
+            .unwrap()
+            .contains("Changed listing"));
+        app.refresh();
+        assert!(app.ui.get_heading().as_str().contains("What's New"));
+        assert!(app
+            .misterzine_information_text()
+            .unwrap()
+            .contains("Checked:"));
+        app.misterzine_job = Some(crate::misterzine::Job::pending_fixture());
+        app.update_operation_ui();
+        assert_eq!(
+            app.ui.get_operation_kind(),
+            0,
+            "cached rows stay browsable while refreshing"
+        );
+        app.handle(Action::Context);
+        assert_eq!(
+            app.screen,
+            Screen::Context,
+            "background refresh does not block Actions"
+        );
+        let at = app
+            .menu
+            .iter()
+            .position(|row| row == Scope::AllCores.label())
+            .unwrap();
+        app.menu_list.select(at);
+        app.handle(Action::Accept);
+        assert_eq!(
+            app.here.len(),
+            2,
+            "manually installed cores remain in All Cores"
+        );
+        app.misterzine_job = None;
+        app.core_changes_visit = None;
+        app.core_changes_scope = Default::default();
+        app.misterzine_items.clear();
+        app.handle(Action::Quit);
+    }
 
     app.open_favorite_folders();
     app.menu_list.select(

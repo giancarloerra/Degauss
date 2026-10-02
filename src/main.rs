@@ -15,6 +15,7 @@ mod browse;
 mod cache;
 mod category_images;
 mod config;
+mod core_changes;
 mod core_choices;
 mod core_variants;
 mod covers;
@@ -1885,6 +1886,7 @@ fn run_on_framebuffer(
     }
     let outcome = outcome?;
     mask_reset?;
+    app.acknowledge_core_changes()?;
 
     let summary = app.frame_summary();
     note(&format!(

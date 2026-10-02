@@ -110,6 +110,14 @@ impl Item {
         self.installed
     }
 
+    pub fn update_available(&self) -> bool {
+        self.state == LocalState::UpdateAvailable
+    }
+
+    pub fn build(&self) -> &str {
+        &self.available_build
+    }
+
     pub fn title(&self) -> &str {
         &self.title
     }
@@ -438,6 +446,8 @@ pub fn choices(items: &[Item], field: FilterField) -> Vec<FilterChoice> {
 pub struct Snapshot {
     pub updated: String,
     pub items: Vec<Item>,
+    pub catalogue: crate::core_changes::Catalogue,
+    pub complete_refresh: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -2765,7 +2775,46 @@ fn match_cache(
     Ok(Some(Snapshot {
         updated: cache.checked.to_string(),
         items,
+        catalogue: comparison_catalogue(cache),
+        complete_refresh: false,
     }))
+}
+
+fn comparison_catalogue(cache: &Cache) -> crate::core_changes::Catalogue {
+    use crate::core_changes::{Catalogue, Listing};
+    let mut catalogue = Catalogue {
+        checked: cache.checked,
+        ..Default::default()
+    };
+    let mut context = Md5::new();
+    context.update(cache.global_filter_defined.to_string());
+    context.update(cache.global_filter.as_bytes());
+    for database in &cache.configuration {
+        // Ownership uses the ordered prefix: later sources cannot change
+        // an earlier source's exact-path precedence.
+        for part in [&database.id, &database.url] {
+            context.update((part.len() as u64).to_le_bytes());
+            context.update(part.as_bytes());
+        }
+        context.update(format!("{:?}", database.filter));
+        catalogue
+            .sources
+            .insert(database.id.clone(), lower_hex(&context.clone().finalize()));
+    }
+    for core in &cache.cores {
+        let mut fingerprint = Md5::new();
+        fingerprint.update(core.hash.as_bytes());
+        fingerprint.update(core.size.to_le_bytes());
+        fingerprint.update([u8::from(core.overwrite)]);
+        catalogue.listings.insert(
+            format!("{}:{}", core.database, core.path.to_ascii_lowercase()),
+            Listing {
+                source: core.database.clone(),
+                fingerprint: lower_hex(&fingerprint.finalize()),
+            },
+        );
+    }
+    catalogue
 }
 
 pub fn cache_path(cache_dir: &Path) -> PathBuf {
@@ -3046,7 +3095,7 @@ fn run_with_fetch<F>(
         cores: remote,
         local_hashes: old_hashes,
     };
-    let snapshot = match match_cache(&mut cache, &request, events, cancelled) {
+    let mut snapshot = match match_cache(&mut cache, &request, events, cancelled) {
         Ok(Some(snapshot)) => snapshot,
         Ok(None) => {
             let _ = events.send(Event::Cancelled);
@@ -3083,6 +3132,7 @@ fn run_with_fetch<F>(
         });
         return;
     }
+    snapshot.complete_refresh = true;
     let _ = events.send(Event::Ready {
         snapshot,
         notice: None,
@@ -3854,12 +3904,20 @@ db_url = https://example.test/two.json
         assert!(notice.is_none());
         assert_eq!(calls.load(Ordering::Relaxed), 1);
         assert_eq!(first.items.len(), 1);
+        assert!(
+            first.complete_refresh,
+            "only a complete saved fresh check can advance history"
+        );
 
         let (cached, notice) = ready(run_events(request.clone(), |_, _, _, _| {
             panic!("a normal cached open must not use the network")
         }));
         assert!(notice.is_none());
         assert_eq!(cached.items.len(), 1);
+        assert!(
+            !cached.complete_refresh,
+            "a cache hit is not a new complete check"
+        );
 
         let mut refresh = request.clone();
         refresh.force_refresh = true;
@@ -3871,6 +3929,10 @@ db_url = https://example.test/two.json
             })
         }));
         assert_eq!(saved.items.len(), 1);
+        assert!(
+            !saved.complete_refresh,
+            "failure retaining saved results cannot acknowledge history"
+        );
         let notice = notice.unwrap();
         assert!(notice.contains("Showing saved results"));
         assert!(notice.contains("MiSTer Distribution: network unavailable"));
@@ -3886,6 +3948,55 @@ db_url = https://example.test/two.json
         }));
         assert!(notice.is_none());
         assert_eq!(refetches.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn comparison_sources_follow_filter_and_ordered_ownership_not_display_labels() {
+        let mut cache = Cache {
+            format: CACHE_FORMAT,
+            checked: 1,
+            global_filter: String::new(),
+            global_filter_defined: false,
+            configuration: vec![
+                database("first", "https://example.test/first"),
+                database("second", "https://example.test/second"),
+            ],
+            cores: Vec::new(),
+            local_hashes: Vec::new(),
+        };
+        let original = comparison_catalogue(&cache);
+        cache.configuration[0].description = "Renamed label".into();
+        assert_eq!(
+            comparison_catalogue(&cache),
+            original,
+            "editorial labels are not ownership changes"
+        );
+        cache
+            .configuration
+            .push(database("third", "https://example.test/third"));
+        let appended = comparison_catalogue(&cache);
+        assert_eq!(appended.sources.get("first"), original.sources.get("first"));
+        assert_eq!(
+            appended.sources.get("second"),
+            original.sources.get("second")
+        );
+        cache.configuration[1].filter = Some("nes".into());
+        let filtered = comparison_catalogue(&cache);
+        assert_eq!(filtered.sources.get("first"), original.sources.get("first"));
+        assert_ne!(
+            filtered.sources.get("second"),
+            original.sources.get("second")
+        );
+        cache.configuration.swap(0, 1);
+        assert_ne!(
+            comparison_catalogue(&cache).sources.get("first"),
+            original.sources.get("first")
+        );
+        cache.global_filter = "arcade".into();
+        assert_ne!(
+            comparison_catalogue(&cache).sources.get("second"),
+            filtered.sources.get("second")
+        );
     }
 
     #[test]
@@ -3917,6 +4028,10 @@ db_url = https://example.test/two.json
             other => panic!("unexpected URL {other}"),
         }));
         assert_eq!(snapshot.items.len(), 2);
+        assert!(
+            !snapshot.complete_refresh,
+            "partial sources cannot acknowledge history"
+        );
         let notice = notice.unwrap();
         assert!(notice.contains("Slow: A Downloader database did not respond in time"));
         assert!(

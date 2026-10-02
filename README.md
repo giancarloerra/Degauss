@@ -302,7 +302,9 @@ screen. It is Off by default. Degauss reads the same databases and filters that
 are configured for MiSTer's Downloader in `downloader.ini`, `downloader/*.ini`
 and `downloader_*.ini`.
 
-Every installed core remains visible, including one that has no configured
+**What's New** is the initial view. **X Actions → Updates Available** shows
+installed cores with a newer configured build, and **All Cores** shows the
+complete list. In All Cores, every installed core remains visible, including one that has no configured
 database source. An uninstalled core appears only when one of this MiSTer's
 configured databases selects it, so it is content the next Downloader run can
 provide. Degauss does not classify databases as official or unofficial and
@@ -323,14 +325,32 @@ cycles through the images once per second. Game data is read on demand for the
 selected core and then reused; Core Updates does not preload another copy of
 the library.
 
-The first open reads the configured databases and saves the result. Later
-opens use that saved result without a network request. **Refresh** reads the
-databases again. If one source times out or returns unusable data, Degauss
+Each entry shows compatible saved results while one background refresh reads
+the configured databases. **Refresh** checks again; **Cancel Refresh** stops
+the background check without leaving the saved rows. No check runs while this
+browser is unopened. If one source times out or returns unusable data, Degauss
 shows the results from the others and names the skipped source at the end;
 partial results are not saved as a complete catalogue. If none can be read,
 the last valid saved result remains available. **B** cancels and returns Home. A
 first-use failure shows a concise cause, while `/tmp/degauss.log` keeps the
 technical detail.
+
+What's New compares exact configured listings with the last complete check
+you viewed. On the first visit it explains that there is no previous history
+and shows current information without marking everything new. Leaving after
+a complete fresh check has appeared saves one baseline for the whole catalogue,
+including rows hidden by temporary filters. Changes stay visible throughout
+that visit, including after Refresh. Cached, partial, failed and cancelled
+checks never advance history. New source/filter/precedence settings establish
+a comparison for the affected sources without treating their entire contents
+as newly released. A changed dated filename is labelled **New or changed
+listing**, not a claim that the core has just debuted. Known dates are build
+dates, and **Game Information** includes the actual checked time.
+
+The small `cache/core-updates-seen.json` history file is separate from the
+existing core catalogue cache. If damaged, What's New explains the failure;
+All Cores remains usable. Repairing or removing that history file starts a new
+comparison without changing installed cores or the library.
 
 ## Why Degauss
 
