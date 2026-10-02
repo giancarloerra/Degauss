@@ -14058,7 +14058,11 @@ impl App {
         }
     }
 
-    pub fn resume_scripts(&mut self, script: &Path) {
+    pub fn resume_scripts(&mut self, script: &Path, home: Option<&crate::home::Resume>) {
+        if let Some(home) = home {
+            self.restore_home(home.clone());
+            return;
+        }
         self.screen = Screen::Browse;
         self.browsing = Browsing::Categories;
         self.open_category = None;
@@ -19489,6 +19493,7 @@ impl App {
         }
 
         if let Some(outcome) = self.handle_home_input(action) {
+            self.dirty = true;
             return outcome;
         }
 

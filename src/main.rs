@@ -1795,10 +1795,11 @@ fn run_on_framebuffer(
         state::clear_resuming();
         app.skip_splash();
     }
-    match state::take_position(resuming, &state_path) {
+    let saved_position = state::take_position(resuming, &state_path);
+    match saved_position.as_ref() {
         Some(saved) => {
             let at = Instant::now();
-            app.restore_position(&saved);
+            app.restore_position(saved);
             note(&format!(
                 "resumed      {} in {} ms",
                 saved.system,
@@ -1823,7 +1824,12 @@ fn run_on_framebuffer(
 
     if let Some(script) = script_return {
         app.skip_splash();
-        app.resume_scripts(&script);
+        app.resume_scripts(
+            &script,
+            saved_position
+                .as_ref()
+                .and_then(|saved| saved.home.as_ref()),
+        );
     }
 
     let mut input = input::InputReader::open()?;

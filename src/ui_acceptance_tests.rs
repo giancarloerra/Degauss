@@ -2324,7 +2324,7 @@ fn run_scripts_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
         app.handle(Action::Accept),
         Some(Outcome::Script(_))
     ));
-    app.resume_scripts(&nested.join("Example Tool.sh"));
+    app.resume_scripts(&nested.join("Example Tool.sh"), None);
     assert_eq!(app.screen, Screen::Scripts);
     assert_eq!(app.menu[app.menu_list.selected()], "Example Tool.sh");
     app.handle(Action::Quit);

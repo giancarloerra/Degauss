@@ -258,9 +258,14 @@ pub(super) fn run(root: &Path, window: Rc<MinimalSoftwareWindow>) {
     app.handle(Action::Accept);
     assert_eq!(app.screen, Screen::Scripts);
     assert!(matches!(app.pending, Some(Pending::RunScript(_))));
+    let returned = app.position();
     app.handle(Action::Quit);
     assert!(app.pending.is_none());
     app.handle(Action::Quit);
+    assert_eq!(app.selected_home_key(), Some(entry_key(&script).as_str()));
+    app.resume_scripts(&script_path, returned.home.as_ref());
+    assert_eq!(app.screen, Screen::Browse);
+    assert_eq!(app.home.folder.as_deref(), Some(folder.as_str()));
     assert_eq!(app.selected_home_key(), Some(entry_key(&script).as_str()));
     select(&mut app, &scripts_category);
     app.handle(Action::Accept);
@@ -393,6 +398,54 @@ pub(super) fn run(root: &Path, window: Rc<MinimalSoftwareWindow>) {
         Some(&logo)
     );
     app.message = None;
+    let second = app
+        .settings
+        .home
+        .add(
+            Entry {
+                name: "Second".into(),
+                image: None,
+                target: Target::Folder {
+                    children: Vec::new(),
+                },
+            },
+            Some(&folder),
+        )
+        .unwrap();
+    let third = app
+        .settings
+        .home
+        .add(
+            Entry {
+                name: "Third".into(),
+                image: None,
+                target: Target::Folder {
+                    children: Vec::new(),
+                },
+            },
+            Some(&second),
+        )
+        .unwrap();
+    app.home.folder = Some(third);
+    app.home_editor();
+    let unchanged = app.home.edit.clone().unwrap();
+    app.open_name_keyboard(NamePurpose::HomeFolder, "Fourth".into());
+    app.name_keyboard_list.select(42);
+    app.dirty = false;
+    app.handle(Action::Accept);
+    assert!(
+        app.dirty,
+        "a rejected Home edit must render its actual error"
+    );
+    assert_eq!(
+        app.home.edit.as_ref(),
+        Some(&unchanged),
+        "depth rejection is atomic"
+    );
+    app.refresh();
+    assert!(app.ui.get_overlay().contains("only three levels"));
+    app.message = None;
+    app.finish_home_edit(false);
     let mut resumed =
         unopened_fixture_app(&root, window, Settings::load(&app.settings_path).unwrap());
     resumed.leave_splash();
