@@ -5023,20 +5023,27 @@ impl App {
                 });
             }
             Ok(Some(discovered)) => {
-                if let Err(error) =
-                    crate::cache::save_core_catalogue(&self.cache_dir, &discovered.cores)
-                {
-                    crate::note(&format!("cores        catalogue not saved: {error}"));
+                match self.refresh_storage_baseline(discovered.core_index, &discovered.systems) {
+                    Err(error) => {
+                        crate::note(&format!("network      {error}"));
+                        self.network_problem = Some(error.to_string());
+                    }
+                    Ok(()) => {
+                        if let Err(error) =
+                            crate::cache::save_core_catalogue(&self.cache_dir, &discovered.cores)
+                        {
+                            crate::note(&format!("cores        catalogue not saved: {error}"));
+                        }
+                        self.core_catalogue = discovered.cores;
+                        self.apply_discovered_systems(discovered.systems);
+                        self.restore_configured_pack_roots();
+                        migrate_legacy_views(&mut self.settings, &self.all_systems);
+                        let local_only = self.network_local_only;
+                        self.network_plan = None;
+                        self.network_problem = None;
+                        self.finish_startup_library(local_only);
+                    }
                 }
-                self.core_catalogue = discovered.cores;
-                self.refresh_storage_baseline(discovered.core_index, &discovered.systems);
-                self.apply_discovered_systems(discovered.systems);
-                self.restore_configured_pack_roots();
-                migrate_legacy_views(&mut self.settings, &self.all_systems);
-                let local_only = self.network_local_only;
-                self.network_plan = None;
-                self.network_problem = None;
-                self.finish_startup_library(local_only);
             }
         }
         self.last_input = Instant::now();
@@ -9716,21 +9723,18 @@ impl App {
         &mut self,
         cores: std::sync::Arc<crate::systems::CoreIndex>,
         systems: &[FoundSystem],
-    ) {
+    ) -> crate::error::Result<()> {
         let Some(storage) = &mut self.storage else {
-            return;
+            return Ok(());
         };
-        match crate::storage::State::new(cores, storage.mountinfo.clone(), systems) {
-            Ok(baseline) => {
-                storage.observed_mounts(baseline.mounts);
-                storage.cores = baseline.cores;
-                storage.active = baseline.active;
-                storage.requested = false;
-                storage.job = None;
-                storage.offer = None;
-            }
-            Err(error) => self.build_warning(error.to_string()),
-        }
+        let baseline = crate::storage::State::new(cores, storage.mountinfo.clone(), systems)?;
+        storage.observed_mounts(baseline.mounts);
+        storage.cores = baseline.cores;
+        storage.active = baseline.active;
+        storage.requested = false;
+        storage.job = None;
+        storage.offer = None;
+        Ok(())
     }
 
     fn request_storage_check(&mut self) {
@@ -10657,18 +10661,22 @@ impl App {
             }
             Err(error) => self.message = Some(error.to_string()),
             Ok(Some(discovered)) => {
-                if let Err(error) =
-                    crate::cache::save_core_catalogue(&self.cache_dir, &discovered.cores)
-                {
-                    self.build_warning(format!("Core catalogue not saved: {error}"));
+                match self.refresh_storage_baseline(discovered.core_index, &discovered.systems) {
+                    Err(error) => self.message = Some(error.to_string()),
+                    Ok(()) => {
+                        if let Err(error) =
+                            crate::cache::save_core_catalogue(&self.cache_dir, &discovered.cores)
+                        {
+                            self.build_warning(format!("Core catalogue not saved: {error}"));
+                        }
+                        self.core_catalogue = discovered.cores;
+                        self.apply_discovered_systems(discovered.systems);
+                        let started = preparation.started;
+                        self.build = Some(preparation);
+                        self.resolve_artwork_sources(SourceResolutionAction::Rebuild(started));
+                        return;
+                    }
                 }
-                self.core_catalogue = discovered.cores;
-                self.refresh_storage_baseline(discovered.core_index, &discovered.systems);
-                self.apply_discovered_systems(discovered.systems);
-                let started = preparation.started;
-                self.build = Some(preparation);
-                self.resolve_artwork_sources(SourceResolutionAction::Rebuild(started));
-                return;
             }
         }
         if let Some(problem) = self.message.take() {
@@ -23598,7 +23606,7 @@ fn test_network_startup_flow(window: Rc<MinimalSoftwareWindow>) {
     let original_index = std::fs::read(crate::cache::index_path(&cache_dir)).unwrap();
     let plan = crate::network_wait::Plan::fixture(
         vec![network.clone()],
-        mountinfo,
+        mountinfo.clone(),
         Duration::from_secs(2),
     );
     let loaded = Loaded {
@@ -23652,6 +23660,53 @@ fn test_network_startup_flow(window: Rc<MinimalSoftwareWindow>) {
         .network_problem
         .as_deref()
         .is_some_and(|problem| problem.contains("cancelled")));
+
+    // A successful wait must not hide a failure reading the new browse
+    // baseline or start indexing against a stale storage snapshot.
+    std::fs::write(
+        &mountinfo,
+        format!(
+            "1 0 0:1 / {} rw - cifs //server/games rw\n",
+            network.display()
+        ),
+    )
+    .unwrap();
+    app.storage = Some(
+        crate::storage::State::new(
+            std::sync::Arc::new(crate::systems::CoreIndex::default()),
+            mountinfo.clone(),
+            &[],
+        )
+        .unwrap(),
+    );
+    app.storage.as_mut().unwrap().mountinfo = root.join("missing-mountinfo");
+    app.handle(Action::Accept);
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while app.network_job.is_some() && Instant::now() < deadline {
+        app.poll_network_startup();
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert!(app.network_job.is_none(), "storage baseline check finishes");
+    assert!(app
+        .network_problem
+        .as_deref()
+        .is_some_and(|problem| problem.contains("reading storage mounts")));
+    assert!(app.network_plan.is_some());
+    assert!(app.build.is_none());
+    assert!(app.index.is_none());
+    app.update_operation_ui();
+    assert_eq!(app.ui.get_operation_state().as_str(), "Needs Attention");
+    assert!(app
+        .ui
+        .get_operation_problem()
+        .contains("reading storage mounts"));
+    assert_eq!(
+        std::fs::read(crate::cache::index_path(&cache_dir)).unwrap(),
+        original_index,
+        "a failed baseline refresh never changes the existing library"
+    );
+    app.storage.as_mut().unwrap().mountinfo = mountinfo.clone();
+    std::fs::write(&mountinfo, "").unwrap();
 
     app.handle(Action::Quit);
     let deadline = Instant::now() + Duration::from_secs(2);

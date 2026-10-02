@@ -1207,7 +1207,7 @@ fn run_storage_rediscovery_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) 
     app.storage = Some(
         crate::storage::State::new(
             std::sync::Arc::new(crate::systems::CoreIndex::default()),
-            mountinfo,
+            mountinfo.clone(),
             &app.all_systems,
         )
         .unwrap(),
@@ -1220,6 +1220,36 @@ fn run_storage_rediscovery_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) 
         "restart forgets a decline"
     );
     app.handle(Action::Quit);
+    // Full discovery must report the same underlying baseline error before
+    // adopting new systems or publishing any replacement library files.
+    let prior_systems = app
+        .all_systems
+        .iter()
+        .map(|system| (system.def.id.clone(), system.paths.clone()))
+        .collect::<Vec<_>>();
+    let index_path = crate::cache::index_path(&app.cache_dir);
+    let prior_index = std::fs::read(&index_path).unwrap();
+    app.storage.as_mut().unwrap().mountinfo = root.join("missing-mountinfo");
+    app.rebuild_all_systems();
+    app.finish_background_work_for_headless();
+    assert_eq!(app.index_terminal.as_ref().unwrap().state, "Failed");
+    assert!(app
+        .index_terminal
+        .as_ref()
+        .unwrap()
+        .problem
+        .contains("reading storage mounts"));
+    assert_eq!(
+        app.all_systems
+            .iter()
+            .map(|system| (system.def.id.clone(), system.paths.clone()))
+            .collect::<Vec<_>>(),
+        prior_systems
+    );
+    assert_eq!(std::fs::read(index_path).unwrap(), prior_index);
+    assert_eq!(std::fs::read(&cache_path).unwrap(), completed);
+    assert_eq!(std::fs::read(&unchanged_cache).unwrap(), unchanged_before);
+    assert!(!snes_cache.exists());
     app.ui.hide().unwrap();
     drop(app);
     std::fs::remove_dir_all(root).unwrap();
