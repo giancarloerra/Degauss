@@ -19,6 +19,7 @@ mod core_changes;
 mod core_choices;
 mod core_variants;
 mod covers;
+mod custom_view;
 mod display_mask;
 mod error;
 mod explore;

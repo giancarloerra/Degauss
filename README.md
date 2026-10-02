@@ -915,6 +915,29 @@ changes again. A custom view remains custom even when it currently matches
 the global setting. At the Categories home screen these view controls are
 directly in its flat Actions menu.
 
+**X Actions → Appearance → Custom Views** creates named views from four
+templates: two columns, a left column with two panels on the right, two
+panels on the left with a right column, or two stacked panels. On Home and
+in Explore, Custom Views is directly in Actions. Exactly one panel is the
+browser list; the others can show artwork, short information or full
+information. Choosing a new list panel moves the existing list rather than
+creating a second selection.
+
+In the editor, Up/Down chooses a panel or divider and Left/Right changes
+its content or proportion with a live preview. **X Save** stores the view;
+**B Cancel** leaves saved views unchanged. Saved names appear alongside the
+six built-in choices in View and Change View. Custom Views also offers
+Use Here, Use Globally, Edit, Save As, Rename and Delete. Deleting a named
+view removes its assignments; existing built-in assignments are unchanged.
+Proportions adapt to the screen and its safe area, including portrait.
+Core Updates keeps its dedicated Details presentation.
+
+Full information is read only for the settled selected game, from its
+configured Gamelist or Artwork Pack. **Actions → Game → Focus Information**
+gives Up/Down to text scrolling; **B** returns to list navigation. On Home
+and Explore this action is directly in Actions. Non-game rows do not show
+invented game metadata.
+
 View changes are saved when leaving the Actions page, before returning to
 browsing or opening another action. A save error keeps the menu open with the
 underlying problem, so the change is not silently lost after a restart.

@@ -50,6 +50,7 @@ use crate::input::{
 use crate::list_state::ListState;
 include!("explore_app.rs");
 include!("home_app.rs");
+include!("custom_view_app.rs");
 use crate::metrics::{FrameTimer, StartupTimings};
 use crate::name_display::GameNameDisplay;
 use crate::name_keyboard::{self, Key as NameKey, Page as NamePage};
@@ -837,6 +838,7 @@ impl Layout {
         }
     }
 
+    #[cfg(test)]
     fn prev(self) -> Self {
         match self {
             Layout::Details => Layout::Gallery,
@@ -848,6 +850,7 @@ impl Layout {
         }
     }
 
+    #[cfg(test)]
     fn next(self) -> Self {
         match self {
             Layout::Details => Layout::Tiled,
@@ -2054,6 +2057,7 @@ impl ContextPage {
             Self::Game => matches!(
                 action,
                 GAME_INFORMATION
+                    | FOCUS_INFORMATION
                     | GAME_LAUNCH_CORE
                     | ARTWORK_PACK_MATCH
                     | RANDOM
@@ -2089,7 +2093,11 @@ impl ContextPage {
             ),
             Self::Appearance => matches!(
                 action,
-                CHANGE_CATEGORY_IMAGE | CLEAR_CATEGORY_IMAGE | CHANGE_VIEW | USE_GLOBAL_VIEW
+                CHANGE_CATEGORY_IMAGE
+                    | CLEAR_CATEGORY_IMAGE
+                    | CHANGE_VIEW
+                    | USE_GLOBAL_VIEW
+                    | MANAGE_VIEWS
             ),
         }
     }
@@ -2101,6 +2109,8 @@ fn context_help(action: &str) -> &'static str {
         ARTWORK_PACK_MATCH => {
             "Choose a Pack entry for this game's artwork and metadata. The game file is unchanged."
         }
+        FOCUS_INFORMATION => "Scroll this view's full information panel. Back returns to the list.",
+        MANAGE_VIEWS => "Create, edit and manage named browser templates and their assignments.",
         RANDOM => "Pick a game from the open folder using Random Game Behaviour.",
         RANDOM_FAVORITE => {
             "Pick only from favourites under the open folder, using Random Game Behaviour."
@@ -2891,6 +2901,8 @@ enum FindMode {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum NamePurpose {
+    SaveView,
+    RenameView(String),
     HomeFolder,
     HomeRename(String),
     SaveCollection,
@@ -4096,6 +4108,7 @@ pub struct App {
     /// A temporary command-line choice used by render, bench and selftest.
     /// It is never written to settings and always wins while present.
     layout_override: Option<Layout>,
+    custom_view: ViewBrowser,
     /// What left and right do while browsing.
     horizontal: Horizontal,
     geometry: Geometry,
@@ -4874,6 +4887,7 @@ impl App {
             global_layout,
             layout,
             layout_override: None,
+            custom_view: ViewBrowser::default(),
             horizontal,
             geometry,
             physical_width,
@@ -5228,6 +5242,7 @@ impl App {
         if self.screen == Screen::Browse
             && self.browsing == Browsing::Games
             && self.layout == Layout::Details
+            && self.custom_definition().is_none()
         {
             // The approved compact preview leaves more room for game titles;
             // Large Artwork gives that room to the picture instead.
@@ -5293,6 +5308,7 @@ impl App {
             geometry.visible = ((geometry.visible as f32 * 0.55).floor() as usize).max(1);
         }
         self.ui.set_plain_help_height(help_height);
+        self.apply_custom_geometry(&mut geometry);
         self.geometry = geometry;
         update_crt_wordmarks(
             &self.ui,
@@ -8582,6 +8598,8 @@ impl App {
     /// Resolve from scratch. A missing or unrecognised custom value means the
     /// global default, never whatever view the previous place happened to use.
     fn resolve_view(&mut self) {
+        self.custom_view.active = None;
+        self.custom_view.information_focus = false;
         if self.in_misterzine_browser() {
             self.layout = Layout::Details;
             return;
@@ -8591,17 +8609,34 @@ impl App {
             .and_then(|place| place.get(&self.settings.custom_views))
             .map(str::to_string);
         self.layout = resolved_layout(self.layout_override, custom.as_deref(), self.global_layout);
+        if self.layout_override.is_none() {
+            let key = custom
+                .as_deref()
+                .filter(|key| Layout::parse(key).is_some() || key.starts_with("custom:"))
+                .or(self.settings.layout.as_deref());
+            if let Some(key) = key.filter(|key| key.starts_with("custom:")) {
+                match crate::custom_view::from_key(&self.settings.view_definitions, key) {
+                    Some(view) => {
+                        self.custom_view.active = Some(view.clone());
+                        self.layout = Layout::Details;
+                    }
+                    None => {
+                        self.message = Some(format!(
+                            "Custom view {key} is unavailable; choose another view."
+                        ));
+                        self.dirty = true;
+                    }
+                }
+            }
+        }
     }
 
-    /// Create or update the custom view for the exact place on screen.
+    #[cfg(test)]
     fn remember_view(&mut self) {
-        let Some(place) = self.current_view_place() else {
-            return;
-        };
-        place.set(
-            &mut self.settings.custom_views,
-            self.layout.label().to_string(),
-        );
+        let key = self.effective_view_key();
+        if let Some(place) = self.current_view_place() {
+            place.set(&mut self.settings.custom_views, key);
+        }
     }
 
     /// Remove only this place's override. Existence, not parseability, is the
@@ -13112,13 +13147,7 @@ impl App {
                 self.settings.art_limit = Some(next);
             }
             OptionId::Layout => {
-                self.global_layout = if delta < 0 {
-                    self.global_layout.prev()
-                } else {
-                    self.global_layout.next()
-                };
-                self.settings.layout = Some(self.global_layout.label().to_string());
-                self.resolve_view();
+                self.step_view_choice(delta, true);
                 self.apply_geometry();
             }
             OptionId::StartFolder => {
@@ -13576,7 +13605,7 @@ impl App {
                     speed_badge(limit)
                 }
             }
-            OptionId::Layout => self.global_layout.shown().to_string(),
+            OptionId::Layout => self.global_view_label(),
             OptionId::StartFolder => self
                 .settings
                 .start_folder
@@ -14257,7 +14286,7 @@ impl App {
                     _ => key.clone(),
                 })
                 .unwrap_or_else(|| "Default".to_string()),
-            Some(CHANGE_VIEW) => self.layout.shown().to_string(),
+            Some(CHANGE_VIEW) => self.view_label(),
             Some(GAME_DATA_SOURCE) => self
                 .context_system_id()
                 .map(|id| self.source_label(id))
@@ -14278,12 +14307,7 @@ impl App {
         if self.menu.get(selected).map(String::as_str) != Some(CHANGE_VIEW) {
             return;
         }
-        self.layout = if delta >= 0 {
-            self.layout.next()
-        } else {
-            self.layout.prev()
-        };
-        self.remember_view();
+        self.step_view_choice(delta, false);
         self.context_view_changed = true;
         self.apply_geometry();
         self.touch_selection();
@@ -15018,6 +15042,8 @@ impl App {
                     self.pack_match_query.clone(),
                 ));
             }
+            NamePurpose::SaveView => self.finish_custom_view(&draft),
+            NamePurpose::RenameView(id) => self.rename_custom_view(&id, &draft),
             NamePurpose::HomeFolder => self.finish_home_folder(&draft),
             NamePurpose::HomeRename(id) => self.finish_home_rename(&id, &draft),
             NamePurpose::SaveCollection => self.save_explore_collection(None, &draft),
@@ -15435,8 +15461,10 @@ impl App {
     }
 
     fn cycle_view_shortcut(&mut self) {
-        self.layout = self.layout.next();
-        self.remember_view();
+        if self.in_misterzine_browser() {
+            return;
+        }
+        self.step_view_choice(1, false);
         self.apply_geometry();
         self.touch_selection();
         self.save_settings();
@@ -17601,6 +17629,13 @@ impl App {
     }
 
     fn show_context_page(&mut self, page: Option<ContextPage>) {
+        if !self.in_misterzine_browser() {
+            for action in self.custom_view_actions() {
+                if !self.context_actions.contains(&action) {
+                    self.context_actions.push(action);
+                }
+            }
+        }
         self.context_page = page;
         self.menu = if self.in_misterzine_browser() || self.browsing == Browsing::Categories {
             self.context_page = None;
@@ -19308,6 +19343,9 @@ impl App {
     }
 
     pub fn handle(&mut self, action: Action) -> Option<Outcome> {
+        if self.handle_custom_view_input(action) {
+            return None;
+        }
         if self.handle_explore_input(action) {
             return None;
         }
@@ -20241,6 +20279,14 @@ impl App {
 
         let geometry = self.geometry;
         let portrait = portrait_dimensions(self.width, self.height);
+        if self.custom_definition().is_some() {
+            return Some((
+                ((geometry.art_width - geometry.pad) / horizontal_scale)
+                    .floor()
+                    .max(1.0) as u32,
+                (geometry.art_height - geometry.pad).floor().max(1.0) as u32,
+            ));
+        }
         let safe_width = self.width as f32 - geometry.inset_x * 2.0;
         let safe_height = self.height as f32 - geometry.inset_y * 2.0;
         let body_height = safe_height
@@ -20524,6 +20570,9 @@ impl App {
             || self.source_job.is_some()
             || !self.show_art
             || !self.layout.prefetches_art()
+            || self
+                .custom_definition()
+                .is_some_and(|view| !view.has(ViewContent::Artwork))
             || self.speed > self.art_limit()
         {
             return;
@@ -20664,7 +20713,12 @@ impl App {
         ) || (self.show_art
             && match self.screen {
                 Screen::Screensaver => true,
-                Screen::Browse => self.layout == Layout::Details,
+                Screen::Browse => {
+                    self.layout == Layout::Details
+                        && self
+                            .custom_definition()
+                            .is_none_or(|view| view.has(ViewContent::Artwork))
+                }
                 Screen::Information => true,
                 _ => false,
             });
@@ -21348,6 +21402,7 @@ impl App {
     }
 
     fn update_chrome(&self) {
+        self.update_custom_view_chrome();
         self.apply_detail_panel();
         self.update_compact_details();
         self.update_operation_ui();
@@ -21532,7 +21587,7 @@ impl App {
         self.ui
             .set_lr_word(SharedString::from(self.horizontal.legend_word()));
 
-        let (heading, status) = match self.screen {
+        let (mut heading, status) = match self.screen {
             Screen::Screensaver => (String::new(), String::new()),
             Screen::FavoriteFolder => ("Keep it in".to_string(), String::new()),
             Screen::Find => match self.find_mode {
@@ -21565,6 +21620,8 @@ impl App {
             ),
             Screen::NameKeyboard => (
                 match self.name_keyboard_purpose {
+                    NamePurpose::SaveView => "Save Custom View".to_string(),
+                    NamePurpose::RenameView(_) => "Rename Custom View".to_string(),
                     NamePurpose::HomeFolder => "New Personal Folder".to_string(),
                     NamePurpose::HomeRename(_) => "Rename Home Entry".to_string(),
                     NamePurpose::SaveCollection => "Save Collection".to_string(),
@@ -21847,6 +21904,23 @@ impl App {
             Screen::Splash => (String::new(), String::new()),
         };
 
+        if self.screen == Screen::Context {
+            if let Some(menu) = &self.custom_view.menu {
+                heading = match menu {
+                    ViewMenu::List => "Custom Views".into(),
+                    ViewMenu::Templates => "Choose Template".into(),
+                    ViewMenu::Definition(id) => self
+                        .settings
+                        .view_definitions
+                        .get(id)
+                        .map(|view| view.name.clone())
+                        .unwrap_or_else(|| "Custom View".into()),
+                };
+                self.ui
+                    .set_plain_help(self.control_hint("A Select   B Back").into());
+                self.ui.set_plain_scope("Custom Views".into());
+            }
+        }
         self.ui.set_heading(SharedString::from(heading));
         let displayed_status = if matches!(
             self.screen,
@@ -21863,6 +21937,8 @@ impl App {
         self.ui.set_status(SharedString::from(displayed_status));
         let controls_are_mapped = matches!(self.screen.ui_index(), 1 | 4);
         let bottom_controls = match self.screen.ui_index() {
+            0 if self.custom_view.editor.is_some() => "↑↓ Choose  ←→ Set  X Save  B Cancel".into(),
+            0 if self.custom_view.information_focus => "↑↓ Scroll   B List".into(),
             0 => {
                 let action = if self.ui.get_browse_playable() {
                     "Play"
@@ -22092,6 +22168,7 @@ impl App {
             self.poll_information();
             self.poll_explore();
             self.poll_home_preview();
+            self.maintain_custom_information();
             if let Some(outcome) = self.poll_home_open() {
                 return Ok(outcome);
             }
@@ -22218,6 +22295,7 @@ impl App {
                 && self.index_terminal.is_none()
                 && self.scraper_refresh_job.is_none()
                 && self.information.is_none()
+                && self.custom_view.editor.is_none()
                 && self.explore.job.is_none()
                 && !matches!(
                     self.screen,
@@ -22822,6 +22900,7 @@ impl App {
             self.poll_storage();
             self.poll_explore();
             self.poll_home_preview();
+            self.maintain_custom_information();
             self.poll_artwork_sources();
             if self.source_resolution.is_some() {
                 std::thread::sleep(Duration::from_millis(1));
@@ -22851,6 +22930,13 @@ impl App {
                         .as_ref()
                         .is_none_or(|storage| storage.job.is_none() && !storage.requested))
                 && self.information.is_none()
+                && self.custom_view.description.is_none()
+                && !(self.screen == Screen::Browse
+                    && self
+                        .custom_definition()
+                        .is_some_and(|view| view.has(ViewContent::FullInformation))
+                    && self.custom_selected_game().is_some()
+                    && self.custom_view.description_key.is_none())
                 && self.source_resolution.is_none()
                 && self.source_job.is_none()
                 && self.provider_job.is_none()

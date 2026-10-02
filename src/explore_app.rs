@@ -50,7 +50,9 @@ impl App {
     fn name_keyboard_controls(&self) -> bool {
         matches!(
             self.name_keyboard_purpose,
-            NamePurpose::SaveCollection
+            NamePurpose::SaveView
+                | NamePurpose::RenameView(_)
+                | NamePurpose::SaveCollection
                 | NamePurpose::RenameCollection(_)
                 | NamePurpose::HomeFolder
                 | NamePurpose::HomeRename(_)
@@ -428,6 +430,7 @@ impl App {
             actions.push(GAME_INFORMATION.into());
         }
         actions.push(CHANGE_VIEW.into());
+        actions.extend(self.custom_view_actions());
         if self.selected_game_launch_core_target().is_some() {
             actions.push(GAME_LAUNCH_CORE.into());
         }

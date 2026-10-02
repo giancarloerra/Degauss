@@ -701,6 +701,7 @@ impl App {
             rows.push(ADD_HOME.into());
         }
         rows.push(CHANGE_VIEW.into());
+        rows.extend(self.custom_view_actions());
         if self.has_custom_view() {
             rows.push(USE_GLOBAL_VIEW.into());
         }

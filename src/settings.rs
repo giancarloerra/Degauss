@@ -328,6 +328,9 @@ pub struct Settings {
     /// `layout` applies there.
     #[serde(default, skip_serializing_if = "CustomViews::is_empty")]
     pub custom_views: CustomViews,
+    /// Named proportional templates. Existing per-place view strings stay intact.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub view_definitions: BTreeMap<String, crate::custom_view::Definition>,
     /// Folders and games hidden one at a time, by the name each is known
     /// by. Systems are hidden by id in `hidden`; this is everything else.
     #[serde(default)]
@@ -538,6 +541,8 @@ impl Settings {
                     .home
                     .validate()
                     .map_err(|error| DegaussError::malformed("Home settings", path, error))?;
+                crate::custom_view::validate(&settings.view_definitions)
+                    .map_err(|error| DegaussError::malformed("custom views", path, error))?;
                 Ok(settings)
             }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Settings::default()),
@@ -562,6 +567,8 @@ impl Settings {
 
     pub(crate) fn encode(&self, path: &Path) -> Result<String> {
         let settings = self.with_resolved_hold_shortcuts();
+        crate::custom_view::validate(&settings.view_definitions)
+            .map_err(|error| DegaussError::malformed("custom views", path, error))?;
         let text = toml::to_string_pretty(&settings)
             .map_err(|e| DegaussError::malformed("settings", path, e.to_string()))?;
         let body = format!(

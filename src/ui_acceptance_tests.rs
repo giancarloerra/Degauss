@@ -1,6 +1,8 @@
 use super::*;
 use slint::Model;
 
+#[path = "custom_view_acceptance_tests.rs"]
+mod custom_view_acceptance_tests;
 #[path = "explore_acceptance_tests.rs"]
 mod explore_acceptance_tests;
 #[path = "home_acceptance_tests.rs"]
@@ -822,7 +824,7 @@ fn run_cores_browser_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
     app.open_context();
     assert_eq!(
         app.context_actions,
-        vec![JUMP, SEARCH, REBUILD_CORES, CHANGE_VIEW]
+        vec![JUMP, SEARCH, REBUILD_CORES, CHANGE_VIEW, MANAGE_VIEWS]
             .into_iter()
             .map(str::to_string)
             .collect::<Vec<_>>()
@@ -12699,6 +12701,7 @@ pub(super) fn run_ui_acceptance_flow(window: Rc<MinimalSoftwareWindow>) {
     std::fs::write(&gamelist_path, &gamelist_xml).unwrap();
     explore_acceptance_tests::run(&root, window.clone());
     home_acceptance_tests::run(&root, window.clone());
+    custom_view_acceptance_tests::run(&root, window.clone());
     run_cores_browser_flow(&root, window.clone());
     run_empty_storage_rediscovery_flow(&root, window.clone());
     run_storage_rediscovery_flow(&root, window.clone());
