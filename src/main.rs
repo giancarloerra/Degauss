@@ -443,13 +443,30 @@ fn load_everything(args: &Args) -> Result<Loaded> {
     // actually is on this card, not from what the table guessed.
     let cores = systems::CoreIndex::read(Path::new(&config.menu_root));
     let core_cache_dir = cache::dir_for(&settings_path);
-    let core_catalogue = cache::load_core_catalogue(&core_cache_dir).unwrap_or_else(|| {
+    let cached_catalogue = cache::load_core_catalogue(&core_cache_dir);
+    let dual_catalogue = cores.has_dual_sdram()
+        || cached_catalogue.as_ref().is_some_and(|catalogue| {
+            catalogue
+                .entries
+                .iter()
+                .any(|entry| entry.name.contains(" (Dual SDRAM"))
+        });
+    let core_catalogue = if dual_catalogue {
         if settings.show_cores.unwrap_or(false) || settings.show_misterzine.unwrap_or(false) {
             cores.catalogue(&table)
         } else {
+            // Leave stale optional catalogues to the existing lazy-on-enable refresh.
             systems::CoreCatalogue::default()
         }
-    });
+    } else {
+        cached_catalogue.unwrap_or_else(|| {
+            if settings.show_cores.unwrap_or(false) || settings.show_misterzine.unwrap_or(false) {
+                cores.catalogue(&table)
+            } else {
+                systems::CoreCatalogue::default()
+            }
+        })
+    };
     let network_boot = if args.interactive_startup() {
         network_wait::detect(&config.wait_for_mounts)?
     } else {
@@ -3079,6 +3096,81 @@ category = "Favorites"
         // layout, startup would overwrite that saved choice on every run
         // and the setting would look like it never saved.
         assert_eq!(parse(&[]).layout, None);
+    }
+
+    #[test]
+    fn startup_refreshes_a_cached_dual_catalogue_after_the_last_build_is_removed() {
+        for keep_single in [true, false] {
+            let root = std::env::temp_dir().join(format!(
+                "degauss-dual-catalogue-{}-{keep_single}",
+                std::process::id()
+            ));
+            std::fs::create_dir(&root).unwrap();
+            let config_path = root.join("degauss.toml");
+            let table_path = root.join("systems.toml");
+            std::fs::write(
+                &config_path,
+                format!(
+                    "game_roots = []\nmenu_root = {:?}\n[app]\n",
+                    root.to_str().unwrap()
+                ),
+            )
+            .unwrap();
+            std::fs::write(
+                &table_path,
+                "[[systems]]\nname='PSX'\nid='PSX'\nfolders=['PSX']\nrbf='_Console/PSX'\nextensions=['chd']\n",
+            )
+            .unwrap();
+            let dual = root.join("_Console (Dual SDRAM)/PSX_20260901.rbf");
+            std::fs::create_dir_all(dual.parent().unwrap()).unwrap();
+            std::fs::write(&dual, b"fixture").unwrap();
+            let single = root.join("_Console/PSX_20260901.rbf");
+            if keep_single {
+                std::fs::create_dir_all(single.parent().unwrap()).unwrap();
+                std::fs::write(&single, b"fixture").unwrap();
+            }
+            Settings {
+                show_cores: Some(true),
+                ..Default::default()
+            }
+            .save(&root.join("settings.toml"))
+            .unwrap();
+            let args = Args {
+                config: Some(config_path),
+                systems: Some(table_path),
+                list_systems: true,
+                ..Default::default()
+            };
+            let original = load_everything(&args).unwrap().core_catalogue;
+            assert!(original.entries.iter().any(|entry| entry.path == dual));
+            cache::save_core_catalogue(&root.join("cache"), &original).unwrap();
+            std::fs::remove_file(&dual).unwrap();
+            let refreshed = load_everything(&args).unwrap().core_catalogue;
+            assert!(refreshed.entries.iter().all(|entry| entry.path != dual));
+            assert_eq!(
+                refreshed.entries.iter().any(|entry| entry.path == single),
+                keep_single,
+                "removing the last dual build keeps any installed single-RAM build"
+            );
+            assert_eq!(refreshed.format, systems::CoreCatalogue::FORMAT);
+            Settings::default()
+                .save(&root.join("settings.toml"))
+                .unwrap();
+            assert!(
+                load_everything(&args)
+                    .unwrap()
+                    .core_catalogue
+                    .entries
+                    .is_empty(),
+                "a stale dual catalogue must allow the existing lazy refresh when enabled later"
+            );
+            assert_eq!(
+                cache::load_core_catalogue(&root.join("cache")).unwrap(),
+                original,
+                "hidden browsers do not write or rebuild the stored catalogue"
+            );
+            std::fs::remove_dir_all(root).unwrap();
+        }
     }
 
     #[test]

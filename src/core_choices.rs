@@ -25,6 +25,9 @@ fn core_stem(reference: &str) -> &str {
 }
 
 pub(crate) fn nightly_matches(stem: &str, reference: &str) -> bool {
+    if crate::systems::dual_sdram_folder(reference) {
+        return false;
+    }
     let wanted = crate::systems::core_name(core_stem(reference));
     if wanted.is_empty() {
         return false;
