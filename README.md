@@ -95,6 +95,7 @@ Click the image to watch Degauss on YouTube.
 
 - [Using it](#using-it)
   - [Explore Games and saved collections](#explore-games-and-saved-collections)
+  - [Personal Home](#personal-home)
   - [Running MiSTer scripts](#running-mister-scripts)
   - [Browsing core updates](#browsing-core-updates)
 - [Why Degauss](#why-degauss)
@@ -224,6 +225,27 @@ start a cross-system search using the selected game's existing metadata.
 Back returns to the previous query or originating browser location. Returning
 from a game restores the query and selection; a fresh start begins unfiltered.
 **Options → Library → Show Explore Games** hides the Home entry.
+
+### Personal Home
+
+**Actions → Add to Home** saves an exact shortcut to a game, system, library
+folder, saved collection, installed core, script or Home category/action.
+Choose Home, an existing personal folder or **New Personal Folder**.
+This does not copy games or change MiSTer Favourites.
+
+On Home, **Actions → Edit Home** lists standard and personal rows, including
+hidden ones. Select a row to move it up/down or hide/show it on Home.
+Personal entries can also be renamed, moved to another personal folder or
+removed. Folders can contain mixed shortcuts and other personal folders,
+up to three folder levels, and use images chosen from the existing logos
+folder. **Save Changes** keeps the edits; **Cancel Changes** discards them.
+
+Existing Library visibility switches remain authoritative. Missing or hidden
+targets stay saved and visibly unavailable; they are not redirected to a
+different game. Removing a personal folder removes only its organisation.
+Back from an opened target and return after play restore its originating
+personal-folder entry. **Start Folder** continues to use the existing category
+identity, independently of Home ordering.
 
 ### Running MiSTer scripts
 

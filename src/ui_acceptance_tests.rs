@@ -3,6 +3,8 @@ use slint::Model;
 
 #[path = "explore_acceptance_tests.rs"]
 mod explore_acceptance_tests;
+#[path = "home_acceptance_tests.rs"]
+mod home_acceptance_tests;
 
 fn information_row() -> browse::Row {
     browse::Row {
@@ -12693,6 +12695,7 @@ pub(super) fn run_ui_acceptance_flow(window: Rc<MinimalSoftwareWindow>) {
     let gamelist_xml = format!("<gameList><game><path>First Game.nes</path><desc><![CDATA[{complete_description}]]></desc></game><game><path>Second Game.nes</path><desc><![CDATA[{complete_description}]]></desc></game></gameList>");
     std::fs::write(&gamelist_path, &gamelist_xml).unwrap();
     explore_acceptance_tests::run(&root, window.clone());
+    home_acceptance_tests::run(&root, window.clone());
     run_cores_browser_flow(&root, window.clone());
     run_empty_storage_rediscovery_flow(&root, window.clone());
     run_storage_rediscovery_flow(&root, window.clone());

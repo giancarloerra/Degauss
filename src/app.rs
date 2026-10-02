@@ -49,6 +49,7 @@ use crate::input::{
 };
 use crate::list_state::ListState;
 include!("explore_app.rs");
+include!("home_app.rs");
 use crate::metrics::{FrameTimer, StartupTimings};
 use crate::name_display::GameNameDisplay;
 use crate::name_keyboard::{self, Key as NameKey, Page as NamePage};
@@ -2889,6 +2890,8 @@ enum FindMode {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum NamePurpose {
+    HomeFolder,
+    HomeRename(String),
     SaveCollection,
     RenameCollection(String),
     /// Create the folder and finish the favourite addition that opened the
@@ -3950,6 +3953,7 @@ pub struct App {
     /// A saved game position waiting for startup's source check or Pack
     /// preparation to finish opening its system.
     pending_restore: Option<crate::state::State>,
+    home: HomeBrowser,
     /// The system currently open, and the folders entered inside it.
     library: Option<Library>,
     names: browse::DisplayNames,
@@ -4744,6 +4748,7 @@ impl App {
             source_resolution_groups: HashSet::new(),
             source_resolution_action: SourceResolutionAction::Startup,
             pending_restore: None,
+            home: HomeBrowser::default(),
             provider_recovery_needed: HashSet::new(),
             pack_health_shown: HashSet::new(),
             pack_health_pending: None,
@@ -5387,8 +5392,11 @@ impl App {
         // of the panel: the picture is what is being looked at. Nothing at
         // all where there are no games, so the groups keep the whole panel
         // for the logo.
-        self.ui
-            .set_show_brand(self.screen == Screen::Browse && self.browsing == Browsing::Categories);
+        self.ui.set_show_brand(
+            self.screen == Screen::Browse
+                && self.browsing == Browsing::Categories
+                && self.home.folder.is_none(),
+        );
         self.apply_detail_panel();
         // 7) A handful of entries look lost against the top of the screen.
         self.ui.set_center_rows(
@@ -5684,8 +5692,10 @@ impl App {
             self.touch_selection();
             return;
         }
-        let Some(row) = self.browse_row(self.game_list.selected()).filter(|row| {
-            self.browsing == Browsing::Games && matches!(row.kind, browse::Kind::Play(_))
+        let Some(row) = self.home_selected_game().map(|(_, row)| row).or_else(|| {
+            self.browse_row(self.game_list.selected()).filter(|row| {
+                self.browsing == Browsing::Games && matches!(row.kind, browse::Kind::Play(_))
+            })
         }) else {
             return;
         };
@@ -5722,7 +5732,9 @@ impl App {
         let browse::Kind::Play(mut launch) = row.kind.clone() else {
             return Err(DegaussError::unsupported("game information", "not a game"));
         };
-        let id = if let Some(entry) = self.explore_selected() {
+        let id = if let Some((system, _)) = self.home_selected_game() {
+            system.to_string()
+        } else if let Some(entry) = self.explore_selected() {
             entry.system.clone()
         } else if self.last_played_open {
             let entry = self.selected_last_played().ok_or_else(|| {
@@ -6022,6 +6034,7 @@ impl App {
     }
 
     fn touch_selection(&mut self) {
+        self.resolve_home_preview();
         if self.art_pending {
             self.art.deferred += 1;
         }
@@ -7660,6 +7673,14 @@ impl App {
     /// a scraper may or may not have filled in.
     /// Identify the exact browse place under any menu currently covering it.
     fn current_view_place(&self) -> Option<ViewPlace> {
+        if self.browsing == Browsing::Categories {
+            if let Some(id) = &self.home.folder {
+                return Some(ViewPlace::Games {
+                    system: "@home".into(),
+                    place: id.clone(),
+                });
+            }
+        }
         if self.explore.active {
             return Some(ViewPlace::Games {
                 system: crate::explore::STATE_ID.into(),
@@ -11936,12 +11957,16 @@ impl App {
             self.categories
                 .insert(0, (crate::explore::NAME.to_string(), 0));
         }
-        let selected_category = self
-            .category_list
-            .selected()
-            .min(self.categories.len().saturating_sub(1));
-        self.category_list = ListState::new(self.categories.len(), self.geometry.visible);
-        self.category_list.select(selected_category);
+        let selected_key = self.selected_home_key().map(str::to_string);
+        let selected_category = self.category_list.selected();
+        self.rebuild_home_rows();
+        self.category_list = ListState::new(self.home.rows.len(), self.geometry.visible);
+        self.category_list.select(
+            selected_key
+                .as_ref()
+                .and_then(|key| self.home.rows.iter().position(|row| row == key))
+                .unwrap_or(selected_category),
+        );
         self.reroll_category_art();
         let count = if self.in_cores_browser() {
             self.core_categories().len()
@@ -11995,7 +12020,7 @@ impl App {
             return;
         };
         self.category_list.select(index);
-        self.open_selected_category();
+        self.open_category_named(self.categories[index].0.clone());
     }
 
     /// Choose which system lends its logo to each group, this time round.
@@ -12077,10 +12102,13 @@ impl App {
     /// Open a group, showing the systems inside it.
     fn open_selected_category(&mut self) {
         self.request_storage_check();
-        let Some((name, _)) = self.categories.get(self.category_list.selected()) else {
+        let Some(name) = self.selected_category_name() else {
             return;
         };
-        let name = name.clone();
+        self.open_category_named(name.to_string());
+    }
+
+    fn open_category_named(&mut self, name: String) {
         if name == crate::explore::NAME {
             self.open_explore(None);
             return;
@@ -12908,9 +12936,8 @@ impl App {
     /// category.
     fn set_separate_handheld_category(&mut self, enabled: bool) {
         let selected_category = (self.browsing == Browsing::Categories)
-            .then(|| self.categories.get(self.category_list.selected()))
-            .flatten()
-            .map(|(name, _)| name.clone());
+            .then(|| self.selected_category_name().map(str::to_string))
+            .flatten();
         let selected_system = match self.browsing {
             Browsing::Systems => self
                 .systems
@@ -14062,7 +14089,10 @@ impl App {
     /// What a contextual entry currently reads as, when it is a choice
     /// rather than an action.
     fn context_value(&self, index: usize) -> String {
-        if self.explore.active && !matches!(self.explore.menu, ExploreMenu::Actions) {
+        if self.home.menu.is_none()
+            && self.explore.active
+            && !matches!(self.explore.menu, ExploreMenu::Actions)
+        {
             return self.explore_menu_value(index);
         }
         if self.context_is_root() {
@@ -14871,6 +14901,8 @@ impl App {
                     self.pack_match_query.clone(),
                 ));
             }
+            NamePurpose::HomeFolder => self.finish_home_folder(&draft),
+            NamePurpose::HomeRename(id) => self.finish_home_rename(&id, &draft),
             NamePurpose::SaveCollection => self.save_explore_collection(None, &draft),
             NamePurpose::RenameCollection(id) => self.save_explore_collection(Some(&id), &draft),
             NamePurpose::NewFavoriteFolder => {
@@ -15533,9 +15565,10 @@ impl App {
     }
 
     fn selected_category_name(&self) -> Option<&str> {
-        self.categories
-            .get(self.category_list.selected())
-            .map(|(name, _)| name.as_str())
+        self.home
+            .rows
+            .get(self.category_list.selected())?
+            .strip_prefix("category:")
     }
 
     fn selected_image_target(&self) -> Option<ImageTarget> {
@@ -17435,7 +17468,8 @@ impl App {
     }
 
     fn context_is_root(&self) -> bool {
-        !self.explore.active
+        self.home.menu.is_none()
+            && !self.explore.active
             && !self.in_misterzine_browser()
             && self.browsing != Browsing::Categories
             && self.context_page.is_none()
@@ -17471,6 +17505,9 @@ impl App {
                 .map(|page| page.label().to_string())
                 .collect()
         };
+        if self.home_pin_target().is_some() && !self.menu.iter().any(|entry| entry == ADD_HOME) {
+            self.menu.push(ADD_HOME.into());
+        }
         let selected = self
             .context_page
             .map(|page| self.context_page_selections[page.index()])
@@ -17497,6 +17534,9 @@ impl App {
     }
 
     fn refresh_context(&mut self) {
+        if self.home_context() {
+            return;
+        }
         if self.explore.active {
             self.explore_actions();
             return;
@@ -19184,6 +19224,7 @@ impl App {
         }
         if self.source_resolution.is_some() && self.build.is_none() {
             if matches!(action, Action::Quit) {
+                self.home.pending_open = None;
                 self.source_resolution_cancelled = true;
                 if let Some(job) = &self.source_resolution {
                     job.cancel();
@@ -19447,6 +19488,10 @@ impl App {
             return None;
         }
 
+        if let Some(outcome) = self.handle_home_input(action) {
+            return outcome;
+        }
+
         if self.screen == Screen::ScraperKeyboard {
             self.handle_scraper_keyboard(action);
             return None;
@@ -19469,6 +19514,7 @@ impl App {
         }
         if self.screen == Screen::SourceProgress {
             if matches!(action, Action::Quit | Action::Context | Action::Menu) {
+                self.home.pending_open = None;
                 if let Some(job) = &self.source_job {
                     job.cancel();
                     self.source_cancelling = true;
@@ -20013,20 +20059,17 @@ impl App {
                     None => (None, String::new(), false, false),
                 }
             }
-            (Screen::Browse, Browsing::Categories) => {
-                match self.categories.get(self.category_list.selected()) {
-                    Some((name, _)) => {
-                        let (logo, heart) = logo_or_favorite_heart(name, self.category_logo(name));
-                        (
-                            logo,
-                            name.clone(),
-                            heart,
-                            self.category_art_is_game_art(name),
-                        )
-                    }
-                    None => (None, String::new(), false, false),
+            (Screen::Browse, Browsing::Categories) => match self.selected_home_key() {
+                Some(key) => {
+                    let (logo, game_art) = self.home_art(key);
+                    let (logo, heart) = logo_or_favorite_heart(
+                        key.strip_prefix("category:").unwrap_or_default(),
+                        logo,
+                    );
+                    (logo, self.home_label(key), heart, game_art)
                 }
-            }
+                None => (None, String::new(), false, false),
+            },
             _ => (None, String::new(), false, false),
         }
     }
@@ -20643,18 +20686,18 @@ impl App {
                 match self.browsing {
                     Browsing::Categories => {
                         for index in range {
-                            let name = self.categories[index].0.clone();
+                            let key = self.home.rows[index].clone();
+                            let name = self.home_label(&key);
                             let name = &name;
                             // No number beside a group. It counted systems,
                             // so Arcade read "1" while holding a thousand
                             // games, which answers a question nobody asked
                             // with a number that means something else.
-                            let logo = if with_art {
-                                self.category_logo(name)
+                            let (logo, game_art) = if with_art {
+                                self.home_art(&key)
                             } else {
-                                None
+                                (None, false)
                             };
-                            let game_art = with_art && self.category_art_is_game_art(name);
                             let art_scale_x = artwork_horizontal(
                                 self.artwork_scale,
                                 self.width,
@@ -20679,7 +20722,10 @@ impl App {
                                 cover,
                                 has_cover,
                                 art_scale_x,
-                                value: SharedString::new(),
+                                value: self
+                                    .home_problem(&key)
+                                    .map(|_| SharedString::from("Unavailable"))
+                                    .unwrap_or_default(),
                             });
                         }
                     }
@@ -21150,10 +21196,18 @@ impl App {
         self.update_operation_ui();
         let (group_title, group_subtitle) = match (self.screen, self.browsing) {
             (Screen::Browse, Browsing::Categories) => (
-                self.selected_category_name()
-                    .unwrap_or_default()
-                    .to_string(),
-                "Browse Systems".to_string(),
+                self.selected_home_key()
+                    .map(|key| self.home_label(key))
+                    .unwrap_or_default(),
+                self.selected_home_key()
+                    .and_then(|key| self.home_problem(key))
+                    .unwrap_or_else(|| {
+                        if self.selected_category_name().is_some() {
+                            "Browse Systems".into()
+                        } else {
+                            "Personal Home".into()
+                        }
+                    }),
             ),
             (Screen::Browse, Browsing::Systems) if self.in_cores_browser() => self
                 .core_categories()
@@ -21349,6 +21403,8 @@ impl App {
             ),
             Screen::NameKeyboard => (
                 match self.name_keyboard_purpose {
+                    NamePurpose::HomeFolder => "New Personal Folder".to_string(),
+                    NamePurpose::HomeRename(_) => "Rename Home Entry".to_string(),
                     NamePurpose::SaveCollection => "Save Collection".to_string(),
                     NamePurpose::RenameCollection(_) => "Rename Collection".to_string(),
                     NamePurpose::NewFavoriteFolder => "New Favourite Folder".to_string(),
@@ -21359,7 +21415,13 @@ impl App {
             ),
             Screen::Browse => {
                 let name = match self.browsing {
-                    Browsing::Categories => String::new(),
+                    Browsing::Categories => self
+                        .home
+                        .folder
+                        .as_ref()
+                        .and_then(|id| self.settings.home.entries.get(id))
+                        .map(|entry| entry.name.clone())
+                        .unwrap_or_default(),
                     Browsing::Systems => self
                         .open_category
                         .clone()
@@ -21411,7 +21473,14 @@ impl App {
                 } else {
                     context_help(selected)
                 };
-                let heading = if self.explore.active {
+                let heading = if self.home.menu.is_some() {
+                    match self.home.menu.as_ref() {
+                        Some(HomeMenu::Entry(key)) => format!("Home / {}", self.home_label(key)),
+                        Some(HomeMenu::Destination(_)) => "Add / Move to Home".into(),
+                        Some(HomeMenu::Editor) => "Edit Home".into(),
+                        _ => "Home / Actions".into(),
+                    }
+                } else if self.explore.active {
                     self.explore_menu_heading()
                 } else {
                     self.context_page
@@ -21852,6 +21921,10 @@ impl App {
             self.poll_scraper_preview();
             self.poll_information();
             self.poll_explore();
+            self.poll_home_preview();
+            if let Some(outcome) = self.poll_home_open() {
+                return Ok(outcome);
+            }
             self.poll_misterzine();
             self.maintain_misterzine_games(now);
             self.open_deferred_network_system();
@@ -22251,6 +22324,15 @@ impl App {
     /// Where the user is standing, in a form that can be written down.
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     pub fn position(&self) -> crate::state::State {
+        let mut saved = self.position_browse();
+        saved.home = self.home.origin.clone().or_else(|| {
+            (self.browsing == Browsing::Categories && self.home.folder.is_some())
+                .then(|| self.home_resume())
+        });
+        saved
+    }
+
+    fn position_browse(&self) -> crate::state::State {
         if self.explore.active {
             let mut saved = crate::state::State::record(
                 crate::explore::STATE_ID,
@@ -22321,6 +22403,10 @@ impl App {
     /// going back would have led anyway, rather than refusing to start.
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     pub fn restore_position(&mut self, saved: &crate::state::State) {
+        if let Some(resume) = &saved.home {
+            self.restore_home(resume.clone());
+            return;
+        }
         if saved.system == crate::explore::STATE_ID {
             if let Some(resume) = &saved.explore {
                 if let Some(origin) = &resume.origin {
@@ -22556,6 +22642,7 @@ impl App {
         loop {
             self.poll_storage();
             self.poll_explore();
+            self.poll_home_preview();
             self.poll_artwork_sources();
             if self.source_resolution.is_some() {
                 std::thread::sleep(Duration::from_millis(1));
@@ -22593,6 +22680,7 @@ impl App {
                 && self.misterzine_game_job.is_none()
                 && self.explore.job.is_none()
                 && self.explore.pending_resume.is_none()
+                && self.home.preview_job.is_none()
             {
                 break;
             }

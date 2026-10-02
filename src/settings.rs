@@ -403,6 +403,8 @@ pub struct Settings {
     pub collections: BTreeMap<String, crate::explore::Collection>,
     #[serde(default)]
     pub next_collection: u64,
+    #[serde(default, skip_serializing_if = "crate::home::Store::is_empty")]
+    pub home: crate::home::Store,
     /// Absent preserves standard-first launches.
     pub core_preference: Option<CorePreference>,
     /// Preferred source for systems left on Automatic. Absent preserves
@@ -529,8 +531,15 @@ impl Settings {
     /// user's settings would vanish with no explanation.
     pub fn load(path: &Path) -> Result<Self> {
         match std::fs::read_to_string(path) {
-            Ok(text) => toml::from_str(&text)
-                .map_err(|e| DegaussError::malformed("settings", path, e.to_string())),
+            Ok(text) => {
+                let settings: Self = toml::from_str(&text)
+                    .map_err(|e| DegaussError::malformed("settings", path, e.to_string()))?;
+                settings
+                    .home
+                    .validate()
+                    .map_err(|error| DegaussError::malformed("Home settings", path, error))?;
+                Ok(settings)
+            }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Settings::default()),
             Err(e) => Err(DegaussError::io("reading settings", path, e)),
         }

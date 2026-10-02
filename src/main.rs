@@ -32,6 +32,7 @@ mod game_filter;
 mod game_launch_cores;
 mod gamelist;
 mod history;
+mod home;
 mod index_job;
 mod information_job;
 mod ini_profile;

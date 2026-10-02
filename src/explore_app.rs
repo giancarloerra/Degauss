@@ -50,7 +50,10 @@ impl App {
     fn name_keyboard_controls(&self) -> bool {
         matches!(
             self.name_keyboard_purpose,
-            NamePurpose::SaveCollection | NamePurpose::RenameCollection(_)
+            NamePurpose::SaveCollection
+                | NamePurpose::RenameCollection(_)
+                | NamePurpose::HomeFolder
+                | NamePurpose::HomeRename(_)
         )
     }
     fn browse_row(&self, index: usize) -> Option<&browse::Row> {
@@ -396,6 +399,13 @@ impl App {
         self.explore.menu = mode;
         self.context_page = None;
         self.menu = rows;
+        if matches!(
+            self.explore.menu,
+            ExploreMenu::Actions | ExploreMenu::Collection(_)
+        ) && self.home_pin_target().is_some()
+        {
+            self.menu.push(ADD_HOME.into());
+        }
         self.menu_list = ListState::new(self.menu.len(), self.geometry.visible);
         self.screen = Screen::Context;
         self.apply_geometry();
@@ -694,6 +704,9 @@ impl App {
     }
 
     fn handle_explore_input(&mut self, action: Action) -> bool {
+        if self.home.menu.is_some() {
+            return false;
+        }
         if self.explore.job.is_some() {
             if matches!(action, Action::Quit) {
                 if let Some(job) = &self.explore.job {

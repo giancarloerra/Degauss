@@ -151,6 +151,8 @@ pub fn recall_left_at<'a>(list: &'a [LeftAt], system: &str, place: &str) -> Opti
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct State {
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub home: Option<crate::home::Resume>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub explore: Option<crate::explore::Resume>,
     /// The system's id from the table, not its index: a table that gains an
     /// entry must not send the user to a different machine.
@@ -187,6 +189,7 @@ impl State {
         category_system: &std::collections::BTreeMap<String, String>,
     ) -> Self {
         State {
+            home: None,
             explore: None,
             system: system.to_string(),
             category: category.to_string(),
