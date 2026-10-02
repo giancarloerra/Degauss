@@ -2072,6 +2072,16 @@ main=degauss/MiSTer_Degauss
 
 To return to the official Main binary, choose **Update All → Settings → Frontends → Stock MiSTer UI** and save the change. Update All removes the Degauss `main=` selection.
 
+### What should I preserve when using custom or alternate INI profiles?
+
+Update All's Degauss option updates `/media/fat/MiSTer.ini`; it does not synchronize custom or alternate INI profiles. If you replace your INI file or switch profiles, keep this setting in the existing `[MiSTer]` section of each profile where Degauss should start automatically:
+
+```ini
+main=degauss/MiSTer_Degauss
+```
+
+With RetroAchievements, also preserve the RA-specific Main selection. Update All's RA option sets `main=MiSTer_RA` under `[RA_*]`. To keep Degauss's Frontend menu and saved shortcut in RA games, select `main=degauss/MiSTer_RA_Degauss` in that existing section instead, following the [RA setup instructions](support/ra-main/README.md#installation-and-updates). Preserve its other settings and any intentional per-core Main overrides.
+
 ### How do I install Degauss on an SS1 currently using Console Mode?
 
 Console Mode uses its own `main=` setting in the SS1's main and alternate video profiles. Degauss's Update All option changes `/media/fat/MiSTer.ini`, so use the **Main** profile for Degauss:
