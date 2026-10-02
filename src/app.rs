@@ -1634,6 +1634,7 @@ fn update_index_summaries(
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ScraperRow {
+    Source,
     Username,
     Password,
     Images,
@@ -1645,7 +1646,8 @@ enum ScraperRow {
     Back,
 }
 
-const SCRAPER_ROWS: [ScraperRow; 8] = [
+const SCRAPER_ROWS: [ScraperRow; 9] = [
+    ScraperRow::Source,
     ScraperRow::Username,
     ScraperRow::Password,
     ScraperRow::Images,
@@ -1655,7 +1657,8 @@ const SCRAPER_ROWS: [ScraperRow; 8] = [
     ScraperRow::ClearLogin,
     ScraperRow::Back,
 ];
-const SCRAPER_GAME_ROWS: [ScraperRow; 9] = [
+const SCRAPER_GAME_ROWS: [ScraperRow; 10] = [
+    ScraperRow::Source,
     ScraperRow::Username,
     ScraperRow::Password,
     ScraperRow::Images,
@@ -1667,7 +1670,32 @@ const SCRAPER_GAME_ROWS: [ScraperRow; 9] = [
     ScraperRow::Back,
 ];
 
-fn scraper_rows(scope: &crate::scraper::Scope) -> &'static [ScraperRow] {
+fn scraper_rows(
+    scope: &crate::scraper::Scope,
+    source: crate::scraper::ScraperSource,
+) -> &'static [ScraperRow] {
+    if source == crate::scraper::ScraperSource::Libretro {
+        return if matches!(scope, crate::scraper::Scope::Game { .. }) {
+            &[
+                ScraperRow::Source,
+                ScraperRow::Images,
+                ScraperRow::ImageType,
+                ScraperRow::Metadata,
+                ScraperRow::Start,
+                ScraperRow::Search,
+                ScraperRow::Back,
+            ]
+        } else {
+            &[
+                ScraperRow::Source,
+                ScraperRow::Images,
+                ScraperRow::ImageType,
+                ScraperRow::Metadata,
+                ScraperRow::Start,
+                ScraperRow::Back,
+            ]
+        };
+    }
     if matches!(scope, crate::scraper::Scope::Game { .. }) {
         &SCRAPER_GAME_ROWS
     } else {
@@ -1680,6 +1708,7 @@ const SCRAPER_PROGRESS_ROWS: usize = 12;
 impl ScraperRow {
     fn label(self) -> &'static str {
         match self {
+            Self::Source => "Scraping Source",
             Self::Username => "Username",
             Self::Password => "Password",
             Self::Images => "Images",
@@ -5657,8 +5686,14 @@ impl App {
                 .get(self.menu_list.selected())
                 .is_some_and(|action| matches!(action.as_str(), CHANGE_VIEW | CORE_VERSION)),
             Screen::Scraper => matches!(
-                scraper_rows(&self.scraper_scope).get(self.scraper_list.selected()),
-                Some(ScraperRow::Images | ScraperRow::ImageType | ScraperRow::Metadata)
+                scraper_rows(&self.scraper_scope, self.scraper_settings.source)
+                    .get(self.scraper_list.selected()),
+                Some(
+                    ScraperRow::Source
+                        | ScraperRow::Images
+                        | ScraperRow::ImageType
+                        | ScraperRow::Metadata
+                )
             ),
             _ => false,
         };
@@ -17907,7 +17942,7 @@ impl App {
         self.scraper_scope = scope;
         self.scraper_return = return_to;
         self.scraper_list = ListState::new(
-            scraper_rows(&self.scraper_scope).len(),
+            scraper_rows(&self.scraper_scope, self.scraper_settings.source).len(),
             self.geometry.visible,
         );
         self.scraper_matches_return = Screen::ScraperProgress;
@@ -17956,6 +17991,12 @@ impl App {
 
     fn scraper_value(&self, row: ScraperRow) -> String {
         match row {
+            ScraperRow::Source => self.scraper_settings.source.label().to_string(),
+            ScraperRow::ImageType
+                if self.scraper_settings.source == crate::scraper::ScraperSource::Libretro =>
+            {
+                self.scraper_settings.libretro_artwork.label().to_string()
+            }
             ScraperRow::Username if self.scraper_settings.username.is_empty() => {
                 "Not set".to_string()
             }
@@ -17989,7 +18030,9 @@ impl App {
     }
 
     fn scraper_selected_help(&self) -> &'static str {
-        match scraper_rows(&self.scraper_scope).get(self.scraper_list.selected()).copied() {
+        match scraper_rows(&self.scraper_scope, self.scraper_settings.source).get(self.scraper_list.selected()).copied() {
+            Some(ScraperRow::Source) => "Choose ScreenScraper with an account, or account-free Libretro databases and artwork.",
+            Some(ScraperRow::ImageType) if self.scraper_settings.source == crate::scraper::ScraperSource::Libretro => "Choose Libretro screenshots, box art or title screens for this scrape.",
             Some(ScraperRow::Username) => "Enter the username for the ScreenScraper account.",
             Some(ScraperRow::Password) => "Enter the account password. Saving it on the card requires storage confirmation.",
             Some(ScraperRow::Images) => "Choose no image downloads, missing images only, or replacement of existing images.",
@@ -18005,10 +18048,28 @@ impl App {
     }
 
     fn adjust_scraper(&mut self, delta: isize) {
-        match scraper_rows(&self.scraper_scope)
+        match scraper_rows(&self.scraper_scope, self.scraper_settings.source)
             .get(self.scraper_list.selected())
             .copied()
         {
+            Some(ScraperRow::Source) => {
+                self.scraper_settings.source = self.scraper_settings.source.step();
+                self.scraper_list = ListState::new(
+                    scraper_rows(&self.scraper_scope, self.scraper_settings.source).len(),
+                    self.geometry.visible,
+                );
+                self.scraper_progress.account = None;
+                self.scraper_matches.clear();
+                self.scraper_preview_job = None;
+                self.scraper_preview_image = None;
+                self.apply_geometry();
+            }
+            Some(ScraperRow::ImageType)
+                if self.scraper_settings.source == crate::scraper::ScraperSource::Libretro =>
+            {
+                self.scraper_settings.libretro_artwork =
+                    self.scraper_settings.libretro_artwork.step(delta);
+            }
             Some(ScraperRow::Images) => {
                 self.scraper_settings.image_policy = self.scraper_settings.image_policy.step(delta);
             }
@@ -18054,15 +18115,18 @@ impl App {
     }
 
     fn activate_scraper_row(&mut self) {
-        match scraper_rows(&self.scraper_scope)
+        match scraper_rows(&self.scraper_scope, self.scraper_settings.source)
             .get(self.scraper_list.selected())
             .copied()
         {
             Some(ScraperRow::Username) => self.open_scraper_keyboard(ScraperField::Username),
             Some(ScraperRow::Password) => self.open_scraper_keyboard(ScraperField::Password),
-            Some(ScraperRow::Images | ScraperRow::ImageType | ScraperRow::Metadata) => {
-                self.adjust_scraper(1)
-            }
+            Some(
+                ScraperRow::Source
+                | ScraperRow::Images
+                | ScraperRow::ImageType
+                | ScraperRow::Metadata,
+            ) => self.adjust_scraper(1),
             Some(ScraperRow::Start) => self.confirm_scrape(),
             Some(ScraperRow::Search) => self.open_manual_scraper_search(),
             Some(ScraperRow::ClearLogin) => {
@@ -18192,7 +18256,11 @@ impl App {
         let crate::scraper::Scope::Game { system_id, .. } = &self.scraper_scope else {
             return None;
         };
-        crate::scraper::platform_id(system_id, &self.scraper_settings.system_ids)
+        crate::scraper::platform_id_for_source(
+            system_id,
+            &self.scraper_settings.system_ids,
+            self.scraper_settings.source,
+        )
     }
 
     fn current_scraper_match(&self) -> Option<&crate::scraper::Match> {
@@ -18258,15 +18326,18 @@ impl App {
         }
         if self.build.is_some() || self.refreshing.is_some() {
             self.message = Some("Wait for the current library update to finish.".to_string());
-        } else if self.scraper_settings.username.is_empty()
-            || self.scraper_settings.password.is_empty()
+        } else if self.scraper_settings.source == crate::scraper::ScraperSource::ScreenScraper
+            && (self.scraper_settings.username.is_empty()
+                || self.scraper_settings.password.is_empty())
         {
             self.message = Some("Set the ScreenScraper username and password first.".to_string());
         } else if self.scraper_settings.image_policy == crate::scraper::ImagePolicy::Off
             && self.scraper_settings.metadata_policy == crate::scraper::MetadataPolicy::Off
         {
             self.message = Some("Enable images, metadata, or both first.".to_string());
-        } else if !self.scraper_settings.accepted_plaintext_warning {
+        } else if self.scraper_settings.source == crate::scraper::ScraperSource::ScreenScraper
+            && !self.scraper_settings.accepted_plaintext_warning
+        {
             self.pending = Some(Pending::AcceptScraperStorageForSearch);
             self.message = Some("ScreenScraper password will be stored as plain text on the card.\n\nA accept, B cancel".to_string());
         } else if self.save_scraper_settings() {
@@ -18289,13 +18360,17 @@ impl App {
             self.dirty = true;
             return;
         }
-        let developer = match crate::scraper::DeveloperCredentials::embedded() {
-            Ok(credentials) => credentials,
-            Err(error) => {
-                crate::note(&format!("scraper      search could not start: {error}"));
-                self.scraper_search_status = "Search could not start".to_string();
-                self.dirty = true;
-                return;
+        let developer = if self.scraper_settings.source == crate::scraper::ScraperSource::Libretro {
+            None
+        } else {
+            match crate::scraper::DeveloperCredentials::embedded() {
+                Ok(credentials) => Some(credentials),
+                Err(error) => {
+                    crate::note(&format!("scraper      search could not start: {error}"));
+                    self.scraper_search_status = "Search could not start".to_string();
+                    self.dirty = true;
+                    return;
+                }
             }
         };
         let request = crate::scraper::SearchRequest {
@@ -18303,12 +18378,19 @@ impl App {
             term: term.clone(),
             settings: self.scraper_search_settings(),
             developer,
+            cache_dir: self.cache_dir.clone(),
         };
         let job = match crate::scraper::start_search(request) {
             Ok(job) => job,
             Err(error) => {
                 crate::note(&format!("scraper      search could not start: {error}"));
-                self.scraper_search_status = scraper_search_error(&error).to_string();
+                self.scraper_search_status =
+                    if self.scraper_settings.source == crate::scraper::ScraperSource::Libretro {
+                        error.user_message_for(self.scraper_settings.source)
+                    } else {
+                        scraper_search_error(&error)
+                    }
+                    .to_string();
                 self.dirty = true;
                 return;
             }
@@ -18319,7 +18401,13 @@ impl App {
         self.scraper_preview_match_id = None;
         self.scraper_preview_image = None;
         self.scraper_preview_caption = "Searching...".to_string();
-        self.scraper_search_status = "Checking account".to_string();
+        self.scraper_search_status =
+            if self.scraper_settings.source == crate::scraper::ScraperSource::Libretro {
+                "Reading Libretro database"
+            } else {
+                "Checking account"
+            }
+            .to_string();
         self.apply_geometry();
         self.dirty = true;
     }
@@ -18345,7 +18433,7 @@ impl App {
                     failed_searches,
                 } => {
                     self.scraper_search_job = None;
-                    self.scraper_progress.account = Some(account);
+                    self.scraper_progress.account = account;
                     // This account snapshot was taken immediately before the
                     // manual query, so these counters describe work after
                     // that snapshot without double-counting the earlier run.
@@ -18365,7 +18453,14 @@ impl App {
                 crate::scraper::SearchEvent::Failed(error) => {
                     self.scraper_search_job = None;
                     crate::note(&format!("scraper      manual search failed: {error}"));
-                    self.scraper_search_status = scraper_search_error(&error).to_string();
+                    self.scraper_search_status = if self.scraper_settings.source
+                        == crate::scraper::ScraperSource::Libretro
+                    {
+                        error.user_message_for(self.scraper_settings.source)
+                    } else {
+                        scraper_search_error(&error)
+                    }
+                    .to_string();
                     self.start_scraper_preview();
                     self.apply_geometry();
                     self.dirty = true;
@@ -18391,30 +18486,41 @@ impl App {
             self.dirty = true;
             return;
         };
-        let Some(max_download_speed) = self
-            .scraper_progress
-            .account
-            .as_ref()
-            .and_then(|account| account.max_download_speed)
-        else {
-            self.scraper_preview_caption = "Preview Unavailable".to_string();
-            self.art_pending = true;
-            self.dirty = true;
-            return;
-        };
-        let developer = match crate::scraper::DeveloperCredentials::embedded() {
-            Ok(credentials) => credentials,
-            Err(error) => {
-                crate::note(&format!("scraper      preview could not start: {error}"));
-                self.scraper_preview_caption = "Preview Unavailable".to_string();
-                self.art_pending = true;
-                self.dirty = true;
-                return;
+        let max_download_speed =
+            if self.scraper_settings.source == crate::scraper::ScraperSource::Libretro {
+                0
+            } else {
+                let Some(max_download_speed) = self
+                    .scraper_progress
+                    .account
+                    .as_ref()
+                    .and_then(|account| account.max_download_speed)
+                else {
+                    self.scraper_preview_caption = "Preview Unavailable".to_string();
+                    self.art_pending = true;
+                    self.dirty = true;
+                    return;
+                };
+                max_download_speed
+            };
+        let developer = if self.scraper_settings.source == crate::scraper::ScraperSource::Libretro {
+            None
+        } else {
+            match crate::scraper::DeveloperCredentials::embedded() {
+                Ok(credentials) => Some(credentials),
+                Err(error) => {
+                    crate::note(&format!("scraper      preview could not start: {error}"));
+                    self.scraper_preview_caption = "Preview Unavailable".to_string();
+                    self.art_pending = true;
+                    self.dirty = true;
+                    return;
+                }
             }
         };
         let palette = self.effective_palette();
         let request = crate::scraper::PreviewRequest {
             match_id: candidate.id.clone(),
+            libretro_urls: crate::scraper::libretro_thumbnail_candidates(&candidate),
             media,
             settings: self.scraper_settings.clone(),
             developer,
@@ -18533,12 +18639,16 @@ impl App {
     }
 
     fn start_selected_scraper_match(&mut self, matched: crate::scraper::Match) {
-        let developer = match crate::scraper::DeveloperCredentials::embedded() {
-            Ok(credentials) => credentials,
-            Err(error) => {
-                self.message = Some(error.to_string());
-                self.dirty = true;
-                return;
+        let developer = if self.scraper_settings.source == crate::scraper::ScraperSource::Libretro {
+            None
+        } else {
+            match crate::scraper::DeveloperCredentials::embedded() {
+                Ok(credentials) => Some(credentials),
+                Err(error) => {
+                    self.message = Some(error.to_string());
+                    self.dirty = true;
+                    return;
+                }
             }
         };
         let request = crate::scraper::Request {
@@ -18547,7 +18657,8 @@ impl App {
             systems: self.all_systems.clone(),
             names: self.names.clone(),
             settings: self.scraper_settings.clone(),
-            developer: Some(developer),
+            developer,
+            cache_dir: self.cache_dir.clone(),
             artwork_pack_system_ids: self.artwork_pack_scraper_exclusions(),
         };
         let job = match crate::scraper::start_selected(request, matched) {
@@ -18572,6 +18683,7 @@ impl App {
         }
         let only_artwork_pack = self.scraper_scope_only_artwork_pack();
         if !only_artwork_pack
+            && self.scraper_settings.source == crate::scraper::ScraperSource::ScreenScraper
             && (self.scraper_settings.username.is_empty()
                 || self.scraper_settings.password.is_empty())
         {
@@ -18587,7 +18699,10 @@ impl App {
             self.dirty = true;
             return;
         }
-        if !only_artwork_pack && !self.scraper_settings.accepted_plaintext_warning {
+        if !only_artwork_pack
+            && self.scraper_settings.source == crate::scraper::ScraperSource::ScreenScraper
+            && !self.scraper_settings.accepted_plaintext_warning
+        {
             self.pending = Some(Pending::AcceptScraperStorageForStart);
             self.message = Some(
                 "ScreenScraper password will be stored as plain text on the card.\n\nA accept, B cancel"
@@ -18616,7 +18731,9 @@ impl App {
         if !only_artwork_pack && !self.save_scraper_settings() {
             return;
         }
-        let developer = if only_artwork_pack {
+        let developer = if only_artwork_pack
+            || self.scraper_settings.source == crate::scraper::ScraperSource::Libretro
+        {
             None
         } else {
             match crate::scraper::DeveloperCredentials::embedded() {
@@ -18636,6 +18753,7 @@ impl App {
             names: self.names.clone(),
             settings: self.scraper_settings.clone(),
             developer,
+            cache_dir: self.cache_dir.clone(),
             artwork_pack_system_ids: self.artwork_pack_scraper_exclusions(),
         };
         let job = match crate::scraper::start(request) {
@@ -18785,8 +18903,16 @@ impl App {
                     )
                 },
             ),
-            (allowance_label.to_string(), allowance),
-            ("Throughput".to_string(), throughput),
+            if self.scraper_settings.source == crate::scraper::ScraperSource::Libretro {
+                ("Source".to_string(), "Libretro (no account)".to_string())
+            } else {
+                (allowance_label.to_string(), allowance)
+            },
+            if self.scraper_settings.source == crate::scraper::ScraperSource::Libretro {
+                ("Database".to_string(), "Cached per system".to_string())
+            } else {
+                ("Throughput".to_string(), throughput)
+            },
             (format!("Last problem: {problem}"), String::new()),
         ]
     }
@@ -18849,7 +18975,9 @@ impl App {
                     self.scraper_job = None;
                     self.scraper_progress = progress;
                     self.begin_scraper_finish(ScraperTerminal::Failed(
-                        error.user_message().to_string(),
+                        error
+                            .user_message_for(self.scraper_settings.source)
+                            .to_string(),
                     ));
                     break;
                 }
@@ -21213,8 +21341,12 @@ impl App {
             }
             Screen::Scraper => {
                 for index in range {
-                    let row = scraper_rows(&self.scraper_scope)[index];
-                    let label = if row == ScraperRow::ImageType {
+                    let row =
+                        scraper_rows(&self.scraper_scope, self.scraper_settings.source)[index];
+                    let label = if row == ScraperRow::ImageType
+                        && self.scraper_settings.source
+                            == crate::scraper::ScraperSource::ScreenScraper
+                    {
                         if self.scraper_system_id().is_some() {
                             "System Image"
                         } else {
@@ -21728,7 +21860,7 @@ impl App {
                 self.ui
                     .set_plain_help(self.control_hint(self.menu_controls()).into());
                 (
-                    "ScreenScraper".to_string(),
+                    self.scraper_settings.source.label().to_string(),
                     self.scraper_selected_help().to_string(),
                 )
             }
@@ -21779,7 +21911,7 @@ impl App {
                 } else {
                     self.scraper_progress.phase.label().to_string()
                 };
-                ("ScreenScraper".to_string(), status)
+                (self.scraper_settings.source.label().to_string(), status)
             }
             Screen::CategoryImage => (
                 format!(

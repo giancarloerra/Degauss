@@ -99,6 +99,7 @@ fn manual_search_is_single_game_only_and_preserves_every_bulk_setting() {
     use crate::scraper::Scope;
 
     let bulk = [
+        ScraperRow::Source,
         ScraperRow::Username,
         ScraperRow::Password,
         ScraperRow::Images,
@@ -121,7 +122,10 @@ fn manual_search_is_single_game_only_and_preserves_every_bulk_setting() {
             display_name: "Fixture Folder".into(),
         },
     ] {
-        assert_eq!(scraper_rows(&scope), bulk);
+        assert_eq!(
+            scraper_rows(&scope, crate::scraper::ScraperSource::ScreenScraper),
+            bulk
+        );
     }
     let scope = Scope::Game {
         system_id: "NES".into(),
@@ -129,8 +133,9 @@ fn manual_search_is_single_game_only_and_preserves_every_bulk_setting() {
         title: "Fixture Game".into(),
     };
     assert_eq!(
-        scraper_rows(&scope),
+        scraper_rows(&scope, crate::scraper::ScraperSource::ScreenScraper),
         [
+            ScraperRow::Source,
             ScraperRow::Username,
             ScraperRow::Password,
             ScraperRow::Images,
@@ -2742,13 +2747,19 @@ fn run_selected_controls_flow(app: &mut App) {
             },
             Screen::Browse,
         );
-        for (index, row) in scraper_rows(&app.scraper_scope).iter().enumerate() {
+        for (index, row) in scraper_rows(&app.scraper_scope, app.scraper_settings.source)
+            .iter()
+            .enumerate()
+        {
             app.select(index);
             app.update_chrome();
             let help = app.ui.get_plain_help();
             let adjustable = matches!(
                 row,
-                ScraperRow::Images | ScraperRow::ImageType | ScraperRow::Metadata
+                ScraperRow::Source
+                    | ScraperRow::Images
+                    | ScraperRow::ImageType
+                    | ScraperRow::Metadata
             );
             assert_eq!(
                 help.contains("←→") || help.contains("Left/Right"),
@@ -4394,6 +4405,7 @@ fn run_scraper_unresolved_report_flow(root: &Path, window: Rc<MinimalSoftwareWin
         systems: Vec::new(),
         names: browse::DisplayNames::default(),
         settings: crate::scraper::ScraperSettings::default(),
+        cache_dir: app.cache_dir.clone(),
         developer: None,
         artwork_pack_system_ids: std::collections::HashSet::new(),
     })
@@ -4417,7 +4429,7 @@ fn run_scraper_image_choice_flow(app: &mut App) {
     use crate::scraper::{Scope, ScraperSettings};
     let original = app.scraper_settings.clone();
     app.open_scraper(Scope::All, Screen::Browse);
-    let image_row = scraper_rows(&app.scraper_scope)
+    let image_row = scraper_rows(&app.scraper_scope, app.scraper_settings.source)
         .iter()
         .position(|row| *row == ScraperRow::ImageType)
         .unwrap();
@@ -4479,6 +4491,52 @@ fn run_scraper_image_choice_flow(app: &mut App) {
     assert!(app.scraper_search_job.is_none());
 }
 
+fn run_libretro_scraper_source_flow(app: &mut App) {
+    use crate::scraper::{Scope, ScraperSettings, ScraperSource};
+    let original = app.scraper_settings.clone();
+    app.scraper_settings = ScraperSettings::default();
+    app.open_scraper(Scope::All, Screen::Browse);
+    app.select(0);
+    app.handle(Action::Faster);
+    assert_eq!(app.scraper_settings.source, ScraperSource::Libretro);
+    if let Some(directory) = std::env::var_os("DEGAUSS_LIBRETRO_CAPTURE_DIR") {
+        let directory = PathBuf::from(directory);
+        std::fs::create_dir_all(&directory).unwrap();
+        capture_frame(app, &directory, "libretro-settings", 352, 240);
+    }
+    let rows = scraper_rows(&app.scraper_scope, app.scraper_settings.source);
+    assert!(!rows.contains(&ScraperRow::Username));
+    assert!(!rows.contains(&ScraperRow::Password));
+    assert!(!rows.contains(&ScraperRow::ClearLogin));
+    assert_eq!(app.scraper_value(ScraperRow::ImageType), "Screenshot");
+    app.select(
+        rows.iter()
+            .position(|row| *row == ScraperRow::ImageType)
+            .unwrap(),
+    );
+    app.handle(Action::Faster);
+    assert_eq!(app.scraper_value(ScraperRow::ImageType), "Box Art");
+    app.handle(Action::Faster);
+    assert_eq!(app.scraper_value(ScraperRow::ImageType), "Title Screen");
+    assert!(app.scraper_settings.ready());
+    let progress = app.scraper_progress_rows();
+    assert!(progress
+        .iter()
+        .any(|(title, value)| title == "Source" && value == "Libretro (no account)"));
+    assert!(!progress.iter().any(|(title, _)| title.contains("Quota")));
+    app.handle(Action::Quit);
+    let saved = ScraperSettings::load(&app.scraper_settings_path).unwrap();
+    assert_eq!(saved.source, ScraperSource::Libretro);
+    app.open_scraper(Scope::All, Screen::Browse);
+    app.select(0);
+    app.handle(Action::Slower);
+    assert_eq!(app.scraper_settings.source, ScraperSource::ScreenScraper);
+    assert!(!app.scraper_settings.ready());
+    app.handle(Action::Quit);
+    assert!(app.replace_scraper_settings(original));
+    assert!(app.scraper_job.is_none());
+}
+
 fn run_manual_search_ui_flow(app: &mut App, root: &Path) {
     use crate::scraper::{ImagePolicy, MetadataPolicy};
 
@@ -4503,7 +4561,7 @@ fn run_manual_search_ui_flow(app: &mut App, root: &Path) {
     assert_eq!(app.scraper_progress.not_found, 0);
     assert_eq!(app.scraper_progress.ambiguous, 0);
     app.scraper_search_term.clear();
-    let search_row = scraper_rows(&app.scraper_scope)
+    let search_row = scraper_rows(&app.scraper_scope, app.scraper_settings.source)
         .iter()
         .position(|row| *row == ScraperRow::Search)
         .unwrap();
@@ -5056,7 +5114,10 @@ fn capture_every_menu_row(app: &mut App, directory: &Path) {
             ),
         ] {
             app.open_scraper(scope, Screen::Browse);
-            for (index, row) in scraper_rows(&app.scraper_scope).iter().enumerate() {
+            for (index, row) in scraper_rows(&app.scraper_scope, app.scraper_settings.source)
+                .iter()
+                .enumerate()
+            {
                 app.select(index);
                 assert!(!app.scraper_selected_help().is_empty());
                 capture_frame(
@@ -5852,7 +5913,7 @@ fn capture_ui_if_requested(root: &Path, window: Rc<MinimalSoftwareWindow>) {
     let scope = app.scraper_scope_from_context(SCRAPE_GAME).unwrap();
     app.open_scraper(scope, Screen::Context);
     app.scraper_list.select(
-        scraper_rows(&app.scraper_scope)
+        scraper_rows(&app.scraper_scope, app.scraper_settings.source)
             .iter()
             .position(|row| *row == ScraperRow::Search)
             .unwrap(),
@@ -12738,6 +12799,7 @@ pub(super) fn run_ui_acceptance_flow(window: Rc<MinimalSoftwareWindow>) {
     run_selected_controls_flow(&mut app);
     run_artwork_visibility_flow(&mut app);
     run_scraper_image_choice_flow(&mut app);
+    run_libretro_scraper_source_flow(&mut app);
     app.filter = "GAME".into();
     app.apply_filter();
     app.game_list.select(1);

@@ -116,6 +116,7 @@ Click the image to watch Degauss on YouTube.
 - [Artwork and metadata](#artwork-and-metadata)
   - [Using MiSTer Game Artwork Databases](#using-mister-game-artwork-databases)
   - [Scraping with ScreenScraper](#scraping-with-screenscraper)
+  - [Scraping with Libretro](#scraping-with-libretro)
   - [Where the gamelist goes](#where-the-gamelist-goes)
   - [System and category images](#system-and-category-images)
 - [Tips](#tips)
@@ -1060,7 +1061,7 @@ require **A** and confirmation, never a sideways press.
 | Library | Show What You Hid | Show what you hid yourself with **Hide This** |
 | Library | Unhide Everything | Press A and confirm to put back everything you hid yourself, in every folder and every system. Left and right do nothing |
 | Library | Rebuild All System Lists | Press A to read the whole card again. Run it after adding games, cores or artwork; **Actions → Library → Rebuild This System List** rebuilds just the containing system. Left and right do nothing |
-| Library | Scrape All Systems | Press A to open ScreenScraper settings for all supported systems. Artwork Pack systems are skipped; the master Favourites system is not a scrape target |
+| Library | Scrape All Systems | Press A to choose ScreenScraper or Libretro for all supported systems. Artwork Pack systems are skipped; the master Favourites system is not a scrape target |
 | Display | Edge Margin, Sides | Keep this much of each side clear of the bezel |
 | Display | Edge Margin, Top and Bottom | The same, vertically |
 | Display | Screen Position, Sideways | Nudge the picture, for a screen that sits off centre |
@@ -1786,6 +1787,51 @@ platform ID. It is intended only for a missing or deliberately overridden
 platform mapping; an invalid or ambiguous override can associate the wrong
 game, so verify both IDs before using it.
 
+### Scraping with Libretro
+
+Open the same **Scrape This Game**, **Scrape This Folder**, **Scrape This System**
+or **Scrape All Systems** screen and change **Scraping Source** to **Libretro**.
+No account is required. ScreenScraper remains the default and its saved login
+and artwork choices are kept when switching sources.
+
+Libretro supplies **Screenshot**, **Box Art** and **Title Screen** choices.
+The existing Images and Metadata policies, manual match selection, progress,
+cancellation, XML backups and list refresh apply to both sources. Artwork Pack
+systems remain excluded. Downloaded pictures go into `media/libretro` beside
+the system's gamelist; no ROM, Artwork Pack or previously downloaded picture
+is overwritten.
+
+The relevant public [Libretro database](https://github.com/libretro/libretro-database)
+is downloaded only when an explicit scrape or manual search needs it, then
+reused from `cache/libretro` beside Degauss's settings. No database or image
+download runs at startup or during normal browsing. An invalid cached database
+is reported as an error; it is not silently replaced. To refresh a database,
+exit Degauss, remove only its `.rdb` file from that cache and scrape again.
+
+Ordinary ROMs use bounded CRC32, MD5 and SHA-1 matching, including renamed
+files. Libretro hashing is limited to 64 MiB or the configured smaller limit.
+Disc/container/launcher files use names, not the hash of an MRA, MGL, CHD,
+CUE or ZIP wrapper. Uncertain regions/revisions require manual selection.
+Supported systems are mapped explicitly to their own database, rather than
+guessed from display labels. Unsupported or unmatched games remain playable.
+This does not add disc-serial or CHD parsing. Serial-only database records are
+not game matches; supported disc games still use their database titles.
+
+Only supplied metadata fields are written. Hash-only database records can
+provide their metadata without inventing a title or artwork. Missing artwork is reported
+separately from network, timeout, HTTP, database and image errors. Thumbnail
+names use the confirmed database title and Libretro's character/URL rules;
+short-name artwork is tried only when that name identifies one database entry.
+See the [Libretro thumbnail conventions](https://docs.libretro.com/guides/roms-playlists-thumbnails/#custom-thumbnails).
+
+Libretro databases are credited to their contributors and licensed under
+[CC BY-SA 4.0](https://github.com/libretro/libretro-database/blob/master/LICENSE).
+Artwork has separate rights belonging to its creators; see
+[Libretro thumbnail credits](https://github.com/libretro-thumbnails/libretro-thumbnails#credits).
+Databases and artwork are fetched on request, not bundled with Degauss.
+The independent RDB reader uses MIT-licensed MessagePack crates, not
+RetroArch's scanner or thumbnail-downloader code.
+
 ### Where the gamelist goes
 
 One `gamelist.xml` at the top of each folder a system uses.
@@ -2422,6 +2468,9 @@ that does it. That one is C++ and does need a cross-compiler.
 ## Licence
 
 Degauss is under PolyForm Noncommercial 1.0.0. See [`LICENSE`](LICENSE).
+
+The `rmp` and `rmpv` MessagePack crates use the
+[MIT licence](assets/licenses/MessagePack-MIT.txt), included with the executable.
 
 `MiSTer_Degauss`, shipped alongside it, is a separate program: a fork of
 [MiSTer Main](https://github.com/MiSTer-devel/Main_MiSTer) under GPLv3, with

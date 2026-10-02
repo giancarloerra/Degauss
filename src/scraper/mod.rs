@@ -1,4 +1,4 @@
-//! ScreenScraper integration.
+//! Explicit ScreenScraper and Libretro scraping sources.
 //!
 //! The scraper is deliberately isolated from the browser's read-only model:
 //! network work happens on worker threads, and a gamelist is installed only
@@ -8,12 +8,18 @@ mod api;
 mod config;
 mod gamelist_edit;
 mod hashes;
+mod libretro;
 mod platforms;
 mod targets;
 mod worker;
 
-pub use config::{DeveloperCredentials, ImagePolicy, MetadataPolicy, ScraperSettings};
+pub use config::{
+    DeveloperCredentials, ImagePolicy, MetadataPolicy, ScraperSettings, ScraperSource,
+};
 pub use targets::{Scope, Target};
+pub fn libretro_thumbnail_candidates(matched: &Match) -> Vec<String> {
+    libretro::thumbnail_candidates(matched, None)
+}
 pub use worker::{
     start, start_preview, start_search, start_selected, Event, Job, Phase, PreviewEvent,
     PreviewJob, PreviewRequest, Progress, Request, SearchEvent, SearchJob, SearchRequest,
@@ -28,6 +34,17 @@ pub fn platform_id(
     overrides: &std::collections::BTreeMap<String, u32>,
 ) -> Option<u32> {
     platforms::id_for(system_id, overrides)
+}
+
+pub fn platform_id_for_source(
+    system_id: &str,
+    overrides: &std::collections::BTreeMap<String, u32>,
+    source: ScraperSource,
+) -> Option<u32> {
+    match source {
+        ScraperSource::ScreenScraper => platform_id(system_id, overrides),
+        ScraperSource::Libretro => libretro::platform(system_id).map(|(key, _)| key),
+    }
 }
 
 use std::fmt;
@@ -79,6 +96,21 @@ impl Error {
             ErrorKind::Timeout => "ScreenScraper timed out",
             ErrorKind::Local => "A local game file could not be read or updated",
             ErrorKind::Cancelled => "Scrape cancelled",
+        }
+    }
+
+    pub fn user_message_for(&self, source: ScraperSource) -> &'static str {
+        if source == ScraperSource::ScreenScraper {
+            return self.user_message();
+        }
+        match self.kind {
+            ErrorKind::Unavailable | ErrorKind::Server => "Libretro is unavailable",
+            ErrorKind::RateLimited => "Libretro rate limit reached",
+            ErrorKind::NotFound => "Libretro data was not found",
+            ErrorKind::InvalidRequest => "Libretro rejected this request",
+            ErrorKind::MalformedResponse => "Libretro data was unreadable",
+            ErrorKind::Timeout => "Libretro timed out",
+            _ => self.user_message(),
         }
     }
 }

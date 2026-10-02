@@ -44,6 +44,10 @@ pub trait Transport: Send + Sync {
         limit: u64,
         max_kib_per_second: Option<u64>,
     ) -> Result<HttpResponse>;
+
+    fn get_libretro(&self, url: &str, limit: u64) -> Result<HttpResponse> {
+        self.get_media(url, limit, None)
+    }
 }
 
 /// HTTPS transport supplied by MiSTer's existing `curl` command.
@@ -182,6 +186,22 @@ impl CurlTransport {
 }
 
 impl Transport for CurlTransport {
+    fn get_libretro(&self, url: &str, limit: u64) -> Result<HttpResponse> {
+        // This explicit operation has no account parameters. The existing
+        // ScreenScraper media allowlist remains unchanged.
+        if !(url.starts_with(
+            "https://raw.githubusercontent.com/libretro/libretro-database/master/rdb/",
+        ) || url.starts_with("https://thumbnails.libretro.com/"))
+            || url.contains(['?', '#', '\r', '\n', '\\'])
+        {
+            return Err(Error::new(
+                ErrorKind::InvalidRequest,
+                "invalid Libretro download address",
+            ));
+        }
+        self.fetch(url, limit, None)
+    }
+
     fn get(&self, endpoint: &str, params: &[(String, String)], limit: u64) -> Result<HttpResponse> {
         if !matches!(
             endpoint,
@@ -3298,6 +3318,40 @@ mod tests {
         assert_eq!(excerpt(&exact), exact);
         assert_eq!(excerpt(&format!("{exact} c")), format!("{exact}..."));
         assert_eq!(excerpt("  one \n\t two  "), "one two");
+    }
+
+    #[test]
+    fn libretro_downloads_keep_the_two_public_hosts_and_never_use_account_parameters() {
+        let transport = CurlTransport::new(Arc::new(AtomicBool::new(true)));
+        for url in [
+            "https://raw.githubusercontent.com/libretro/libretro-database/master/rdb/MAME.rdb",
+            "https://thumbnails.libretro.com/MAME/Named_Snaps/Game.png",
+        ] {
+            assert_eq!(
+                transport.get_libretro(url, 1024).err().unwrap().kind,
+                ErrorKind::Cancelled
+            );
+        }
+        for url in [
+            "http://thumbnails.libretro.com/Game.png",
+            "https://thumbnails.libretro.com.example.org/Game.png",
+            "https://thumbnails.libretro.com/Game.png?password=secret",
+            "https://raw.githubusercontent.com/another/repository/master/Game.rdb",
+            "https://thumbnails.libretro.com/Game.png\noutput = stolen",
+        ] {
+            assert_eq!(
+                transport.get_libretro(url, 1024).err().unwrap().kind,
+                ErrorKind::InvalidRequest
+            );
+        }
+        assert_eq!(
+            transport
+                .get_media("https://thumbnails.libretro.com/Game.png", 1024, None)
+                .err()
+                .unwrap()
+                .kind,
+            ErrorKind::MalformedResponse
+        );
     }
 
     #[test]

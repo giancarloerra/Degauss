@@ -33,6 +33,7 @@ pub struct Request {
     pub systems: Vec<FoundSystem>,
     pub names: DisplayNames,
     pub settings: ScraperSettings,
+    pub cache_dir: PathBuf,
     /// Not needed for an all-Artwork-Pack run, which must finish as an
     /// expected skip without touching any ScreenScraper credential.
     pub developer: Option<DeveloperCredentials>,
@@ -188,7 +189,8 @@ pub struct SearchRequest {
     pub system_id: u32,
     pub term: String,
     pub settings: ScraperSettings,
-    pub developer: DeveloperCredentials,
+    pub developer: Option<DeveloperCredentials>,
+    pub cache_dir: PathBuf,
 }
 
 #[derive(Debug)]
@@ -196,7 +198,7 @@ pub enum SearchEvent {
     Activity(String),
     Finished {
         matches: Vec<Match>,
-        account: Account,
+        account: Option<Account>,
         requests_started: u64,
         failed_searches: u64,
     },
@@ -248,8 +250,9 @@ impl Drop for SearchJob {
 pub struct PreviewRequest {
     pub match_id: String,
     pub media: super::Media,
+    pub libretro_urls: Vec<String>,
     pub settings: ScraperSettings,
-    pub developer: DeveloperCredentials,
+    pub developer: Option<DeveloperCredentials>,
     pub max_download_speed: u64,
     pub max_edge: u32,
     pub ground: [u8; 3],
@@ -457,6 +460,46 @@ fn run_search(
     events: &SyncSender<SearchEvent>,
     cancelled: &Arc<AtomicBool>,
 ) {
+    if request.settings.source == super::ScraperSource::Libretro {
+        let result = (|| {
+            request.settings.validate()?;
+            if request.term.trim().is_empty() {
+                return Err(Error::new(
+                    ErrorKind::Configuration,
+                    "enter a game title to search for",
+                ));
+            }
+            let database =
+                super::libretro::database_for_key(request.system_id).ok_or_else(|| {
+                    Error::new(
+                        ErrorKind::Configuration,
+                        "this system has no Libretro database",
+                    )
+                })?;
+            let database = super::libretro::Database::load(
+                database,
+                &request.cache_dir,
+                transport.as_ref(),
+                cancelled,
+                &mut |status| {
+                    let _ = events.send(SearchEvent::Activity(status.into()));
+                },
+            )?;
+            Ok(database.search(&request.term, request.settings.libretro_artwork))
+        })();
+        let event = match result {
+            Ok(matches) => SearchEvent::Finished {
+                matches,
+                account: None,
+                requests_started: 0,
+                failed_searches: 0,
+            },
+            Err(error) if error.kind == ErrorKind::Cancelled => SearchEvent::Cancelled,
+            Err(error) => SearchEvent::Failed(error),
+        };
+        let _ = events.send(event);
+        return;
+    }
     let result = (|| {
         if request.term.trim().is_empty() {
             return Err(Error::new(
@@ -475,7 +518,12 @@ fn run_search(
         let _ = events.send(SearchEvent::Activity("Checking account".into()));
         let account_client = Client::new(
             Arc::clone(&transport),
-            request.developer.clone(),
+            request.developer.clone().ok_or_else(|| {
+                Error::new(
+                    ErrorKind::Configuration,
+                    "ScreenScraper support is unavailable in this build",
+                )
+            })?,
             &request.settings,
         )?;
         let account_requests = AtomicU64::new(0);
@@ -555,7 +603,16 @@ fn run_search(
             usize::try_from(account_requests.load(Ordering::Relaxed)).unwrap_or(usize::MAX),
             Arc::clone(cancelled),
         ));
-        let client = Client::new(limits.clone(), request.developer, &settings)?;
+        let client = Client::new(
+            limits.clone(),
+            request.developer.ok_or_else(|| {
+                Error::new(
+                    ErrorKind::Configuration,
+                    "ScreenScraper support is unavailable in this build",
+                )
+            })?,
+            &settings,
+        )?;
         let _ = events.send(SearchEvent::Activity("Searching ScreenScraper".into()));
         let response = retry(
             cancelled,
@@ -585,7 +642,7 @@ fn run_search(
         Ok((matches, account, requests_started, failed_searches)) => {
             let _ = events.send(SearchEvent::Finished {
                 matches,
-                account,
+                account: Some(account),
                 requests_started,
                 failed_searches,
             });
@@ -604,6 +661,15 @@ fn run_preview(
     transport: Arc<dyn Transport>,
     cancelled: &Arc<AtomicBool>,
 ) -> Result<crate::covers::RgbImage> {
+    if request.settings.source == super::ScraperSource::Libretro {
+        let response = super::libretro::download_image(
+            &request.libretro_urls,
+            transport.as_ref(),
+            request.settings.max_media_bytes(),
+            cancelled,
+        )?;
+        return decode_media_image(&response, request.ground, request.max_edge);
+    }
     if request.max_download_speed == 0 {
         return Err(Error::new(
             ErrorKind::RateLimited,
@@ -619,7 +685,16 @@ fn run_preview(
         0,
         Arc::clone(cancelled),
     ));
-    let client = Client::new(limited, request.developer, &request.settings)?;
+    let client = Client::new(
+        limited,
+        request.developer.ok_or_else(|| {
+            Error::new(
+                ErrorKind::Configuration,
+                "ScreenScraper support is unavailable in this build",
+            )
+        })?,
+        &request.settings,
+    )?;
     let response = retry(
         cancelled,
         |_, _| {},
@@ -643,7 +718,7 @@ fn run(
     emit(events, &mut progress);
 
     let mut settings = request.settings.clone();
-    let batch = match super::targets::collect(
+    let batch = match super::targets::collect_for_source(
         &request.systems,
         &request.names,
         &request.scope,
@@ -655,6 +730,7 @@ fn run(
             progress.activity = "Enumerating game folders".to_string();
             emit(events, &mut progress);
         },
+        settings.source,
     ) {
         Ok(batch) => batch,
         Err(error) if error.kind == ErrorKind::Cancelled => {
@@ -688,7 +764,7 @@ fn run(
         log_scraper_detail(
             "shared library targets skipped",
             &format!(
-                "{} target paths mapped to more than one ScreenScraper platform",
+                "{} target paths mapped to more than one scraper platform",
                 batch.ambiguous_targets
             ),
         );
@@ -734,7 +810,11 @@ fn run(
             events,
             Error::new(
                 ErrorKind::Configuration,
-                "complete the ScreenScraper login and enable images or metadata",
+                if settings.source == super::ScraperSource::Libretro {
+                    "enable images or metadata"
+                } else {
+                    "complete the ScreenScraper login and enable images or metadata"
+                },
             ),
             progress,
         );
@@ -783,7 +863,7 @@ fn run(
                 events,
                 Error::new(
                     ErrorKind::Configuration,
-                    "a selected ScreenScraper match can be applied only to one game",
+                    "a selected scraper match can be applied only to one game",
                 ),
                 progress,
             );
@@ -802,6 +882,19 @@ fn run(
         progress.phase = Phase::Finishing;
         log_scraper_summary("finished", &progress);
         let _ = events.send(Event::Finished(progress));
+        return;
+    }
+
+    if settings.source == super::ScraperSource::Libretro {
+        run_libretro_work(
+            work,
+            &settings,
+            &request.cache_dir,
+            transport.as_ref(),
+            events,
+            cancelled,
+            progress,
+        );
         return;
     }
 
@@ -1169,6 +1262,187 @@ fn run(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
+fn run_libretro_work(
+    work: Vec<Work>,
+    settings: &ScraperSettings,
+    cache_dir: &Path,
+    transport: &dyn Transport,
+    events: &SyncSender<Event>,
+    cancelled: &AtomicBool,
+    mut progress: Progress,
+) {
+    let mut database: Option<super::libretro::Database> = None;
+    let mut backups = Backups::new();
+    let mut pending: BTreeMap<PathBuf, Vec<Pending>> = BTreeMap::new();
+    let mut fatal = None;
+    progress.workers = 1;
+    progress.phase = Phase::Scraping;
+    for item in work {
+        if cancelled.load(Ordering::Relaxed) {
+            break;
+        }
+        let label = current_label(&item.target);
+        progress.current = label.clone();
+        let gamelist = item.target.gamelist_path();
+        // plan_work orders gamelists. Flush the previous one before moving
+        // on, preserving the existing bounded per-folder XML-write path.
+        if pending.keys().next().is_some_and(|path| path != &gamelist) {
+            flush_pending(
+                std::mem::take(&mut pending),
+                settings,
+                &mut backups,
+                &mut progress,
+                events,
+            );
+        }
+        let result = (|| {
+            let name = super::libretro::database_for_key(item.target.screen_scraper_system_id)
+                .ok_or_else(|| {
+                    Error::new(
+                        ErrorKind::Configuration,
+                        "this system has no Libretro database",
+                    )
+                })?;
+            if item.selected.is_none()
+                && database
+                    .as_ref()
+                    .is_none_or(|database| database.name != name)
+            {
+                database = Some(super::libretro::Database::load(
+                    name,
+                    cache_dir,
+                    transport,
+                    cancelled,
+                    &mut |status| {
+                        progress.activity = status.into();
+                        emit(events, &mut progress);
+                    },
+                )?);
+            }
+            let Work {
+                target,
+                needs,
+                selected,
+                retain_alternatives,
+            } = item;
+            let lookup = if let Some(matched) = selected {
+                super::api::LookupResponse {
+                    lookup: Lookup::Found(Box::new(matched)),
+                    alternatives: Vec::new(),
+                    account: None,
+                    server_miss: false,
+                }
+            } else {
+                progress.activity = "Matching Libretro game".into();
+                emit(events, &mut progress);
+                let hashes = if let Some(path) = target.match_path.as_deref() {
+                    hashes::file(
+                        path,
+                        settings.hash_limit_bytes().min(64 * 1024 * 1024),
+                        cancelled,
+                    )?
+                } else {
+                    None
+                };
+                database
+                    .as_ref()
+                    .expect("database loaded for automatic lookup")
+                    .lookup(&target.title, hashes.as_ref(), settings.libretro_artwork)
+            };
+            let alternatives = if retain_alternatives {
+                lookup.alternatives
+            } else {
+                Vec::new()
+            };
+            let mut prepared = Prepared {
+                target,
+                needs,
+                matched: None,
+                media: None,
+                media_error: None,
+                no_media: false,
+                ambiguous: None,
+                not_found: None,
+                alternatives,
+            };
+            match lookup.lookup {
+                Lookup::NotFound => prepared.not_found = Some(Miss::NoMatch),
+                Lookup::Ambiguous(count) => prepared.ambiguous = Some(count),
+                Lookup::Found(matched) => {
+                    if needs.image {
+                        progress.activity = "Downloading Libretro image".into();
+                        emit(events, &mut progress);
+                        if matched.media.is_some() {
+                            progress.requests_started += 1;
+                            let urls = super::libretro::thumbnail_candidates(
+                                &matched,
+                                Path::new(&prepared.target.relative_path)
+                                    .file_stem()
+                                    .and_then(|name| name.to_str()),
+                            );
+                            match super::libretro::download_image(
+                                &urls,
+                                transport,
+                                settings.max_media_bytes(),
+                                cancelled,
+                            ) {
+                                Ok(response) => match install_media_for_source(
+                                    &prepared.target,
+                                    &matched,
+                                    response,
+                                    super::ScraperSource::Libretro,
+                                ) {
+                                    Ok(media) => prepared.media = Some(media),
+                                    Err(error) => prepared.media_error = Some(error),
+                                },
+                                Err(error) if error.kind == ErrorKind::NotFound => {
+                                    prepared.no_media = true
+                                }
+                                Err(error) => return Err(error),
+                            }
+                        } else {
+                            prepared.no_media = true;
+                        }
+                    }
+                    prepared.matched = Some(*matched);
+                }
+            }
+            stage_for_source(
+                prepared,
+                &label,
+                &mut progress,
+                super::ScraperSource::Libretro,
+            )
+        })();
+        progress.completed += 1;
+        match result {
+            Ok(Some(item)) => {
+                pending.entry(gamelist).or_default().push(item);
+            }
+            Ok(None) => {}
+            Err(error) if error.kind == ErrorKind::Cancelled => break,
+            Err(error) => {
+                progress.failed += 1;
+                progress.unresolved(&label, &error.detail);
+                progress.last_problem = Some(error.detail.clone());
+                fatal = Some(error);
+                break;
+            }
+        }
+        emit(events, &mut progress);
+    }
+    progress.phase = Phase::Finishing;
+    flush_pending(pending, settings, &mut backups, &mut progress, events);
+    if let Some(error) = fatal {
+        finish_error(events, error, progress);
+    } else if cancelled.load(Ordering::Relaxed) {
+        let _ = events.send(Event::Cancelled(progress));
+    } else {
+        let _ = events.send(Event::Finished(progress));
+    }
+}
+
 fn scope_has_only_artwork_pack_systems(
     scope: &Scope,
     systems: &[FoundSystem],
@@ -1351,7 +1625,7 @@ fn reconcile_alias_platforms(
         }
         if conflicts.contains(&representative) {
             let error =
-                Error::local("linked scrape targets resolve to different ScreenScraper platforms");
+                Error::local("linked scrape targets resolve to different scraper platforms");
             outcomes[at] = Err(error.clone());
             outcomes[representative] = Err(error);
         } else {
@@ -1975,13 +2249,30 @@ fn stage(
     target_label: &str,
     progress: &mut Progress,
 ) -> Result<Option<Pending>> {
+    stage_for_source(
+        prepared,
+        target_label,
+        progress,
+        super::ScraperSource::ScreenScraper,
+    )
+}
+
+fn stage_for_source(
+    prepared: Prepared,
+    target_label: &str,
+    progress: &mut Progress,
+    source: super::ScraperSource,
+) -> Result<Option<Pending>> {
     if let Some(not_found) = prepared.not_found {
         // A file with no searchable title was never sent to ScreenScraper,
         // so the log names that reason rather than a miss that did not
         // happen.
         match not_found {
             Miss::NoMatch => {
-                log_scraper_detail(target_label, "no exact ScreenScraper match; skipped");
+                log_scraper_detail(
+                    target_label,
+                    &format!("no exact {} match; skipped", source.label()),
+                );
             }
             Miss::NoSearchableTitle => {
                 log_scraper_detail(
@@ -2000,7 +2291,7 @@ fn stage(
     if let Some(count) = prepared.ambiguous {
         log_scraper_detail(
             target_label,
-            &format!("{count} automatic ScreenScraper matches; skipped"),
+            &format!("{count} automatic {} matches; skipped", source.label()),
         );
         if !prepared.alternatives.is_empty() {
             progress.manual_matches = prepared.alternatives;
@@ -2016,8 +2307,8 @@ fn stage(
     if let Some(error) = prepared.media_error {
         progress.failed += 1;
         log_scraper_problem(target_label, &error);
-        progress.unresolved(target_label, error.user_message());
-        progress.last_problem = Some(error.user_message().to_string());
+        progress.unresolved(target_label, error.user_message_for(source));
+        progress.last_problem = Some(error.user_message_for(source).to_string());
         if !prepared.needs.metadata {
             return Ok(None);
         }
@@ -2025,7 +2316,7 @@ fn stage(
     if prepared.no_media {
         log_scraper_detail(
             target_label,
-            "the match has no selected ScreenScraper image",
+            &format!("the match has no selected {} image", source.label()),
         );
         progress.no_media += 1;
         // Listed whether or not its metadata is written, so the report's
@@ -2202,6 +2493,20 @@ fn install_media(
     matched: &Match,
     response: HttpResponse,
 ) -> Result<InstalledMedia> {
+    install_media_for_source(
+        target,
+        matched,
+        response,
+        super::ScraperSource::ScreenScraper,
+    )
+}
+
+fn install_media_for_source(
+    target: &Target,
+    matched: &Match,
+    response: HttpResponse,
+    source: super::ScraperSource,
+) -> Result<InstalledMedia> {
     let format = media_format(&response)?;
     decode_media_image(&response, [0, 0, 0], u32::MAX)?;
 
@@ -2221,11 +2526,15 @@ fn install_media(
         "{}-{id}-{checksum}.{format}",
         target.screen_scraper_system_id,
     );
-    let relative = format!("./media/screenscraper/{file_name}");
-    let directory = target.folder.join("media/screenscraper");
+    let folder = match source {
+        super::ScraperSource::ScreenScraper => "media/screenscraper",
+        super::ScraperSource::Libretro => "media/libretro",
+    };
+    let relative = format!("./{folder}/{file_name}");
+    let directory = target.folder.join(folder);
     std::fs::create_dir_all(&directory).map_err(|error| {
         Error::local(format!(
-            "could not create the ScreenScraper media folder: {error}"
+            "could not create the scraper media folder: {error}"
         ))
     })?;
     let destination = directory.join(&file_name);
@@ -2238,7 +2547,7 @@ fn install_media(
                 .is_some_and(|existing| existing == response.body);
         if !matches {
             return Err(Error::local(
-                "an existing content-named ScreenScraper image has different bytes",
+                "an existing content-named scraper image has different bytes",
             ));
         }
         return Ok(InstalledMedia {
@@ -2291,7 +2600,7 @@ fn media_format(response: &HttpResponse) -> Result<&'static str> {
     } else {
         return Err(Error::new(
             ErrorKind::MalformedResponse,
-            "ScreenScraper returned media that is not a PNG or JPEG",
+            "The scraper returned media that is not a PNG or JPEG",
         ));
     };
     Ok(format)
@@ -2305,7 +2614,7 @@ fn decode_media_image(
     let _ = media_format(response)?;
     let decoded = crate::covers::decode_bounded(
         &response.body,
-        Path::new("ScreenScraper download"),
+        Path::new("Scraper download"),
         ground,
         MAX_MEDIA_DIMENSION,
     )
@@ -2388,6 +2697,10 @@ fn log_scraper_summary(outcome: &str, progress: &Progress) {
 }
 
 #[cfg(test)]
+#[path = "libretro_live_tests.rs"]
+mod libretro_live_tests;
+
+#[cfg(test)]
 mod tests {
     #[test]
     fn alias_reconciliation_preserves_readers_and_rejects_cross_platform_groups() {
@@ -2423,7 +2736,7 @@ mod tests {
             .as_ref()
             .unwrap_err()
             .to_string()
-            .contains("different ScreenScraper platforms")));
+            .contains("different scraper platforms")));
         assert_eq!(mixed[0].affected_system_ids, ["first"]);
         let mut cancelled = outcomes();
         let error = reconcile_alias_platforms(&mut mixed, &mut cancelled, &AtomicBool::new(true))
@@ -2920,6 +3233,304 @@ mod tests {
         }
     }
 
+    struct LibretroMock {
+        database: Vec<u8>,
+        downloads: AtomicUsize,
+        images: AtomicUsize,
+        image_status: u16,
+        database_error: Option<ErrorKind>,
+        cancelled: Option<Arc<AtomicBool>>,
+    }
+
+    impl Transport for LibretroMock {
+        fn get(&self, _: &str, _: &[(String, String)], _: u64) -> Result<HttpResponse> {
+            panic!("Libretro must never call the ScreenScraper account or API path");
+        }
+        fn get_media(&self, url: &str, _: u64, _: Option<u64>) -> Result<HttpResponse> {
+            if url.ends_with(".rdb") {
+                self.downloads.fetch_add(1, Ordering::Relaxed);
+                if let Some(kind) = self.database_error {
+                    return Err(Error::new(kind, "Libretro database transfer failed"));
+                }
+                if let Some(cancelled) = &self.cancelled {
+                    cancelled.store(true, Ordering::Relaxed);
+                }
+                Ok(HttpResponse {
+                    status: 200,
+                    content_type: None,
+                    body: self.database.clone(),
+                })
+            } else {
+                assert!(url.starts_with("https://thumbnails.libretro.com/"));
+                self.images.fetch_add(1, Ordering::Relaxed);
+                Ok(HttpResponse {
+                    status: self.image_status,
+                    content_type: Some("image/png".into()),
+                    body: PNG.to_vec(),
+                })
+            }
+        }
+    }
+
+    fn libretro_mock() -> Arc<LibretroMock> {
+        let rmpv::Value::Map(mut fields) = super::super::libretro::tests::record("Canonical (USA)")
+        else {
+            unreachable!()
+        };
+        fields.push((
+            "crc".into(),
+            rmpv::Value::Binary(crc32fast::hash(b"game").to_be_bytes().to_vec()),
+        ));
+        Arc::new(LibretroMock {
+            database: super::super::libretro::tests::fixture(vec![rmpv::Value::Map(fields)]),
+            downloads: AtomicUsize::new(0),
+            images: AtomicUsize::new(0),
+            image_status: 200,
+            database_error: None,
+            cancelled: None,
+        })
+    }
+
+    fn libretro_request(root: &Path) -> Request {
+        let mut request = request(
+            root,
+            ScraperSettings {
+                source: super::super::ScraperSource::Libretro,
+                ..Default::default()
+            },
+        );
+        request.developer = None;
+        request.cache_dir = root.join("cache");
+        request
+    }
+
+    #[test]
+    fn libretro_renamed_rom_writes_reloadable_xml_and_reuses_the_database() {
+        let root = temp("libretro-roundtrip");
+        std::fs::write(root.join("Renamed.rom"), b"game").unwrap();
+        let mock = libretro_mock();
+        let Event::Finished(progress) =
+            finish(start_with_transport(libretro_request(&root), mock.clone()).unwrap())
+        else {
+            panic!("Libretro scrape failed")
+        };
+        assert_eq!(progress.updated, 1);
+        assert!(progress.account.is_none());
+        let xml = std::fs::read_to_string(root.join("gamelist.xml")).unwrap();
+        assert!(xml.contains("<name>Canonical (USA)</name>"), "{xml}");
+        assert!(xml.contains("<publisher>Example Publisher</publisher>"));
+        assert!(xml.contains("<image>./media/libretro/"));
+        let data = crate::gamelist::Gamelist::load(&root.join("gamelist.xml"), &root).unwrap();
+        assert_eq!(
+            data.lookup_exact("./Renamed.rom")
+                .unwrap()
+                .0
+                .name
+                .as_deref(),
+            Some("Canonical (USA)")
+        );
+        let Event::Finished(noop) =
+            finish(start_with_transport(libretro_request(&root), mock.clone()).unwrap())
+        else {
+            panic!("repeat scrape failed")
+        };
+        assert_eq!(noop.updated, 0);
+        assert_eq!(mock.downloads.load(Ordering::Relaxed), 1);
+        assert_eq!(mock.images.load(Ordering::Relaxed), 1);
+        let mut replace = libretro_request(&root);
+        replace.settings.metadata_policy = MetadataPolicy::ReplaceExisting;
+        let Event::Finished(_) = finish(start_with_transport(replace, mock.clone()).unwrap())
+        else {
+            panic!("cached scrape failed")
+        };
+        assert_eq!(
+            mock.downloads.load(Ordering::Relaxed),
+            1,
+            "explicit repeat reuses the valid RDB"
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn libretro_preserves_existing_artwork_metadata_and_missing_upstream_fields() {
+        let root = temp("libretro-policies");
+        std::fs::write(root.join("Game.rom"), b"game").unwrap();
+        std::fs::write(root.join("old.png"), PNG).unwrap();
+        std::fs::write(root.join("gamelist.xml"), "<gameList><game><path>./Game.rom</path><name>Local</name><desc>Keep this</desc><image>./old.png</image></game></gameList>").unwrap();
+        let mock = libretro_mock();
+        let mut request = libretro_request(&root);
+        request.scope = Scope::Game {
+            system_id: "NES".into(),
+            launch: crate::browse::Launch::File(root.join("Game.rom")),
+            title: "Local".into(),
+        };
+        let Event::Finished(_) = finish(start_with_transport(request, mock.clone()).unwrap())
+        else {
+            panic!("fill scrape failed")
+        };
+        let xml = std::fs::read_to_string(root.join("gamelist.xml")).unwrap();
+        assert!(xml.contains("<name>Local</name>"));
+        assert!(xml.contains("<desc>Keep this</desc>"));
+        assert!(xml.contains("<publisher>Example Publisher</publisher>"));
+        assert!(xml.contains("<image>./old.png</image>"));
+        assert_eq!(mock.images.load(Ordering::Relaxed), 0);
+        let mut request = libretro_request(&root);
+        request.settings.image_policy = ImagePolicy::ReplaceExisting;
+        request.settings.metadata_policy = MetadataPolicy::ReplaceExisting;
+        let Event::Finished(_) = finish(start_with_transport(request, mock).unwrap()) else {
+            panic!("replace scrape failed")
+        };
+        let xml = std::fs::read_to_string(root.join("gamelist.xml")).unwrap();
+        assert!(xml.contains("<name>Canonical (USA)</name>"));
+        assert!(
+            xml.contains("<desc>Keep this</desc>"),
+            "absent upstream description must not erase local text"
+        );
+        assert!(root.join("old.png").is_file());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn libretro_missing_image_is_not_a_network_error_and_partial_metadata_survives() {
+        let root = temp("libretro-no-image");
+        std::fs::write(root.join("Game.rom"), b"game").unwrap();
+        let mut mock = libretro_mock();
+        Arc::get_mut(&mut mock).unwrap().image_status = 404;
+        let Event::Finished(progress) =
+            finish(start_with_transport(libretro_request(&root), mock).unwrap())
+        else {
+            panic!("missing image stopped the run")
+        };
+        assert_eq!(progress.no_media, 1);
+        assert_eq!(progress.failed, 0);
+        assert_eq!(progress.updated, 1);
+        assert!(std::fs::read_to_string(root.join("gamelist.xml"))
+            .unwrap()
+            .contains("Example Publisher"));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn libretro_failure_cancellation_and_invalid_cache_never_become_success() {
+        for (name, kind) in [
+            ("timeout", ErrorKind::Timeout),
+            ("network", ErrorKind::Transport),
+        ] {
+            let root = temp(&format!("libretro-{name}"));
+            std::fs::write(root.join("Game.rom"), b"game").unwrap();
+            let mut mock = libretro_mock();
+            Arc::get_mut(&mut mock).unwrap().database_error = Some(kind);
+            let Event::Failed { error, .. } =
+                finish(start_with_transport(libretro_request(&root), mock).unwrap())
+            else {
+                panic!("transfer failure became success")
+            };
+            assert_eq!(error.kind, kind);
+            assert!(!root.join("gamelist.xml").exists());
+            std::fs::remove_dir_all(root).unwrap();
+        }
+        let root = temp("libretro-cancel");
+        std::fs::write(root.join("Game.rom"), b"game").unwrap();
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let mut mock = libretro_mock();
+        Arc::get_mut(&mut mock).unwrap().cancelled = Some(cancelled.clone());
+        let (events, receiver) = mpsc::sync_channel(64);
+        run(libretro_request(&root), mock, &events, &cancelled, None);
+        assert!(receiver
+            .try_iter()
+            .any(|event| matches!(event, Event::Cancelled(_))));
+        assert!(!root.join("gamelist.xml").exists());
+        std::fs::create_dir_all(root.join("cache/libretro")).unwrap();
+        std::fs::write(
+            root.join("cache/libretro/Nintendo - Nintendo Entertainment System.rdb"),
+            b"invalid",
+        )
+        .unwrap();
+        let mock = libretro_mock();
+        let Event::Failed { error, .. } =
+            finish(start_with_transport(libretro_request(&root), mock.clone()).unwrap())
+        else {
+            panic!("invalid cache became success")
+        };
+        assert_eq!(error.kind, ErrorKind::MalformedResponse);
+        assert_eq!(
+            mock.downloads.load(Ordering::Relaxed),
+            0,
+            "a corrupt cache is reported, not silently replaced"
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn libretro_manual_search_and_selection_need_no_fake_account() {
+        let root = temp("libretro-manual");
+        std::fs::write(root.join("Game.rom"), b"game").unwrap();
+        let mock = libretro_mock();
+        let SearchEvent::Finished {
+            matches, account, ..
+        } = finish_search(
+            start_search_with_transport(
+                SearchRequest {
+                    system_id: 1039,
+                    term: "Canonical".into(),
+                    settings: libretro_request(&root).settings,
+                    developer: None,
+                    cache_dir: root.join("cache"),
+                },
+                mock.clone(),
+                Arc::new(AtomicBool::new(false)),
+            )
+            .unwrap(),
+        )
+        else {
+            panic!("manual search failed")
+        };
+        assert!(account.is_none());
+        assert_eq!(matches.len(), 1);
+        let selected = matches[0].clone();
+        let PreviewEvent::Finished { image, .. } = finish_preview(
+            start_preview_with_transport(
+                PreviewRequest {
+                    match_id: selected.id.clone(),
+                    media: selected.media.clone().unwrap(),
+                    libretro_urls: super::super::libretro::thumbnail_candidates(&selected, None),
+                    settings: libretro_request(&root).settings,
+                    developer: None,
+                    max_download_speed: 0,
+                    max_edge: 320,
+                    ground: [0; 3],
+                },
+                mock.clone(),
+                Arc::new(AtomicBool::new(false)),
+            )
+            .unwrap(),
+        ) else {
+            panic!("preview failed")
+        };
+        assert_eq!((image.width, image.height), (1, 1));
+        let mut request = libretro_request(&root);
+        request.scope = Scope::Game {
+            system_id: "NES".into(),
+            launch: crate::browse::Launch::File(root.join("Game.rom")),
+            title: "Game".into(),
+        };
+        let (events, receiver) = mpsc::sync_channel(64);
+        run(
+            request,
+            mock,
+            &events,
+            &Arc::new(AtomicBool::new(false)),
+            Some(selected),
+        );
+        assert!(receiver
+            .try_iter()
+            .any(|event| matches!(event, Event::Finished(_))));
+        assert!(std::fs::read_to_string(root.join("gamelist.xml"))
+            .unwrap()
+            .contains("Canonical (USA)"));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
     fn request(root: &Path, settings: ScraperSettings) -> Request {
         Request {
             scope: Scope::System {
@@ -2935,6 +3546,7 @@ mod tests {
                 developer_id: "developer".into(),
                 developer_password: "private".into(),
             }),
+            cache_dir: std::env::temp_dir().join("degauss-scraper-test-cache"),
             artwork_pack_system_ids: HashSet::new(),
         }
     }
@@ -2954,6 +3566,7 @@ mod tests {
                 developer_id: "developer".into(),
                 developer_password: "private".into(),
             }),
+            cache_dir: std::env::temp_dir().join("degauss-scraper-test-cache"),
             artwork_pack_system_ids: HashSet::new(),
         }
     }
@@ -3048,6 +3661,7 @@ mod tests {
             names: DisplayNames::default(),
             settings: ScraperSettings::default(),
             developer: None,
+            cache_dir: std::env::temp_dir().join("degauss-scraper-test-cache"),
             artwork_pack_system_ids: HashSet::from(["NES".into()]),
         };
         let event = finish(start_with_transport(request, mock.clone()).unwrap());
@@ -3092,6 +3706,7 @@ mod tests {
                 developer_id: "developer".into(),
                 developer_password: "private".into(),
             }),
+            cache_dir: std::env::temp_dir().join("degauss-scraper-test-cache"),
             artwork_pack_system_ids: HashSet::from(["NES".into()]),
         };
 
@@ -3914,13 +4529,14 @@ mod tests {
     #[test]
     fn manual_search_returns_all_candidates_and_reports_account_usage() {
         let request = SearchRequest {
+            cache_dir: std::env::temp_dir().join("degauss-scraper-search-cache"),
             system_id: 3,
             term: "Adventure".into(),
             settings: settings(ImagePolicy::Off),
-            developer: DeveloperCredentials {
+            developer: Some(DeveloperCredentials {
                 developer_id: "developer".into(),
                 developer_password: "private".into(),
-            },
+            }),
         };
         let event = finish_search(
             start_search_with_transport(
@@ -3946,7 +4562,7 @@ mod tests {
                 .collect::<Vec<_>>(),
             ["20", "10"]
         );
-        assert_eq!(account.max_download_speed, Some(256));
+        assert_eq!(account.unwrap().max_download_speed, Some(256));
         assert_eq!(requests_started, 2, "account preflight plus search");
         assert_eq!(failed_searches, 0);
     }
@@ -3954,13 +4570,14 @@ mod tests {
     #[test]
     fn manual_search_can_return_no_results_then_succeed_with_an_edited_term() {
         let make_request = |term: &str| SearchRequest {
+            cache_dir: std::env::temp_dir().join("degauss-scraper-search-cache"),
             system_id: 3,
             term: term.into(),
             settings: settings(ImagePolicy::Off),
-            developer: DeveloperCredentials {
+            developer: Some(DeveloperCredentials {
                 developer_id: "developer".into(),
                 developer_password: "private".into(),
-            },
+            }),
         };
         let run = |term: &str| {
             finish_search(
@@ -3997,13 +4614,14 @@ mod tests {
         let event = finish_search(
             start_search_with_transport(
                 SearchRequest {
+                    cache_dir: std::env::temp_dir().join("degauss-scraper-search-cache"),
                     system_id: 3,
                     term: "Adventure".into(),
                     settings: settings(ImagePolicy::Off),
-                    developer: DeveloperCredentials {
+                    developer: Some(DeveloperCredentials {
                         developer_id: "developer".into(),
                         developer_password: "private".into(),
-                    },
+                    }),
                 },
                 Arc::new(SearchMock),
                 cancelled,
@@ -4017,15 +4635,16 @@ mod tests {
     fn preview_job_decodes_success_and_distinguishes_missing_invalid_and_cancelled_media() {
         let request = |id: &str| PreviewRequest {
             match_id: id.into(),
+            libretro_urls: Vec::new(),
             media: super::super::Media {
                 url: format!("https://media.screenscraper.fr/{id}.png"),
                 format: Some("png".into()),
             },
             settings: settings(ImagePolicy::MissingOnly),
-            developer: DeveloperCredentials {
+            developer: Some(DeveloperCredentials {
                 developer_id: "developer".into(),
                 developer_password: "private".into(),
-            },
+            }),
             max_download_speed: 256,
             max_edge: 128,
             ground: [0, 0, 0],

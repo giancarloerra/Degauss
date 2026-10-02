@@ -184,6 +184,7 @@ fn real_service_small_system_batch_is_non_destructive() {
         names: DisplayNames::default(),
         settings: config.settings(ImagePolicy::Off, MetadataPolicy::FillMissing),
         developer: Some(config.developer.clone()),
+        cache_dir: root.join("cache"),
         artwork_pack_system_ids: HashSet::new(),
     };
     let cancelled = Arc::new(AtomicBool::new(false));
@@ -482,10 +483,11 @@ fn real_service_manual_match_preview_edit_and_batch_skip_are_non_destructive() {
     // authentication failure.
     let missing = finish_live_search(
         start_search(SearchRequest {
+            cache_dir: suite.root.join("cache"),
             system_id: config.platform_id,
             term: "Degauss Definitely Missing Manual Search 73F908".into(),
             settings: settings.clone(),
-            developer: config.developer.clone(),
+            developer: Some(config.developer.clone()),
         })
         .expect("start the real no-result manual search"),
     );
@@ -505,10 +507,11 @@ fn real_service_manual_match_preview_edit_and_batch_skip_are_non_destructive() {
     // same candidate record later applied to a disposable fixture.
     let search = finish_live_search(
         start_search(SearchRequest {
+            cache_dir: suite.root.join("cache"),
             system_id: config.platform_id,
             term: "Adventure".into(),
             settings: settings.clone(),
-            developer: config.developer.clone(),
+            developer: Some(config.developer.clone()),
         })
         .expect("start the real broad manual search"),
     );
@@ -532,15 +535,17 @@ fn real_service_manual_match_preview_edit_and_batch_skip_are_non_destructive() {
         .cloned()
         .expect("at least one real candidate must provide screenshot media");
     let max_download_speed = account
+        .expect("the ScreenScraper search must return its real account")
         .max_download_speed
         .expect("the real account must report its media speed");
     let media = selected.media.clone().expect("selected preview media");
     let preview = finish_live_preview(
         start_preview(PreviewRequest {
             match_id: selected.id.clone(),
+            libretro_urls: Vec::new(),
             media,
             settings: settings.clone(),
-            developer: config.developer.clone(),
+            developer: Some(config.developer.clone()),
             max_download_speed,
             max_edge: 320,
             ground: [0, 0, 0],
@@ -566,6 +571,7 @@ fn real_service_manual_match_preview_edit_and_batch_skip_are_non_destructive() {
         names: DisplayNames::default(),
         settings: settings.clone(),
         developer: Some(config.developer.clone()),
+        cache_dir: suite.root.join("cache"),
         artwork_pack_system_ids: HashSet::new(),
     };
     let selected_progress = finish_live(
@@ -609,6 +615,7 @@ fn real_service_manual_match_preview_edit_and_batch_skip_are_non_destructive() {
         names: DisplayNames::default(),
         settings: config.settings(ImagePolicy::Off, MetadataPolicy::FillMissing),
         developer: Some(config.developer.clone()),
+        cache_dir: suite.root.join("cache"),
         artwork_pack_system_ids: HashSet::new(),
     };
     let batch_progress = finish_live(start(batch_request).expect("start the real mixed batch"));
@@ -679,6 +686,7 @@ fn run_case_with_title(
         names: DisplayNames::default(),
         settings: config.settings(image_policy, metadata_policy),
         developer: Some(config.developer.clone()),
+        cache_dir: root.join("cache"),
         artwork_pack_system_ids: HashSet::new(),
     };
     let cancelled = Arc::new(AtomicBool::new(false));
