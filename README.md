@@ -45,17 +45,21 @@ separately. CRT presentation is applied for the README.
 
 | | | |
 |---|---|---|
-| <img src="docs/screenshots/0.8.1/01-home.png" alt="Home with optional Cores, Last Played and Core Updates collections" height="200"> | <img src="docs/screenshots/0.7.0/03-handheld.png" alt="Optional Handheld category" height="200"> | <img src="docs/screenshots/0.6.0/02-details.png" alt="Details: DoDonPachi III" height="200"> |
-| Home | Optional Handheld Category | Details View |
-| <img src="docs/screenshots/0.7.0/01-large-artwork.png" alt="Large Artwork Details: DonPachi" height="200"> | <img src="docs/screenshots/0.6.0/03-list.png" alt="List View: Arcade Favourites" height="200"> | <img src="docs/screenshots/0.6.0/04-gallery.png" alt="Gallery View: Arcade Favourites" height="200"> |
-| Large Artwork Details | List View | Gallery View |
-| <img src="docs/screenshots/0.6.0/05-multi-list.png" alt="Multi List View: Arcade Favourites" height="200"> | <img src="docs/screenshots/0.6.0/06-carousel.png" alt="Carousel View: Actraiser" height="200"> | <img src="docs/screenshots/0.6.0/07-tiled.png" alt="Tiled View: Amiga Favourites" height="200"> |
-| Multi List View | Carousel View | Tiled View |
+| <img src="docs/screenshots/1.0.0/01-home.png" alt="Home with Explore Games and personal shortcuts" height="200"> | <img src="docs/screenshots/1.0.0/02-explore.png" alt="Explore Games" height="200"> | <img src="docs/screenshots/1.0.0/03-explore-filters.png" alt="Explore Filters" height="200"> |
+| Home | Explore Games | Explore Filters |
+| <img src="docs/screenshots/1.0.0/04-personal-folder.png" alt="Personal Folders" height="200"> | <img src="docs/screenshots/1.0.0/05-home-editor.png" alt="Home Folder Editor" height="200"> | <img src="docs/screenshots/0.7.0/03-handheld.png" alt="Optional Handheld category" height="200"> |
+| Personal Folders | Home Folder Editor | Optional Handheld Category |
+| <img src="docs/screenshots/0.6.0/02-details.png" alt="Details: DoDonPachi III" height="200"> | <img src="docs/screenshots/0.7.0/01-large-artwork.png" alt="Large Artwork Details: DonPachi" height="200"> | <img src="docs/screenshots/0.6.0/03-list.png" alt="List View: Arcade Favourites" height="200"> |
+| Details View | Large Artwork Details | List View |
+| <img src="docs/screenshots/0.6.0/04-gallery.png" alt="Gallery View: Arcade Favourites" height="200"> | <img src="docs/screenshots/0.6.0/05-multi-list.png" alt="Multi List View: Arcade Favourites" height="200"> | <img src="docs/screenshots/0.6.0/06-carousel.png" alt="Carousel View: Actraiser" height="200"> |
+| Gallery View | Multi List View | Carousel View |
+| <img src="docs/screenshots/0.6.0/07-tiled.png" alt="Tiled View: Amiga Favourites" height="200"> | <img src="docs/screenshots/1.0.0/06-custom-view.png" alt="Named Custom View" height="200"> | <img src="docs/screenshots/1.0.0/07-custom-view-editor.png" alt="Custom View Editor" height="200"> |
+| Tiled View | Named Custom View | Custom View Editor |
 | <img src="docs/screenshots/0.8.0/02-core-selection.png" alt="Per-system Core Selection" height="200"> | <img src="docs/screenshots/0.6.0/08-options.png" alt="Extensive Options" height="200"> | <img src="docs/screenshots/0.7.0/02-shortcuts.png" alt="Configurable Hold Shortcuts" height="200"> |
 | Per-system Core Selection | Extensive Options | Configurable Hold Shortcuts |
-| <img src="docs/screenshots/0.6.0/10-appearance.png" alt="Appearance" height="200"> | <img src="docs/screenshots/0.8.1/02-library.png" alt="Library: optional Cores and Core Updates browsers" height="200"> | <img src="docs/screenshots/0.9.1/02-screen-rotation.png" alt="Complete interface rotated clockwise for a vertical display" height="200"> |
+| <img src="docs/screenshots/0.6.0/10-appearance.png" alt="Appearance" height="200"> | <img src="docs/screenshots/1.0.0/08-library-options.png" alt="Library visibility including Explore Games" height="200"> | <img src="docs/screenshots/0.9.1/02-screen-rotation.png" alt="Complete interface rotated clockwise for a vertical display" height="200"> |
 | Appearance Settings | Library Visibility | 90° Screen Rotation |
-| <img src="docs/screenshots/0.8.2/03-core-updates.png" alt="Core Updates" height="200"> | <img src="docs/screenshots/0.8.0/05-cores.png" alt="Installed Cores Browser" height="200"> | <img src="docs/screenshots/0.8.0/06-metadata-filters.png" alt="Metadata Filters" height="200"> |
+| <img src="docs/screenshots/1.0.0/09-core-updates.png" alt="Core Updates with All Cores, latest-first sorting and local game artwork" height="200"> | <img src="docs/screenshots/0.8.0/05-cores.png" alt="Installed Cores Browser" height="200"> | <img src="docs/screenshots/0.8.0/06-metadata-filters.png" alt="Metadata Filters" height="200"> |
 | Core Updates | Installed Cores Browser | Metadata Filters |
 | <img src="docs/screenshots/0.6.0/13-developer.png" alt="Developer" height="200"> | <img src="docs/screenshots/0.6.0/14-actions.png" alt="Grouped Actions" height="200"> | <img src="docs/screenshots/0.6.0/15-random-favourite.png" alt="Random Game and Random Favourite" height="200"> |
 | Drawing and Performance Controls | Actions for This Place | Random Game or Random Favourite |
@@ -63,23 +67,22 @@ separately. CRT presentation is applied for the README.
 | A Different View for Every Place | Full Game Information | Indexing Progress |
 | <img src="docs/screenshots/0.6.0/34-index-details.png" alt="Indexing Details" height="200"> | <img src="docs/screenshots/0.6.0/19-index-complete.png" alt="Indexing Complete" height="200"> | <img src="docs/screenshots/0.6.0/28-artwork-source.png" alt="Automatic, Gamelist or Artwork Pack" height="200"> |
 | Indexing Details | Indexing Complete | Automatic, Gamelist or Artwork Pack |
-| <img src="docs/screenshots/0.6.0/36-artwork-pack-location.png" alt="Choose an Installed Artwork Pack" height="200"> | <img src="docs/screenshots/0.6.0/20-manual-search.png" alt="Single-game Scraper Controls" height="200"> | <img src="docs/screenshots/0.6.0/33-manual-query.png" alt="Enter a Manual Search" height="200"> |
-| Choose an Installed Artwork Pack | Single-game Scraper Controls | Enter a Manual Search |
-| <img src="docs/screenshots/0.6.0/24-manual-match.png" alt="Choose the Matching Game: 1944" height="200"> | <img src="docs/screenshots/0.6.0/21-scraper-progress.png" alt="Scraper Preparation" height="200"> | <img src="docs/screenshots/0.6.0/35-scraper-complete.png" alt="Single-game Scrape Complete" height="200"> |
-| Choose the Matching Game: 1944 | Scraper Preparation | Single-game Scrape Complete |
-| <img src="docs/screenshots/0.6.0/26-scripts.png" alt="Browse Installed Scripts" height="200"> | <img src="docs/screenshots/0.6.0/27-script-confirmation.png" alt="Confirm Before Running" height="200"> | <img src="docs/screenshots/0.6.0/32-standard-details.png" alt="Standard Theme: Details" height="200"> |
-| Browse Installed Scripts | Confirm Before Running | Standard Theme: Details |
-| <img src="docs/screenshots/0.4.0/07-custom-theme.png" alt="Custom Theme" height="200"> | <img src="docs/screenshots/0.4.0/08-amber-theme.png" alt="Amber Theme" height="200"> | <img src="docs/screenshots/0.4.0/09-blue-orange-theme.png" alt="Blue-Orange Theme" height="200"> |
-| Custom Theme | Amber Theme | Blue-Orange Theme |
-| <img src="docs/screenshots/0.4.0/10-mono-theme.png" alt="Mono Theme" height="200"> | <img src="docs/screenshots/0.4.0/11-green-mono-theme.png" alt="Green Mono Theme" height="200"> | <img src="docs/screenshots/0.4.0/12-modern-theme.png" alt="Modern Theme" height="200"> |
-| Mono Theme | Green Mono Theme | Modern Theme |
-| <img src="docs/screenshots/0.4.0/13-neon-theme.png" alt="Neon Theme" height="200"> | <img src="docs/screenshots/0.4.0/16-theme-editor.png" alt="Theme Editor" height="200"> | <img src="docs/screenshots/0.4.0/17-category-system-image-picker.png" alt="Category &amp; System Image Picker" height="200"> |
-| Neon Theme | Theme Editor | Category & System Image Picker |
-
-| | | |
-|---|---|---|
-| <img src="docs/screenshots/0.4.0/18-saved-custom-theme.png" alt="A Saved Custom Theme" height="200"> | <img src="docs/screenshots/0.9.0/01-attract-mode.png" alt="Attract Mode" height="200"> | <img src="docs/screenshots/0.9.1/01-video-effects.png" alt="Display settings with Video Effects and Scanlines selected" height="200"> |
-| A Saved Custom Theme | Attract Mode | Video Effects |
+| <img src="docs/screenshots/0.6.0/36-artwork-pack-location.png" alt="Choose an Installed Artwork Pack" height="200"> | <img src="docs/screenshots/1.0.0/10-libretro-settings.png" alt="Libretro Scraping" height="200"> | <img src="docs/screenshots/1.0.0/11-libretro-match.png" alt="Libretro Match Selection" height="200"> |
+| Choose an Installed Artwork Pack | Libretro Scraping | Libretro Match Selection |
+| <img src="docs/screenshots/0.6.0/20-manual-search.png" alt="Single-game Scraper Controls" height="200"> | <img src="docs/screenshots/0.6.0/33-manual-query.png" alt="Enter a Manual Search" height="200"> | <img src="docs/screenshots/0.6.0/24-manual-match.png" alt="Choose the Matching Game: 1944" height="200"> |
+| Single-game Scraper Controls | Enter a Manual Search | Choose the Matching Game: 1944 |
+| <img src="docs/screenshots/0.6.0/21-scraper-progress.png" alt="Scraper Preparation" height="200"> | <img src="docs/screenshots/0.6.0/35-scraper-complete.png" alt="Single-game Scrape Complete" height="200"> | <img src="docs/screenshots/0.6.0/26-scripts.png" alt="Browse Installed Scripts" height="200"> |
+| Scraper Preparation | Single-game Scrape Complete | Browse Installed Scripts |
+| <img src="docs/screenshots/0.6.0/27-script-confirmation.png" alt="Confirm Before Running" height="200"> | <img src="docs/screenshots/0.6.0/32-standard-details.png" alt="Standard Theme: Details" height="200"> | <img src="docs/screenshots/0.4.0/07-custom-theme.png" alt="Custom Theme" height="200"> |
+| Confirm Before Running | Standard Theme: Details | Custom Theme |
+| <img src="docs/screenshots/0.4.0/08-amber-theme.png" alt="Amber Theme" height="200"> | <img src="docs/screenshots/0.4.0/09-blue-orange-theme.png" alt="Blue-Orange Theme" height="200"> | <img src="docs/screenshots/0.4.0/10-mono-theme.png" alt="Mono Theme" height="200"> |
+| Amber Theme | Blue-Orange Theme | Mono Theme |
+| <img src="docs/screenshots/0.4.0/11-green-mono-theme.png" alt="Green Mono Theme" height="200"> | <img src="docs/screenshots/0.4.0/12-modern-theme.png" alt="Modern Theme" height="200"> | <img src="docs/screenshots/0.4.0/13-neon-theme.png" alt="Neon Theme" height="200"> |
+| Green Mono Theme | Modern Theme | Neon Theme |
+| <img src="docs/screenshots/0.4.0/16-theme-editor.png" alt="Theme Editor" height="200"> | <img src="docs/screenshots/0.4.0/17-category-system-image-picker.png" alt="Category &amp; System Image Picker" height="200"> | <img src="docs/screenshots/0.4.0/18-saved-custom-theme.png" alt="A Saved Custom Theme" height="200"> |
+| Theme Editor | Category & System Image Picker | A Saved Custom Theme |
+| <img src="docs/screenshots/0.9.0/01-attract-mode.png" alt="Attract Mode" height="200"> | <img src="docs/screenshots/0.9.1/01-video-effects.png" alt="Display settings with Video Effects and Scanlines selected" height="200"> |  |
+| Attract Mode | Video Effects |  |
 
 ## Watch Degauss in action
 
@@ -164,8 +167,9 @@ available at the current browse location, the normal action remains immediate.
 **Actions** groups the available controls into **Game**, **Find**, **Library**
 and **Appearance**. Groups without applicable actions are omitted. **A** opens
 a group; **B** returns to the group list, then to browsing. Each selected
-control has an explanation below the list. The Categories home screen keeps
-its short, flat Actions menu for images and views.
+control has an explanation below the list. Home keeps its flat Actions menu
+for personal folders, editing, images and views. Explore has its own search,
+filter and collection actions.
 
 **Game** contains Game Information, separate **Random Game** and **Random
 Favourite** actions, and adding/removing favourites. Adding one opens a
@@ -917,13 +921,13 @@ slightly enlarged there; on a landscape screen, a `cover_size` of at least
 two thirds of the screen width keeps every picture within its decode.
 
 **Options → Appearance → View** is the global default. Every browse place can instead
-keep its own custom view: the Categories screen, each category's Systems
+keep its own custom view: Home, each category's Systems
 screen, each system root, and every folder inside a system. Use **X Actions →
 Appearance → Change View** at that place to create or update its custom view.
 **Use Global View**, in the same group, removes only that place's custom view;
 it then follows later global
 changes again. A custom view remains custom even when it currently matches
-the global setting. At the Categories home screen these view controls are
+the global setting. At Home these view controls are
 directly in its flat Actions menu.
 
 **X Actions → Appearance → Custom Views** creates named views from four
@@ -2044,7 +2048,7 @@ supported. Favourites shows its heart when `Favorites.png` or `.jpg` is not
 present. Restart Degauss after adding or replacing a directly named image.
 
 You can also put additional PNG, JPG or JPEG images directly in this same `logos`
-folder, using any filename. On the master Categories screen, press **X** and
+folder, using any filename. On Home, press **X** and
 choose **Change Image** directly. On a system such as **Computer → Amiga**,
 press **X** and choose **Appearance → Change Image**. Then select any
 shipped or user-added image in the list. Degauss copies the selection into its
@@ -2066,8 +2070,8 @@ category.
 
 ### Making the gamelists
 
-Degauss's built-in ScreenScraper tool can create and update gamelists directly
-on MiSTer and is the simplest choice when MiSTer is online. The computer tools
+Degauss's built-in scraper can create and update gamelists directly on MiSTer
+using ScreenScraper or account-free Libretro. The computer tools
 below are alternatives for preparing or curating them while the card is mounted
 in a computer, or through a local or network location.
 
