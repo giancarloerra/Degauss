@@ -455,6 +455,7 @@ impl DeveloperCredentials {
 }
 
 pub(super) fn atomic_write(path: &Path, bytes: &[u8], what: &str) -> Result<()> {
+    static SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let parent = path.parent().unwrap_or(Path::new("."));
     std::fs::create_dir_all(parent)
         .map_err(|error| Error::local(format!("could not create {}: {error}", parent.display())))?;
@@ -462,11 +463,11 @@ pub(super) fn atomic_write(path: &Path, bytes: &[u8], what: &str) -> Result<()> 
         .file_name()
         .and_then(|name| name.to_str())
         .unwrap_or("screenscraper.toml");
-    let temp = parent.join(format!(".{file_name}.{}.part", std::process::id()));
-    if temp.exists() {
-        std::fs::remove_file(&temp)
-            .map_err(|error| Error::local(format!("could not clear old {what}: {error}")))?;
-    }
+    let sequence = SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let temp = parent.join(format!(
+        ".{file_name}.{}-{sequence}.part",
+        std::process::id()
+    ));
     let outcome = (|| {
         let mut options = std::fs::OpenOptions::new();
         options.write(true).create_new(true);
@@ -536,6 +537,49 @@ mod tests {
             !read.ready(),
             "switching back must not waive the original account requirements"
         );
+    }
+
+    #[test]
+    fn concurrent_database_writes_do_not_remove_or_install_another_writers_temporary_file() {
+        let root = temp("concurrent-write");
+        std::fs::create_dir(&root).unwrap();
+        let path = root.join("database.rdb");
+        let outstanding = root.join(format!(".database.rdb.{}.part", std::process::id()));
+        let mut first = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&outstanding)
+            .unwrap();
+        first
+            .write_all(b"another worker's unfinished database")
+            .unwrap();
+        atomic_write(&path, b"complete database", "Libretro database").unwrap();
+        assert_eq!(
+            std::fs::read(&outstanding).unwrap(),
+            b"another worker's unfinished database"
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), b"complete database");
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(8));
+        std::thread::scope(|scope| {
+            for number in 0..8_u8 {
+                let path = &path;
+                let barrier = std::sync::Arc::clone(&barrier);
+                scope.spawn(move || {
+                    barrier.wait();
+                    atomic_write(path, &vec![number; 64 * 1024], "Libretro database").unwrap();
+                });
+            }
+        });
+        let bytes = std::fs::read(path).unwrap();
+        assert_eq!(bytes.len(), 64 * 1024);
+        assert!(bytes[0] < 8 && bytes.iter().all(|byte| *byte == bytes[0]));
+        assert_eq!(
+            std::fs::read_dir(&root).unwrap().count(),
+            2,
+            "each call removes only its own temporary file"
+        );
+        drop(first);
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
