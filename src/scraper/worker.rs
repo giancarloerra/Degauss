@@ -1296,6 +1296,7 @@ fn run_libretro_work(
                 events,
             );
         }
+        let mut database_failure = false;
         let result = (|| {
             let name = super::libretro::database_for_key(item.target.screen_scraper_system_id)
                 .ok_or_else(|| {
@@ -1309,16 +1310,21 @@ fn run_libretro_work(
                     .as_ref()
                     .is_none_or(|database| database.name != name)
             {
-                database = Some(super::libretro::Database::load(
-                    name,
-                    cache_dir,
-                    transport,
-                    cancelled,
-                    &mut |status| {
-                        progress.activity = status.into();
-                        emit(events, &mut progress);
-                    },
-                )?);
+                database = Some(
+                    super::libretro::Database::load(
+                        name,
+                        cache_dir,
+                        transport,
+                        cancelled,
+                        &mut |status| {
+                            progress.activity = status.into();
+                            emit(events, &mut progress);
+                        },
+                    )
+                    .inspect_err(|_| {
+                        database_failure = true;
+                    })?,
+                );
             }
             let Work {
                 target,
@@ -1399,6 +1405,14 @@ fn run_libretro_work(
                                 Err(error) if error.kind == ErrorKind::NotFound => {
                                     prepared.no_media = true
                                 }
+                                Err(error)
+                                    if matches!(
+                                        error.kind,
+                                        ErrorKind::MalformedResponse | ErrorKind::InvalidRequest
+                                    ) =>
+                                {
+                                    prepared.media_error = Some(error);
+                                }
                                 Err(error) => return Err(error),
                             }
                         } else {
@@ -1424,10 +1438,22 @@ fn run_libretro_work(
             Err(error) if error.kind == ErrorKind::Cancelled => break,
             Err(error) => {
                 progress.failed += 1;
-                progress.unresolved(&label, &error.detail);
-                progress.last_problem = Some(error.detail.clone());
-                fatal = Some(error);
-                break;
+                log_scraper_problem(&label, &error);
+                progress.unresolved(
+                    &label,
+                    error.user_message_for(super::ScraperSource::Libretro),
+                );
+                progress.last_problem = Some(
+                    error
+                        .user_message_for(super::ScraperSource::Libretro)
+                        .into(),
+                );
+                // An unusable shared database stops matching. A bad game file
+                // is reported individually, as in the existing scraper.
+                if database_failure || fatal_for_run(&error) {
+                    fatal = Some(error);
+                    break;
+                }
             }
         }
         emit(events, &mut progress);
@@ -3240,7 +3266,9 @@ mod tests {
         downloads: AtomicUsize,
         images: AtomicUsize,
         image_status: u16,
+        image_error: Option<ErrorKind>,
         database_error: Option<ErrorKind>,
+        remove_after_planning: Option<PathBuf>,
         cancelled: Option<Arc<AtomicBool>>,
     }
 
@@ -3257,6 +3285,9 @@ mod tests {
                 if let Some(cancelled) = &self.cancelled {
                     cancelled.store(true, Ordering::Relaxed);
                 }
+                if let Some(path) = &self.remove_after_planning {
+                    std::fs::remove_file(path).unwrap();
+                }
                 Ok(HttpResponse {
                     status: 200,
                     content_type: None,
@@ -3265,6 +3296,9 @@ mod tests {
             } else {
                 assert!(url.starts_with("https://thumbnails.libretro.com/"));
                 self.images.fetch_add(1, Ordering::Relaxed);
+                if let Some(kind) = self.image_error {
+                    return Err(Error::new(kind, "Libretro image response was unreadable"));
+                }
                 Ok(HttpResponse {
                     status: self.image_status,
                     content_type: Some("image/png".into()),
@@ -3288,7 +3322,9 @@ mod tests {
             downloads: AtomicUsize::new(0),
             images: AtomicUsize::new(0),
             image_status: 200,
+            image_error: None,
             database_error: None,
+            remove_after_planning: None,
             cancelled: None,
         })
     }
@@ -3409,6 +3445,66 @@ mod tests {
         assert!(std::fs::read_to_string(root.join("gamelist.xml"))
             .unwrap()
             .contains("Example Publisher"));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn libretro_refused_or_unreadable_images_preserve_metadata_and_reach_the_next_game() {
+        for kind in [ErrorKind::InvalidRequest, ErrorKind::MalformedResponse] {
+            let root = temp(&format!("libretro-image-{kind:?}"));
+            for name in ["First.rom", "Second.rom"] {
+                std::fs::write(root.join(name), b"game").unwrap();
+            }
+            let mut mock = libretro_mock();
+            let response = Arc::get_mut(&mut mock).unwrap();
+            if kind == ErrorKind::InvalidRequest {
+                response.image_status = 400;
+            } else {
+                response.image_error = Some(kind);
+            }
+            let Event::Finished(progress) =
+                finish(start_with_transport(libretro_request(&root), mock).unwrap())
+            else {
+                panic!("one image failure stopped the batch")
+            };
+            assert_eq!(progress.completed, 2);
+            assert_eq!(progress.failed, 2, "both image failures remain reported");
+            assert_eq!(progress.updated, 2, "matched metadata is retained");
+            assert!(progress
+                .last_problem
+                .as_deref()
+                .unwrap()
+                .contains("Libretro"));
+            let xml = std::fs::read_to_string(root.join("gamelist.xml")).unwrap();
+            assert!(xml.contains("./First.rom") && xml.contains("./Second.rom"));
+            assert_eq!(xml.matches("Example Publisher").count(), 2);
+            assert!(!xml.contains("<image>"));
+            std::fs::remove_dir_all(root).unwrap();
+        }
+    }
+
+    #[test]
+    fn libretro_reports_an_unreadable_game_without_a_name_fallback_or_stopping_healthy_games() {
+        let root = temp("libretro-local-failure");
+        for name in ["Bad.rom", "Good.rom"] {
+            std::fs::write(root.join(name), b"game").unwrap();
+        }
+        let mut mock = libretro_mock();
+        Arc::get_mut(&mut mock).unwrap().remove_after_planning = Some(root.join("Bad.rom"));
+        let Event::Finished(progress) =
+            finish(start_with_transport(libretro_request(&root), mock).unwrap())
+        else {
+            panic!("an individual game file stopped healthy games")
+        };
+        assert_eq!(progress.completed, 2);
+        assert_eq!(progress.failed, 1);
+        assert_eq!(progress.updated, 1);
+        let xml = std::fs::read_to_string(root.join("gamelist.xml")).unwrap();
+        assert!(xml.contains("./Good.rom"));
+        assert!(
+            !xml.contains("./Bad.rom"),
+            "a read error is not a name match"
+        );
         std::fs::remove_dir_all(root).unwrap();
     }
 

@@ -582,7 +582,7 @@ fn thumbnail_filename(title: &str) -> String {
     title
         .chars()
         .map(|character| {
-            if "&*/:`<>?\\|".contains(character) {
+            if "&*/:`<>?\\|\"".contains(character) {
                 '_'
             } else {
                 character
@@ -805,6 +805,10 @@ pub(crate) mod tests {
     #[test]
     fn thumbnails_use_canonical_encoding_and_only_safe_flexible_names() {
         assert_eq!(thumbnail_url("Nintendo - Game Boy", Artwork::TitleScreen, "Q*Bert & Friends (USA)"), "https://thumbnails.libretro.com/Nintendo%20-%20Game%20Boy/Named_Titles/Q_Bert%20_%20Friends%20%28USA%29.png");
+        assert_eq!(
+            thumbnail_url("MAME", Artwork::Screenshot, "A \"Quoted\" Title"),
+            "https://thumbnails.libretro.com/MAME/Named_Snaps/A%20_Quoted_%20Title.png"
+        );
         let db = database(vec![record("Unique (USA)")]);
         let Lookup::Found(matched) = db.lookup("Unique (USA)", None, Artwork::Screenshot).lookup
         else {
