@@ -474,7 +474,15 @@ impl App {
                 self.open_scripts();
                 if let Some(parent) = path.parent() {
                     self.show_scripts_directory(parent.to_path_buf(), Some(&path));
-                    self.activate_script();
+                    if self
+                        .scripts_entries
+                        .get(self.menu_list.selected())
+                        .is_some_and(|entry| entry.path == path)
+                    {
+                        self.activate_script();
+                    } else if self.message.is_none() {
+                        self.message = Some("The pinned script could not be selected.".into());
+                    }
                 }
             }
             Target::Folder { .. } => unreachable!(),

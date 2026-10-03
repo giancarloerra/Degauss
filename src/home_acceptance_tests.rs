@@ -726,6 +726,25 @@ pub(super) fn run(root: &Path, window: Rc<MinimalSoftwareWindow>) {
     assert_eq!(app.screen, Screen::Browse);
     assert_eq!(app.home.folder.as_deref(), Some(folder.as_str()));
     assert_eq!(app.selected_home_key(), Some(entry_key(&script).as_str()));
+    for name in ["Not a script.txt", ".Hidden.sh"] {
+        let unavailable = scripts.join(name);
+        std::fs::write(&unavailable, "not a selectable script").unwrap();
+        app.settings.home.entries.get_mut(&script).unwrap().target =
+            Target::Script { path: unavailable };
+        select(&mut app, &script);
+        app.handle(Action::Accept);
+        assert!(
+            app.pending.is_none(),
+            "an unselectable Home script must not run another directory entry"
+        );
+        assert!(app.message.as_deref().unwrap().contains("pinned script"));
+        app.handle(Action::Quit);
+        app.handle(Action::Quit);
+        assert_eq!(app.selected_home_key(), Some(entry_key(&script).as_str()));
+    }
+    app.settings.home.entries.get_mut(&script).unwrap().target = Target::Script {
+        path: script_path.clone(),
+    };
     select(&mut app, &scripts_category);
     app.handle(Action::Accept);
     assert_eq!(app.screen, Screen::Scripts);
@@ -889,7 +908,12 @@ pub(super) fn run(root: &Path, window: Rc<MinimalSoftwareWindow>) {
     app.home_editor();
     let unchanged = app.home.edit.clone().unwrap();
     app.open_name_keyboard(NamePurpose::HomeFolder, "Fourth".into());
-    app.name_keyboard_list.select(42);
+    app.name_keyboard_list.select(
+        name_keyboard::keys(app.name_keyboard_page, true)
+            .iter()
+            .position(|key| matches!(key, NameKey::Save))
+            .unwrap(),
+    );
     app.dirty = false;
     app.handle(Action::Accept);
     assert!(
