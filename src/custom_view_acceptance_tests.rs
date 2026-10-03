@@ -449,11 +449,48 @@ pub(super) fn run(root: &Path, window: Rc<MinimalSoftwareWindow>) {
         !app.ui.get_custom_view(),
         "Core Updates keeps its dedicated layout"
     );
+    app.open_view_editor(None, Definition::new(Template::SplitRight));
+    paint_index_frame(&mut app);
+    assert!(
+        app.ui.get_custom_view(),
+        "an explicit editor must remain visible when opened over Core Updates"
+    );
+    assert_eq!(app.ui.get_custom_panels().row_count(), 3);
+    app.handle(Action::Quit);
+    app.apply_geometry();
+    assert!(
+        !app.ui.get_custom_view(),
+        "Cancel restores the dedicated Core Updates view"
+    );
     app.open_system = Some("NES".into());
     app.open_category = None;
     app.resolve_view();
     app.apply_geometry();
     assert!(app.ui.get_custom_view());
+
+    app.layout_override = Some(Layout::List);
+    app.resolve_view();
+    app.apply_geometry();
+    assert!(
+        !app.ui.get_custom_view(),
+        "temporary layouts still override saved views"
+    );
+    app.open_view_editor(Some(id.clone()), Definition::new(Template::Columns));
+    paint_index_frame(&mut app);
+    assert!(
+        app.ui.get_custom_view(),
+        "an explicit editor overrides the temporary layout"
+    );
+    assert_eq!(app.ui.get_custom_panels().row_count(), 2);
+    app.handle(Action::Quit);
+    app.apply_geometry();
+    assert!(
+        !app.ui.get_custom_view(),
+        "Cancel restores the temporary layout"
+    );
+    app.layout_override = None;
+    app.resolve_view();
+    app.apply_geometry();
 
     app.browsing = Browsing::Categories;
     app.open_system = None;

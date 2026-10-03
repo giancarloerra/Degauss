@@ -91,14 +91,13 @@ impl App {
         self.resolve_view();
     }
     fn custom_definition(&self) -> Option<&ViewDefinition> {
+        if let Some(editor) = &self.custom_view.editor {
+            return Some(&editor.draft);
+        }
         if self.in_misterzine_browser() || self.layout_override.is_some() {
             return None;
         }
-        self.custom_view
-            .editor
-            .as_ref()
-            .map(|editor| &editor.draft)
-            .or(self.custom_view.active.as_ref())
+        self.custom_view.active.as_ref()
     }
     fn custom_rectangles(&self, geometry: Geometry) -> Vec<crate::custom_view::Rect> {
         let Some(view) = self.custom_definition() else {
