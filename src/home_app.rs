@@ -878,25 +878,23 @@ impl App {
                 children: Vec::new(),
             },
         };
-        let result = self
-            .home
-            .edit
-            .as_mut()
-            .expect("Home editor")
-            .add(entry, parent.as_deref());
+        let mut store = self.home.edit.clone().expect("Home editor");
+        let result = store.add(entry, parent.as_deref());
         match result {
             Ok(id) => {
-                if let Some(entry) = self.home.pending_entry.take() {
-                    if let Err(error) = self
-                        .home
-                        .edit
-                        .as_mut()
-                        .expect("Home editor")
-                        .add(entry, Some(&id))
-                    {
-                        self.message = Some(error);
-                    }
+                let placed = if let Some(entry) = self.home.pending_entry.as_ref() {
+                    store.add(entry.clone(), Some(&id)).map(|_| ())
+                } else if let Some(HomeMenu::Destination(Some(moving))) = &self.home.menu {
+                    store.move_to(moving, Some(&id))
+                } else {
+                    Ok(())
+                };
+                if let Err(error) = placed {
+                    self.message = Some(error);
+                    return;
                 }
+                self.home.edit = Some(store);
+                self.home.pending_entry = None;
                 if self.home.explicit_editor {
                     self.home_editor_select(&crate::home::entry_key(&id));
                 } else {
