@@ -166,6 +166,7 @@ impl Catalogue {
             if shown.as_ref() != entry.row.name {
                 entry.row.name = shown.into_owned();
             }
+            entry.search_title = entry.row.name.to_lowercase().replace(' ', "");
             groups
                 .entry((entry.system.clone(), normalise(&entry.row.name)))
                 .or_default()
@@ -201,9 +202,6 @@ impl Catalogue {
                 entry.row.name.push_str(" · ");
                 entry.row.name.push_str(&label);
             }
-        }
-        for entry in &mut self.entries {
-            entry.search_title = entry.row.name.to_lowercase().replace(' ', "");
         }
         self.entries.sort_by_cached_key(|entry| {
             (
@@ -1032,6 +1030,54 @@ mod tests {
                 .collect::<HashSet<_>>(),
             HashSet::from(["Same game · /Amiga/First", "Same game · /Amiga/Second"])
         );
+    }
+
+    #[test]
+    fn variant_qualifiers_do_not_change_title_search_results() {
+        let mut catalogue = Catalogue::default();
+        for path in [
+            "/media/fat/games/NES/First/Same Game.nes",
+            "/media/usb0/games/NES/Second/Same Game.nes",
+        ] {
+            let mut game = entry("NES", "Same Game", None, "", "");
+            game.row.kind = Kind::Play(Launch::File(PathBuf::from(path)));
+            catalogue.entries.push(game);
+        }
+        catalogue
+            .entries
+            .push(entry("NES", "NES Adventure", None, "", ""));
+        let identities: HashSet<_> = catalogue.entries.iter().map(Entry::key).collect();
+        for names in [
+            crate::name_display::GameNameDisplay::Full,
+            crate::name_display::GameNameDisplay::RemoveParenthesesAndBrackets,
+        ] {
+            catalogue.present_names(names, false);
+            let variants: Vec<_> = catalogue
+                .entries
+                .iter()
+                .filter(|entry| entry.original_name == "Same Game")
+                .collect();
+            assert_ne!(variants[0].row.name, variants[1].row.name);
+            for game in variants {
+                assert!(Query::default().matches_except(game, None, "same game"));
+                for path_word in ["fat", "usb", "games", "nes", "first", "second"] {
+                    assert!(
+                        !Query::default().matches_except(game, None, path_word),
+                        "a distinguishing path is not part of the title query"
+                    );
+                }
+            }
+            let title = catalogue
+                .entries
+                .iter()
+                .find(|entry| entry.original_name == "NES Adventure")
+                .unwrap();
+            assert!(Query::default().matches_except(title, None, "nes"));
+            assert_eq!(
+                identities,
+                catalogue.entries.iter().map(Entry::key).collect()
+            );
+        }
     }
 
     #[test]

@@ -114,6 +114,29 @@ pub(super) fn run(root: &Path, window: Rc<MinimalSoftwareWindow>) {
         .set(&mut app.settings.custom_views, key.clone());
     app.resolve_view();
 
+    let previous_layout = app.settings.layout.clone();
+    let previous_fallback = app.global_layout;
+    let selections = app.settings.custom_views.clone();
+    app.settings.layout = Some("gallery".into());
+    app.global_layout = Layout::Gallery;
+    app.step_view_choice(1, true);
+    assert_eq!(app.settings.layout.as_deref(), Some(key.as_str()));
+    assert_eq!(
+        app.global_layout,
+        Layout::Details,
+        "a global named view must not retain the previous built-in fallback"
+    );
+    assert_eq!(app.settings.custom_views, selections);
+    let definition = app.settings.view_definitions.remove(&id).unwrap();
+    app.resolve_view();
+    assert_eq!(app.layout, Layout::Details);
+    assert!(app.message.as_deref().unwrap().contains("unavailable"));
+    app.settings.view_definitions.insert(id.clone(), definition);
+    app.settings.layout = previous_layout;
+    app.global_layout = previous_fallback;
+    app.message = None;
+    app.resolve_view();
+
     let assignments = app.settings.custom_views.clone();
     let global_view = app.settings.layout.clone();
     let saved_definition = app.settings.view_definitions[&id].clone();

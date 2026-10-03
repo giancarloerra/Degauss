@@ -462,7 +462,14 @@ mod tests {
 
     #[test]
     fn preview_reads_exact_cached_targets_and_preserves_real_read_failures() {
-        let dir = std::env::temp_dir().join(format!("degauss-home-preview-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!(
+            "degauss-home-preview-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
         std::fs::create_dir(&dir).unwrap();
         let launch = crate::browse::Launch::File(dir.join("example.nes"));
         let row = crate::browse::Row {

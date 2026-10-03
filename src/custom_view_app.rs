@@ -83,9 +83,7 @@ impl App {
         let at = choices.iter().position(|value| *value == key).unwrap_or(0);
         let next = choices[step(at, delta, choices.len())].clone();
         if global {
-            if let Some(layout) = Layout::parse(&next) {
-                self.global_layout = layout;
-            }
+            self.global_layout = Layout::parse(&next).unwrap_or(Layout::Details);
             self.settings.layout = Some(next);
         } else if let Some(place) = self.current_view_place() {
             place.set(&mut self.settings.custom_views, next);
