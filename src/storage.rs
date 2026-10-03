@@ -436,6 +436,10 @@ impl Job {
         }
         Some(result)
     }
+
+    pub fn cancel(&self) {
+        self.cancelled.store(true, Ordering::Relaxed);
+    }
 }
 
 impl Drop for Job {
@@ -513,6 +517,37 @@ mod tests {
         dropper.join().unwrap();
         assert!(cancelled.load(Ordering::Relaxed));
         assert!(responsive, "dropping the check waited for its reader");
+    }
+
+    #[test]
+    fn cancellation_retains_a_blocked_worker_until_its_result_is_consumed() {
+        let (sender, result) = mpsc::sync_channel(1);
+        let (release, blocked) = mpsc::sync_channel(0);
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let handle = std::thread::spawn(move || {
+            blocked.recv().unwrap();
+            sender.send(Ok(None)).unwrap();
+        });
+        let mut job = Job {
+            result: Some(result),
+            cancelled: cancelled.clone(),
+            handle: Some(handle),
+        };
+        job.cancel();
+        let retained = job.handle.is_some() && job.try_recv().is_none();
+        release.send(()).unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let outcome = loop {
+            if let Some(result) = job.try_recv() {
+                break result;
+            }
+            assert!(std::time::Instant::now() < deadline);
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        };
+        assert!(retained, "cancellation must not detach its blocked worker");
+        assert!(cancelled.load(Ordering::Relaxed));
+        assert!(outcome.unwrap().is_none());
+        assert!(job.handle.is_none(), "the completed worker is reaped");
     }
 
     struct Fixture {

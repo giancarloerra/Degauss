@@ -998,6 +998,21 @@ fn run_storage_rediscovery_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) 
     let cache_path = crate::cache::system_path(&app.cache_dir, "NES");
     let before = std::fs::read(&cache_path).unwrap();
     let settings_before = std::fs::read(&app.settings_path).ok();
+    app.go_back();
+    app.request_storage_check();
+    app.poll_storage();
+    assert!(app.storage.as_ref().unwrap().job.is_some());
+    let cores = app.storage.as_ref().unwrap().cores.clone();
+    let systems = app.all_systems.clone();
+    app.refresh_storage_baseline(cores, &systems).unwrap();
+    assert!(
+        app.storage.as_ref().unwrap().job.is_some(),
+        "a baseline refresh must retain its old worker until its result is consumed"
+    );
+    assert!(app.storage.as_ref().unwrap().stale);
+    app.finish_background_work_for_headless();
+    assert!(app.storage.as_ref().unwrap().job.is_none());
+    assert!(app.pending.is_none());
     for (folder, game) in [("NES", "New.nes"), ("SNES", "New.sfc")] {
         let directory = root.join("usb/games").join(folder);
         std::fs::create_dir_all(&directory).unwrap();

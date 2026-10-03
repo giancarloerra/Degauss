@@ -9792,7 +9792,10 @@ impl App {
         storage.cores = baseline.cores;
         storage.active = baseline.active;
         storage.requested = false;
-        storage.job = None;
+        if let Some(job) = &storage.job {
+            job.cancel();
+            storage.stale = true;
+        }
         storage.offer = None;
         Ok(())
     }
