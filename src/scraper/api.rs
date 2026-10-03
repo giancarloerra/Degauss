@@ -84,7 +84,7 @@ impl CurlTransport {
                 "ScreenScraper reported a zero media-download allowance",
             ));
         }
-        let timeout = request_timeout(limit, max_kib_per_second);
+        let timeout = request_timeout(url, limit, max_kib_per_second);
         let response_file = ResponseFile::create()?;
         let config = curl_config(
             url,
@@ -262,7 +262,7 @@ fn curl_config(
     ca_bundle: Option<&Path>,
 ) -> String {
     let connect_timeout = CONNECT_TIMEOUT.as_secs();
-    let global_timeout = request_timeout(limit, max_kib_per_second).as_secs();
+    let global_timeout = request_timeout(url, limit, max_kib_per_second).as_secs();
     let rate = max_kib_per_second
         .filter(|speed| *speed > 0)
         .map(|speed| format!("limit-rate = \"{speed}K\"\n"))
@@ -292,7 +292,12 @@ fn first_readable_ca_bundle<'a>(candidates: impl IntoIterator<Item = &'a Path>) 
     })
 }
 
-fn request_timeout(limit: u64, max_kib_per_second: Option<u64>) -> Duration {
+fn request_timeout(url: &str, limit: u64, max_kib_per_second: Option<u64>) -> Duration {
+    if url.starts_with("https://raw.githubusercontent.com/libretro/libretro-database/master/rdb/") {
+        // RDB files can be much larger than API replies or thumbnails.
+        // Reuse the existing bounded transfer allowance without rate limiting.
+        return MAX_MEDIA_TIMEOUT;
+    }
     let Some(speed) = max_kib_per_second.filter(|speed| *speed > 0) else {
         return GLOBAL_TIMEOUT;
     };
@@ -3504,12 +3509,31 @@ mod tests {
 
     #[test]
     fn media_timeout_allows_for_the_reported_speed_but_remains_bounded() {
-        assert_eq!(request_timeout(1024, None), GLOBAL_TIMEOUT);
+        assert_eq!(request_timeout("", 1024, None), GLOBAL_TIMEOUT);
         assert_eq!(
-            request_timeout(8 * 1024 * 1024, Some(128)),
+            request_timeout("", 8 * 1024 * 1024, Some(128)),
             Duration::from_secs(79)
         );
-        assert_eq!(request_timeout(u64::MAX, Some(1)), MAX_MEDIA_TIMEOUT);
+        assert_eq!(request_timeout("", u64::MAX, Some(1)), MAX_MEDIA_TIMEOUT);
+    }
+
+    #[test]
+    fn libretro_databases_allow_long_transfers_without_limiting_the_download_speed() {
+        let database = curl_config(
+            "https://raw.githubusercontent.com/libretro/libretro-database/master/rdb/Sony%20-%20PlayStation.rdb",
+            Path::new("/tmp/result"), 32 * 1024 * 1024, None, None,
+        );
+        assert!(database.contains("max-time = \"300\""));
+        assert!(!database.contains("limit-rate"));
+        let image = curl_config(
+            "https://thumbnails.libretro.com/Sony%20-%20PlayStation/Named_Snaps/Example.png",
+            Path::new("/tmp/result"),
+            32 * 1024 * 1024,
+            None,
+            None,
+        );
+        assert!(image.contains("max-time = \"60\""));
+        assert!(!image.contains("limit-rate"));
     }
 
     #[test]

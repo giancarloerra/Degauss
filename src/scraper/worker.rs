@@ -476,13 +476,21 @@ fn run_search(
                         "this system has no Libretro database",
                     )
                 })?;
-            let database = super::libretro::Database::load(
-                database,
-                &request.cache_dir,
-                transport.as_ref(),
+            let database = retry(
                 cancelled,
-                &mut |status| {
-                    let _ = events.send(SearchEvent::Activity(status.into()));
+                |error, delay| {
+                    let _ = events.send(SearchEvent::Activity(retry_status(error, delay)));
+                },
+                || {
+                    super::libretro::Database::load(
+                        database,
+                        &request.cache_dir,
+                        transport.as_ref(),
+                        cancelled,
+                        &mut |status| {
+                            let _ = events.send(SearchEvent::Activity(status.into()));
+                        },
+                    )
                 },
             )?;
             Ok(database.search(&request.term, request.settings.libretro_artwork))
@@ -662,11 +670,17 @@ fn run_preview(
     cancelled: &Arc<AtomicBool>,
 ) -> Result<crate::covers::RgbImage> {
     if request.settings.source == super::ScraperSource::Libretro {
-        let response = super::libretro::download_image(
-            &request.libretro_urls,
-            transport.as_ref(),
-            request.settings.max_media_bytes(),
+        let response = retry(
             cancelled,
+            |_, _| {},
+            || {
+                super::libretro::download_image(
+                    &request.libretro_urls,
+                    transport.as_ref(),
+                    request.settings.max_media_bytes(),
+                    cancelled,
+                )
+            },
         )?;
         return decode_media_image(&response, request.ground, request.max_edge);
     }
@@ -1310,15 +1324,25 @@ fn run_libretro_work(
                     .as_ref()
                     .is_none_or(|database| database.name != name)
             {
+                let mut retry_progress = progress.clone();
                 database = Some(
-                    super::libretro::Database::load(
-                        name,
-                        cache_dir,
-                        transport,
+                    retry(
                         cancelled,
-                        &mut |status| {
-                            progress.activity = status.into();
-                            emit(events, &mut progress);
+                        |error, delay| {
+                            retry_progress.activity = retry_status(error, delay);
+                            emit(events, &mut retry_progress);
+                        },
+                        || {
+                            super::libretro::Database::load(
+                                name,
+                                cache_dir,
+                                transport,
+                                cancelled,
+                                &mut |status| {
+                                    progress.activity = status.into();
+                                    emit(events, &mut progress);
+                                },
+                            )
                         },
                     )
                     .inspect_err(|_| {
@@ -1387,11 +1411,21 @@ fn run_libretro_work(
                                     .file_stem()
                                     .and_then(|name| name.to_str()),
                             );
-                            match super::libretro::download_image(
-                                &urls,
-                                transport,
-                                settings.max_media_bytes(),
+                            let mut retry_progress = progress.clone();
+                            match retry(
                                 cancelled,
+                                |error, delay| {
+                                    retry_progress.activity = retry_status(error, delay);
+                                    emit(events, &mut retry_progress);
+                                },
+                                || {
+                                    super::libretro::download_image(
+                                        &urls,
+                                        transport,
+                                        settings.max_media_bytes(),
+                                        cancelled,
+                                    )
+                                },
                             ) {
                                 Ok(response) => match install_media_for_source(
                                     &prepared.target,
@@ -3268,6 +3302,8 @@ mod tests {
         image_status: u16,
         image_error: Option<ErrorKind>,
         database_error: Option<ErrorKind>,
+        database_failures: usize,
+        image_failures: usize,
         remove_after_planning: Option<PathBuf>,
         cancelled: Option<Arc<AtomicBool>>,
     }
@@ -3278,12 +3314,19 @@ mod tests {
         }
         fn get_media(&self, url: &str, _: u64, _: Option<u64>) -> Result<HttpResponse> {
             if url.ends_with(".rdb") {
-                self.downloads.fetch_add(1, Ordering::Relaxed);
-                if let Some(kind) = self.database_error {
-                    return Err(Error::new(kind, "Libretro database transfer failed"));
-                }
+                let attempt = self.downloads.fetch_add(1, Ordering::Relaxed);
                 if let Some(cancelled) = &self.cancelled {
                     cancelled.store(true, Ordering::Relaxed);
+                }
+                if attempt < self.database_failures {
+                    return Ok(HttpResponse {
+                        status: 503,
+                        content_type: None,
+                        body: Vec::new(),
+                    });
+                }
+                if let Some(kind) = self.database_error {
+                    return Err(Error::new(kind, "Libretro database transfer failed"));
                 }
                 if let Some(path) = &self.remove_after_planning {
                     std::fs::remove_file(path).unwrap();
@@ -3295,7 +3338,14 @@ mod tests {
                 })
             } else {
                 assert!(url.starts_with("https://thumbnails.libretro.com/"));
-                self.images.fetch_add(1, Ordering::Relaxed);
+                let attempt = self.images.fetch_add(1, Ordering::Relaxed);
+                if attempt < self.image_failures {
+                    return Ok(HttpResponse {
+                        status: 503,
+                        content_type: None,
+                        body: Vec::new(),
+                    });
+                }
                 if let Some(kind) = self.image_error {
                     return Err(Error::new(kind, "Libretro image response was unreadable"));
                 }
@@ -3324,6 +3374,8 @@ mod tests {
             image_status: 200,
             image_error: None,
             database_error: None,
+            database_failures: 0,
+            image_failures: 0,
             remove_after_planning: None,
             cancelled: None,
         })
@@ -3387,6 +3439,37 @@ mod tests {
             "explicit repeat reuses the valid RDB"
         );
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn libretro_recovers_from_transient_database_and_image_responses() {
+        for database_failure in [true, false] {
+            let root = temp("libretro-retry");
+            std::fs::write(root.join("Game.rom"), b"game").unwrap();
+            let mut mock = libretro_mock();
+            if database_failure {
+                Arc::get_mut(&mut mock).unwrap().database_failures = 2;
+            } else {
+                Arc::get_mut(&mut mock).unwrap().image_failures = 2;
+            }
+            let Event::Finished(progress) =
+                finish(start_with_transport(libretro_request(&root), mock.clone()).unwrap())
+            else {
+                panic!("a transient upstream failure stopped the scrape")
+            };
+            assert_eq!(progress.updated, 1);
+            assert_eq!(progress.failed, 0);
+            assert_eq!(
+                mock.downloads.load(Ordering::Relaxed),
+                if database_failure { 3 } else { 1 }
+            );
+            assert_eq!(
+                mock.images.load(Ordering::Relaxed),
+                if database_failure { 1 } else { 3 }
+            );
+            assert!(root.join("gamelist.xml").exists());
+            std::fs::remove_dir_all(root).unwrap();
+        }
     }
 
     #[test]
@@ -3519,11 +3602,12 @@ mod tests {
             let mut mock = libretro_mock();
             Arc::get_mut(&mut mock).unwrap().database_error = Some(kind);
             let Event::Failed { error, .. } =
-                finish(start_with_transport(libretro_request(&root), mock).unwrap())
+                finish(start_with_transport(libretro_request(&root), mock.clone()).unwrap())
             else {
                 panic!("transfer failure became success")
             };
             assert_eq!(error.kind, kind);
+            assert_eq!(mock.downloads.load(Ordering::Relaxed), 3);
             assert!(!root.join("gamelist.xml").exists());
             std::fs::remove_dir_all(root).unwrap();
         }
@@ -3537,6 +3621,28 @@ mod tests {
         assert!(receiver
             .try_iter()
             .any(|event| matches!(event, Event::Cancelled(_))));
+        assert!(!root.join("gamelist.xml").exists());
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let mut mock = libretro_mock();
+        let transport = Arc::get_mut(&mut mock).unwrap();
+        transport.cancelled = Some(cancelled.clone());
+        transport.database_error = Some(ErrorKind::Server);
+        let (events, receiver) = mpsc::sync_channel(64);
+        run(
+            libretro_request(&root),
+            mock.clone(),
+            &events,
+            &cancelled,
+            None,
+        );
+        assert!(receiver
+            .try_iter()
+            .any(|event| matches!(event, Event::Cancelled(_))));
+        assert_eq!(
+            mock.downloads.load(Ordering::Relaxed),
+            1,
+            "cancellation prevents a second request"
+        );
         assert!(!root.join("gamelist.xml").exists());
         std::fs::create_dir_all(root.join("cache/libretro")).unwrap();
         std::fs::write(
@@ -3563,7 +3669,9 @@ mod tests {
     fn libretro_manual_search_and_selection_need_no_fake_account() {
         let root = temp("libretro-manual");
         std::fs::write(root.join("Game.rom"), b"game").unwrap();
-        let mock = libretro_mock();
+        let mut mock = libretro_mock();
+        Arc::get_mut(&mut mock).unwrap().database_failures = 2;
+        Arc::get_mut(&mut mock).unwrap().image_failures = 2;
         let SearchEvent::Finished {
             matches, account, ..
         } = finish_search(
@@ -3606,6 +3714,8 @@ mod tests {
             panic!("preview failed")
         };
         assert_eq!((image.width, image.height), (1, 1));
+        assert_eq!(mock.downloads.load(Ordering::Relaxed), 3);
+        assert_eq!(mock.images.load(Ordering::Relaxed), 3);
         let mut request = libretro_request(&root);
         request.scope = Scope::Game {
             system_id: "NES".into(),

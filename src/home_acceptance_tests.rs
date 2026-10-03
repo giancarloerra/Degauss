@@ -196,6 +196,111 @@ pub(super) fn run(root: &Path, window: Rc<MinimalSoftwareWindow>) {
         .clone();
     app.settings.home.remove(&id);
     app.settings.save(&app.settings_path).unwrap();
+    // Cancelling a new-folder name keeps the immediate pin workflow,
+    // rather than entering an unrelated explicit Home edit session.
+    for cancel in [Action::Quit, Action::Accept] {
+        app.home.pending_entry = Some(pinned.clone());
+        app.home_destinations(None);
+        app.menu_list.select(
+            app.menu
+                .iter()
+                .position(|row| row == NEW_HOME_FOLDER)
+                .unwrap(),
+        );
+        app.handle(Action::Accept);
+        assert_eq!(app.screen, Screen::NameKeyboard);
+        app.name_keyboard_list.select(
+            name_keyboard::keys(app.name_keyboard_page, true)
+                .iter()
+                .position(|key| matches!(key, NameKey::Cancel))
+                .unwrap(),
+        );
+        app.handle(cancel);
+        assert!(matches!(app.home.menu, Some(HomeMenu::Destination(None))));
+        assert!(!app.home.explicit_editor);
+        assert!(app.home.pending_entry.is_some());
+        app.menu_list.select(0);
+        app.handle(Action::Accept);
+        assert_eq!(app.screen, Screen::Browse);
+        assert!(app.home.edit.is_none());
+        let id = app
+            .settings
+            .home
+            .entries
+            .iter()
+            .find(|(_, entry)| entry.name == "Immediate game")
+            .unwrap()
+            .0
+            .clone();
+        assert!(Settings::load(&app.settings_path)
+            .unwrap()
+            .home
+            .entries
+            .contains_key(&id));
+        app.settings.home.remove(&id);
+        app.settings.save(&app.settings_path).unwrap();
+    }
+    app.begin_home_edit();
+    app.home_entry_actions(entry_key(&folder));
+    app.menu_list
+        .select(app.menu.iter().position(|row| row == "Rename").unwrap());
+    app.handle(Action::Accept);
+    app.handle(Action::Quit);
+    assert!(matches!(&app.home.menu, Some(HomeMenu::Entry(key)) if key == &entry_key(&folder)));
+    assert!(!app.home.explicit_editor);
+    assert_eq!(app.home_store().entries[&folder].name, "Renamed");
+    app.finish_home_edit(false);
+    app.home_destinations(Some(folder.clone()));
+    app.menu_list.select(
+        app.menu
+            .iter()
+            .position(|row| row == NEW_HOME_FOLDER)
+            .unwrap(),
+    );
+    app.handle(Action::Accept);
+    app.handle(Action::Quit);
+    assert!(matches!(&app.home.menu, Some(HomeMenu::Destination(Some(id))) if id == &folder));
+    assert!(!app.home.explicit_editor);
+    app.finish_home_edit(false);
+    app.restore_home(crate::home::Resume {
+        folder: None,
+        key: String::new(),
+        anchor: None,
+    });
+    app.home_context();
+    app.menu_list.select(
+        app.menu
+            .iter()
+            .position(|row| row == NEW_HOME_FOLDER)
+            .unwrap(),
+    );
+    app.handle(Action::Accept);
+    app.handle(Action::Quit);
+    assert_eq!(app.screen, Screen::Browse);
+    assert!(app.home.edit.is_none());
+    assert!(!app.home.explicit_editor);
+    app.home_editor();
+    app.home
+        .edit
+        .as_mut()
+        .unwrap()
+        .entries
+        .get_mut(&folder)
+        .unwrap()
+        .name = "Retained draft".into();
+    app.menu_list.select(
+        app.menu
+            .iter()
+            .position(|row| row == NEW_HOME_FOLDER)
+            .unwrap(),
+    );
+    app.handle(Action::Accept);
+    app.handle(Action::Quit);
+    assert!(matches!(app.home.menu, Some(HomeMenu::Editor)));
+    assert!(app.home.explicit_editor);
+    assert_eq!(app.home_store().entries[&folder].name, "Retained draft");
+    app.finish_home_edit(false);
+    app.browsing = Browsing::Games;
     for (name, parent) in [
         ("Immediate game", None),
         ("Second immediate game", Some(folder.as_str())),

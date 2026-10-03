@@ -1208,7 +1208,12 @@ impl App {
             if action == Action::Quit
                 || (action == Action::Accept && matches!(key, Some(NameKey::Cancel)))
             {
-                self.home_editor();
+                match self.home.menu.clone() {
+                    Some(HomeMenu::Destination(moving)) => self.home_destinations(moving),
+                    Some(HomeMenu::Entry(key)) => self.home_entry_actions(key),
+                    Some(HomeMenu::Editor) => self.home_editor(),
+                    _ => self.finish_home_edit(false),
+                }
                 return Some(None);
             }
             if action == Action::Accept && matches!(key, Some(NameKey::Save)) {
