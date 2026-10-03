@@ -200,17 +200,7 @@ impl App {
             ),
             names: self.game_name_display,
             previous: None,
-            signatures: Default::default(),
         };
-        request.signatures = request.source_signatures();
-        if self
-            .explore
-            .catalogue
-            .as_ref()
-            .is_some_and(|catalogue| catalogue.signatures == request.signatures)
-        {
-            return;
-        }
         self.explore.restore_selection = Some((
             self.explore_selected().map(crate::explore::Entry::key),
             self.game_list.selected(),
@@ -727,6 +717,13 @@ impl App {
                 if let Some(job) = &self.explore.job {
                     job.cancel();
                 }
+                self.explore.job = None;
+                self.explore.pivots.clear();
+                self.leave_explore();
+                self.message = Some(match self.explore.match_warning.take() {
+                    Some(warning) => format!("Explore Games: reading cancelled.\n\n{warning}"),
+                    None => "Explore Games: reading cancelled.".into(),
+                });
             }
             self.last_input = Instant::now();
             return true;

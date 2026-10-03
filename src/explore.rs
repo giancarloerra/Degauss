@@ -144,11 +144,13 @@ pub struct Catalogue {
     pub omitted: Vec<String>,
     pub providers: BTreeMap<String, crate::artwork_pack::Provider>,
     pub signatures: BTreeMap<String, String>,
+    names: crate::name_display::GameNameDisplay,
     notices: BTreeMap<String, Vec<String>>,
 }
 
 impl Catalogue {
     pub fn present_names(&mut self, names: crate::name_display::GameNameDisplay) {
+        self.names = names;
         for entry in &mut self.entries {
             entry.search_title = names.apply(&entry.row.name).to_lowercase().replace(' ', "");
         }
@@ -248,7 +250,7 @@ impl Query {
 
     /// References into the immutable projection: editing criteria never clones games.
     pub fn matching(&self, catalogue: &Catalogue) -> Vec<usize> {
-        let title = self.title.to_lowercase().replace(' ', "");
+        let title = self.title.to_lowercase();
         catalogue
             .entries
             .iter()
@@ -262,7 +264,7 @@ impl Query {
         let mut values: BTreeMap<String, (String, usize)> = BTreeMap::new();
         let mut unknown = 0;
         let mut total = 0;
-        let title = self.title.to_lowercase().replace(' ', "");
+        let title = self.title.to_lowercase();
         for entry in &catalogue.entries {
             if !self.matches_except(entry, Some(facet), &title) {
                 continue;
@@ -357,15 +359,15 @@ pub struct Request {
     pub language: Option<String>,
     pub names: crate::name_display::GameNameDisplay,
     pub previous: Option<Catalogue>,
-    pub signatures: BTreeMap<String, String>,
 }
 
 impl Request {
     /// Cache revisions and selected-source/visibility changes invalidate only
     /// affected systems. This does not enumerate or read game directories.
-    pub fn source_signatures(&self) -> BTreeMap<String, String> {
+    fn source_signatures(&self, cancelled: &AtomicBool) -> BTreeMap<String, String> {
         self.sources
             .iter()
+            .take_while(|_| !cancelled.load(Ordering::Relaxed))
             .map(|source| {
                 let mut paths = vec![crate::cache::system_path(&self.cache_dir, &source.id)];
                 if source.pack.is_some() {
@@ -563,6 +565,24 @@ fn load(
     cancelled: &AtomicBool,
     mut progress: impl FnMut(String),
 ) -> Result<Option<Catalogue>> {
+    if cancelled.load(Ordering::Relaxed) {
+        return Ok(None);
+    }
+    let signatures = request.source_signatures(cancelled);
+    if cancelled.load(Ordering::Relaxed) {
+        return Ok(None);
+    }
+    if request
+        .previous
+        .as_ref()
+        .is_some_and(|previous| previous.signatures == signatures)
+    {
+        let mut previous = request.previous.take().expect("unchanged projection");
+        if previous.names != request.names {
+            previous.present_names(request.names);
+        }
+        return Ok(Some(previous));
+    }
     let mut catalogue = Catalogue::default();
     let mut identities = HashSet::new();
     let mut previous = request.previous.take().unwrap_or_default();
@@ -578,8 +598,8 @@ fn load(
             return Ok(None);
         }
         progress(source.name.clone());
-        if previous.signatures.get(&source.id) == request.signatures.get(&source.id)
-            && request.signatures.contains_key(&source.id)
+        if previous.signatures.get(&source.id) == signatures.get(&source.id)
+            && signatures.contains_key(&source.id)
         {
             catalogue
                 .entries
@@ -664,7 +684,7 @@ fn load(
         }
         catalogue.notices.insert(source.id.clone(), notices);
     }
-    catalogue.signatures = request.signatures;
+    catalogue.signatures = signatures;
     catalogue.omitted = catalogue.notices.values().flatten().cloned().collect();
     catalogue.present_names(request.names);
     Ok((!cancelled.load(Ordering::Relaxed)).then_some(catalogue))
@@ -744,6 +764,91 @@ mod tests {
         query.fields = Default::default();
         query.decade = Some(Criterion::Unknown);
         assert_eq!(query.matching(&catalogue), [2]);
+    }
+
+    #[test]
+    fn title_words_match_in_any_order_and_facet_counts_use_the_same_query() {
+        let catalogue = Catalogue {
+            entries: vec![
+                entry("NES", "Super Mario Bros.", Some("Platform"), "", ""),
+                entry("NES", "Mario Kart", Some("Racing"), "", ""),
+            ],
+            ..Default::default()
+        };
+        for title in [
+            "super mario",
+            "mario super",
+            "SUPERMARIO",
+            "  mario\t super  ",
+        ] {
+            let query = Query {
+                title: title.into(),
+                ..Default::default()
+            };
+            assert_eq!(
+                query.matching(&catalogue),
+                [0],
+                "all requested words must match"
+            );
+            assert_eq!(query.choices(&catalogue, Facet::System)[0].count, 1);
+        }
+    }
+
+    #[test]
+    fn unchanged_worker_refresh_returns_the_same_projection_without_decoding_or_sorting() {
+        let (_root, request) = fixture();
+        let mut unchanged = Request {
+            sources: request.sources.clone(),
+            cache_dir: request.cache_dir.clone(),
+            hidden: request.hidden.clone(),
+            language: request.language.clone(),
+            names: request.names,
+            previous: None,
+        };
+        let cancel = AtomicBool::new(false);
+        let catalogue = load(request, &cancel, |_| {}).unwrap().unwrap();
+        assert!(!catalogue.signatures.is_empty());
+        let pointer = catalogue.entries.as_ptr();
+        unchanged.previous = Some(catalogue);
+        let catalogue = load(unchanged, &cancel, |_| {
+            panic!("unchanged owners need no traversal")
+        })
+        .unwrap()
+        .unwrap();
+        assert_eq!(catalogue.entries.as_ptr(), pointer);
+    }
+
+    #[test]
+    fn a_name_setting_changed_outside_explore_reprojects_the_reused_catalogue_only() {
+        let (_root, request) = fixture();
+        let mut changed = Request {
+            sources: request.sources.clone(),
+            cache_dir: request.cache_dir.clone(),
+            hidden: request.hidden.clone(),
+            language: request.language.clone(),
+            names: crate::name_display::GameNameDisplay::RemoveParentheses,
+            previous: None,
+        };
+        let cancel = AtomicBool::new(false);
+        let mut catalogue = load(request, &cancel, |_| {}).unwrap().unwrap();
+        catalogue.entries[0].row.name = "Canonical (USA)".into();
+        catalogue.present_names(crate::name_display::GameNameDisplay::Full);
+        let query = Query {
+            title: "USA".into(),
+            ..Default::default()
+        };
+        assert_eq!(query.matching(&catalogue).len(), 1);
+        changed.previous = Some(catalogue);
+        let catalogue = load(changed, &cancel, |_| {
+            panic!("a display change must not reread owners")
+        })
+        .unwrap()
+        .unwrap();
+        assert!(query.matching(&catalogue).is_empty());
+        assert!(catalogue
+            .entries
+            .iter()
+            .any(|entry| entry.row.name == "Canonical (USA)"));
     }
 
     #[test]
@@ -876,7 +981,6 @@ mod tests {
             language: None,
             names: Default::default(),
             previous: None,
-            signatures: Default::default(),
         };
         (root, request)
     }
@@ -891,12 +995,10 @@ mod tests {
             language: None,
             names: Default::default(),
             previous: None,
-            signatures: Default::default(),
         };
         request
             .hidden
             .insert(format!("d:{}/Hidden", request.sources[0].config.path));
-        request.signatures = request.source_signatures();
         let cancel = AtomicBool::new(false);
         let catalogue = load(request, &cancel, |_| {}).unwrap().unwrap();
         assert_eq!(catalogue.entries.len(), 3);
@@ -918,7 +1020,6 @@ mod tests {
         changed
             .hidden
             .insert(format!("d:{}/Hidden", changed.sources[1].config.path));
-        changed.signatures = changed.source_signatures();
         changed.previous = Some(catalogue);
         let catalogue = load(changed, &cancel, |_| {}).unwrap().unwrap();
         assert_eq!(catalogue.entries.len(), 2);
@@ -947,7 +1048,6 @@ mod tests {
         let pack = root.path().join("docs");
         std::fs::create_dir_all(&pack).unwrap();
         request.sources[0].pack = Some(pack.clone());
-        request.signatures = request.source_signatures();
         let cancel = AtomicBool::new(false);
         let missing = load(request, &cancel, |_| {}).unwrap().unwrap();
         assert!(missing.entries.is_empty());
@@ -1012,7 +1112,6 @@ mod tests {
             &prepared,
         )
         .unwrap();
-        request.signatures = request.source_signatures();
         let catalogue = load(request, &cancel, |_| {}).unwrap().unwrap();
         assert!(catalogue.omitted.is_empty());
         assert!(catalogue

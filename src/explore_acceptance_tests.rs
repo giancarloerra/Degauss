@@ -92,6 +92,7 @@ pub(super) fn run(root: &Path, window: Rc<MinimalSoftwareWindow>) {
         }
     }
     app.explore_pivot(MORE_DEVELOPER);
+    app.finish_background_work_for_headless();
     assert_eq!(app.browse_count(), 2);
     assert_eq!(app.explore.pivots.len(), 1);
     app.explore_back();
@@ -152,6 +153,29 @@ pub(super) fn run(root: &Path, window: Rc<MinimalSoftwareWindow>) {
     assert!(app.explore.active);
     assert_eq!(app.browse_count(), 2);
     assert_eq!(app.explore_selected().unwrap().key(), selected);
+    app.leave_explore();
+    app.open_explore(None);
+    assert!(
+        app.explore.job.is_some(),
+        "source probes run on the worker, not before its loading screen"
+    );
+    app.explore.match_warning = Some("Saved match warning".into());
+    assert!(app.handle_explore_input(Action::Quit));
+    assert!(
+        app.explore.job.is_none(),
+        "Back must not wait for a blocked filesystem probe"
+    );
+    assert!(!app.explore.active);
+    assert_eq!(app.browsing, Browsing::Categories);
+    assert!(app.message.as_ref().unwrap().contains("cancelled"));
+    assert!(app
+        .message
+        .as_ref()
+        .unwrap()
+        .contains("Saved match warning"));
+    assert!(app.explore.match_warning.is_none());
+    app.open_explore(Some(saved.explore.as_ref().unwrap().query.clone()));
+    app.finish_background_work_for_headless();
     app.explore.query = Default::default();
     app.filter_explore(false);
     app.leave_explore();
