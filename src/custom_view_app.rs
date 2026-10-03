@@ -288,7 +288,10 @@ impl App {
         };
         let mut settings = self.settings.clone();
         settings.view_definitions.insert(id.clone(), view);
-        if let Some(place) = self.current_view_place() {
+        if let Some(place) = self
+            .current_view_place()
+            .filter(|_| editor.original.is_none())
+        {
             place.set(&mut settings.custom_views, crate::custom_view::key(&id));
         }
         if !self.save_view_settings(settings) {

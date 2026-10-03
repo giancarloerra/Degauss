@@ -113,6 +113,38 @@ pub(super) fn run(root: &Path, window: Rc<MinimalSoftwareWindow>) {
         .unwrap()
         .set(&mut app.settings.custom_views, key.clone());
     app.resolve_view();
+
+    let assignments = app.settings.custom_views.clone();
+    let global_view = app.settings.layout.clone();
+    let saved_definition = app.settings.view_definitions[&id].clone();
+    app.settings.custom_views = Default::default();
+    app.settings.layout = Some(key.clone());
+    app.resolve_view();
+    let mut edited_definition = saved_definition.clone();
+    edited_definition.columns = 60;
+    app.open_view_editor(Some(id.clone()), edited_definition);
+    app.finish_custom_view("Readable games");
+    let persisted = Settings::load(&app.settings_path).unwrap();
+    assert_eq!(
+        persisted.custom_views,
+        Default::default(),
+        "editing a globally used view must not create an unrequested place override"
+    );
+    assert_eq!(persisted.layout.as_deref(), Some(key.as_str()));
+    assert_eq!(persisted.view_definitions[&id].columns, 60);
+    app.settings.layout = Some("list".into());
+    app.resolve_view();
+    assert!(
+        app.custom_view.active.is_none(),
+        "after editing, this place must still follow later global view choices"
+    );
+    app.settings.custom_views = assignments;
+    app.settings.layout = global_view;
+    app.settings
+        .view_definitions
+        .insert(id.clone(), saved_definition);
+    assert!(app.save_view_settings(app.settings.clone()));
+    app.resolve_view();
     app.game_list.select(0);
     app.touch_selection();
     app.settled_since = Some(Instant::now() - Duration::from_millis(300));
