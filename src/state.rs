@@ -150,6 +150,10 @@ pub fn recall_left_at<'a>(list: &'a [LeftAt], system: &str, place: &str) -> Opti
 /// Everything needed to put the user back where they were.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct State {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub home: Option<crate::home::Resume>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub explore: Option<crate::explore::Resume>,
     /// The system's id from the table, not its index: a table that gains an
     /// entry must not send the user to a different machine.
     #[serde(default)]
@@ -185,6 +189,8 @@ impl State {
         category_system: &std::collections::BTreeMap<String, String>,
     ) -> Self {
         State {
+            home: None,
+            explore: None,
             system: system.to_string(),
             category: category.to_string(),
             category_system: category_system.clone(),
@@ -240,7 +246,7 @@ pub fn take_position(resuming: bool, path: &Path) -> Option<State> {
         return None;
     }
     let saved = State::load(path);
-    (!saved.system.is_empty()).then_some(saved)
+    (!saved.system.is_empty() || saved.home.is_some()).then_some(saved)
 }
 
 /// In `/tmp` on purpose: it is gone after a power cycle, so a cold start
@@ -309,6 +315,40 @@ pub fn clear_resuming() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn personal_home_resume_does_not_require_an_open_game_system() {
+        let directory =
+            std::env::temp_dir().join(format!("degauss-home-resume-{}", std::process::id()));
+        std::fs::create_dir(&directory).unwrap();
+        let path = directory.join("state.toml");
+        let saved = State {
+            home: Some(crate::home::Resume {
+                folder: Some("1".into()),
+                key: "entry:8".into(),
+                anchor: None,
+            }),
+            ..Default::default()
+        };
+        saved.save(&path).unwrap();
+        assert_eq!(
+            take_position(true, &path).unwrap().home.unwrap().key,
+            "entry:8",
+            "a pinned script or core returns to its exact personal folder entry"
+        );
+        State::default().save(&path).unwrap();
+        assert!(
+            take_position(true, &path).is_none(),
+            "ordinary empty legacy state is still ignored"
+        );
+        saved.save(&path).unwrap();
+        assert!(
+            take_position(false, &path).is_none(),
+            "a genuine cold start retains its normal root behavior"
+        );
+        assert!(!path.exists());
+        std::fs::remove_dir(&directory).unwrap();
+    }
 
     #[cfg(unix)]
     #[test]

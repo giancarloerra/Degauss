@@ -63,8 +63,8 @@ impl Key {
     }
 }
 
-/// Keys for one filename page. Save and Cancel belong only to the theme
-/// editor; Favourites names finish with B, preserving their existing flow.
+/// Keys for one filename page. Editors and saved collections use Save and
+/// Cancel; Favourites names finish with B, preserving their existing flow.
 pub fn keys(page: Page, save_and_cancel: bool) -> Vec<Key> {
     let characters = match page {
         Page::Lower => LOWER,

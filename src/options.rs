@@ -24,6 +24,8 @@ pub enum OptionId {
     /// The scroll speed above which artwork stops being loaded per row.
     ArtLimit,
     Layout,
+    /// Create and manage named template-based views.
+    CustomViews,
     /// Which available top-level folder opens after the splash screen.
     StartFolder,
     /// Remove every place-specific view after confirmation.
@@ -62,6 +64,7 @@ pub enum OptionId {
     /// Show the collection of nightly cores.
     ShowUnstable,
     ShowScripts,
+    ShowExplore,
     /// Preferred installed variant for ordinary game launches.
     CorePreference,
     /// Preferred available source for systems left on Automatic.
@@ -134,8 +137,9 @@ pub const OPTIONS: &[OptionId] = &[
     OptionId::Spacer,
     OptionId::Theme,
     OptionId::Layout,
-    OptionId::StartFolder,
+    OptionId::CustomViews,
     OptionId::ResetCustomViews,
+    OptionId::StartFolder,
     OptionId::DetailsStyle,
     OptionId::GameNameDisplay,
     OptionId::FolderBrackets,
@@ -161,6 +165,7 @@ pub const OPTIONS: &[OptionId] = &[
     OptionId::ShowMisterZine,
     OptionId::ShowUnstable,
     OptionId::ShowScripts,
+    OptionId::ShowExplore,
     OptionId::ShowEmpty,
     OptionId::ShowHidden,
     OptionId::ResetHidden,
@@ -272,8 +277,9 @@ impl OptionsPage {
             Self::Appearance => &[
                 OptionId::Theme,
                 OptionId::Layout,
-                OptionId::StartFolder,
+                OptionId::CustomViews,
                 OptionId::ResetCustomViews,
+                OptionId::StartFolder,
                 OptionId::DetailsStyle,
                 OptionId::GameNameDisplay,
                 OptionId::FolderBrackets,
@@ -302,6 +308,7 @@ impl OptionsPage {
                 OptionId::ShowMisterZine,
                 OptionId::ShowUnstable,
                 OptionId::ShowScripts,
+                OptionId::ShowExplore,
                 OptionId::ShowEmpty,
                 OptionId::ShowHidden,
                 OptionId::ResetHidden,
@@ -330,6 +337,7 @@ impl OptionId {
             OptionId::SwapXY => "Swap X and Y",
             OptionId::ArtLimit => "Skip Artwork Faster Than",
             OptionId::Layout => "View",
+            OptionId::CustomViews => "Custom Views",
             OptionId::StartFolder => "Start Folder",
             OptionId::ResetCustomViews => "Reset All Custom Views",
             OptionId::DetailsStyle => "Details Style",
@@ -350,6 +358,7 @@ impl OptionId {
             OptionId::ShowMisterZine => "Show Core Updates",
             OptionId::ShowUnstable => "Show Unstable Folder",
             OptionId::ShowScripts => "Show Scripts Folder",
+            OptionId::ShowExplore => "Show Explore Games",
             OptionId::CorePreference => "Core Preference",
             OptionId::AutomaticDataSource => "Automatic Data Source",
             OptionId::AutoRunPhysicalDiscs => "Auto-run Physical Discs",
@@ -403,6 +412,7 @@ impl OptionId {
             OptionId::Layout => {
                 "Default view for places without a custom view. Actions changes only the current place."
             }
+            OptionId::CustomViews => "Create, edit or choose a named view from the available templates.",
             OptionId::StartFolder => {
                 "Choose Home or an available top-level folder to open when Degauss starts. A missing folder safely opens Home."
             }
@@ -453,6 +463,7 @@ impl OptionId {
             }
             OptionId::ShowUnstable => "Show the Unstable category for nightly core builds.",
             OptionId::ShowScripts => "Show Scripts on Home. Run installed scripts and return to Degauss when they finish.",
+            OptionId::ShowExplore => "Show Explore Games on Home. Search across indexed systems without scanning game folders.",
             OptionId::CorePreference => "Choose the preferred core when standard and RetroAchievements versions are both installed.",
             OptionId::AutomaticDataSource => {
                 "Choose which available source systems left on Automatic try first when they are entered."

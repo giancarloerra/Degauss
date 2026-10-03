@@ -122,6 +122,7 @@ cp assets/masks/*.txt deploy/Scripts/.config/degauss/masks/
 # with no terms attached. The typefaces are baked into the binary and carry
 # their own terms, so those travel with it too.
 cp LICENSE deploy/Scripts/.config/degauss/LICENSE
+cp assets/licenses/MessagePack-MIT.txt deploy/Scripts/.config/degauss/
 cp assets/fonts/DejaVuSans-LICENSE.txt assets/fonts/Px437-LICENSE.txt \
    assets/fonts/RobotoCondensed-LICENSE.txt assets/fonts/Tamzen-LICENSE.txt \
    deploy/Scripts/.config/degauss/

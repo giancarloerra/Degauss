@@ -44,6 +44,10 @@ pub trait Transport: Send + Sync {
         limit: u64,
         max_kib_per_second: Option<u64>,
     ) -> Result<HttpResponse>;
+
+    fn get_libretro(&self, url: &str, limit: u64) -> Result<HttpResponse> {
+        self.get_media(url, limit, None)
+    }
 }
 
 /// HTTPS transport supplied by MiSTer's existing `curl` command.
@@ -182,6 +186,23 @@ impl CurlTransport {
 }
 
 impl Transport for CurlTransport {
+    fn get_libretro(&self, url: &str, limit: u64) -> Result<HttpResponse> {
+        // This explicit operation has no account parameters. The existing
+        // ScreenScraper media allowlist remains unchanged.
+        if !(url.starts_with(
+            "https://raw.githubusercontent.com/libretro/libretro-database/master/rdb/",
+        ) || url.starts_with("https://thumbnails.libretro.com/"))
+            || url.contains(['?', '#', '\r', '\n', '\\'])
+        {
+            return Err(Error::new(
+                ErrorKind::InvalidRequest,
+                "invalid Libretro download address",
+            ));
+        }
+        self.fetch(url, limit, None)
+            .map_err(libretro_transport_error)
+    }
+
     fn get(&self, endpoint: &str, params: &[(String, String)], limit: u64) -> Result<HttpResponse> {
         if !matches!(
             endpoint,
@@ -307,6 +328,11 @@ fn curl_spawn_error(error: std::io::Error) -> Error {
     } else {
         logged_transport_error(&format!("curl could not start: {error}"))
     }
+}
+
+fn libretro_transport_error(mut error: Error) -> Error {
+    error.detail = error.detail.replace("ScreenScraper", "Libretro");
+    error
 }
 
 fn logged_transport_error(diagnostic: &str) -> Error {
@@ -3301,6 +3327,40 @@ mod tests {
     }
 
     #[test]
+    fn libretro_downloads_keep_the_two_public_hosts_and_never_use_account_parameters() {
+        let transport = CurlTransport::new(Arc::new(AtomicBool::new(true)));
+        for url in [
+            "https://raw.githubusercontent.com/libretro/libretro-database/master/rdb/MAME.rdb",
+            "https://thumbnails.libretro.com/MAME/Named_Snaps/Game.png",
+        ] {
+            assert_eq!(
+                transport.get_libretro(url, 1024).err().unwrap().kind,
+                ErrorKind::Cancelled
+            );
+        }
+        for url in [
+            "http://thumbnails.libretro.com/Game.png",
+            "https://thumbnails.libretro.com.example.org/Game.png",
+            "https://thumbnails.libretro.com/Game.png?password=secret",
+            "https://raw.githubusercontent.com/another/repository/master/Game.rdb",
+            "https://thumbnails.libretro.com/Game.png\noutput = stolen",
+        ] {
+            assert_eq!(
+                transport.get_libretro(url, 1024).err().unwrap().kind,
+                ErrorKind::InvalidRequest
+            );
+        }
+        assert_eq!(
+            transport
+                .get_media("https://thumbnails.libretro.com/Game.png", 1024, None)
+                .err()
+                .unwrap()
+                .kind,
+            ErrorKind::MalformedResponse
+        );
+    }
+
+    #[test]
     fn api_values_cannot_inject_curl_configuration() {
         let url = api_url(
             "jeuRecherche.php",
@@ -3362,6 +3422,25 @@ mod tests {
             None
         );
         std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn libretro_transport_failures_name_the_selected_provider_without_changing_the_cause() {
+        for code in [7, 28, 60, 56, 77, 63] {
+            let original = curl_exit_error(Some(code), None, 1024);
+            let converted = libretro_transport_error(original.clone());
+            assert_eq!(converted.kind, original.kind);
+            assert_eq!(
+                converted.detail,
+                original.detail.replace("ScreenScraper", "Libretro")
+            );
+            assert!(!converted.detail.contains("ScreenScraper"));
+        }
+        let missing = libretro_transport_error(curl_spawn_error(std::io::Error::from(
+            std::io::ErrorKind::NotFound,
+        )));
+        assert_eq!(missing.kind, ErrorKind::Configuration);
+        assert!(missing.detail.contains("cannot contact Libretro"));
     }
 
     #[test]

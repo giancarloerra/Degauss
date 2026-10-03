@@ -21,6 +21,30 @@ static EMBEDDED_DEVELOPER_PASSWORD: Option<&str> = option_env!("DEGAUSS_SCREENSC
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+pub enum ScraperSource {
+    #[default]
+    ScreenScraper,
+    Libretro,
+}
+
+impl ScraperSource {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::ScreenScraper => "ScreenScraper",
+            Self::Libretro => "Libretro",
+        }
+    }
+
+    pub fn step(self) -> Self {
+        match self {
+            Self::ScreenScraper => Self::Libretro,
+            Self::Libretro => Self::ScreenScraper,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum ImagePolicy {
     Off,
     #[default]
@@ -80,6 +104,10 @@ fn step<T: Copy + PartialEq, const N: usize>(values: [T; N], current: T, delta: 
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ScraperSettings {
     #[serde(default)]
+    pub source: ScraperSource,
+    #[serde(default)]
+    pub libretro_artwork: super::libretro::Artwork,
+    #[serde(default)]
     pub username: String,
     #[serde(default)]
     pub password: String,
@@ -108,6 +136,8 @@ pub struct ScraperSettings {
 impl Default for ScraperSettings {
     fn default() -> Self {
         Self {
+            source: ScraperSource::default(),
+            libretro_artwork: super::libretro::Artwork::default(),
             username: String::new(),
             password: String::new(),
             accepted_plaintext_warning: false,
@@ -278,9 +308,10 @@ impl ScraperSettings {
     }
 
     pub fn ready(&self) -> bool {
-        !self.username.is_empty()
-            && !self.password.is_empty()
-            && self.accepted_plaintext_warning
+        (self.source == ScraperSource::Libretro
+            || (!self.username.is_empty()
+                && !self.password.is_empty()
+                && self.accepted_plaintext_warning))
             && !(self.image_policy == ImagePolicy::Off
                 && self.metadata_policy == MetadataPolicy::Off)
     }
@@ -423,7 +454,7 @@ impl DeveloperCredentials {
     }
 }
 
-fn atomic_write(path: &Path, bytes: &[u8], what: &str) -> Result<()> {
+pub(super) fn atomic_write(path: &Path, bytes: &[u8], what: &str) -> Result<()> {
     let parent = path.parent().unwrap_or(Path::new("."));
     std::fs::create_dir_all(parent)
         .map_err(|error| Error::local(format!("could not create {}: {error}", parent.display())))?;
@@ -481,6 +512,30 @@ mod tests {
         assert!(settings.system_media_types.is_empty());
         assert_eq!(settings.media_type_for("NES"), "ss");
         assert!(!settings.ready());
+    }
+
+    #[test]
+    fn libretro_is_explicit_account_free_and_preserves_existing_account_settings() {
+        let mut settings: ScraperSettings = toml::from_str("username = 'player'\npassword = 'secret'\naccepted_plaintext_warning = true\nmedia_type = 'wheel-hd'\n").unwrap();
+        assert_eq!(settings.source, ScraperSource::ScreenScraper);
+        assert!(settings.ready());
+        settings.source = ScraperSource::Libretro;
+        settings.libretro_artwork = super::super::libretro::Artwork::BoxArt;
+        let encoded = toml::to_string(&settings).unwrap();
+        let mut read: ScraperSettings = toml::from_str(&encoded).unwrap();
+        assert_eq!(read, settings);
+        read.username.clear();
+        read.password.clear();
+        read.accepted_plaintext_warning = false;
+        assert!(
+            read.ready(),
+            "Libretro must not require a ScreenScraper login or storage consent"
+        );
+        read.source = ScraperSource::ScreenScraper;
+        assert!(
+            !read.ready(),
+            "switching back must not waive the original account requirements"
+        );
     }
 
     #[test]
