@@ -180,7 +180,8 @@ impl Catalogue {
                         .unwrap_or_default()
                         .to_string_lossy()
                         .into_owned(),
-                    _ => self.entries[*index].key(),
+                    Kind::Play(Launch::AmigaVision { title, .. }) => title.clone(),
+                    Kind::Enter(place) => place.path().display().to_string(),
                 })
                 .collect();
             for (position, index) in group.iter().enumerate() {
@@ -189,6 +190,9 @@ impl Catalogue {
                 let label = if filenames.iter().filter(|name| *name == filename).count() > 1 {
                     match &entry.row.kind {
                         Kind::Play(Launch::File(path)) => path.display().to_string(),
+                        Kind::Play(Launch::AmigaVision { install, .. }) => {
+                            install.display().to_string()
+                        }
                         _ => filename.clone(),
                     }
                 } else {
@@ -959,6 +963,75 @@ mod tests {
                 },
             },
         }
+    }
+
+    #[test]
+    fn amiga_and_folder_variant_captions_never_expose_internal_keys() {
+        let mut catalogue = Catalogue::default();
+        for title in ["Game (AGA)", "Game (ECS)"] {
+            let mut game = entry("Amiga", title, None, "", "");
+            game.row.kind = Kind::Play(Launch::AmigaVision {
+                install: PathBuf::from("/Amiga/install"),
+                title: title.into(),
+            });
+            catalogue.entries.push(game);
+        }
+        for (title, path) in [("Folder (A)", "/A"), ("Folder (B)", "/B")] {
+            let mut folder = entry("Folders", title, None, "", "");
+            folder.row.kind = Kind::Enter(crate::browse::Place::Dir(PathBuf::from(path)));
+            catalogue.entries.push(folder);
+        }
+        for install in ["/Amiga/First", "/Amiga/Second"] {
+            let mut game = entry("Amiga", "Same game", None, "", "");
+            game.row.kind = Kind::Play(Launch::AmigaVision {
+                install: PathBuf::from(install),
+                title: "Same game".into(),
+            });
+            catalogue.entries.push(game);
+        }
+        let identities: HashSet<_> = catalogue.entries.iter().map(Entry::key).collect();
+        catalogue.present_names(
+            crate::name_display::GameNameDisplay::RemoveParentheses,
+            false,
+        );
+        let captions: HashSet<_> = catalogue
+            .entries
+            .iter()
+            .map(|entry| entry.row.name.as_str())
+            .collect();
+        assert_eq!(
+            captions,
+            HashSet::from([
+                "Game · Game (AGA)",
+                "Game · Game (ECS)",
+                "Folder · /A",
+                "Folder · /B",
+                "Same game · /Amiga/First",
+                "Same game · /Amiga/Second"
+            ])
+        );
+        assert!(captions.iter().all(|name| !name.contains('\0')));
+        assert_eq!(
+            identities,
+            catalogue.entries.iter().map(Entry::key).collect()
+        );
+        catalogue.present_names(crate::name_display::GameNameDisplay::Full, false);
+        assert!(catalogue
+            .entries
+            .iter()
+            .filter(|entry| entry.original_name != "Same game")
+            .all(|entry| entry.row.name == entry.original_name));
+        // Full titles still need a qualifier when distinct installations
+        // genuinely share a title; switching modes must not collapse them.
+        assert_eq!(
+            catalogue
+                .entries
+                .iter()
+                .filter(|entry| entry.original_name == "Same game")
+                .map(|entry| entry.row.name.as_str())
+                .collect::<HashSet<_>>(),
+            HashSet::from(["Same game · /Amiga/First", "Same game · /Amiga/Second"])
+        );
     }
 
     #[test]

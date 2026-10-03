@@ -18,6 +18,30 @@ spec.loader.exec_module(package_ra)
 
 
 class ReleaseTests(unittest.TestCase):
+    def test_messagepack_licence_is_fetchable_and_uses_repository_bytes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            staged = root / 'deploy/Scripts/.config/degauss'
+            staged.mkdir(parents=True)
+            (staged / 'degauss').write_bytes(b'frontend')
+            (staged / 'MessagePack-MIT.txt').write_bytes(b'staged copy')
+            main = root / 'MiSTer_Degauss'
+            main.write_bytes(b'main')
+            out = root / 'database.json'
+            subprocess.run(
+                [sys.executable, str(ROOT / 'scripts/make-db.py'),
+                 'v1.0.0', str(root / 'deploy'), str(main), str(out)],
+                cwd=ROOT, check=True, capture_output=True,
+            )
+            entry = json.loads(out.read_text())['files']['Scripts/.config/degauss/MessagePack-MIT.txt']
+            source = (ROOT / 'assets/licenses/MessagePack-MIT.txt').read_bytes()
+            self.assertEqual(entry['hash'], hashlib.md5(source).hexdigest())
+            self.assertEqual(entry['size'], len(source))
+            self.assertEqual(
+                entry['url'],
+                'https://raw.githubusercontent.com/giancarloerra/Degauss/v1.0.0/assets/licenses/MessagePack-MIT.txt',
+            )
+
     def test_delivery_excludes_user_owned_configuration(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)

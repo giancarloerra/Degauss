@@ -1144,6 +1144,71 @@ pub(super) fn run(root: &Path, window: Rc<MinimalSoftwareWindow>) {
     );
     assert_eq!(recovery.settings.home.entries.len(), 1);
 
+    // Removing an unsaved folder must also remove its unsaved descendants,
+    // without saving unrelated draft edits or resurrecting it on Save.
+    let saved_home = recovery.settings.home.clone();
+    recovery.home.folder = None;
+    recovery.home_editor();
+    recovery.finish_home_folder("Draft folder");
+    let parent = recovery
+        .home
+        .edit
+        .as_ref()
+        .unwrap()
+        .entries
+        .iter()
+        .find(|(_, entry)| entry.name == "Draft folder")
+        .unwrap()
+        .0
+        .clone();
+    recovery.home.folder = Some(parent.clone());
+    recovery.finish_home_folder("Draft child");
+    let child = recovery
+        .home
+        .edit
+        .as_ref()
+        .unwrap()
+        .entries
+        .iter()
+        .find(|(_, entry)| entry.name == "Draft child")
+        .unwrap()
+        .0
+        .clone();
+    recovery.home.folder = None;
+    recovery.home_editor();
+    recovery.home_entry_actions(entry_key(&parent));
+    recovery.menu_list.select(
+        recovery
+            .menu
+            .iter()
+            .position(|row| row == "Remove")
+            .unwrap(),
+    );
+    recovery.handle(Action::Accept);
+    assert!(matches!(recovery.home.menu, Some(HomeMenu::Editor)));
+    for id in [&parent, &child] {
+        assert!(!recovery
+            .home
+            .edit
+            .as_ref()
+            .unwrap()
+            .entries
+            .contains_key(id));
+    }
+    assert_eq!(
+        Settings::load(&recovery.settings_path).unwrap().home,
+        saved_home
+    );
+    recovery.finish_home_edit(true);
+    assert_eq!(recovery.settings.home.entries, saved_home.entries);
+    assert_eq!(
+        Settings::load(&recovery.settings_path)
+            .unwrap()
+            .home
+            .entries,
+        saved_home.entries
+    );
+
     let empty_logos = recovery_root.join("empty-logos");
     std::fs::create_dir(&empty_logos).unwrap();
     let invalid_logos = recovery_root.join("not-a-directory");

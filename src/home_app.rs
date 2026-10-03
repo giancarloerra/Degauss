@@ -1129,6 +1129,7 @@ impl App {
                                 return true;
                             }
                             let draft = self.home.edit.as_mut().expect("Home editor");
+                            draft.remove(&id);
                             for id in removed {
                                 draft.remove(&id);
                             }
