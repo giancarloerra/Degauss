@@ -456,6 +456,15 @@ impl DeveloperCredentials {
 
 pub(super) fn atomic_write(path: &Path, bytes: &[u8], what: &str) -> Result<()> {
     static SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    atomic_write_with_sequence(path, bytes, what, &SEQUENCE)
+}
+
+fn atomic_write_with_sequence(
+    path: &Path,
+    bytes: &[u8],
+    what: &str,
+    sequence: &std::sync::atomic::AtomicU64,
+) -> Result<()> {
     let parent = path.parent().unwrap_or(Path::new("."));
     std::fs::create_dir_all(parent)
         .map_err(|error| Error::local(format!("could not create {}: {error}", parent.display())))?;
@@ -463,22 +472,30 @@ pub(super) fn atomic_write(path: &Path, bytes: &[u8], what: &str) -> Result<()> 
         .file_name()
         .and_then(|name| name.to_str())
         .unwrap_or("screenscraper.toml");
-    let sequence = SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let temp = parent.join(format!(
-        ".{file_name}.{}-{sequence}.part",
-        std::process::id()
-    ));
-    let outcome = (|| {
-        let mut options = std::fs::OpenOptions::new();
-        options.write(true).create_new(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            options.mode(0o600);
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let (temp, mut file) = {
+        let mut attempt = 0;
+        loop {
+            let number = sequence.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let temp = parent.join(format!(".{file_name}.{}-{number}.part", std::process::id()));
+            match options.open(&temp) {
+                Ok(file) => break (temp, file),
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists && attempt < 15 => {
+                    attempt += 1;
+                }
+                Err(error) => {
+                    return Err(Error::local(format!("could not create {what}: {error}")))
+                }
+            }
         }
-        let mut file = options
-            .open(&temp)
-            .map_err(|error| Error::local(format!("could not create {what}: {error}")))?;
+    };
+    let outcome = (|| {
         file.write_all(bytes)
             .map_err(|error| Error::local(format!("could not write {what}: {error}")))?;
         file.sync_all()
@@ -579,6 +596,49 @@ mod tests {
             "each call removes only its own temporary file"
         );
         drop(first);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn interrupted_writes_do_not_block_reused_process_ids_or_remove_another_writes_file() {
+        let root = temp("interrupted-write");
+        std::fs::create_dir(&root).unwrap();
+        let path = root.join("database.rdb");
+        let sequence = std::sync::atomic::AtomicU64::new(0);
+        let part = |number| {
+            root.join(format!(
+                ".database.rdb.{}-{number}.part",
+                std::process::id()
+            ))
+        };
+        for number in 0..2 {
+            std::fs::write(part(number), b"unfinished previous write").unwrap();
+        }
+        atomic_write_with_sequence(&path, b"complete database", "Libretro database", &sequence)
+            .unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), b"complete database");
+        for number in 0..2 {
+            assert_eq!(
+                std::fs::read(part(number)).unwrap(),
+                b"unfinished previous write"
+            );
+        }
+        assert!(!part(2).exists());
+        let exhausted = std::sync::atomic::AtomicU64::new(100);
+        for number in 100..116 {
+            std::fs::write(part(number), b"another write").unwrap();
+        }
+        let error =
+            atomic_write_with_sequence(&path, b"not installed", "Libretro database", &exhausted)
+                .unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("could not create Libretro database"));
+        assert_eq!(std::fs::read(&path).unwrap(), b"complete database");
+        for number in 100..116 {
+            assert_eq!(std::fs::read(part(number)).unwrap(), b"another write");
+        }
+        assert!(!part(116).exists(), "collision retries are bounded");
         std::fs::remove_dir_all(root).unwrap();
     }
 
