@@ -13,8 +13,9 @@
 # USB sticks first, then the network share, then the CIFS mount, then the
 # card. For each folder name the first root that has it wins; a root that
 # is not mounted is skipped. Direct card folders (including Arcade) take
-# priority over /media/fat/games. Other storage that appears
-# later is picked up on the next start, or by Rebuild this system list.
+# priority over /media/fat/games. Storage that appears later is checked
+# when returning to the category or system browser. New or moved sources
+# ask before rebuilding; already indexed locations reuse their saved lists.
 game_roots = [
     "/media/usb0/games",
     "/media/usb1/games",

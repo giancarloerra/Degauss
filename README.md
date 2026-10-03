@@ -502,7 +502,7 @@ accept an HDMI mode number such as `8`.
 
 Some older CRT timings use a zero sync width. They can work with the older
 shared-scaler route below, but cannot be copied unchanged into
-`degauss_analog_video_mode` in 0.9.1. Do not change a timing value at random to
+`degauss_analog_video_mode`. Do not change a timing value at random to
 make it accepted. Leave the optional entry out to use the default CRT timing.
 An invalid entry reports an INI error; remove it to return to the default.
 
@@ -601,10 +601,20 @@ When only one configured folder actually contains games for that system,
 Degauss opens it directly. The folder chooser appears only when two or more
 real locations contribute compatible games.
 
-USB storage is looked for when Degauss starts, so plug the stick in first
-(or restart after). `game_roots` in `degauss.toml` controls where to search;
-an absent optional root never causes a startup wait. If games depend on a
-mount that can arrive late, add its actual mountpoint to `wait_for_mounts`:
+Degauss checks configured game locations at startup and when opening or
+returning to the category or system browser. A previously indexed drive
+that arrives later uses its saved lists without rebuilding. New folders or
+a newly available higher-priority location prompt **Rebuild affected systems**
+or **Not Now**. Only the affected systems are indexed after confirmation.
+**Not Now** keeps usable previous sources and their caches unchanged. The offer
+can return after browser checks observe the drive disconnected and then
+reconnected, or after restarting Degauss. Unplugging and reconnecting entirely
+between checks may keep the previous answer. Storage is not continuously monitored
+while the browser is idle.
+
+`game_roots` in `degauss.toml` controls where to search; an absent optional
+root never causes a startup wait. To require a late mount before startup,
+add its actual mountpoint to `wait_for_mounts`:
 
 ```toml
 # Games are directly mounted here:
@@ -623,10 +633,10 @@ starts immediately when every required mountpoint is already mounted; otherwise
 it waits up to 180 seconds, then offers **Retry** or continuation with available
 local games. The complete library index is not replaced by a partial one.
 Installations that relied on the previous automatic wait based on the stock
-CIFS script must now explicitly list their required mountpoint. Moving a
-system between storages changes its paths, so its listing is stale until
-**Rebuild this system** or a full rebuild. A layout the defaults do not cover
-is one `game_roots` edit in `degauss.toml` away.
+CIFS script must now explicitly list their required mountpoint. Changes to
+game files on an already connected drive still need **Rebuild this system**
+or a full rebuild. A layout the defaults do not cover is one `game_roots`
+edit in `degauss.toml` away.
 
 The first run reads the card and writes an index, about a minute for a
 full one of 97k+ games. It reads the ordinary game libraries only: an
@@ -2034,9 +2044,11 @@ anything a core needs that is missing. It reports; I decide; it executes.
 
 ### Network games are missing when Degauss starts
 
-If a game share mounts after Degauss starts, add its actual mountpoint to
+Return to the category or system browser to check for storage that mounted
+late. Existing lists are reused; new or moved sources ask before indexing.
+To require that share before startup instead, add its actual mountpoint to
 `wait_for_mounts` in `degauss.toml`. See [External storage support](#external-storage-support)
-for examples and the startup wait behaviour.
+for examples.
 
 ### What MiSTer hardware has Degauss been reported working on?
 
@@ -2148,7 +2160,7 @@ video_mode=8
 
 With Degauss's bundled Main and Menu, the CRT shows the native interface and HDMI scales up the same image to 1080p60. Replace the old `[Menu]` `video_mode` line and keep the other settings; do not add a second `[Menu]` section. The native analog option is off by default.
 
-The optional `degauss_analog_video_mode` can preserve a compatible progressive CRT timing, but 0.9.1 rejects timings with zero sync widths. Leave it unset initially. See the [complete dual-display example and CRT-timing limitations](#crt-and-hdmi-at-the-same-time).
+The optional `degauss_analog_video_mode` can preserve a compatible progressive CRT timing, but timings with zero sync widths are rejected. Leave it unset initially. See the [complete dual-display example and CRT-timing limitations](#crt-and-hdmi-at-the-same-time).
 
 If you instead use `vga_scaler=1`, both outputs use the scaler. That route needs a 15 kHz `video_mode` supported by the CRT; this common mode can be used as a starting point:
 

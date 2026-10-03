@@ -225,7 +225,7 @@ fn run(
             "Required storage ready; discovering systems".into()
         };
     }
-    let cores = crate::systems::CoreIndex::read(&discovery.menu_root);
+    let cores = Arc::new(crate::systems::CoreIndex::read(&discovery.menu_root));
     if cancelled.load(Ordering::Relaxed) {
         return Ok(None);
     }
@@ -251,6 +251,7 @@ fn run(
     Ok((!cancelled.load(Ordering::Relaxed)).then_some(Discovered {
         systems,
         cores: catalogue,
+        core_index: cores,
     }))
 }
 
@@ -296,7 +297,7 @@ fn mount_points(mountinfo: &str) -> Vec<PathBuf> {
         .collect()
 }
 
-fn decode_mount_field(field: &str) -> String {
+pub(crate) fn decode_mount_field(field: &str) -> String {
     let bytes = field.as_bytes();
     let mut decoded = Vec::with_capacity(bytes.len());
     let mut at = 0;

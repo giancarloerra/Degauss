@@ -84,6 +84,7 @@ pub enum Event {
         provider: Box<crate::artwork_pack::Provider>,
         prepared: crate::cache::PreparedCacheGroup,
         settings: Box<crate::settings::Settings>,
+        warnings: Vec<String>,
     },
     Loaded {
         snapshots: Vec<Snapshot>,
@@ -444,17 +445,30 @@ fn run_matching(
         )
     })?;
     let key = crate::game_launch_cores::key(&save.launch);
+    let mut warnings = Vec::new();
     let presentation = if let Some(selected) = &save.selected {
         Some(provider.presentation_for_match(selected)?)
     } else {
-        let mut fingerprints = cached.fingerprints;
-        // Restore Automatic using the current ROM, not a possibly old CRC.
-        if let Some((path, fingerprint)) =
-            provider.fingerprint_for_launch(&save.launch, homes, cancelled, &mut |_| {})?
-        {
-            fingerprints.insert(path, fingerprint);
+        let automatic = (|| {
+            let mut fingerprints = crate::cache::ContentFingerprints::new();
+            // Restore Automatic using the current ROM, not a possibly old CRC.
+            if let Some((path, fingerprint)) =
+                provider.fingerprint_for_launch(&save.launch, homes, cancelled, &mut |_| {})?
+            {
+                fingerprints.insert(path, fingerprint);
+            }
+            provider.presentation_for_launch_with_fingerprints(&save.launch, &fingerprints, homes)
+        })();
+        match automatic {
+            Ok(presentation) => presentation,
+            Err(error) if crate::artwork_pack::entry_failure(&error).is_some() => {
+                let warning = format!("Automatic Match restored without Pack data:\n{error}");
+                crate::note(&warning);
+                warnings.push(warning);
+                None
+            }
+            Err(error) => return Err(error),
         }
-        provider.presentation_for_launch_with_fingerprints(&save.launch, &fingerprints, homes)?
     };
     if cancelled.load(Ordering::Relaxed) {
         return Ok(None);
@@ -514,6 +528,7 @@ fn run_matching(
         provider: Box::new(provider),
         prepared,
         settings: Box::new(settings),
+        warnings,
     }))
 }
 
@@ -887,6 +902,62 @@ mod tests {
             0,
             "a stale CRC must never cross the worker/UI boundary"
         );
+
+        std::fs::write(&rom, &bytes).unwrap();
+        let fingerprint = provider
+            .fingerprint_for_launch(
+                &Launch::File(rom.clone()),
+                &crate::mgl::Homes::default(),
+                &cancelled,
+                &mut |_| {},
+            )
+            .unwrap()
+            .unwrap();
+        crate::cache::install_transactional(
+            &cache_dir,
+            crate::cache::CacheKind::ArtworkPack,
+            &[crate::cache::StagedSystemCache {
+                id: "SuperGrafx".into(),
+                cache: cache_with_rom(&rom),
+                fingerprints: crate::cache::ContentFingerprints::from([fingerprint]),
+                fingerprints_complete: true,
+            }],
+        )
+        .unwrap();
+        let mut accept = request(None);
+        accept.write_state = true;
+        let mut job = start(vec![accept]).unwrap();
+        assert!(matches!(terminal(&mut job), Event::Loaded { .. }));
+        assert!(
+            crate::cache::load_pack_source_state(&cache_dir, "SuperGrafx")
+                .unwrap()
+                .unwrap()
+                .accepted
+                .is_some()
+        );
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(&rom)
+            .unwrap()
+            .set_len(64 * 1024 * 1024 + 1)
+            .unwrap();
+        let launch = Launch::File(rom.clone());
+        let mut automatic = request(None);
+        automatic.matching = Some(Matching::Save(Box::new(MatchSave {
+            launch: launch.clone(),
+            selected: None,
+            settings: Default::default(),
+            settings_path: root.join("settings.toml"),
+        })));
+        let mut job = start(vec![automatic]).unwrap();
+        let event = terminal(&mut job);
+        let Event::MatchStaged { provider, .. } = event else {
+            panic!("Automatic could not be restored for an oversized ROM: {event:?}");
+        };
+        assert!(
+            !provider.prepared_map().unwrap().contains_key(&launch),
+            "an ineligible current ROM must not inherit its previous CRC artwork"
+        );
         std::fs::remove_dir_all(root).ok();
     }
 
@@ -1130,6 +1201,7 @@ mod tests {
             prepared,
             provider,
             settings: updated,
+            ..
         } = terminal(&mut job)
         else {
             panic!("retry was not staged");
@@ -1191,6 +1263,44 @@ mod tests {
                 .as_deref(),
             Some("Pack Healthy")
         );
+        std::fs::remove_file(root.join("_Arcade/Healthy.mra")).unwrap();
+        let mut job = start(vec![request(
+            Some(selected),
+            crate::settings::Settings::load(&settings_path).unwrap(),
+            settings_path.clone(),
+        )])
+        .unwrap();
+        let Event::MatchStaged { prepared, .. } = terminal(&mut job) else {
+            panic!("a manual selection must not require an unchanged game file");
+        };
+        prepared.install().unwrap();
+        let mut job = start(vec![request(
+            None,
+            crate::settings::Settings::load(&settings_path).unwrap(),
+            settings_path.clone(),
+        )])
+        .unwrap();
+        let Event::MatchStaged {
+            prepared, warnings, ..
+        } = terminal(&mut job)
+        else {
+            panic!("Automatic must clear an override even when the game no longer has a readable identity");
+        };
+        assert!(
+            warnings.iter().any(|warning| warning
+                .contains("Automatic Match restored without Pack data")
+                && warning.contains("Healthy.mra")),
+            "the missing game remains a visible warning"
+        );
+        prepared.install().unwrap();
+        assert!(crate::settings::Settings::load(&settings_path)
+            .unwrap()
+            .artwork_pack_matches
+            .is_empty());
+        assert!(!crate::cache::load_pack_prepared_map(&cache_dir, "Arcade")
+            .unwrap()
+            .unwrap()
+            .contains_key(&launch));
         for (path, bytes) in pack_before {
             assert_eq!(std::fs::read(path).unwrap(), bytes, "the Pack is read-only");
         }
