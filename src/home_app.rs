@@ -228,7 +228,7 @@ impl App {
         let (range, _) = self.category_list.window();
         let keys = self.home.rows[range].to_vec();
         for key in keys {
-            if self.home.preview_done.contains(&key) || self.home_problem(&key).is_some() {
+            if self.home.preview_done.contains(&key) {
                 continue;
             }
             let Some(entry) = key
@@ -236,12 +236,14 @@ impl App {
                 .and_then(|id| self.settings.home.entries.get(id))
                 .cloned()
             else {
+                self.home.preview_done.insert(key);
                 continue;
             };
             let crate::home::Target::Game { system, launch } = entry.target else {
+                self.home.preview_done.insert(key);
                 continue;
             };
-            if self.source_problem(&system).is_some() {
+            if self.home_problem(&key).is_some() || self.source_problem(&system).is_some() {
                 continue;
             }
             if !sources.contains_key(&system) {
