@@ -534,7 +534,11 @@ impl Job {
                         let _ = handle.join();
                     }
                 }
-                Some(event)
+                if matches!(event, Event::Ready { .. }) && self.cancelled.load(Ordering::Relaxed) {
+                    Some(Event::Cancelled)
+                } else {
+                    Some(event)
+                }
             }
             Err(TryRecvError::Empty) => None,
             Err(TryRecvError::Disconnected) => {
@@ -2889,7 +2893,12 @@ fn validate_cache(cache: &Cache) -> std::result::Result<(), String> {
     Ok(())
 }
 
-fn save_cache(cache_dir: &Path, cache: &Cache, cancelled: &AtomicBool) -> Result<bool> {
+fn save_cache(
+    cache_dir: &Path,
+    cache: &Cache,
+    cancelled: &AtomicBool,
+    write: impl FnOnce(&Path, &[u8]) -> Result<()>,
+) -> Result<bool> {
     if cancelled.load(Ordering::Relaxed) {
         return Ok(false);
     }
@@ -2897,8 +2906,8 @@ fn save_cache(cache_dir: &Path, cache: &Cache, cancelled: &AtomicBool) -> Result
         .map_err(|detail| DegaussError::unsupported("Core Updates cache", detail))?;
     let bytes = postcard::to_stdvec(cache)
         .map_err(|error| DegaussError::unsupported("Core Updates cache", error.to_string()))?;
-    crate::cache::write(&cache_path(cache_dir), &bytes)?;
-    Ok(true)
+    write(&cache_path(cache_dir), &bytes)?;
+    Ok(!cancelled.load(Ordering::Relaxed))
 }
 
 fn configuration_matches(cache: &Cache, config: &DownloaderConfig) -> bool {
@@ -2994,7 +3003,7 @@ fn run_with_fetch<F>(
     if let Some(mut cache) = cached.filter(|cache| configuration_matches(cache, &config)) {
         match match_cache(&mut cache, &request, events, cancelled) {
             Ok(Some(snapshot)) if !request.force_refresh => {
-                match save_cache(&request.cache_dir, &cache, cancelled) {
+                match save_cache(&request.cache_dir, &cache, cancelled, crate::cache::write) {
                     Ok(false) => {
                         let _ = events.send(Event::Cancelled);
                         return;
@@ -3136,7 +3145,7 @@ fn run_with_fetch<F>(
         });
         return;
     }
-    match save_cache(&request.cache_dir, &cache, cancelled) {
+    match save_cache(&request.cache_dir, &cache, cancelled, crate::cache::write) {
         Ok(false) => {
             let _ = events.send(Event::Cancelled);
             return;
@@ -3983,18 +3992,61 @@ db_url = https://example.test/two.json
             local_hashes: Vec::new(),
         };
         let cancelled = AtomicBool::new(false);
-        assert!(save_cache(&directory, &cache, &cancelled).unwrap());
+        assert!(save_cache(&directory, &cache, &cancelled, crate::cache::write).unwrap());
         let original = std::fs::read(cache_path(&directory)).unwrap();
         cache.checked = 2;
         cancelled.store(true, Ordering::Relaxed);
         assert!(
-            !save_cache(&directory, &cache, &cancelled).unwrap(),
+            !save_cache(&directory, &cache, &cancelled, crate::cache::write).unwrap(),
             "cancelled saves cannot be used to acknowledge a fresh catalogue"
         );
         assert_eq!(std::fs::read(cache_path(&directory)).unwrap(), original);
         cancelled.store(false, Ordering::Relaxed);
-        assert!(save_cache(&directory, &cache, &cancelled).unwrap());
+        assert!(save_cache(&directory, &cache, &cancelled, crate::cache::write).unwrap());
         assert_eq!(load_cache(&directory).unwrap().unwrap().checked, 2);
+
+        cache.checked = 3;
+        assert!(
+            !save_cache(&directory, &cache, &cancelled, |path, bytes| {
+                crate::cache::write(path, bytes)?;
+                cancelled.store(true, Ordering::Relaxed);
+                Ok(())
+            })
+            .unwrap(),
+            "cancellation during the real cache write must not acknowledge a fresh catalogue"
+        );
+        assert_eq!(load_cache(&directory).unwrap().unwrap().checked, 3);
+    }
+
+    #[test]
+    fn cancelling_a_queued_ready_event_does_not_acknowledge_a_refresh() {
+        for cancel in [false, true] {
+            let (sender, events) = std::sync::mpsc::sync_channel(1);
+            let mut job = Job {
+                events,
+                cancelled: Arc::new(AtomicBool::new(false)),
+                handle: None,
+            };
+            sender
+                .send(Event::Ready {
+                    snapshot: Snapshot {
+                        updated: String::new(),
+                        items: Vec::new(),
+                        catalogue: crate::core_changes::Catalogue::default(),
+                        complete_refresh: true,
+                    },
+                    notice: None,
+                })
+                .unwrap();
+            if cancel {
+                job.cancel();
+                assert!(matches!(job.try_recv(), Some(Event::Cancelled)));
+            } else {
+                assert!(
+                    matches!(job.try_recv(), Some(Event::Ready { snapshot, .. }) if snapshot.complete_refresh)
+                );
+            }
+        }
     }
 
     #[test]
