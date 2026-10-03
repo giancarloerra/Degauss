@@ -929,6 +929,99 @@ pub(super) fn run(root: &Path, window: Rc<MinimalSoftwareWindow>) {
     assert!(app.ui.get_overlay().contains("only three levels"));
     app.message = None;
     app.finish_home_edit(false);
+    let destination_root = root.join("named-destinations");
+    std::fs::create_dir_all(destination_root.join("games/NES")).unwrap();
+    let mut destinations =
+        unopened_fixture_app(&destination_root, window.clone(), Settings::default());
+    destinations.leave_splash();
+    destinations.finish_background_work_for_headless();
+    destinations.message = None;
+    for name in ["Save Changes", "Cancel Changes", "New Personal Folder"] {
+        let parent = destinations
+            .settings
+            .home
+            .add(
+                Entry {
+                    name: name.into(),
+                    image: None,
+                    target: Target::Folder {
+                        children: Vec::new(),
+                    },
+                },
+                None,
+            )
+            .unwrap();
+        let entry = Entry {
+            name: format!("Moved to {name}"),
+            image: None,
+            target: Target::System {
+                system: "NES".into(),
+            },
+        };
+        let moving = destinations.settings.home.add(entry, None).unwrap();
+        destinations.home_destinations(Some(moving.clone()));
+        destinations.menu_list.select(
+            destinations
+                .home
+                .menu_keys
+                .iter()
+                .position(|id| id == &parent)
+                .unwrap(),
+        );
+        destinations.handle(Action::Accept);
+        assert_eq!(
+            destinations.settings.home.parent(&moving).as_deref(),
+            Some(parent.as_str()),
+            "a destination is identified by its key, not its editable name"
+        );
+        assert_eq!(
+            Settings::load(&destinations.settings_path)
+                .unwrap()
+                .home
+                .parent(&moving)
+                .as_deref(),
+            Some(parent.as_str())
+        );
+        let added_name = format!("Added to {name}");
+        destinations.home.pending_entry = Some(Entry {
+            name: added_name.clone(),
+            image: None,
+            target: Target::System {
+                system: "NES".into(),
+            },
+        });
+        destinations.home_destinations(None);
+        destinations.menu_list.select(
+            destinations
+                .home
+                .menu_keys
+                .iter()
+                .position(|id| id == &parent)
+                .unwrap(),
+        );
+        destinations.handle(Action::Accept);
+        let added = destinations
+            .settings
+            .home
+            .entries
+            .iter()
+            .find(|(_, entry)| entry.name == added_name)
+            .unwrap()
+            .0;
+        assert_eq!(
+            destinations.settings.home.parent(added).as_deref(),
+            Some(parent.as_str()),
+            "adding a shortcut to a named folder saves immediately"
+        );
+        assert_eq!(
+            Settings::load(&destinations.settings_path)
+                .unwrap()
+                .home
+                .parent(added)
+                .as_deref(),
+            Some(parent.as_str())
+        );
+    }
     let mut resumed =
         unopened_fixture_app(&root, window, Settings::load(&app.settings_path).unwrap());
     resumed.leave_splash();

@@ -995,15 +995,16 @@ impl App {
         };
         let at = self.menu_list.selected();
         let choice = self.menu.get(at).cloned().unwrap_or_default();
-        if choice == SAVE_HOME {
+        let destination = matches!(mode, HomeMenu::Destination(_)) && at < self.home.menu_keys.len();
+        if !destination && choice == SAVE_HOME {
             self.finish_home_edit(true);
             return true;
         }
-        if choice == CANCEL_HOME {
+        if !destination && choice == CANCEL_HOME {
             self.finish_home_edit(false);
             return true;
         }
-        if choice == NEW_HOME_FOLDER {
+        if !destination && choice == NEW_HOME_FOLDER {
             self.begin_home_edit();
             self.open_name_keyboard(NamePurpose::HomeFolder, String::new());
             return true;

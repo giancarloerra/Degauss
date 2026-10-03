@@ -246,7 +246,7 @@ pub fn take_position(resuming: bool, path: &Path) -> Option<State> {
         return None;
     }
     let saved = State::load(path);
-    (!saved.system.is_empty() || saved.home.is_some()).then_some(saved)
+    (!saved.system.is_empty() || saved.home.is_some() || saved.explore.is_some()).then_some(saved)
 }
 
 /// In `/tmp` on purpose: it is gone after a power cycle, so a cold start
@@ -315,6 +315,47 @@ pub fn clear_resuming() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn explore_resume_does_not_require_an_open_game_system() {
+        let directory =
+            std::env::temp_dir().join(format!("degauss-explore-resume-{}", std::process::id()));
+        std::fs::create_dir(&directory).unwrap();
+        let path = directory.join("state.toml");
+        let query = crate::explore::Query {
+            title: "1941".into(),
+            category: Some("Arcade".into()),
+            ..Default::default()
+        };
+        let saved = State {
+            explore: Some(crate::explore::Resume {
+                query: query.clone(),
+                origin: Some(Box::new(State::default())),
+                pivots: vec![(crate::explore::Query::default(), 3)],
+            }),
+            selected_row: Some("1941".into()),
+            selected: 2,
+            ..Default::default()
+        };
+        saved.save(&path).unwrap();
+        let resumed = take_position(true, &path).unwrap();
+        let explore = resumed.explore.unwrap();
+        assert_eq!(
+            explore.query, query,
+            "a game launched from root Explore preserves its query"
+        );
+        assert!(explore.origin.is_some());
+        assert_eq!(explore.pivots, vec![(crate::explore::Query::default(), 3)]);
+        assert_eq!(resumed.selected_row, saved.selected_row);
+        assert_eq!(resumed.selected, 2);
+        assert!(path.exists());
+        assert!(
+            take_position(false, &path).is_none(),
+            "cold startup must not resume Explore"
+        );
+        assert!(!path.exists());
+        std::fs::remove_dir(&directory).unwrap();
+    }
 
     #[test]
     fn personal_home_resume_does_not_require_an_open_game_system() {
