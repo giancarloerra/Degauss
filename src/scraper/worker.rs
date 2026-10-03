@@ -1375,10 +1375,24 @@ fn run_libretro_work(
                 } else {
                     None
                 };
+                let title = target.title.trim();
+                let title = match (
+                    title.rsplit_once('.'),
+                    Path::new(&target.relative_path)
+                        .extension()
+                        .and_then(|extension| extension.to_str()),
+                ) {
+                    (Some((stem, suffix)), Some(extension))
+                        if suffix.eq_ignore_ascii_case(extension) =>
+                    {
+                        stem
+                    }
+                    _ => title,
+                };
                 database
                     .as_ref()
                     .expect("database loaded for automatic lookup")
-                    .lookup(&target.title, hashes.as_ref(), settings.libretro_artwork)
+                    .lookup(title, hashes.as_ref(), settings.libretro_artwork)
             };
             let alternatives = if retain_alternatives {
                 lookup.alternatives
@@ -3392,6 +3406,66 @@ mod tests {
         request.developer = None;
         request.cache_dir = root.join("cache");
         request
+    }
+
+    #[test]
+    fn libretro_disc_titles_keep_region_tags_but_not_the_actual_file_extension() {
+        for extension in ["cue", "CHD", "iso"] {
+            let root = temp(&format!("libretro-disc-{extension}"));
+            let name = format!("Canonical (USA).{extension}");
+            std::fs::write(root.join(&name), b"disc wrapper").unwrap();
+            let mut request = libretro_request(&root);
+            request.systems[0].def.extensions = vec!["cue".into(), "chd".into(), "iso".into()];
+            let mut mock = libretro_mock();
+            Arc::get_mut(&mut mock).unwrap().database =
+                super::super::libretro::tests::fixture(vec![
+                    super::super::libretro::tests::record("Canonical (USA)"),
+                    super::super::libretro::tests::record("Canonical (Japan)"),
+                ]);
+            let Event::Finished(progress) = finish(start_with_transport(request, mock).unwrap())
+            else {
+                panic!("disc-title scrape failed")
+            };
+            assert_eq!(progress.updated, 1, "{extension}: {progress:?}");
+            assert_eq!(
+                progress.ambiguous, 0,
+                "region tags must retain the exact match"
+            );
+            let xml = std::fs::read_to_string(root.join("gamelist.xml")).unwrap();
+            assert!(xml.contains("<name>Canonical (USA)</name>"), "{xml}");
+            assert!(
+                xml.contains(&name),
+                "the original launch path must remain unchanged"
+            );
+            std::fs::remove_dir_all(root).unwrap();
+        }
+    }
+
+    #[test]
+    fn libretro_metadata_titles_do_not_lose_dots_unrelated_to_the_launch_extension() {
+        let root = temp("libretro-title-dot");
+        std::fs::write(root.join("Game.cue"), b"disc wrapper").unwrap();
+        std::fs::write(
+            root.join("gamelist.xml"),
+            "<gameList><game><path>Game.cue</path><name>Dr. Mario (USA)</name></game></gameList>",
+        )
+        .unwrap();
+        let mut request = libretro_request(&root);
+        request.systems[0].def.extensions = vec!["cue".into(), "chd".into()];
+        request.settings.metadata_policy = MetadataPolicy::ReplaceExisting;
+        let mut mock = libretro_mock();
+        Arc::get_mut(&mut mock).unwrap().database = super::super::libretro::tests::fixture(vec![
+            super::super::libretro::tests::record("Dr. Mario (USA)"),
+            super::super::libretro::tests::record("Dr. Mario (Japan)"),
+        ]);
+        let Event::Finished(progress) = finish(start_with_transport(request, mock).unwrap()) else {
+            panic!("metadata-title scrape failed")
+        };
+        assert_eq!(progress.updated, 1);
+        let xml = std::fs::read_to_string(root.join("gamelist.xml")).unwrap();
+        assert!(xml.contains("<name>Dr. Mario (USA)</name>"), "{xml}");
+        assert!(xml.contains("Game.cue"));
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

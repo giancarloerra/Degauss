@@ -359,6 +359,7 @@ component BrowserPanel inherits Rectangle {
     in property <length> pad;
     in property <length> body-font;
     in property <length> small-font;
+    in property <length> list-value-font;
     in property <string> list-family;
     in property <color> text-color;
     in property <color> dim-color;
@@ -388,7 +389,7 @@ component BrowserPanel inherits Rectangle {
             at-end: root.marquee-end;
             pad: root.pad;
             font-size: root.body-font;
-            value-font: root.small-font;
+            value-font: root.list-value-font;
             family-name: root.list-family;
             value-min-width: 34px;
             text-color: root.text-color;
@@ -1610,6 +1611,7 @@ export component DegaussWindow inherits Window {
                     pad: root.pad;
                     body-font: root.list-body-glyph;
                     small-font: root.small-glyph;
+                    list-value-font: root.list-small-glyph;
                     list-family: root.list-font-family;
                     text-color: root.c-text;
                     dim-color: root.c-text-dim;
@@ -1642,6 +1644,7 @@ export component DegaussWindow inherits Window {
                     pad: root.pad;
                     body-font: root.list-body-glyph;
                     small-font: root.small-glyph;
+                    list-value-font: root.list-small-glyph;
                     list-family: root.list-font-family;
                     text-color: root.c-text;
                     dim-color: root.c-text-dim;
@@ -1674,6 +1677,7 @@ export component DegaussWindow inherits Window {
                     pad: root.pad;
                     body-font: root.list-body-glyph;
                     small-font: root.small-glyph;
+                    list-value-font: root.list-small-glyph;
                     list-family: root.list-font-family;
                     text-color: root.c-text;
                     dim-color: root.c-text-dim;

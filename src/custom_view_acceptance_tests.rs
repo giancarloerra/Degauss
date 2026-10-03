@@ -390,6 +390,22 @@ pub(super) fn run(root: &Path, window: Rc<MinimalSoftwareWindow>) {
     app.width = 352;
     app.height = 240;
     app.window.set_size(slint::PhysicalSize::new(352, 240));
+    let source = include_str!("../ui/degauss.slint");
+    let panel = source
+        .split("component BrowserPanel")
+        .nth(1)
+        .unwrap()
+        .split("export component")
+        .next()
+        .unwrap();
+    assert!(panel.contains("value-font: root.list-value-font;"), "custom-view counts must use the browse font's baked glyph size, not the interface font's size");
+    assert_eq!(
+        source
+            .matches("list-value-font: root.list-small-glyph;")
+            .count(),
+        3,
+        "every custom panel must receive the browse font's count size"
+    );
     for font in Font::ALL {
         for size in crate::font::TextSize::ALL {
             app.font = font;
