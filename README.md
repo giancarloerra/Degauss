@@ -1142,6 +1142,7 @@ Do not copy all defaults into the user file. UI preferences remain in
 invalid user file is ignored for that run, with its path and underlying cause
 in `/tmp/degauss.log`; the base configuration, UI preferences and themes still
 apply. No partial overrides are used.
+`--check-install` reports an invalid or unreadable user file separately.
 
 Move only custom values you manually edited in degauss.toml into
 degauss-user.toml once, keeping any required TOML section headers, so future

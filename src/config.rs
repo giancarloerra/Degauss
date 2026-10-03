@@ -427,7 +427,7 @@ impl Config {
         }
     }
 
-    fn with_overrides(base: &str, overrides: &str, origin: &Path) -> Result<Self> {
+    pub(crate) fn with_overrides(base: &str, overrides: &str, origin: &Path) -> Result<Self> {
         fn merge(base: &mut toml::Value, overrides: toml::Value) {
             match (base, overrides) {
                 (toml::Value::Table(base), toml::Value::Table(overrides)) => {
