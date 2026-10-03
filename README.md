@@ -16,17 +16,20 @@ Degauss plays nice with the standard MiSTer setup, folders and scripts, instead 
 
 1. **Blazing-fast browsing** through large collections, with nothing left running while you play.
 2. **Your existing MiSTer library, as it is**, including SD, external storage and ZIP games that do not need unpacking.
-3. **Six built-in views and your own**, with named layouts for your systems and folders.
-4. **Artwork and full game information** from existing files and artwork packs, ScreenScraper or account-free Libretro scraping.
-5. **Themes** with an on-device editor, font choices and custom system images.
-6. **Your own Home**, with shortcuts and named personal folders for games, systems, folders and saved collections.
-7. **Made for CRTs and HDMI**, with smoother CRT artwork, screen-alignment controls and a rotatable interface for vertical displays.
-8. **Optional HDMI CRT effects** for the interface, including scanlines and shadow masks.
-9. **Explore Games across your library**, combining filters, following metadata links and saving collections, alongside shared favourites, Last Played and random picks.
-10. **Attract Mode** showcases your collection and lets you switch systems or launch the pictured game.
-11. **Core Updates and What's New** show installed cores and changes available from your configured download sources.
-12. **Core choice per system or game**, including installed RetroAchievements, Unstable and Dual SDRAM builds.
-13. **Fits into MiSTer**: configured controllers work straight away, and you can run installed scripts or use Zaparoo Core launches.
+3. **Six built-in views**, with a different view for each system or folder if you want.
+4. **Layouts Designer** lets you choose a template, arrange list, artwork and information panels, and save your own named layouts.
+5. **Artwork and full game information** from existing files and artwork packs, or Degauss's built-in scraper.
+6. **Libretro Integration** adds an optional, account-free source for game information, screenshots, box art and title screens alongside ScreenScraper.
+7. **Themes** with an on-device editor, font choices and custom system images.
+8. **Home Editor** lets you reorder Home entries and choose which ones to show or hide.
+9. **Custom Folders & Collections** group games, systems and folders your way, keeping filtered searches as reusable collections, with names and custom images.
+10. **Made for CRTs and HDMI**, with smoother CRT artwork, screen-alignment controls and a rotatable interface for vertical displays.
+11. **Optional HDMI CRT effects** for the interface, including scanlines and shadow masks.
+12. **Games Explorer** optionally searches across your library, combines filters and follows metadata links, alongside shared favourites, Last Played and random picks.
+13. **Attract Mode** showcases your collection and lets you switch systems or launch the pictured game.
+14. **Expanded Core Updates** shows installed cores, available updates and What's New, with latest-first sorting and cached browsing while refreshing.
+15. **Core choice per system or game**, including installed RetroAchievements, Unstable and Dual SDRAM builds.
+16. **Fits into MiSTer**: configured controllers work straight away, and you can run installed scripts or use Zaparoo Core launches.
 
 Source available, written in Rust and using Slint, and licensed for non-commercial use.
 
