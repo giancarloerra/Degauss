@@ -219,20 +219,19 @@ fn year_date(value: &ValueRef<'_>) -> Option<String> {
     let year = field(value, "releaseyear")?
         .as_u64()
         .filter(|year| (1..=9999).contains(year))?;
-    let mut date = format!("{year:04}");
-    if let Some(month) = field(value, "releasemonth")
+    let month = field(value, "releasemonth")
         .and_then(ValueRef::as_u64)
-        .filter(|month| (1..=12).contains(month))
-    {
-        date.push_str(&format!("{month:02}"));
-        if let Some(day) = field(value, "releaseday")
+        .filter(|month| (1..=12).contains(month));
+    let day = month.and_then(|_| {
+        field(value, "releaseday")
             .and_then(ValueRef::as_u64)
             .filter(|day| (1..=31).contains(day))
-        {
-            date.push_str(&format!("{day:02}"));
-        }
-    }
-    Some(date)
+    });
+    Some(format!(
+        "{year:04}{:02}{:02}T000000",
+        month.unwrap_or(0),
+        day.unwrap_or(0)
+    ))
 }
 
 pub struct Database {
@@ -698,10 +697,42 @@ pub(crate) mod tests {
         let matched = &db.records[0];
         assert_eq!(matched.rom_crc32.as_deref(), Some("12345678"));
         assert_eq!(matched.metadata.developer.as_deref(), Some("First, Second"));
-        assert_eq!(matched.metadata.releasedate.as_deref(), Some("1992"));
+        assert_eq!(
+            matched.metadata.releasedate.as_deref(),
+            Some("19920000T000000")
+        );
         assert_eq!(matched.metadata.players.as_deref(), Some("2"));
         assert!(matched.metadata.desc.is_none());
         assert!(matched.metadata.lang.is_none());
+    }
+
+    #[test]
+    fn rdb_partial_dates_preserve_known_components_in_the_existing_gamelist_format() {
+        for (month, day, expected) in [
+            (None, None, "19920000T000000"),
+            (Some(3), None, "19920300T000000"),
+            (Some(3), Some(4), "19920304T000000"),
+            (None, Some(4), "19920000T000000"),
+            (Some(13), Some(4), "19920000T000000"),
+            (Some(3), Some(32), "19920300T000000"),
+        ] {
+            let Value::Map(mut fields) = record("Partial date") else {
+                unreachable!()
+            };
+            if let Some(month) = month {
+                fields.push(("releasemonth".into(), month.into()));
+            }
+            if let Some(day) = day {
+                fields.push(("releaseday".into(), day.into()));
+            }
+            let db = database(vec![Value::Map(fields)]);
+            assert_eq!(
+                db.records[0].metadata.releasedate.as_deref(),
+                Some(expected)
+            );
+        }
+        let db = database(vec![Value::Map(vec![("name".into(), "Undated".into())])]);
+        assert!(db.records[0].metadata.releasedate.is_none());
     }
 
     #[test]
