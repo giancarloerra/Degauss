@@ -16,16 +16,17 @@ Degauss plays nice with the standard MiSTer setup, folders and scripts, instead 
 
 1. **Blazing-fast browsing** through large collections, with nothing left running while you play.
 2. **Your existing MiSTer library, as it is**, including SD, external storage and ZIP games that do not need unpacking.
-3. **Six ways to browse**, with a different view for each system or folder if you want.
-4. **Artwork and full game information** from your existing files and artwork packs, or Degauss’s built-in scraper.
+3. **Six built-in views and your own**, with named layouts for your systems and folders.
+4. **Artwork and full game information** from existing files and artwork packs, ScreenScraper or account-free Libretro scraping.
 5. **Themes** with an on-device editor, font choices and custom system images.
-6. **Made for CRTs and HDMI**, with smoother CRT artwork, screen-alignment controls and a rotatable interface for vertical displays.
-7. **Optional HDMI CRT effects** for the interface, including scanlines and shadow masks.
-8. **Find and rediscover games** with search, filters, shared MiSTer favourites, Last Played and random picks.
-9. **Attract Mode** showcases your collection and lets you switch systems or launch the pictured game.
-10. **Core Updates** shows installed cores and updates available from your configured download sources.
-11. **Core choice per system or game**, including installed RetroAchievements and Unstable versions.
-12. **Fits into MiSTer**: configured controllers work straight away, and you can run installed scripts or use Zaparoo Core launches.
+6. **Your own Home**, with shortcuts and named personal folders for games, systems, folders and saved collections.
+7. **Made for CRTs and HDMI**, with smoother CRT artwork, screen-alignment controls and a rotatable interface for vertical displays.
+8. **Optional HDMI CRT effects** for the interface, including scanlines and shadow masks.
+9. **Explore Games across your library**, combining filters, following metadata links and saving collections, alongside shared favourites, Last Played and random picks.
+10. **Attract Mode** showcases your collection and lets you switch systems or launch the pictured game.
+11. **Core Updates and What's New** show installed cores and changes available from your configured download sources.
+12. **Core choice per system or game**, including installed RetroAchievements, Unstable and Dual SDRAM builds.
+13. **Fits into MiSTer**: configured controllers work straight away, and you can run installed scripts or use Zaparoo Core launches.
 
 Source available, written in Rust and using Slint, and licensed for non-commercial use.
 

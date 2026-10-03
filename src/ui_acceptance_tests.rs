@@ -6634,6 +6634,91 @@ fn run_manual_pack_match_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
         Some(art.join("Known.jpg")),
         "another game's automatic match is unchanged"
     );
+    restarted.open_explore(None);
+    restarted.finish_background_work_for_headless();
+    let selected = (0..restarted.browse_count())
+        .find(|&at| {
+            restarted
+                .browse_row(at)
+                .is_some_and(|row| row.name == "Unmatched.nes")
+        })
+        .expect("the unmatched game appears in Explore");
+    restarted.game_list.select(selected);
+    restarted.reopen_context_for(ARTWORK_PACK_MATCH);
+    assert_eq!(
+        restarted.menu[restarted.menu_list.selected()],
+        ARTWORK_PACK_MATCH
+    );
+    restarted.handle(Action::Accept);
+    restarted.finish_background_work_for_headless();
+    assert_eq!(
+        restarted.screen,
+        Screen::ArtworkPackMatch,
+        "{:?}",
+        restarted.message
+    );
+    restarted.handle(Action::Context);
+    assert_eq!(
+        restarted.screen,
+        Screen::NameKeyboard,
+        "{:?}",
+        restarted.message
+    );
+    restarted.name_keyboard_draft = "Other Stable Name".into();
+    restarted.handle(Action::Quit);
+    restarted.finish_background_work_for_headless();
+    assert_eq!(
+        restarted.screen,
+        Screen::ArtworkPackMatch,
+        "{:?}",
+        restarted.message
+    );
+    restarted.menu_list.select(
+        restarted
+            .menu
+            .iter()
+            .position(|label| label == "Other")
+            .unwrap_or_else(|| {
+                panic!(
+                    "matching choices: {:?}; message: {:?}",
+                    restarted.menu, restarted.message
+                )
+            }),
+    );
+    restarted.handle(Action::Accept);
+    restarted.explore.match_warning = Some("Saved match warning".into());
+    restarted.finish_background_work_for_headless();
+    assert!(restarted.explore.active);
+    let row = restarted
+        .browse_row(restarted.game_list.selected())
+        .unwrap();
+    assert_eq!(
+        row.name, "Chosen Pack Title",
+        "Explore immediately reflects a confirmed match"
+    );
+    assert_eq!(row.cover, Some(art.join("Other.jpg")));
+    assert_eq!(
+        row.kind, launch,
+        "Explore retains the original launch target"
+    );
+    assert_eq!(restarted.message.as_deref(), Some("Saved match warning"));
+    assert!(restarted.explore.match_warning.is_none());
+    restarted.handle(Action::Quit);
+    restarted.reopen_context_for(ARTWORK_PACK_MATCH);
+    restarted.handle(Action::Accept);
+    restarted.finish_background_work_for_headless();
+    restarted.menu_list.select(0);
+    restarted.handle(Action::Accept);
+    restarted.finish_background_work_for_headless();
+    let row = restarted
+        .browse_row(restarted.game_list.selected())
+        .unwrap();
+    assert_eq!(
+        row.name, "Unmatched.nes",
+        "Automatic updates Explore without reopening it"
+    );
+    assert_eq!(row.cover, None);
+    assert_eq!(row.kind, launch);
     for (path, bytes) in pack_before {
         assert_eq!(std::fs::read(path).unwrap(), bytes);
     }

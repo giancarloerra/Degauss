@@ -16943,6 +16943,9 @@ impl App {
                             warnings.extend(match_warnings);
                             self.settings = *settings;
                             let provider = *provider;
+                            if let Some(catalogue) = &mut self.explore.catalogue {
+                                catalogue.signatures.remove(&provider.system_id);
+                            }
                             if self.open_system.as_deref() == Some(&provider.system_id) {
                                 self.artwork_provider = Some(provider.clone());
                             }
@@ -16957,8 +16960,16 @@ impl App {
                             self.screen = Screen::Browse;
                             self.apply_geometry();
                             self.relist_here_preserving_game_filters();
+                            if self.explore.active {
+                                self.start_explore();
+                            }
                             if !warnings.is_empty() {
-                                self.message = Some(warnings.join("\n"));
+                                let warning = warnings.join("\n");
+                                if self.explore.job.is_some() {
+                                    self.explore.match_warning = Some(warning);
+                                } else {
+                                    self.message = Some(warning);
+                                }
                             }
                         }
                         Err(error) => {

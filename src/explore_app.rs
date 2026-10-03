@@ -14,6 +14,7 @@ struct ExploreBrowser {
     logos: std::collections::BTreeMap<String, Option<PathBuf>>,
     restore_selection: Option<(Option<String>, usize)>,
     pending_resume: Option<crate::state::State>,
+    match_warning: Option<String>,
     pivots: Vec<(crate::explore::Query, usize)>,
     selection: usize,
     revision: u64,
@@ -304,6 +305,14 @@ impl App {
                     self.message = Some(error);
                 }
             }
+            if self.explore.job.is_none() {
+                if let Some(warning) = self.explore.match_warning.take() {
+                    self.message = Some(match self.message.take() {
+                        Some(message) => format!("{message}\n\n{warning}"),
+                        None => warning,
+                    });
+                }
+            }
             self.dirty = true;
         }
     }
@@ -433,6 +442,9 @@ impl App {
         actions.extend(self.custom_view_actions());
         if self.selected_game_launch_core_target().is_some() {
             actions.push(GAME_LAUNCH_CORE.into());
+        }
+        if self.selected_pack_match_target().is_some() {
+            actions.push(ARTWORK_PACK_MATCH.into());
         }
         if self.selected_game().is_some() {
             actions.push(

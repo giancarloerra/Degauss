@@ -372,7 +372,7 @@ mod tests {
             store.rows(None, &categories, false),
             vec![category_key("Arcade"), category_key("Console")]
         );
-        let id = store.add(folder("Friday"), None).unwrap();
+        let id = store.add(folder("Play Later"), None).unwrap();
         assert_eq!(store.rows(None, &categories, false)[0], entry_key(&id));
         store.hidden.insert(category_key("Arcade"));
         assert_eq!(store.rows(None, &categories, false).len(), 2);
@@ -398,7 +398,7 @@ mod tests {
     #[test]
     fn exact_targets_persist_and_removal_only_removes_organisation() {
         let mut store = Store::default();
-        let folder = store.add(folder("Friday"), None).unwrap();
+        let folder = store.add(folder("Play Later"), None).unwrap();
         let path = PathBuf::from("/usb/games/pack.zip/game.rom");
         store
             .add(

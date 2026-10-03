@@ -26,7 +26,7 @@ pub(super) fn run(root: &Path, window: Rc<MinimalSoftwareWindow>) {
     let folder = store
         .add(
             Entry {
-                name: "Friday".into(),
+                name: "Play Later".into(),
                 image: None,
                 target: Target::Folder {
                     children: Vec::new(),
@@ -105,7 +105,7 @@ pub(super) fn run(root: &Path, window: Rc<MinimalSoftwareWindow>) {
         .unwrap()
         .name = "Cancelled".into();
     app.finish_home_edit(false);
-    assert_eq!(app.settings.home.entries[&folder].name, "Friday");
+    assert_eq!(app.settings.home.entries[&folder].name, "Play Later");
     assert_eq!(
         app.selected_home_key(),
         Some(entry_key(&system).as_str()),
