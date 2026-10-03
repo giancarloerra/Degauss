@@ -891,7 +891,7 @@ fn run() -> Result<()> {
     let started = Instant::now();
     let loaded = load_everything(&args)?;
 
-    if loaded.systems.is_empty() && loaded.network_boot.is_none() {
+    if loaded.systems.is_empty() && loaded.network_boot.is_none() && loaded.storage.is_none() {
         return Err(DegaussError::unsupported(
             "systems",
             format!(

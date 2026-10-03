@@ -502,7 +502,7 @@ accept an HDMI mode number such as `8`.
 
 Some older CRT timings use a zero sync width. They can work with the older
 shared-scaler route below, but cannot be copied unchanged into
-`degauss_analog_video_mode` in 0.9.1. Do not change a timing value at random to
+`degauss_analog_video_mode`. Do not change a timing value at random to
 make it accepted. Leave the optional entry out to use the default CRT timing.
 An invalid entry reports an INI error; remove it to return to the default.
 
@@ -2160,7 +2160,7 @@ video_mode=8
 
 With Degauss's bundled Main and Menu, the CRT shows the native interface and HDMI scales up the same image to 1080p60. Replace the old `[Menu]` `video_mode` line and keep the other settings; do not add a second `[Menu]` section. The native analog option is off by default.
 
-The optional `degauss_analog_video_mode` can preserve a compatible progressive CRT timing, but 0.9.1 rejects timings with zero sync widths. Leave it unset initially. See the [complete dual-display example and CRT-timing limitations](#crt-and-hdmi-at-the-same-time).
+The optional `degauss_analog_video_mode` can preserve a compatible progressive CRT timing, but timings with zero sync widths are rejected. Leave it unset initially. See the [complete dual-display example and CRT-timing limitations](#crt-and-hdmi-at-the-same-time).
 
 If you instead use `vga_scaler=1`, both outputs use the scaler. That route needs a 15 kHz `video_mode` supported by the CRT; this common mode can be used as a starting point:
 

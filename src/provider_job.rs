@@ -450,7 +450,7 @@ fn run_matching(
         Some(provider.presentation_for_match(selected)?)
     } else {
         let automatic = (|| {
-            let mut fingerprints = cached.fingerprints;
+            let mut fingerprints = crate::cache::ContentFingerprints::new();
             // Restore Automatic using the current ROM, not a possibly old CRC.
             if let Some((path, fingerprint)) =
                 provider.fingerprint_for_launch(&save.launch, homes, cancelled, &mut |_| {})?
@@ -901,6 +901,62 @@ mod tests {
             changed.provider.apply_prepared(&mut rows),
             0,
             "a stale CRC must never cross the worker/UI boundary"
+        );
+
+        std::fs::write(&rom, &bytes).unwrap();
+        let fingerprint = provider
+            .fingerprint_for_launch(
+                &Launch::File(rom.clone()),
+                &crate::mgl::Homes::default(),
+                &cancelled,
+                &mut |_| {},
+            )
+            .unwrap()
+            .unwrap();
+        crate::cache::install_transactional(
+            &cache_dir,
+            crate::cache::CacheKind::ArtworkPack,
+            &[crate::cache::StagedSystemCache {
+                id: "SuperGrafx".into(),
+                cache: cache_with_rom(&rom),
+                fingerprints: crate::cache::ContentFingerprints::from([fingerprint]),
+                fingerprints_complete: true,
+            }],
+        )
+        .unwrap();
+        let mut accept = request(None);
+        accept.write_state = true;
+        let mut job = start(vec![accept]).unwrap();
+        assert!(matches!(terminal(&mut job), Event::Loaded { .. }));
+        assert!(
+            crate::cache::load_pack_source_state(&cache_dir, "SuperGrafx")
+                .unwrap()
+                .unwrap()
+                .accepted
+                .is_some()
+        );
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(&rom)
+            .unwrap()
+            .set_len(64 * 1024 * 1024 + 1)
+            .unwrap();
+        let launch = Launch::File(rom.clone());
+        let mut automatic = request(None);
+        automatic.matching = Some(Matching::Save(Box::new(MatchSave {
+            launch: launch.clone(),
+            selected: None,
+            settings: Default::default(),
+            settings_path: root.join("settings.toml"),
+        })));
+        let mut job = start(vec![automatic]).unwrap();
+        let event = terminal(&mut job);
+        let Event::MatchStaged { provider, .. } = event else {
+            panic!("Automatic could not be restored for an oversized ROM: {event:?}");
+        };
+        assert!(
+            !provider.prepared_map().unwrap().contains_key(&launch),
+            "an ineligible current ROM must not inherit its previous CRC artwork"
         );
         std::fs::remove_dir_all(root).ok();
     }

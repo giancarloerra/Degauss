@@ -923,6 +923,60 @@ fn run_cores_browser_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
     std::fs::remove_dir_all(root).unwrap();
 }
 
+fn run_empty_storage_rediscovery_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
+    let root = root.join("empty-storage-rediscovery");
+    std::fs::create_dir_all(root.join("games/NES")).unwrap();
+    for game in ["First.nes", "Second.nes"] {
+        std::fs::write(root.join("games/NES").join(game), b"fixture").unwrap();
+    }
+    let app = fixture_app(&root, window.clone(), Settings::default());
+    let table = app.table.clone();
+    let cache_path = crate::cache::system_path(&app.cache_dir, "NES");
+    let before = std::fs::read(&cache_path).unwrap();
+    app.ui.hide().unwrap();
+    drop(app);
+    std::fs::rename(root.join("games"), root.join("held-games")).unwrap();
+    let mut app =
+        unopened_fixture_app_with_systems(&root, window, Settings::default(), &[], "games/NES");
+    app.table = table;
+    let mountinfo = root.join("mountinfo");
+    let base = "1 0 8:1 / / rw - ext4 /dev/card rw\n";
+    std::fs::write(&mountinfo, base).unwrap();
+    app.storage = Some(
+        crate::storage::State::new(
+            std::sync::Arc::new(crate::systems::CoreIndex::default()),
+            mountinfo.clone(),
+            &[],
+        )
+        .unwrap(),
+    );
+    app.finish_background_work_for_headless();
+    app.leave_splash();
+    assert!(app.all_systems.is_empty());
+    assert!(app.build.is_none());
+    assert_eq!(app.screen, Screen::Browse);
+    std::fs::rename(root.join("held-games"), root.join("games")).unwrap();
+    std::fs::write(
+        mountinfo,
+        format!(
+            "{base}2 1 0:2 / {} rw - cifs //server/games rw\n",
+            root.join("games").display()
+        ),
+    )
+    .unwrap();
+    app.request_storage_check();
+    app.finish_background_work_for_headless();
+    assert!(app.pending.is_none(), "an existing cache needs no rebuild");
+    assert_eq!(app.all_systems.len(), 1);
+    assert_eq!(app.all_systems[0].def.id, "NES");
+    assert_eq!(std::fs::read(cache_path).unwrap(), before);
+    app.open_system_by_index(0);
+    assert_eq!(app.here.len(), 2);
+    app.ui.hide().unwrap();
+    drop(app);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
 fn run_storage_rediscovery_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
     let root = root.join("storage-rediscovery");
     std::fs::create_dir_all(&root).unwrap();
@@ -12631,6 +12685,7 @@ pub(super) fn run_ui_acceptance_flow(window: Rc<MinimalSoftwareWindow>) {
     let gamelist_xml = format!("<gameList><game><path>First Game.nes</path><desc><![CDATA[{complete_description}]]></desc></game><game><path>Second Game.nes</path><desc><![CDATA[{complete_description}]]></desc></game></gameList>");
     std::fs::write(&gamelist_path, &gamelist_xml).unwrap();
     run_cores_browser_flow(&root, window.clone());
+    run_empty_storage_rediscovery_flow(&root, window.clone());
     run_storage_rediscovery_flow(&root, window.clone());
     run_storage_pack_rebuild_flow(&root, window.clone(), false);
     run_storage_pack_rebuild_flow(&root, window.clone(), true);
