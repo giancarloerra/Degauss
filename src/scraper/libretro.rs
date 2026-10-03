@@ -444,7 +444,17 @@ impl Database {
         if !exact.is_empty() {
             // A known fingerprint that disagrees with the database must not
             // silently borrow another revision's metadata from its filename.
-            return if hashes.is_some() {
+            let conflicts = hashes.is_some_and(|hashes| {
+                exact.iter().any(|record| {
+                    [&record.rom_sha1, &record.rom_md5, &record.rom_crc32]
+                        .into_iter()
+                        .zip([&hashes.sha1, &hashes.md5, &hashes.crc32])
+                        .any(|(stored, actual)| {
+                            stored.as_ref().is_some_and(|stored| stored != actual)
+                        })
+                })
+            });
+            return if conflicts {
                 LookupResponse {
                     lookup: Lookup::Ambiguous(exact.len()),
                     alternatives: exact,
@@ -808,6 +818,28 @@ pub(crate) mod tests {
                 .lookup,
             Lookup::Ambiguous(1)
         ));
+    }
+
+    #[test]
+    fn an_exact_name_only_record_remains_usable_for_a_hashable_rom() {
+        let db = database(vec![record("Example (USA)")]);
+        let hashes = Hashes {
+            crc32: "FFFFFFFF".into(),
+            md5: "00".repeat(16),
+            sha1: "00".repeat(20),
+            size: 32,
+        };
+        let Lookup::Found(matched) = db
+            .lookup("Example (USA)", Some(&hashes), Artwork::Screenshot)
+            .lookup
+        else {
+            panic!("absence of a database hash is not a conflicting hash")
+        };
+        assert_eq!(matched.name, "Example (USA)");
+        assert_eq!(
+            matched.metadata.publisher.as_deref(),
+            Some("Example Publisher")
+        );
     }
 
     #[test]

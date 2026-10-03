@@ -22,6 +22,81 @@ pub(super) fn run(root: &Path, window: Rc<MinimalSoftwareWindow>) {
         "old settings preserve ordinary Home rows"
     );
     let initial = app.home.rows.clone();
+    // Non-game rows cannot produce a preview. In particular, an unavailable
+    // script/core must not be stat-ed again on every main-loop poll. Game
+    // availability failures must remain retryable when storage/source recovers.
+    let missing = root.join("games/NES/Missing.nes");
+    let mut preview_keys = Vec::new();
+    for (name, target) in [
+        (
+            "Missing script",
+            Target::Script {
+                path: root.join("absent.sh"),
+            },
+        ),
+        (
+            "Missing core",
+            Target::Core {
+                path: root.join("absent.rbf"),
+            },
+        ),
+        (
+            "Missing game",
+            Target::Game {
+                system: "NES".into(),
+                launch: browse::Launch::File(missing.clone()),
+            },
+        ),
+        (
+            "Source recovery",
+            Target::Game {
+                system: "NES".into(),
+                launch: browse::Launch::File(path.clone()),
+            },
+        ),
+    ] {
+        let id = app
+            .settings
+            .home
+            .add(
+                Entry {
+                    name: name.into(),
+                    image: None,
+                    target,
+                },
+                None,
+            )
+            .unwrap();
+        preview_keys.push(entry_key(&id));
+    }
+    app.artwork_source_errors
+        .insert("NES".into(), "Temporary source error".into());
+    app.home.rows = preview_keys.clone();
+    app.home.rows.push("malformed".into());
+    app.category_list = ListState::new(app.home.rows.len(), app.geometry.visible);
+    app.resolve_home_preview();
+    for key in [&preview_keys[0], &preview_keys[1], &"malformed".to_string()] {
+        assert!(
+            app.home.preview_done.contains(key),
+            "non-preview rows are checked only once"
+        );
+    }
+    assert!(!app.home.preview_done.contains(&preview_keys[2]));
+    assert!(!app.home.preview_done.contains(&preview_keys[3]));
+    assert!(app.home.preview_job.is_none());
+    app.artwork_source_errors.remove("NES");
+    std::fs::write(&missing, b"fixture").unwrap();
+    app.resolve_home_preview();
+    assert!(
+        app.home.preview_job.is_some(),
+        "restored games/sources must retry previews"
+    );
+    app.finish_background_work_for_headless();
+    app.message = None;
+    app.settings.home = Default::default();
+    app.rebuild_system_list();
+    std::fs::remove_file(&missing).unwrap();
+    assert_eq!(app.home.rows, initial);
     let mut store = app.settings.home.clone();
     let folder = store
         .add(
