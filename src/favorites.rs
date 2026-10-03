@@ -291,9 +291,7 @@ pub fn has_home_relative_paths(path: &Path) -> Result<bool> {
                         DegaussError::malformed("favourite MGL", path, e.to_string())
                     })?;
                     if a.key.as_ref().eq_ignore_ascii_case("path") {
-                        let raw = a.normalized_value(XmlVersion::Implicit1_0).map_err(|e| {
-                            DegaussError::malformed("favourite MGL", path, e.to_string())
-                        })?;
+                        let raw = main_path_value(&a, path, "favourite MGL")?;
                         if crate::mgl::needs_home(&raw) {
                             return Ok(true);
                         }
@@ -344,9 +342,7 @@ pub fn relocate_mgl(
                     if !a.key.as_ref().eq_ignore_ascii_case("path") {
                         continue;
                     }
-                    let raw = a.normalized_value(XmlVersion::Implicit1_0).map_err(|e| {
-                        DegaussError::malformed("favourite MGL", original, e.to_string())
-                    })?;
+                    let raw = main_path_value(&a, original, "favourite MGL")?;
                     if raw.starts_with('/') {
                         continue;
                     }
@@ -559,34 +555,41 @@ fn file_target(
             DegaussError::malformed(what, path, format!("bad file attribute: {error}"))
         })?;
         if attribute.key.as_ref().eq_ignore_ascii_case("path") {
-            // Main's sxmlc html2str decodes known escapes and keeps literal
-            // ampersands, including the paths supplied by DOS MGL packs.
-            let value = attribute.value.as_ref();
-            let mut escaped = String::with_capacity(value.len());
-            for (at, character) in value.char_indices() {
-                if character == '&'
-                    && !value[at + 1..].split_once(';').is_some_and(|(name, _)| {
-                        quick_xml::escape::resolve_predefined_entity(name).is_some()
-                            || resolve_numeric_entity(name).is_some()
-                    })
-                {
-                    escaped.push_str("&amp;");
-                } else {
-                    escaped.push(character);
-                }
-            }
-            let raw = quick_xml::events::attributes::Attribute {
-                key: attribute.key,
-                value: std::borrow::Cow::Owned(escaped),
-            }
-            .normalized_value(XmlVersion::Implicit1_0)
-            .map_err(|error| {
-                DegaussError::malformed(what, path, format!("bad path attribute: {error}"))
-            })?;
-            target = Some(raw.into_owned());
+            target = Some(main_path_value(&attribute, path, what)?);
         }
     }
     Ok(target)
+}
+
+/// Main-compatible decoding shared by descriptor and favourite path readers.
+fn main_path_value(
+    attribute: &quick_xml::events::attributes::Attribute<'_>,
+    path: &Path,
+    what: &'static str,
+) -> Result<String> {
+    // Main's sxmlc html2str decodes known escapes and keeps literal
+    // ampersands, including the paths supplied by DOS MGL packs.
+    let value = attribute.value.as_ref();
+    let mut escaped = String::with_capacity(value.len());
+    for (at, character) in value.char_indices() {
+        if character == '&'
+            && !value[at + 1..].split_once(';').is_some_and(|(name, _)| {
+                quick_xml::escape::resolve_predefined_entity(name).is_some()
+                    || resolve_numeric_entity(name).is_some()
+            })
+        {
+            escaped.push_str("&amp;");
+        } else {
+            escaped.push(character);
+        }
+    }
+    let raw = quick_xml::events::attributes::Attribute {
+        key: attribute.key,
+        value: std::borrow::Cow::Owned(escaped),
+    }
+    .normalized_value(XmlVersion::Implicit1_0)
+    .map_err(|error| DegaussError::malformed(what, path, format!("bad path attribute: {error}")))?;
+    Ok(raw.into_owned())
 }
 
 fn validate_descriptor_value(path: &Path, what: &'static str, value: &str) -> Result<()> {
@@ -1826,6 +1829,60 @@ extensions = ["nes", "mgl"]
             ["media/command & conquer/rock & roll & & &custom;.vhd"]
         );
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn favourite_path_checks_and_relocation_accept_main_compatible_ampersands() {
+        let root = temp("favourite-ampersands");
+        let games = root.join("games/NES");
+        std::fs::create_dir_all(&games).unwrap();
+        let game = games.join("Rock & Roll.nes");
+        std::fs::write(&game, b"game").unwrap();
+        let def = crate::systems::parse_table(
+            "[[systems]]\nname = 'NES'\nid = 'NES'\nfolders = ['NES']\nrbf = '_Console/NES'\nextensions = ['nes', 'mgl']\n",
+            Path::new("favourite path fixture"),
+        ).unwrap().remove(0);
+        let system = crate::systems::FoundSystem {
+            def,
+            paths: vec![games],
+            logo_dir: None,
+            menu_folder: None,
+        }
+        .to_config();
+        let mgl = root.join("Favorite.mgl");
+        for value in [
+            "Rock & Roll.nes",
+            "Rock &amp; Roll.nes",
+            "Rock &#38; Roll.nes",
+            "Rock &#x26; Roll.nes",
+        ] {
+            let text = format!("<mistergamedescription><rbf>_Console/NES</rbf><file delay=\"1\" type=\"f\" index=\"0\" path='{value}'/><reset delay=\"2\"/></mistergamedescription>");
+            std::fs::write(&mgl, &text).unwrap();
+            assert!(has_home_relative_paths(&mgl).unwrap());
+            assert_eq!(
+                descriptor_reference(&mgl, "test MGL").unwrap().files,
+                ["Rock & Roll.nes"]
+            );
+            let relocated = relocate_mgl(&text, &mgl, &system).unwrap();
+            let escaped = quick_xml::escape::escape(game.to_str().unwrap());
+            assert_eq!(
+                relocated,
+                text.replace(value, &escaped),
+                "only the original path slice changes, not quotes or other actions"
+            );
+            std::fs::write(&mgl, &relocated).unwrap();
+            assert!(!has_home_relative_paths(&mgl).unwrap());
+            assert_eq!(
+                descriptor_reference(&mgl, "test MGL").unwrap().files,
+                [game.to_str().unwrap()]
+            );
+            assert_eq!(
+                relocate_mgl(&relocated, &mgl, &system).unwrap(),
+                relocated,
+                "absolute favourite paths stay unchanged"
+            );
+        }
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
