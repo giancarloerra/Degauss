@@ -9,6 +9,7 @@ const FOCUS_INFORMATION: &str = "Focus Information";
 #[derive(Default)]
 struct ViewBrowser {
     active: Option<ViewDefinition>,
+    active_id: Option<String>,
     editor: Option<ViewEditor>,
     menu: Option<ViewMenu>,
     ids: Vec<String>,
@@ -32,15 +33,9 @@ enum ViewMenu {
 impl App {
     fn effective_view_key(&self) -> String {
         self.custom_view
-            .active
+            .active_id
             .as_ref()
-            .and_then(|active| {
-                self.settings
-                    .view_definitions
-                    .iter()
-                    .find(|(_, view)| *view == active)
-                    .map(|(id, _)| crate::custom_view::key(id))
-            })
+            .map(|id| crate::custom_view::key(id))
             .unwrap_or_else(|| self.layout.label().into())
     }
     fn view_label(&self) -> String {

@@ -84,6 +84,35 @@ pub(super) fn run(root: &Path, window: Rc<MinimalSoftwareWindow>) {
     );
     assert_eq!(app.view_label(), "Readable games");
     assert!(app.view_choices().contains(&key));
+    let duplicate_id = crate::custom_view::next_id(&app.settings.view_definitions).unwrap();
+    app.settings.view_definitions.insert(
+        duplicate_id.clone(),
+        app.settings.view_definitions[&id].clone(),
+    );
+    let duplicate_key = crate::custom_view::key(&duplicate_id);
+    app.current_view_place()
+        .unwrap()
+        .set(&mut app.settings.custom_views, duplicate_key.clone());
+    app.resolve_view();
+    assert_eq!(
+        app.effective_view_key(),
+        duplicate_key,
+        "identical definitions still retain the explicitly selected saved identity"
+    );
+    app.remember_view();
+    assert_eq!(
+        app.current_view_place()
+            .unwrap()
+            .get(&app.settings.custom_views),
+        Some(duplicate_key.as_str())
+    );
+    app.step_view_choice(1, false);
+    assert_eq!(app.effective_view_key(), "details");
+    app.settings.view_definitions.remove(&duplicate_id);
+    app.current_view_place()
+        .unwrap()
+        .set(&mut app.settings.custom_views, key.clone());
+    app.resolve_view();
     app.game_list.select(0);
     app.touch_selection();
     app.settled_since = Some(Instant::now() - Duration::from_millis(300));

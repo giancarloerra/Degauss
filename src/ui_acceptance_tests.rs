@@ -2035,6 +2035,45 @@ fn run_misterzine_browser_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
     );
     app.prepare_misterzine_browser(true);
 
+    let baseline = crate::core_changes::Catalogue::default();
+    crate::core_changes::save(&app.cache_dir, &baseline).unwrap();
+    let history_path = app.cache_dir.join("core-updates-seen.json");
+    let history_before = std::fs::read(&history_path).unwrap();
+    let blocked_write = history_path.with_extension("part");
+    std::fs::create_dir(&blocked_write).unwrap();
+    let mut current = baseline.clone();
+    current.checked = 1;
+    let mut visit = crate::core_changes::Visit::new(Some(baseline.clone()));
+    visit.observe(current, true);
+    visit.presented();
+    app.core_changes_visit = Some(visit);
+    app.handle(Action::Quit);
+    app.refresh();
+    assert_eq!(
+        app.browsing,
+        Browsing::Categories,
+        "an automatic history-save error must not trap Back inside Core Updates"
+    );
+    assert!(app.ui.get_show_brand());
+    assert!(
+        app.message.as_deref().is_some_and(|message| {
+            message.contains("writing the cache") && message.contains("core-updates-seen.part")
+        }),
+        "the actual failed write remains visible after returning Home"
+    );
+    assert_eq!(std::fs::read(&history_path).unwrap(), history_before);
+    assert!(app.acknowledge_core_changes().is_err());
+    app.handle(Action::Quit);
+    assert!(app.message.is_none());
+    assert_eq!(app.browsing, Browsing::Categories);
+    std::fs::remove_dir(blocked_write).unwrap();
+    app.prepare_misterzine_browser(true);
+    assert_eq!(
+        app.core_changes_visit.as_ref().unwrap().baseline,
+        Some(baseline),
+        "reopening keeps the previously acknowledged comparison, not the failed write"
+    );
+
     let Outcome::Launch { plan, .. } = app.handle(Action::Accept).expect("local core launch")
     else {
         panic!("unexpected Core Updates launch outcome")

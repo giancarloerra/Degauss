@@ -2889,15 +2889,16 @@ fn validate_cache(cache: &Cache) -> std::result::Result<(), String> {
     Ok(())
 }
 
-fn save_cache(cache_dir: &Path, cache: &Cache, cancelled: &AtomicBool) -> Result<()> {
+fn save_cache(cache_dir: &Path, cache: &Cache, cancelled: &AtomicBool) -> Result<bool> {
     if cancelled.load(Ordering::Relaxed) {
-        return Ok(());
+        return Ok(false);
     }
     validate_cache(cache)
         .map_err(|detail| DegaussError::unsupported("Core Updates cache", detail))?;
     let bytes = postcard::to_stdvec(cache)
         .map_err(|error| DegaussError::unsupported("Core Updates cache", error.to_string()))?;
-    crate::cache::write(&cache_path(cache_dir), &bytes)
+    crate::cache::write(&cache_path(cache_dir), &bytes)?;
+    Ok(true)
 }
 
 fn configuration_matches(cache: &Cache, config: &DownloaderConfig) -> bool {
@@ -2993,10 +2994,15 @@ fn run_with_fetch<F>(
     if let Some(mut cache) = cached.filter(|cache| configuration_matches(cache, &config)) {
         match match_cache(&mut cache, &request, events, cancelled) {
             Ok(Some(snapshot)) if !request.force_refresh => {
-                if let Err(error) = save_cache(&request.cache_dir, &cache, cancelled) {
-                    crate::note(&format!(
+                match save_cache(&request.cache_dir, &cache, cancelled) {
+                    Ok(false) => {
+                        let _ = events.send(Event::Cancelled);
+                        return;
+                    }
+                    Err(error) => crate::note(&format!(
                         "core updates  local hash cache save failed: {error}"
-                    ));
+                    )),
+                    Ok(true) => {}
                 }
                 let _ = events.send(Event::Ready {
                     snapshot,
@@ -3130,13 +3136,20 @@ fn run_with_fetch<F>(
         });
         return;
     }
-    if let Err(error) = save_cache(&request.cache_dir, &cache, cancelled) {
-        crate::note(&format!("core updates  cache save failed: {error}"));
-        let _ = events.send(Event::Ready {
-            snapshot,
-            notice: Some("Core Updates were read but could not be saved.".into()),
-        });
-        return;
+    match save_cache(&request.cache_dir, &cache, cancelled) {
+        Ok(false) => {
+            let _ = events.send(Event::Cancelled);
+            return;
+        }
+        Err(error) => {
+            crate::note(&format!("core updates  cache save failed: {error}"));
+            let _ = events.send(Event::Ready {
+                snapshot,
+                notice: Some("Core Updates were read but could not be saved.".into()),
+            });
+            return;
+        }
+        Ok(true) => {}
     }
     snapshot.complete_refresh = true;
     let _ = events.send(Event::Ready {
@@ -3954,6 +3967,34 @@ db_url = https://example.test/two.json
         }));
         assert!(notice.is_none());
         assert_eq!(refetches.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn cancelled_cache_save_does_not_report_a_completed_refresh() {
+        let root = TestRoot::new("cancel-cache-save");
+        let directory = root.path().join("cache");
+        let mut cache = Cache {
+            format: CACHE_FORMAT,
+            checked: 1,
+            global_filter: String::new(),
+            global_filter_defined: false,
+            configuration: vec![database("source", "https://example.test/db.json")],
+            cores: Vec::new(),
+            local_hashes: Vec::new(),
+        };
+        let cancelled = AtomicBool::new(false);
+        assert!(save_cache(&directory, &cache, &cancelled).unwrap());
+        let original = std::fs::read(cache_path(&directory)).unwrap();
+        cache.checked = 2;
+        cancelled.store(true, Ordering::Relaxed);
+        assert!(
+            !save_cache(&directory, &cache, &cancelled).unwrap(),
+            "cancelled saves cannot be used to acknowledge a fresh catalogue"
+        );
+        assert_eq!(std::fs::read(cache_path(&directory)).unwrap(), original);
+        cancelled.store(false, Ordering::Relaxed);
+        assert!(save_cache(&directory, &cache, &cancelled).unwrap());
+        assert_eq!(load_cache(&directory).unwrap().unwrap().checked, 2);
     }
 
     #[test]

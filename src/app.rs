@@ -8705,6 +8705,7 @@ impl App {
     /// global default, never whatever view the previous place happened to use.
     fn resolve_view(&mut self) {
         self.custom_view.active = None;
+        self.custom_view.active_id = None;
         self.custom_view.information_focus = false;
         if self.in_misterzine_browser() {
             self.layout = Layout::Details;
@@ -8724,6 +8725,8 @@ impl App {
                 match crate::custom_view::from_key(&self.settings.view_definitions, key) {
                     Some(view) => {
                         self.custom_view.active = Some(view.clone());
+                        self.custom_view.active_id =
+                            key.strip_prefix("custom:").map(str::to_string);
                         self.layout = Layout::Details;
                     }
                     None => {
@@ -13969,13 +13972,6 @@ impl App {
     /// controller enough to reach everything, including exit.
     fn go_back(&mut self) -> Option<Outcome> {
         self.request_storage_check();
-        if self.screen == Screen::Browse && self.in_misterzine_browser() {
-            if let Err(error) = self.acknowledge_core_changes() {
-                self.message = Some(error.to_string());
-                self.dirty = true;
-                return None;
-            }
-        }
         if self.explore.active && self.explore_back() {
             return None;
         }
@@ -14109,6 +14105,7 @@ impl App {
             }
             Screen::Browse => match self.browsing {
                 Browsing::Games if self.in_misterzine_browser() => {
+                    let history_error = self.acknowledge_core_changes().err();
                     // A late network or game-art result must not redraw Home
                     // with Core Updates' rows after this browser was left.
                     self.misterzine_job = None;
@@ -14117,7 +14114,7 @@ impl App {
                     self.misterzine_filters.clear();
                     self.misterzine_filter_options = std::array::from_fn(|_| Vec::new());
                     self.misterzine_filter_field = None;
-                    self.message = None;
+                    self.message = history_error.map(|error| error.to_string());
                     self.all_here.clear();
                     self.here.clear();
                     self.open_category = None;
