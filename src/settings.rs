@@ -366,6 +366,10 @@ pub struct Settings {
     /// Absent preserves full names from releases before this setting.
     #[serde(default)]
     pub game_name_display: Option<GameNameDisplay>,
+    /// Show the complete MRA filename stem instead of its metadata title.
+    /// Absent keeps the existing metadata-based Arcade names.
+    #[serde(default)]
+    pub use_mra_filenames: Option<bool>,
     /// Whether folder rows receive Degauss's outer `[ name ]` marker.
     /// Absent preserves the marker used by earlier releases.
     #[serde(default)]

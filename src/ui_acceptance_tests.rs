@@ -356,7 +356,9 @@ fn fixture_directory() -> PathBuf {
             std::process::id()
         ));
         match std::fs::create_dir(&path) {
-            Ok(()) => return path,
+            // Scripts discovery returns canonical paths, including macOS's
+            // /var alias. Fixtures must use those same persisted identities.
+            Ok(()) => return path.canonicalize().unwrap(),
             Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
             Err(error) => panic!("creating UI fixture: {error}"),
         }
@@ -2009,7 +2011,7 @@ fn run_misterzine_browser_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
     assert_eq!(app.here.len(), 1);
     assert_eq!(app.here[0].name, "Installed Arcade Release");
 
-    app.filter = "ARCADE".to_string();
+    app.filter = "Arcade Release".to_string();
     app.apply_filter();
     app.settings.custom_views.categories = Some("list".into());
     app.prepare_misterzine_browser(false);
@@ -2152,7 +2154,14 @@ fn run_misterzine_browser_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
 }
 
 fn run_handheld_category_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
-    let mut app = fixture_app(root, window, Settings::default());
+    let mut app = fixture_app(
+        root,
+        window,
+        Settings {
+            show_explore: Some(true),
+            ..Default::default()
+        },
+    );
     let mut handheld = app.all_systems[0].clone();
     handheld.def.handheld = true;
     let mut console = handheld.clone();
@@ -2174,7 +2183,7 @@ fn run_handheld_category_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
             .iter()
             .map(|(name, _)| name.as_str())
             .collect::<Vec<_>>(),
-        vec![crate::explore::NAME, "Console", SCRIPTS_CATEGORY]
+        vec!["Console", crate::explore::NAME, SCRIPTS_CATEGORY]
     );
     let saved = app.position();
     let selected_game = row_key(&app.here[app.game_list.selected()]);
@@ -2207,9 +2216,9 @@ fn run_handheld_category_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
             .map(|(name, _)| name.as_str())
             .collect::<Vec<_>>(),
         vec![
-            crate::explore::NAME,
             "Console",
             HANDHELD_CATEGORY,
+            crate::explore::NAME,
             SCRIPTS_CATEGORY
         ]
     );
@@ -6803,6 +6812,21 @@ fn run_manual_pack_match_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
     arcade_app.open_system_by_index(0);
     arcade_app.message = None;
     arcade_app.enter(Place::Dir(arcade));
+    select_row_named(&mut arcade_app, "Known Arcade");
+    let original = arcade_app.here.clone();
+    let original_xml = std::fs::read(&mra).unwrap();
+    arcade_app.screen = Screen::Options;
+    arcade_app.adjust_option_value(OptionId::UseMraFilenames, 1);
+    arcade_app.screen = Screen::Browse;
+    assert_eq!(arcade_app.shown_row_name(&arcade_app.here[0]), "Descriptor");
+    assert_eq!(
+        arcade_app.here, original,
+        "Pack metadata must not be rewritten"
+    );
+    assert_eq!(std::fs::read(&mra).unwrap(), original_xml);
+    arcade_app.screen = Screen::Options;
+    arcade_app.adjust_option_value(OptionId::UseMraFilenames, -1);
+    arcade_app.screen = Screen::Browse;
     select_row_named(&mut arcade_app, "Known Arcade");
     assert!(arcade_app.selected_game_launch_core_target().is_none());
     assert_eq!(
@@ -11856,6 +11880,83 @@ fn run_game_name_display_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
     restarted.ui.hide().unwrap();
 }
 
+fn run_mra_filename_display_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
+    let root = root.join("mra-filenames");
+    let games = root.join("_Arcade");
+    std::fs::create_dir_all(&games).unwrap();
+    for name in ["A Game (Japan, Rev 2).mra", "Z Game (World).mra"] {
+        std::fs::write(games.join(name), "<misterromdescription><name>Shared metadata title</name><rbf>Fixture</rbf></misterromdescription>").unwrap();
+    }
+    std::fs::write(games.join("gamelist.xml"), "<gameList><game><path>./A Game (Japan, Rev 2).mra</path><name>Shared metadata title</name></game><game><path>./Z Game (World).mra</path><name>Shared metadata title</name></game></gameList>").unwrap();
+    let mut app = unopened_fixture_app_with_systems(
+        &root,
+        window.clone(),
+        Settings {
+            game_name_display: Some(GameNameDisplay::RemoveParenthesesAndBrackets),
+            ..Default::default()
+        },
+        &["Arcade"],
+        "_Arcade",
+    );
+    app.open_system_by_index(0);
+    app.leave_splash();
+    app.finish_background_work_for_headless();
+    app.message = None;
+    app.refresh();
+    assert!(app
+        .here
+        .iter()
+        .all(|row| row.name == "Shared metadata title"));
+    let snapshot = cache_snapshot(&app.cache_dir);
+    let xml = std::fs::read(games.join("gamelist.xml")).unwrap();
+    let keys = app.here.iter().map(row_key).collect::<HashSet<_>>();
+    select_option(&mut app, OptionsPage::Appearance, OptionId::UseMraFilenames);
+    app.handle(Action::Accept);
+    leave_options_to_browse(&mut app);
+    for layout in Layout::ALL {
+        app.layout = layout;
+        app.apply_geometry();
+        app.refresh();
+        assert_eq!(
+            app.rows.row_data(0).unwrap().title,
+            "A Game (Japan, Rev 2)",
+            "{layout:?}"
+        );
+        assert_eq!(
+            app.rows.row_data(1).unwrap().title,
+            "Z Game (World)",
+            "{layout:?}"
+        );
+    }
+    app.filter = "Japan".into();
+    app.apply_filter();
+    assert_eq!(app.here.len(), 1);
+    assert!(row_key(&app.here[0]).ends_with("A Game (Japan, Rev 2).mra"));
+    app.clear_filter();
+    assert_eq!(app.here.iter().map(row_key).collect::<HashSet<_>>(), keys);
+    assert_eq!(cache_snapshot(&app.cache_dir), snapshot);
+    assert_eq!(std::fs::read(games.join("gamelist.xml")).unwrap(), xml);
+    let saved = Settings::load(&app.settings_path).unwrap();
+    assert_eq!(saved.use_mra_filenames, Some(true));
+    select_option(&mut app, OptionsPage::Appearance, OptionId::UseMraFilenames);
+    app.handle(Action::Accept);
+    leave_options_to_browse(&mut app);
+    app.refresh();
+    assert_eq!(app.rows.row_data(0).unwrap().title, "Shared metadata title");
+    app.ui.hide().unwrap();
+    drop(app);
+    let mut restarted =
+        unopened_fixture_app_with_systems(&root, window, saved, &["Arcade"], "_Arcade");
+    restarted.open_system_by_index(0);
+    restarted.leave_splash();
+    restarted.refresh();
+    assert_eq!(
+        restarted.rows.row_data(0).unwrap().title,
+        "A Game (Japan, Rev 2)"
+    );
+    restarted.ui.hide().unwrap();
+}
+
 fn run_details_style_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
     let artwork = Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/logos/NES.png");
     assert!(artwork.is_file());
@@ -12974,6 +13075,7 @@ pub(super) fn run_ui_acceptance_flow(window: Rc<MinimalSoftwareWindow>) {
     run_start_folder_and_game_position_flow(&root, window.clone());
     run_screen_rotation_flow(&root, window.clone());
     run_game_name_display_flow(&root, window.clone());
+    run_mra_filename_display_flow(&root, window.clone());
     run_details_style_flow(&root, window.clone());
     run_handheld_category_flow(&root, window.clone());
     run_scripts_flow(&root, window.clone());
@@ -13364,14 +13466,29 @@ pub(super) fn run_ui_acceptance_flow(window: Rc<MinimalSoftwareWindow>) {
     assert!(app.ui.get_find_filtering());
     assert_eq!(app.ui.get_find_query(), "GAME");
     assert_eq!(app.ui.get_heading(), "Search This Folder");
-    assert_eq!(app.ui.get_grid_help(), "A Type B Back X Del Y Clear");
-    assert_eq!(app.rows.row_count(), FIND_CELLS.chars().count());
+    assert_eq!(app.ui.get_grid_help(), "A Type B Back X Del Y Page");
+    assert_eq!(
+        app.rows.row_count(),
+        name_keyboard::keys(name_keyboard::Page::Lower, false).len()
+    );
     app.handle(Action::Context);
     app.refresh();
     assert_eq!(app.ui.get_find_query(), "GAM", "X deletes the last letter");
     app.handle(Action::Menu);
     app.refresh();
-    assert_eq!(app.ui.get_find_query(), "", "Y clears the live filter");
+    assert_eq!(
+        app.ui.get_find_query(),
+        "GAM",
+        "Y changes keyboard page without clearing the search"
+    );
+    assert_eq!(app.name_keyboard_page, name_keyboard::Page::Upper);
+    let clear = name_keyboard::keys(app.name_keyboard_page, false)
+        .iter()
+        .position(|key| *key == name_keyboard::Key::Clear)
+        .unwrap();
+    app.find_list.select(clear);
+    app.handle(Action::Accept);
+    app.find_list.select(0);
     app.handle(Action::Accept);
     app.refresh();
     assert_eq!(app.ui.get_find_query(), "A", "A adds the selected letter");
@@ -13382,6 +13499,24 @@ pub(super) fn run_ui_acceptance_flow(window: Rc<MinimalSoftwareWindow>) {
         "B keeps the search when returning to Browse"
     );
     assert!(!app.ui.get_find_filtering());
+    app.open_find(FindMode::Search);
+    app.filter.clear();
+    app.handle(Action::Accept);
+    assert_eq!(app.filter, "a", "lowercase is available in list searches");
+    let space = name_keyboard::keys(app.name_keyboard_page, false)
+        .iter()
+        .position(|key| *key == name_keyboard::Key::Space)
+        .unwrap();
+    app.find_list.select(space);
+    app.handle(Action::Accept);
+    assert_eq!(app.filter, "a ");
+    app.handle(Action::Menu);
+    app.handle(Action::Menu);
+    assert_eq!(app.name_keyboard_page, name_keyboard::Page::Symbols);
+    app.find_list.select(0);
+    app.handle(Action::Accept);
+    assert_eq!(app.filter, "a !");
+    app.handle(Action::Quit);
     app.open_find(FindMode::Jump);
     assert!(!app.ui.get_find_filtering());
     assert_eq!(app.ui.get_grid_help(), "A Pick   B Back");

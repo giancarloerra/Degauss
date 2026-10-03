@@ -760,7 +760,11 @@ impl App {
             ));
             self.home.edit_origin =
                 (self.browsing == Browsing::Categories).then(|| self.home_resume());
-            self.home.edit = Some(self.settings.home.clone());
+            let mut store = self.settings.home.clone();
+            if !self.settings.show_explore.unwrap_or(false) {
+                store.hidden.insert(crate::home::category_key(crate::explore::NAME));
+            }
+            self.home.edit = Some(store);
         }
     }
 
@@ -802,7 +806,6 @@ impl App {
             .map(|(name, _)| name.clone())
             .collect::<Vec<_>>();
         for name in [
-            crate::explore::NAME,
             "Arcade",
             "Console",
             HANDHELD_CATEGORY,
@@ -811,6 +814,7 @@ impl App {
             "Other",
             "Unstable",
             LAST_PLAYED_CATEGORY,
+            crate::explore::NAME,
             FAVORITES_ID,
             CORES_CATEGORY,
             MISTERZINE_CATEGORY,
@@ -950,13 +954,19 @@ impl App {
     }
 
     fn finish_home_edit(&mut self, save: bool) {
+        let mut visibility_changed = false;
         if save {
             let Some(store) = self.home.edit.clone() else {
                 return;
             };
+            let enabled = !store.hidden.contains(&crate::home::category_key(crate::explore::NAME));
+            let previous = self.settings.show_explore;
+            self.settings.show_explore = Some(enabled);
             if !self.save_home_store(store) {
+                self.settings.show_explore = previous;
                 return;
             }
+            visibility_changed = previous.unwrap_or(false) != enabled;
         }
         self.home.edit = None;
         self.home.image = None;
@@ -977,7 +987,11 @@ impl App {
             .as_ref()
             .map(|origin| origin.key.clone())
             .or_else(|| self.selected_home_key().map(str::to_string));
-        self.rebuild_home_rows();
+        if visibility_changed {
+            self.rebuild_system_list();
+        } else {
+            self.rebuild_home_rows();
+        }
         self.category_list = ListState::new(self.home.rows.len(), self.geometry.visible);
         if let Some(index) = selected
             .as_ref()

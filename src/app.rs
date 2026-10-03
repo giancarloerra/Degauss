@@ -369,6 +369,7 @@ fn option_operation(option: OptionId, input: OptionInput) -> OptionOperation {
         | OptionId::ArtworkScale
         | OptionId::DetailsStyle
         | OptionId::GameNameDisplay
+        | OptionId::UseMraFilenames
         | OptionId::FolderBrackets
         | OptionId::ShowGamePosition
         | OptionId::ShowHidden
@@ -3142,11 +3143,11 @@ fn reselect(rows: &[browse::Row], remembered: Option<&str>, fallback: usize) -> 
 
 /// Order canonical rows by the name the user can currently see, without
 /// changing row identity. Full names retain the cache's established key.
-fn sort_rows_for_display(rows: &mut [browse::Row], mode: GameNameDisplay) {
+fn sort_rows_for_display(rows: &mut [browse::Row], mode: GameNameDisplay, mra_filenames: bool) {
     rows.sort_by_cached_key(|row| {
         let shown = match mode {
-            GameNameDisplay::Full => row.sort_key.clone(),
-            _ => mode.apply(&row.name).to_lowercase(),
+            GameNameDisplay::Full if !mra_filenames => row.sort_key.clone(),
+            _ => crate::name_display::row_name(row, mode, mra_filenames).to_lowercase(),
         };
         (shown, row.sort_key.clone())
     });
@@ -3313,8 +3314,7 @@ fn first_letter(key: &str) -> char {
     key.chars().next().unwrap_or(' ').to_ascii_lowercase()
 }
 
-/// A title with its spaces and punctuation taken out, in capitals, so a
-/// search can be typed on a grid that has neither.
+/// Search matching ignores spaces, punctuation and ASCII letter case.
 fn squashed(name: &str) -> String {
     name.chars()
         .filter(|c| c.is_ascii_alphanumeric())
@@ -5500,7 +5500,11 @@ impl App {
         if self.screen == Screen::Find {
             // The grid sizes itself from the screen rather than from the
             // list geometry, which is measured for rows of text.
-            let cells = FIND_CELLS.chars().count();
+            let cells = if self.find_mode == FindMode::Search {
+                name_keyboard::keys(self.name_keyboard_page, false).len()
+            } else {
+                FIND_CELLS.chars().count()
+            };
             self.ui.set_columns(FIND_COLUMNS as i32);
             self.ui
                 .set_grid_rows(cells.div_ceil(FIND_COLUMNS).max(1) as i32);
@@ -5542,7 +5546,7 @@ impl App {
                 "A Type  B Search  X Del  Y Page"
             }
             Screen::ScraperKeyboard => "A Type  B Done  X Del  Y Page",
-            Screen::Find if self.find_mode == FindMode::Search => "A Type B Back X Del Y Clear",
+            Screen::Find if self.find_mode == FindMode::Search => "A Type B Back X Del Y Page",
             Screen::Find => "A Pick   B Back",
             _ => "",
         };
@@ -5771,7 +5775,7 @@ impl App {
             return;
         };
         let mut row = row.clone();
-        let shown_name = self.game_name_display.apply(&row.name).into_owned();
+        let shown_name = self.shown_row_name(&row).into_owned();
         let request = self.information_request(&row);
         if let Ok(request) = &request {
             row.kind = browse::Kind::Play(request.launch.clone());
@@ -9261,8 +9265,14 @@ impl App {
         }
         // Library and cache rows already arrive in canonical Full order.
         // Preserve that exact path and cost for existing configurations.
-        if self.game_name_display != GameNameDisplay::Full {
-            sort_rows_for_display(rows, self.game_name_display);
+        if self.game_name_display != GameNameDisplay::Full
+            || self.settings.use_mra_filenames.unwrap_or(false)
+        {
+            sort_rows_for_display(
+                rows,
+                self.game_name_display,
+                self.settings.use_mra_filenames.unwrap_or(false),
+            );
         }
         group_rows(rows, self.folders_last, self.favorites_first);
     }
@@ -9273,7 +9283,10 @@ impl App {
         if self.explore.active {
             let selected = self.explore_selected().map(crate::explore::Entry::key);
             if let Some(catalogue) = &mut self.explore.catalogue {
-                catalogue.present_names(self.game_name_display);
+                catalogue.present_names(
+                    self.game_name_display,
+                    self.settings.use_mra_filenames.unwrap_or(false),
+                );
             }
             self.filter_explore(false);
             if let Some(at) = self.explore.matches.iter().position(|at| {
@@ -9289,11 +9302,19 @@ impl App {
         }
         let selected = self.browse_row(self.game_list.selected()).map(row_key);
         if self.filter.is_empty() {
-            sort_rows_for_display(&mut self.here, self.game_name_display);
+            sort_rows_for_display(
+                &mut self.here,
+                self.game_name_display,
+                self.settings.use_mra_filenames.unwrap_or(false),
+            );
             group_rows(&mut self.here, self.folders_last, self.favorites_first);
             self.game_list = ListState::new(self.here.len(), self.geometry.visible);
         } else {
-            sort_rows_for_display(&mut self.all_here, self.game_name_display);
+            sort_rows_for_display(
+                &mut self.all_here,
+                self.game_name_display,
+                self.settings.use_mra_filenames.unwrap_or(false),
+            );
             group_rows(&mut self.all_here, self.folders_last, self.favorites_first);
             self.apply_filter();
         }
@@ -11793,6 +11814,7 @@ impl App {
     }
 
     fn rebuild_misterzine_rows(&mut self) {
+        let wanted = squashed(&self.filter);
         let selected = self
             .misterzine_visible
             .get(self.game_list.selected())
@@ -11800,7 +11822,7 @@ impl App {
         self.misterzine_visible = self
             .misterzine_items
             .iter()
-            .filter(|item| self.filter.is_empty() || squashed(item.title()).contains(&self.filter))
+            .filter(|item| wanted.is_empty() || squashed(item.title()).contains(&wanted))
             .filter(|item| self.misterzine_filters.matches(item))
             .filter(|item| {
                 self.core_changes_visit
@@ -12133,6 +12155,9 @@ impl App {
                         self.last_played.entries.len().min(visible),
                     ));
                 }
+                if self.settings.show_explore.unwrap_or(false) {
+                    categories.push((crate::explore::NAME.to_string(), 0));
+                }
                 continue;
             }
             // Other holds the cores that are not games, which is not what
@@ -12208,10 +12233,6 @@ impl App {
         };
 
         self.categories = categories;
-        if self.settings.show_explore.unwrap_or(true) {
-            self.categories
-                .insert(0, (crate::explore::NAME.to_string(), 0));
-        }
         let selected_key = self.selected_home_key().map(str::to_string);
         let selected_category = self.category_list.selected();
         self.rebuild_home_rows();
@@ -13059,7 +13080,10 @@ impl App {
             }
             OptionOperation::ConfirmResetCustomViews => {
                 self.pending = Some(Pending::ResetCustomViews);
-                self.message = Some("Reset all custom views?\n\nA yes, B no".to_string());
+                self.message = Some(
+                    "Reset views selections to global?\n\nNamed views are kept.\nA yes, B no"
+                        .to_string(),
+                );
                 self.dirty = true;
             }
             OptionOperation::ConfirmResetHidden => {
@@ -13476,6 +13500,11 @@ impl App {
                 self.settings.game_name_display = Some(self.game_name_display);
                 self.refresh_name_presentation();
             }
+            OptionId::UseMraFilenames => {
+                self.settings.use_mra_filenames =
+                    Some(!self.settings.use_mra_filenames.unwrap_or(false));
+                self.refresh_name_presentation();
+            }
             OptionId::FolderBrackets => {
                 self.folder_brackets = !self.folder_brackets;
                 self.settings.folder_brackets = Some(self.folder_brackets);
@@ -13553,7 +13582,14 @@ impl App {
                 self.rebuild_system_list();
             }
             OptionId::ShowExplore => {
-                self.settings.show_explore = Some(!self.settings.show_explore.unwrap_or(true));
+                let enabled = !self.settings.show_explore.unwrap_or(false);
+                self.settings.show_explore = Some(enabled);
+                let key = crate::home::category_key(crate::explore::NAME);
+                if enabled {
+                    self.settings.home.hidden.remove(&key);
+                } else {
+                    self.settings.home.hidden.insert(key);
+                }
                 self.rebuild_system_list();
             }
             OptionId::ShowScripts => {
@@ -13760,6 +13796,7 @@ impl App {
             OptionId::ArtworkScale => self.artwork_scale.shown().to_string(),
             OptionId::DetailsStyle => self.details_style.shown().to_string(),
             OptionId::GameNameDisplay => self.game_name_display.label().to_string(),
+            OptionId::UseMraFilenames => on_off(self.settings.use_mra_filenames.unwrap_or(false)),
             OptionId::FolderBrackets => on_off(self.folder_brackets),
             OptionId::ShowGamePosition => on_off(self.settings.show_game_position.unwrap_or(true)),
             OptionId::ShowStats => on_off(self.show_stats),
@@ -13790,7 +13827,7 @@ impl App {
             OptionId::ShowMisterZine => on_off(self.show_misterzine),
             OptionId::ShowUnstable => on_off(self.show_unstable),
             OptionId::ShowScripts => on_off(self.settings.show_scripts.unwrap_or(true)),
-            OptionId::ShowExplore => on_off(self.settings.show_explore.unwrap_or(true)),
+            OptionId::ShowExplore => on_off(self.settings.show_explore.unwrap_or(false)),
             OptionId::CorePreference => self
                 .settings
                 .core_preference
@@ -13895,7 +13932,7 @@ impl App {
         self.resolve_view();
         self.apply_geometry();
         if saved {
-            self.message = Some(format!("{removed} custom views reset"));
+            self.message = Some(format!("{removed} view selections reset to global"));
         }
         self.dirty = true;
     }
@@ -14459,7 +14496,7 @@ impl App {
             match self.browsing {
                 Browsing::Games => {
                     if let Some(row) = self.browse_row(self.game_list.selected()) {
-                        return self.game_name_display.apply(&row.name).into_owned();
+                        return self.shown_row_name(row).into_owned();
                     }
                 }
                 Browsing::Systems => {
@@ -14974,7 +15011,12 @@ impl App {
     /// Open the grid of letters.
     fn open_find(&mut self, mode: FindMode) {
         self.find_mode = mode;
-        let cells = FIND_CELLS.chars().count();
+        self.name_keyboard_page = name_keyboard::Page::Lower;
+        let cells = if mode == FindMode::Search {
+            name_keyboard::keys(self.name_keyboard_page, false).len()
+        } else {
+            FIND_CELLS.chars().count()
+        };
         self.find_list = ListState::new(cells, cells);
         self.find_list.reshape(cells, FIND_COLUMNS);
         self.screen = Screen::Find;
@@ -15262,6 +15304,17 @@ impl App {
 
     /// Act on the cell under the cursor.
     fn pick_letter(&mut self) {
+        if self.find_mode == FindMode::Search {
+            match name_keyboard::keys(self.name_keyboard_page, false).get(self.find_list.selected())
+            {
+                Some(name_keyboard::Key::Character(character)) => self.filter.push(*character),
+                Some(name_keyboard::Key::Space) => self.filter.push(' '),
+                Some(name_keyboard::Key::Clear) => self.filter.clear(),
+                _ => return,
+            }
+            self.apply_filter();
+            return;
+        }
         let Some(letter) = FIND_CELLS.chars().nth(self.find_list.selected()) else {
             return;
         };
@@ -15288,7 +15341,7 @@ impl App {
         let letters: Vec<char> = match self.browsing {
             Browsing::Games => self
                 .browse_rows()
-                .map(|row| first_letter(self.game_name_display.apply(&row.name).as_ref()))
+                .map(|row| first_letter(self.shown_row_name(row).as_ref()))
                 .collect(),
             Browsing::Systems if self.in_cores_browser() => self
                 .core_categories()
@@ -15353,7 +15406,7 @@ impl App {
                 .browse_rows()
                 .map(|row| {
                     (
-                        first_letter(self.game_name_display.apply(&row.name).as_ref()),
+                        first_letter(self.shown_row_name(row).as_ref()),
                         row.is_folder(),
                         row.favorite,
                     )
@@ -15383,8 +15436,7 @@ impl App {
 
     /// Project the complete in-memory rows through title and metadata filters.
     ///
-    /// Spaces are dropped from both sides, because the grid has no space
-    /// key and typing SUPERM should still find Super Mario.
+    /// Spaces are dropped from both sides so SUPERM still finds Super Mario.
     fn apply_filter(&mut self) {
         if self.explore.active {
             self.explore.query.title = self.filter.clone();
@@ -15405,8 +15457,9 @@ impl App {
         if !active {
             self.here = std::mem::take(&mut self.all_here);
         } else {
-            let wanted = self.filter.as_str();
+            let wanted = squashed(&self.filter);
             let mode = self.game_name_display;
+            let mra_filenames = self.settings.use_mra_filenames.unwrap_or(false);
             self.here = self
                 .all_here
                 .iter()
@@ -15414,10 +15467,15 @@ impl App {
                     if row.is_folder() {
                         // Metadata criteria apply to games only. When any is
                         // active, every subfolder remains reachable.
-                        metadata_active || wanted.is_empty() || squashed(&row.name).contains(wanted)
+                        metadata_active
+                            || wanted.is_empty()
+                            || squashed(&row.name).contains(&wanted)
                     } else {
                         (wanted.is_empty()
-                            || squashed(mode.apply(&row.name).as_ref()).contains(wanted))
+                            || squashed(
+                                crate::name_display::row_name(row, mode, mra_filenames).as_ref(),
+                            )
+                            .contains(&wanted))
                             && self.game_filters.matches(row)
                     }
                 })
@@ -20040,13 +20098,12 @@ impl App {
                 if self.screen == Screen::Browse {
                     self.open_menu();
                 } else if self.screen == Screen::Find && self.find_mode == FindMode::Search {
-                    // Y wipes what has been typed rather than leaving: on a
-                    // grid the two spare buttons are the only edit keys
-                    // there are.
-                    self.filter.clear();
-                    if self.find_mode == FindMode::Search {
-                        self.apply_filter();
-                    }
+                    self.name_keyboard_page = self.name_keyboard_page.next();
+                    self.find_list.reshape(
+                        name_keyboard::keys(self.name_keyboard_page, false).len(),
+                        FIND_COLUMNS,
+                    );
+                    self.apply_geometry();
                     self.dirty = true;
                 } else {
                     return self.go_back();
@@ -20460,7 +20517,7 @@ impl App {
                                 // system's logo is better than a blank plate.
                                 self.game_placeholder_logo()
                             }),
-                            self.game_name_display.apply(&row.name).into_owned(),
+                            self.shown_row_name(row).into_owned(),
                             heart,
                             game_art,
                         )
@@ -21057,9 +21114,17 @@ impl App {
             // A strip of pictures, drifting sideways. Enough of them to
             // cover the width plus one either side, taken from the ring so
             Screen::Find => {
-                for cell in FIND_CELLS.chars() {
+                let labels = if self.find_mode == FindMode::Search {
+                    name_keyboard::keys(self.name_keyboard_page, false)
+                        .into_iter()
+                        .map(|key| key.label())
+                        .collect::<Vec<_>>()
+                } else {
+                    FIND_CELLS.chars().map(|cell| cell.to_string()).collect()
+                };
+                for label in labels {
                     rows.push(Row {
-                        title: SharedString::from(cell.to_string()),
+                        title: SharedString::from(label),
                         favorite: false,
                         cover: slint::Image::default(),
                         has_cover: false,
@@ -21291,7 +21356,7 @@ impl App {
                             );
                             gallery_pending |= deferred;
                             let row = self.browse_row(index).expect("visible game row");
-                            let shown_name = self.game_name_display.apply(&row.name);
+                            let shown_name = self.shown_row_name(row);
                             rows.push(Row {
                                 // A folder is marked as one. Nothing else in
                                 // the list says which rows can be entered.

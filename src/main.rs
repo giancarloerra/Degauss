@@ -655,7 +655,7 @@ fn check_install(config_path: &Path) -> Result<()> {
     }
 
     match std::fs::read_to_string(config_path) {
-        Ok(text) => match Config::parse(&text, config_path) {
+        Ok(_) => match Config::load(config_path) {
             Ok(_) => println!("degauss.toml present, parses"),
             Err(e) => {
                 println!("degauss.toml PRESENT BUT BROKEN");

@@ -35,6 +35,7 @@ pub enum OptionId {
     DetailsStyle,
     /// Runtime-only formatting of the final effective game or folder name.
     GameNameDisplay,
+    UseMraFilenames,
     /// Whether folder rows receive Degauss's outer square-bracket marker.
     FolderBrackets,
     /// Whether game browsing shows the selected row position and total.
@@ -142,6 +143,7 @@ pub const OPTIONS: &[OptionId] = &[
     OptionId::StartFolder,
     OptionId::DetailsStyle,
     OptionId::GameNameDisplay,
+    OptionId::UseMraFilenames,
     OptionId::FolderBrackets,
     OptionId::ShowGamePosition,
     OptionId::Font,
@@ -282,6 +284,7 @@ impl OptionsPage {
                 OptionId::StartFolder,
                 OptionId::DetailsStyle,
                 OptionId::GameNameDisplay,
+                OptionId::UseMraFilenames,
                 OptionId::FolderBrackets,
                 OptionId::ShowGamePosition,
                 OptionId::Font,
@@ -339,9 +342,10 @@ impl OptionId {
             OptionId::Layout => "View",
             OptionId::CustomViews => "Custom Views",
             OptionId::StartFolder => "Start Folder",
-            OptionId::ResetCustomViews => "Reset All Custom Views",
+            OptionId::ResetCustomViews => "Reset Views Selections to Global",
             OptionId::DetailsStyle => "Details Style",
             OptionId::GameNameDisplay => "Game Name Display",
+            OptionId::UseMraFilenames => "Use MRA Filenames for Arcade Titles",
             OptionId::FolderBrackets => "Folder Brackets",
             OptionId::ShowGamePosition => "Game Total/Position",
             OptionId::Font => "Text",
@@ -396,6 +400,7 @@ impl OptionId {
     /// explain are settings nobody should have.
     pub fn help(self) -> &'static str {
         match self {
+            OptionId::UseMraFilenames => "Show the full Arcade MRA filename, including region and revision, instead of its metadata title. Other game names are unchanged.",
             OptionId::Speed => "Set how quickly the selection moves while a direction is held.",
             OptionId::LeftRight => {
                 "Choose speed changes, letter jumps, page jumps or movement. Direction uses rows in grids."
@@ -417,7 +422,7 @@ impl OptionId {
                 "Choose Home or an available top-level folder to open when Degauss starts. A missing folder safely opens Home."
             }
             OptionId::ResetCustomViews => {
-                "Remove all custom views after confirmation. Every place will use the global view."
+                "Reset every place's view selection to the global view after confirmation. Named custom views are kept."
             }
             OptionId::DetailsStyle => {
                 "Information shows a summary, Large Artwork fills the column, Compact shows more titles."

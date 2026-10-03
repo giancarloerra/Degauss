@@ -48,6 +48,14 @@ const MORE_PUBLISHER: &str = "More by Publisher";
 const SAME_GENRE: &str = "Same Genre";
 
 impl App {
+    fn shown_row_name<'a>(&self, row: &'a browse::Row) -> std::borrow::Cow<'a, str> {
+        if self.explore.active {
+            std::borrow::Cow::Borrowed(&row.name)
+        } else {
+            crate::name_display::row_name(row, self.game_name_display, self.settings.use_mra_filenames.unwrap_or(false))
+        }
+    }
+
     fn name_keyboard_controls(&self) -> bool {
         matches!(
             self.name_keyboard_purpose,
@@ -199,6 +207,7 @@ impl App {
                 self.scraper_settings.language.as_deref(),
             ),
             names: self.game_name_display,
+            mra_filenames: self.settings.use_mra_filenames.unwrap_or(false),
             previous: None,
         };
         self.explore.restore_selection = Some((
@@ -276,7 +285,7 @@ impl App {
                     self.touch_selection();
                     if let Some(catalogue) = &self.explore.catalogue {
                         if !catalogue.omitted.is_empty() {
-                            self.message = Some(format!("{} games available. {} indexed sources/folders were omitted.\n{}\nActions: Indexed Coverage for the complete report.", catalogue.entries.len(), catalogue.omitted.len(), catalogue.omitted[0]));
+                            self.message = Some(format!("{} games available. {} notices about omitted indexed sources, folders or games.\n{}\nActions: Indexed Coverage for the complete report.", catalogue.entries.len(), catalogue.omitted.len(), catalogue.omitted[0]));
                         }
                     }
                 }

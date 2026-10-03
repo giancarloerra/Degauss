@@ -732,6 +732,14 @@ fn run(
     emit(events, &mut progress);
 
     let mut settings = request.settings.clone();
+    // An explicit result selection accepts its picture. Automatic and batch
+    // scraping still use the saved policy, and Images Off remains Off.
+    if selected_match.is_some()
+        && matches!(request.scope, Scope::Game { .. })
+        && settings.image_policy == super::ImagePolicy::MissingOnly
+    {
+        settings.image_policy = super::ImagePolicy::ReplaceExisting;
+    }
     let batch = match super::targets::collect_for_source(
         &request.systems,
         &request.names,
@@ -3828,6 +3836,59 @@ mod tests {
         std::fs::remove_dir_all(root).unwrap();
     }
 
+    #[test]
+    fn libretro_accepting_a_single_match_replaces_only_the_requested_picture() {
+        for policy in [ImagePolicy::MissingOnly, ImagePolicy::Off] {
+            let root = temp(&format!("libretro-manual-replacement-{policy:?}"));
+            std::fs::write(root.join("Game.rom"), b"game").unwrap();
+            std::fs::write(root.join("old.png"), PNG).unwrap();
+            std::fs::write(root.join("gamelist.xml"), "<gameList><game><path>./Game.rom</path><name>Local</name><desc>Keep this</desc><image>./old.png</image></game></gameList>").unwrap();
+            let mock = libretro_mock();
+            let mut request = libretro_request(&root);
+            request.scope = Scope::Game {
+                system_id: "NES".into(),
+                launch: crate::browse::Launch::File(root.join("Game.rom")),
+                title: "Local".into(),
+            };
+            request.settings.image_policy = policy;
+            let selected = super::super::libretro::Database::parse(
+                "Nintendo - Nintendo Entertainment System",
+                &mock.database,
+                &AtomicBool::new(false),
+            )
+            .unwrap()
+            .search("Canonical", request.settings.libretro_artwork)
+            .remove(0);
+            let (events, receiver) = mpsc::sync_channel(64);
+            run(
+                request,
+                mock.clone(),
+                &events,
+                &Arc::new(AtomicBool::new(false)),
+                Some(selected),
+            );
+            assert!(receiver
+                .try_iter()
+                .any(|event| matches!(event, Event::Finished(_))));
+            let xml = std::fs::read_to_string(root.join("gamelist.xml")).unwrap();
+            assert!(xml.contains("<name>Local</name>"));
+            assert!(xml.contains("<desc>Keep this</desc>"));
+            assert_eq!(
+                mock.images.load(Ordering::Relaxed),
+                usize::from(policy != ImagePolicy::Off)
+            );
+            assert_eq!(
+                xml.contains("<image>./old.png</image>"),
+                policy == ImagePolicy::Off
+            );
+            assert!(
+                root.join("old.png").is_file(),
+                "the former image file is not deleted"
+            );
+            std::fs::remove_dir_all(root).unwrap();
+        }
+    }
+
     fn request(root: &Path, settings: ScraperSettings) -> Request {
         Request {
             scope: Scope::System {
@@ -4061,12 +4122,7 @@ mod tests {
     }
 
     #[test]
-    fn a_selected_match_fills_individual_empty_fields_and_keeps_the_existing_picture() {
-        // Search Manually forces a new search but still applies the chosen
-        // image and metadata policies: with a picture on disk and one
-        // stored field, the selected match fills the empty fields one by
-        // one without fetching the picture it offers or replacing the
-        // local name.
+    fn a_selected_match_replaces_the_picture_but_preserves_the_metadata_policy() {
         let root = temp("selected-match-partial");
         std::fs::write(root.join("Game.rom"), b"game").unwrap();
         std::fs::write(root.join("art.png"), PNG).unwrap();
@@ -4103,8 +4159,8 @@ mod tests {
         );
         assert_eq!(
             mock.media_calls.load(Ordering::Relaxed),
-            0,
-            "the existing picture is kept under Missing only"
+            1,
+            "accepting a manual match replaces the picture even under Missing only"
         );
         let text = std::fs::read_to_string(root.join("gamelist.xml")).unwrap();
         assert!(text.contains("<name>Local Name</name>"), "{text}");
@@ -4113,7 +4169,7 @@ mod tests {
             text.contains("<desc>Description for Chosen Game</desc>"),
             "{text}"
         );
-        assert!(text.contains("<image>./art.png</image>"), "{text}");
+        assert!(!text.contains("<image>./art.png</image>"), "{text}");
         let _ = std::fs::remove_dir_all(root);
     }
 

@@ -114,6 +114,7 @@ Click the image to watch Degauss on YouTube.
   - [External storage support](#external-storage-support)
 - [Views](#views)
 - [Settings](#settings)
+  - [Manual configuration overrides](#manual-configuration-overrides)
   - [Themes and colours](#themes-and-colours)
     - [Editing a theme on-device](#editing-a-theme-on-device)
     - [Proposing a theme for an official release](#proposing-a-theme-for-an-official-release)
@@ -130,6 +131,10 @@ Click the image to watch Degauss on YouTube.
     - [After any change](#after-any-change)
   - [Keeping the card in order (additional bonus!)](#keeping-the-card-in-order-additional-bonus)
 - [Troubleshooting and FAQ](#troubleshooting-and-faq)
+  - [Why does a core appear in MiSTer's menu but not in Degauss?](#why-does-a-core-appear-in-misters-menu-but-not-in-degauss)
+  - [How can I rebuild just one system instead of the whole library?](#how-can-i-rebuild-just-one-system-instead-of-the-whole-library)
+  - [Can I put a system in a different Home folder?](#can-i-put-a-system-in-a-different-home-folder)
+  - [An Artwork Pack assigns the wrong picture to a game. How can I correct it?](#an-artwork-pack-assigns-the-wrong-picture-to-a-game-how-can-i-correct-it)
   - [What MiSTer hardware has Degauss been reported working on?](#what-mister-hardware-has-degauss-been-reported-working-on)
   - [Can an AI coding agent maintain my MiSTer after Update All?](#can-an-ai-coding-agent-maintain-my-mister-after-update-all)
   - [I installed an Artwork Pack, but its artwork is not showing](#i-installed-an-artwork-pack-but-its-artwork-is-not-showing)
@@ -217,6 +222,8 @@ It does not scan ROM folders, prepare an Artwork Pack or contact a game service.
 Unavailable or unindexed sources are reported; **Actions → Indexed Coverage**
 shows the complete report. Rebuild an affected system through its ordinary
 Library actions before reopening Explore if it has not yet been indexed.
+Games missing since indexing are skipped with a warning; healthy entries remain
+available, and Indexed Coverage lists the missing paths.
 
 Combine title search, category, system, decade and the existing six metadata
 fields. Filters combine together; each value's count respects the other chosen
@@ -230,7 +237,11 @@ copying games. **More by Developer**, **More by Publisher** and **Same Genre**
 start a cross-system search using the selected game's existing metadata.
 Back returns to the previous query or originating browser location. Returning
 from a game restores the query and selection; a fresh start begins unfiltered.
-**Options → Library → Show Explore Games** hides the Home entry.
+Explore Games is **Off** by default. Enable **Options → Library → Show Explore
+Games**, or show it in **Edit Home** and save. Its default position is after
+Last Played. Identical references and matching copies within a system appear
+once; distinct variants remain separate and include their filename when their
+displayed titles would otherwise be identical.
 
 ### Personal Home
 
@@ -692,9 +703,9 @@ reconnected, or after restarting Degauss. Unplugging and reconnecting entirely
 between checks may keep the previous answer. Storage is not continuously monitored
 while the browser is idle.
 
-`game_roots` in `degauss.toml` controls where to search; an absent optional
+`game_roots` in `degauss-user.toml` controls where to search; an absent optional
 root never causes a startup wait. To require a late mount before startup,
-add its actual mountpoint to `wait_for_mounts`:
+add its actual mountpoint to `wait_for_mounts` in that user file:
 
 ```toml
 # Games are directly mounted here:
@@ -716,7 +727,7 @@ Installations that relied on the previous automatic wait based on the stock
 CIFS script must now explicitly list their required mountpoint. Changes to
 game files on an already connected drive still need **Rebuild this system**
 or a full rebuild. A layout the defaults do not cover is one `game_roots`
-edit in `degauss.toml` away.
+edit in `degauss-user.toml` away. See [Manual configuration overrides](#manual-configuration-overrides).
 
 The first run reads the card and writes an index, about a minute for a
 full one of 97k+ games. It reads the ordinary game libraries only: an
@@ -912,7 +923,8 @@ in the file
 for you to correct. That substitution is reported on the first screen,
 unless a library read starts at the same time and takes the screen first,
 and always in `/tmp/degauss.log`, which is the copy that survives such a
-read. Pictures are decoded to `cover_size` in `degauss.toml` or half the
+read. Pictures are decoded to `cover_size` under `[app]` in the effective
+configuration or half the
 longer screen edge, whichever is larger. With the shipped `cover_size` of
 320 and the default screen margins, the Large Artwork box outgrows that
 decode on landscape screens wider than about 600 pixels (a little sooner
@@ -1049,10 +1061,11 @@ require **A** and confirmation, never a sideways press.
 | Appearance | Theme | Left and right choose a palette. Press A to open the editor. Standard uses the colours in `degauss.toml`. See [Themes and colours](#themes-and-colours) |
 | Appearance | View | The global default for places without a custom view: Details, Tiled, Carousel, List, Multi List or Gallery |
 | Appearance | Custom Views | Create, edit or choose a named template-based view |
-| Appearance | Reset All Custom Views | With A and confirmation, remove every place-specific view without changing the global View setting |
+| Appearance | Reset Views Selections to Global | With A and confirmation, remove every place-specific view selection without changing the global View or deleting named custom views |
 | Appearance | Start Folder | Home by default, or any currently available top-level folder. If the saved folder is no longer present, Degauss safely starts at Home without replacing the choice |
 | Appearance | Details Style | How Details shares the screen while browsing games. Information (default) keeps the list beside a picture of about 42% of the width, with the summary under it; Large Artwork gives the picture about 62% and the whole column height; Compact uses about 33% for the picture and shows more rows on higher-resolution screens |
 | Appearance | Game Name Display | Full (default), remove parenthesised tags, remove square-bracketed tags, remove both, or retain only recognised region and/or disc-index tags. This changes presentation, sorting and search only; names stored in files and caches are unchanged |
+| Appearance | Use MRA Filenames for Arcade Titles | Off by default. On shows each Arcade MRA's exact filename without `.mra`, retaining variant tags regardless of Game Name Display. Sorting and search follow the displayed title; artwork, metadata and launch targets stay unchanged |
 | Appearance | Folder Brackets | On by default. Turn off only Degauss's outer `[ name ]` marker for folders; square brackets that are part of the underlying name still follow Game Name Display |
 | Appearance | Game Total/Position | On by default. Turn off the selected-position and total counter while browsing games |
 | Appearance | Text | The typeface: Smooth, Pixel (a DOS font on whole pixels), and the bolder Smooth 2 and Pixel 2 |
@@ -1076,6 +1089,7 @@ require **A** and confirmation, never a sideways press.
 | Library | Show Unstable Folder | Show installed Unstable cores. On by default |
 | Library | Show Scripts Folder | On by default. Show Scripts in the main browser to browse and run installed `.sh` files. Turning this Off hides the entry without changing the files |
 | Library | Show Core Updates | Off by default. Show every installed core and uninstalled cores selected by this MiSTer's configured Downloader databases |
+| Library | Show Explore Games | Off by default. Show Explore after Last Played on Home. Edit Home can also show or hide it |
 | Library | Show Systems with No Games | Systems and folders holding nothing are left out on their own; this shows them. Off by default |
 | Library | Show What You Hid | Show what you hid yourself with **Hide This** |
 | Library | Unhide Everything | Press A and confirm to put back everything you hid yourself, in every folder and every system. Left and right do nothing |
@@ -1090,20 +1104,54 @@ require **A** and confirmation, never a sideways press.
 | Developer | Drawing Path | Draw into the screen directly, or into memory first |
 | Developer | Performance Readout | Replace the key hints with frame timings |
 
-`degauss.toml` is documentation as much as configuration: every value
-explains itself. Changes are written to `settings.toml` beside it when leaving
-an Options page, so your changes never overwrite those notes.
+`degauss.toml` contains shipped defaults. Changes made in Options are written
+to `settings.toml` beside it when leaving an Options page.
 If saving fails, the page stays open and a message explains the problem.
 Changes remain active for the current session; dismiss the message and press
 **B** again after resolving the storage problem to retry saving.
-Delete `settings.toml` to go back to the documented defaults.
+Delete `settings.toml` to reset UI preferences. Manual overrides still apply.
+
+### Manual configuration overrides
+
+Create `degauss-user.toml` beside `degauss.toml`, normally at
+`/media/fat/Scripts/.config/degauss/degauss-user.toml`, only when manual
+configuration is needed. Updates deliver `degauss.toml`, not your user file.
+With `--config`, the user file is looked for beside the selected configuration.
+
+Put only intentionally overridden values in it. Keys omitted at the root or
+inside a section retain the shipped defaults. Arrays replace the complete
+array and keep the order you supply. For example, to wait for a mounted share:
+
+```toml
+wait_for_mounts = ["/media/fat/cifs"]
+```
+
+Manual settings include `game_roots` (game search locations and order),
+`wait_for_mounts` (required startup mounts), `menu_root` (a custom MiSTer menu
+root), and optional artwork tuning `cover_size` and `art_cache` under `[app]`.
+For example, changing only the decode size requires:
+
+```toml
+[app]
+cover_size = 400
+```
+
+Do not copy all defaults into the user file. UI preferences remain in
+`settings.toml`; edit and save colours through **Options → Appearance → Theme
+→ press A**. The user file is not rewritten by Options. An unreadable or
+invalid user file is ignored for that run, with its path and underlying cause
+in `/tmp/degauss.log`; the base configuration, UI preferences and themes still
+apply. No partial overrides are used.
+
+Move only custom values you manually edited in degauss.toml into
+degauss-user.toml once, keeping any required TOML section headers, so future
+updates preserve them. Preferences chosen in Options and saved themes do not
+need moving.
 
 ### Themes and colours
 
-The ten palette colours Degauss draws with are roles in the `[colors]`
-block of `degauss.toml`, validated as `#rrggbb` when the file is read
-(the wordmark's `logo` colour, below, is the one colour that lives
-outside it):
+Edit all ten palette colours through **Options → Appearance → Theme → press
+A**, then save a named theme. The colours are roles rather than fixed hues:
 
 | Role | Does |
 |---|---|
@@ -1121,9 +1169,8 @@ outside it):
 A theme is one `.toml` file in the `themes/` folder beside `degauss.toml`
 (`Scripts/.config/degauss/themes/` on a card), naming any of those ten
 roles, and its file stem is its name in the **Theme** row of Options.
-The roles go in as bare keys or under a `[colors]` header, so the block
-from `degauss.toml` pastes in unchanged. A theme overlays your
-`[colors]`: roles it does not name show through from `degauss.toml`. One
+The roles go in as bare keys or under a `[colors]` header in a theme file.
+Roles it does not name use the shipped palette. One
 more key, `logo`, at the top level, draws the wordmark as a flat
 silhouette in that colour; leave it out and the wordmark keeps its own
 three colours. The optional top-level `logo_opacity` is an integer from
@@ -1158,16 +1205,15 @@ logo_opacity = 80
 
 picks a darker ground, a green selection bar and a wordmark blended 80%
 towards green from its original colours, and
-every other colour shows through from your `[colors]`. Copying the whole
-`[colors]` block out of `degauss.toml` and pasting it in, header and
-all, is also a valid theme, ready to be edited.
+every other colour uses the base palette. The on-device editor can save a
+complete theme without manually editing configuration files.
 
 Six themes are available as starting points: `Amber`, `Mono`,
 `Blue-Orange`, `Green Mono`, `Modern` and `Neon`. `Green Mono` defaults to
 Pixel 2, `Neon` to Pixel, and `Modern` to Smooth 2. The three older file-based
 themes do not set a font, so they use the system-wide Text choice. None of the six
 names `favorite`, so the hearts keep your own favourite colour under every
-palette: red unless you changed it in `[colors]`.
+palette: red unless changed in your saved theme.
 
 The updater manages the `Amber`, `Mono` and `Blue-Orange` files, so edits
 to those files are overwritten on the next update. Copy one under a new
@@ -1661,13 +1707,15 @@ For a direct title search without first running automatic matching, open
 **Start Scraping**. It searches the selected game's system using its pre-filled
 title. The same candidate picker lets you edit the title, preview a match and
 confirm its use. **B** returns to the single-game scraper settings. The account,
-password-storage confirmation and chosen Images and Metadata policies still
-apply: manual matching does not force replacement of existing data. This action
+password-storage confirmation and chosen Metadata policy still apply.
+Accepting a manual match replaces its picture even with **Images: Missing only**;
+**Images: Off** still downloads no picture. This action
 is available only for an individual game, not folder, system or all-system jobs.
 
 Use Search Manually when an automatic match was wrong. To correct existing
-artwork or metadata, set the corresponding Images or Metadata policy to
-**Replace existing** before confirming the replacement match.
+metadata, set **Metadata: Replace existing** before confirming the replacement
+match. Automatic single-game and batch scraping still respect **Images: Missing
+only**. These rules also apply to Libretro.
 
 Folder, system and all-systems scrapes never stop for a match choice. Missing
 and ambiguous ScreenScraper matches are counted, skipped without changes, and the remaining
@@ -2195,12 +2243,70 @@ anything a core needs that is missing. It reports; I decide; it executes.
 
 ## Troubleshooting and FAQ
 
+### Why does a core appear in MiSTer's menu but not in Degauss?
+
+Degauss's game library uses per-system definitions to recognise game folders,
+file formats and launch settings. It is not a direct copy of MiSTer's core
+menu, so an installed core may not yet have a dedicated game-library section.
+
+To access the installed core directly:
+
+1. Set **Options → Library → Show Cores → On**.
+2. Return to **Home** and open **Cores**.
+3. Choose the appropriate category and core.
+
+For example, Atari ST is available through **Cores → Computer → AtariST**.
+Load games through the core's usual MiSTer OSD. This provides access without
+leaving Degauss, but does not add an indexed game list or artwork section.
+Those require a system definition. Rebuilding the library or enabling
+**Show Systems with No Games** cannot add a missing definition.
+
+### How can I rebuild just one system instead of the whole library?
+
+1. Enter the affected system, for example **Console → NES**.
+2. Press **X** and open **Actions → Library → Rebuild This System List**.
+3. Let indexing finish, then close the completion report.
+
+Only that system's game folders are read. Starting from a subfolder still
+rebuilds the containing system, not just that folder. **B Cancel** stops an
+active rebuild. Use **Options → Library → Rebuild All System Lists** only
+when the whole library needs updating. See [External storage support](#external-storage-support)
+for indexing and storage details.
+
+### Can I put a system in a different Home folder?
+
+Yes, organise shortcuts in personal Home folders without moving game files
+or changing MiSTer's categories:
+
+1. Highlight the system, game, library folder or saved collection.
+2. Press **X** and choose **Add to Home** in Actions.
+3. Choose an existing personal folder or **New Personal Folder**, then name it.
+
+The addition appears immediately. **Edit Home** and **Edit Home Folder** let
+you change order, visibility, names, images and personal-folder placement;
+save those editor changes with **Save Changes**. Personal folders can contain
+other personal folders up to three levels. The original system remains in
+its standard category unless separately hidden. See [Personal Home](#personal-home)
+for all shortcut and editing controls.
+
+### An Artwork Pack assigns the wrong picture to a game. How can I correct it?
+
+1. Select the affected game while its system uses **Artwork Pack** data.
+2. Open **X Actions → Game → Artwork Pack Match**.
+3. Preview the suggested titles, or use **Search Pack...** to find the right one.
+4. Press **A** to apply its artwork and metadata, or **B** to leave unchanged.
+
+The choice is saved in Degauss, not the pack, and the launch target stays
+unchanged. **Automatic Match** removes your manual choice. See
+[Correct a missing or wrong Pack match](#correct-a-missing-or-wrong-pack-match)
+for update behaviour and matching details.
+
 ### Network games are missing when Degauss starts
 
 Return to the category or system browser to check for storage that mounted
 late. Existing lists are reused; new or moved sources ask before indexing.
 To require that share before startup instead, add its actual mountpoint to
-`wait_for_mounts` in `degauss.toml`. See [External storage support](#external-storage-support)
+`wait_for_mounts` in `degauss-user.toml`. See [External storage support](#external-storage-support)
 for examples.
 
 ### What MiSTer hardware has Degauss been reported working on?

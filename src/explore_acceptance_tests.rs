@@ -35,6 +35,75 @@ pub(super) fn run(root: &Path, window: Rc<MinimalSoftwareWindow>) {
         app.build.is_none(),
         "fixture startup must finish before measuring Explore"
     );
+    assert!(app
+        .categories
+        .iter()
+        .all(|(name, _)| name != crate::explore::NAME));
+    app.settings.last_played = Some(5);
+    app.rebuild_system_list();
+    select_option(&mut app, OptionsPage::Library, OptionId::ShowExplore);
+    assert_eq!(app.option_value(OptionId::ShowExplore), "Off");
+    app.handle(Action::Accept);
+    assert_eq!(app.settings.show_explore, Some(true));
+    leave_options_to_browse(&mut app);
+    let recent = app
+        .categories
+        .iter()
+        .position(|(name, _)| name == LAST_PLAYED_CATEGORY)
+        .unwrap();
+    assert_eq!(app.categories[recent + 1].0, crate::explore::NAME);
+    let enabled = Settings::load(&app.settings_path).unwrap();
+    assert_eq!(
+        enabled.show_explore,
+        Some(true),
+        "Options persists the opt-in"
+    );
+    app.home.folder = None;
+    app.home_editor();
+    let explore_key = crate::home::category_key(crate::explore::NAME);
+    app.home_entry_actions(explore_key.clone());
+    app.menu_list.select(
+        app.menu
+            .iter()
+            .position(|label| label == "Hide on Home")
+            .unwrap(),
+    );
+    app.handle(Action::Accept);
+    app.finish_home_edit(true);
+    assert_eq!(app.settings.show_explore, Some(false));
+    assert!(app
+        .categories
+        .iter()
+        .all(|(name, _)| name != crate::explore::NAME));
+    app.home_editor();
+    app.home_entry_actions(explore_key.clone());
+    app.menu_list.select(
+        app.menu
+            .iter()
+            .position(|label| label == "Show on Home")
+            .unwrap(),
+    );
+    app.handle(Action::Accept);
+    app.finish_home_edit(false);
+    assert_eq!(
+        app.settings.show_explore,
+        Some(false),
+        "Cancel does not enable Explore"
+    );
+    app.home_editor();
+    app.home_entry_actions(explore_key);
+    app.menu_list.select(
+        app.menu
+            .iter()
+            .position(|label| label == "Show on Home")
+            .unwrap(),
+    );
+    app.handle(Action::Accept);
+    app.finish_home_edit(true);
+    assert_eq!(
+        Settings::load(&app.settings_path).unwrap().show_explore,
+        Some(true)
+    );
     let source_snapshot = cache_snapshot(&app.cache_dir);
     let origin = app.position();
     app.open_explore(None);

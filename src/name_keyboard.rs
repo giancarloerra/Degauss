@@ -1,6 +1,6 @@
-//! Paged controller keyboard for names that become files or directories.
+//! Paged controller keyboard for names and browser searches.
 //!
-//! Search, Jump and ScreenScraper keep their own established controls. This
+//! Jump and ScreenScraper keep their own established controls. This
 //! keyboard deliberately offers ScreenScraper's character set minus the
 //! characters the Favourites and theme filename contracts reject.
 

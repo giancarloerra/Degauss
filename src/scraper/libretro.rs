@@ -127,6 +127,13 @@ const PLATFORMS: &[(&[&str], u32, &str)] = &[
     (&["X68000"], 1057, "Sharp - X68000"),
     (&["ZXSpectrum"], 1058, "Sinclair - ZX Spectrum"),
     (&["NeoGeo", "NeoGeoMVS"], 1059, "SNK - Neo Geo"),
+    (&["Enterprise"], 1060, "Enterprise - 128"),
+    (&["GameCom"], 1061, "Tiger - Game.com"),
+    (&["Loopy"], 1062, "Casio - Loopy"),
+    (&["PC88"], 1063, "NEC - PC-88"),
+    (&["SCV"], 1064, "Epoch - Super Cassette Vision"),
+    (&["Studio-II"], 1065, "RCA - Studio II"),
+    (&["AtariST"], 1066, "Atari - ST"),
 ];
 
 pub fn platform(system_id: &str) -> Option<(u32, &'static str)> {

@@ -11,6 +11,7 @@ use std::path::Path;
 
 use serde::de::{self, Deserializer};
 use serde::Deserialize;
+use serde::Serialize;
 
 use crate::error::{DegaussError, Result};
 
@@ -49,8 +50,17 @@ impl<'de> Deserialize<'de> for Color {
     }
 }
 
+impl Serialize for Color {
+    fn serialize<S: serde::Serializer>(
+        &self,
+        serializer: S,
+    ) -> std::result::Result<S::Ok, S::Error> {
+        serializer.serialize_str(&format!("#{:02X}{:02X}{:02X}", self.r, self.g, self.b))
+    }
+}
+
 /// Palette. Names are roles, not hues, so a theme can invert freely.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Colors {
     pub background: Color,
@@ -392,12 +402,75 @@ impl Config {
     pub fn load(path: &Path) -> Result<Self> {
         let text = std::fs::read_to_string(path)
             .map_err(|e| DegaussError::io("reading config", path, e))?;
-        Self::parse(&text, path)
+        let base = Self::parse(&text, path)?;
+        let user_path = path.with_file_name("degauss-user.toml");
+        let user_text = match std::fs::read_to_string(&user_path) {
+            Ok(text) => text,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(base),
+            Err(error) => {
+                crate::note(&format!(
+                    "config       ignoring {}: {error}",
+                    user_path.display()
+                ));
+                return Ok(base);
+            }
+        };
+        match Self::with_overrides(&text, &user_text, &user_path) {
+            Ok(config) => Ok(config),
+            Err(error) => {
+                crate::note(&format!(
+                    "config       ignoring {}: {error}",
+                    user_path.display()
+                ));
+                Ok(base)
+            }
+        }
+    }
+
+    fn with_overrides(base: &str, overrides: &str, origin: &Path) -> Result<Self> {
+        fn merge(base: &mut toml::Value, overrides: toml::Value) {
+            match (base, overrides) {
+                (toml::Value::Table(base), toml::Value::Table(overrides)) => {
+                    for (key, value) in overrides {
+                        if let Some(existing) = base.get_mut(&key) {
+                            merge(existing, value);
+                        } else {
+                            base.insert(key, value);
+                        }
+                    }
+                }
+                (base, value) => *base = value,
+            }
+        }
+        let mut value = toml::from_str::<toml::Value>(base)
+            .map_err(|error| DegaussError::malformed("config", origin, error.to_string()))?;
+        // A legacy config may omit the whole palette and use its defaults.
+        // Partial user overrides must preserve those effective values too.
+        if value.get("colors").is_none() {
+            let colors = toml::Value::try_from(Colors::default())
+                .map_err(|error| DegaussError::malformed("config", origin, error.to_string()))?;
+            value
+                .as_table_mut()
+                .unwrap()
+                .insert("colors".into(), colors);
+        }
+        let overrides = toml::from_str::<toml::Value>(overrides)
+            .map_err(|error| DegaussError::malformed("config", origin, error.to_string()))?;
+        merge(&mut value, overrides);
+        let config: Self = value
+            .try_into()
+            .map_err(|error| DegaussError::malformed("config", origin, error.to_string()))?;
+        config.validate(origin)
     }
 
     pub fn parse(text: &str, origin: &Path) -> Result<Self> {
         let config: Config = toml::from_str(text)
             .map_err(|e| DegaussError::malformed("config", origin, e.to_string()))?;
+        config.validate(origin)
+    }
+
+    fn validate(self, origin: &Path) -> Result<Self> {
+        let config = self;
         // Validated like the colours: a value nothing answers to would
         // otherwise silently mean the default, which reads as the
         // setting not working.
@@ -431,6 +504,70 @@ pub const LEFT_RIGHT_VALUES: [&str; 4] = ["speed", "letter", "page", "direction"
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn user_overrides_merge_tables_replace_arrays_and_preserve_defaults() {
+        let config = Config::with_overrides(
+            "game_roots = [\"/media/fat/games\"]\nmenu_root = \"/media/fat\"\n[app]\ncover_size = 320\nart_cache = 200\n",
+            "game_roots = [\"/media/fat/cifs\", \"/media/usb0/games\"]\nwait_for_mounts = [\"/media/fat/cifs\"]\n[app]\nart_cache = 123\n",
+            Path::new("degauss-user.toml"),
+        ).unwrap();
+        assert_eq!(config.game_roots, ["/media/fat/cifs", "/media/usb0/games"]);
+        assert_eq!(config.wait_for_mounts, ["/media/fat/cifs"]);
+        assert_eq!(config.menu_root, "/media/fat");
+        assert_eq!(config.app.cover_size, 320);
+        assert_eq!(config.app.art_cache, 123);
+        assert_eq!(config.app.layout, "details");
+        let palette = Config::with_overrides(
+            "[app]\n",
+            "[colors]\naccent = \"#123456\"\n",
+            Path::new("degauss-user.toml"),
+        )
+        .unwrap();
+        assert_eq!(palette.colors.accent, Color::new(0x12, 0x34, 0x56));
+        assert_eq!(palette.colors.background, Colors::default().background);
+        let shipped = Config::with_overrides(
+            include_str!("../degauss.toml"),
+            "[colors]\naccent = \"#123456\"\n",
+            Path::new("degauss-user.toml"),
+        )
+        .unwrap();
+        assert_eq!(shipped.colors.accent, palette.colors.accent);
+        assert_eq!(shipped.colors.background, Colors::default().background);
+    }
+
+    #[test]
+    fn invalid_user_file_is_ignored_whole_and_never_written() {
+        let root = std::env::temp_dir().join(format!("degauss-user-config-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let path = root.join("custom-config.toml");
+        let user_path = root.join("degauss-user.toml");
+        let base = "game_roots = [\"/media/fat/games\"]\n[app]\nart_cache = 200\n";
+        std::fs::write(&path, base).unwrap();
+        assert_eq!(Config::load(&path).unwrap().app.art_cache, 200);
+        for invalid in [
+            "[app\nart_cache = 123",
+            "unknown_key = true\n[app]\nart_cache = 123",
+            "[app]\nart_cache = 123\nleft_right = \"invalid\"",
+            "wait_for_mounts = [\"relative/path\"]\n[app]\nart_cache = 123",
+            "[app]\nart_cache = \"invalid\"",
+        ] {
+            std::fs::write(&user_path, invalid).unwrap();
+            let config = Config::load(&path).unwrap();
+            assert_eq!(
+                config.app.art_cache, 200,
+                "invalid overrides must not apply partially"
+            );
+            assert_eq!(std::fs::read_to_string(&user_path).unwrap(), invalid);
+            assert_eq!(std::fs::read_to_string(&path).unwrap(), base);
+        }
+        std::fs::write(&user_path, "[app]\nart_cache = 123\n").unwrap();
+        assert_eq!(Config::load(&path).unwrap().app.art_cache, 123);
+        std::fs::remove_file(&user_path).unwrap();
+        std::fs::create_dir(&user_path).unwrap();
+        assert_eq!(Config::load(&path).unwrap().app.art_cache, 200);
+        std::fs::remove_dir_all(&root).unwrap();
+    }
 
     #[test]
     fn a_left_right_value_nothing_answers_to_is_refused_by_name() {

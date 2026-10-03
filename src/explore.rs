@@ -1,6 +1,7 @@
 //! Cross-system discovery from selected-source indexes, never a ROM scan.
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
+use std::io::Read;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc};
@@ -121,6 +122,7 @@ pub struct Entry {
     pub system_name: String,
     pub category: String,
     pub row: Row,
+    original_name: String,
     search_title: String,
     decade: Option<String>,
 }
@@ -140,23 +142,68 @@ impl Entry {
 #[derive(Default)]
 pub struct Catalogue {
     pub entries: Vec<Entry>,
-    /// Visible systems omitted because their selected source is not indexed or readable.
+    /// Indexed source, folder and missing-game notices shown in the coverage report.
     pub omitted: Vec<String>,
     pub providers: BTreeMap<String, crate::artwork_pack::Provider>,
     pub signatures: BTreeMap<String, String>,
     names: crate::name_display::GameNameDisplay,
+    mra_filenames: bool,
     notices: BTreeMap<String, Vec<String>>,
 }
 
 impl Catalogue {
-    pub fn present_names(&mut self, names: crate::name_display::GameNameDisplay) {
+    pub fn present_names(
+        &mut self,
+        names: crate::name_display::GameNameDisplay,
+        mra_filenames: bool,
+    ) {
         self.names = names;
+        self.mra_filenames = mra_filenames;
+        let mut groups: BTreeMap<(String, String), Vec<usize>> = BTreeMap::new();
+        for (index, entry) in self.entries.iter_mut().enumerate() {
+            entry.row.name.clone_from(&entry.original_name);
+            let shown = crate::name_display::row_name(&entry.row, names, mra_filenames);
+            if shown.as_ref() != entry.row.name {
+                entry.row.name = shown.into_owned();
+            }
+            groups
+                .entry((entry.system.clone(), normalise(&entry.row.name)))
+                .or_default()
+                .push(index);
+        }
+        for group in groups.values().filter(|group| group.len() > 1) {
+            let filenames: Vec<String> = group
+                .iter()
+                .map(|index| match &self.entries[*index].row.kind {
+                    Kind::Play(Launch::File(path)) => path
+                        .file_name()
+                        .unwrap_or_default()
+                        .to_string_lossy()
+                        .into_owned(),
+                    _ => self.entries[*index].key(),
+                })
+                .collect();
+            for (position, index) in group.iter().enumerate() {
+                let entry = &mut self.entries[*index];
+                let filename = &filenames[position];
+                let label = if filenames.iter().filter(|name| *name == filename).count() > 1 {
+                    match &entry.row.kind {
+                        Kind::Play(Launch::File(path)) => path.display().to_string(),
+                        _ => filename.clone(),
+                    }
+                } else {
+                    filename.clone()
+                };
+                entry.row.name.push_str(" · ");
+                entry.row.name.push_str(&label);
+            }
+        }
         for entry in &mut self.entries {
-            entry.search_title = names.apply(&entry.row.name).to_lowercase().replace(' ', "");
+            entry.search_title = entry.row.name.to_lowercase().replace(' ', "");
         }
         self.entries.sort_by_cached_key(|entry| {
             (
-                normalise(names.apply(&entry.row.name).as_ref()),
+                normalise(&entry.row.name),
                 entry.system.clone(),
                 entry.key(),
             )
@@ -358,6 +405,7 @@ pub struct Request {
     pub hidden: HashSet<String>,
     pub language: Option<String>,
     pub names: crate::name_display::GameNameDisplay,
+    pub mra_filenames: bool,
     pub previous: Option<Catalogue>,
 }
 
@@ -560,6 +608,193 @@ fn read_source(
     Ok((data.cache, Some(provider)))
 }
 
+/// Resolve aliases first, then read only files with repeated indexed titles or
+/// filenames. Different content stays distinct, including MGL file/core choices.
+fn deduplicate(
+    mut entries: Vec<Entry>,
+    cancelled: &AtomicBool,
+    notices: &mut Vec<String>,
+) -> Result<Option<Vec<Entry>>> {
+    entries.sort_by_cached_key(|entry| match &entry.row.kind {
+        Kind::Play(Launch::File(path)) => (path.components().count(), entry.key()),
+        _ => (0, entry.key()),
+    });
+    let mut references = HashSet::new();
+    let mut unique = Vec::with_capacity(entries.len());
+    for entry in entries {
+        if cancelled.load(Ordering::Relaxed) {
+            return Ok(None);
+        }
+        let identity = match &entry.row.kind {
+            Kind::Play(Launch::File(path)) => {
+                let (file, member) = crate::zip::split_member_path(path)
+                    .unwrap_or_else(|| (path.clone(), String::new()));
+                let real = match std::fs::canonicalize(&file) {
+                    Ok(real) => real,
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                        notices.push(format!(
+                            "{}: missing indexed game {}: {error}",
+                            entry.system_name,
+                            path.display()
+                        ));
+                        continue;
+                    }
+                    Err(error) => {
+                        return Err(DegaussError::io("resolving indexed game", &file, error))
+                    }
+                };
+                format!("{}\0{}\0{}", entry.system, real.display(), member)
+            }
+            _ => entry.key(),
+        };
+        if references.insert(identity) {
+            unique.push(entry);
+        }
+    }
+    let mut filenames = HashMap::new();
+    let mut titles = HashMap::new();
+    for entry in &unique {
+        if let Kind::Play(Launch::File(path)) = &entry.row.kind {
+            *filenames
+                .entry((
+                    entry.system.clone(),
+                    path.file_name().unwrap_or_default().to_os_string(),
+                ))
+                .or_insert(0usize) += 1;
+            *titles
+                .entry((entry.system.clone(), normalise(&entry.original_name)))
+                .or_insert(0usize) += 1;
+        }
+    }
+    let mut archives = crate::zip::ArchiveCache::default();
+    let mut candidates = Vec::with_capacity(unique.len());
+    let mut sizes = HashMap::new();
+    for entry in unique {
+        if cancelled.load(Ordering::Relaxed) {
+            return Ok(None);
+        }
+        let Kind::Play(Launch::File(path)) = &entry.row.kind else {
+            candidates.push((entry, None));
+            continue;
+        };
+        let extension = path
+            .extension()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_ascii_lowercase();
+        let repeated = filenames[&(
+            entry.system.clone(),
+            path.file_name().unwrap_or_default().to_os_string(),
+        )] > 1
+            || titles[&(entry.system.clone(), normalise(&entry.original_name))] > 1;
+        if !repeated {
+            candidates.push((entry, None));
+            continue;
+        }
+        let (size, digest) = if let Some((archive, member)) = crate::zip::split_member_path(path) {
+            let listing = match archives.read_controlled(&archive, cancelled) {
+                Ok(listing) => listing,
+                Err(DegaussError::Io { source, .. })
+                    if source.kind() == std::io::ErrorKind::NotFound =>
+                {
+                    notices.push(format!(
+                        "{}: missing indexed game {}: {source}",
+                        entry.system_name,
+                        path.display()
+                    ));
+                    continue;
+                }
+                Err(error) => return Err(error),
+            };
+            let Some(listing) = listing else {
+                return Ok(None);
+            };
+            let Some(file) = listing.entries.iter().find(|file| file.name == member) else {
+                notices.push(format!(
+                    "{}: missing indexed game: {} no longer contains {member}",
+                    entry.system_name,
+                    archive.display()
+                ));
+                continue;
+            };
+            (file.size, Some(file.crc32))
+        } else {
+            let metadata = match std::fs::metadata(path) {
+                Ok(metadata) => metadata,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    notices.push(format!(
+                        "{}: missing indexed game {}: {error}",
+                        entry.system_name,
+                        path.display()
+                    ));
+                    continue;
+                }
+                Err(error) => return Err(DegaussError::io("checking duplicate size", path, error)),
+            };
+            (metadata.len(), None)
+        };
+        *sizes
+            .entry((entry.system.clone(), extension.clone(), size))
+            .or_insert(0usize) += 1;
+        candidates.push((entry, Some((extension, size, digest))));
+    }
+    let mut content = HashSet::new();
+    let mut games = Vec::with_capacity(candidates.len());
+    for (entry, candidate) in candidates {
+        if cancelled.load(Ordering::Relaxed) {
+            return Ok(None);
+        }
+        let Some((extension, size, digest)) = candidate else {
+            games.push(entry);
+            continue;
+        };
+        if sizes[&(entry.system.clone(), extension.clone(), size)] < 2 {
+            games.push(entry);
+            continue;
+        }
+        let Kind::Play(Launch::File(path)) = &entry.row.kind else {
+            unreachable!("only file entries are duplicate candidates");
+        };
+        let digest = if let Some(digest) = digest {
+            digest
+        } else {
+            let mut file = match std::fs::File::open(path) {
+                Ok(file) => file,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    notices.push(format!(
+                        "{}: missing indexed game {}: {error}",
+                        entry.system_name,
+                        path.display()
+                    ));
+                    continue;
+                }
+                Err(error) => {
+                    return Err(DegaussError::io("opening duplicate candidate", path, error))
+                }
+            };
+            let mut digest = crc32fast::Hasher::new();
+            let mut buffer = [0u8; 128 * 1024];
+            loop {
+                if cancelled.load(Ordering::Relaxed) {
+                    return Ok(None);
+                }
+                let read = file.read(&mut buffer).map_err(|error| {
+                    DegaussError::io("checking duplicate candidate", path, error)
+                })?;
+                if read == 0 {
+                    break;
+                }
+                digest.update(&buffer[..read]);
+            }
+            digest.finalize()
+        };
+        if content.insert((entry.system.clone(), extension, size, digest)) {
+            games.push(entry);
+        }
+    }
+    Ok(Some(games))
+}
+
 fn load(
     mut request: Request,
     cancelled: &AtomicBool,
@@ -578,13 +813,12 @@ fn load(
         .is_some_and(|previous| previous.signatures == signatures)
     {
         let mut previous = request.previous.take().expect("unchanged projection");
-        if previous.names != request.names {
-            previous.present_names(request.names);
+        if previous.names != request.names || previous.mra_filenames != request.mra_filenames {
+            previous.present_names(request.names, request.mra_filenames);
         }
         return Ok(Some(previous));
     }
     let mut catalogue = Catalogue::default();
-    let mut identities = HashSet::new();
     let mut previous = request.previous.take().unwrap_or_default();
     let mut previous_entries: BTreeMap<String, Vec<Entry>> = BTreeMap::new();
     for entry in previous.entries.drain(..) {
@@ -613,6 +847,7 @@ fn load(
             continue;
         }
         let mut notices = Vec::new();
+        let mut entries = Vec::new();
         let (cache, provider) = match read_source(&request, source) {
             Ok(data) => data,
             Err(error) => {
@@ -668,17 +903,21 @@ fn load(
                             system: source.id.clone(),
                             system_name: source.name.clone(),
                             category: source.category.clone(),
+                            original_name: row.name.clone(),
                             row,
                             decade,
                             search_title,
                         };
-                        if identities.insert(entry.key()) {
-                            catalogue.entries.push(entry);
-                        }
+                        entries.push(entry);
                     }
                 }
             }
         }
+        progress(format!("{}: checking duplicate references", source.name));
+        let Some(entries) = deduplicate(entries, cancelled, &mut notices)? else {
+            return Ok(None);
+        };
+        catalogue.entries.extend(entries);
         if let Some(provider) = provider {
             catalogue.providers.insert(source.id.clone(), provider);
         }
@@ -686,7 +925,7 @@ fn load(
     }
     catalogue.signatures = signatures;
     catalogue.omitted = catalogue.notices.values().flatten().cloned().collect();
-    catalogue.present_names(request.names);
+    catalogue.present_names(request.names, request.mra_filenames);
     Ok((!cancelled.load(Ordering::Relaxed)).then_some(catalogue))
 }
 
@@ -699,6 +938,7 @@ mod tests {
             system: system.into(),
             system_name: system.into(),
             category: "Console".into(),
+            original_name: title.into(),
             search_title: title.to_lowercase().replace(' ', ""),
             decade: year
                 .get(..4)
@@ -719,6 +959,201 @@ mod tests {
                 },
             },
         }
+    }
+
+    #[test]
+    fn identical_copies_collapse_but_real_variants_and_system_owners_remain() {
+        let root = duplicate_fixture("copies");
+        let mut entries = Vec::new();
+        for (folder, bytes) in [
+            ("Original", b"game".as_slice()),
+            ("Copy", b"game".as_slice()),
+            ("Japan", b"variant".as_slice()),
+        ] {
+            std::fs::create_dir(root.path().join(folder)).unwrap();
+            let path = root.path().join(folder).join("Game.nes");
+            std::fs::write(&path, bytes).unwrap();
+            let mut row = entry("NES", "Same metadata title", None, "", "");
+            row.row.kind = Kind::Play(Launch::File(path));
+            entries.push(row);
+        }
+        let mut other = entries[0].clone();
+        other.system = "Other".into();
+        entries.push(other);
+        let mut catalogue = Catalogue {
+            entries: deduplicate(entries, &AtomicBool::new(false), &mut Vec::new())
+                .unwrap()
+                .unwrap(),
+            ..Default::default()
+        };
+        assert_eq!(
+            catalogue.entries.len(),
+            3,
+            "only identical copies belonging to the same system collapse"
+        );
+        let paths = catalogue
+            .entries
+            .iter()
+            .map(Entry::key)
+            .collect::<HashSet<_>>();
+        catalogue.present_names(
+            crate::name_display::GameNameDisplay::RemoveParenthesesAndBrackets,
+            false,
+        );
+        let nes = catalogue
+            .entries
+            .iter()
+            .filter(|entry| entry.system == "NES")
+            .collect::<Vec<_>>();
+        assert_ne!(
+            nes[0].row.name, nes[1].row.name,
+            "distinct contents with one metadata title have distinct captions"
+        );
+        assert_eq!(
+            catalogue
+                .entries
+                .iter()
+                .map(Entry::key)
+                .collect::<HashSet<_>>(),
+            paths,
+            "presentation never changes launch identity"
+        );
+        assert!(
+            deduplicate(catalogue.entries, &AtomicBool::new(true), &mut Vec::new())
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn different_size_candidates_do_not_read_their_content() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = duplicate_fixture("different-sizes");
+        let mut entries = Vec::new();
+        for (folder, bytes) in [("A", b"a".as_slice()), ("B", b"variant".as_slice())] {
+            std::fs::create_dir(root.path().join(folder)).unwrap();
+            let path = root.path().join(folder).join("Game.chd");
+            std::fs::write(&path, bytes).unwrap();
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).unwrap();
+            let mut row = entry("PSX", "Same title", None, "", "");
+            row.row.kind = Kind::Play(Launch::File(path));
+            entries.push(row);
+        }
+        assert_eq!(
+            deduplicate(entries, &AtomicBool::new(false), &mut Vec::new())
+                .unwrap()
+                .unwrap()
+                .len(),
+            2
+        );
+    }
+
+    #[test]
+    fn missing_games_are_reported_without_discarding_healthy_entries() {
+        let root = duplicate_fixture("missing");
+        let healthy = root.path().join("Healthy.nes");
+        std::fs::write(&healthy, b"game").unwrap();
+        let mut entries = Vec::new();
+        for path in [
+            healthy.clone(),
+            root.path().join("Deleted.nes"),
+            root.path().join("Deleted.zip/Game.nes"),
+        ] {
+            let mut game = entry("NES", "Game", None, "", "");
+            game.row.kind = Kind::Play(Launch::File(path));
+            entries.push(game);
+        }
+        let mut notices = Vec::new();
+        let games = deduplicate(entries, &AtomicBool::new(false), &mut notices)
+            .unwrap()
+            .unwrap();
+        assert_eq!(games.len(), 1);
+        assert_eq!(games[0].row.kind, Kind::Play(Launch::File(healthy)));
+        assert_eq!(notices.len(), 2);
+        assert!(notices
+            .iter()
+            .all(|notice| notice.contains("missing indexed game")));
+        assert!(notices.iter().any(|notice| notice.contains("Deleted.nes")));
+        assert!(notices.iter().any(|notice| notice.contains("Deleted.zip")));
+    }
+
+    #[test]
+    fn missing_zip_members_are_reported_but_corrupt_archives_are_not_hidden() {
+        let root = duplicate_fixture("missing-member");
+        let archive = root.path().join("Games.zip");
+        std::fs::write(&archive, crate::zip::tests_archive(&["Healthy.nes"], false)).unwrap();
+        let mut entries = Vec::new();
+        for member in ["Healthy.nes", "Deleted.nes"] {
+            let mut game = entry("NES", "Game", None, "", "");
+            game.row.kind = Kind::Play(Launch::File(archive.join(member)));
+            entries.push(game);
+        }
+        let mut notices = Vec::new();
+        let games = deduplicate(entries.clone(), &AtomicBool::new(false), &mut notices)
+            .unwrap()
+            .unwrap();
+        assert_eq!(games.len(), 1);
+        assert_eq!(notices.len(), 1);
+        assert!(notices[0].contains("no longer contains Deleted.nes"));
+        std::fs::write(&archive, b"not a ZIP").unwrap();
+        assert!(deduplicate(entries, &AtomicBool::new(false), &mut Vec::new()).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn organised_arcade_links_do_not_duplicate_the_original_mra() {
+        let root = duplicate_fixture("symlinks");
+        let game = root.path().join("1941 (World).mra");
+        std::fs::write(&game, b"<misterromdescription/>").unwrap();
+        std::fs::create_dir(root.path().join("Organised")).unwrap();
+        let alias = root.path().join("Organised/1941 (World).mra");
+        std::os::unix::fs::symlink(&game, &alias).unwrap();
+        let mut original = entry("Arcade", "1941", None, "", "");
+        original.row.kind = Kind::Play(Launch::File(game.clone()));
+        let mut linked = original.clone();
+        linked.row.kind = Kind::Play(Launch::File(alias));
+        let rows = deduplicate(
+            vec![linked, original],
+            &AtomicBool::new(false),
+            &mut Vec::new(),
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(
+            rows[0].row.kind,
+            Kind::Play(Launch::File(game)),
+            "the root entry wins over its organised alias"
+        );
+    }
+
+    #[test]
+    fn identical_mgl_copies_collapse_but_different_launch_targets_remain() {
+        let root = duplicate_fixture("mgl");
+        let mut rows = Vec::new();
+        for folder in ["A", "B", "Japan"] {
+            std::fs::create_dir(root.path().join(folder)).unwrap();
+            let path = root.path().join(folder).join("Game.mgl");
+            let game = if folder == "Japan" {
+                "Japan.rom"
+            } else {
+                "Game.rom"
+            };
+            std::fs::write(&path, format!("<mistergamedescription><rbf>NES</rbf><setname same_dir=\"1\">NES</setname><file delay=\"1\" type=\"f\" index=\"0\" path=\"{game}\"/></mistergamedescription>"))
+                .unwrap();
+            let mut row = entry("NES", "Same title", None, "", "");
+            row.row.kind = Kind::Play(Launch::File(path));
+            rows.push(row);
+        }
+        assert_eq!(
+            deduplicate(rows, &AtomicBool::new(false), &mut Vec::new())
+                .unwrap()
+                .unwrap()
+                .len(),
+            2,
+            "Main resolves relative files against the core home, not the MGL's directory"
+        );
     }
 
     #[test]
@@ -803,6 +1238,7 @@ mod tests {
             hidden: request.hidden.clone(),
             language: request.language.clone(),
             names: request.names,
+            mra_filenames: request.mra_filenames,
             previous: None,
         };
         let cancel = AtomicBool::new(false);
@@ -827,12 +1263,13 @@ mod tests {
             hidden: request.hidden.clone(),
             language: request.language.clone(),
             names: crate::name_display::GameNameDisplay::RemoveParentheses,
+            mra_filenames: false,
             previous: None,
         };
         let cancel = AtomicBool::new(false);
         let mut catalogue = load(request, &cancel, |_| {}).unwrap().unwrap();
-        catalogue.entries[0].row.name = "Canonical (USA)".into();
-        catalogue.present_names(crate::name_display::GameNameDisplay::Full);
+        catalogue.entries[0].original_name = "Canonical (USA)".into();
+        catalogue.present_names(crate::name_display::GameNameDisplay::Full, false);
         let query = Query {
             title: "USA".into(),
             ..Default::default()
@@ -848,7 +1285,7 @@ mod tests {
         assert!(catalogue
             .entries
             .iter()
-            .any(|entry| entry.row.name == "Canonical (USA)"));
+            .any(|entry| entry.original_name == "Canonical (USA)"));
     }
 
     #[test]
@@ -916,6 +1353,14 @@ mod tests {
     }
 
     struct Fixture(PathBuf);
+    fn duplicate_fixture(name: &str) -> Fixture {
+        let root = std::env::temp_dir().join(format!(
+            "degauss-explore-dedup-{name}-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        Fixture(root)
+    }
     impl Fixture {
         fn path(&self) -> &std::path::Path {
             &self.0
@@ -980,6 +1425,7 @@ mod tests {
             hidden: HashSet::new(),
             language: None,
             names: Default::default(),
+            mra_filenames: false,
             previous: None,
         };
         (root, request)
@@ -994,6 +1440,7 @@ mod tests {
             hidden: HashSet::new(),
             language: None,
             names: Default::default(),
+            mra_filenames: false,
             previous: None,
         };
         request

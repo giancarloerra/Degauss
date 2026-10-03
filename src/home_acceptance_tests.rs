@@ -716,7 +716,13 @@ pub(super) fn run(root: &Path, window: Rc<MinimalSoftwareWindow>) {
     select(&mut app, &script);
     app.handle(Action::Accept);
     assert_eq!(app.screen, Screen::Scripts);
-    assert!(matches!(app.pending, Some(Pending::RunScript(_))));
+    assert!(
+        matches!(app.pending, Some(Pending::RunScript(_))),
+        "pinned script launch: message={:?}, selected={:?}, path={:?}",
+        app.message,
+        app.scripts_entries.get(app.menu_list.selected()),
+        script_path
+    );
     let returned = app.position();
     app.handle(Action::Quit);
     assert!(app.pending.is_none());
