@@ -122,14 +122,16 @@ impl Store {
 
     pub fn add(&mut self, entry: Entry, parent: Option<&str>) -> Result<String, String> {
         let mut changed = self.clone();
-        changed.next = changed
-            .next
-            .checked_add(1)
-            .ok_or("Home entry IDs are exhausted.")?;
-        let id = format!("{}", changed.next);
-        if changed.entries.contains_key(&id) {
-            return Err("Home entry ID already exists.".into());
-        }
+        let id = loop {
+            changed.next = changed
+                .next
+                .checked_add(1)
+                .ok_or("Home entry IDs are exhausted.")?;
+            let id = changed.next.to_string();
+            if !changed.entries.contains_key(&id) {
+                break id;
+            }
+        };
         changed.entries.insert(id.clone(), entry);
         changed.attach(&id, parent)?;
         changed.validate()?;
@@ -417,6 +419,45 @@ mod tests {
         assert_eq!(toml::from_str::<Store>(&encoded).unwrap(), store);
         store.remove(&folder);
         assert!(store.entries.is_empty());
+    }
+
+    #[test]
+    fn accepted_saved_home_without_a_counter_allocates_without_replacing_entries() {
+        let original = Entry {
+            name: "Existing folder".into(),
+            image: None,
+            target: Target::Folder {
+                children: Vec::new(),
+            },
+        };
+        let mut saved = Store::default();
+        saved.add(original.clone(), None).unwrap();
+        let encoded = toml::to_string(&saved).unwrap();
+        let encoded = encoded
+            .lines()
+            .filter(|line| !line.starts_with("next ="))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let mut restored: Store = toml::from_str(&encoded).unwrap();
+        restored.validate().unwrap();
+        let id = restored.add(original.clone(), None).unwrap();
+        assert_eq!(
+            id, "2",
+            "a supported omitted counter cannot prevent adding a folder"
+        );
+        assert_eq!(restored.entries["1"], original);
+        assert_eq!(restored.order, ["entry:1", "entry:2"]);
+        let mut restored: Store = toml::from_str(&encoded).unwrap();
+        restored.next = u64::MAX;
+        let before = restored.clone();
+        assert!(restored
+            .add(original, None)
+            .unwrap_err()
+            .contains("exhausted"));
+        assert_eq!(
+            restored, before,
+            "exhaustion must not change the existing Home"
+        );
     }
 
     #[test]
