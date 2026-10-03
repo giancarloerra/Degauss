@@ -284,7 +284,7 @@ impl App {
                     self.restore_explore_selection();
                     self.touch_selection();
                     if let Some(catalogue) = &self.explore.catalogue {
-                        if !catalogue.omitted.is_empty() {
+                        if catalogue.rebuilt && !catalogue.omitted.is_empty() {
                             self.message = Some(format!("{} games available. {} notices about omitted indexed sources, folders or games.\n{}\nActions: Indexed Coverage for the complete report.", catalogue.entries.len(), catalogue.omitted.len(), catalogue.omitted[0]));
                         }
                     }

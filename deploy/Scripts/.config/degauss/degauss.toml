@@ -1,9 +1,11 @@
 # Degauss configuration.
 #
-# This file is documentation as much as configuration: every value says what
-# it does and why. Anything you change from the Options screen is written to
-# settings.toml next to this file, so your changes never overwrite these
-# notes. Delete settings.toml to come back to exactly what is written here.
+# This file contains updateable shipped defaults. Put only intentional manual
+# overrides in degauss-user.toml beside it, using the same keys and sections.
+# Unspecified values keep these defaults; an array override replaces the array.
+# Options save UI preferences in settings.toml. Edit colours and save a theme
+# with Options -> Appearance -> Theme -> press A, not in either config file.
+# Delete settings.toml to reset UI preferences; manual overrides still apply.
 #
 # Which core runs which system, and which slot a file goes into, lives in
 # systems.toml. That file is generated from public community data and is
@@ -34,6 +36,7 @@ game_roots = [
 # path must be the actual mountpoint, which may be a parent of a game root.
 # No mount is required by default. Leave commented out for older Degauss
 # versions, which cannot read settings introduced after their release.
+# Put this in degauss-user.toml when required:
 #wait_for_mounts = ["/media/fat/cifs"]
 
 # The top of the card, where the _-prefixed menu folders live. Read once at
@@ -42,6 +45,7 @@ game_roots = [
 menu_root = "/media/fat"
 
 [app]
+# File-only artwork tuning belongs under [app] in degauss-user.toml.
 # Longest edge artwork is decoded to. The picture view draws it at roughly
 # half the screen, or about 62% of the width with the Large Artwork Details
 # Style, so this wants to be at least that big.

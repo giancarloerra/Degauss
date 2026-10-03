@@ -120,6 +120,7 @@ pub(super) fn run(root: &Path, window: Rc<MinimalSoftwareWindow>) {
     app.finish_background_work_for_headless();
     assert!(app.explore.active);
     assert!(app.explore.job.is_none());
+    assert!(app.explore.catalogue.as_ref().unwrap().rebuilt);
     assert_eq!(
         app.browse_count(),
         4,
@@ -291,9 +292,31 @@ pub(super) fn run(root: &Path, window: Rc<MinimalSoftwareWindow>) {
     app.finish_background_work_for_headless();
     assert_eq!(app.browse_count(), 2);
     assert_eq!(app.explore.catalogue.as_ref().unwrap().omitted.len(), 1);
+    assert!(app.explore.catalogue.as_ref().unwrap().rebuilt);
     assert!(app.message.as_ref().unwrap().contains("omitted"));
+    assert!(app
+        .message
+        .as_ref()
+        .unwrap()
+        .contains("Game list not indexed"));
+    assert!(!app.message.as_ref().unwrap().contains("unsupported"));
     assert!(!crate::cache::system_path(&app.cache_dir, "SNES").exists());
+    let coverage = app.explore.catalogue.as_ref().unwrap().omitted.clone();
     app.message = None;
+    app.leave_explore();
+    app.open_explore(None);
+    app.finish_background_work_for_headless();
+    assert_eq!(app.browse_count(), 2);
+    assert!(!app.explore.catalogue.as_ref().unwrap().rebuilt);
+    assert!(
+        app.message.is_none(),
+        "cached reopening must not repeat the indexing warning"
+    );
+    assert_eq!(
+        app.explore.catalogue.as_ref().unwrap().omitted,
+        coverage,
+        "the complete coverage report remains available after cached reopening"
+    );
     app.leave_explore();
     app.settings.show_explore = Some(false);
     app.rebuild_system_list();

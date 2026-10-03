@@ -559,11 +559,30 @@ fn file_target(
             DegaussError::malformed(what, path, format!("bad file attribute: {error}"))
         })?;
         if attribute.key.as_ref().eq_ignore_ascii_case("path") {
-            let raw = attribute
-                .normalized_value(XmlVersion::Implicit1_0)
-                .map_err(|error| {
-                    DegaussError::malformed(what, path, format!("bad path attribute: {error}"))
-                })?;
+            // Main's sxmlc html2str decodes known escapes and keeps literal
+            // ampersands, including the paths supplied by DOS MGL packs.
+            let value = attribute.value.as_ref();
+            let mut escaped = String::with_capacity(value.len());
+            for (at, character) in value.char_indices() {
+                if character == '&'
+                    && !value[at + 1..].split_once(';').is_some_and(|(name, _)| {
+                        quick_xml::escape::resolve_predefined_entity(name).is_some()
+                            || resolve_numeric_entity(name).is_some()
+                    })
+                {
+                    escaped.push_str("&amp;");
+                } else {
+                    escaped.push(character);
+                }
+            }
+            let raw = quick_xml::events::attributes::Attribute {
+                key: attribute.key,
+                value: std::borrow::Cow::Owned(escaped),
+            }
+            .normalized_value(XmlVersion::Implicit1_0)
+            .map_err(|error| {
+                DegaussError::malformed(what, path, format!("bad path attribute: {error}"))
+            })?;
             target = Some(raw.into_owned());
         }
     }
@@ -1790,6 +1809,23 @@ extensions = ["nes", "mgl"]
             found,
             Some(PathBuf::from("/media/fat/games/C64/Rock & Roll.crt"))
         );
+    }
+
+    #[test]
+    fn main_compatible_literal_ampersands_and_existing_escapes_read_back() {
+        let dir = temp("literal-ampersand");
+        let mgl = dir.join("Command & Conquer.mgl");
+        std::fs::write(
+            &mgl,
+            "<mistergamedescription><rbf>_computer/ao486</rbf><file path=\"media/command & conquer/rock &amp; roll &#38; &#x26; &custom;.vhd\"/></mistergamedescription>",
+        )
+        .unwrap();
+        let descriptor = descriptor_reference(&mgl, "test MGL").unwrap();
+        assert_eq!(
+            descriptor.files,
+            ["media/command & conquer/rock & roll & & &custom;.vhd"]
+        );
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

@@ -242,9 +242,11 @@ Back returns to the previous query or originating browser location. Returning
 from a game restores the query and selection; a fresh start begins unfiltered.
 Explore Games is **Off** by default. Enable **Options → Library → Show Explore
 Games**, or show it in **Edit Home** and save. Its default position is after
-Last Played. Identical references and matching copies within a system appear
-once; distinct variants remain separate and include their filename when their
-displayed titles would otherwise be identical.
+Last Played. Entries with the same full name and launch identity within a
+system appear once, even in different folders. Different variant filenames or
+core choices remain separate and include their filename when their displayed
+titles would otherwise be identical. Explore does not read ROM contents to
+compare copies.
 
 ### Personal Home
 
