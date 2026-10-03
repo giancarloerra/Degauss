@@ -375,6 +375,102 @@ pub(super) fn run(root: &Path, window: Rc<MinimalSoftwareWindow>) {
     assert!(app.home.explicit_editor);
     assert_eq!(app.home_store().entries[&folder].name, "Retained draft");
     app.finish_home_edit(false);
+    // Creating a destination must move the chosen entry, not leave behind
+    // an empty folder. Explicit editing keeps Save/Cancel semantics.
+    let before_move = app.settings.home.clone();
+    for explicit in [false, true] {
+        if explicit {
+            app.home_editor();
+        }
+        app.home_destinations(Some(system.clone()));
+        app.menu_list.select(
+            app.menu
+                .iter()
+                .position(|row| row == NEW_HOME_FOLDER)
+                .unwrap(),
+        );
+        app.handle(Action::Accept);
+        app.name_keyboard_draft = "Moved items".into();
+        app.name_keyboard_list.select(
+            name_keyboard::keys(app.name_keyboard_page, true)
+                .iter()
+                .position(|key| matches!(key, NameKey::Save))
+                .unwrap(),
+        );
+        app.handle(Action::Accept);
+        let destination = app
+            .home_store()
+            .entries
+            .iter()
+            .find(|(_, entry)| entry.name == "Moved items")
+            .unwrap()
+            .0
+            .clone();
+        assert_eq!(
+            app.home_store().parent(&system),
+            Some(destination.clone()),
+            "Move to Folder must place the selected entry in its new folder"
+        );
+        if explicit {
+            assert_eq!(app.settings.home, before_move);
+            assert_eq!(
+                Settings::load(&app.settings_path).unwrap().home,
+                before_move
+            );
+            assert!(matches!(app.home.menu, Some(HomeMenu::Editor)));
+            app.finish_home_edit(false);
+            assert_eq!(app.settings.home, before_move);
+        } else {
+            assert_eq!(app.screen, Screen::Browse);
+            assert_eq!(
+                Settings::load(&app.settings_path).unwrap().home,
+                app.settings.home
+            );
+            app.settings.home = before_move.clone();
+            app.settings.save(&app.settings_path).unwrap();
+            app.rebuild_home_rows();
+        }
+    }
+    // A subtree at the depth limit cannot be moved one level deeper.
+    // That rejected placement must not save an empty destination either.
+    let mut deepest = before_move.clone();
+    let level_two = deepest
+        .add(
+            Entry {
+                name: "Level two".into(),
+                image: None,
+                target: Target::Folder {
+                    children: Vec::new(),
+                },
+            },
+            Some(&folder),
+        )
+        .unwrap();
+    deepest
+        .add(
+            Entry {
+                name: "Level three".into(),
+                image: None,
+                target: Target::Folder {
+                    children: Vec::new(),
+                },
+            },
+            Some(&level_two),
+        )
+        .unwrap();
+    app.settings.home = deepest.clone();
+    app.settings.save(&app.settings_path).unwrap();
+    app.home_destinations(Some(folder.clone()));
+    app.finish_home_folder("Too deep");
+    assert!(app.message.as_deref().unwrap().contains("three levels"));
+    assert_eq!(app.home_store(), &deepest);
+    assert_eq!(app.settings.home, deepest);
+    assert_eq!(Settings::load(&app.settings_path).unwrap().home, deepest);
+    app.message = None;
+    app.finish_home_edit(false);
+    app.settings.home = before_move;
+    app.settings.save(&app.settings_path).unwrap();
+    app.rebuild_home_rows();
     app.browsing = Browsing::Games;
     for (name, parent) in [
         ("Immediate game", None),
