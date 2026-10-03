@@ -84,6 +84,7 @@ pub enum Event {
         provider: Box<crate::artwork_pack::Provider>,
         prepared: crate::cache::PreparedCacheGroup,
         settings: Box<crate::settings::Settings>,
+        warnings: Vec<String>,
     },
     Loaded {
         snapshots: Vec<Snapshot>,
@@ -444,17 +445,30 @@ fn run_matching(
         )
     })?;
     let key = crate::game_launch_cores::key(&save.launch);
+    let mut warnings = Vec::new();
     let presentation = if let Some(selected) = &save.selected {
         Some(provider.presentation_for_match(selected)?)
     } else {
-        let mut fingerprints = cached.fingerprints;
-        // Restore Automatic using the current ROM, not a possibly old CRC.
-        if let Some((path, fingerprint)) =
-            provider.fingerprint_for_launch(&save.launch, homes, cancelled, &mut |_| {})?
-        {
-            fingerprints.insert(path, fingerprint);
+        let automatic = (|| {
+            let mut fingerprints = cached.fingerprints;
+            // Restore Automatic using the current ROM, not a possibly old CRC.
+            if let Some((path, fingerprint)) =
+                provider.fingerprint_for_launch(&save.launch, homes, cancelled, &mut |_| {})?
+            {
+                fingerprints.insert(path, fingerprint);
+            }
+            provider.presentation_for_launch_with_fingerprints(&save.launch, &fingerprints, homes)
+        })();
+        match automatic {
+            Ok(presentation) => presentation,
+            Err(error) if crate::artwork_pack::entry_failure(&error).is_some() => {
+                let warning = format!("Automatic Match restored without Pack data:\n{error}");
+                crate::note(&warning);
+                warnings.push(warning);
+                None
+            }
+            Err(error) => return Err(error),
         }
-        provider.presentation_for_launch_with_fingerprints(&save.launch, &fingerprints, homes)?
     };
     if cancelled.load(Ordering::Relaxed) {
         return Ok(None);
@@ -514,6 +528,7 @@ fn run_matching(
         provider: Box::new(provider),
         prepared,
         settings: Box::new(settings),
+        warnings,
     }))
 }
 
@@ -1130,6 +1145,7 @@ mod tests {
             prepared,
             provider,
             settings: updated,
+            ..
         } = terminal(&mut job)
         else {
             panic!("retry was not staged");
@@ -1191,6 +1207,44 @@ mod tests {
                 .as_deref(),
             Some("Pack Healthy")
         );
+        std::fs::remove_file(root.join("_Arcade/Healthy.mra")).unwrap();
+        let mut job = start(vec![request(
+            Some(selected),
+            crate::settings::Settings::load(&settings_path).unwrap(),
+            settings_path.clone(),
+        )])
+        .unwrap();
+        let Event::MatchStaged { prepared, .. } = terminal(&mut job) else {
+            panic!("a manual selection must not require an unchanged game file");
+        };
+        prepared.install().unwrap();
+        let mut job = start(vec![request(
+            None,
+            crate::settings::Settings::load(&settings_path).unwrap(),
+            settings_path.clone(),
+        )])
+        .unwrap();
+        let Event::MatchStaged {
+            prepared, warnings, ..
+        } = terminal(&mut job)
+        else {
+            panic!("Automatic must clear an override even when the game no longer has a readable identity");
+        };
+        assert!(
+            warnings.iter().any(|warning| warning
+                .contains("Automatic Match restored without Pack data")
+                && warning.contains("Healthy.mra")),
+            "the missing game remains a visible warning"
+        );
+        prepared.install().unwrap();
+        assert!(crate::settings::Settings::load(&settings_path)
+            .unwrap()
+            .artwork_pack_matches
+            .is_empty());
+        assert!(!crate::cache::load_pack_prepared_map(&cache_dir, "Arcade")
+            .unwrap()
+            .unwrap()
+            .contains_key(&launch));
         for (path, bytes) in pack_before {
             assert_eq!(std::fs::read(path).unwrap(), bytes, "the Pack is read-only");
         }

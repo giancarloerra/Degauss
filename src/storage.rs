@@ -25,8 +25,9 @@ pub struct Mounts(Vec<Mount>);
 
 impl Mounts {
     pub fn read(path: &Path) -> Result<Self> {
-        let text = std::fs::read_to_string(path)
+        let bytes = std::fs::read(path)
             .map_err(|error| DegaussError::io("reading storage mounts", path, error))?;
+        let text = String::from_utf8_lossy(&bytes);
         let mut mounts = Vec::new();
         for line in text.lines() {
             let Some((before, after)) = line.split_once(" - ") else {
@@ -992,6 +993,19 @@ mod tests {
             "real cache failures are not missing libraries"
         );
         assert!(!before.is_empty());
+    }
+
+    #[test]
+    fn an_unrelated_non_utf8_mount_record_does_not_hide_valid_storage() {
+        let f = Fixture::new();
+        f.game("card/games/NES/Old.rom");
+        let mut bytes = std::fs::read(f.mountinfo()).unwrap();
+        bytes.extend_from_slice(b"2 1 0:2 / /unrelated rw - tmpfs invalid-\xff rw\n");
+        std::fs::write(f.mountinfo(), bytes).unwrap();
+        let mounts = Mounts::read(&f.mountinfo()).unwrap();
+        let attachments = mounts.attachment(&[f.path("card/games/NES")]).unwrap();
+        assert_eq!(attachments.len(), 1);
+        assert_eq!(attachments[0].point, Path::new("/"));
     }
 
     #[test]

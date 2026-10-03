@@ -884,14 +884,18 @@ impl Provider {
                 if !inspected.insert(launch) {
                     continue;
                 }
-                if skipped.contains_key(launch) {
-                    continue;
-                }
                 let selected = if manual.is_empty() {
                     None
                 } else {
                     manual.get(&crate::game_launch_cores::key(launch))
                 };
+                if selected.is_some() && self.health.usable() {
+                    // Explicit matching reads the selected Pack entry, not
+                    // the launch identity that may have failed earlier.
+                    skipped.remove(launch);
+                } else if skipped.contains_key(launch) {
+                    continue;
+                }
                 let resolved = match selected {
                     Some(selected) if self.health.usable() => {
                         self.presentation_for_match(selected).map(Some)
@@ -3647,6 +3651,16 @@ mod tests {
         let fingerprints = Default::default();
         let homes = Default::default();
         let mut skipped = SkippedEntries::new();
+        skip_entry(
+            &mut skipped,
+            &launches[0],
+            DegaussError::io(
+                "opening game",
+                "/games/Unmatched.nes",
+                std::io::Error::from(std::io::ErrorKind::NotFound),
+            ),
+        )
+        .unwrap();
         assert_eq!(
             provider
                 .prepare_for_cache_with_matches(
@@ -3659,6 +3673,10 @@ mod tests {
                 )
                 .unwrap(),
             Some(5)
+        );
+        assert!(
+            skipped.is_empty(),
+            "an explicit pack match does not need a readable ROM identity"
         );
         let mut rows = cache.folders["root"].rows.clone();
         assert_eq!(provider.apply_prepared(&mut rows), 5);

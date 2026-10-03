@@ -5048,7 +5048,12 @@ impl App {
                 });
             }
             Ok(Some(discovered)) => {
-                match self.refresh_storage_baseline(discovered.core_index, &discovered.systems) {
+                let refreshed = if self.network_local_only {
+                    Ok(())
+                } else {
+                    self.refresh_storage_baseline(discovered.core_index, &discovered.systems)
+                };
+                match refreshed {
                     Err(error) => {
                         crate::note(&format!("network      {error}"));
                         self.network_problem = Some(error.to_string());
@@ -16485,6 +16490,7 @@ impl App {
                     provider,
                     prepared,
                     settings,
+                    warnings: match_warnings,
                 } => {
                     self.provider_job = None;
                     self.provider_job_purpose = ProviderJobPurpose::Runtime;
@@ -16494,7 +16500,8 @@ impl App {
                         break;
                     }
                     match prepared.install() {
-                        Ok((_, warnings)) => {
+                        Ok((_, mut warnings)) => {
+                            warnings.extend(match_warnings);
                             self.settings = *settings;
                             let provider = *provider;
                             if self.open_system.as_deref() == Some(&provider.system_id) {
@@ -24046,7 +24053,6 @@ fn test_network_startup_flow(window: Rc<MinimalSoftwareWindow>) {
         original_index,
         "a failed baseline refresh never changes the existing library"
     );
-    app.storage.as_mut().unwrap().mountinfo = mountinfo.clone();
     std::fs::write(&mountinfo, "").unwrap();
 
     app.handle(Action::Quit);
@@ -24057,6 +24063,10 @@ fn test_network_startup_flow(window: Rc<MinimalSoftwareWindow>) {
     }
     assert!(app.network_plan.is_none(), "local-only discovery completes");
     assert!(app.network_local_only);
+    assert!(
+        app.network_problem.is_none(),
+        "local-only startup must not reread the unavailable mount table"
+    );
     assert_eq!(app.all_systems.len(), 1);
     assert_eq!(app.all_systems[0].paths, vec![local.join("NES")]);
     assert!(app.index.as_ref().unwrap().systems.is_empty());
