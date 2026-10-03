@@ -2697,7 +2697,7 @@ fn decode_media_image(
     .map_err(|error| {
         Error::new(
             ErrorKind::MalformedResponse,
-            format!("ScreenScraper returned an invalid image: {error}"),
+            format!("The scraper returned an invalid image: {error}"),
         )
     })?;
     Ok(crate::covers::scale_to_fit(&decoded, max_edge))
@@ -2778,6 +2778,21 @@ mod libretro_live_tests;
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn malformed_decoded_images_do_not_name_a_different_scraping_source() {
+        let response = HttpResponse {
+            status: 200,
+            content_type: Some("image/png".into()),
+            body: b"\x89PNG\r\n\x1a\n".to_vec(),
+        };
+        let error = decode_media_image(&response, [0; 3], 320).unwrap_err();
+        assert_eq!(error.kind, ErrorKind::MalformedResponse);
+        assert!(error
+            .detail
+            .contains("The scraper returned an invalid image"));
+        assert!(!error.detail.contains("ScreenScraper"));
+    }
+
     #[test]
     fn alias_reconciliation_preserves_readers_and_rejects_cross_platform_groups() {
         let target = |id: &str, platform| Target {

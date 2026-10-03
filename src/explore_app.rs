@@ -555,7 +555,13 @@ impl App {
             ExploreMenu::Collection(id) => match choice.as_str() {
                 "Open" => {
                     if let Some(collection) = self.settings.collections.get(&id) {
-                        self.open_explore(Some(collection.query.clone()));
+                        let query = collection.query.clone();
+                        if self.explore.active {
+                            self.explore
+                                .pivots
+                                .push((self.explore.query.clone(), self.game_list.selected()));
+                        }
+                        self.open_explore(Some(query));
                     }
                 }
                 "Rename" => {

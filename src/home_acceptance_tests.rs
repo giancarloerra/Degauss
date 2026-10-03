@@ -1022,6 +1022,150 @@ pub(super) fn run(root: &Path, window: Rc<MinimalSoftwareWindow>) {
             Some(parent.as_str())
         );
     }
+    let recovery_root = root.join("save-recovery");
+    std::fs::create_dir_all(recovery_root.join("games/NES")).unwrap();
+    let mut recovery = unopened_fixture_app(&recovery_root, window.clone(), Settings::default());
+    recovery.leave_splash();
+    recovery.finish_background_work_for_headless();
+    recovery.message = None;
+    let pin = Entry {
+        name: "Keep selected shortcut".into(),
+        image: None,
+        target: Target::System {
+            system: "NES".into(),
+        },
+    };
+    recovery.home.pending_entry = Some(pin.clone());
+    recovery.home_destinations(None);
+    let draft_before = recovery.home.edit.clone();
+    let writable = recovery.settings_path.clone();
+    recovery.settings_path = recovery_root.clone();
+    recovery.finish_home_folder("Try again");
+    assert!(
+        recovery.message.is_some(),
+        "the original write error is visible"
+    );
+    assert_eq!(
+        recovery.home.edit, draft_before,
+        "failed folder saves do not change placement or allocate another folder"
+    );
+    assert_eq!(recovery.home.pending_entry.as_ref(), Some(&pin));
+    assert!(recovery.settings.home.is_empty());
+    recovery.settings_path = writable;
+    recovery.message = None;
+    recovery.finish_home_folder("Try again");
+    assert_eq!(
+        recovery.settings.home.entries.len(),
+        2,
+        "retry saves one folder with the original shortcut"
+    );
+    assert_eq!(
+        Settings::load(&recovery.settings_path).unwrap().home,
+        recovery.settings.home
+    );
+    let parent = recovery
+        .settings
+        .home
+        .entries
+        .iter()
+        .find(|(_, entry)| entry.name == "Try again")
+        .unwrap()
+        .0
+        .clone();
+    let child = recovery
+        .settings
+        .home
+        .entries
+        .iter()
+        .find(|(_, entry)| entry.name == pin.name)
+        .unwrap()
+        .0
+        .clone();
+    let other = recovery
+        .settings
+        .home
+        .add(
+            Entry {
+                name: "Keep this folder".into(),
+                image: None,
+                target: Target::Folder {
+                    children: Vec::new(),
+                },
+            },
+            None,
+        )
+        .unwrap();
+    assert!(recovery.save_home_store(recovery.settings.home.clone()));
+    recovery.home_editor();
+    let draft = recovery.home.edit.as_mut().unwrap();
+    draft.move_to(&child, None).unwrap();
+    draft.entries.get_mut(&other).unwrap().name = "Draft preserved".into();
+    recovery.home_entry_actions(entry_key(&parent));
+    recovery.menu_list.select(
+        recovery
+            .menu
+            .iter()
+            .position(|row| row == "Remove")
+            .unwrap(),
+    );
+    recovery.handle(Action::Accept);
+    for id in [&parent, &child] {
+        assert!(!recovery.settings.home.entries.contains_key(id));
+        assert!(
+            !recovery
+                .home
+                .edit
+                .as_ref()
+                .unwrap()
+                .entries
+                .contains_key(id),
+            "saved descendants cannot be resurrected by an unsaved move"
+        );
+    }
+    assert_eq!(
+        recovery.settings.home.entries[&other].name,
+        "Keep this folder"
+    );
+    assert_eq!(
+        recovery.home.edit.as_ref().unwrap().entries[&other].name,
+        "Draft preserved"
+    );
+    recovery.home.edit.as_ref().unwrap().validate().unwrap();
+    recovery.finish_home_edit(true);
+    assert_eq!(
+        Settings::load(&recovery.settings_path).unwrap().home,
+        recovery.settings.home
+    );
+    assert_eq!(recovery.settings.home.entries.len(), 1);
+
+    let empty_logos = recovery_root.join("empty-logos");
+    std::fs::create_dir(&empty_logos).unwrap();
+    let invalid_logos = recovery_root.join("not-a-directory");
+    std::fs::write(&invalid_logos, b"fixture").unwrap();
+    for logos in [None, Some(empty_logos), Some(invalid_logos)] {
+        recovery.message = None;
+        recovery.home_editor();
+        recovery.home.image = Some(other.clone());
+        recovery.logo_dir = logos;
+        recovery.open_home_image_picker();
+        assert!(recovery.message.is_some());
+        assert!(
+            recovery.home.image.is_none(),
+            "failed image discovery cannot retain Home ownership of a later ordinary picker"
+        );
+        recovery.home.image = Some(other.clone());
+        recovery.finish_home_edit(false);
+        assert!(
+            recovery.home.image.is_none(),
+            "ending an editor clears its image-picker ownership"
+        );
+        recovery.screen = Screen::CategoryImage;
+        assert!(
+            recovery.handle_home_input(Action::Quit).is_none(),
+            "ordinary image-picker cancellation is not intercepted by Home"
+        );
+        recovery.screen = Screen::Browse;
+    }
     let mut resumed =
         unopened_fixture_app(&root, window, Settings::load(&app.settings_path).unwrap());
     resumed.leave_splash();

@@ -31,6 +31,9 @@ fn live_libretro_database_artwork_and_xml_roundtrip() {
         .map(PathBuf::from)
         .expect("set DEGAUSS_LIBRETRO_TEST_ROOT to an isolated project test directory");
     std::fs::create_dir_all(&root).unwrap();
+    let fixture = root.join(format!("isolated-card-{}", std::process::id()));
+    std::fs::create_dir(&fixture).unwrap();
+    let cache = fixture.join("cache");
     let cancelled = Arc::new(AtomicBool::new(false));
     let transport = CurlTransport::new(cancelled.clone());
     for name in [
@@ -41,14 +44,7 @@ fn live_libretro_database_artwork_and_xml_roundtrip() {
         "Commodore - CD32",
     ] {
         let before = Instant::now();
-        let database = Database::load(
-            name,
-            &root.join("cache"),
-            &transport,
-            &cancelled,
-            &mut |_| {},
-        )
-        .unwrap();
+        let database = Database::load(name, &cache, &transport, &cancelled, &mut |_| {}).unwrap();
         assert!(
             !database.search("a", Artwork::Screenshot).is_empty(),
             "real {name} returned no records"
@@ -89,14 +85,8 @@ fn live_libretro_database_artwork_and_xml_roundtrip() {
         ErrorKind::NotFound
     );
     for artwork in Artwork::ALL {
-        let db = Database::load(
-            "Atari - 2600",
-            &root.join("cache"),
-            &transport,
-            &cancelled,
-            &mut |_| {},
-        )
-        .unwrap();
+        let db =
+            Database::load("Atari - 2600", &cache, &transport, &cancelled, &mut |_| {}).unwrap();
         let Lookup::Found(matched) = db.lookup("Adventure (USA)", None, artwork).lookup else {
             panic!("Atari title was not an exact match")
         };
@@ -109,7 +99,6 @@ fn live_libretro_database_artwork_and_xml_roundtrip() {
         .unwrap();
         assert!(decode_media_image(&image, [0; 3], 320).unwrap().width > 1);
     }
-    let fixture = root.join(format!("isolated-card-{}", std::process::id()));
     let card = fixture.join("_Arcade");
     std::fs::create_dir_all(&card).unwrap();
     let mra = card.join("Battle K-Road.mra");
@@ -150,7 +139,7 @@ fn live_libretro_database_artwork_and_xml_roundtrip() {
                 ..Default::default()
             },
             developer: None,
-            cache_dir: root.join("cache"),
+            cache_dir: cache.clone(),
             artwork_pack_system_ids: HashSet::new(),
         };
         let progress = finish_live(start(request).unwrap());
@@ -179,13 +168,6 @@ fn live_libretro_database_artwork_and_xml_roundtrip() {
             panic!("valid cached data caused a network request")
         }
     }
-    Database::load(
-        "MAME",
-        &root.join("cache"),
-        &NoNetwork,
-        &cancelled,
-        &mut |_| {},
-    )
-    .unwrap();
+    Database::load("MAME", &cache, &NoNetwork, &cancelled, &mut |_| {}).unwrap();
     std::fs::remove_dir_all(fixture).unwrap();
 }

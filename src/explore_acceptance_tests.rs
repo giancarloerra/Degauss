@@ -104,6 +104,32 @@ pub(super) fn run(root: &Path, window: Rc<MinimalSoftwareWindow>) {
     app.game_list.select(1);
     let selected = app.explore_selected().unwrap().key();
     assert_eq!(app.context_system_id(), Some("SNES"));
+    app.settings.collections.insert(
+        "back-check".into(),
+        crate::explore::Collection {
+            name: "Earlier query".into(),
+            query: crate::explore::Query {
+                title: "alpha".into(),
+                ..Default::default()
+            },
+        },
+    );
+    app.explore_menu(
+        ExploreMenu::Collection("back-check".into()),
+        vec!["Open".into(), "Rename".into(), "Delete".into()],
+    );
+    app.handle(Action::Accept);
+    app.finish_background_work_for_headless();
+    assert_eq!(app.explore.query.title, "alpha");
+    app.explore_back();
+    app.finish_background_work_for_headless();
+    assert!(
+        app.explore.active,
+        "Back returns to the query before opening a collection"
+    );
+    assert_eq!(app.explore.query.title, "beta");
+    assert_eq!(app.explore_selected().unwrap().key(), selected);
+    app.settings.collections.remove("back-check");
     app.explore_fields();
     assert_eq!(app.explore_menu_heading(), "Explore / Filters");
     app.menu_list.select(1);

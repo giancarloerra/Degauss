@@ -901,12 +901,12 @@ impl App {
                     self.message = Some(error);
                     return;
                 }
-                self.home.edit = Some(store);
-                self.home.pending_entry = None;
                 if self.home.explicit_editor {
+                    self.home.edit = Some(store);
+                    self.home.pending_entry = None;
                     self.home_editor_select(&crate::home::entry_key(&id));
-                } else {
-                    self.finish_home_edit(true);
+                } else if self.save_home_store(store) {
+                    self.finish_home_edit(false);
                 }
             }
             Err(error) => self.message = Some(error),
@@ -959,6 +959,7 @@ impl App {
             }
         }
         self.home.edit = None;
+        self.home.image = None;
         self.home.explicit_editor = false;
         let origin = self.home.edit_origin.take();
         if let Some(origin) = &origin {
@@ -1102,10 +1103,21 @@ impl App {
                         if let Some(id) = id {
                             let mut saved = self.settings.home.clone();
                             saved.remove(&id);
+                            let removed = self
+                                .settings
+                                .home
+                                .entries
+                                .keys()
+                                .filter(|id| !saved.entries.contains_key(*id))
+                                .cloned()
+                                .collect::<Vec<_>>();
                             if !self.save_home_store(saved) {
                                 return true;
                             }
-                            self.home.edit.as_mut().expect("Home editor").remove(&id);
+                            let draft = self.home.edit.as_mut().expect("Home editor");
+                            for id in removed {
+                                draft.remove(&id);
+                            }
                         }
                         if self.home.explicit_editor {
                             self.home_editor();
@@ -1143,6 +1155,7 @@ impl App {
 
     fn open_home_image_picker(&mut self) {
         let Some(dir) = self.logo_dir.as_deref() else {
+            self.home.image = None;
             self.message = Some("The logos folder is unavailable.".into());
             return;
         };
@@ -1157,9 +1170,13 @@ impl App {
                 self.touch_selection();
             }
             Ok(_) => {
+                self.home.image = None;
                 self.message = Some("No PNG or JPG images were found in the logos folder.".into())
             }
-            Err(error) => self.message = Some(error.to_string()),
+            Err(error) => {
+                self.home.image = None;
+                self.message = Some(error.to_string());
+            }
         }
     }
 
