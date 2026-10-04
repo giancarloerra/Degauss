@@ -15,11 +15,14 @@ mod browse;
 mod cache;
 mod category_images;
 mod config;
+mod core_changes;
 mod core_choices;
 mod core_variants;
 mod covers;
+mod custom_view;
 mod display_mask;
 mod error;
+mod explore;
 mod favorites;
 mod font;
 #[cfg(test)]
@@ -31,6 +34,7 @@ mod game_filter;
 mod game_launch_cores;
 mod gamelist;
 mod history;
+mod home;
 mod index_job;
 mod information_job;
 mod ini_profile;
@@ -652,7 +656,24 @@ fn check_install(config_path: &Path) -> Result<()> {
 
     match std::fs::read_to_string(config_path) {
         Ok(text) => match Config::parse(&text, config_path) {
-            Ok(_) => println!("degauss.toml present, parses"),
+            Ok(_) => {
+                println!("degauss.toml present, parses");
+                let user_path = dir.join("degauss-user.toml");
+                match std::fs::read_to_string(&user_path) {
+                    Ok(user_text) => match Config::with_overrides(&text, &user_text, &user_path) {
+                        Ok(_) => println!("degauss-user.toml present, parses"),
+                        Err(error) => {
+                            println!("degauss-user.toml PRESENT BUT BROKEN");
+                            problems.push(format!("degauss-user.toml does not parse: {error}"));
+                        }
+                    },
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(error) => {
+                        println!("degauss-user.toml CANNOT BE READ");
+                        problems.push(format!("degauss-user.toml cannot be read: {error}"));
+                    }
+                }
+            }
             Err(e) => {
                 println!("degauss.toml PRESENT BUT BROKEN");
                 problems.push(format!("degauss.toml does not parse: {e}"));
@@ -1793,10 +1814,11 @@ fn run_on_framebuffer(
         state::clear_resuming();
         app.skip_splash();
     }
-    match state::take_position(resuming, &state_path) {
+    let saved_position = state::take_position(resuming, &state_path);
+    match saved_position.as_ref() {
         Some(saved) => {
             let at = Instant::now();
-            app.restore_position(&saved);
+            app.restore_position(saved);
             note(&format!(
                 "resumed      {} in {} ms",
                 saved.system,
@@ -1821,7 +1843,12 @@ fn run_on_framebuffer(
 
     if let Some(script) = script_return {
         app.skip_splash();
-        app.resume_scripts(&script);
+        app.resume_scripts(
+            &script,
+            saved_position
+                .as_ref()
+                .and_then(|saved| saved.home.as_ref()),
+        );
     }
 
     let mut input = input::InputReader::open()?;
@@ -1877,6 +1904,7 @@ fn run_on_framebuffer(
     }
     let outcome = outcome?;
     mask_reset?;
+    app.acknowledge_core_changes()?;
 
     let summary = app.frame_summary();
     note(&format!(
@@ -2344,6 +2372,53 @@ fn truncate(text: &str, width: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn install_check_reports_invalid_user_overrides_without_changing_startup() {
+        let root =
+            std::env::temp_dir().join(format!("degauss-install-overrides-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let config_path = root.join("degauss.toml");
+        let base = "[app]\nart_cache = 200\n";
+        std::fs::write(&config_path, base).unwrap();
+        std::fs::write(
+            root.join("systems.toml"),
+            include_str!("../assets/systems.toml"),
+        )
+        .unwrap();
+        let binary = root.join("degauss");
+        std::fs::write(&binary, b"install fixture").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        assert!(check_install(&config_path).is_ok());
+        let user_path = root.join("degauss-user.toml");
+        for invalid in [
+            "[app\n",
+            "unknown_key = true\n",
+            "[app]\nart_cache = \"invalid\"\n",
+        ] {
+            std::fs::write(&user_path, invalid).unwrap();
+            assert!(
+                check_install(&config_path).is_err(),
+                "a broken user override must not receive a healthy installation verdict"
+            );
+            assert_eq!(Config::load(&config_path).unwrap().app.art_cache, 200);
+            assert_eq!(std::fs::read_to_string(&user_path).unwrap(), invalid);
+        }
+        std::fs::remove_file(&user_path).unwrap();
+        std::fs::create_dir(&user_path).unwrap();
+        assert!(check_install(&config_path).is_err());
+        assert_eq!(Config::load(&config_path).unwrap().app.art_cache, 200);
+        std::fs::remove_dir(&user_path).unwrap();
+        std::fs::write(&user_path, "[app]\nart_cache = 123\n").unwrap();
+        assert!(check_install(&config_path).is_ok());
+        assert_eq!(Config::load(&config_path).unwrap().app.art_cache, 123);
+        assert_eq!(std::fs::read_to_string(&config_path).unwrap(), base);
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     #[cfg(target_os = "linux")]
     #[test]

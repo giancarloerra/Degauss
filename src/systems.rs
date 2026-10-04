@@ -1773,6 +1773,8 @@ extensions = ["md", "bin"]
             [
                 "Arduboy",
                 "AtariLynx",
+                "GameCom",
+                "GameKing",
                 "GBA",
                 "GBA2P",
                 "Gamate",
@@ -1787,6 +1789,7 @@ extensions = ["md", "bin"]
                 "NeoGeoPocketColor",
                 "PocketChallengeV2",
                 "PokemonMini",
+                "PocketStation",
                 "SuperVision",
                 "WonderSwan",
                 "WonderSwanColor",
@@ -1839,6 +1842,115 @@ extensions = ["md", "bin"]
         assert_eq!(found[0].name(), "Commodore 64");
         assert_eq!(found[0].path(), root.join("C64"));
         std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn additional_game_systems_use_their_native_loader_slots() {
+        let table = load_table(Path::new("assets/systems.toml")).unwrap();
+        let cases = [
+            ("AtariST", "st", "s", 0),
+            ("AtariST", "msa", "s", 0),
+            ("AtariST", "stx", "s", 0),
+            ("AtariST", "vhd", "s", 2),
+            ("AtariST", "stc", "f", 0),
+            ("Archie", "adf", "s", 0),
+            ("Archie", "hdf", "s", 2),
+            ("SharpMZ", "mzf", "f", 1),
+            ("SharpMZ", "mzt", "f", 1),
+            ("Altair8800", "rom", "f", 0),
+            ("C128", "d71", "s", 0),
+            ("C128", "prg", "f", 2),
+            ("CBM-II", "d80", "s", 0),
+            ("CBM-II", "prg", "f", 9),
+            ("CoCo3", "ccc", "f", 1),
+            ("CoCo3", "dsk", "s", 0),
+            ("Enterprise", "vhd", "s", 0),
+            ("Enterprise", "dsk", "s", 1),
+            ("FM-7", "t77", "f", 1),
+            ("FM-7", "d88", "s", 0),
+            ("Homelab", "htp", "f", 1),
+            ("JR100", "prg", "f", 1),
+            ("JR100", "cmt", "s", 1),
+            ("MacLC", "dsk", "s", 6),
+            ("MacLC", "hda", "s", 0),
+            ("MacLC", "chd", "s", 4),
+            ("NeXT", "vhd", "s", 0),
+            ("NeXT", "chd", "s", 3),
+            ("NeXT", "vfd", "s", 4),
+            ("NeXT", "mo", "s", 5),
+            ("PC88", "d88", "s", 0),
+            ("PCjr", "img", "s", 0),
+            ("PCjr", "jrc", "f", 2),
+            ("SGIIndy", "img", "s", 1),
+            ("SGIIndy", "chd", "s", 3),
+            ("TK2000", "nib", "s", 0),
+            ("Tandy1000", "vhd", "s", 2),
+            ("EG2000", "cas", "f", 1),
+            ("BBCBridgeCompanion", "bin", "f", 1),
+            ("GameCom", "tgc", "f", 1),
+            ("GameKing", "bin", "f", 1),
+            ("Loopy", "bin", "f", 1),
+            ("MyVision", "bin", "f", 1),
+            ("PocketStation", "gme", "f", 1),
+            ("PocketStation", "mcd", "s", 1),
+            ("SCV", "rom", "f", 1),
+            ("Studio-II", "st2", "f", 1),
+            ("Studio-II", "ch8", "f", 3),
+            ("SuperAcan", "bin", "f", 1),
+            ("SuperVision8000", "bin", "f", 1),
+        ];
+        let card = temp_dir("additional-native-systems");
+        for (id, extension, kind, index) in cases {
+            let def = table.iter().find(|def| def.id == id).unwrap();
+            let folder = card.join(&def.folders[0]);
+            std::fs::create_dir_all(&folder).unwrap();
+            let game = folder.join(format!("Game.{extension}"));
+            std::fs::write(&game, b"loader fixture").unwrap();
+            let found = FoundSystem {
+                def: def.clone(),
+                paths: vec![folder],
+                logo_dir: None,
+                menu_folder: None,
+            };
+            let config = found.to_config();
+            let library = crate::browse::Library::open(&config).unwrap();
+            let cache = crate::cache::build_system(&library);
+            let start = crate::browse::Place::Dir(found.path().to_path_buf());
+            assert!(
+                cache.get(&start).unwrap().rows.iter().any(|row| {
+                    row.kind == crate::browse::Kind::Play(crate::browse::Launch::File(game.clone()))
+                }),
+                "{id} must discover its game format"
+            );
+            let rule = config.rule_for(&game).unwrap();
+            assert_eq!(
+                (rule.kind.as_str(), rule.index),
+                (kind, index),
+                "{id}/{extension}"
+            );
+            let plan = crate::launch::plan(&config, &game, &card.join("launch.mgl")).unwrap();
+            assert!(
+                plan.mgl.contains(&format!("type=\"{kind}\"")),
+                "{id}: {}",
+                plan.mgl
+            );
+            assert!(
+                plan.mgl.contains(&format!("index=\"{index}\"")),
+                "{id}: {}",
+                plan.mgl
+            );
+        }
+        for (id, core) in [
+            ("PCXT", "_Computer/PCXT-EGA"),
+            ("AtariLynx", "_Console/AtariLynx2P"),
+        ] {
+            let def = table.iter().find(|def| def.id == id).unwrap();
+            assert!(def
+                .compatible_cores
+                .iter()
+                .any(|profile| profile.rbf == core));
+        }
+        std::fs::remove_dir_all(card).unwrap();
     }
 
     #[test]

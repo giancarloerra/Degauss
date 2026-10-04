@@ -343,6 +343,115 @@ component MenuRow inherits Rectangle {
     }
 }
 
+struct CustomPanel { x: float, y: float, width: float, height: float, content: int }
+export { CustomPanel }
+
+// Compiled panels share the same rows, selection, artwork and text.
+component BrowserPanel inherits Rectangle {
+    in property <int> content;
+    in property <[Row]> rows;
+    in property <int> selected;
+    in property <bool> center-rows;
+    in property <bool> marquee-end;
+    in property <bool> focused;
+    in property <bool> editing;
+    in property <length> row-height;
+    in property <length> pad;
+    in property <length> body-font;
+    in property <length> small-font;
+    in property <length> list-value-font;
+    in property <string> list-family;
+    in property <color> text-color;
+    in property <color> dim-color;
+    in property <color> surface-color;
+    in property <color> selection-color;
+    in property <color> selection-text;
+    in property <color> favorite-color;
+    in property <image> art;
+    in property <bool> has-art;
+    in property <float> art-scale-x;
+    in property <string> caption;
+    in property <string> short-text;
+    in property <string> full-text;
+    in property <float> information-offset;
+    out property <float> max-scroll: root.content == 3 ? full.max-scroll : 0;
+    clip: true;
+    background: root.content == 0 ? transparent : root.surface-color;
+
+    if root.content == 0: VerticalLayout {
+        alignment: root.center-rows ? LayoutAlignment.center : LayoutAlignment.start;
+        spacing: 0px;
+        for row[index] in root.rows: MenuRow {
+            height: root.row-height;
+            item: row;
+            selected: index == root.selected;
+            reserve-marker: true;
+            at-end: root.marquee-end;
+            pad: root.pad;
+            font-size: root.body-font;
+            value-font: root.list-value-font;
+            family-name: root.list-family;
+            value-min-width: 34px;
+            text-color: root.text-color;
+            value-color: root.dim-color;
+            selection-color: root.selection-color;
+            selection-text: root.selection-text;
+            favorite-color: root.favorite-color;
+        }
+    }
+    if root.content == 1: Rectangle {
+        ArtworkImage {
+            source: root.art;
+            has-source: root.has-art;
+            horizontal-scale: root.art-scale-x;
+            x: root.pad / 2;
+            y: root.pad / 2;
+            width: parent.width - root.pad;
+            height: parent.height - root.pad;
+        }
+        Text {
+            visible: !root.has-art;
+            text: root.caption;
+            color: root.text-color;
+            font-size: root.small-font;
+            x: root.pad;
+            y: root.pad;
+            width: parent.width - root.pad * 2;
+            height: parent.height - root.pad * 2;
+            wrap: word-wrap;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+        }
+    }
+    if root.content == 2: Text {
+        text: root.short-text;
+        color: root.text-color;
+        font-size: root.small-font;
+        x: root.pad;
+        y: root.pad;
+        width: parent.width - root.pad * 2;
+        height: parent.height - root.pad * 2;
+        wrap: word-wrap;
+    }
+    full := InformationSheet {
+        visible: root.content == 3;
+        text: root.full-text;
+        offset: root.information-offset;
+        font-size: root.small-font;
+        pad: root.pad;
+        text-color: root.text-color;
+        track-color: root.dim-color;
+        position-color: root.selection-color;
+        width: parent.width;
+        height: parent.height;
+    }
+    // Selection and information focus are explicit without changing the content.
+    if root.focused || root.editing: Rectangle {
+        border-width: 1px;
+        border-color: root.selection-color;
+    }
+}
+
 export component DegaussWindow inherits Window {
     // Palette.
     in property <color> c-background;
@@ -413,6 +522,16 @@ export component DegaussWindow inherits Window {
     // Within browse: 0 = details, 1 = tiled, 2 = list, 3 = carousel,
     // 4 = multi list, 5 = gallery.
     in property <int> layout: 0;
+    in property <bool> custom-view: false;
+    in property <[CustomPanel]> custom-panels;
+    in property <int> custom-edit-panel: -1;
+    in property <string> custom-editor-label;
+    in property <string> custom-short-text;
+    in property <string> custom-full-text;
+    in property <bool> custom-information-focus: false;
+    in property <float> custom-information-offset: 0;
+    out property <float> custom-information-max-scroll: max(custom-panel-0.max-scroll,
+        max(custom-panel-1.max-scroll, custom-panel-2.max-scroll));
 
     in property <[Row]> rows;
     in property <int> selected;
@@ -1475,7 +1594,120 @@ export component DegaussWindow inherits Window {
             // Browse, preview: titles beside artwork in landscape, below it
             // on a vertical display. These are the same two components, not
             // a second portrait-only screen.
-            if root.screen == 0 && root.layout == 0: Rectangle {
+                custom-panel-0 := BrowserPanel {
+                    visible: root.screen == 0 && root.custom-view && root.custom-panels.length > 0;
+                    x: root.custom-panels[0].x * 1px;
+                    y: root.custom-panels[0].y * 1px;
+                    width: root.custom-panels[0].width * 1px;
+                    height: root.custom-panels[0].height * 1px;
+                    content: root.custom-panels[0].content;
+                    rows: root.screen == 0 && root.custom-view ? root.rows : [];
+                    selected: root.selected;
+                    center-rows: root.center-rows;
+                    marquee-end: root.marquee-end;
+                    focused: root.custom-information-focus && self.content == 3;
+                    editing: root.custom-edit-panel == 0;
+                    row-height: root.row-height;
+                    pad: root.pad;
+                    body-font: root.list-body-glyph;
+                    small-font: root.small-glyph;
+                    list-value-font: root.list-small-glyph;
+                    list-family: root.list-font-family;
+                    text-color: root.c-text;
+                    dim-color: root.c-text-dim;
+                    surface-color: root.c-surface;
+                    selection-color: root.c-accent;
+                    selection-text: root.c-accent-text;
+                    favorite-color: root.c-favorite;
+                    art: root.art;
+                    has-art: root.has-art;
+                    art-scale-x: root.art-scale-x;
+                    caption: root.art-heart ? "\u{2665}" : root.art-caption;
+                    short-text: root.custom-short-text;
+                    full-text: root.custom-full-text;
+                    information-offset: root.custom-information-offset;
+                }
+                custom-panel-1 := BrowserPanel {
+                    visible: root.screen == 0 && root.custom-view && root.custom-panels.length > 1;
+                    x: root.custom-panels[1].x * 1px;
+                    y: root.custom-panels[1].y * 1px;
+                    width: root.custom-panels[1].width * 1px;
+                    height: root.custom-panels[1].height * 1px;
+                    content: root.custom-panels[1].content;
+                    rows: root.screen == 0 && root.custom-view ? root.rows : [];
+                    selected: root.selected;
+                    center-rows: root.center-rows;
+                    marquee-end: root.marquee-end;
+                    focused: root.custom-information-focus && self.content == 3;
+                    editing: root.custom-edit-panel == 1;
+                    row-height: root.row-height;
+                    pad: root.pad;
+                    body-font: root.list-body-glyph;
+                    small-font: root.small-glyph;
+                    list-value-font: root.list-small-glyph;
+                    list-family: root.list-font-family;
+                    text-color: root.c-text;
+                    dim-color: root.c-text-dim;
+                    surface-color: root.c-surface;
+                    selection-color: root.c-accent;
+                    selection-text: root.c-accent-text;
+                    favorite-color: root.c-favorite;
+                    art: root.art;
+                    has-art: root.has-art;
+                    art-scale-x: root.art-scale-x;
+                    caption: root.art-heart ? "\u{2665}" : root.art-caption;
+                    short-text: root.custom-short-text;
+                    full-text: root.custom-full-text;
+                    information-offset: root.custom-information-offset;
+                }
+                custom-panel-2 := BrowserPanel {
+                    visible: root.screen == 0 && root.custom-view && root.custom-panels.length > 2;
+                    x: root.custom-panels[2].x * 1px;
+                    y: root.custom-panels[2].y * 1px;
+                    width: root.custom-panels[2].width * 1px;
+                    height: root.custom-panels[2].height * 1px;
+                    content: root.custom-panels[2].content;
+                    rows: root.screen == 0 && root.custom-view ? root.rows : [];
+                    selected: root.selected;
+                    center-rows: root.center-rows;
+                    marquee-end: root.marquee-end;
+                    focused: root.custom-information-focus && self.content == 3;
+                    editing: root.custom-edit-panel == 2;
+                    row-height: root.row-height;
+                    pad: root.pad;
+                    body-font: root.list-body-glyph;
+                    small-font: root.small-glyph;
+                    list-value-font: root.list-small-glyph;
+                    list-family: root.list-font-family;
+                    text-color: root.c-text;
+                    dim-color: root.c-text-dim;
+                    surface-color: root.c-surface;
+                    selection-color: root.c-accent;
+                    selection-text: root.c-accent-text;
+                    favorite-color: root.c-favorite;
+                    art: root.art;
+                    has-art: root.has-art;
+                    art-scale-x: root.art-scale-x;
+                    caption: root.art-heart ? "\u{2665}" : root.art-caption;
+                    short-text: root.custom-short-text;
+                    full-text: root.custom-full-text;
+                    information-offset: root.custom-information-offset;
+                }
+                if root.screen == 0 && root.custom-view && root.custom-editor-label != "": Rectangle {
+                    x: root.pad;
+                    y: parent.height - root.small-glyph * 2;
+                    width: parent.width - root.pad * 2;
+                    height: root.small-glyph * 2;
+                    background: root.c-bar;
+                    Text {
+                        text: root.custom-editor-label;
+                        color: root.c-text;
+                        font-size: root.small-glyph;
+                        vertical-alignment: center;
+                    }
+                }
+
+            if root.screen == 0 && root.layout == 0 && !root.custom-view: Rectangle {
 
                 Rectangle {
                     x: 0px;

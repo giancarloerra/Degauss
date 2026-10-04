@@ -82,6 +82,7 @@ REPO_SOURCED = {
     "Scripts/.config/degauss/degauss.toml": "degauss.toml",
     "Scripts/.config/degauss/systems.toml": "assets/systems.toml",
     "Scripts/.config/degauss/LICENSE": "LICENSE",
+    "Scripts/.config/degauss/MessagePack-MIT.txt": "assets/licenses/MessagePack-MIT.txt",
     "Scripts/.config/degauss/DejaVuSans-LICENSE.txt": "assets/fonts/DejaVuSans-LICENSE.txt",
     "Scripts/.config/degauss/Px437-LICENSE.txt": "assets/fonts/Px437-LICENSE.txt",
     "Scripts/.config/degauss/RobotoCondensed-LICENSE.txt": "assets/fonts/RobotoCondensed-LICENSE.txt",

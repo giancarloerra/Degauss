@@ -328,6 +328,9 @@ pub struct Settings {
     /// `layout` applies there.
     #[serde(default, skip_serializing_if = "CustomViews::is_empty")]
     pub custom_views: CustomViews,
+    /// Named proportional templates. Existing per-place view strings stay intact.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub view_definitions: BTreeMap<String, crate::custom_view::Definition>,
     /// Folders and games hidden one at a time, by the name each is known
     /// by. Systems are hidden by id in `hidden`; this is everything else.
     #[serde(default)]
@@ -363,6 +366,10 @@ pub struct Settings {
     /// Absent preserves full names from releases before this setting.
     #[serde(default)]
     pub game_name_display: Option<GameNameDisplay>,
+    /// Show the complete MRA filename stem instead of its metadata title.
+    /// Absent keeps the existing metadata-based Arcade names.
+    #[serde(default)]
+    pub use_mra_filenames: Option<bool>,
     /// Whether folder rows receive Degauss's outer `[ name ]` marker.
     /// Absent preserves the marker used by earlier releases.
     #[serde(default)]
@@ -397,6 +404,14 @@ pub struct Settings {
     /// Nightly cores are visible unless explicitly switched off.
     pub show_unstable: Option<bool>,
     pub show_scripts: Option<bool>,
+    #[serde(default)]
+    pub show_explore: Option<bool>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub collections: BTreeMap<String, crate::explore::Collection>,
+    #[serde(default)]
+    pub next_collection: u64,
+    #[serde(default, skip_serializing_if = "crate::home::Store::is_empty")]
+    pub home: crate::home::Store,
     /// Absent preserves standard-first launches.
     pub core_preference: Option<CorePreference>,
     /// Preferred source for systems left on Automatic. Absent preserves
@@ -523,8 +538,17 @@ impl Settings {
     /// user's settings would vanish with no explanation.
     pub fn load(path: &Path) -> Result<Self> {
         match std::fs::read_to_string(path) {
-            Ok(text) => toml::from_str(&text)
-                .map_err(|e| DegaussError::malformed("settings", path, e.to_string())),
+            Ok(text) => {
+                let settings: Self = toml::from_str(&text)
+                    .map_err(|e| DegaussError::malformed("settings", path, e.to_string()))?;
+                settings
+                    .home
+                    .validate()
+                    .map_err(|error| DegaussError::malformed("Home settings", path, error))?;
+                crate::custom_view::validate(&settings.view_definitions)
+                    .map_err(|error| DegaussError::malformed("custom views", path, error))?;
+                Ok(settings)
+            }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Settings::default()),
             Err(e) => Err(DegaussError::io("reading settings", path, e)),
         }
@@ -547,6 +571,8 @@ impl Settings {
 
     pub(crate) fn encode(&self, path: &Path) -> Result<String> {
         let settings = self.with_resolved_hold_shortcuts();
+        crate::custom_view::validate(&settings.view_definitions)
+            .map_err(|error| DegaussError::malformed("custom views", path, error))?;
         let text = toml::to_string_pretty(&settings)
             .map_err(|e| DegaussError::malformed("settings", path, e.to_string()))?;
         let body = format!(

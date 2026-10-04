@@ -24,6 +24,8 @@ pub enum OptionId {
     /// The scroll speed above which artwork stops being loaded per row.
     ArtLimit,
     Layout,
+    /// Create and manage named template-based views.
+    CustomViews,
     /// Which available top-level folder opens after the splash screen.
     StartFolder,
     /// Remove every place-specific view after confirmation.
@@ -33,6 +35,7 @@ pub enum OptionId {
     DetailsStyle,
     /// Runtime-only formatting of the final effective game or folder name.
     GameNameDisplay,
+    UseMraFilenames,
     /// Whether folder rows receive Degauss's outer square-bracket marker.
     FolderBrackets,
     /// Whether game browsing shows the selected row position and total.
@@ -62,6 +65,7 @@ pub enum OptionId {
     /// Show the collection of nightly cores.
     ShowUnstable,
     ShowScripts,
+    ShowExplore,
     /// Preferred installed variant for ordinary game launches.
     CorePreference,
     /// Preferred available source for systems left on Automatic.
@@ -134,10 +138,12 @@ pub const OPTIONS: &[OptionId] = &[
     OptionId::Spacer,
     OptionId::Theme,
     OptionId::Layout,
-    OptionId::StartFolder,
+    OptionId::CustomViews,
     OptionId::ResetCustomViews,
+    OptionId::StartFolder,
     OptionId::DetailsStyle,
     OptionId::GameNameDisplay,
+    OptionId::UseMraFilenames,
     OptionId::FolderBrackets,
     OptionId::ShowGamePosition,
     OptionId::Font,
@@ -161,6 +167,7 @@ pub const OPTIONS: &[OptionId] = &[
     OptionId::ShowMisterZine,
     OptionId::ShowUnstable,
     OptionId::ShowScripts,
+    OptionId::ShowExplore,
     OptionId::ShowEmpty,
     OptionId::ShowHidden,
     OptionId::ResetHidden,
@@ -272,10 +279,12 @@ impl OptionsPage {
             Self::Appearance => &[
                 OptionId::Theme,
                 OptionId::Layout,
-                OptionId::StartFolder,
+                OptionId::CustomViews,
                 OptionId::ResetCustomViews,
+                OptionId::StartFolder,
                 OptionId::DetailsStyle,
                 OptionId::GameNameDisplay,
+                OptionId::UseMraFilenames,
                 OptionId::FolderBrackets,
                 OptionId::ShowGamePosition,
                 OptionId::Font,
@@ -302,6 +311,7 @@ impl OptionsPage {
                 OptionId::ShowMisterZine,
                 OptionId::ShowUnstable,
                 OptionId::ShowScripts,
+                OptionId::ShowExplore,
                 OptionId::ShowEmpty,
                 OptionId::ShowHidden,
                 OptionId::ResetHidden,
@@ -330,10 +340,12 @@ impl OptionId {
             OptionId::SwapXY => "Swap X and Y",
             OptionId::ArtLimit => "Skip Artwork Faster Than",
             OptionId::Layout => "View",
+            OptionId::CustomViews => "Custom Views",
             OptionId::StartFolder => "Start Folder",
-            OptionId::ResetCustomViews => "Reset All Custom Views",
+            OptionId::ResetCustomViews => "Reset Views Selections to Global",
             OptionId::DetailsStyle => "Details Style",
             OptionId::GameNameDisplay => "Game Name Display",
+            OptionId::UseMraFilenames => "Use MRA Filenames for Arcade Titles",
             OptionId::FolderBrackets => "Folder Brackets",
             OptionId::ShowGamePosition => "Game Total/Position",
             OptionId::Font => "Text",
@@ -350,6 +362,7 @@ impl OptionId {
             OptionId::ShowMisterZine => "Show Core Updates",
             OptionId::ShowUnstable => "Show Unstable Folder",
             OptionId::ShowScripts => "Show Scripts Folder",
+            OptionId::ShowExplore => "Show Explore Games",
             OptionId::CorePreference => "Core Preference",
             OptionId::AutomaticDataSource => "Automatic Data Source",
             OptionId::AutoRunPhysicalDiscs => "Auto-run Physical Discs",
@@ -387,6 +400,7 @@ impl OptionId {
     /// explain are settings nobody should have.
     pub fn help(self) -> &'static str {
         match self {
+            OptionId::UseMraFilenames => "Show the full Arcade MRA filename, including region and revision, instead of its metadata title. Other game names are unchanged.",
             OptionId::Speed => "Set how quickly the selection moves while a direction is held.",
             OptionId::LeftRight => {
                 "Choose speed changes, letter jumps, page jumps or movement. Direction uses rows in grids."
@@ -403,11 +417,12 @@ impl OptionId {
             OptionId::Layout => {
                 "Default view for places without a custom view. Actions changes only the current place."
             }
+            OptionId::CustomViews => "Create, edit or choose a named view from the available templates.",
             OptionId::StartFolder => {
                 "Choose Home or an available top-level folder to open when Degauss starts. A missing folder safely opens Home."
             }
             OptionId::ResetCustomViews => {
-                "Remove all custom views after confirmation. Every place will use the global view."
+                "Reset every place's view selection to the global view after confirmation. Named custom views are kept."
             }
             OptionId::DetailsStyle => {
                 "Information shows a summary, Large Artwork fills the column, Compact shows more titles."
@@ -453,6 +468,7 @@ impl OptionId {
             }
             OptionId::ShowUnstable => "Show the Unstable category for nightly core builds.",
             OptionId::ShowScripts => "Show Scripts on Home. Run installed scripts and return to Degauss when they finish.",
+            OptionId::ShowExplore => "Show Explore Games on Home. Search across indexed systems without scanning game folders.",
             OptionId::CorePreference => "Choose the preferred core when standard and RetroAchievements versions are both installed.",
             OptionId::AutomaticDataSource => {
                 "Choose which available source systems left on Automatic try first when they are entered."

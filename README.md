@@ -16,16 +16,20 @@ Degauss plays nice with the standard MiSTer setup, folders and scripts, instead 
 
 1. **Blazing-fast browsing** through large collections, with nothing left running while you play.
 2. **Your existing MiSTer library, as it is**, including SD, external storage and ZIP games that do not need unpacking.
-3. **Six ways to browse**, with a different view for each system or folder if you want.
-4. **Artwork and full game information** from your existing files and artwork packs, or Degauss’s built-in scraper.
-5. **Themes** with an on-device editor, font choices and custom system images.
-6. **Made for CRTs and HDMI**, with smoother CRT artwork, screen-alignment controls and a rotatable interface for vertical displays.
-7. **Optional HDMI CRT effects** for the interface, including scanlines and shadow masks.
-8. **Find and rediscover games** with search, filters, shared MiSTer favourites, Last Played and random picks.
-9. **Attract Mode** showcases your collection and lets you switch systems or launch the pictured game.
-10. **Core Updates** shows installed cores and updates available from your configured download sources.
-11. **Core choice per system or game**, including installed RetroAchievements and Unstable versions.
-12. **Fits into MiSTer**: configured controllers work straight away, and you can run installed scripts or use Zaparoo Core launches.
+3. **Six built-in views**, with a different view for each system or folder if you want.
+4. **Layouts Designer** lets you choose a template, arrange list, artwork and information panels, and save your own named layouts.
+5. **Artwork and full game information** from existing files and artwork packs, or Degauss's built-in scraper.
+6. **Libretro Integration** adds an optional, account-free source for game information, screenshots, box art and title screens alongside ScreenScraper.
+7. **Themes** with an on-device editor, font choices and custom system images.
+8. **Home Editor** lets you reorder Home entries and choose which ones to show or hide.
+9. **Custom Folders & Collections** group games, systems and folders your way, keeping filtered searches as reusable collections, with names and custom images.
+10. **Made for CRTs and HDMI**, with smoother CRT artwork, screen-alignment controls and a rotatable interface for vertical displays.
+11. **Optional HDMI CRT effects** for the interface, including scanlines and shadow masks.
+12. **Games Explorer** optionally searches across your library, combines filters and follows metadata links, alongside shared favourites, Last Played and random picks.
+13. **Attract Mode** showcases your collection and lets you switch systems or launch the pictured game.
+14. **Expanded Core Updates** shows installed cores, available updates and What's New, with latest-first sorting and cached browsing while refreshing.
+15. **Core choice per system or game**, including installed RetroAchievements, Unstable and Dual SDRAM builds.
+16. **Fits into MiSTer**: configured controllers work straight away, and you can run installed scripts or use Zaparoo Core launches.
 
 Source available, written in Rust and using Slint, and licensed for non-commercial use.
 
@@ -44,17 +48,21 @@ separately. CRT presentation is applied for the README.
 
 | | | |
 |---|---|---|
-| <img src="docs/screenshots/0.8.1/01-home.png" alt="Home with optional Cores, Last Played and Core Updates collections" height="200"> | <img src="docs/screenshots/0.7.0/03-handheld.png" alt="Optional Handheld category" height="200"> | <img src="docs/screenshots/0.6.0/02-details.png" alt="Details: DoDonPachi III" height="200"> |
-| Home | Optional Handheld Category | Details View |
-| <img src="docs/screenshots/0.7.0/01-large-artwork.png" alt="Large Artwork Details: DonPachi" height="200"> | <img src="docs/screenshots/0.6.0/03-list.png" alt="List View: Arcade Favourites" height="200"> | <img src="docs/screenshots/0.6.0/04-gallery.png" alt="Gallery View: Arcade Favourites" height="200"> |
-| Large Artwork Details | List View | Gallery View |
-| <img src="docs/screenshots/0.6.0/05-multi-list.png" alt="Multi List View: Arcade Favourites" height="200"> | <img src="docs/screenshots/0.6.0/06-carousel.png" alt="Carousel View: Actraiser" height="200"> | <img src="docs/screenshots/0.6.0/07-tiled.png" alt="Tiled View: Amiga Favourites" height="200"> |
-| Multi List View | Carousel View | Tiled View |
+| <img src="docs/screenshots/1.0.0/01-home.png" alt="Home with Explore Games and personal shortcuts" height="200"> | <img src="docs/screenshots/1.0.0/02-explore.png" alt="Explore Games" height="200"> | <img src="docs/screenshots/1.0.0/03-explore-filters.png" alt="Explore Filters" height="200"> |
+| Home | Explore Games | Explore Filters |
+| <img src="docs/screenshots/1.0.0/04-personal-folder.png" alt="Personal Folders" height="200"> | <img src="docs/screenshots/1.0.0/05-home-editor.png" alt="Home Folder Editor" height="200"> | <img src="docs/screenshots/0.7.0/03-handheld.png" alt="Optional Handheld category" height="200"> |
+| Personal Folders | Home Folder Editor | Optional Handheld Category |
+| <img src="docs/screenshots/0.6.0/02-details.png" alt="Details: DoDonPachi III" height="200"> | <img src="docs/screenshots/0.7.0/01-large-artwork.png" alt="Large Artwork Details: DonPachi" height="200"> | <img src="docs/screenshots/0.6.0/03-list.png" alt="List View: Arcade Favourites" height="200"> |
+| Details View | Large Artwork Details | List View |
+| <img src="docs/screenshots/0.6.0/04-gallery.png" alt="Gallery View: Arcade Favourites" height="200"> | <img src="docs/screenshots/0.6.0/05-multi-list.png" alt="Multi List View: Arcade Favourites" height="200"> | <img src="docs/screenshots/0.6.0/06-carousel.png" alt="Carousel View: Actraiser" height="200"> |
+| Gallery View | Multi List View | Carousel View |
+| <img src="docs/screenshots/0.6.0/07-tiled.png" alt="Tiled View: Amiga Favourites" height="200"> | <img src="docs/screenshots/1.0.0/06-custom-view.png" alt="Named Custom View" height="200"> | <img src="docs/screenshots/1.0.0/07-custom-view-editor.png" alt="Custom View Editor" height="200"> |
+| Tiled View | Named Custom View | Custom View Editor |
 | <img src="docs/screenshots/0.8.0/02-core-selection.png" alt="Per-system Core Selection" height="200"> | <img src="docs/screenshots/0.6.0/08-options.png" alt="Extensive Options" height="200"> | <img src="docs/screenshots/0.7.0/02-shortcuts.png" alt="Configurable Hold Shortcuts" height="200"> |
 | Per-system Core Selection | Extensive Options | Configurable Hold Shortcuts |
-| <img src="docs/screenshots/0.6.0/10-appearance.png" alt="Appearance" height="200"> | <img src="docs/screenshots/0.8.1/02-library.png" alt="Library: optional Cores and Core Updates browsers" height="200"> | <img src="docs/screenshots/0.9.1/02-screen-rotation.png" alt="Complete interface rotated clockwise for a vertical display" height="200"> |
+| <img src="docs/screenshots/0.6.0/10-appearance.png" alt="Appearance" height="200"> | <img src="docs/screenshots/1.0.0/08-library-options.png" alt="Library visibility including Explore Games" height="200"> | <img src="docs/screenshots/0.9.1/02-screen-rotation.png" alt="Complete interface rotated clockwise for a vertical display" height="200"> |
 | Appearance Settings | Library Visibility | 90° Screen Rotation |
-| <img src="docs/screenshots/0.8.2/03-core-updates.png" alt="Core Updates" height="200"> | <img src="docs/screenshots/0.8.0/05-cores.png" alt="Installed Cores Browser" height="200"> | <img src="docs/screenshots/0.8.0/06-metadata-filters.png" alt="Metadata Filters" height="200"> |
+| <img src="docs/screenshots/1.0.0/09-core-updates.png" alt="Core Updates with All Cores, latest-first sorting and local game artwork" height="200"> | <img src="docs/screenshots/0.8.0/05-cores.png" alt="Installed Cores Browser" height="200"> | <img src="docs/screenshots/0.8.0/06-metadata-filters.png" alt="Metadata Filters" height="200"> |
 | Core Updates | Installed Cores Browser | Metadata Filters |
 | <img src="docs/screenshots/0.6.0/13-developer.png" alt="Developer" height="200"> | <img src="docs/screenshots/0.6.0/14-actions.png" alt="Grouped Actions" height="200"> | <img src="docs/screenshots/0.6.0/15-random-favourite.png" alt="Random Game and Random Favourite" height="200"> |
 | Drawing and Performance Controls | Actions for This Place | Random Game or Random Favourite |
@@ -62,29 +70,28 @@ separately. CRT presentation is applied for the README.
 | A Different View for Every Place | Full Game Information | Indexing Progress |
 | <img src="docs/screenshots/0.6.0/34-index-details.png" alt="Indexing Details" height="200"> | <img src="docs/screenshots/0.6.0/19-index-complete.png" alt="Indexing Complete" height="200"> | <img src="docs/screenshots/0.6.0/28-artwork-source.png" alt="Automatic, Gamelist or Artwork Pack" height="200"> |
 | Indexing Details | Indexing Complete | Automatic, Gamelist or Artwork Pack |
-| <img src="docs/screenshots/0.6.0/36-artwork-pack-location.png" alt="Choose an Installed Artwork Pack" height="200"> | <img src="docs/screenshots/0.6.0/20-manual-search.png" alt="Single-game Scraper Controls" height="200"> | <img src="docs/screenshots/0.6.0/33-manual-query.png" alt="Enter a Manual Search" height="200"> |
-| Choose an Installed Artwork Pack | Single-game Scraper Controls | Enter a Manual Search |
-| <img src="docs/screenshots/0.6.0/24-manual-match.png" alt="Choose the Matching Game: 1944" height="200"> | <img src="docs/screenshots/0.6.0/21-scraper-progress.png" alt="Scraper Preparation" height="200"> | <img src="docs/screenshots/0.6.0/35-scraper-complete.png" alt="Single-game Scrape Complete" height="200"> |
-| Choose the Matching Game: 1944 | Scraper Preparation | Single-game Scrape Complete |
-| <img src="docs/screenshots/0.6.0/26-scripts.png" alt="Browse Installed Scripts" height="200"> | <img src="docs/screenshots/0.6.0/27-script-confirmation.png" alt="Confirm Before Running" height="200"> | <img src="docs/screenshots/0.6.0/32-standard-details.png" alt="Standard Theme: Details" height="200"> |
-| Browse Installed Scripts | Confirm Before Running | Standard Theme: Details |
-| <img src="docs/screenshots/0.4.0/07-custom-theme.png" alt="Custom Theme" height="200"> | <img src="docs/screenshots/0.4.0/08-amber-theme.png" alt="Amber Theme" height="200"> | <img src="docs/screenshots/0.4.0/09-blue-orange-theme.png" alt="Blue-Orange Theme" height="200"> |
-| Custom Theme | Amber Theme | Blue-Orange Theme |
-| <img src="docs/screenshots/0.4.0/10-mono-theme.png" alt="Mono Theme" height="200"> | <img src="docs/screenshots/0.4.0/11-green-mono-theme.png" alt="Green Mono Theme" height="200"> | <img src="docs/screenshots/0.4.0/12-modern-theme.png" alt="Modern Theme" height="200"> |
-| Mono Theme | Green Mono Theme | Modern Theme |
-| <img src="docs/screenshots/0.4.0/13-neon-theme.png" alt="Neon Theme" height="200"> | <img src="docs/screenshots/0.4.0/16-theme-editor.png" alt="Theme Editor" height="200"> | <img src="docs/screenshots/0.4.0/17-category-system-image-picker.png" alt="Category &amp; System Image Picker" height="200"> |
-| Neon Theme | Theme Editor | Category & System Image Picker |
-
-| | | |
-|---|---|---|
-| <img src="docs/screenshots/0.4.0/18-saved-custom-theme.png" alt="A Saved Custom Theme" height="200"> | <img src="docs/screenshots/0.9.0/01-attract-mode.png" alt="Attract Mode" height="200"> | <img src="docs/screenshots/0.9.1/01-video-effects.png" alt="Display settings with Video Effects and Scanlines selected" height="200"> |
-| A Saved Custom Theme | Attract Mode | Video Effects |
+| <img src="docs/screenshots/0.6.0/36-artwork-pack-location.png" alt="Choose an Installed Artwork Pack" height="200"> | <img src="docs/screenshots/1.0.0/10-libretro-settings.png" alt="Libretro Scraping" height="200"> | <img src="docs/screenshots/1.0.0/11-libretro-match.png" alt="Libretro Match Selection" height="200"> |
+| Choose an Installed Artwork Pack | Libretro Scraping | Libretro Match Selection |
+| <img src="docs/screenshots/0.6.0/20-manual-search.png" alt="Single-game Scraper Controls" height="200"> | <img src="docs/screenshots/0.6.0/33-manual-query.png" alt="Enter a Manual Search" height="200"> | <img src="docs/screenshots/0.6.0/24-manual-match.png" alt="Choose the Matching Game: 1944" height="200"> |
+| Single-game Scraper Controls | Enter a Manual Search | Choose the Matching Game: 1944 |
+| <img src="docs/screenshots/0.6.0/21-scraper-progress.png" alt="Scraper Preparation" height="200"> | <img src="docs/screenshots/0.6.0/35-scraper-complete.png" alt="Single-game Scrape Complete" height="200"> | <img src="docs/screenshots/0.6.0/26-scripts.png" alt="Browse Installed Scripts" height="200"> |
+| Scraper Preparation | Single-game Scrape Complete | Browse Installed Scripts |
+| <img src="docs/screenshots/0.6.0/27-script-confirmation.png" alt="Confirm Before Running" height="200"> | <img src="docs/screenshots/0.6.0/32-standard-details.png" alt="Standard Theme: Details" height="200"> | <img src="docs/screenshots/0.4.0/07-custom-theme.png" alt="Custom Theme" height="200"> |
+| Confirm Before Running | Standard Theme: Details | Custom Theme |
+| <img src="docs/screenshots/0.4.0/08-amber-theme.png" alt="Amber Theme" height="200"> | <img src="docs/screenshots/0.4.0/09-blue-orange-theme.png" alt="Blue-Orange Theme" height="200"> | <img src="docs/screenshots/0.4.0/10-mono-theme.png" alt="Mono Theme" height="200"> |
+| Amber Theme | Blue-Orange Theme | Mono Theme |
+| <img src="docs/screenshots/0.4.0/11-green-mono-theme.png" alt="Green Mono Theme" height="200"> | <img src="docs/screenshots/0.4.0/12-modern-theme.png" alt="Modern Theme" height="200"> | <img src="docs/screenshots/0.4.0/13-neon-theme.png" alt="Neon Theme" height="200"> |
+| Green Mono Theme | Modern Theme | Neon Theme |
+| <img src="docs/screenshots/0.4.0/16-theme-editor.png" alt="Theme Editor" height="200"> | <img src="docs/screenshots/0.4.0/17-category-system-image-picker.png" alt="Category &amp; System Image Picker" height="200"> | <img src="docs/screenshots/0.4.0/18-saved-custom-theme.png" alt="A Saved Custom Theme" height="200"> |
+| Theme Editor | Category & System Image Picker | A Saved Custom Theme |
+| <img src="docs/screenshots/0.9.0/01-attract-mode.png" alt="Attract Mode" height="200"> | <img src="docs/screenshots/0.9.1/01-video-effects.png" alt="Display settings with Video Effects and Scanlines selected" height="200"> |  |
+| Attract Mode | Video Effects |  |
 
 ## Watch Degauss in action
 
 <p align="center">
-  <a href="https://www.youtube.com/watch?v=I2TwQtroipM">
-    <img src="https://img.youtube.com/vi/I2TwQtroipM/maxresdefault.jpg"
+  <a href="https://www.youtube.com/watch?v=VpQkgDZS5NE">
+    <img src="https://img.youtube.com/vi/VpQkgDZS5NE/maxresdefault.jpg"
          alt="Degauss in motion" width="640">
   </a>
 </p>
@@ -94,6 +101,8 @@ Click the image to watch Degauss on YouTube.
 ## Table of contents
 
 - [Using it](#using-it)
+  - [Explore Games and saved collections](#explore-games-and-saved-collections)
+  - [Personal Home](#personal-home)
   - [Running MiSTer scripts](#running-mister-scripts)
   - [Browsing core updates](#browsing-core-updates)
 - [Why Degauss](#why-degauss)
@@ -108,12 +117,14 @@ Click the image to watch Degauss on YouTube.
   - [External storage support](#external-storage-support)
 - [Views](#views)
 - [Settings](#settings)
+  - [Manual configuration overrides](#manual-configuration-overrides)
   - [Themes and colours](#themes-and-colours)
     - [Editing a theme on-device](#editing-a-theme-on-device)
     - [Proposing a theme for an official release](#proposing-a-theme-for-an-official-release)
 - [Artwork and metadata](#artwork-and-metadata)
   - [Using MiSTer Game Artwork Databases](#using-mister-game-artwork-databases)
   - [Scraping with ScreenScraper](#scraping-with-screenscraper)
+  - [Scraping with Libretro](#scraping-with-libretro)
   - [Where the gamelist goes](#where-the-gamelist-goes)
   - [System and category images](#system-and-category-images)
 - [Tips](#tips)
@@ -123,6 +134,10 @@ Click the image to watch Degauss on YouTube.
     - [After any change](#after-any-change)
   - [Keeping the card in order (additional bonus!)](#keeping-the-card-in-order-additional-bonus)
 - [Troubleshooting and FAQ](#troubleshooting-and-faq)
+  - [Why does a core appear in MiSTer's menu but not in Degauss?](#why-does-a-core-appear-in-misters-menu-but-not-in-degauss)
+  - [How can I rebuild just one system instead of the whole library?](#how-can-i-rebuild-just-one-system-instead-of-the-whole-library)
+  - [Can I put a system in a different Home folder?](#can-i-put-a-system-in-a-different-home-folder)
+  - [An Artwork Pack assigns the wrong picture to a game. How can I correct it?](#an-artwork-pack-assigns-the-wrong-picture-to-a-game-how-can-i-correct-it)
   - [What MiSTer hardware has Degauss been reported working on?](#what-mister-hardware-has-degauss-been-reported-working-on)
   - [Can an AI coding agent maintain my MiSTer after Update All?](#can-an-ai-coding-agent-maintain-my-mister-after-update-all)
   - [I installed an Artwork Pack, but its artwork is not showing](#i-installed-an-artwork-pack-but-its-artwork-is-not-showing)
@@ -160,8 +175,9 @@ available at the current browse location, the normal action remains immediate.
 **Actions** groups the available controls into **Game**, **Find**, **Library**
 and **Appearance**. Groups without applicable actions are omitted. **A** opens
 a group; **B** returns to the group list, then to browsing. Each selected
-control has an explanation below the list. The Categories home screen keeps
-its short, flat Actions menu for images and views.
+control has an explanation below the list. Home keeps its flat Actions menu
+for personal folders, editing, images and views. Explore has its own search,
+filter and collection actions.
 
 **Game** contains Game Information, separate **Random Game** and **Random
 Favourite** actions, and adding/removing favourites. Adding one opens a
@@ -201,6 +217,62 @@ within 40 ms; held scrolling and deliberate repeated taps are not affected.
 the controller actions inside Degauss. Keyboard controls, MiSTer's controller
 mapping and launched games remain unchanged. On-screen control hints follow
 the selected swaps; the **Hold A/B/X/Y** rows always name the physical buttons.
+
+### Explore Games and saved collections
+
+**Explore Games** on Home browses the visible games in already indexed systems.
+It does not scan ROM folders, prepare an Artwork Pack or contact a game service.
+Unavailable or unindexed sources are reported; **Actions → Indexed Coverage**
+shows the complete report. Rebuild an affected system through its ordinary
+Library actions before reopening Explore if it has not yet been indexed.
+Games missing since indexing are skipped with a warning; healthy entries remain
+available, and Indexed Coverage lists the missing paths.
+
+Combine title search, category, system, decade and the existing six metadata
+fields. Filters combine together; each value's count respects the other chosen
+filters. **Unknown** selects games without that field. Identically named games
+retain their owning systems and exact launch targets. Existing views, artwork,
+Game Information, favourites and core choices remain available.
+
+**Actions → Save Collection** saves the current criteria under a name.
+**Saved Collections** opens, renames or deletes those saved searches without
+copying games. **More by Developer**, **More by Publisher** and **Same Genre**
+start a cross-system search using the selected game's existing metadata.
+Back returns to the previous query or originating browser location. Returning
+from a game restores the query and selection; a fresh start begins unfiltered.
+Explore Games is **Off** by default. Enable **Options → Library → Show Explore
+Games**, or show it in **Edit Home** and save. Its default position is after
+Last Played. Entries with the same full name and launch identity within a
+system appear once, even in different folders. Different variant filenames or
+core choices remain separate and include their filename when their displayed
+titles would otherwise be identical. Explore does not read ROM contents to
+compare copies.
+
+### Personal Home
+
+**Actions → Add to Home** saves an exact shortcut to a game, system, library
+folder, saved collection, installed core, script or Home category/action.
+Choose Home, an existing personal folder or **New Personal Folder**.
+The shortcut is saved and appears immediately, without opening Edit Home.
+Removing a shortcut is also immediate. This does not copy games or change
+MiSTer Favourites.
+
+On Home, **Actions → Edit Home** lists standard and personal rows, including
+hidden ones. Select a row to move it up/down or hide/show it on Home.
+Inside a personal folder this is **Edit Home Folder**. Moving or hiding a row
+returns to the entries list with that row selected and its status updated.
+Personal entries can also be renamed, moved to another personal folder or
+removed. Folders can contain mixed shortcuts and other personal folders,
+up to three folder levels, and use images chosen from the existing logos
+folder. **Save Changes** keeps ordering, visibility and other draft edits;
+**Cancel Changes** discards those edits. Additions and removals are immediate.
+
+Existing Library visibility switches remain authoritative. Missing or hidden
+targets stay saved and visibly unavailable; they are not redirected to a
+different game. Removing a personal folder removes only its organisation.
+Back from an opened target and return after play restore its originating
+personal-folder entry. **Start Folder** continues to use the existing category
+identity, independently of Home ordering.
 
 ### Running MiSTer scripts
 
@@ -257,7 +329,12 @@ screen. It is Off by default. Degauss reads the same databases and filters that
 are configured for MiSTer's Downloader in `downloader.ini`, `downloader/*.ini`
 and `downloader_*.ini`.
 
-Every installed core remains visible, including one that has no configured
+**All Cores** is the initial view, sorted by the latest build date first.
+**X Actions → Sort by Name** changes the order; **Sort by Latest Updated**
+restores it. **What's New** compares listings with the previous complete check.
+**X Actions → Updates Available** shows
+installed cores with a newer configured build, and **All Cores** shows the
+complete list. In All Cores, every installed core remains visible, including one that has no configured
 database source. An uninstalled core appears only when one of this MiSTer's
 configured databases selects it, so it is content the next Downloader run can
 provide. Degauss does not classify databases as official or unofficial and
@@ -278,14 +355,33 @@ cycles through the images once per second. Game data is read on demand for the
 selected core and then reused; Core Updates does not preload another copy of
 the library.
 
-The first open reads the configured databases and saves the result. Later
-opens use that saved result without a network request. **Refresh** reads the
-databases again. If one source times out or returns unusable data, Degauss
+Opening uses compatible saved results and rechecks installed cores without
+forcing a download. **Refresh** reads the configured databases again while
+saved rows remain browsable; **Cancel Refresh** stops
+the background check without leaving the saved rows. No check runs while this
+browser is unopened. If one source times out or returns unusable data, Degauss
 shows the results from the others and names the skipped source at the end;
 partial results are not saved as a complete catalogue. If none can be read,
 the last valid saved result remains available. **B** cancels and returns Home. A
 first-use failure shows a concise cause, while `/tmp/degauss.log` keeps the
 technical detail.
+
+What's New compares exact configured listings with the last complete check
+you viewed. On the first visit it explains that there is no previous history
+and shows current information without marking everything new. Leaving after
+a complete fresh check has appeared saves one baseline for the whole catalogue,
+including rows hidden by temporary filters. Changes stay visible throughout
+that visit, including after Refresh. Cached, partial, failed and cancelled
+checks never advance history. New source/filter/precedence settings establish
+a comparison for the affected sources without treating their entire contents
+as newly released. A changed dated filename is labelled **New or changed
+listing**, not a claim that the core has just debuted. Known dates are build
+dates, and **Game Information** includes the actual checked time.
+
+The small `cache/core-updates-seen.json` history file is separate from the
+existing core catalogue cache. If damaged, What's New explains the failure;
+All Cores remains usable. Repairing or removing that history file starts a new
+comparison without changing installed cores or the library.
 
 ## Why Degauss
 
@@ -612,9 +708,9 @@ reconnected, or after restarting Degauss. Unplugging and reconnecting entirely
 between checks may keep the previous answer. Storage is not continuously monitored
 while the browser is idle.
 
-`game_roots` in `degauss.toml` controls where to search; an absent optional
+`game_roots` in `degauss-user.toml` controls where to search; an absent optional
 root never causes a startup wait. To require a late mount before startup,
-add its actual mountpoint to `wait_for_mounts`:
+add its actual mountpoint to `wait_for_mounts` in that user file:
 
 ```toml
 # Games are directly mounted here:
@@ -636,7 +732,7 @@ Installations that relied on the previous automatic wait based on the stock
 CIFS script must now explicitly list their required mountpoint. Changes to
 game files on an already connected drive still need **Rebuild this system**
 or a full rebuild. A layout the defaults do not cover is one `game_roots`
-edit in `degauss.toml` away.
+edit in `degauss-user.toml` away. See [Manual configuration overrides](#manual-configuration-overrides).
 
 The first run reads the card and writes an index, about a minute for a
 full one of 97k+ games. It reads the ordinary game libraries only: an
@@ -832,7 +928,8 @@ in the file
 for you to correct. That substitution is reported on the first screen,
 unless a library read starts at the same time and takes the screen first,
 and always in `/tmp/degauss.log`, which is the copy that survives such a
-read. Pictures are decoded to `cover_size` in `degauss.toml` or half the
+read. Pictures are decoded to `cover_size` under `[app]` in the effective
+configuration or half the
 longer screen edge, whichever is larger. With the shipped `cover_size` of
 320 and the default screen margins, the Large Artwork box outgrows that
 decode on landscape screens wider than about 600 pixels (a little sooner
@@ -841,14 +938,41 @@ slightly enlarged there; on a landscape screen, a `cover_size` of at least
 two thirds of the screen width keeps every picture within its decode.
 
 **Options → Appearance → View** is the global default. Every browse place can instead
-keep its own custom view: the Categories screen, each category's Systems
+keep its own custom view: Home, each category's Systems
 screen, each system root, and every folder inside a system. Use **X Actions →
 Appearance → Change View** at that place to create or update its custom view.
 **Use Global View**, in the same group, removes only that place's custom view;
 it then follows later global
 changes again. A custom view remains custom even when it currently matches
-the global setting. At the Categories home screen these view controls are
+the global setting. At Home these view controls are
 directly in its flat Actions menu.
+
+**X Actions → Appearance → Custom Views** creates named views from four
+templates: two columns, a left column with two panels on the right, two
+panels on the left with a right column, or two stacked panels. On Home and
+in Explore, Custom Views is directly in Actions. Exactly one panel is the
+browser list; the others can show artwork, short information or full
+information. Choosing a new list panel moves the existing list rather than
+creating a second selection.
+
+**Options → Appearance → Custom Views** opens the same manager from the
+general menu, immediately below View.
+
+In the editor, Up/Down chooses a panel or divider and Left/Right changes
+its content or proportion with a live preview. **X Save** stores the view;
+**B Cancel** leaves saved views unchanged. Saved names appear alongside the
+six built-in choices in View and Change View. Custom Views also offers
+Use Here, Use Globally, Edit, Save As, Rename and Delete. Deleting a named
+view removes its assignments; existing built-in assignments are unchanged.
+Proportions adapt to the screen and its safe area, including portrait.
+Core Updates keeps its dedicated Details presentation.
+
+Full information is read only for the settled selected game, from its
+configured Gamelist or Artwork Pack. Long information scrolls slowly after a
+brief pause. **Actions → Game → Focus Information**
+gives Up/Down to text scrolling; **B** returns to list navigation. On Home
+and Explore this action is directly in Actions. Non-game rows do not show
+invented game metadata.
 
 View changes are saved when leaving the Actions page, before returning to
 browsing or opening another action. A save error keeps the menu open with the
@@ -941,10 +1065,12 @@ require **A** and confirmation, never a sideways press.
 | Shortcuts | Hold A / Hold B / Hold X / Hold Y | Off by default. Assign None, Cycle View, Random Game, Random Favourite, Add/Remove Favourite, Game Information, Search This Folder, Jump to Letter, Actions, Menu or Start Attract Mode to each one-second hold. Assign Actions and Menu to A/B for two-button controllers. Short presses retain their normal action. Holds work only while browsing and only where the chosen command is available; otherwise the normal press is immediate |
 | Appearance | Theme | Left and right choose a palette. Press A to open the editor. Standard uses the colours in `degauss.toml`. See [Themes and colours](#themes-and-colours) |
 | Appearance | View | The global default for places without a custom view: Details, Tiled, Carousel, List, Multi List or Gallery |
+| Appearance | Custom Views | Create, edit or choose a named template-based view |
+| Appearance | Reset Views Selections to Global | With A and confirmation, remove every place-specific view selection without changing the global View or deleting named custom views |
 | Appearance | Start Folder | Home by default, or any currently available top-level folder. If the saved folder is no longer present, Degauss safely starts at Home without replacing the choice |
-| Appearance | Reset All Custom Views | With A and confirmation, remove every place-specific view without changing the global View setting |
 | Appearance | Details Style | How Details shares the screen while browsing games. Information (default) keeps the list beside a picture of about 42% of the width, with the summary under it; Large Artwork gives the picture about 62% and the whole column height; Compact uses about 33% for the picture and shows more rows on higher-resolution screens |
 | Appearance | Game Name Display | Full (default), remove parenthesised tags, remove square-bracketed tags, remove both, or retain only recognised region and/or disc-index tags. This changes presentation, sorting and search only; names stored in files and caches are unchanged |
+| Appearance | Use MRA Filenames for Arcade Titles | Off by default. On shows each Arcade MRA's exact filename without `.mra`, retaining variant tags regardless of Game Name Display. Sorting and search follow the displayed title; artwork, metadata and launch targets stay unchanged |
 | Appearance | Folder Brackets | On by default. Turn off only Degauss's outer `[ name ]` marker for folders; square brackets that are part of the underlying name still follow Game Name Display |
 | Appearance | Game Total/Position | On by default. Turn off the selected-position and total counter while browsing games |
 | Appearance | Text | The typeface: Smooth, Pixel (a DOS font on whole pixels), and the bolder Smooth 2 and Pixel 2 |
@@ -968,11 +1094,12 @@ require **A** and confirmation, never a sideways press.
 | Library | Show Unstable Folder | Show installed Unstable cores. On by default |
 | Library | Show Scripts Folder | On by default. Show Scripts in the main browser to browse and run installed `.sh` files. Turning this Off hides the entry without changing the files |
 | Library | Show Core Updates | Off by default. Show every installed core and uninstalled cores selected by this MiSTer's configured Downloader databases |
+| Library | Show Explore Games | Off by default. Show Explore after Last Played on Home. Edit Home can also show or hide it |
 | Library | Show Systems with No Games | Systems and folders holding nothing are left out on their own; this shows them. Off by default |
 | Library | Show What You Hid | Show what you hid yourself with **Hide This** |
 | Library | Unhide Everything | Press A and confirm to put back everything you hid yourself, in every folder and every system. Left and right do nothing |
 | Library | Rebuild All System Lists | Press A to read the whole card again. Run it after adding games, cores or artwork; **Actions → Library → Rebuild This System List** rebuilds just the containing system. Left and right do nothing |
-| Library | Scrape All Systems | Press A to open ScreenScraper settings for all supported systems. Artwork Pack systems are skipped; the master Favourites system is not a scrape target |
+| Library | Scrape All Systems | Press A to choose ScreenScraper or Libretro for all supported systems. Artwork Pack systems are skipped; the master Favourites system is not a scrape target |
 | Display | Edge Margin, Sides | Keep this much of each side clear of the bezel |
 | Display | Edge Margin, Top and Bottom | The same, vertically |
 | Display | Screen Position, Sideways | Nudge the picture, for a screen that sits off centre |
@@ -982,20 +1109,55 @@ require **A** and confirmation, never a sideways press.
 | Developer | Drawing Path | Draw into the screen directly, or into memory first |
 | Developer | Performance Readout | Replace the key hints with frame timings |
 
-`degauss.toml` is documentation as much as configuration: every value
-explains itself. Changes are written to `settings.toml` beside it when leaving
-an Options page, so your changes never overwrite those notes.
+`degauss.toml` contains shipped defaults. Changes made in Options are written
+to `settings.toml` beside it when leaving an Options page.
 If saving fails, the page stays open and a message explains the problem.
 Changes remain active for the current session; dismiss the message and press
 **B** again after resolving the storage problem to retry saving.
-Delete `settings.toml` to go back to the documented defaults.
+Delete `settings.toml` to reset UI preferences. Manual overrides still apply.
+
+### Manual configuration overrides
+
+Create `degauss-user.toml` beside `degauss.toml`, normally at
+`/media/fat/Scripts/.config/degauss/degauss-user.toml`, only when manual
+configuration is needed. Updates deliver `degauss.toml`, not your user file.
+With `--config`, the user file is looked for beside the selected configuration.
+
+Put only intentionally overridden values in it. Keys omitted at the root or
+inside a section retain the shipped defaults. Arrays replace the complete
+array and keep the order you supply. For example, to wait for a mounted share:
+
+```toml
+wait_for_mounts = ["/media/fat/cifs"]
+```
+
+Manual settings include `game_roots` (game search locations and order),
+`wait_for_mounts` (required startup mounts), `menu_root` (a custom MiSTer menu
+root), and optional artwork tuning `cover_size` and `art_cache` under `[app]`.
+For example, changing only the decode size requires:
+
+```toml
+[app]
+cover_size = 400
+```
+
+Do not copy all defaults into the user file. UI preferences remain in
+`settings.toml`; edit and save colours through **Options → Appearance → Theme
+→ press A**. The user file is not rewritten by Options. An unreadable or
+invalid user file is ignored for that run, with its path and underlying cause
+in `/tmp/degauss.log`; the base configuration, UI preferences and themes still
+apply. No partial overrides are used.
+`--check-install` reports an invalid or unreadable user file separately.
+
+Move only custom values you manually edited in degauss.toml into
+degauss-user.toml once, keeping any required TOML section headers, so future
+updates preserve them. Preferences chosen in Options and saved themes do not
+need moving.
 
 ### Themes and colours
 
-The ten palette colours Degauss draws with are roles in the `[colors]`
-block of `degauss.toml`, validated as `#rrggbb` when the file is read
-(the wordmark's `logo` colour, below, is the one colour that lives
-outside it):
+Edit all ten palette colours through **Options → Appearance → Theme → press
+A**, then save a named theme. The colours are roles rather than fixed hues:
 
 | Role | Does |
 |---|---|
@@ -1013,9 +1175,8 @@ outside it):
 A theme is one `.toml` file in the `themes/` folder beside `degauss.toml`
 (`Scripts/.config/degauss/themes/` on a card), naming any of those ten
 roles, and its file stem is its name in the **Theme** row of Options.
-The roles go in as bare keys or under a `[colors]` header, so the block
-from `degauss.toml` pastes in unchanged. A theme overlays your
-`[colors]`: roles it does not name show through from `degauss.toml`. One
+The roles go in as bare keys or under a `[colors]` header in a theme file.
+Roles it does not name use the shipped palette. One
 more key, `logo`, at the top level, draws the wordmark as a flat
 silhouette in that colour; leave it out and the wordmark keeps its own
 three colours. The optional top-level `logo_opacity` is an integer from
@@ -1050,16 +1211,15 @@ logo_opacity = 80
 
 picks a darker ground, a green selection bar and a wordmark blended 80%
 towards green from its original colours, and
-every other colour shows through from your `[colors]`. Copying the whole
-`[colors]` block out of `degauss.toml` and pasting it in, header and
-all, is also a valid theme, ready to be edited.
+every other colour uses the base palette. The on-device editor can save a
+complete theme without manually editing configuration files.
 
 Six themes are available as starting points: `Amber`, `Mono`,
 `Blue-Orange`, `Green Mono`, `Modern` and `Neon`. `Green Mono` defaults to
 Pixel 2, `Neon` to Pixel, and `Modern` to Smooth 2. The three older file-based
 themes do not set a font, so they use the system-wide Text choice. None of the six
 names `favorite`, so the hearts keep your own favourite colour under every
-palette: red unless you changed it in `[colors]`.
+palette: red unless changed in your saved theme.
 
 The updater manages the `Amber`, `Mono` and `Blue-Orange` files, so edits
 to those files are overwritten on the next update. Copy one under a new
@@ -1553,13 +1713,15 @@ For a direct title search without first running automatic matching, open
 **Start Scraping**. It searches the selected game's system using its pre-filled
 title. The same candidate picker lets you edit the title, preview a match and
 confirm its use. **B** returns to the single-game scraper settings. The account,
-password-storage confirmation and chosen Images and Metadata policies still
-apply: manual matching does not force replacement of existing data. This action
+password-storage confirmation and chosen Metadata policy still apply.
+Accepting a manual match replaces its picture even with **Images: Missing only**;
+**Images: Off** still downloads no picture. This action
 is available only for an individual game, not folder, system or all-system jobs.
 
 Use Search Manually when an automatic match was wrong. To correct existing
-artwork or metadata, set the corresponding Images or Metadata policy to
-**Replace existing** before confirming the replacement match.
+metadata, set **Metadata: Replace existing** before confirming the replacement
+match. Automatic single-game and batch scraping still respect **Images: Missing
+only**. These rules also apply to Libretro.
 
 Folder, system and all-systems scrapes never stop for a match choice. Missing
 and ambiguous ScreenScraper matches are counted, skipped without changes, and the remaining
@@ -1697,6 +1859,51 @@ Degauss system ID, matched case-insensitively, to a positive ScreenScraper
 platform ID. It is intended only for a missing or deliberately overridden
 platform mapping; an invalid or ambiguous override can associate the wrong
 game, so verify both IDs before using it.
+
+### Scraping with Libretro
+
+Open the same **Scrape This Game**, **Scrape This Folder**, **Scrape This System**
+or **Scrape All Systems** screen and change **Scraping Source** to **Libretro**.
+No account is required. ScreenScraper remains the default and its saved login
+and artwork choices are kept when switching sources.
+
+Libretro supplies **Screenshot**, **Box Art** and **Title Screen** choices.
+The existing Images and Metadata policies, manual match selection, progress,
+cancellation, XML backups and list refresh apply to both sources. Artwork Pack
+systems remain excluded. Downloaded pictures go into `media/libretro` beside
+the system's gamelist; no ROM, Artwork Pack or previously downloaded picture
+is overwritten.
+
+The relevant public [Libretro database](https://github.com/libretro/libretro-database)
+is downloaded only when an explicit scrape or manual search needs it, then
+reused from `cache/libretro` beside Degauss's settings. No database or image
+download runs at startup or during normal browsing. An invalid cached database
+is reported as an error; it is not silently replaced. To refresh a database,
+exit Degauss, remove only its `.rdb` file from that cache and scrape again.
+
+Ordinary ROMs use bounded CRC32, MD5 and SHA-1 matching, including renamed
+files. Libretro hashing is limited to 64 MiB or the configured smaller limit.
+Disc/container/launcher files use names, not the hash of an MRA, MGL, CHD,
+CUE or ZIP wrapper. Uncertain regions/revisions require manual selection.
+Supported systems are mapped explicitly to their own database, rather than
+guessed from display labels. Unsupported or unmatched games remain playable.
+This does not add disc-serial or CHD parsing. Serial-only database records are
+not game matches; supported disc games still use their database titles.
+
+Only supplied metadata fields are written. Hash-only database records can
+provide their metadata without inventing a title or artwork. Missing artwork is reported
+separately from network, timeout, HTTP, database and image errors. Thumbnail
+names use the confirmed database title and Libretro's character/URL rules;
+short-name artwork is tried only when that name identifies one database entry.
+See the [Libretro thumbnail conventions](https://docs.libretro.com/guides/roms-playlists-thumbnails/#custom-thumbnails).
+
+Libretro databases are credited to their contributors and licensed under
+[CC BY-SA 4.0](https://github.com/libretro/libretro-database/blob/master/LICENSE).
+Artwork has separate rights belonging to its creators; see
+[Libretro thumbnail credits](https://github.com/libretro-thumbnails/libretro-thumbnails#credits).
+Databases and artwork are fetched on request, not bundled with Degauss.
+The independent RDB reader uses MIT-licensed MessagePack crates, not
+RetroArch's scanner or thumbnail-downloader code.
 
 ### Where the gamelist goes
 
@@ -1895,7 +2102,7 @@ supported. Favourites shows its heart when `Favorites.png` or `.jpg` is not
 present. Restart Degauss after adding or replacing a directly named image.
 
 You can also put additional PNG, JPG or JPEG images directly in this same `logos`
-folder, using any filename. On the master Categories screen, press **X** and
+folder, using any filename. On Home, press **X** and
 choose **Change Image** directly. On a system such as **Computer → Amiga**,
 press **X** and choose **Appearance → Change Image**. Then select any
 shipped or user-added image in the list. Degauss copies the selection into its
@@ -1917,8 +2124,8 @@ category.
 
 ### Making the gamelists
 
-Degauss's built-in ScreenScraper tool can create and update gamelists directly
-on MiSTer and is the simplest choice when MiSTer is online. The computer tools
+Degauss's built-in scraper can create and update gamelists directly on MiSTer
+using ScreenScraper or account-free Libretro. The computer tools
 below are alternatives for preparing or curating them while the card is mounted
 in a computer, or through a local or network location.
 
@@ -2042,12 +2249,70 @@ anything a core needs that is missing. It reports; I decide; it executes.
 
 ## Troubleshooting and FAQ
 
+### Why does a core appear in MiSTer's menu but not in Degauss?
+
+Degauss's game library uses per-system definitions to recognise game folders,
+file formats and launch settings. It is not a direct copy of MiSTer's core
+menu, so an installed core may not yet have a dedicated game-library section.
+
+To access the installed core directly:
+
+1. Set **Options → Library → Show Cores → On**.
+2. Return to **Home** and open **Cores**.
+3. Choose the appropriate category and core.
+
+For example, Atari ST is available through **Cores → Computer → AtariST**.
+Load games through the core's usual MiSTer OSD. This provides access without
+leaving Degauss, but does not add an indexed game list or artwork section.
+Those require a system definition. Rebuilding the library or enabling
+**Show Systems with No Games** cannot add a missing definition.
+
+### How can I rebuild just one system instead of the whole library?
+
+1. Enter the affected system, for example **Console → NES**.
+2. Press **X** and open **Actions → Library → Rebuild This System List**.
+3. Let indexing finish, then close the completion report.
+
+Only that system's game folders are read. Starting from a subfolder still
+rebuilds the containing system, not just that folder. **B Cancel** stops an
+active rebuild. Use **Options → Library → Rebuild All System Lists** only
+when the whole library needs updating. See [External storage support](#external-storage-support)
+for indexing and storage details.
+
+### Can I put a system in a different Home folder?
+
+Yes, organise shortcuts in personal Home folders without moving game files
+or changing MiSTer's categories:
+
+1. Highlight the system, game, library folder or saved collection.
+2. Press **X** and choose **Add to Home** in Actions.
+3. Choose an existing personal folder or **New Personal Folder**, then name it.
+
+The addition appears immediately. **Edit Home** and **Edit Home Folder** let
+you change order, visibility, names, images and personal-folder placement;
+save those editor changes with **Save Changes**. Personal folders can contain
+other personal folders up to three levels. The original system remains in
+its standard category unless separately hidden. See [Personal Home](#personal-home)
+for all shortcut and editing controls.
+
+### An Artwork Pack assigns the wrong picture to a game. How can I correct it?
+
+1. Select the affected game while its system uses **Artwork Pack** data.
+2. Open **X Actions → Game → Artwork Pack Match**.
+3. Preview the suggested titles, or use **Search Pack...** to find the right one.
+4. Press **A** to apply its artwork and metadata, or **B** to leave unchanged.
+
+The choice is saved in Degauss, not the pack, and the launch target stays
+unchanged. **Automatic Match** removes your manual choice. See
+[Correct a missing or wrong Pack match](#correct-a-missing-or-wrong-pack-match)
+for update behaviour and matching details.
+
 ### Network games are missing when Degauss starts
 
 Return to the category or system browser to check for storage that mounted
 late. Existing lists are reused; new or moved sources ask before indexing.
 To require that share before startup instead, add its actual mountpoint to
-`wait_for_mounts` in `degauss.toml`. See [External storage support](#external-storage-support)
+`wait_for_mounts` in `degauss-user.toml`. See [External storage support](#external-storage-support)
 for examples.
 
 ### What MiSTer hardware has Degauss been reported working on?
@@ -2334,6 +2599,9 @@ that does it. That one is C++ and does need a cross-compiler.
 ## Licence
 
 Degauss is under PolyForm Noncommercial 1.0.0. See [`LICENSE`](LICENSE).
+
+The `rmp` and `rmpv` MessagePack crates use the
+[MIT licence](assets/licenses/MessagePack-MIT.txt), included with the executable.
 
 `MiSTer_Degauss`, shipped alongside it, is a separate program: a fork of
 [MiSTer Main](https://github.com/MiSTer-devel/Main_MiSTer) under GPLv3, with

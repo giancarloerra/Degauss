@@ -18,6 +18,55 @@ spec.loader.exec_module(package_ra)
 
 
 class ReleaseTests(unittest.TestCase):
+    def test_messagepack_licence_is_fetchable_and_uses_repository_bytes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            staged = root / 'deploy/Scripts/.config/degauss'
+            staged.mkdir(parents=True)
+            (staged / 'degauss').write_bytes(b'frontend')
+            (staged / 'MessagePack-MIT.txt').write_bytes(b'staged copy')
+            main = root / 'MiSTer_Degauss'
+            main.write_bytes(b'main')
+            out = root / 'database.json'
+            subprocess.run(
+                [sys.executable, str(ROOT / 'scripts/make-db.py'),
+                 'v1.0.0', str(root / 'deploy'), str(main), str(out)],
+                cwd=ROOT, check=True, capture_output=True,
+            )
+            entry = json.loads(out.read_text())['files']['Scripts/.config/degauss/MessagePack-MIT.txt']
+            source = (ROOT / 'assets/licenses/MessagePack-MIT.txt').read_bytes()
+            self.assertEqual(entry['hash'], hashlib.md5(source).hexdigest())
+            self.assertEqual(entry['size'], len(source))
+            self.assertEqual(
+                entry['url'],
+                'https://raw.githubusercontent.com/giancarloerra/Degauss/v1.0.0/assets/licenses/MessagePack-MIT.txt',
+            )
+
+    def test_delivery_excludes_user_owned_configuration(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            staged = root / 'deploy/Scripts/.config/degauss'
+            staged.mkdir(parents=True)
+            (staged / 'degauss').write_bytes(b'frontend')
+            (staged / 'degauss.toml').write_bytes(b'staged defaults')
+            main = root / 'MiSTer_Degauss'
+            main.write_bytes(b'main')
+            out = root / 'database.json'
+            command = [sys.executable, str(ROOT / 'scripts/make-db.py'),
+                       'v1.0.0', str(root / 'deploy'), str(main), str(out)]
+            subprocess.run(command, cwd=ROOT, check=True, capture_output=True)
+            files = json.loads(out.read_text())['files']
+            self.assertIn('Scripts/.config/degauss/degauss.toml', files)
+            self.assertFalse(any(path.endswith('/degauss-user.toml') for path in files))
+            # A contaminated staging directory must not publish a personal file.
+            user = staged / 'degauss-user.toml'
+            user.write_text('wait_for_mounts = ["/media/fat/cifs"]\n')
+            previous = user.read_bytes()
+            failed = subprocess.run(command, cwd=ROOT, capture_output=True)
+            self.assertNotEqual(failed.returncode, 0)
+            self.assertIn(b'no source known', failed.stderr)
+            self.assertEqual(user.read_bytes(), previous)
+
     def test_ra_core_chooser_uses_root_only_for_the_private_menu(self):
         patch = (ROOT / 'support/ra-main/frontend.patch').read_text()
         menu = patch.split('diff --git a/menu.cpp b/menu.cpp\n', 1)[1].split('diff --git', 1)[0]

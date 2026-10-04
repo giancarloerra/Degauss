@@ -1,6 +1,13 @@
 use super::*;
 use slint::Model;
 
+#[path = "custom_view_acceptance_tests.rs"]
+mod custom_view_acceptance_tests;
+#[path = "explore_acceptance_tests.rs"]
+mod explore_acceptance_tests;
+#[path = "home_acceptance_tests.rs"]
+mod home_acceptance_tests;
+
 fn information_row() -> browse::Row {
     browse::Row {
         name: "Example Game / 日本語".into(),
@@ -92,6 +99,7 @@ fn manual_search_is_single_game_only_and_preserves_every_bulk_setting() {
     use crate::scraper::Scope;
 
     let bulk = [
+        ScraperRow::Source,
         ScraperRow::Username,
         ScraperRow::Password,
         ScraperRow::Images,
@@ -114,7 +122,10 @@ fn manual_search_is_single_game_only_and_preserves_every_bulk_setting() {
             display_name: "Fixture Folder".into(),
         },
     ] {
-        assert_eq!(scraper_rows(&scope), bulk);
+        assert_eq!(
+            scraper_rows(&scope, crate::scraper::ScraperSource::ScreenScraper),
+            bulk
+        );
     }
     let scope = Scope::Game {
         system_id: "NES".into(),
@@ -122,8 +133,9 @@ fn manual_search_is_single_game_only_and_preserves_every_bulk_setting() {
         title: "Fixture Game".into(),
     };
     assert_eq!(
-        scraper_rows(&scope),
+        scraper_rows(&scope, crate::scraper::ScraperSource::ScreenScraper),
         [
+            ScraperRow::Source,
             ScraperRow::Username,
             ScraperRow::Password,
             ScraperRow::Images,
@@ -344,7 +356,9 @@ fn fixture_directory() -> PathBuf {
             std::process::id()
         ));
         match std::fs::create_dir(&path) {
-            Ok(()) => return path,
+            // Scripts discovery returns canonical paths, including macOS's
+            // /var alias. Fixtures must use those same persisted identities.
+            Ok(()) => return path.canonicalize().unwrap(),
             Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
             Err(error) => panic!("creating UI fixture: {error}"),
         }
@@ -817,7 +831,7 @@ fn run_cores_browser_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
     app.open_context();
     assert_eq!(
         app.context_actions,
-        vec![JUMP, SEARCH, REBUILD_CORES, CHANGE_VIEW]
+        vec![JUMP, SEARCH, REBUILD_CORES, CHANGE_VIEW, MANAGE_VIEWS]
             .into_iter()
             .map(str::to_string)
             .collect::<Vec<_>>()
@@ -1842,7 +1856,8 @@ fn run_misterzine_browser_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
             "distribution_mister",
             crate::misterzine::LocalState::Current,
             Some(core.clone()),
-        ),
+        )
+        .with_fixture_build("2026-10-02"),
         crate::misterzine::Item::fixture_with(
             "Installed Arcade Release",
             "Arcade",
@@ -1854,6 +1869,18 @@ fn run_misterzine_browser_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
     app.misterzine_items[0].set_game_match(2, None);
     app.rebuild_misterzine_rows();
     assert_eq!(app.here.len(), 2);
+    assert_eq!(app.core_changes_scope, crate::core_changes::Scope::AllCores);
+    assert_eq!(
+        app.here[0].name, "Installed Release",
+        "All Cores starts with the latest build, not the alphabetically first name"
+    );
+    app.core_updates_sort_by_name = true;
+    app.rebuild_misterzine_rows();
+    assert_eq!(app.here[0].name, "Installed Arcade Release");
+    app.core_updates_sort_by_name = false;
+    app.game_list.select(0);
+    app.rebuild_misterzine_rows();
+    app.game_list.select(0);
     let first_cover = root.join("first.png");
     let second_cover = root.join("second.jpg");
     std::fs::copy(
@@ -1902,12 +1929,39 @@ fn run_misterzine_browser_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
     app.maintain_misterzine_games(slideshow_started + Duration::from_secs(CORE_UPDATE_ART_SECONDS));
     assert_eq!(app.current_art().0.as_deref(), Some(second_cover.as_path()));
     app.open_context();
+    app.menu_list.select(
+        app.menu
+            .iter()
+            .position(|row| row == "Sort by Name")
+            .unwrap(),
+    );
+    app.handle(Action::Accept);
+    assert!(app.core_updates_sort_by_name);
+    assert_eq!(app.screen, Screen::Browse);
+    assert_eq!(
+        app.misterzine_visible[0].title(),
+        "Installed Arcade Release"
+    );
+    app.open_context();
+    app.menu_list.select(
+        app.menu
+            .iter()
+            .position(|row| row == "Sort by Latest Updated")
+            .unwrap(),
+    );
+    app.handle(Action::Accept);
+    app.game_list.select(0);
+    app.open_context();
     assert_eq!(
         app.context_actions,
         [
             GAME_INFORMATION,
             JUMP,
             SEARCH,
+            "What's New",
+            "Updates Available",
+            "All Cores",
+            "Sort by Name",
             FILTER_RELEASES,
             REFRESH_MISTERZINE,
             ABOUT_MISTERZINE,
@@ -1957,7 +2011,7 @@ fn run_misterzine_browser_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
     assert_eq!(app.here.len(), 1);
     assert_eq!(app.here[0].name, "Installed Arcade Release");
 
-    app.filter = "ARCADE".to_string();
+    app.filter = "Arcade Release".to_string();
     app.apply_filter();
     app.settings.custom_views.categories = Some("list".into());
     app.prepare_misterzine_browser(false);
@@ -1982,6 +2036,45 @@ fn run_misterzine_browser_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
         "finished reads also return to Home"
     );
     app.prepare_misterzine_browser(true);
+
+    let baseline = crate::core_changes::Catalogue::default();
+    crate::core_changes::save(&app.cache_dir, &baseline).unwrap();
+    let history_path = app.cache_dir.join("core-updates-seen.json");
+    let history_before = std::fs::read(&history_path).unwrap();
+    let blocked_write = history_path.with_extension("part");
+    std::fs::create_dir(&blocked_write).unwrap();
+    let mut current = baseline.clone();
+    current.checked = 1;
+    let mut visit = crate::core_changes::Visit::new(Some(baseline.clone()));
+    visit.observe(current, true);
+    visit.presented();
+    app.core_changes_visit = Some(visit);
+    app.handle(Action::Quit);
+    app.refresh();
+    assert_eq!(
+        app.browsing,
+        Browsing::Categories,
+        "an automatic history-save error must not trap Back inside Core Updates"
+    );
+    assert!(app.ui.get_show_brand());
+    assert!(
+        app.message.as_deref().is_some_and(|message| {
+            message.contains("writing the cache") && message.contains("core-updates-seen.part")
+        }),
+        "the actual failed write remains visible after returning Home"
+    );
+    assert_eq!(std::fs::read(&history_path).unwrap(), history_before);
+    assert!(app.acknowledge_core_changes().is_err());
+    app.handle(Action::Quit);
+    assert!(app.message.is_none());
+    assert_eq!(app.browsing, Browsing::Categories);
+    std::fs::remove_dir(blocked_write).unwrap();
+    app.prepare_misterzine_browser(true);
+    assert_eq!(
+        app.core_changes_visit.as_ref().unwrap().baseline,
+        Some(baseline),
+        "reopening keeps the previously acknowledged comparison, not the failed write"
+    );
 
     let Outcome::Launch { plan, .. } = app.handle(Action::Accept).expect("local core launch")
     else {
@@ -2061,7 +2154,14 @@ fn run_misterzine_browser_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
 }
 
 fn run_handheld_category_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
-    let mut app = fixture_app(root, window, Settings::default());
+    let mut app = fixture_app(
+        root,
+        window,
+        Settings {
+            show_explore: Some(true),
+            ..Default::default()
+        },
+    );
     let mut handheld = app.all_systems[0].clone();
     handheld.def.handheld = true;
     let mut console = handheld.clone();
@@ -2083,7 +2183,7 @@ fn run_handheld_category_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
             .iter()
             .map(|(name, _)| name.as_str())
             .collect::<Vec<_>>(),
-        vec!["Console", SCRIPTS_CATEGORY]
+        vec!["Console", crate::explore::NAME, SCRIPTS_CATEGORY]
     );
     let saved = app.position();
     let selected_game = row_key(&app.here[app.game_list.selected()]);
@@ -2115,7 +2215,12 @@ fn run_handheld_category_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
             .iter()
             .map(|(name, _)| name.as_str())
             .collect::<Vec<_>>(),
-        vec!["Console", HANDHELD_CATEGORY, SCRIPTS_CATEGORY]
+        vec![
+            "Console",
+            HANDHELD_CATEGORY,
+            crate::explore::NAME,
+            SCRIPTS_CATEGORY
+        ]
     );
     assert_eq!(app.systems.len(), 1);
     assert_eq!(app.systems[0].def.id, "NES");
@@ -2314,7 +2419,7 @@ fn run_scripts_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
         app.handle(Action::Accept),
         Some(Outcome::Script(_))
     ));
-    app.resume_scripts(&nested.join("Example Tool.sh"));
+    app.resume_scripts(&nested.join("Example Tool.sh"), None);
     assert_eq!(app.screen, Screen::Scripts);
     assert_eq!(app.menu[app.menu_list.selected()], "Example Tool.sh");
     app.handle(Action::Quit);
@@ -2727,13 +2832,19 @@ fn run_selected_controls_flow(app: &mut App) {
             },
             Screen::Browse,
         );
-        for (index, row) in scraper_rows(&app.scraper_scope).iter().enumerate() {
+        for (index, row) in scraper_rows(&app.scraper_scope, app.scraper_settings.source)
+            .iter()
+            .enumerate()
+        {
             app.select(index);
             app.update_chrome();
             let help = app.ui.get_plain_help();
             let adjustable = matches!(
                 row,
-                ScraperRow::Images | ScraperRow::ImageType | ScraperRow::Metadata
+                ScraperRow::Source
+                    | ScraperRow::Images
+                    | ScraperRow::ImageType
+                    | ScraperRow::Metadata
             );
             assert_eq!(
                 help.contains("←→") || help.contains("Left/Right"),
@@ -4379,6 +4490,7 @@ fn run_scraper_unresolved_report_flow(root: &Path, window: Rc<MinimalSoftwareWin
         systems: Vec::new(),
         names: browse::DisplayNames::default(),
         settings: crate::scraper::ScraperSettings::default(),
+        cache_dir: app.cache_dir.clone(),
         developer: None,
         artwork_pack_system_ids: std::collections::HashSet::new(),
     })
@@ -4402,7 +4514,7 @@ fn run_scraper_image_choice_flow(app: &mut App) {
     use crate::scraper::{Scope, ScraperSettings};
     let original = app.scraper_settings.clone();
     app.open_scraper(Scope::All, Screen::Browse);
-    let image_row = scraper_rows(&app.scraper_scope)
+    let image_row = scraper_rows(&app.scraper_scope, app.scraper_settings.source)
         .iter()
         .position(|row| *row == ScraperRow::ImageType)
         .unwrap();
@@ -4464,6 +4576,63 @@ fn run_scraper_image_choice_flow(app: &mut App) {
     assert!(app.scraper_search_job.is_none());
 }
 
+fn run_libretro_scraper_source_flow(app: &mut App) {
+    use crate::scraper::{Scope, ScraperSettings, ScraperSource};
+    let original = app.scraper_settings.clone();
+    app.scraper_settings = ScraperSettings::default();
+    app.open_scraper(Scope::All, Screen::Browse);
+    app.select(0);
+    app.handle(Action::Faster);
+    assert_eq!(app.scraper_settings.source, ScraperSource::Libretro);
+    if let Some(directory) = std::env::var_os("DEGAUSS_LIBRETRO_CAPTURE_DIR") {
+        let directory = PathBuf::from(directory);
+        std::fs::create_dir_all(&directory).unwrap();
+        capture_frame(app, &directory, "libretro-settings", 352, 240);
+    }
+    let rows = scraper_rows(&app.scraper_scope, app.scraper_settings.source);
+    assert!(!rows.contains(&ScraperRow::Username));
+    assert!(!rows.contains(&ScraperRow::Password));
+    assert!(!rows.contains(&ScraperRow::ClearLogin));
+    assert_eq!(app.scraper_value(ScraperRow::ImageType), "Screenshot");
+    app.select(
+        rows.iter()
+            .position(|row| *row == ScraperRow::ImageType)
+            .unwrap(),
+    );
+    app.handle(Action::Faster);
+    assert_eq!(app.scraper_value(ScraperRow::ImageType), "Box Art");
+    app.handle(Action::Faster);
+    assert_eq!(app.scraper_value(ScraperRow::ImageType), "Title Screen");
+    assert!(app.scraper_settings.ready());
+    let progress = app.scraper_progress_rows();
+    assert!(progress
+        .iter()
+        .any(|(title, value)| title == "Source" && value == "Libretro (no account)"));
+    assert!(!progress.iter().any(|(title, _)| title.contains("Quota")));
+    app.screen = Screen::ScraperProgress;
+    app.scraper_terminal = Some(ScraperTerminal::Finished);
+    app.refresh();
+    assert_eq!(app.ui.get_operation_title(), "Libretro");
+    app.screen = Screen::Scraper;
+    app.apply_geometry();
+    app.handle(Action::Quit);
+    let saved = ScraperSettings::load(&app.scraper_settings_path).unwrap();
+    assert_eq!(saved.source, ScraperSource::Libretro);
+    app.open_scraper(Scope::All, Screen::Browse);
+    app.select(0);
+    app.handle(Action::Slower);
+    assert_eq!(app.scraper_settings.source, ScraperSource::ScreenScraper);
+    assert!(!app.scraper_settings.ready());
+    app.screen = Screen::ScraperProgress;
+    app.refresh();
+    assert_eq!(app.ui.get_operation_title(), "ScreenScraper");
+    app.screen = Screen::Scraper;
+    app.apply_geometry();
+    app.handle(Action::Quit);
+    assert!(app.replace_scraper_settings(original));
+    assert!(app.scraper_job.is_none());
+}
+
 fn run_manual_search_ui_flow(app: &mut App, root: &Path) {
     use crate::scraper::{ImagePolicy, MetadataPolicy};
 
@@ -4488,7 +4657,7 @@ fn run_manual_search_ui_flow(app: &mut App, root: &Path) {
     assert_eq!(app.scraper_progress.not_found, 0);
     assert_eq!(app.scraper_progress.ambiguous, 0);
     app.scraper_search_term.clear();
-    let search_row = scraper_rows(&app.scraper_scope)
+    let search_row = scraper_rows(&app.scraper_scope, app.scraper_settings.source)
         .iter()
         .position(|row| *row == ScraperRow::Search)
         .unwrap();
@@ -5041,7 +5210,10 @@ fn capture_every_menu_row(app: &mut App, directory: &Path) {
             ),
         ] {
             app.open_scraper(scope, Screen::Browse);
-            for (index, row) in scraper_rows(&app.scraper_scope).iter().enumerate() {
+            for (index, row) in scraper_rows(&app.scraper_scope, app.scraper_settings.source)
+                .iter()
+                .enumerate()
+            {
                 app.select(index);
                 assert!(!app.scraper_selected_help().is_empty());
                 capture_frame(
@@ -5637,7 +5809,8 @@ fn capture_ui_if_requested(root: &Path, window: Rc<MinimalSoftwareWindow>) {
         .into_iter()
         .map(|name| (name.to_string(), 1))
         .collect();
-    app.category_list = ListState::new(app.categories.len(), app.geometry.visible);
+    app.rebuild_home_rows();
+    app.category_list = ListState::new(app.home.rows.len(), app.geometry.visible);
     app.category_list.select(1);
     app.category_picks.insert("Console".into(), artwork.clone());
     app.touch_selection();
@@ -5663,7 +5836,8 @@ fn capture_ui_if_requested(root: &Path, window: Rc<MinimalSoftwareWindow>) {
         }
     }
     app.categories = original_categories;
-    app.category_list = ListState::new(app.categories.len(), app.geometry.visible);
+    app.rebuild_home_rows();
+    app.category_list = ListState::new(app.home.rows.len(), app.geometry.visible);
     app.browsing = Browsing::Games;
     for (width, height) in [(352, 240), (640, 480)] {
         for layout in Layout::ALL {
@@ -5744,6 +5918,11 @@ fn capture_ui_if_requested(root: &Path, window: Rc<MinimalSoftwareWindow>) {
     app.browsing = Browsing::Categories;
     app.set_screen(Screen::Context);
     capture_frame(&mut app, &directory, "actions-category", 352, 240);
+    app.handle(Action::Quit);
+    assert!(
+        app.home.menu.is_none(),
+        "leave Home Actions before returning to a game"
+    );
     app.browsing = Browsing::Games;
     app.game_list.select(5);
     app.set_screen(Screen::Information);
@@ -5757,6 +5936,16 @@ fn capture_ui_if_requested(root: &Path, window: Rc<MinimalSoftwareWindow>) {
     app.handle(Action::End);
     assert!(app.ui.get_information_offset() > 0.0);
     capture_frame(&mut app, &directory, "information-bottom", 352, 240);
+    let at = Instant::now();
+    app.information_scroll_next_at.set(at);
+    app.maintain_information_scroll(at);
+    assert_eq!(
+        app.ui.get_information_offset(),
+        0.0,
+        "automatic reading loops after the bottom pause"
+    );
+    app.maintain_information_scroll(at + INFORMATION_SCROLL_WAIT);
+    assert_eq!(app.ui.get_information_offset(), 1.0);
 
     app.set_screen(Screen::Browse);
     app.message = Some(format!(
@@ -5764,6 +5953,13 @@ fn capture_ui_if_requested(root: &Path, window: Rc<MinimalSoftwareWindow>) {
         "Detailed archive error.\n".repeat(30)
     ));
     capture_frame(&mut app, &directory, "long-error-top", 352, 240);
+    app.information_scroll_next_at.set(at);
+    app.maintain_information_scroll(at);
+    assert_eq!(
+        app.ui.get_overlay_offset(),
+        1.0,
+        "long notices are readable without manual scrolling"
+    );
     app.handle(Action::End);
     capture_frame(&mut app, &directory, "long-error-bottom", 352, 240);
     app.handle(Action::Quit);
@@ -5837,7 +6033,7 @@ fn capture_ui_if_requested(root: &Path, window: Rc<MinimalSoftwareWindow>) {
     let scope = app.scraper_scope_from_context(SCRAPE_GAME).unwrap();
     app.open_scraper(scope, Screen::Context);
     app.scraper_list.select(
-        scraper_rows(&app.scraper_scope)
+        scraper_rows(&app.scraper_scope, app.scraper_settings.source)
             .iter()
             .position(|row| *row == ScraperRow::Search)
             .unwrap(),
@@ -5987,6 +6183,9 @@ fn capture_ui_if_requested(root: &Path, window: Rc<MinimalSoftwareWindow>) {
     assert_eq!(app.screen, Screen::CategoryImage);
     capture_frame(&mut app, &directory, "category-image", 352, 240);
     app.handle(Action::Quit);
+    assert!(matches!(app.home.menu, Some(HomeMenu::Actions)));
+    app.handle(Action::Quit);
+    assert!(app.home.menu.is_none());
     app.browsing = Browsing::Games;
     app.set_screen(Screen::Browse);
     app.saver_pool.push(SaverPicture {
@@ -6483,6 +6682,91 @@ fn run_manual_pack_match_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
         Some(art.join("Known.jpg")),
         "another game's automatic match is unchanged"
     );
+    restarted.open_explore(None);
+    restarted.finish_background_work_for_headless();
+    let selected = (0..restarted.browse_count())
+        .find(|&at| {
+            restarted
+                .browse_row(at)
+                .is_some_and(|row| row.name == "Unmatched.nes")
+        })
+        .expect("the unmatched game appears in Explore");
+    restarted.game_list.select(selected);
+    restarted.reopen_context_for(ARTWORK_PACK_MATCH);
+    assert_eq!(
+        restarted.menu[restarted.menu_list.selected()],
+        ARTWORK_PACK_MATCH
+    );
+    restarted.handle(Action::Accept);
+    restarted.finish_background_work_for_headless();
+    assert_eq!(
+        restarted.screen,
+        Screen::ArtworkPackMatch,
+        "{:?}",
+        restarted.message
+    );
+    restarted.handle(Action::Context);
+    assert_eq!(
+        restarted.screen,
+        Screen::NameKeyboard,
+        "{:?}",
+        restarted.message
+    );
+    restarted.name_keyboard_draft = "Other Stable Name".into();
+    restarted.handle(Action::Quit);
+    restarted.finish_background_work_for_headless();
+    assert_eq!(
+        restarted.screen,
+        Screen::ArtworkPackMatch,
+        "{:?}",
+        restarted.message
+    );
+    restarted.menu_list.select(
+        restarted
+            .menu
+            .iter()
+            .position(|label| label == "Other")
+            .unwrap_or_else(|| {
+                panic!(
+                    "matching choices: {:?}; message: {:?}",
+                    restarted.menu, restarted.message
+                )
+            }),
+    );
+    restarted.handle(Action::Accept);
+    restarted.explore.match_warning = Some("Saved match warning".into());
+    restarted.finish_background_work_for_headless();
+    assert!(restarted.explore.active);
+    let row = restarted
+        .browse_row(restarted.game_list.selected())
+        .unwrap();
+    assert_eq!(
+        row.name, "Chosen Pack Title",
+        "Explore immediately reflects a confirmed match"
+    );
+    assert_eq!(row.cover, Some(art.join("Other.jpg")));
+    assert_eq!(
+        row.kind, launch,
+        "Explore retains the original launch target"
+    );
+    assert_eq!(restarted.message.as_deref(), Some("Saved match warning"));
+    assert!(restarted.explore.match_warning.is_none());
+    restarted.handle(Action::Quit);
+    restarted.reopen_context_for(ARTWORK_PACK_MATCH);
+    restarted.handle(Action::Accept);
+    restarted.finish_background_work_for_headless();
+    restarted.menu_list.select(0);
+    restarted.handle(Action::Accept);
+    restarted.finish_background_work_for_headless();
+    let row = restarted
+        .browse_row(restarted.game_list.selected())
+        .unwrap();
+    assert_eq!(
+        row.name, "Unmatched.nes",
+        "Automatic updates Explore without reopening it"
+    );
+    assert_eq!(row.cover, None);
+    assert_eq!(row.kind, launch);
     for (path, bytes) in pack_before {
         assert_eq!(std::fs::read(path).unwrap(), bytes);
     }
@@ -6528,6 +6812,21 @@ fn run_manual_pack_match_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
     arcade_app.open_system_by_index(0);
     arcade_app.message = None;
     arcade_app.enter(Place::Dir(arcade));
+    select_row_named(&mut arcade_app, "Known Arcade");
+    let original = arcade_app.here.clone();
+    let original_xml = std::fs::read(&mra).unwrap();
+    arcade_app.screen = Screen::Options;
+    arcade_app.adjust_option_value(OptionId::UseMraFilenames, 1);
+    arcade_app.screen = Screen::Browse;
+    assert_eq!(arcade_app.shown_row_name(&arcade_app.here[0]), "Descriptor");
+    assert_eq!(
+        arcade_app.here, original,
+        "Pack metadata must not be rewritten"
+    );
+    assert_eq!(std::fs::read(&mra).unwrap(), original_xml);
+    arcade_app.screen = Screen::Options;
+    arcade_app.adjust_option_value(OptionId::UseMraFilenames, -1);
+    arcade_app.screen = Screen::Browse;
     select_row_named(&mut arcade_app, "Known Arcade");
     assert!(arcade_app.selected_game_launch_core_target().is_none());
     assert_eq!(
@@ -11581,6 +11880,83 @@ fn run_game_name_display_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
     restarted.ui.hide().unwrap();
 }
 
+fn run_mra_filename_display_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
+    let root = root.join("mra-filenames");
+    let games = root.join("_Arcade");
+    std::fs::create_dir_all(&games).unwrap();
+    for name in ["A Game (Japan, Rev 2).mra", "Z Game (World).mra"] {
+        std::fs::write(games.join(name), "<misterromdescription><name>Shared metadata title</name><rbf>Fixture</rbf></misterromdescription>").unwrap();
+    }
+    std::fs::write(games.join("gamelist.xml"), "<gameList><game><path>./A Game (Japan, Rev 2).mra</path><name>Shared metadata title</name></game><game><path>./Z Game (World).mra</path><name>Shared metadata title</name></game></gameList>").unwrap();
+    let mut app = unopened_fixture_app_with_systems(
+        &root,
+        window.clone(),
+        Settings {
+            game_name_display: Some(GameNameDisplay::RemoveParenthesesAndBrackets),
+            ..Default::default()
+        },
+        &["Arcade"],
+        "_Arcade",
+    );
+    app.open_system_by_index(0);
+    app.leave_splash();
+    app.finish_background_work_for_headless();
+    app.message = None;
+    app.refresh();
+    assert!(app
+        .here
+        .iter()
+        .all(|row| row.name == "Shared metadata title"));
+    let snapshot = cache_snapshot(&app.cache_dir);
+    let xml = std::fs::read(games.join("gamelist.xml")).unwrap();
+    let keys = app.here.iter().map(row_key).collect::<HashSet<_>>();
+    select_option(&mut app, OptionsPage::Appearance, OptionId::UseMraFilenames);
+    app.handle(Action::Accept);
+    leave_options_to_browse(&mut app);
+    for layout in Layout::ALL {
+        app.layout = layout;
+        app.apply_geometry();
+        app.refresh();
+        assert_eq!(
+            app.rows.row_data(0).unwrap().title,
+            "A Game (Japan, Rev 2)",
+            "{layout:?}"
+        );
+        assert_eq!(
+            app.rows.row_data(1).unwrap().title,
+            "Z Game (World)",
+            "{layout:?}"
+        );
+    }
+    app.filter = "Japan".into();
+    app.apply_filter();
+    assert_eq!(app.here.len(), 1);
+    assert!(row_key(&app.here[0]).ends_with("A Game (Japan, Rev 2).mra"));
+    app.clear_filter();
+    assert_eq!(app.here.iter().map(row_key).collect::<HashSet<_>>(), keys);
+    assert_eq!(cache_snapshot(&app.cache_dir), snapshot);
+    assert_eq!(std::fs::read(games.join("gamelist.xml")).unwrap(), xml);
+    let saved = Settings::load(&app.settings_path).unwrap();
+    assert_eq!(saved.use_mra_filenames, Some(true));
+    select_option(&mut app, OptionsPage::Appearance, OptionId::UseMraFilenames);
+    app.handle(Action::Accept);
+    leave_options_to_browse(&mut app);
+    app.refresh();
+    assert_eq!(app.rows.row_data(0).unwrap().title, "Shared metadata title");
+    app.ui.hide().unwrap();
+    drop(app);
+    let mut restarted =
+        unopened_fixture_app_with_systems(&root, window, saved, &["Arcade"], "_Arcade");
+    restarted.open_system_by_index(0);
+    restarted.leave_splash();
+    restarted.refresh();
+    assert_eq!(
+        restarted.rows.row_data(0).unwrap().title,
+        "A Game (Japan, Rev 2)"
+    );
+    restarted.ui.hide().unwrap();
+}
+
 fn run_details_style_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
     let artwork = Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/logos/NES.png");
     assert!(artwork.is_file());
@@ -12684,6 +13060,9 @@ pub(super) fn run_ui_acceptance_flow(window: Rc<MinimalSoftwareWindow>) {
     let gamelist_path = root.join("games/NES/gamelist.xml");
     let gamelist_xml = format!("<gameList><game><path>First Game.nes</path><desc><![CDATA[{complete_description}]]></desc></game><game><path>Second Game.nes</path><desc><![CDATA[{complete_description}]]></desc></game></gameList>");
     std::fs::write(&gamelist_path, &gamelist_xml).unwrap();
+    explore_acceptance_tests::run(&root, window.clone());
+    home_acceptance_tests::run(&root, window.clone());
+    custom_view_acceptance_tests::run(&root, window.clone());
     run_cores_browser_flow(&root, window.clone());
     run_empty_storage_rediscovery_flow(&root, window.clone());
     run_storage_rediscovery_flow(&root, window.clone());
@@ -12696,6 +13075,7 @@ pub(super) fn run_ui_acceptance_flow(window: Rc<MinimalSoftwareWindow>) {
     run_start_folder_and_game_position_flow(&root, window.clone());
     run_screen_rotation_flow(&root, window.clone());
     run_game_name_display_flow(&root, window.clone());
+    run_mra_filename_display_flow(&root, window.clone());
     run_details_style_flow(&root, window.clone());
     run_handheld_category_flow(&root, window.clone());
     run_scripts_flow(&root, window.clone());
@@ -12720,6 +13100,7 @@ pub(super) fn run_ui_acceptance_flow(window: Rc<MinimalSoftwareWindow>) {
     run_selected_controls_flow(&mut app);
     run_artwork_visibility_flow(&mut app);
     run_scraper_image_choice_flow(&mut app);
+    run_libretro_scraper_source_flow(&mut app);
     app.filter = "GAME".into();
     app.apply_filter();
     app.game_list.select(1);
@@ -13085,14 +13466,29 @@ pub(super) fn run_ui_acceptance_flow(window: Rc<MinimalSoftwareWindow>) {
     assert!(app.ui.get_find_filtering());
     assert_eq!(app.ui.get_find_query(), "GAME");
     assert_eq!(app.ui.get_heading(), "Search This Folder");
-    assert_eq!(app.ui.get_grid_help(), "A Type B Back X Del Y Clear");
-    assert_eq!(app.rows.row_count(), FIND_CELLS.chars().count());
+    assert_eq!(app.ui.get_grid_help(), "A Type B Back X Del Y Page");
+    assert_eq!(
+        app.rows.row_count(),
+        name_keyboard::keys(name_keyboard::Page::Lower, false).len()
+    );
     app.handle(Action::Context);
     app.refresh();
     assert_eq!(app.ui.get_find_query(), "GAM", "X deletes the last letter");
     app.handle(Action::Menu);
     app.refresh();
-    assert_eq!(app.ui.get_find_query(), "", "Y clears the live filter");
+    assert_eq!(
+        app.ui.get_find_query(),
+        "GAM",
+        "Y changes keyboard page without clearing the search"
+    );
+    assert_eq!(app.name_keyboard_page, name_keyboard::Page::Upper);
+    let clear = name_keyboard::keys(app.name_keyboard_page, false)
+        .iter()
+        .position(|key| *key == name_keyboard::Key::Clear)
+        .unwrap();
+    app.find_list.select(clear);
+    app.handle(Action::Accept);
+    app.find_list.select(0);
     app.handle(Action::Accept);
     app.refresh();
     assert_eq!(app.ui.get_find_query(), "A", "A adds the selected letter");
@@ -13103,6 +13499,24 @@ pub(super) fn run_ui_acceptance_flow(window: Rc<MinimalSoftwareWindow>) {
         "B keeps the search when returning to Browse"
     );
     assert!(!app.ui.get_find_filtering());
+    app.open_find(FindMode::Search);
+    app.filter.clear();
+    app.handle(Action::Accept);
+    assert_eq!(app.filter, "a", "lowercase is available in list searches");
+    let space = name_keyboard::keys(app.name_keyboard_page, false)
+        .iter()
+        .position(|key| *key == name_keyboard::Key::Space)
+        .unwrap();
+    app.find_list.select(space);
+    app.handle(Action::Accept);
+    assert_eq!(app.filter, "a ");
+    app.handle(Action::Menu);
+    app.handle(Action::Menu);
+    assert_eq!(app.name_keyboard_page, name_keyboard::Page::Symbols);
+    app.find_list.select(0);
+    app.handle(Action::Accept);
+    assert_eq!(app.filter, "a !");
+    app.handle(Action::Quit);
     app.open_find(FindMode::Jump);
     assert!(!app.ui.get_find_filtering());
     assert_eq!(app.ui.get_grid_help(), "A Pick   B Back");

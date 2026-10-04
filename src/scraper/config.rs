@@ -21,6 +21,30 @@ static EMBEDDED_DEVELOPER_PASSWORD: Option<&str> = option_env!("DEGAUSS_SCREENSC
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+pub enum ScraperSource {
+    #[default]
+    ScreenScraper,
+    Libretro,
+}
+
+impl ScraperSource {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::ScreenScraper => "ScreenScraper",
+            Self::Libretro => "Libretro",
+        }
+    }
+
+    pub fn step(self) -> Self {
+        match self {
+            Self::ScreenScraper => Self::Libretro,
+            Self::Libretro => Self::ScreenScraper,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum ImagePolicy {
     Off,
     #[default]
@@ -80,6 +104,10 @@ fn step<T: Copy + PartialEq, const N: usize>(values: [T; N], current: T, delta: 
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ScraperSettings {
     #[serde(default)]
+    pub source: ScraperSource,
+    #[serde(default)]
+    pub libretro_artwork: super::libretro::Artwork,
+    #[serde(default)]
     pub username: String,
     #[serde(default)]
     pub password: String,
@@ -108,6 +136,8 @@ pub struct ScraperSettings {
 impl Default for ScraperSettings {
     fn default() -> Self {
         Self {
+            source: ScraperSource::default(),
+            libretro_artwork: super::libretro::Artwork::default(),
             username: String::new(),
             password: String::new(),
             accepted_plaintext_warning: false,
@@ -278,9 +308,10 @@ impl ScraperSettings {
     }
 
     pub fn ready(&self) -> bool {
-        !self.username.is_empty()
-            && !self.password.is_empty()
-            && self.accepted_plaintext_warning
+        (self.source == ScraperSource::Libretro
+            || (!self.username.is_empty()
+                && !self.password.is_empty()
+                && self.accepted_plaintext_warning))
             && !(self.image_policy == ImagePolicy::Off
                 && self.metadata_policy == MetadataPolicy::Off)
     }
@@ -423,7 +454,17 @@ impl DeveloperCredentials {
     }
 }
 
-fn atomic_write(path: &Path, bytes: &[u8], what: &str) -> Result<()> {
+pub(super) fn atomic_write(path: &Path, bytes: &[u8], what: &str) -> Result<()> {
+    static SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    atomic_write_with_sequence(path, bytes, what, &SEQUENCE)
+}
+
+fn atomic_write_with_sequence(
+    path: &Path,
+    bytes: &[u8],
+    what: &str,
+    sequence: &std::sync::atomic::AtomicU64,
+) -> Result<()> {
     let parent = path.parent().unwrap_or(Path::new("."));
     std::fs::create_dir_all(parent)
         .map_err(|error| Error::local(format!("could not create {}: {error}", parent.display())))?;
@@ -431,22 +472,30 @@ fn atomic_write(path: &Path, bytes: &[u8], what: &str) -> Result<()> {
         .file_name()
         .and_then(|name| name.to_str())
         .unwrap_or("screenscraper.toml");
-    let temp = parent.join(format!(".{file_name}.{}.part", std::process::id()));
-    if temp.exists() {
-        std::fs::remove_file(&temp)
-            .map_err(|error| Error::local(format!("could not clear old {what}: {error}")))?;
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
     }
-    let outcome = (|| {
-        let mut options = std::fs::OpenOptions::new();
-        options.write(true).create_new(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            options.mode(0o600);
+    let (temp, mut file) = {
+        let mut attempt = 0;
+        loop {
+            let number = sequence.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let temp = parent.join(format!(".{file_name}.{}-{number}.part", std::process::id()));
+            match options.open(&temp) {
+                Ok(file) => break (temp, file),
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists && attempt < 15 => {
+                    attempt += 1;
+                }
+                Err(error) => {
+                    return Err(Error::local(format!("could not create {what}: {error}")))
+                }
+            }
         }
-        let mut file = options
-            .open(&temp)
-            .map_err(|error| Error::local(format!("could not create {what}: {error}")))?;
+    };
+    let outcome = (|| {
         file.write_all(bytes)
             .map_err(|error| Error::local(format!("could not write {what}: {error}")))?;
         file.sync_all()
@@ -481,6 +530,116 @@ mod tests {
         assert!(settings.system_media_types.is_empty());
         assert_eq!(settings.media_type_for("NES"), "ss");
         assert!(!settings.ready());
+    }
+
+    #[test]
+    fn libretro_is_explicit_account_free_and_preserves_existing_account_settings() {
+        let mut settings: ScraperSettings = toml::from_str("username = 'player'\npassword = 'secret'\naccepted_plaintext_warning = true\nmedia_type = 'wheel-hd'\n").unwrap();
+        assert_eq!(settings.source, ScraperSource::ScreenScraper);
+        assert!(settings.ready());
+        settings.source = ScraperSource::Libretro;
+        settings.libretro_artwork = super::super::libretro::Artwork::BoxArt;
+        let encoded = toml::to_string(&settings).unwrap();
+        let mut read: ScraperSettings = toml::from_str(&encoded).unwrap();
+        assert_eq!(read, settings);
+        read.username.clear();
+        read.password.clear();
+        read.accepted_plaintext_warning = false;
+        assert!(
+            read.ready(),
+            "Libretro must not require a ScreenScraper login or storage consent"
+        );
+        read.source = ScraperSource::ScreenScraper;
+        assert!(
+            !read.ready(),
+            "switching back must not waive the original account requirements"
+        );
+    }
+
+    #[test]
+    fn concurrent_database_writes_do_not_remove_or_install_another_writers_temporary_file() {
+        let root = temp("concurrent-write");
+        std::fs::create_dir(&root).unwrap();
+        let path = root.join("database.rdb");
+        let outstanding = root.join(format!(".database.rdb.{}.part", std::process::id()));
+        let mut first = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&outstanding)
+            .unwrap();
+        first
+            .write_all(b"another worker's unfinished database")
+            .unwrap();
+        atomic_write(&path, b"complete database", "Libretro database").unwrap();
+        assert_eq!(
+            std::fs::read(&outstanding).unwrap(),
+            b"another worker's unfinished database"
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), b"complete database");
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(8));
+        std::thread::scope(|scope| {
+            for number in 0..8_u8 {
+                let path = &path;
+                let barrier = std::sync::Arc::clone(&barrier);
+                scope.spawn(move || {
+                    barrier.wait();
+                    atomic_write(path, &vec![number; 64 * 1024], "Libretro database").unwrap();
+                });
+            }
+        });
+        let bytes = std::fs::read(path).unwrap();
+        assert_eq!(bytes.len(), 64 * 1024);
+        assert!(bytes[0] < 8 && bytes.iter().all(|byte| *byte == bytes[0]));
+        assert_eq!(
+            std::fs::read_dir(&root).unwrap().count(),
+            2,
+            "each call removes only its own temporary file"
+        );
+        drop(first);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn interrupted_writes_do_not_block_reused_process_ids_or_remove_another_writes_file() {
+        let root = temp("interrupted-write");
+        std::fs::create_dir(&root).unwrap();
+        let path = root.join("database.rdb");
+        let sequence = std::sync::atomic::AtomicU64::new(0);
+        let part = |number| {
+            root.join(format!(
+                ".database.rdb.{}-{number}.part",
+                std::process::id()
+            ))
+        };
+        for number in 0..2 {
+            std::fs::write(part(number), b"unfinished previous write").unwrap();
+        }
+        atomic_write_with_sequence(&path, b"complete database", "Libretro database", &sequence)
+            .unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), b"complete database");
+        for number in 0..2 {
+            assert_eq!(
+                std::fs::read(part(number)).unwrap(),
+                b"unfinished previous write"
+            );
+        }
+        assert!(!part(2).exists());
+        let exhausted = std::sync::atomic::AtomicU64::new(100);
+        for number in 100..116 {
+            std::fs::write(part(number), b"another write").unwrap();
+        }
+        let error =
+            atomic_write_with_sequence(&path, b"not installed", "Libretro database", &exhausted)
+                .unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("could not create Libretro database"));
+        assert_eq!(std::fs::read(&path).unwrap(), b"complete database");
+        for number in 100..116 {
+            assert_eq!(std::fs::read(part(number)).unwrap(), b"another write");
+        }
+        assert!(!part(116).exists(), "collision retries are bounded");
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

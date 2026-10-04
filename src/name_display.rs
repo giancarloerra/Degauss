@@ -8,6 +8,27 @@ use std::borrow::Cow;
 
 use serde::{Deserialize, Serialize};
 
+/// Explicit Arcade filenames take precedence over metadata and shortening.
+pub fn row_name(
+    row: &crate::browse::Row,
+    mode: GameNameDisplay,
+    mra_filenames: bool,
+) -> Cow<'_, str> {
+    if mra_filenames {
+        if let crate::browse::Kind::Play(crate::browse::Launch::File(path)) = &row.kind {
+            if path
+                .extension()
+                .is_some_and(|extension| extension.eq_ignore_ascii_case("mra"))
+            {
+                if let Some(stem) = path.file_stem() {
+                    return stem.to_string_lossy();
+                }
+            }
+        }
+    }
+    mode.apply(&row.name)
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum GameNameDisplay {
@@ -182,6 +203,34 @@ fn sanitise(name: &str, remove: Remove) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mra_filename_override_preserves_variants_without_changing_metadata() {
+        let mut row = crate::browse::Row {
+            name: "Metadata title (World)".into(),
+            sort_key: "Metadata title (World)".into(),
+            kind: crate::browse::Kind::Play(crate::browse::Launch::File(
+                "/_Arcade/Game (Japan, Rev 2).MRA".into(),
+            )),
+            cover: None,
+            genre: None,
+            favorite: false,
+            below: None,
+            details: Default::default(),
+        };
+        let mode = GameNameDisplay::RemoveParenthesesAndBrackets;
+        assert_eq!(row_name(&row, mode, false), "Metadata title");
+        assert_eq!(row_name(&row, mode, true), "Game (Japan, Rev 2)");
+        assert_eq!(row.name, "Metadata title (World)");
+        row.kind = crate::browse::Kind::Play(crate::browse::Launch::File("/NES/Game.nes".into()));
+        assert_eq!(row_name(&row, mode, true), "Metadata title");
+        row.kind = crate::browse::Kind::Enter(crate::browse::Place::Dir("/Folder.mra".into()));
+        assert_eq!(
+            row_name(&row, mode, true),
+            "Metadata title",
+            "folder labels do not change"
+        );
+    }
 
     #[test]
     fn every_mode_formats_the_documented_example() {

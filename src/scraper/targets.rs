@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use crate::browse::{DisplayNames, Kind, Launch, Library, Place, MAX_DEPTH};
 use crate::systems::FoundSystem;
 
-use super::{platforms, Error, ErrorKind, Result};
+use super::{Error, ErrorKind, Result, ScraperSource};
 
 #[derive(Debug, Clone)]
 pub enum Scope {
@@ -102,6 +102,7 @@ pub struct TargetBatch {
     pub ambiguous_targets: usize,
 }
 
+#[cfg(test)]
 pub fn collect(
     systems: &[FoundSystem],
     names: &DisplayNames,
@@ -110,6 +111,29 @@ pub fn collect(
     artwork_pack_system_ids: &HashSet<String>,
     cancelled: &AtomicBool,
     on_progress: &mut dyn FnMut(&str),
+) -> Result<TargetBatch> {
+    collect_for_source(
+        systems,
+        names,
+        scope,
+        overrides,
+        artwork_pack_system_ids,
+        cancelled,
+        on_progress,
+        ScraperSource::ScreenScraper,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn collect_for_source(
+    systems: &[FoundSystem],
+    names: &DisplayNames,
+    scope: &Scope,
+    overrides: &BTreeMap<String, u32>,
+    artwork_pack_system_ids: &HashSet<String>,
+    cancelled: &AtomicBool,
+    on_progress: &mut dyn FnMut(&str),
+    source: ScraperSource,
 ) -> Result<TargetBatch> {
     check_cancelled(cancelled)?;
     let excluded = |system_id: &str| {
@@ -125,6 +149,7 @@ pub fn collect(
             artwork_pack_system_ids,
             cancelled,
             on_progress,
+            source,
         ),
         Scope::System {
             system_id, place, ..
@@ -146,6 +171,7 @@ pub fn collect(
                 overrides,
                 cancelled,
                 on_progress,
+                source,
             )
         }
         Scope::Game {
@@ -160,7 +186,7 @@ pub fn collect(
                     ..Default::default()
                 });
             }
-            let platform = platform_id(system, overrides)?;
+            let platform = platform_id(system, overrides, source)?;
             on_progress(&system.def.name);
             check_cancelled(cancelled)?;
             Ok(TargetBatch {
@@ -220,6 +246,7 @@ fn expand_affected_systems(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn collect_all(
     systems: &[FoundSystem],
     names: &DisplayNames,
@@ -227,6 +254,7 @@ fn collect_all(
     artwork_pack_system_ids: &HashSet<String>,
     cancelled: &AtomicBool,
     on_progress: &mut dyn FnMut(&str),
+    source: ScraperSource,
 ) -> Result<TargetBatch> {
     let mut batch = TargetBatch::default();
     for system in systems {
@@ -243,7 +271,8 @@ fn collect_all(
         }
         on_progress(&system.def.name);
         check_cancelled(cancelled)?;
-        let Some(platform) = platforms::id_for(&system.def.id, overrides) else {
+        let Some(platform) = super::platform_id_for_source(&system.def.id, overrides, source)
+        else {
             batch.unsupported_systems.push(system.def.name.clone());
             continue;
         };
@@ -275,8 +304,9 @@ fn collect_system(
     overrides: &BTreeMap<String, u32>,
     cancelled: &AtomicBool,
     on_progress: &mut dyn FnMut(&str),
+    source: ScraperSource,
 ) -> Result<TargetBatch> {
-    let platform = platform_id(system, overrides)?;
+    let platform = platform_id(system, overrides, source)?;
     on_progress(&system.def.name);
     check_cancelled(cancelled)?;
     let library =
@@ -449,19 +479,24 @@ pub(super) fn is_favorites_target(system: &FoundSystem) -> bool {
         || system.def.id.eq_ignore_ascii_case("Favorites")
 }
 
-fn platform_id(system: &FoundSystem, overrides: &BTreeMap<String, u32>) -> Result<u32> {
+fn platform_id(
+    system: &FoundSystem,
+    overrides: &BTreeMap<String, u32>,
+    source: ScraperSource,
+) -> Result<u32> {
     if is_favorites_target(system) {
         return Err(Error::new(
             ErrorKind::Configuration,
             "the master Favourites shelf is not a scrape target",
         ));
     }
-    platforms::id_for(&system.def.id, overrides).ok_or_else(|| {
+    super::platform_id_for_source(&system.def.id, overrides, source).ok_or_else(|| {
         Error::new(
             ErrorKind::Configuration,
             format!(
-                "{} has no reviewed ScreenScraper platform mapping",
-                system.def.name
+                "{} has no reviewed {} platform mapping",
+                system.def.name,
+                source.label()
             ),
         )
     })
@@ -634,6 +669,48 @@ mod tests {
             logo_dir: None,
             menu_folder: Some("Console".into()),
         }
+    }
+
+    #[test]
+    fn libretro_scopes_exclude_pack_and_unsupported_systems_without_guessing_ids() {
+        let root = temp("libretro-scopes");
+        let systems = [
+            system("NES", "Nintendo", &root, &["rom"]),
+            system("ZXNext", "ZX Next", &root, &["rom"]),
+        ];
+        std::fs::write(root.join("One.rom"), b"one").unwrap();
+        let no_exclusions = HashSet::new();
+        let pack_exclusions = HashSet::from(["nes".into()]);
+        let collect = |scope, excluded| {
+            collect_for_source(
+                &systems,
+                &DisplayNames::default(),
+                scope,
+                &BTreeMap::from([("ZXNext".into(), 3)]),
+                excluded,
+                &AtomicBool::new(false),
+                &mut |_| {},
+                ScraperSource::Libretro,
+            )
+        };
+        let batch = collect(&Scope::All, &no_exclusions).unwrap();
+        assert_eq!(batch.targets.len(), 1);
+        assert_eq!(batch.targets[0].screen_scraper_system_id, 1039);
+        assert_eq!(batch.unsupported_systems, ["ZX Next"]);
+        let batch = collect(&Scope::All, &pack_exclusions).unwrap();
+        assert!(batch.targets.is_empty());
+        assert_eq!(batch.skipped_artwork_pack, ["Nintendo"]);
+        let error = collect(
+            &Scope::Game {
+                system_id: "ZXNext".into(),
+                launch: Launch::File(root.join("One.rom")),
+                title: "One".into(),
+            },
+            &no_exclusions,
+        )
+        .unwrap_err();
+        assert_eq!(error.kind, ErrorKind::Configuration);
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

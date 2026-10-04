@@ -315,6 +315,11 @@ rbf = "_Console/AtariLynx"
 handheld = true
 extensions = ["lnx", "mgl"]
 
+[[systems.compatible_cores]]
+id = "lynx-2p"
+label = "Atari Lynx 2P"
+rbf = "_Console/AtariLynx2P"
+
 [[systems.launch]]
 extensions = ["lnx"]
 type = "f"
@@ -1289,6 +1294,11 @@ folders = ["PCXT"]
 rbf = "_Computer/PCXT"
 extensions = ["img", "vhd", "ima", "vfd", "mgl"]
 
+[[systems.compatible_cores]]
+id = "pcxt-ega"
+label = "PC/XT EGA"
+rbf = "_Computer/PCXT-EGA"
+
 [[systems.launch]]
 extensions = ["img", "ima", "vfd"]
 type = "s"
@@ -2045,3 +2055,473 @@ folders = ["_@Favorites"]
 rbf = ""
 extensions = ["mgl", "mra", "rbf"]
 category = "Favorites"
+
+# Additional game libraries use the file slots exposed by each core's OSD.
+[[systems]]
+name = "Atari ST"
+id = "AtariST"
+folders = ["AtariST"]
+rbf = "_Computer/AtariST"
+extensions = ["st", "msa", "stx", "vhd", "stc", "mgl"]
+category = "Computer"
+[[systems.launch]]
+extensions = ["st", "msa", "stx"]
+type = "s"
+index = 0
+delay = 1
+[[systems.launch]]
+extensions = ["vhd"]
+type = "s"
+index = 2
+delay = 1
+[[systems.launch]]
+extensions = ["stc"]
+type = "f"
+index = 0
+delay = 1
+
+[[systems]]
+name = "Acorn Archimedes"
+id = "Archie"
+folders = ["Archie"]
+rbf = "_Computer/Archie"
+extensions = ["adf", "hdf", "mgl"]
+category = "Computer"
+[[systems.launch]]
+extensions = ["adf"]
+type = "s"
+index = 0
+delay = 1
+[[systems.launch]]
+extensions = ["hdf"]
+type = "s"
+index = 2
+delay = 1
+
+[[systems]]
+name = "Sharp MZ"
+id = "SharpMZ"
+folders = ["SharpMZ"]
+rbf = "_Computer/SharpMZ"
+extensions = ["mzf", "mzt", "mgl"]
+category = "Computer"
+[[systems.launch]]
+extensions = ["mzf", "mzt"]
+type = "f"
+index = 1
+delay = 1
+
+[[systems]]
+name = "Altair 8800"
+id = "Altair8800"
+folders = ["Altair8800"]
+rbf = "_Computer/Altair8800"
+extensions = ["rom", "mgl"]
+[[systems.launch]]
+extensions = ["rom"]
+type = "f"
+index = 0
+delay = 1
+
+[[systems]]
+name = "Commodore 128"
+id = "C128"
+folders = ["C128"]
+rbf = "_Computer/C128"
+extensions = ["d64", "g64", "d71", "g71", "d81", "t64", "prg", "crt", "reu", "tap", "mgl"]
+[[systems.launch]]
+extensions = ["d64", "g64", "d71", "g71", "d81", "t64"]
+type = "s"
+index = 0
+delay = 1
+[[systems.launch]]
+extensions = ["prg", "crt", "reu", "tap"]
+type = "f"
+index = 2
+delay = 1
+
+[[systems]]
+name = "Commodore CBM-II"
+id = "CBM-II"
+folders = ["CBM-II"]
+rbf = "_Computer/CBM-II"
+extensions = ["d64", "d80", "d82", "prg", "mgl"]
+[[systems.launch]]
+extensions = ["d64", "d80", "d82"]
+type = "s"
+index = 0
+delay = 1
+[[systems.launch]]
+extensions = ["prg"]
+type = "f"
+index = 9
+delay = 1
+
+[[systems]]
+name = "TRS-80 Color Computer 3"
+id = "CoCo3"
+folders = ["COCO3", "CoCo3"]
+rbf = "_Computer/CoCo3"
+extensions = ["ccc", "cas", "dsk", "vhd", "mgl"]
+[[systems.launch]]
+extensions = ["ccc"]
+type = "f"
+index = 1
+delay = 1
+[[systems.launch]]
+extensions = ["cas"]
+type = "f"
+index = 2
+delay = 1
+[[systems.launch]]
+extensions = ["dsk", "vhd"]
+type = "s"
+index = 0
+delay = 1
+
+[[systems]]
+name = "Enterprise"
+id = "Enterprise"
+folders = ["Enterprise"]
+rbf = "_Computer/Enterprise"
+extensions = ["vhd", "img", "dsk", "rom", "mgl"]
+[[systems.launch]]
+extensions = ["vhd"]
+type = "s"
+index = 0
+delay = 1
+[[systems.launch]]
+extensions = ["img", "dsk"]
+type = "s"
+index = 1
+delay = 1
+[[systems.launch]]
+extensions = ["rom"]
+type = "f"
+index = 0
+delay = 1
+
+[[systems]]
+name = "Fujitsu FM-7"
+id = "FM-7"
+folders = ["FM-7"]
+rbf = "_Computer/FM-7"
+extensions = ["t77", "d77", "d88", "mgl"]
+[[systems.launch]]
+extensions = ["t77"]
+type = "f"
+index = 1
+delay = 1
+[[systems.launch]]
+extensions = ["d77", "d88"]
+type = "s"
+index = 0
+delay = 1
+
+[[systems]]
+name = "Homelab"
+id = "Homelab"
+folders = ["Homelab"]
+rbf = "_Computer/Homelab"
+extensions = ["htp", "mgl"]
+[[systems.launch]]
+extensions = ["htp"]
+type = "f"
+index = 1
+delay = 1
+
+[[systems]]
+name = "Panasonic JR-100"
+id = "JR100"
+folders = ["JR100"]
+rbf = "_Computer/JR100"
+extensions = ["prg", "bas", "cmt", "mgl"]
+[[systems.launch]]
+extensions = ["prg"]
+type = "f"
+index = 1
+delay = 1
+[[systems.launch]]
+extensions = ["bas"]
+type = "f"
+index = 2
+delay = 1
+[[systems.launch]]
+extensions = ["cmt"]
+type = "s"
+index = 1
+delay = 1
+
+[[systems]]
+name = "Macintosh LC"
+id = "MacLC"
+folders = ["MACLC", "MacLC"]
+rbf = "_Computer/MacLC"
+extensions = ["dsk", "img", "vhd", "hda", "iso", "cue", "bin", "chd", "mgl"]
+[[systems.launch]]
+extensions = ["dsk"]
+type = "s"
+index = 6
+delay = 1
+[[systems.launch]]
+extensions = ["img", "vhd", "hda"]
+type = "s"
+index = 0
+delay = 1
+[[systems.launch]]
+extensions = ["iso", "cue", "bin", "chd"]
+type = "s"
+index = 4
+delay = 1
+
+[[systems]]
+name = "NeXT"
+id = "NeXT"
+folders = ["NeXT"]
+rbf = "_Computer/NeXT"
+extensions = ["vhd", "img", "iso", "cue", "bin", "chd", "ima", "flp", "vfd", "fd", "mo", "od", "mgl"]
+[[systems.launch]]
+extensions = ["vhd", "img"]
+type = "s"
+index = 0
+delay = 1
+[[systems.launch]]
+extensions = ["iso", "cue", "bin", "chd"]
+type = "s"
+index = 3
+delay = 1
+[[systems.launch]]
+extensions = ["ima", "flp", "vfd", "fd"]
+type = "s"
+index = 4
+delay = 1
+[[systems.launch]]
+extensions = ["mo", "od"]
+type = "s"
+index = 5
+delay = 1
+
+[[systems]]
+name = "NEC PC-8801"
+id = "PC88"
+folders = ["PC8801", "PC88"]
+rbf = "_Computer/PC88"
+extensions = ["d88", "mgl"]
+[[systems.launch]]
+extensions = ["d88"]
+type = "s"
+index = 0
+delay = 1
+
+[[systems]]
+name = "IBM PCjr"
+id = "PCjr"
+folders = ["PCjr"]
+rbf = "_Computer/PCjr"
+extensions = ["img", "ima", "vfd", "jrc", "jrt", "mgl"]
+[[systems.launch]]
+extensions = ["img", "ima", "vfd"]
+type = "s"
+index = 0
+delay = 1
+[[systems.launch]]
+extensions = ["jrc"]
+type = "f"
+index = 2
+delay = 1
+[[systems.launch]]
+extensions = ["jrt"]
+type = "f"
+index = 4
+delay = 1
+
+[[systems]]
+name = "SGI Indy"
+id = "SGIIndy"
+folders = ["SGIIndy"]
+rbf = "_Computer/SGIIndy"
+extensions = ["img", "iso", "chd", "mgl"]
+[[systems.launch]]
+extensions = ["img"]
+type = "s"
+index = 1
+delay = 1
+[[systems.launch]]
+extensions = ["iso", "chd"]
+type = "s"
+index = 3
+delay = 1
+
+[[systems]]
+name = "Microdigital TK2000"
+id = "TK2000"
+folders = ["TK2000"]
+rbf = "_Computer/TK2000"
+extensions = ["nib", "dsk", "do", "po", "mgl"]
+[[systems.launch]]
+extensions = ["nib", "dsk", "do", "po"]
+type = "s"
+index = 0
+delay = 1
+
+[[systems]]
+name = "Tandy 1000"
+id = "Tandy1000"
+folders = ["Tandy1000"]
+rbf = "_Computer/Tandy1000"
+extensions = ["img", "ima", "vfd", "vhd", "mgl"]
+[[systems.launch]]
+extensions = ["img", "ima", "vfd"]
+type = "s"
+index = 0
+delay = 1
+[[systems.launch]]
+extensions = ["vhd"]
+type = "s"
+index = 2
+delay = 1
+
+[[systems]]
+name = "EACA Colour Genie"
+id = "EG2000"
+folders = ["eg2000", "EG2000"]
+rbf = "_Computer/eg2000"
+extensions = ["cas", "mgl"]
+[[systems.launch]]
+extensions = ["cas"]
+type = "f"
+index = 1
+delay = 1
+
+[[systems]]
+name = "BBC Bridge Companion"
+id = "BBCBridgeCompanion"
+folders = ["BBCBridgeCompanion"]
+rbf = "_Console/BBCBridgeCompanion"
+extensions = ["bin", "mgl"]
+[[systems.launch]]
+extensions = ["bin"]
+type = "f"
+index = 1
+delay = 1
+
+[[systems]]
+name = "Game.com"
+id = "GameCom"
+folders = ["GameCom", "Gamecom"]
+rbf = "_Console/GameCom"
+handheld = true
+extensions = ["tgc", "mgl"]
+[[systems.launch]]
+extensions = ["tgc"]
+type = "f"
+index = 1
+delay = 1
+
+[[systems]]
+name = "GameKing"
+id = "GameKing"
+folders = ["GameKing"]
+rbf = "_Console/GameKing"
+handheld = true
+extensions = ["bin", "mgl"]
+[[systems.launch]]
+extensions = ["bin"]
+type = "f"
+index = 1
+delay = 1
+
+[[systems]]
+name = "Casio Loopy"
+id = "Loopy"
+folders = ["Loopy"]
+rbf = "_Console/Loopy"
+extensions = ["bin", "mgl"]
+[[systems.launch]]
+extensions = ["bin"]
+type = "f"
+index = 1
+delay = 1
+
+[[systems]]
+name = "Nichibutsu My Vision"
+id = "MyVision"
+folders = ["MyVision"]
+rbf = "_Console/MyVision"
+extensions = ["bin", "mgl"]
+[[systems.launch]]
+extensions = ["bin"]
+type = "f"
+index = 1
+delay = 1
+
+[[systems]]
+name = "PocketStation"
+id = "PocketStation"
+folders = ["PocketStation"]
+rbf = "_Console/PocketStation"
+handheld = true
+extensions = ["gme", "sav", "mcs", "bin", "mcd", "mgl"]
+[[systems.launch]]
+extensions = ["gme", "sav", "mcs", "bin"]
+type = "f"
+index = 1
+delay = 1
+[[systems.launch]]
+extensions = ["mcd"]
+type = "s"
+index = 1
+delay = 1
+
+[[systems]]
+name = "Super Cassette Vision"
+id = "SCV"
+folders = ["SCV"]
+rbf = "_Console/SCV"
+extensions = ["rom", "bin", "mgl"]
+[[systems.launch]]
+extensions = ["rom", "bin"]
+type = "f"
+index = 1
+delay = 1
+
+[[systems]]
+name = "RCA Studio II"
+id = "Studio-II"
+folders = ["Studio-II"]
+rbf = "_Console/Studio-II"
+extensions = ["st2", "bin", "ch8", "mgl"]
+[[systems.launch]]
+extensions = ["st2", "bin"]
+type = "f"
+index = 1
+delay = 1
+[[systems.launch]]
+extensions = ["ch8"]
+type = "f"
+index = 3
+delay = 1
+
+[[systems]]
+name = "Super A'Can"
+id = "SuperAcan"
+folders = ["SuperAcan"]
+rbf = "_Console/SuperAcan"
+extensions = ["bin", "mgl"]
+[[systems.launch]]
+extensions = ["bin"]
+type = "f"
+index = 1
+delay = 1
+
+[[systems]]
+name = "Super Vision 8000"
+id = "SuperVision8000"
+folders = ["SuperVision8000"]
+rbf = "_Console/Super_Vision_8000"
+extensions = ["bin", "mgl"]
+[[systems.launch]]
+extensions = ["bin"]
+type = "f"
+index = 1
+delay = 1
