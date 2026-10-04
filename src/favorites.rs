@@ -573,10 +573,14 @@ fn main_path_value(
     let mut escaped = String::with_capacity(value.len());
     for (at, character) in value.char_indices() {
         if character == '&'
-            && !value[at + 1..].split_once(';').is_some_and(|(name, _)| {
-                quick_xml::escape::resolve_predefined_entity(name).is_some()
-                    || resolve_numeric_entity(name).is_some()
-            })
+            && !value[at + 1..]
+                .split_inclusive(['&', ';'])
+                .next()
+                .and_then(|entity| entity.strip_suffix(';'))
+                .is_some_and(|name| {
+                    quick_xml::escape::resolve_predefined_entity(name).is_some()
+                        || resolve_numeric_entity(name).is_some()
+                })
         {
             escaped.push_str("&amp;");
         } else {
@@ -1829,6 +1833,20 @@ extensions = ["nes", "mgl"]
             ["media/command & conquer/rock & roll & & &custom;.vhd"]
         );
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn many_literal_ampersands_preserve_later_named_and_numeric_entities() {
+        let literal = "&".repeat(MAX_MGL_VALUE_BYTES);
+        let value = format!("{literal}&amp;&#38;&#x26;&custom;");
+        let attribute = quick_xml::events::attributes::Attribute {
+            key: quick_xml::name::QName("path"),
+            value: std::borrow::Cow::Borrowed(value.as_str()),
+        };
+        assert_eq!(
+            main_path_value(&attribute, Path::new("ampersands.mgl"), "test MGL").unwrap(),
+            format!("{literal}&&&&custom;")
+        );
     }
 
     #[test]
