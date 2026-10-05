@@ -316,6 +316,62 @@ inserting a supported disc launches it through an installed
 `MiSTer_Physical-CD` or `MiSTer-disc` provider. PlayStation, Saturn, Mega CD,
 PC Engine CD, Neo Geo CD, 3DO, CD-i, MD+ and SNES MSU-1 media are recognised.
 
+Enabling this option does not install physical-disc support. Automatic launch
+requires Degauss's bundled `MiSTer_Degauss` Main; script-only use with stock
+MiSTer Main does not provide it.
+
+#### Physical-disc setup
+
+1. Keep `main=degauss/MiSTer_Degauss` in the active MiSTer INI's existing
+   `[MiSTer]` section, as in the recommended Degauss installation.
+2. Install one supported provider, including its executable and MGL launchers:
+
+   - [Physical Disc Support](https://github.com/Anime0t4ku/Main_MiSTer_Physical_Disc#installation):
+     `/media/fat/MiSTer_Physical-CD` and `/media/fat/_Physical Disc Cores/`.
+     Its documentation covers installation through MiSTer Companion or Update All.
+   - [mister-disc](https://github.com/theshaneobrien/mister-disc-drive-support):
+     `/media/fat/MiSTer-disc` and `/media/fat/_Disc_Cores/`.
+     Use its scoped installation method, not its global Main replacement.
+
+   The corresponding cores and their usual BIOS files must also be installed.
+3. Back up the active MiSTer INI, then add or update the section for the
+   installed provider. For Physical Disc Support:
+
+   ```ini
+   [A0CD-*]
+   main=MiSTer_Physical-CD
+   ```
+
+   For mister-disc instead:
+
+   ```ini
+   [CD-*]
+   main=MiSTer-disc
+   ```
+
+   Do not add a duplicate section or remove unrelated settings. Keep these
+   entries in each INI profile used with physical discs. They select the
+   provider's Main only for its physical-disc launchers, leaving Degauss as
+   the menu. **Do not change the global or `[Menu]` Main to the provider's
+   executable to enable its own menu auto-detection.** Degauss handles that
+   detection itself.
+4. Confirm that the appropriate MGL in the provider's folder plays the disc
+   when selected manually from MiSTer's menu, then enable
+   **Options → Library → Auto-run Physical Discs** in Degauss.
+
+Degauss identifies the disc and launches the provider's MGL. The INI section
+then selects the provider's Main, which supplies physical-disc playback for
+that core. Installing the binary without the INI routing is not sufficient.
+If both providers are installed, Degauss prefers a matching Physical Disc
+Support launcher when one is available.
+
+**MD+ and SNES MSU-1 require the Physical Disc Support provider in Degauss's
+current integration.** These are specially prepared data discs, not ordinary
+Mega CD or SNES cartridges. MD+ automatic identification looks for matching
+`.md` and `.cue` filenames in the disc's root; SNES MSU-1 identification looks
+for a `.sfc` or `.smc` file there. Follow the provider's
+[disc-burning guide](https://github.com/Anime0t4ku/Main_MiSTer_Physical_Disc#burning-snes-msu-1--mega-drive--genesis-md-cds).
+
 Degauss uses the provider's existing MGL and the same launch handoff as any
 other game. A disc is handled once and is not launched again until it has been
 ejected. Unknown and audio-only discs are ignored. If the matching provider or
@@ -2483,6 +2539,21 @@ Open **Options → Display → Video Effects** to choose **Off**, an included ma
 To make a full video preset, create `/media/fat/Presets/Degauss/` if needed, copy an installed MiSTer `.ini` preset there, give the copy your own name, and edit it. Reopen **Display** and it appears as **Custom/Your Name**. A preset can combine MiSTer's horizontal, vertical and scanline filters, gamma and shadow masks. Referenced filter, gamma and mask files must already be installed in MiSTer's `/media/fat/filters/`, `/media/fat/gamma/` and `/media/fat/shadow_masks/` folders. Presets with missing components are not listed; Main reports an error if a selected file is malformed. The standard [MiSTer preset format](https://github.com/MiSTer-devel/Presets_MiSTer#creating-presets) documents the keys and example combinations.
 
 The mask files are not general-purpose shaders. All Video Effects choices affect Degauss on HDMI and scaled analog output while it is open, not games.
+
+### Why aren't physical discs launching automatically?
+
+**Auto-run Physical Discs** does not install disc support. It requires
+`MiSTer_Degauss`, an installed physical-disc provider and its MGL launchers,
+and the provider-specific `main=` section in the active MiSTer INI. Keep
+Degauss as the menu's Main. Follow the
+[physical-disc setup](#physical-disc-setup), including the provider and disc
+format requirements for MD+ and SNES MSU-1.
+
+If the same disc plays through the provider's manual launcher but not
+automatically, record the exact MGL selected and the game title. Save
+`/tmp/degauss.log` after the failed automatic attempt, before restarting,
+using the instructions below. Manual playback does not test automatic
+identification.
 
 ### My problem is not listed here
 
