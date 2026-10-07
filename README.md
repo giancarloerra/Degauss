@@ -2404,6 +2404,16 @@ Degauss checks an installed Artwork Pack when its system is opened, not by scann
 
 An explicit per-system **Gamelist** or **Artwork Pack** choice always overrides the global Automatic preference. Packs installed normally through Update All are found below `docs/<System>/Artwork` on the SD card or USB storage.
 
+### Why are the new Screenshot or Title Screen Artwork Packs not showing?
+
+**Degauss 1.0.0 supports the existing 2D, 3D and MixRBV2 box-art packs** in `docs/<System>/Artwork`. These styles share that folder, so Degauss uses whichever style is installed, not three separate style choices. For selection and preparation, see [I installed an Artwork Pack, but its artwork is not showing](#i-installed-an-artwork-pack-but-its-artwork-is-not-showing).
+
+The new **Screenshot** and **Title Screen** packs install separately in `docs/<System>/Screenshots` and `docs/<System>/Titles`. They are not yet selectable as Artwork Pack sources in Degauss 1.0.0. Installing or updating them alongside a box-art pack does not stop the existing box art working. Do not rename their folders to `Artwork`: that is not a supported workaround.
+
+Support is planned for a future update, with one selectable pack picture type per system, tracked in [issue #198](https://github.com/giancarloerra/Degauss/issues/198). No release version or date is confirmed yet.
+
+This limitation is specific to the new packs. JPEG and PNG artwork from `gamelist.xml` or Degauss's scrapers remains supported, including screenshots. See [Artwork and metadata](#artwork-and-metadata) for those workflows.
+
 ### Degauss stays on “Starting Degauss frontend...”
 
 The first start reads the game library and creates its index, so it can take longer than later starts. If the indexing screen appears, let it finish.
