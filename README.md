@@ -611,8 +611,19 @@ use the native analog route below with Degauss's bundled Main and Menu.
 #### CRT and HDMI at the same time
 
 This example shows the same Degauss interface on both displays. HDMI scales up
-the CRT image to 1080p60; it does not render a separate interface. Back up the
-active `MiSTer.ini`, then update these entries in its existing `[Menu]` section.
+the CRT image to 1080p60; it does not render a separate interface.
+
+**This requires Degauss's bundled Main and Menu, not the stock-Main script-only
+setup.** Back up the active MiSTer INI and first confirm that its existing
+`[MiSTer]` section selects Degauss Main:
+
+```ini
+main=degauss/MiSTer_Degauss
+```
+
+Keep this selection in every INI profile used with Degauss, including SS1's
+alternate video profiles. Update All only updates `/media/fat/MiSTer.ini`.
+Then update these entries in the active INI's existing `[Menu]` section.
 Replace the previous `[Menu]` `video_mode` line rather than adding another one:
 
 ```ini
@@ -713,7 +724,9 @@ The installation above is the recommended way to use Degauss. It opens Degauss a
 
 If you prefer to keep the stock MiSTer menu as the default, leave the `main=` line as it is in `MiSTer.ini`. You can then start Degauss when wanted by opening the OSD and selecting **Scripts → degauss**.
 
-This requires MiSTer's framebuffer terminal to be enabled:
+**Some features may be missing or may not work correctly when using only the script with stock MiSTer Main.** Native CRT output requires the bundled Degauss Main and Menu and is not available in script-only mode with stock Main. For full feature support, use the recommended installation with `main=degauss/MiSTer_Degauss` under `[MiSTer]` in every INI profile used with Degauss. If you encounter a problem in script-only mode, try that setup as the first troubleshooting step.
+
+Script-only use requires MiSTer's framebuffer terminal to be enabled:
 
 ```ini
 fb_terminal=1
@@ -2434,7 +2447,7 @@ If Degauss never reaches that screen:
 
    It reports missing, incomplete or invalid installation files.
 
-If Degauss is intentionally launched from **Scripts** instead of replacing the stock frontend, the `main=` line is not required. That mode requires `fb_terminal=1` under `[Menu]` in `MiSTer.ini`.
+If Degauss is intentionally launched from **Scripts** with stock MiSTer Main, the `main=` line is not required to browse and launch games. That mode requires `fb_terminal=1` under `[Menu]` in `MiSTer.ini`, but some features may be missing or may not work correctly. Native CRT output requires the bundled Degauss Main and Menu. The recommended setup uses `main=degauss/MiSTer_Degauss` under `[MiSTer]`. If you encounter a problem in script-only mode, try that setup as the first troubleshooting step.
 
 ### Why does Update All warn that Degauss replaces MiSTer firmware with a fork?
 
@@ -2450,11 +2463,13 @@ To return to the official Main binary, choose **Update All → Settings → Fron
 
 ### What should I preserve when using custom or alternate INI profiles?
 
-Update All's Degauss option updates `/media/fat/MiSTer.ini`; it does not synchronize custom or alternate INI profiles. If you replace your INI file or switch profiles, keep this setting in the existing `[MiSTer]` section of each profile where Degauss should start automatically:
+Update All's Degauss option updates `/media/fat/MiSTer.ini`; it does not synchronize custom or alternate INI profiles. If you replace your INI file or switch profiles, keep this setting in the existing `[MiSTer]` section of each profile used with Degauss, including alternate HDMI and analog video profiles:
 
 ```ini
 main=degauss/MiSTer_Degauss
 ```
+
+This selects Degauss Main for full frontend integration, including native CRT output; it is not just an automatic-startup option.
 
 With RetroAchievements, also preserve the RA-specific Main selection. Update All's RA option sets `main=MiSTer_RA` under `[RA_*]`. To keep Degauss's Frontend menu and saved shortcut in RA games, select `main=degauss/MiSTer_RA_Degauss` in that existing section instead, following the [RA setup instructions](support/ra-main/README.md#installation-and-updates). Preserve its other settings and any intentional per-core Main overrides.
 
@@ -2479,7 +2494,13 @@ Current Update All replaces Console Mode's existing `main=` value, so it does no
 
 Seeing MiSTer's OSD on a CRT does not necessarily mean that its Linux framebuffer is routed there. This is especially relevant when using an SS1's analog output.
 
-For CRT and HDMI together, back up the active `MiSTer.ini` and update its existing `[Menu]` section:
+**Native CRT output requires Degauss's bundled Main and Menu.** Back up the active MiSTer INI and first confirm that its existing `[MiSTer]` section selects Degauss Main:
+
+```ini
+main=degauss/MiSTer_Degauss
+```
+
+Keep this selection in every INI profile used with Degauss, including SS1's alternate video profiles. Update All only updates `/media/fat/MiSTer.ini`. Then update the active INI's existing `[Menu]` section:
 
 ```ini
 [Menu]
@@ -2567,7 +2588,15 @@ identification.
 
 ### My problem is not listed here
 
-Reproduce the problem once, then save Degauss's log before restarting Degauss or rebooting MiSTer:
+Before contacting support, first check that Degauss Main is enabled in the active MiSTer INI's existing `[MiSTer]` section:
+
+```ini
+main=degauss/MiSTer_Degauss
+```
+
+Keep this selection in every INI profile used with Degauss, including alternate video profiles. See [custom or alternate INI profiles](#what-should-i-preserve-when-using-custom-or-alternate-ini-profiles). If you were using the stock-Main script-only setup, try the recommended full installation first. After changing the Main selection, reboot MiSTer and retry.
+
+If the problem remains, reproduce it once, then save Degauss's log before restarting Degauss or rebooting MiSTer:
 
 ```bash
 cp /tmp/degauss.log /media/fat/degauss.log
