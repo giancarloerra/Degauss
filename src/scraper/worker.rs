@@ -1770,7 +1770,7 @@ impl LimitedTransport {
         }
         self.rate.wait(&self.cancelled)?;
         self.used
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |used| {
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |used| {
                 if used < self.requests_left {
                     Some(used + 1)
                 } else {
@@ -1803,7 +1803,7 @@ impl LimitedTransport {
             }
             if self
                 .possible_failures
-                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |pending| {
+                .try_update(Ordering::Relaxed, Ordering::Relaxed, |pending| {
                     (failed.saturating_add(pending) < self.failed_left)
                         .then_some(pending.saturating_add(1))
                 })

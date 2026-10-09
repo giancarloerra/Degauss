@@ -178,12 +178,12 @@ fn read_romset_nodes(
             }
             Ok(Event::Start(event)) => {
                 depth += 1;
-                if let Some(found) = romset_node(&event).map_err(&bad)? {
+                if let Some(found) = romset_node(&event).map_err(bad)? {
                     node(found);
                 }
             }
             Ok(Event::Empty(event)) => {
-                if let Some(found) = romset_node(&event).map_err(&bad)? {
+                if let Some(found) = romset_node(&event).map_err(bad)? {
                     node(found);
                 }
             }
