@@ -167,6 +167,14 @@ Click the image to watch Degauss on YouTube.
 | **X** (tab) | **Actions** for the current selection and location: Game Information, random game, random favourite, keep a favourite in Main Favourites or in a folder, drop a favourite, rename or remove an empty Favourites folder, jump to letter, search or filter games, hide a row, rebuild this system, change view, etc. |
 | **Y** (space) | **Menu**: Options, Help, About, Exit to MiSTer. Scripts and optional Attract Mode are on Home |
 
+**Custom controller mappings:** Degauss uses MiSTer's **Menu: OK** and
+**Menu: Back** assignments when set, which take precedence over ordinary A and B
+for menu navigation. With the default Degauss controls, the "B Back" hint means
+the Back action, not necessarily the physical B button. For example, if
+**Menu: Back** is assigned to L, use L to go back. B remains mapped to B in games.
+To use physical B for Back in Degauss, assign it to **Menu: Back** in MiSTer's
+controller mapping.
+
 **Options → Shortcuts** can assign an optional one-second hold to A, B, X or Y.
 A short press keeps the button's normal action. An available hold runs once and
 does not also run the short action when released. If the assigned action is not
@@ -209,7 +217,7 @@ symbols, **SP** enters a space and **Clear** clears the complete name. Existing
 folders remain unchanged unless their Rename action is explicitly used.
 
 A gamepad needs no extra setup and browsing and settings need no keyboard. While Degauss
-owns the screen, MiSTer sends the d-pad as arrows and the face buttons as
+owns the screen, MiSTer sends the d-pad as arrows and the mapped menu controls as
 Enter, Escape, Space and Tab. One physical press counts once even when a
 controller or the input stack delivers it as two press and release pairs
 within 40 ms; held scrolling and deliberate repeated taps are not affected.
