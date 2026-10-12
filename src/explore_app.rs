@@ -7,6 +7,7 @@ struct ExploreBrowser {
     job: Option<crate::explore::Job>,
     query: crate::explore::Query,
     matches: Vec<usize>,
+    up_level: Option<(usize, browse::Row)>,
     origin: Option<ExploreOrigin>,
     menu: ExploreMenu,
     choices: Vec<crate::explore::Choice>,
@@ -65,25 +66,24 @@ impl App {
                 | NamePurpose::RenameCollection(_)
                 | NamePurpose::HomeFolder
                 | NamePurpose::HomeRename(_)
+                | NamePurpose::FavoriteName(_)
         )
     }
     fn browse_row(&self, index: usize) -> Option<&browse::Row> {
         if self.explore.active {
-            let at = *self.explore.matches.get(index)?;
-            return self
-                .explore
-                .catalogue
-                .as_ref()?
-                .entries
-                .get(at)
-                .map(|entry| &entry.row);
+            if let Some((at, row)) = &self.explore.up_level {
+                if index == *at {
+                    return Some(row);
+                }
+            }
+            return self.explore_entry(index).map(|entry| &entry.row);
         }
         self.here.get(index)
     }
 
     fn browse_count(&self) -> usize {
         if self.explore.active {
-            self.explore.matches.len()
+            self.explore.matches.len() + usize::from(self.explore.up_level.is_some())
         } else {
             self.here.len()
         }
@@ -97,7 +97,19 @@ impl App {
         if !self.explore.active {
             return None;
         }
-        let at = *self.explore.matches.get(self.game_list.selected())?;
+        self.explore_entry(self.game_list.selected())
+    }
+
+    fn explore_entry(&self, index: usize) -> Option<&crate::explore::Entry> {
+        if !self.explore.active {
+            return None;
+        }
+        let up = self.explore.up_level.as_ref().map(|(at, _)| *at);
+        if up == Some(index) {
+            return None;
+        }
+        let index = index - usize::from(up.is_some_and(|up| up < index));
+        let at = *self.explore.matches.get(index)?;
         self.explore.catalogue.as_ref()?.entries.get(at)
     }
 
@@ -216,6 +228,7 @@ impl App {
         ));
         request.previous = self.explore.catalogue.take();
         self.explore.matches.clear();
+        self.explore.up_level = None;
         self.game_list = ListState::new(0, self.geometry.visible);
         self.apply_geometry();
         match crate::explore::Job::start(request) {
@@ -317,9 +330,15 @@ impl App {
     }
 
     fn filter_explore(&mut self, preserve: bool) {
+        let selected = if preserve {
+            self.explore.selection - usize::from(self.up_level_index().is_some_and(|up| up < self.explore.selection))
+        } else {
+            0
+        };
         if !preserve {
             self.explore.selection = 0;
         }
+        self.explore.up_level = None;
         self.explore.matches = self
             .explore
             .catalogue
@@ -327,7 +346,6 @@ impl App {
             .map(|catalogue| self.explore.query.matching(catalogue))
             .unwrap_or_default();
         self.explore.revision = self.explore.revision.wrapping_add(1);
-        let selected = if preserve { self.explore.selection } else { 0 };
         self.game_list = ListState::new(self.explore.matches.len(), self.geometry.visible);
         self.game_list.select(selected);
         self.apply_geometry();
@@ -343,7 +361,7 @@ impl App {
                             .catalogue
                             .as_ref()
                             .is_some_and(|catalogue| catalogue.entries[*at].key() == key)
-                    })
+                    }).map(|at| at + usize::from(self.up_level_index().is_some_and(|up| up <= at)))
                 })
                 .unwrap_or(fallback);
             self.game_list.select(selected);

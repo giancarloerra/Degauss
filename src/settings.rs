@@ -25,6 +25,27 @@ pub enum CorePreference {
     RetroAchievementsFirst,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum UpLevelEntry {
+    #[default]
+    Off,
+    Top,
+    Bottom,
+}
+
+impl UpLevelEntry {
+    pub const ALL: [Self; 3] = [Self::Off, Self::Top, Self::Bottom];
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Off => "Off",
+            Self::Top => "Top",
+            Self::Bottom => "Bottom",
+        }
+    }
+}
+
 /// A face button whose short press keeps its normal meaning while a
 /// one-second hold may run one browsing action.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -270,6 +291,8 @@ pub struct Settings {
     /// behaved.
     #[serde(default)]
     pub left_right: Option<String>,
+    #[serde(default)]
+    pub up_level_entry: Option<UpLevelEntry>,
     /// Swap the controller's physical A/B actions inside Degauss. Direct
     /// keyboard controls and launched software are unchanged. Absent is Off.
     #[serde(default)]
@@ -378,6 +401,10 @@ pub struct Settings {
     /// preserves the visible counter used by earlier releases.
     #[serde(default)]
     pub show_game_position: Option<bool>,
+    /// Move overflowing text in the top title strip. Absent preserves On;
+    /// game titles and metadata retain their existing scrolling behaviour.
+    #[serde(default)]
+    pub scroll_title_strip: Option<bool>,
     pub present: Option<String>,
     /// Optional full-interface quarter turn. Absent preserves the landscape
     /// orientation used by every release before TATE support.
@@ -443,6 +470,10 @@ pub struct Settings {
     /// game launch. Empty on existing installations; ignored by Gamelist.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub artwork_pack_matches: BTreeMap<String, crate::artwork_pack::ManualMatches>,
+    /// Selected picture type for each source group. Missing entries retain
+    /// the existing Box Art workflow and persisted prepared data.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub artwork_pack_picture_types: BTreeMap<String, crate::artwork_pack::PictureType>,
     /// The browse strip is visible by default. Both On and Off are explicit
     /// saved choices; only an absent value follows the default.
     pub show_bar: Option<bool>,
@@ -862,6 +893,23 @@ mod tests {
     }
 
     #[test]
+    fn up_level_entry_is_opt_in_and_each_choice_survives_restart() {
+        let old: Settings = toml::from_str("scroll_title_strip = false\n").unwrap();
+        assert_eq!(old.up_level_entry, None);
+        assert_eq!(old.up_level_entry.unwrap_or_default(), UpLevelEntry::Off);
+        let path = temp_path("up-level");
+        for choice in UpLevelEntry::ALL {
+            let settings = Settings {
+                up_level_entry: Some(choice),
+                ..old.clone()
+            };
+            settings.save(&path).unwrap();
+            assert_eq!(Settings::load(&path).unwrap().up_level_entry, Some(choice));
+        }
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
     fn what_is_saved_is_what_comes_back() {
         let path = temp_path("roundtrip");
         let settings = Settings {
@@ -920,6 +968,30 @@ mod tests {
         // applying rather than being frozen at whatever they were today.
         assert!(read.present.is_none());
         std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn title_strip_scrolling_preserves_old_defaults_and_explicit_choices() {
+        let absent: Settings = toml::from_str("").unwrap();
+        assert_eq!(absent.scroll_title_strip, None);
+        assert!(absent.scroll_title_strip.unwrap_or(true));
+        assert!(toml::from_str::<Settings>("scroll_title_strip = 'off'\n").is_err());
+
+        let path = temp_path("title-strip");
+        for enabled in [false, true] {
+            let settings = Settings {
+                scroll_title_strip: Some(enabled),
+                speed_step: Some(2),
+                ..Default::default()
+            };
+            settings
+                .save(&path)
+                .expect("save the explicit scrolling choice");
+            let restored = Settings::load(&path).expect("reload existing settings");
+            assert_eq!(restored.scroll_title_strip, Some(enabled));
+            assert_eq!(restored.speed_step, Some(2), "list speed is independent");
+        }
+        std::fs::remove_file(path).unwrap();
     }
 
     #[test]

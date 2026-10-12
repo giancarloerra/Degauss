@@ -108,7 +108,7 @@ jobs:
         uses: actions/checkout@v5
         with:
           repository: MiSTer-devel/Menu_MiSTer
-          ref: 81f657c557da769d615f91af7da04a06a5732460
+          ref: 5502db909c66c65075c63e79c020cd550462c21c
           path: menu-source
 
       # The About screen reports the version compiled into the binary, and

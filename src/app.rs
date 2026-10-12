@@ -133,6 +133,8 @@ pub enum Screen {
     ScraperMatches,
     /// Gamelist or a local MiSTer Artwork Pack for one supported system.
     GameDataSource,
+    /// Box art, screenshot or title screen before choosing a Pack location.
+    ArtworkPackType,
     /// Automatically discovered Pack installations and manual browsing.
     ArtworkPackLocation,
     /// A bounded directory-only browser for a Pack installation.
@@ -162,6 +164,7 @@ impl Screen {
             | Screen::CategoryImage
             | Screen::ScraperMatches
             | Screen::GameDataSource
+            | Screen::ArtworkPackType
             | Screen::ArtworkPackLocation
             | Screen::ArtworkPackDirectory
             | Screen::ArtworkPackMatch
@@ -357,6 +360,7 @@ fn option_operation(option: OptionId, input: OptionInput) -> OptionOperation {
         },
         OptionId::Speed
         | OptionId::LeftRight
+        | OptionId::UpLevelEntry
         | OptionId::SwapAB
         | OptionId::SwapXY
         | OptionId::ArtLimit
@@ -372,6 +376,7 @@ fn option_operation(option: OptionId, input: OptionInput) -> OptionOperation {
         | OptionId::UseMraFilenames
         | OptionId::FolderBrackets
         | OptionId::ShowGamePosition
+        | OptionId::ScrollTitleStrip
         | OptionId::ShowHidden
         | OptionId::ShowEmpty
         | OptionId::ShowOther
@@ -1374,17 +1379,34 @@ fn artwork_directory_children(
 /// MiSTer storage. The Pack read from a root covers every mapped folder under
 /// it, so a link out of the storage is refused here as the picker never lists
 /// such a directory, and as `candidate_root` refuses one out of its base.
+#[cfg(test)]
 fn chosen_pack_root(
     system_id: &str,
     chosen: &Path,
     game_roots: &[String],
 ) -> std::result::Result<Option<PathBuf>, PathBuf> {
-    let Some(root) = crate::artwork_pack::normalize_docs_root(system_id, chosen) else {
+    chosen_pack_root_for_type(
+        system_id,
+        chosen,
+        game_roots,
+        crate::artwork_pack::PictureType::BoxArt,
+    )
+}
+
+fn chosen_pack_root_for_type(
+    system_id: &str,
+    chosen: &Path,
+    game_roots: &[String],
+    picture_type: crate::artwork_pack::PictureType,
+) -> std::result::Result<Option<PathBuf>, PathBuf> {
+    let Some(root) =
+        crate::artwork_pack::normalize_docs_root_for_type(system_id, chosen, picture_type)
+    else {
         return Ok(None);
     };
     match crate::artwork_pack::expected_folders(system_id)
         .iter()
-        .map(|folder| root.join(folder).join("Artwork"))
+        .map(|folder| root.join(folder).join(picture_type.folder()))
         .find(|artwork| artwork.is_dir() && !directory_allowed_for(artwork, game_roots))
     {
         Some(artwork) => Err(artwork),
@@ -1392,11 +1414,15 @@ fn chosen_pack_root(
     }
 }
 
-fn pack_folders_at(system_id: &str, docs_root: &Path) -> String {
+fn pack_folders_for_type(
+    system_id: &str,
+    docs_root: &Path,
+    picture_type: crate::artwork_pack::PictureType,
+) -> String {
     let present: Vec<&str> = crate::artwork_pack::expected_folders(system_id)
         .iter()
         .copied()
-        .filter(|folder| docs_root.join(folder).join("Artwork").is_dir())
+        .filter(|folder| docs_root.join(folder).join(picture_type.folder()).is_dir())
         .collect();
     if present.is_empty() {
         "No Matching Pack".to_string()
@@ -1405,9 +1431,25 @@ fn pack_folders_at(system_id: &str, docs_root: &Path) -> String {
     }
 }
 
+#[cfg(test)]
 fn pack_location_label(system_id: &str, docs_root: &Path) -> String {
+    pack_location_label_for_type(
+        system_id,
+        docs_root,
+        crate::artwork_pack::PictureType::BoxArt,
+    )
+}
+
+fn pack_location_label_for_type(
+    system_id: &str,
+    docs_root: &Path,
+    picture_type: crate::artwork_pack::PictureType,
+) -> String {
     const CRT_ROOM: usize = 46;
-    let prefix = format!("[{}] ", pack_folders_at(system_id, docs_root));
+    let prefix = format!(
+        "[{}] ",
+        pack_folders_for_type(system_id, docs_root, picture_type)
+    );
     let room = CRT_ROOM.saturating_sub(prefix.chars().count());
     format!(
         "{prefix}{}",
@@ -1590,8 +1632,18 @@ fn persist_source_choice(
             changed.gamelist_sources.insert(group.to_string());
             SOURCE_GAMELIST
         }
-        crate::source_cache::Target::ArtworkPack { docs_root } => {
+        crate::source_cache::Target::ArtworkPack {
+            docs_root,
+            picture_type,
+        } => {
             changed.gamelist_sources.remove(group);
+            if *picture_type == crate::artwork_pack::PictureType::BoxArt {
+                changed.artwork_pack_picture_types.remove(group);
+            } else {
+                changed
+                    .artwork_pack_picture_types
+                    .insert(group.to_string(), *picture_type);
+            }
             changed
                 .artwork_pack_roots
                 .insert(group.to_string(), docs_root.to_string_lossy().into_owned());
@@ -2949,6 +3001,8 @@ enum NamePurpose {
     NewFavoriteFolder,
     /// Rename this real folder in its current parent.
     RenameFavoriteFolder(PathBuf),
+    /// Choose an unused filename without changing the selected game's target.
+    FavoriteName(PathBuf),
     PackMatchSearch,
 }
 
@@ -3111,7 +3165,20 @@ fn row_target(row: &browse::Row) -> Option<PathBuf> {
         browse::Kind::Play(browse::Launch::AmigaVision { install, title }) => {
             Some(crate::favorites::amiga_key(install, title))
         }
-        browse::Kind::Enter(_) => None,
+        browse::Kind::Enter(_) | browse::Kind::Up => None,
+    }
+}
+
+fn up_level_row() -> browse::Row {
+    browse::Row {
+        name: "< UP A LEVEL >".into(),
+        sort_key: String::new(),
+        kind: browse::Kind::Up,
+        cover: None,
+        genre: None,
+        favorite: false,
+        below: None,
+        details: Default::default(),
     }
 }
 
@@ -3122,6 +3189,7 @@ fn row_target(row: &browse::Row) -> Option<PathBuf> {
 /// a game in a gamelist must not unhide it.
 fn row_key(row: &browse::Row) -> String {
     match &row.kind {
+        browse::Kind::Up => "up:".to_string(),
         browse::Kind::Enter(place) => place.key(),
         browse::Kind::Play(browse::Launch::File(path)) => format!("f:{}", path.display()),
         browse::Kind::Play(browse::Launch::AmigaVision { install, title }) => {
@@ -3249,6 +3317,7 @@ fn gather_folder_cover<'c>(
             continue;
         }
         match &row.kind {
+            browse::Kind::Up => {}
             browse::Kind::Enter(inner) => {
                 if row.below == Some(0) {
                     continue;
@@ -4094,6 +4163,7 @@ pub struct App {
     /// cover the browse context.
     source_system_id: Option<String>,
     source_locations: Vec<PathBuf>,
+    source_picture_type: crate::artwork_pack::PictureType,
     source_directory: Option<PathBuf>,
     /// Canonical directories from the picker root to the current directory.
     /// Children resolving to an identity already in this ancestry are hidden,
@@ -4902,6 +4972,7 @@ impl App {
             scraper_cancelling: false,
             source_system_id: None,
             source_locations: Vec::new(),
+            source_picture_type: crate::artwork_pack::PictureType::BoxArt,
             source_directory: None,
             source_directory_history: Vec::new(),
             source_directory_entries: Vec::new(),
@@ -5239,6 +5310,7 @@ impl App {
             | Screen::CategoryImage
             | Screen::ScraperMatches
             | Screen::GameDataSource
+            | Screen::ArtworkPackType
             | Screen::ArtworkPackLocation
             | Screen::ArtworkPackDirectory
             | Screen::ArtworkPackMatch
@@ -5271,6 +5343,7 @@ impl App {
     }
 
     fn apply_geometry(&mut self) {
+        self.sync_up_level_entry();
         let portrait = portrait_dimensions(self.width, self.height);
         let mut geometry = Geometry::compute(
             self.layout,
@@ -5329,6 +5402,7 @@ impl App {
                 | Screen::Scripts
                 | Screen::Scraper
                 | Screen::GameDataSource
+                | Screen::ArtworkPackType
                 | Screen::ArtworkPackLocation
         ) {
             self.font.quantise(geometry.small_font) * 4.2 + geometry.pad * 1.5
@@ -5452,6 +5526,8 @@ impl App {
         self.ui.set_bar_height(geometry.bar);
         self.ui.set_show_bar(self.bar_here());
         self.ui
+            .set_scroll_title_strip(self.settings.scroll_title_strip.unwrap_or(true));
+        self.ui
             .set_scraper_match_picker(self.screen == Screen::ScraperMatches);
         // The lines under the picture. Small, and never more than a third
         // of the panel: the picture is what is being looked at. Nothing at
@@ -5561,14 +5637,18 @@ impl App {
             Screen::ScraperMatches if self.scraper_matches.is_empty() => "B Back   X Search",
             Screen::ScraperMatches => "A Use   B Back   X Search",
             Screen::ArtworkPackMatch => "A Use   B Back   X Search",
-            Screen::LaunchCore | Screen::GameDataSource | Screen::ArtworkPackLocation
+            Screen::LaunchCore
+            | Screen::GameDataSource
+            | Screen::ArtworkPackType
+            | Screen::ArtworkPackLocation
                 if self.width < 480 =>
             {
                 "↑↓ Choose  A Select  B Back"
             }
-            Screen::LaunchCore | Screen::GameDataSource | Screen::ArtworkPackLocation => {
-                "Up/Down Choose   A Select   B Back"
-            }
+            Screen::LaunchCore
+            | Screen::GameDataSource
+            | Screen::ArtworkPackType
+            | Screen::ArtworkPackLocation => "Up/Down Choose   A Select   B Back",
             Screen::ArtworkPackDirectory if self.width < 480 => "↑↓ Choose  A Use  B Parent",
             Screen::ArtworkPackDirectory => "Up/Down Choose   A Open/Use   B Parent",
             Screen::SourceProgress if self.source_cancelling || self.provider_cancelling => {
@@ -5628,6 +5708,7 @@ impl App {
             | Screen::GameFilterValues
             | Screen::CategoryImage
             | Screen::GameDataSource
+            | Screen::ArtworkPackType
             | Screen::ArtworkPackLocation
             | Screen::ArtworkPackDirectory
             | Screen::ArtworkPackMatch
@@ -5664,6 +5745,7 @@ impl App {
             | Screen::GameFilterValues
             | Screen::CategoryImage
             | Screen::GameDataSource
+            | Screen::ArtworkPackType
             | Screen::ArtworkPackLocation
             | Screen::ArtworkPackDirectory
             | Screen::ArtworkPackMatch
@@ -6914,8 +6996,11 @@ impl App {
                 .insert(id.to_string(), accepted.docs_root.clone());
             return self.pack_state(id, &name, &root, state, then);
         }
-        let candidate = match crate::artwork_source::candidate_root(id, &self.pack_candidate_bases)
-        {
+        let candidate = match crate::artwork_source::candidate_root_for_type(
+            id,
+            &self.pack_candidate_bases,
+            crate::artwork_pack::selected_picture_type(&self.settings, id),
+        ) {
             Ok(candidate) => candidate,
             Err(error) => return self.source_unresolved(&name, &error),
         };
@@ -6939,11 +7024,12 @@ impl App {
                 Path::new(&declined.docs_root) == root
                     && declined.language == language
                     && declined.signature.as_ref().is_some_and(|recorded| {
-                        crate::artwork_pack::snapshot_status(
+                        crate::artwork_pack::snapshot_status_for_type(
                             id,
                             recorded,
                             &root,
                             language.as_deref(),
+                            crate::artwork_pack::selected_picture_type(&self.settings, id),
                         )
                         .0 == crate::artwork_pack::SnapshotStatus::Current
                     })
@@ -7097,12 +7183,22 @@ impl App {
         // the fixed table names, unless it cannot be read at all.
         let (status, refreshed, problem) = match baseline {
             Some(signature) => {
-                let (status, refreshed) =
-                    crate::artwork_pack::snapshot_status(id, signature, root, language.as_deref());
+                let (status, refreshed) = crate::artwork_pack::snapshot_status_for_type(
+                    id,
+                    signature,
+                    root,
+                    language.as_deref(),
+                    crate::artwork_pack::selected_picture_type(&self.settings, id),
+                );
                 (status, Some(refreshed), None)
             }
             None => {
-                match crate::artwork_pack::known_tables_signature(id, root, language.as_deref()) {
+                match crate::artwork_pack::known_tables_signature_for_type(
+                    id,
+                    root,
+                    language.as_deref(),
+                    crate::artwork_pack::selected_picture_type(&self.settings, id),
+                ) {
                     Ok(signature) => (SnapshotStatus::Changed, Some(signature), None),
                     Err(error) => {
                         crate::note(&format!("artwork pack {id}: {error}"));
@@ -7182,11 +7278,12 @@ impl App {
                 // prepared is no change at all.
                 if kept.is_some() {
                     let back = accepted.signature.as_ref().is_some_and(|signature| {
-                        crate::artwork_pack::snapshot_status(
+                        crate::artwork_pack::snapshot_status_for_type(
                             id,
                             signature,
                             root,
                             language.as_deref(),
+                            crate::artwork_pack::selected_picture_type(&self.settings, id),
                         )
                         .0 == SnapshotStatus::Current
                     }) && accepted.cache_marker == marker
@@ -7286,8 +7383,11 @@ impl App {
             // The one held for a Pack that was unreachable on an earlier
             // entry stands in for the prepared one only while it is
             // unreachable: once it is back, the prepared one is read again.
-            if provider.configuration_matches(root, language.as_deref())
-                && provider.health == accepted.health
+            if provider.configuration_matches(
+                root,
+                language.as_deref(),
+                crate::artwork_pack::selected_picture_type(&self.settings, id),
+            ) && provider.health == accepted.health
             {
                 return Ok(Some(provider.clone()));
             }
@@ -8176,7 +8276,11 @@ impl App {
     ) -> Option<crate::artwork_pack::Provider> {
         let provider = self.artwork_provider_cache.get(system_id).cloned();
         if provider.as_ref().is_some_and(|provider| {
-            provider.configuration_matches(docs_root, self.scraper_settings.language.as_deref())
+            provider.configuration_matches(
+                docs_root,
+                self.scraper_settings.language.as_deref(),
+                crate::artwork_pack::selected_picture_type(&self.settings, system_id),
+            )
         }) {
             return provider;
         }
@@ -8282,9 +8386,11 @@ impl App {
                     continue;
                 }
                 for folder in crate::artwork_pack::expected_folders(&system.def.id) {
-                    let artwork = docs_root.join(folder).join("Artwork");
-                    if !artwork_roots.contains(&artwork) {
-                        artwork_roots.push(artwork);
+                    for kind in crate::artwork_pack::PictureType::ALL {
+                        let artwork = docs_root.join(folder).join(kind.folder());
+                        if !artwork_roots.contains(&artwork) {
+                            artwork_roots.push(artwork);
+                        }
                     }
                 }
             }
@@ -8318,9 +8424,14 @@ impl App {
                     &snapshot.provider.system_id,
                 )
                 .is_some_and(|root| {
-                    snapshot
-                        .provider
-                        .configuration_matches(root, language.as_deref())
+                    snapshot.provider.configuration_matches(
+                        root,
+                        language.as_deref(),
+                        crate::artwork_pack::selected_picture_type(
+                            &self.settings,
+                            &snapshot.provider.system_id,
+                        ),
+                    )
                 })
             })
             .filter_map(|snapshot| {
@@ -8338,9 +8449,13 @@ impl App {
                 &self.effective_artwork_pack_roots,
                 &provider.system_id,
             );
-            if current_root
-                .is_some_and(|root| provider.configuration_matches(root, language.as_deref()))
-            {
+            if current_root.is_some_and(|root| {
+                provider.configuration_matches(
+                    root,
+                    language.as_deref(),
+                    crate::artwork_pack::selected_picture_type(&self.settings, &provider.system_id),
+                )
+            }) {
                 let system_id = provider.system_id.clone();
                 if snapshot.cache_needs_recovery {
                     self.provider_recovery_needed.insert(system_id.clone());
@@ -8359,7 +8474,13 @@ impl App {
                 &self.effective_artwork_pack_roots,
                 &provider.system_id,
             );
-            if !current_root.is_some_and(|root| provider.configuration_matches(root, language)) {
+            if !current_root.is_some_and(|root| {
+                provider.configuration_matches(
+                    root,
+                    language,
+                    crate::artwork_pack::selected_picture_type(&self.settings, &provider.system_id),
+                )
+            }) {
                 continue;
             }
             let system_id = provider.system_id.clone();
@@ -8428,6 +8549,7 @@ impl App {
             system_id: system.def.id.clone(),
             system_name: system.name().to_string(),
             docs_root: PathBuf::from(root),
+            picture_type: crate::artwork_pack::selected_picture_type(&self.settings, system_id),
             synopsis_language: self.scraper_settings.language.clone(),
             cache_dir: self.cache_dir.clone(),
             validate_location_only: false,
@@ -8437,7 +8559,10 @@ impl App {
             manual_matches: self
                 .settings
                 .artwork_pack_matches
-                .get(system_id)
+                .get(
+                    &crate::artwork_pack::selected_picture_type(&self.settings, system_id)
+                        .match_key(system_id),
+                )
                 .cloned()
                 .unwrap_or_default(),
             matching: None,
@@ -9155,6 +9280,7 @@ impl App {
                 continue;
             }
             match &row.kind {
+                browse::Kind::Up => {}
                 browse::Kind::Play(_) => held += 1,
                 browse::Kind::Enter(inner) => held += self.count_under(cache, inner, depth + 1),
             }
@@ -9178,6 +9304,13 @@ impl App {
     /// at, but from the menu they are one entry: whatever is under the
     /// cursor goes away and comes back the same way.
     fn selected_hidden(&self) -> Option<bool> {
+        if self.browsing == Browsing::Games
+            && self
+                .browse_row(self.game_list.selected())
+                .is_some_and(|row| matches!(row.kind, browse::Kind::Up))
+        {
+            return None;
+        }
         if self.last_played_open {
             return None;
         }
@@ -9295,6 +9428,7 @@ impl App {
                     .as_ref()
                     .is_some_and(|catalogue| Some(catalogue.entries[*at].key()) == selected)
             }) {
+                let at = at + usize::from(self.up_level_index().is_some_and(|up| up <= at));
                 self.game_list.select(at);
             }
             self.touch_selection();
@@ -9381,6 +9515,7 @@ impl App {
                 self.here.clear();
                 self.game_list = ListState::new(0, self.geometry.visible);
                 self.message = Some(format!("{e}"));
+                self.apply_geometry();
                 self.dirty = true;
             }
         }
@@ -13313,6 +13448,13 @@ impl App {
                 self.horizontal = Horizontal::ALL[at];
                 self.settings.left_right = Some(self.horizontal.label().to_string());
             }
+            OptionId::UpLevelEntry => {
+                let current = self.settings.up_level_entry.unwrap_or_default();
+                let values = crate::settings::UpLevelEntry::ALL;
+                let at = values.iter().position(|value| *value == current).unwrap();
+                self.settings.up_level_entry = Some(values[step(at, delta, values.len())]);
+                self.apply_geometry();
+            }
             OptionId::SwapAB => {
                 self.settings.swap_a_b = Some(!self.settings.swap_a_b.unwrap_or(false));
             }
@@ -13513,6 +13655,10 @@ impl App {
             OptionId::ShowGamePosition => {
                 self.settings.show_game_position =
                     Some(!self.settings.show_game_position.unwrap_or(true));
+            }
+            OptionId::ScrollTitleStrip => {
+                self.settings.scroll_title_strip =
+                    Some(!self.settings.scroll_title_strip.unwrap_or(true));
             }
             OptionId::ShowStats => {
                 self.show_stats = !self.show_stats;
@@ -13772,6 +13918,12 @@ impl App {
                 count => format!("{count} set"),
             },
             OptionId::LeftRight => self.horizontal.shown().to_string(),
+            OptionId::UpLevelEntry => self
+                .settings
+                .up_level_entry
+                .unwrap_or_default()
+                .label()
+                .to_string(),
             OptionId::SwapAB => on_off(self.settings.swap_a_b.unwrap_or(false)),
             OptionId::SwapXY => on_off(self.settings.swap_x_y.unwrap_or(false)),
             OptionId::Font => self.font.shown().to_string(),
@@ -13799,6 +13951,7 @@ impl App {
             OptionId::UseMraFilenames => on_off(self.settings.use_mra_filenames.unwrap_or(false)),
             OptionId::FolderBrackets => on_off(self.folder_brackets),
             OptionId::ShowGamePosition => on_off(self.settings.show_game_position.unwrap_or(true)),
+            OptionId::ScrollTitleStrip => on_off(self.settings.scroll_title_strip.unwrap_or(true)),
             OptionId::ShowStats => on_off(self.show_stats),
             OptionId::Present => capitalised(self.present_label),
             OptionId::SwitchIni => self
@@ -14074,7 +14227,8 @@ impl App {
                     self.menu_list.select(index);
                 }
             }
-            Screen::ArtworkPackLocation => self.open_game_data_source(),
+            Screen::ArtworkPackType => self.open_game_data_source(),
+            Screen::ArtworkPackLocation => self.open_artwork_pack_types(),
             Screen::ArtworkPackDirectory => self.leave_artwork_pack_directory(),
             Screen::ArtworkPackMatch => self.leave_pack_matches(),
             Screen::Scripts => self.leave_scripts(),
@@ -14679,6 +14833,10 @@ impl App {
             system_id: target.system_id.clone(),
             system_name: target.name.clone(),
             docs_root: PathBuf::from(root),
+            picture_type: crate::artwork_pack::selected_picture_type(
+                &self.settings,
+                &target.system_id,
+            ),
             synopsis_language: self.scraper_settings.language.clone(),
             cache_dir: self.cache_dir.clone(),
             validate_location_only: false,
@@ -15213,6 +15371,7 @@ impl App {
                     }
                 }
             }
+            NamePurpose::FavoriteName(target) => self.add_favorite_in_named(&target, Some(&draft)),
             NamePurpose::RenameFavoriteFolder(source) => {
                 let unchanged = source
                     .file_name()
@@ -15272,6 +15431,23 @@ impl App {
     }
 
     fn handle_name_keyboard(&mut self, action: Action) {
+        if matches!(self.name_keyboard_purpose, NamePurpose::FavoriteName(_)) {
+            let key = name_keyboard::keys(self.name_keyboard_page, true)
+                .get(self.name_keyboard_list.selected())
+                .copied();
+            if action == Action::Quit || (action == Action::Accept && key == Some(NameKey::Cancel))
+            {
+                self.screen = Screen::Browse;
+                self.resolve_view();
+                self.apply_geometry();
+                self.touch_selection();
+                return;
+            }
+            if action == Action::Accept && key == Some(NameKey::Save) {
+                self.finish_name_keyboard();
+                return;
+            }
+        }
         match action {
             Action::Up => {
                 self.name_keyboard_list.move_rows(-1);
@@ -15338,9 +15514,11 @@ impl App {
     /// Move to the previous or next run of rows sharing a first letter,
     /// in whatever list is on screen, narrowed or not.
     fn letter_step(&mut self, delta: isize) {
+        let up = self.up_level_index();
         let letters: Vec<char> = match self.browsing {
             Browsing::Games => self
                 .browse_rows()
+                .filter(|row| !matches!(row.kind, browse::Kind::Up))
                 .map(|row| first_letter(self.shown_row_name(row).as_ref()))
                 .collect(),
             Browsing::Systems if self.in_cores_browser() => self
@@ -15360,7 +15538,21 @@ impl App {
         if letters.is_empty() {
             return;
         }
-        let target = letter_target(&letters, self.active_list().selected(), delta);
+        let selected = self.active_list().selected();
+        let target = if up == Some(selected) {
+            if delta > 0 {
+                0
+            } else {
+                letters.len() - 1
+            }
+        } else {
+            letter_target(
+                &letters,
+                selected - usize::from(up.is_some_and(|up| up < selected)),
+                delta,
+            )
+        };
+        let target = target + usize::from(up.is_some_and(|up| up <= target));
         if target != self.active_list().selected() {
             self.active_list_mut().select(target);
             self.touch_selection();
@@ -15400,10 +15592,11 @@ impl App {
             && !self.in_favorites()
             && self
                 .browse_rows()
-                .any(|row| !row.is_folder() && !row.favorite);
+                .any(|row| matches!(row.kind, browse::Kind::Play(_)) && !row.favorite);
         let entries: Vec<(char, bool, bool)> = match self.browsing {
             Browsing::Games => self
                 .browse_rows()
+                .filter(|row| !matches!(row.kind, browse::Kind::Up))
                 .map(|row| {
                     (
                         first_letter(self.shown_row_name(row).as_ref()),
@@ -15424,14 +15617,14 @@ impl App {
                 .collect(),
             Browsing::Categories => return,
         };
-        match jump_target(&entries, key, skip_favorites) {
-            Some(at) => self.active_list_mut().select(at),
-            // Past the end of the alphabet as this list has it: the last
-            // entry is the nearest thing to what was asked for.
-            None => {
-                self.active_list_mut().go_last();
-            }
+        if entries.is_empty() {
+            return;
         }
+        // Past the end of the alphabet, use the final content row, never
+        // the navigation entry at the bottom of the list.
+        let at = jump_target(&entries, key, skip_favorites).unwrap_or(entries.len() - 1);
+        let at = at + usize::from(self.up_level_index().is_some_and(|up| up <= at));
+        self.active_list_mut().select(at);
     }
 
     /// Project the complete in-memory rows through title and metadata filters.
@@ -15449,6 +15642,10 @@ impl App {
             self.dirty = true;
             return;
         }
+        self.here
+            .retain(|row| !matches!(row.kind, browse::Kind::Up));
+        self.all_here
+            .retain(|row| !matches!(row.kind, browse::Kind::Up));
         let metadata_active = self.game_filters.is_active();
         let active = !self.filter.is_empty() || metadata_active;
         if self.all_here.is_empty() && active {
@@ -15495,6 +15692,89 @@ impl App {
         }
         self.filter.clear();
         self.apply_filter();
+    }
+
+    fn up_level_index(&self) -> Option<usize> {
+        if self.browsing != Browsing::Games {
+            return None;
+        }
+        if self.explore.active {
+            return self.explore.up_level.as_ref().map(|(at, _)| *at);
+        }
+        if self
+            .here
+            .first()
+            .is_some_and(|row| matches!(row.kind, browse::Kind::Up))
+        {
+            Some(0)
+        } else if self
+            .here
+            .last()
+            .is_some_and(|row| matches!(row.kind, browse::Kind::Up))
+        {
+            Some(self.here.len() - 1)
+        } else {
+            None
+        }
+    }
+
+    fn sync_up_level_entry(&mut self) {
+        if self.browsing != Browsing::Games
+            || self.in_cores_browser()
+            || self.in_misterzine_browser()
+        {
+            return;
+        }
+        let position = self.settings.up_level_entry.unwrap_or_default();
+        if self.explore.active {
+            let wanted = match position {
+                crate::settings::UpLevelEntry::Off => None,
+                crate::settings::UpLevelEntry::Top => Some(0),
+                crate::settings::UpLevelEntry::Bottom => Some(self.explore.matches.len()),
+            };
+            if self.up_level_index() == wanted {
+                return;
+            }
+            let selected = self.browse_row(self.game_list.selected()).map(row_key);
+            let previous = self.game_list.selected();
+            self.explore.up_level = wanted.map(|at| (at, up_level_row()));
+            self.game_list = ListState::new(self.browse_count(), self.geometry.visible);
+            let at = selected
+                .and_then(|key| self.browse_rows().position(|row| row_key(row) == key))
+                .unwrap_or(previous);
+            self.game_list.select(at);
+            return;
+        }
+        if position == crate::settings::UpLevelEntry::Off && self.up_level_index().is_none() {
+            return;
+        }
+        let present = self
+            .here
+            .iter()
+            .position(|row| matches!(row.kind, browse::Kind::Up));
+        let count = self.here.len() - usize::from(present.is_some());
+        let wanted = if self.open_system.is_some() || self.last_played_open {
+            match position {
+                crate::settings::UpLevelEntry::Off => None,
+                crate::settings::UpLevelEntry::Top => Some(0),
+                crate::settings::UpLevelEntry::Bottom => Some(count),
+            }
+        } else {
+            None
+        };
+        if present == wanted {
+            return;
+        }
+        let selected = self.here.get(self.game_list.selected()).map(row_key);
+        let previous = self.game_list.selected();
+        self.here
+            .retain(|row| !matches!(row.kind, browse::Kind::Up));
+        if let Some(index) = wanted {
+            self.here.insert(index, up_level_row());
+        }
+        self.game_list = ListState::new(self.here.len(), self.geometry.visible);
+        self.game_list
+            .select(reselect(&self.here, selected.as_deref(), previous));
     }
 
     /// Clear metadata criteria without changing an active title search.
@@ -15705,6 +15985,43 @@ impl App {
     /// Degauss's own format, so a favourite made here is a favourite in the
     /// stock menu too.
     fn add_favorite_in(&mut self, target: &Path) {
+        self.add_favorite_in_named(target, None);
+    }
+
+    fn favorite_stem(
+        &mut self,
+        target: &Path,
+        original: &str,
+        extension: &str,
+        renamed: Option<&str>,
+    ) -> Option<String> {
+        let stem = renamed.map(str::trim).unwrap_or(original);
+        if renamed.is_some()
+            && (!crate::favorites::name_is_usable(stem)
+                || stem.chars().count() + extension.chars().count() > 255)
+        {
+            self.message = Some("Choose a valid favourite filename of at most 255 characters, including its extension.".into());
+            self.dirty = true;
+            return None;
+        }
+        if target.join(format!("{stem}{extension}")).exists() {
+            if renamed.is_some() {
+                self.message = Some(format!(
+                    "A favourite called {stem}{extension} already exists. Choose another name."
+                ));
+                self.dirty = true;
+            } else {
+                self.open_name_keyboard(
+                    NamePurpose::FavoriteName(target.to_path_buf()),
+                    stem.into(),
+                );
+            }
+            return None;
+        }
+        Some(stem.to_string())
+    }
+
+    fn add_favorite_in_named(&mut self, target: &Path, renamed: Option<&str>) {
         let Some(game) = self.selected_game() else {
             return;
         };
@@ -15720,7 +16037,7 @@ impl App {
                 self.browse_row(self.game_list.selected())
                     .and_then(|row| match &row.kind {
                         browse::Kind::Play(launch) => Some(launch.clone()),
-                        browse::Kind::Enter(_) => None,
+                        browse::Kind::Enter(_) | browse::Kind::Up => None,
                     })
             });
         let selected_family = origin_launch.as_ref().and_then(|launch| {
@@ -15762,8 +16079,17 @@ impl App {
                 ra_first,
                 selected_core,
                 selected_family,
-            )
-            .and_then(|mgl| crate::favorites::add_game(target, &sanitise(&title), &mgl));
+            );
+            let outcome = match outcome {
+                Ok(mgl) => {
+                    let Some(stem) = self.favorite_stem(target, &sanitise(&title), ".mgl", renamed)
+                    else {
+                        return;
+                    };
+                    crate::favorites::add_game(target, &stem, &mgl)
+                }
+                Err(error) => Err(error),
+            };
             let mut outcome_error = None;
             let mut refresh_error = None;
             match outcome {
@@ -15771,7 +16097,14 @@ impl App {
                     self.reread_favorites();
                     refresh_error = self.refresh_favorites_system();
                 }
-                Err(e) => outcome_error = Some(format!("{e}")),
+                Err(e) => {
+                    if renamed.is_some() {
+                        self.message = Some(e.to_string());
+                        self.dirty = true;
+                        return;
+                    }
+                    outcome_error = Some(format!("{e}"));
+                }
             }
             self.screen = Screen::Browse;
             self.apply_geometry();
@@ -15795,17 +16128,28 @@ impl App {
                 // stem: a favourite called "mslug" would be a stranger in a
                 // list that has always said "Metal Slug".
                 let fav_name = crate::favorites::favorite_name(&name, &game);
-                crate::favorites::add_game(target, &fav_name, &mgl)
+                let Some(stem) = self.favorite_stem(target, &fav_name, ".mgl", renamed) else {
+                    return;
+                };
+                crate::favorites::add_game(target, &stem, &mgl)
             }
             // A core file is linked to, not described. The link keeps the
             // real filename, not the shown name: the stock script resolves
             // a link by its filename, and the browser derives the shown
             // name from the stem at browse time anyway.
             Ok(None) => {
-                let file = game
-                    .file_name()
+                let stem = game
+                    .file_stem()
                     .map(|s| s.to_string_lossy().into_owned())
                     .unwrap_or_else(|| name.clone());
+                let extension = game
+                    .extension()
+                    .map(|ext| format!(".{}", ext.to_string_lossy()))
+                    .unwrap_or_default();
+                let Some(stem) = self.favorite_stem(target, &stem, &extension, renamed) else {
+                    return;
+                };
+                let file = format!("{stem}{extension}");
                 if native_arcade_favourite {
                     crate::favorites::ensure_arcade_cores_link(Path::new(&self.config.menu_root))
                         .and_then(|()| crate::favorites::add_core(target, &file, &game))
@@ -15823,7 +16167,14 @@ impl App {
                 self.reread_favorites();
                 refresh_error = self.refresh_favorites_system();
             }
-            Err(e) => outcome_error = Some(format!("{e}")),
+            Err(e) => {
+                if renamed.is_some() {
+                    self.message = Some(e.to_string());
+                    self.dirty = true;
+                    return;
+                }
+                outcome_error = Some(format!("{e}"));
+            }
         }
         self.screen = Screen::Browse;
         self.apply_geometry();
@@ -16015,6 +16366,8 @@ impl App {
             return;
         }
         self.source_system_id = Some(system_id.clone());
+        self.source_picture_type =
+            crate::artwork_pack::selected_picture_type(&self.settings, &system_id);
         let mode = crate::artwork_source::mode(&self.settings, &system_id);
         self.menu = source_choice_rows(mode);
         if mode == crate::artwork_source::Mode::Automatic {
@@ -16078,12 +16431,46 @@ impl App {
         self.dirty = true;
     }
 
+    fn open_artwork_pack_types(&mut self) {
+        let Some(id) = self.source_system_id.as_deref() else {
+            return;
+        };
+        let selected = crate::artwork_pack::selected_picture_type(&self.settings, id);
+        self.menu = crate::artwork_pack::PictureType::ALL
+            .iter()
+            .map(|kind| kind.label().to_string())
+            .collect();
+        self.menu_list = ListState::new(self.menu.len(), self.geometry.visible);
+        self.menu_list.select(
+            crate::artwork_pack::PictureType::ALL
+                .iter()
+                .position(|kind| *kind == selected)
+                .unwrap_or(0),
+        );
+        self.screen = Screen::ArtworkPackType;
+        self.message = None;
+        self.apply_geometry();
+        self.dirty = true;
+    }
+
+    fn choose_artwork_pack_type(&mut self) {
+        let Some(kind) = crate::artwork_pack::PictureType::ALL.get(self.menu_list.selected())
+        else {
+            return;
+        };
+        self.source_picture_type = *kind;
+        self.open_artwork_pack_locations();
+    }
+
     fn open_artwork_pack_locations(&mut self) {
         let Some(system_id) = self.source_system_id.clone() else {
             return;
         };
-        let candidates =
-            crate::artwork_pack::discover_candidate_roots(&system_id, &self.config.game_roots);
+        let candidates = crate::artwork_pack::discover_candidate_roots_for_type(
+            &system_id,
+            &self.config.game_roots,
+            self.source_picture_type,
+        );
 
         if candidates.is_empty() {
             self.source_locations.clear();
@@ -16108,6 +16495,7 @@ impl App {
                 system_id: system_id.clone(),
                 system_name: root.to_string_lossy().into_owned(),
                 docs_root: root.clone(),
+                picture_type: self.source_picture_type,
                 synopsis_language: self.scraper_settings.language.clone(),
                 cache_dir: self.cache_dir.clone(),
                 validate_location_only: true,
@@ -16150,7 +16538,7 @@ impl App {
         self.menu = self
             .source_locations
             .iter()
-            .map(|root| pack_location_label(system_id, root))
+            .map(|root| pack_location_label_for_type(system_id, root, self.source_picture_type))
             .collect();
         self.menu.push(CHOOSE_PACK_DIRECTORY.to_string());
         self.menu_list = ListState::new(self.menu.len(), self.geometry.visible);
@@ -16199,7 +16587,7 @@ impl App {
 
         let mut outside_storage = None;
         let valid_root = self.source_system_id.as_deref().and_then(|system_id| {
-            chosen_pack_root(system_id, &canonical, &self.config.game_roots).unwrap_or_else(
+            chosen_pack_root_for_type(system_id, &canonical, &self.config.game_roots, self.source_picture_type).unwrap_or_else(
                 |artwork| {
                     crate::note(&format!(
                         "artwork pack directory {}: {} resolves outside the available storage, not offered",
@@ -16236,7 +16624,7 @@ impl App {
         {
             self.menu.push(format!(
                 "{USE_PACK_DIRECTORY} ({})",
-                pack_folders_at(system_id, root)
+                pack_folders_for_type(system_id, root, self.source_picture_type)
             ));
             self.source_directory_entries.push(None);
         }
@@ -16256,7 +16644,10 @@ impl App {
         let selected = self.menu_list.selected();
         if selected < self.source_locations.len() {
             let root = self.source_locations[selected].clone();
-            self.begin_source_switch(crate::source_cache::Target::ArtworkPack { docs_root: root });
+            self.begin_source_switch(crate::source_cache::Target::ArtworkPack {
+                docs_root: root,
+                picture_type: self.source_picture_type,
+            });
         } else {
             self.open_artwork_pack_directory(self.default_pack_browser_root(), true);
         }
@@ -16281,7 +16672,12 @@ impl App {
                 let Some(current) = self.source_directory.as_deref() else {
                     return;
                 };
-                let root = match chosen_pack_root(system_id, current, &self.config.game_roots) {
+                let root = match chosen_pack_root_for_type(
+                    system_id,
+                    current,
+                    &self.config.game_roots,
+                    self.source_picture_type,
+                ) {
                     Ok(Some(root)) => root,
                     Ok(None) => {
                         self.message = Some(
@@ -16306,6 +16702,7 @@ impl App {
                 };
                 self.begin_source_switch(crate::source_cache::Target::ArtworkPack {
                     docs_root: root,
+                    picture_type: self.source_picture_type,
                 });
             }
         }
@@ -16351,13 +16748,16 @@ impl App {
                 crate::source_cache::Target::Gamelist => members
                     .iter()
                     .all(|id| !self.effective_artwork_pack_roots.contains_key(*id)),
-                crate::source_cache::Target::ArtworkPack { docs_root } => {
-                    members.iter().all(|id| {
-                        self.effective_artwork_pack_roots
+                crate::source_cache::Target::ArtworkPack {
+                    docs_root,
+                    picture_type,
+                } => members.iter().all(|id| {
+                    crate::artwork_pack::selected_picture_type(&self.settings, id) == *picture_type
+                        && self
+                            .effective_artwork_pack_roots
                             .get(*id)
                             .is_some_and(|root| Path::new(root) == docs_root)
-                    })
-                }
+                }),
             };
         if unchanged {
             match persist_source_choice(&self.settings, &self.settings_path, group, &target) {
@@ -16421,7 +16821,10 @@ impl App {
         }
         self.source_system_id = Some(system_id.to_string());
         self.start_source_job(
-            crate::source_cache::Target::ArtworkPack { docs_root },
+            crate::source_cache::Target::ArtworkPack {
+                docs_root,
+                picture_type: crate::artwork_pack::selected_picture_type(&self.settings, system_id),
+            },
             group,
             SourceOperation::Recover(purpose),
         );
@@ -16450,6 +16853,10 @@ impl App {
         self.start_source_job(
             crate::source_cache::Target::ArtworkPack {
                 docs_root: offer.docs_root,
+                picture_type: crate::artwork_pack::selected_picture_type(
+                    &self.settings,
+                    &offer.system_id,
+                ),
             },
             group,
             SourceOperation::Recover(SourceRecoveryPurpose::Consented),
@@ -16496,10 +16903,11 @@ impl App {
                 .is_some_and(|accepted| accepted.docs_root == docs_root);
         let signature = match offer.signature {
             Some(signature) => Ok(signature),
-            None => crate::artwork_pack::known_tables_signature(
+            None => crate::artwork_pack::known_tables_signature_for_type(
                 &id,
                 &offer.docs_root,
                 offer.language.as_deref(),
+                crate::artwork_pack::selected_picture_type(&self.settings, &id),
             ),
         };
         let signature = match signature {
@@ -16590,16 +16998,20 @@ impl App {
     fn offer_legacy_update(&mut self, id: &str, name: &str, root: PathBuf, then: OfferFollowUp) {
         let language =
             crate::artwork_pack::normalized_language(self.scraper_settings.language.as_deref());
-        let signature =
-            match crate::artwork_pack::known_tables_signature(id, &root, language.as_deref()) {
-                Ok(signature) => signature,
-                Err(error) => {
-                    self.effective_artwork_pack_roots.remove(id);
-                    self.open_with_root(id, None, None, None);
-                    self.source_unresolved(name, &error);
-                    return;
-                }
-            };
+        let signature = match crate::artwork_pack::known_tables_signature_for_type(
+            id,
+            &root,
+            language.as_deref(),
+            crate::artwork_pack::selected_picture_type(&self.settings, id),
+        ) {
+            Ok(signature) => signature,
+            Err(error) => {
+                self.effective_artwork_pack_roots.remove(id);
+                self.open_with_root(id, None, None, None);
+                self.source_unresolved(name, &error);
+                return;
+            }
+        };
         self.effective_artwork_pack_roots.remove(id);
         crate::note(&format!("artwork pack {id}: prompt shown: changed"));
         self.message = Some(format!(
@@ -17409,7 +17821,7 @@ impl App {
         scan_warnings: Vec<String>,
         purpose: SourceRecoveryPurpose,
     ) {
-        let crate::source_cache::Target::ArtworkPack { docs_root } = &target else {
+        let crate::source_cache::Target::ArtworkPack { docs_root, .. } = &target else {
             self.finish_source_terminal(
                 Some(SourceOperation::Recover(purpose)),
                 Some(crate::error::DegaussError::unsupported(
@@ -17704,7 +18116,7 @@ impl App {
                 // question for the group, accepted members included.
                 self.clear_group_roots(group);
             }
-            crate::source_cache::Target::ArtworkPack { docs_root } => {
+            crate::source_cache::Target::ArtworkPack { docs_root, .. } => {
                 self.set_group_root(group, &docs_root.to_string_lossy());
             }
         }
@@ -18022,6 +18434,7 @@ impl App {
                 }
                 let (place, display_name) = match self.browse_row(self.game_list.selected()) {
                     Some(row) => match &row.kind {
+                        browse::Kind::Up => return None,
                         browse::Kind::Enter(place) => (place.clone(), row.name.clone()),
                         browse::Kind::Play(_) => {
                             (self.trail.last()?.place.clone(), self.here_label())
@@ -20141,6 +20554,7 @@ impl App {
                         }
                         if let Some(row) = self.browse_row(self.game_list.selected()) {
                             match &row.kind {
+                                browse::Kind::Up => return self.handle(Action::Quit),
                                 browse::Kind::Enter(place) => {
                                     let place = place.clone();
                                     self.enter(place);
@@ -20406,9 +20820,10 @@ impl App {
                 Screen::GameDataSource => match self.menu_list.selected() {
                     0 => self.choose_automatic_source(),
                     1 => self.begin_source_switch(crate::source_cache::Target::Gamelist),
-                    2 => self.open_artwork_pack_locations(),
+                    2 => self.open_artwork_pack_types(),
                     _ => {}
                 },
+                Screen::ArtworkPackType => self.choose_artwork_pack_type(),
                 Screen::ArtworkPackLocation => self.activate_artwork_pack_location(),
                 Screen::ArtworkPackDirectory => self.activate_artwork_pack_directory(),
                 Screen::Scripts => self.activate_script(),
@@ -21305,15 +21720,8 @@ impl App {
                         };
                         for index in range {
                             let logo = if self.explore.active && with_art {
-                                let at = self.explore.matches[index];
-                                let id = &self
-                                    .explore
-                                    .catalogue
-                                    .as_ref()
-                                    .expect("Explore catalogue")
-                                    .entries[at]
-                                    .system;
-                                self.explore_logo(id)
+                                self.explore_entry(index)
+                                    .and_then(|entry| self.explore_logo(&entry.system))
                             } else {
                                 logo.clone()
                             };
@@ -21330,7 +21738,11 @@ impl App {
                                 self.screen_rotation,
                                 game_art,
                             );
-                            let wanted = if with_art {
+                            let wanted = if with_art
+                                && !matches!(
+                                    self.browse_row(index).expect("visible game row").kind,
+                                    browse::Kind::Up
+                                ) {
                                 // Inside favourites a folder is a shelf the
                                 // user made, and the panel marks it with a
                                 // heart rather than a logo: no stand-in here
@@ -21363,15 +21775,12 @@ impl App {
                                 title: SharedString::from(
                                     if row.is_folder() && self.folder_brackets {
                                         format!("[ {shown_name} ]")
-                                    } else if self.explore.active && self.layout.rows_have_art() {
-                                        let at = self.explore.matches[index];
-                                        let owner = &self
-                                            .explore
-                                            .catalogue
-                                            .as_ref()
-                                            .expect("Explore catalogue")
-                                            .entries[at]
-                                            .system_name;
+                                    } else if let Some(entry) =
+                                        self.explore_entry(index).filter(|_| {
+                                            self.explore.active && self.layout.rows_have_art()
+                                        })
+                                    {
+                                        let owner = &entry.system_name;
                                         format!("{shown_name} ({owner})")
                                     } else {
                                         shown_name.into_owned()
@@ -21388,16 +21797,9 @@ impl App {
                                 // How much is in there, where somebody has
                                 // counted. Folders only: a game is one game.
                                 value: if self.explore.active {
-                                    let at = self.explore.matches[index];
-                                    SharedString::from(
-                                        self.explore
-                                            .catalogue
-                                            .as_ref()
-                                            .expect("Explore catalogue")
-                                            .entries[at]
-                                            .system_name
-                                            .clone(),
-                                    )
+                                    self.explore_entry(index)
+                                        .map(|entry| SharedString::from(entry.system_name.clone()))
+                                        .unwrap_or_default()
                                 } else if self.in_misterzine_browser() {
                                     SharedString::new()
                                 } else {
@@ -21455,6 +21857,7 @@ impl App {
             | Screen::CategoryImage
             | Screen::LaunchCore
             | Screen::GameDataSource
+            | Screen::ArtworkPackType
             | Screen::ArtworkPackLocation
             | Screen::ArtworkPackDirectory
             | Screen::ArtworkPackMatch => {
@@ -21749,6 +22152,7 @@ impl App {
         self.ui
             .set_clock(SharedString::from(self.status.clock.as_str()));
         self.ui.set_wifi(self.status.wifi);
+        self.ui.set_ethernet(self.status.ethernet);
         self.ui.set_bluetooth(self.status.bluetooth);
         self.ui.set_index_active(self.build.is_some());
         self.ui.set_index_fraction(
@@ -21790,7 +22194,7 @@ impl App {
                             .unwrap_or_default(),
                     })
                     .unwrap_or_default(),
-                Screen::GameDataSource | Screen::ArtworkPackLocation => {
+                Screen::GameDataSource | Screen::ArtworkPackType | Screen::ArtworkPackLocation => {
                     self.source_system_id.clone().unwrap_or_default()
                 }
                 _ => String::new(),
@@ -21812,6 +22216,19 @@ impl App {
                         && !self.settings.show_game_position.unwrap_or(true) =>
                 {
                     String::new()
+                }
+                Screen::Browse
+                    if self.browsing == Browsing::Games && self.up_level_index().is_some() =>
+                {
+                    let up = self.up_level_index().unwrap();
+                    let at = self.game_list.selected();
+                    let count = self.game_list.count() - 1;
+                    let selected = if at == up {
+                        0
+                    } else {
+                        at + 1 - usize::from(up < at)
+                    };
+                    format!("{selected}/{count}")
                 }
                 Screen::Browse
                 | Screen::OptionsRoot
@@ -21853,7 +22270,7 @@ impl App {
                             .unwrap_or_default(),
                     })
                     .unwrap_or_default(),
-                Screen::GameDataSource | Screen::ArtworkPackLocation => {
+                Screen::GameDataSource | Screen::ArtworkPackType | Screen::ArtworkPackLocation => {
                     self.source_system_id.clone().unwrap_or_default()
                 }
                 Screen::CategoryImage => format!(
@@ -21896,7 +22313,10 @@ impl App {
                 FindMode::Jump => ("Jump to letter".to_string(), String::new()),
                 FindMode::Search => (
                     "Search This Folder".to_string(),
-                    format!("{} found", self.browse_count()),
+                    format!(
+                        "{} found",
+                        self.browse_count() - usize::from(self.up_level_index().is_some())
+                    ),
                 ),
             },
             Screen::GameFilters => (
@@ -21930,6 +22350,7 @@ impl App {
                     NamePurpose::RenameCollection(_) => "Rename Collection".to_string(),
                     NamePurpose::NewFavoriteFolder => "New Favourite Folder".to_string(),
                     NamePurpose::RenameFavoriteFolder(_) => "Rename Favourite Folder".to_string(),
+                    NamePurpose::FavoriteName(_) => "Choose Favourite Filename".to_string(),
                     NamePurpose::PackMatchSearch => "Search Artwork Pack".to_string(),
                 },
                 self.name_keyboard_page.label().to_string(),
@@ -22140,13 +22561,20 @@ impl App {
                 }
                 .to_string(),
             ),
+            Screen::ArtworkPackType => (
+                "Artwork Pack Picture Type".to_string(),
+                "Choose one picture type, then its installed pack location.".to_string(),
+            ),
             Screen::ArtworkPackLocation => (
                 if self.source_choice_is_shared() {
                     "Artwork Pack: Neo Geo + MVS".to_string()
                 } else {
                     "Artwork Pack Location".to_string()
                 },
-                "Choose a detected pack or browse to another directory.".to_string(),
+                format!(
+                    "{}: choose a detected pack or browse to another directory.",
+                    self.source_picture_type.label()
+                ),
             ),
             Screen::ArtworkPackDirectory => (
                 self.source_directory
@@ -23757,6 +24185,7 @@ pub(crate) fn test_library_launch_flow(window: Rc<MinimalSoftwareWindow>) {
         label: "Legacy NES".into(),
         rbf: "_Arcade/LegacyNES".into(),
         setname: Some("LegacyNES".into()),
+        same_dir: false,
     });
     let found = FoundSystem {
         def: def.clone(),
@@ -25411,6 +25840,7 @@ mod tests {
             &io,
             &crate::source_cache::Target::ArtworkPack {
                 docs_root: PathBuf::from("/media/usb0/docs"),
+                picture_type: crate::artwork_pack::PictureType::BoxArt,
             },
             "Arcade",
             "Automatic remains active and is currently using Gamelist.",
@@ -25603,6 +26033,7 @@ mod tests {
             "SuperGrafx",
             &crate::source_cache::Target::ArtworkPack {
                 docs_root: docs.clone(),
+                picture_type: crate::artwork_pack::PictureType::BoxArt,
             },
         )
         .unwrap();
@@ -25698,6 +26129,7 @@ mod tests {
             rbf: "_Console/Test".to_string(),
             launch: Vec::new(),
             setname: None,
+            same_dir: false,
             compatible_cores: Vec::new(),
             skip_folders: Vec::new(),
             extra_paths: Vec::new(),
@@ -25733,6 +26165,7 @@ mod tests {
             "SuperGrafx",
             &crate::source_cache::Target::ArtworkPack {
                 docs_root: root.join("docs"),
+                picture_type: crate::artwork_pack::PictureType::BoxArt,
             },
         );
 
@@ -26554,6 +26987,7 @@ mod tests {
             rbf: "_Console/TurboGrafx16".to_string(),
             launch: Vec::new(),
             setname: Some("SuperGrafx".to_string()),
+            same_dir: false,
             compatible_cores: Vec::new(),
             skip_folders: Vec::new(),
             extra_paths: Vec::new(),

@@ -556,6 +556,7 @@ fn walk_controlled(
         }
         omit_non_utf8_cover(row);
         match &row.kind {
+            Kind::Up => dropped.push(index),
             Kind::Play(_) => {
                 games += 1;
                 *games_done += 1;
@@ -1963,6 +1964,7 @@ mod tests {
             rbf: "_Computer/Test".into(),
             launch: Vec::new(),
             setname: None,
+            same_dir: false,
             compatible_cores: Vec::new(),
             skip_folders: Vec::new(),
             extra_paths: Vec::new(),

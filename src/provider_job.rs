@@ -17,6 +17,7 @@ pub struct Request {
     pub system_id: String,
     pub system_name: String,
     pub docs_root: PathBuf,
+    pub picture_type: crate::artwork_pack::PictureType,
     pub synopsis_language: Option<String>,
     pub cache_dir: PathBuf,
     /// Location discovery needs only a bounded provider-health check. It must
@@ -199,7 +200,8 @@ fn run(
         let _ = events.try_send(Event::Progress(progress.clone()));
         let mut cached_provider = request.cached_provider;
         let source_is_current = cached_provider.as_ref().is_some_and(|provider| {
-            provider.still_current(&request.docs_root, request.synopsis_language.as_deref())
+            provider.picture_type == request.picture_type
+                && provider.still_current(&request.docs_root, request.synopsis_language.as_deref())
         });
         let source_changed = !source_is_current;
         let can_reuse_catalogue = source_is_current
@@ -207,10 +209,11 @@ fn run(
                 .as_ref()
                 .is_some_and(crate::artwork_pack::Provider::catalogue_available);
         let provider = if !can_reuse_catalogue {
-            crate::artwork_pack::Provider::load_controlled(
+            crate::artwork_pack::Provider::load_controlled_for_type(
                 &request.system_id,
                 &request.docs_root,
                 request.synopsis_language.as_deref(),
+                request.picture_type,
                 cancelled,
             )
         } else {
@@ -418,6 +421,7 @@ fn run_matching(
     if !provider.configuration_matches(
         std::path::Path::new(&accepted.docs_root),
         accepted.language.as_deref(),
+        provider.picture_type,
     ) || provider.snapshot() != accepted.signature.as_ref()
     {
         return Err(DegaussError::unsupported(
@@ -499,16 +503,17 @@ fn run_matching(
         }
     }
     let mut settings = save.settings;
+    let matches_key = provider.picture_type.match_key(&id);
     if let Some(selected) = save.selected {
         settings
             .artwork_pack_matches
-            .entry(id.clone())
+            .entry(matches_key.clone())
             .or_default()
             .insert(key, selected);
-    } else if let Some(matches) = settings.artwork_pack_matches.get_mut(&id) {
+    } else if let Some(matches) = settings.artwork_pack_matches.get_mut(&matches_key) {
         matches.remove(&key);
         if matches.is_empty() {
-            settings.artwork_pack_matches.remove(&id);
+            settings.artwork_pack_matches.remove(&matches_key);
         }
     }
     if !provider.still_current(&provider.docs_root, provider.synopsis_language()) {
@@ -618,6 +623,7 @@ mod tests {
                 system_id: "SuperGrafx".to_string(),
                 system_name: "SuperGrafx".to_string(),
                 docs_root: ready_docs,
+                picture_type: crate::artwork_pack::PictureType::BoxArt,
                 synopsis_language: Some("en".to_string()),
                 cache_dir: root.join("cache"),
                 validate_location_only: false,
@@ -631,6 +637,7 @@ mod tests {
                 system_id: "NES".to_string(),
                 system_name: "NES".to_string(),
                 docs_root: root.join("missing/docs"),
+                picture_type: crate::artwork_pack::PictureType::BoxArt,
                 synopsis_language: Some("en".to_string()),
                 cache_dir: root.join("cache"),
                 validate_location_only: false,
@@ -687,6 +694,7 @@ mod tests {
             system_id: "SuperGrafx".to_string(),
             system_name: docs_root.to_string_lossy().into_owned(),
             docs_root,
+            picture_type: crate::artwork_pack::PictureType::BoxArt,
             synopsis_language: Some("en".to_string()),
             cache_dir: root.join("cache-that-does-not-exist"),
             validate_location_only: true,
@@ -734,6 +742,7 @@ mod tests {
             system_id: "NES".to_string(),
             system_name: "NES".to_string(),
             docs_root: root.join("missing/docs"),
+            picture_type: crate::artwork_pack::PictureType::BoxArt,
             synopsis_language: None,
             cache_dir,
             validate_location_only: false,
@@ -767,6 +776,7 @@ mod tests {
                 system_id: "SuperGrafx".to_string(),
                 system_name: "SuperGrafx".to_string(),
                 docs_root: root.clone(),
+                picture_type: crate::artwork_pack::PictureType::BoxArt,
                 synopsis_language: None,
                 cache_dir: root.join("cache"),
                 validate_location_only: false,
@@ -846,6 +856,7 @@ mod tests {
             system_id: "SuperGrafx".to_string(),
             system_name: "SuperGrafx".to_string(),
             docs_root: docs.clone(),
+            picture_type: crate::artwork_pack::PictureType::BoxArt,
             synopsis_language: None,
             cache_dir: cache_dir.clone(),
             validate_location_only: false,
@@ -1063,6 +1074,7 @@ mod tests {
             system_id: "Arcade".to_string(),
             system_name: "Arcade".to_string(),
             docs_root: docs.to_path_buf(),
+            picture_type: crate::artwork_pack::PictureType::BoxArt,
             synopsis_language: Some("EN".to_string()),
             cache_dir: cache_dir.to_path_buf(),
             validate_location_only: false,

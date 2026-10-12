@@ -1102,6 +1102,20 @@ folders = ["NEOGEO"]
 rbf = "_Console/NeoGeo"
 extensions = ["neo", "mgl"]
 
+[[systems.compatible_cores]]
+id = "neogeo-turbo-v2"
+label = "Neo Geo Turbo V2"
+rbf = "_Console/console_extra/NeoGeo_TurboV2"
+setname = "NEOGEO_TURBO"
+same_dir = true
+
+[[systems.compatible_cores]]
+id = "neogeo-turbo"
+label = "Neo Geo Turbo"
+rbf = "_Console/console_extra/NeoGeo_Turbo"
+setname = "NEOGEO_TURBO"
+same_dir = true
+
 [[systems.launch]]
 extensions = ["neo", "mgl"]
 type = "f"
@@ -1127,6 +1141,20 @@ id = "NeoGeoMVS"
 folders = ["NEOGEO"]
 rbf = "_Console/NeoGeo"
 extensions = ["neo", "mgl"]
+
+[[systems.compatible_cores]]
+id = "neogeo-turbo-v2"
+label = "Neo Geo Turbo V2"
+rbf = "_Console/console_extra/NeoGeo_TurboV2"
+setname = "NEOGEO_TURBO"
+same_dir = true
+
+[[systems.compatible_cores]]
+id = "neogeo-turbo"
+label = "Neo Geo Turbo"
+rbf = "_Console/console_extra/NeoGeo_Turbo"
+setname = "NEOGEO_TURBO"
+same_dir = true
 
 [[systems.launch]]
 extensions = ["neo"]
@@ -1207,6 +1235,11 @@ folders = ["N64"]
 rbf = "_Console/N64"
 extensions = ["n64", "z64", "v64", "mgl"]
 
+[[systems.compatible_cores]]
+id = "n64-turbo"
+label = "Nintendo 64 Turbo (80 MHz)"
+rbf = "_Console/N64_80MHz"
+
 [[systems.launch]]
 extensions = ["n64", "z64", "v64"]
 type = "f"
@@ -1255,7 +1288,7 @@ delay = 1
 [[systems]]
 name = "PC (DOS)"
 id = "DOS"
-folders = ["AO486", "/media/fat/_DOS Games"]
+folders = ["AO486", "/media/fat/_DOS Games", "/media/fat/_Win 3.1 Games", "/media/fat/_Win 95 Games", "/media/fat/_W95 Games"]
 rbf = "_Computer/ao486"
 extensions = ["mgl", "vhd", "img", "ima", "vfd", "iso", "cue", "chd"]
 
@@ -2103,12 +2136,27 @@ name = "Sharp MZ"
 id = "SharpMZ"
 folders = ["SharpMZ"]
 rbf = "_Computer/SharpMZ"
-extensions = ["mzf", "mzt", "mgl"]
+extensions = ["mzf", "mzt", "dsk", "d88", "d77", "qdf", "mzq", "mgl"]
 category = "Computer"
 [[systems.launch]]
-extensions = ["mzf", "mzt"]
+extensions = ["mzf"]
 type = "f"
 index = 1
+delay = 1
+[[systems.launch]]
+extensions = ["mzt"]
+type = "s"
+index = 0
+delay = 1
+[[systems.launch]]
+extensions = ["dsk", "d88", "d77"]
+type = "s"
+index = 1
+delay = 1
+[[systems.launch]]
+extensions = ["qdf", "mzq"]
+type = "s"
+index = 3
 delay = 1
 
 [[systems]]
@@ -2524,4 +2572,148 @@ extensions = ["bin", "mgl"]
 extensions = ["bin"]
 type = "f"
 index = 1
+delay = 1
+
+[[systems]]
+name = "Apple III"
+id = "Apple-III"
+folders = ["Apple-III"]
+rbf = "_Computer/Apple-III"
+extensions = ["woz", "dsk", "do", "nib", "hdv", "mgl"]
+[[systems.launch]]
+extensions = ["woz", "dsk", "do", "nib"]
+type = "s"
+index = 0
+delay = 1
+[[systems.launch]]
+extensions = ["hdv"]
+type = "s"
+index = 4
+delay = 1
+
+[[systems]]
+name = "Macintosh Quadra 800"
+id = "MacQuadra800"
+folders = ["MacQuadra800"]
+rbf = "_Computer/MacQuadra800"
+extensions = ["hda", "vhd", "iso", "toast", "cue", "bin", "chd", "mgl"]
+[[systems.launch]]
+extensions = ["hda", "vhd"]
+type = "s"
+index = 0
+delay = 1
+[[systems.launch]]
+extensions = ["iso", "toast", "cue", "bin", "chd"]
+type = "s"
+index = 4
+delay = 1
+
+[[systems]]
+name = "NeXT Color"
+id = "NeXT-Color"
+folders = ["NeXT-Color"]
+rbf = "_Computer/NeXT-Color"
+extensions = ["hda", "vhd", "iso", "cue", "bin", "chd", "ima", "flp", "vfd", "fd", "mgl"]
+[[systems.launch]]
+extensions = ["hda", "vhd"]
+type = "s"
+index = 0
+delay = 1
+[[systems.launch]]
+extensions = ["iso", "cue", "bin", "chd"]
+type = "s"
+index = 3
+delay = 1
+[[systems.launch]]
+extensions = ["ima", "flp", "vfd", "fd"]
+type = "s"
+index = 4
+delay = 1
+
+[[systems]]
+name = "Sun-2"
+id = "Sun-2"
+folders = ["Sun-2"]
+rbf = "_Computer/Sun-2"
+extensions = ["img", "vhd", "qic", "mgl"]
+[[systems.launch]]
+extensions = ["img", "vhd"]
+type = "s"
+index = 0
+delay = 1
+[[systems.launch]]
+extensions = ["qic"]
+type = "s"
+index = 1
+delay = 1
+
+[[systems]]
+name = "Sun-3"
+id = "Sun-3"
+folders = ["Sun-3"]
+rbf = "_Computer/Sun-3"
+extensions = ["img", "vhd", "qic", "mgl"]
+[[systems.launch]]
+extensions = ["img", "vhd"]
+type = "s"
+index = 0
+delay = 1
+[[systems.launch]]
+extensions = ["qic"]
+type = "s"
+index = 2
+delay = 1
+
+[[systems]]
+name = "Macintosh SE/30"
+id = "MACSE30"
+folders = ["MACSE30"]
+rbf = "_Computer/MacSE30"
+extensions = ["dsk", "vhd", "iso", "toast", "mgl"]
+[[systems.launch]]
+extensions = ["dsk"]
+type = "s"
+index = 0
+delay = 1
+[[systems.launch]]
+extensions = ["vhd"]
+type = "s"
+index = 2
+delay = 1
+[[systems.launch]]
+extensions = ["iso", "toast"]
+type = "s"
+index = 4
+delay = 1
+
+[[systems]]
+name = "FM Towns Marty"
+id = "Marty"
+folders = ["Marty"]
+rbf = "_Console/Marty"
+extensions = ["cue", "chd", "iso", "d88", "d77", "bin", "hdm", "icm", "vhd", "hdd", "h0", "h1", "mgl"]
+[[systems.launch]]
+extensions = ["cue", "chd", "iso"]
+type = "s"
+index = 0
+delay = 1
+[[systems.launch]]
+extensions = ["d88", "d77", "bin", "hdm"]
+type = "s"
+index = 1
+delay = 1
+[[systems.launch]]
+extensions = ["icm"]
+type = "s"
+index = 2
+delay = 1
+[[systems.launch]]
+extensions = ["vhd", "hdd", "h0"]
+type = "s"
+index = 4
+delay = 1
+[[systems.launch]]
+extensions = ["h1"]
+type = "s"
+index = 6
 delay = 1

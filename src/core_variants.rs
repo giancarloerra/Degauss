@@ -206,11 +206,17 @@ pub(crate) fn core_present(root: &Path, rbf: &str) -> Result<bool> {
 pub(crate) fn standard(system: &SystemConfig) -> EffectiveCore {
     EffectiveCore {
         rbf: system.rbf.clone(),
-        setname_xml: system
-            .setname
-            .as_ref()
-            .filter(|s| !s.is_empty())
-            .map(|s| format!("<setname>{}</setname>", quick_xml::escape::escape(s))),
+        setname_xml: system.setname.as_ref().filter(|s| !s.is_empty()).map(|s| {
+            format!(
+                "<setname{}>{}</setname>",
+                if system.same_dir {
+                    " same_dir=\"1\""
+                } else {
+                    ""
+                },
+                quick_xml::escape::escape(s)
+            )
+        }),
     }
 }
 
@@ -475,6 +481,7 @@ mod tests {
             extensions: vec!["nes".into()],
             rbf: "_Console/NES".into(),
             setname: None,
+            same_dir: false,
             compatible_cores: Vec::new(),
             skip_folders: vec![],
             launch: vec![crate::config::LaunchRule {

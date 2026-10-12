@@ -2,12 +2,18 @@ Degauss Menu is a patched build of MiSTer's Menu core, licensed under
 GPL-2.0-or-later.
 
 Upstream source revision:
-  81f657c557da769d615f91af7da04a06a5732460
+  5502db909c66c65075c63e79c020cd550462c21c
 Upstream source:
-  https://github.com/MiSTer-devel/Menu_MiSTer/tree/81f657c557da769d615f91af7da04a06a5732460
+  https://github.com/MiSTer-devel/Menu_MiSTer/tree/5502db909c66c65075c63e79c020cd550462c21c
 Applied patch:
   support/menu-core/degauss-menu-0.9.1.patch
 Quartus fitter seed: 5
+Quartus version: 17.0.2 Build 602 Lite Edition
+
+The Menu retains the upstream 25 MHz clock. The private native framebuffer
+advances through a four-in-five pixel clock enable, preserving its 20 MHz
+D161 timing units for existing Main executables and custom modelines.
+The stock and private readers are mutually exclusive on the DDR port.
 
 The corresponding patched source archive is attached to the Degauss release
 as Degauss_Menu-source.tar.gz.

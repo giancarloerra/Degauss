@@ -540,6 +540,7 @@ export component DegaussWindow inherits Window {
     /// The same for the lines under the picture, which travel at half the
     /// pace and so turn round on their own, slower clock.
     in property <bool> detail-end;
+    in property <bool> scroll-title-strip: true;
     in property <string> gallery-title;
     in property <bool> gallery-title-visible;
 
@@ -577,6 +578,7 @@ export component DegaussWindow inherits Window {
     in property <length> bar-font: 9px;
     in property <string> clock;
     in property <bool> wifi;
+    in property <bool> ethernet;
     in property <bool> bluetooth;
     /// Shown for a moment after it changes, then gone again.
     in property <string> speed-badge;
@@ -733,8 +735,9 @@ export component DegaussWindow inherits Window {
                 text-color: root.c-text;
                 font-size: root.small-glyph;
                 family-name: root.font-family;
-                active: true;
+                active: root.scroll-title-strip;
                 at-end: root.marquee-end;
+                travel-cap: root.scroll-title-strip ? 1400ms : 0ms;
                 x: root.pad + heading-bar.brand-width
                     + (heading-bar.brand-width > 0px ? root.pad : 0px);
                 width: max(1px, parent.width - self.x - root.pad
@@ -748,8 +751,9 @@ export component DegaussWindow inherits Window {
                 font-size: root.small-glyph;
                 family-name: root.font-family;
                 align: right;
-                active: true;
+                active: root.scroll-title-strip;
                 at-end: root.marquee-end;
+                travel-cap: root.scroll-title-strip ? 1400ms : 0ms;
                 x: parent.width - root.pad - heading-bar.right-width;
                 width: heading-bar.right-width;
                 height: parent.height;
@@ -2182,6 +2186,32 @@ export component DegaussWindow inherits Window {
                         height: root.bar-font * 0.75;
                         x: root.bar-font * 0.72;
                         y: (parent.height + root.bar-font * 0.7) / 2 - self.height;
+                    }
+                }
+                // The Ethernet socket uses the same pixel style as the radios.
+                Rectangle {
+                    property <length> dot: max(1px, root.bar-font * 0.13);
+                    visible: root.ethernet;
+                    width: root.ethernet ? self.dot * 8 : 0px;
+                    height: root.bar-height;
+                    for p in [
+                        {x: 0, y: 0}, {x: 1, y: 0}, {x: 2, y: 0}, {x: 3, y: 0},
+                        {x: 4, y: 0}, {x: 5, y: 0}, {x: 6, y: 0}, {x: 7, y: 0},
+                        {x: 0, y: 1}, {x: 7, y: 1},
+                        {x: 0, y: 2}, {x: 2, y: 2}, {x: 3, y: 2},
+                        {x: 4, y: 2}, {x: 5, y: 2}, {x: 7, y: 2},
+                        {x: 0, y: 3}, {x: 2, y: 3}, {x: 3, y: 3},
+                        {x: 4, y: 3}, {x: 5, y: 3}, {x: 7, y: 3},
+                        {x: 0, y: 4}, {x: 1, y: 4}, {x: 6, y: 4}, {x: 7, y: 4},
+                        {x: 1, y: 5}, {x: 2, y: 5}, {x: 5, y: 5}, {x: 6, y: 5},
+                        {x: 2, y: 6}, {x: 5, y: 6},
+                        {x: 2, y: 7}, {x: 3, y: 7}, {x: 4, y: 7}, {x: 5, y: 7},
+                    ]: Rectangle {
+                        background: root.c-state;
+                        width: parent.dot;
+                        height: parent.dot;
+                        x: p.x * parent.dot;
+                        y: (parent.height - parent.dot * 8) / 2 + p.y * parent.dot;
                     }
                 }
                 // The bluetooth rune, as pixels. Drawn rather than written

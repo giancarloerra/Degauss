@@ -71,6 +71,8 @@ pub struct SystemDef {
     /// the Atari 7800 core running Atari 2600 games.
     #[serde(default)]
     setname: Option<String>,
+    #[serde(default)]
+    same_dir: bool,
     /// Ordered core families that are compatible with the same extensions
     /// and launch rules. The system-level `rbf` remains preferred.
     #[serde(default)]
@@ -215,6 +217,7 @@ impl FoundSystem {
             launch: self.def.launch.clone(),
             skip_folders,
             setname: self.def.setname.clone(),
+            same_dir: self.def.same_dir,
             compatible_cores: self.def.compatible_cores.clone(),
         }
     }
@@ -258,7 +261,12 @@ pub fn parse_table(text: &str, origin: &Path) -> Result<Vec<SystemDef>> {
             "no [[systems]] entries",
         ));
     }
-    for system in &file.systems {
+    validate_core_profiles(&file.systems, origin)?;
+    Ok(file.systems)
+}
+
+fn validate_core_profiles(table: &[SystemDef], origin: &Path) -> Result<()> {
+    for system in table {
         let mut profile_ids = BTreeSet::new();
         for profile in &system.compatible_cores {
             if profile.id.trim().is_empty()
@@ -269,8 +277,8 @@ pub fn parse_table(text: &str, origin: &Path) -> Result<Vec<SystemDef>> {
                     "systems table",
                     origin,
                     format!(
-                        "{} has a compatible core whose id, label or rbf is empty",
-                        system.id
+                        "{} has a compatible core {:?} whose id, label or rbf is empty",
+                        system.id, profile.id
                     ),
                 ));
             }
@@ -299,7 +307,77 @@ pub fn parse_table(text: &str, origin: &Path) -> Result<Vec<SystemDef>> {
             }
         }
     }
-    Ok(file.systems)
+    Ok(())
+}
+
+/// Merge only supplied launch fields, leaving shipped library definitions and
+/// every untouched compatible profile current across updates.
+pub(crate) fn with_core_overrides(
+    table: &[SystemDef],
+    overrides: &BTreeMap<String, crate::config::CoreOverride>,
+    origin: &Path,
+) -> Result<Vec<SystemDef>> {
+    let mut updated = table.to_vec();
+    for (id, changes) in overrides {
+        let system = updated
+            .iter_mut()
+            .find(|system| system.id == *id)
+            .ok_or_else(|| {
+                DegaussError::malformed(
+                    "core overrides",
+                    origin,
+                    format!("unknown system ID {id:?}"),
+                )
+            })?;
+        if let Some(rbf) = &changes.rbf {
+            if rbf.trim().is_empty() {
+                return Err(DegaussError::malformed(
+                    "core overrides",
+                    origin,
+                    format!("{id} has an empty preferred rbf"),
+                ));
+            }
+            system.rbf = rbf.clone();
+        }
+        if let Some(setname) = &changes.setname {
+            system.setname = (!setname.is_empty()).then(|| setname.clone());
+        }
+        if let Some(same_dir) = changes.same_dir {
+            system.same_dir = same_dir;
+        }
+        for (profile_id, changes) in &changes.compatible_cores {
+            let profile = if let Some(index) = system
+                .compatible_cores
+                .iter()
+                .position(|profile| profile.id == *profile_id)
+            {
+                &mut system.compatible_cores[index]
+            } else {
+                system.compatible_cores.push(CoreProfile {
+                    id: profile_id.clone(),
+                    label: String::new(),
+                    rbf: String::new(),
+                    setname: None,
+                    same_dir: false,
+                });
+                system.compatible_cores.last_mut().unwrap()
+            };
+            if let Some(label) = &changes.label {
+                profile.label = label.clone();
+            }
+            if let Some(rbf) = &changes.rbf {
+                profile.rbf = rbf.clone();
+            }
+            if let Some(setname) = &changes.setname {
+                profile.setname = (!setname.is_empty()).then(|| setname.clone());
+            }
+            if let Some(same_dir) = changes.same_dir {
+                profile.same_dir = same_dir;
+            }
+        }
+    }
+    validate_core_profiles(&updated, origin)?;
+    Ok(updated)
 }
 
 /// Built-in collection identity is reserved only for the exact legacy path
@@ -396,6 +474,7 @@ pub fn prepare_table(mut table: Vec<SystemDef>, menu_root: &Path) -> Result<Vec<
             handheld: false,
             skip_folders: Vec::new(),
             setname: None,
+            same_dir: false,
             compatible_cores: Vec::new(),
         });
     }
@@ -851,13 +930,19 @@ impl CoreIndex {
     /// These runtime profiles never rewrite a user's systems table or caches.
     fn with_dual_sdram_profiles(&self, system: &SystemDef) -> SystemDef {
         let mut result = system.clone();
-        let families = std::iter::once((system.rbf.as_str(), system.setname.as_ref())).chain(
-            system
-                .compatible_cores
-                .iter()
-                .map(|profile| (profile.rbf.as_str(), profile.setname.as_ref())),
-        );
-        for (rbf, setname) in families {
+        let families = std::iter::once((
+            system.rbf.as_str(),
+            system.setname.as_ref(),
+            system.same_dir,
+        ))
+        .chain(system.compatible_cores.iter().map(|profile| {
+            (
+                profile.rbf.as_str(),
+                profile.setname.as_ref(),
+                profile.same_dir,
+            )
+        }));
+        for (rbf, setname, same_dir) in families {
             let reference = Path::new(rbf);
             let Some(name) = reference.file_name().and_then(|name| name.to_str()) else {
                 continue;
@@ -929,6 +1014,7 @@ impl CoreIndex {
                     ),
                     rbf: variant,
                     setname: setname.cloned(),
+                    same_dir,
                 });
             }
         }
@@ -1434,6 +1520,119 @@ mod tests {
 
     use super::*;
 
+    #[test]
+    fn user_core_overrides_merge_by_stable_ids_without_replacing_shipped_profiles() {
+        let table = load_table(Path::new("assets/systems.toml")).unwrap();
+        let origin = Path::new("degauss-user.toml");
+        let config = crate::config::Config::with_overrides(
+            include_str!("../degauss.toml"),
+            "[core_overrides.NeoGeo]\nrbf = \"_Console/CustomNeoGeo\"\n\
+             [core_overrides.NeoGeo.compatible_cores.custom]\nlabel = \"Custom Neo Geo\"\nrbf = \"_Console/MyNeoGeo\"\nsetname = \"NEOGEO\"\n\
+             [core_overrides.NeoGeoPocketColor.compatible_cores.jtngpc]\nlabel = \"Legacy Pocket\"\n",
+            origin,
+        ).unwrap();
+        let changed = with_core_overrides(&table, &config.core_overrides, origin).unwrap();
+        let original_neo = table.iter().find(|system| system.id == "NeoGeo").unwrap();
+        let neo = changed.iter().find(|system| system.id == "NeoGeo").unwrap();
+        assert_eq!(neo.rbf, "_Console/CustomNeoGeo");
+        assert_eq!(neo.name, original_neo.name);
+        assert_eq!(neo.folders, original_neo.folders);
+        assert_eq!(neo.extensions, original_neo.extensions);
+        assert_eq!(neo.launch, original_neo.launch);
+        assert_eq!(neo.setname, original_neo.setname);
+        assert_eq!(
+            neo.compatible_cores.len(),
+            original_neo.compatible_cores.len() + 1
+        );
+        let custom = neo
+            .compatible_cores
+            .iter()
+            .find(|profile| profile.id == "custom")
+            .unwrap();
+        assert_eq!(custom.setname.as_deref(), Some("NEOGEO"));
+        let old = table
+            .iter()
+            .find(|system| system.id == "NeoGeoPocketColor")
+            .unwrap();
+        let pocket = changed.iter().find(|system| system.id == old.id).unwrap();
+        assert_eq!(pocket.compatible_cores[0].label, "Legacy Pocket");
+        assert_eq!(pocket.compatible_cores[0].rbf, old.compatible_cores[0].rbf);
+        assert_eq!(
+            pocket.compatible_cores[0].setname,
+            old.compatible_cores[0].setname
+        );
+
+        let mut next_release = table.clone();
+        next_release
+            .iter_mut()
+            .find(|system| system.id == "NeoGeo")
+            .unwrap()
+            .compatible_cores
+            .push(CoreProfile {
+                id: "future-built-in".into(),
+                label: "Future compatible build".into(),
+                rbf: "_Console/FutureNeoGeo".into(),
+                setname: None,
+                same_dir: false,
+            });
+        let updated = with_core_overrides(&next_release, &config.core_overrides, origin).unwrap();
+        let updated_neo = updated.iter().find(|system| system.id == "NeoGeo").unwrap();
+        assert!(updated_neo
+            .compatible_cores
+            .iter()
+            .any(|profile| profile.id == "future-built-in"));
+        assert!(updated_neo
+            .compatible_cores
+            .iter()
+            .any(|profile| profile.id == "custom"));
+        assert_eq!(
+            table
+                .iter()
+                .find(|system| system.id == "NeoGeo")
+                .unwrap()
+                .rbf,
+            "_Console/NeoGeo",
+            "merging must not modify the shipped table"
+        );
+        let none = with_core_overrides(&table, &BTreeMap::new(), origin).unwrap();
+        assert_eq!(
+            none.iter().map(|system| &system.rbf).collect::<Vec<_>>(),
+            table.iter().map(|system| &system.rbf).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn user_core_overrides_can_clear_setnames_and_reject_invalid_declarations_atomically() {
+        let table = load_table(Path::new("assets/systems.toml")).unwrap();
+        let origin = Path::new("degauss-user.toml");
+        let overrides = |text| {
+            crate::config::Config::with_overrides(include_str!("../degauss.toml"), text, origin)
+                .unwrap()
+                .core_overrides
+        };
+        let changes = overrides(
+            "[core_overrides.NeoGeoPocketColor.compatible_cores.jtngpc]\nsetname = \"\"\n",
+        );
+        let changed = with_core_overrides(&table, &changes, origin).unwrap();
+        assert!(changed
+            .iter()
+            .find(|system| system.id == "NeoGeoPocketColor")
+            .unwrap()
+            .compatible_cores[0]
+            .setname
+            .is_none());
+        for text in [
+            "[core_overrides.Unknown]\nrbf = \"_Console/Unknown\"\n",
+            "[core_overrides.NeoGeo]\nrbf = \"\"\n",
+            "[core_overrides.NeoGeo.compatible_cores.incomplete]\nrbf = \"_Console/Custom\"\n",
+            "[core_overrides.NeoGeo.compatible_cores.primary]\nlabel = \"Reserved\"\nrbf = \"_Console/Custom\"\n",
+        ] {
+            let error = with_core_overrides(&table, &overrides(text), origin).unwrap_err();
+            assert!(error.to_string().contains("degauss-user.toml"));
+            assert_eq!(table.iter().find(|system| system.id == "NeoGeo").unwrap().rbf, "_Console/NeoGeo");
+        }
+    }
+
     const TABLE: &str = r#"
 [[systems]]
 name = "Commodore 64"
@@ -1469,6 +1668,7 @@ extensions = ["md", "bin"]
             handheld: false,
             skip_folders: Vec::new(),
             setname: None,
+            same_dir: false,
             compatible_cores: Vec::new(),
         }
     }
@@ -1678,6 +1878,71 @@ extensions = ["md", "bin"]
     }
 
     #[test]
+    fn pc_windows_collections_extend_dos_without_a_new_system_or_launcher() {
+        let table = load_table(Path::new("assets/systems.toml")).unwrap();
+        let pc = table.iter().find(|system| system.id == "DOS").unwrap();
+        assert_eq!(pc.name, "PC (DOS)");
+        assert_eq!(pc.rbf, "_Computer/ao486");
+        assert_eq!(
+            pc.folders,
+            [
+                "AO486",
+                "/media/fat/_DOS Games",
+                "/media/fat/_Win 3.1 Games",
+                "/media/fat/_Win 95 Games",
+                "/media/fat/_W95 Games",
+            ]
+        );
+
+        let base = temp_dir("pc-windows-collections");
+        for selected in [&[0][..], &[1], &[2], &[3], &[4], &[0, 1, 2, 3, 4]] {
+            let card = base.join(format!("case-{selected:?}"));
+            let mut configured = pc.clone();
+            for folder in configured.folders.iter_mut().skip(1) {
+                let name = Path::new(folder).file_name().unwrap();
+                *folder = card.join(name).to_string_lossy().into_owned();
+            }
+            let paths: Vec<_> = configured
+                .folders
+                .iter()
+                .map(|folder| {
+                    if Path::new(folder).is_absolute() {
+                        PathBuf::from(folder)
+                    } else {
+                        card.join("games").join(folder)
+                    }
+                })
+                .collect();
+            for &index in selected {
+                std::fs::create_dir_all(&paths[index]).unwrap();
+            }
+            assert_eq!(
+                existing_folders(&configured, &[card.join("games")]),
+                selected
+                    .iter()
+                    .map(|&index| paths[index].clone())
+                    .collect::<Vec<_>>(),
+                "only installed roots are discovered, independently or together"
+            );
+        }
+        let legacy = parse_table(
+            include_str!("../tests/fixtures/v0.1.0-and-v0.2.0-systems.toml"),
+            Path::new("legacy"),
+        )
+        .unwrap();
+        assert_eq!(
+            legacy
+                .iter()
+                .find(|system| system.id == "DOS")
+                .unwrap()
+                .folders,
+            ["AO486", "/media/fat/_DOS Games"],
+            "customised older tables remain valid and are not rewritten"
+        );
+        std::fs::remove_dir_all(base).unwrap();
+    }
+
+    #[test]
     fn the_shipped_table_parses_and_covers_the_systems_people_have() {
         // The real file, not a fixture: a table that stopped parsing would
         // leave the browser empty.
@@ -1848,6 +2113,50 @@ extensions = ["md", "bin"]
     fn additional_game_systems_use_their_native_loader_slots() {
         let table = load_table(Path::new("assets/systems.toml")).unwrap();
         let cases = [
+            ("Apple-III", "woz", "s", 0),
+            ("Apple-III", "dsk", "s", 0),
+            ("Apple-III", "do", "s", 0),
+            ("Apple-III", "nib", "s", 0),
+            ("Apple-III", "hdv", "s", 4),
+            ("MacQuadra800", "hda", "s", 0),
+            ("MacQuadra800", "vhd", "s", 0),
+            ("MacQuadra800", "iso", "s", 4),
+            ("MacQuadra800", "toast", "s", 4),
+            ("MacQuadra800", "cue", "s", 4),
+            ("MacQuadra800", "bin", "s", 4),
+            ("MacQuadra800", "chd", "s", 4),
+            ("NeXT-Color", "hda", "s", 0),
+            ("NeXT-Color", "vhd", "s", 0),
+            ("NeXT-Color", "iso", "s", 3),
+            ("NeXT-Color", "cue", "s", 3),
+            ("NeXT-Color", "bin", "s", 3),
+            ("NeXT-Color", "chd", "s", 3),
+            ("NeXT-Color", "ima", "s", 4),
+            ("NeXT-Color", "flp", "s", 4),
+            ("NeXT-Color", "vfd", "s", 4),
+            ("NeXT-Color", "fd", "s", 4),
+            ("Sun-2", "img", "s", 0),
+            ("Sun-2", "vhd", "s", 0),
+            ("Sun-2", "qic", "s", 1),
+            ("Sun-3", "img", "s", 0),
+            ("Sun-3", "vhd", "s", 0),
+            ("Sun-3", "qic", "s", 2),
+            ("MACSE30", "dsk", "s", 0),
+            ("MACSE30", "vhd", "s", 2),
+            ("MACSE30", "iso", "s", 4),
+            ("MACSE30", "toast", "s", 4),
+            ("Marty", "cue", "s", 0),
+            ("Marty", "chd", "s", 0),
+            ("Marty", "iso", "s", 0),
+            ("Marty", "d88", "s", 1),
+            ("Marty", "d77", "s", 1),
+            ("Marty", "bin", "s", 1),
+            ("Marty", "hdm", "s", 1),
+            ("Marty", "icm", "s", 2),
+            ("Marty", "vhd", "s", 4),
+            ("Marty", "hdd", "s", 4),
+            ("Marty", "h0", "s", 4),
+            ("Marty", "h1", "s", 6),
             ("AtariST", "st", "s", 0),
             ("AtariST", "msa", "s", 0),
             ("AtariST", "stx", "s", 0),
@@ -1856,7 +2165,12 @@ extensions = ["md", "bin"]
             ("Archie", "adf", "s", 0),
             ("Archie", "hdf", "s", 2),
             ("SharpMZ", "mzf", "f", 1),
-            ("SharpMZ", "mzt", "f", 1),
+            ("SharpMZ", "mzt", "s", 0),
+            ("SharpMZ", "dsk", "s", 1),
+            ("SharpMZ", "d88", "s", 1),
+            ("SharpMZ", "d77", "s", 1),
+            ("SharpMZ", "qdf", "s", 3),
+            ("SharpMZ", "mzq", "s", 3),
             ("Altair8800", "rom", "f", 0),
             ("C128", "d71", "s", 0),
             ("C128", "prg", "f", 2),
@@ -1949,6 +2263,73 @@ extensions = ["md", "bin"]
                 .compatible_cores
                 .iter()
                 .any(|profile| profile.rbf == core));
+        }
+        std::fs::remove_dir_all(card).unwrap();
+    }
+
+    #[test]
+    fn new_system_libraries_keep_gamelist_data_and_skip_core_support_files() {
+        let table = load_table(Path::new("assets/systems.toml")).unwrap();
+        let card = temp_dir("new-system-library-data");
+        for (id, extension) in [
+            ("Apple-III", "dsk"),
+            ("MacQuadra800", "vhd"),
+            ("NeXT-Color", "vhd"),
+            ("Sun-2", "vhd"),
+            ("Sun-3", "vhd"),
+            ("MACSE30", "dsk"),
+            ("Marty", "iso"),
+        ] {
+            let def = table.iter().find(|def| def.id == id).unwrap();
+            let folder = card.join(&def.folders[0]);
+            std::fs::create_dir_all(folder.join("media/covers")).unwrap();
+            let game = folder.join(format!("Game.{extension}"));
+            std::fs::write(&game, b"game fixture").unwrap();
+            let image = folder.join("media/covers/game.jpg");
+            std::fs::write(&image, b"cover path fixture").unwrap();
+            for filename in [
+                "boot0.rom",
+                "boot1.rom",
+                "boot2.rom",
+                "boot3.vhd",
+                "blank.vhd",
+                "MacSE30.nvr",
+                "mrom.m36",
+                "mrom.m37",
+            ] {
+                std::fs::write(folder.join(filename), b"support fixture").unwrap();
+            }
+            std::fs::write(folder.join("gamelist.xml"), format!("<gameList><game><path>Game.{extension}</path><name>Named Game</name><desc>Game description</desc><publisher>Publisher</publisher><image>./media/covers/game.jpg</image></game></gameList>")).unwrap();
+            let found = FoundSystem {
+                def: def.clone(),
+                paths: vec![folder.clone()],
+                logo_dir: None,
+                menu_folder: None,
+            };
+            assert_eq!(
+                found.category(),
+                if id == "Marty" { "Console" } else { "Computer" }
+            );
+            let library = crate::browse::Library::open(&found.to_config()).unwrap();
+            let cache = crate::cache::build_system(&library);
+            let rows = &cache.get(&crate::browse::Place::Dir(folder)).unwrap().rows;
+            let games: Vec<_> = rows
+                .iter()
+                .filter(|row| matches!(row.kind, crate::browse::Kind::Play(_)))
+                .collect();
+            assert_eq!(
+                games.len(),
+                1,
+                "{id}: support files must not appear as games"
+            );
+            assert_eq!(
+                games[0].kind,
+                crate::browse::Kind::Play(crate::browse::Launch::File(game))
+            );
+            assert_eq!(games[0].name, "Named Game");
+            assert_eq!(games[0].cover, Some(image));
+            assert_eq!(games[0].details.publisher, "Publisher");
+            assert_eq!(games[0].details.desc, "Game description");
         }
         std::fs::remove_dir_all(card).unwrap();
     }

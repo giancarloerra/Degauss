@@ -117,6 +117,9 @@ pub enum Launch {
 pub enum Kind {
     Enter(Place),
     Play(Launch),
+    /// Application-only parent navigation. Never produced by a library scan.
+    /// Appended so existing serialized Enter/Play tags remain unchanged.
+    Up,
 }
 
 /// One line of a listing.
@@ -1517,6 +1520,7 @@ impl Library {
                     });
                     for row in rows {
                         match row.kind {
+                            Kind::Up => {}
                             Kind::Enter(inner) => {
                                 audit.folders += 1;
                                 stack.push((inner, depth + 1));
@@ -1627,6 +1631,7 @@ mod tests {
             launch: Vec::new(),
             skip_folders: Vec::new(),
             setname: None,
+            same_dir: false,
             compatible_cores: Vec::new(),
             extra_paths: Vec::new(),
         }
@@ -2968,6 +2973,7 @@ mod tests {
             }],
             skip_folders: Vec::new(),
             setname: None,
+            same_dir: false,
             compatible_cores: Vec::new(),
             extra_paths: Vec::new(),
         }

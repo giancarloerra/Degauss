@@ -673,6 +673,7 @@ impl App {
                             })
                             .or_else(|| self.open_system.clone())?;
                         let target = match &row.kind {
+                            browse::Kind::Up => return None,
                             browse::Kind::Play(launch) => Target::Game {
                                 system,
                                 launch: launch.clone(),

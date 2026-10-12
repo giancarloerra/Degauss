@@ -209,6 +209,55 @@ fn validate_native_choice(actual: &Path) -> Result<()> {
     Ok(())
 }
 
+/// N64's regular and 80 MHz builds share Main's loose `N64_` prefix.
+/// Keep every other core's released reference unchanged; regular N64 uses
+/// the newest installed regular filename and the existing exact-build check.
+fn standard_reference(reference: &str, root: &Path) -> Result<String> {
+    let path = Path::new(reference);
+    if !path
+        .file_name()
+        .is_some_and(|name| name.eq_ignore_ascii_case("N64"))
+    {
+        return Ok(reference.to_string());
+    }
+    let directory = root.join(path.parent().unwrap_or(Path::new("")));
+    let entries = std::fs::read_dir(&directory)
+        .map_err(|error| DegaussError::io("standard N64 core directory", &directory, error))?;
+    let mut latest: Option<PathBuf> = None;
+    for entry in entries {
+        let entry = entry
+            .map_err(|error| DegaussError::io("standard N64 core entry", &directory, error))?;
+        let actual = entry.path();
+        if !actual
+            .extension()
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("rbf"))
+            || !actual
+                .file_stem()
+                .and_then(|stem| stem.to_str())
+                .is_some_and(|stem| core_variants::same_core_identity(stem, "N64"))
+        {
+            continue;
+        }
+        let metadata = std::fs::metadata(&actual)
+            .map_err(|error| DegaussError::io("standard N64 core file", &actual, error))?;
+        if metadata.is_file()
+            && latest
+                .as_ref()
+                .is_none_or(|current| current.file_name() < actual.file_name())
+        {
+            latest = Some(actual);
+        }
+    }
+    let actual = latest.ok_or_else(|| {
+        DegaussError::unsupported("standard N64 core", "no regular N64 core is installed")
+    })?;
+    validate_native_choice(&actual)?;
+    let selected = actual.strip_prefix(root).unwrap().to_str().ok_or_else(|| {
+        DegaussError::unsupported("standard N64 core", "filename is not valid UTF-8")
+    })?;
+    Ok(selected[..selected.len() - 4].to_string())
+}
+
 fn first_installed_family(system: &SystemConfig, root: &Path) -> Result<SystemConfig> {
     let families = system.core_family_configs();
     for family in &families {
@@ -275,7 +324,15 @@ pub fn resolve(
     ra_first: bool,
 ) -> Result<EffectiveCore> {
     let Some(selected) = selected else {
-        return core_variants::resolve(system, root, ra_first);
+        let mut core = core_variants::resolve(system, root, ra_first)?;
+        if system
+            .core_family_configs()
+            .iter()
+            .any(|family| family.rbf == core.rbf)
+        {
+            core.rbf = standard_reference(&core.rbf, root)?;
+        }
+        return Ok(core);
     };
     let missing = || {
         DegaussError::unsupported(
@@ -287,7 +344,9 @@ pub fn resolve(
         "standard" => {
             for family in system.core_family_configs() {
                 if core_variants::core_present(root, &family.rbf)? {
-                    return Ok(core_variants::standard(&family));
+                    let mut core = core_variants::standard(&family);
+                    core.rbf = standard_reference(&core.rbf, root)?;
+                    return Ok(core);
                 }
             }
             Err(missing())
@@ -360,6 +419,7 @@ mod tests {
             rbf: "_Console/NES".into(),
             launch: Vec::new(),
             setname: Some("NES".into()),
+            same_dir: false,
             compatible_cores: Vec::new(),
             skip_folders: Vec::new(),
             extra_paths: Vec::new(),
@@ -370,6 +430,78 @@ mod tests {
         let path = root.join(path);
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(path, bytes).unwrap();
+    }
+
+    #[test]
+    fn regular_n64_uses_the_current_exact_build_without_selecting_turbo() {
+        let root = directory("n64-regular");
+        let mut n64 = system();
+        n64.name = "Nintendo 64".into();
+        n64.rbf = "_Console/N64".into();
+        n64.setname = None;
+        write(&root, "_Console/N64_20260726.rbf", b"regular");
+        write(&root, "_Console/N64_80MHz_20250811.rbf", b"turbo");
+        for selected in [None, Some("standard")] {
+            assert_eq!(
+                resolve(&n64, &root, selected, false).unwrap().rbf,
+                "_Console/N64_20260726"
+            );
+        }
+        write(
+            &root,
+            "_Console/N64_20261012_a1b2c3d_DB9.rbf",
+            b"regular update",
+        );
+        assert_eq!(
+            resolve(&n64, &root, None, false).unwrap().rbf,
+            "_Console/N64_20261012_a1b2c3d_DB9"
+        );
+        n64.rbf = "_Console/N64_20260726".into();
+        assert_eq!(
+            resolve(&n64, &root, None, false).unwrap().rbf,
+            n64.rbf,
+            "an explicit dated reference stays pinned"
+        );
+        n64.rbf = "_Console/N64_80MHz".into();
+        assert_eq!(
+            resolve(&n64, &root, Some("standard"), false).unwrap().rbf,
+            n64.rbf,
+            "the explicit Turbo family remains Turbo"
+        );
+        n64.rbf = "_Console/N64".into();
+        write(&root, "_RA_Cores/Cores/N64.rbf", b"RA");
+        write(&root, "_RA_Cores/N64.mgl", br#"<mistergamedescription><rbf>_RA_Cores/Cores/N64</rbf><setname same_dir="1">RA_N64</setname></mistergamedescription>"#);
+        assert_eq!(
+            resolve(&n64, &root, Some("ra"), false).unwrap().rbf,
+            "_RA_Cores/Cores/N64"
+        );
+        assert_eq!(
+            resolve(&n64, &root, None, true).unwrap().rbf,
+            "_RA_Cores/Cores/N64"
+        );
+        let nightly = "_Unstable/N64_unstable_20261012_a1b2.rbf";
+        write(&root, nightly, b"nightly");
+        assert_eq!(
+            resolve(&n64, &root, Some(nightly), false).unwrap().rbf,
+            nightly.strip_suffix(".rbf").unwrap()
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn an_undated_n64_build_must_not_silently_launch_a_shadowing_turbo_file() {
+        let root = directory("n64-undated");
+        write(&root, "_Console/N64.rbf", b"regular");
+        write(&root, "_Console/N64_80MHz_20250811.rbf", b"turbo");
+        let mut n64 = system();
+        n64.rbf = "_Console/N64".into();
+        assert!(resolve(&n64, &root, None, false)
+            .unwrap_err()
+            .to_string()
+            .contains("shadows this build"));
+        std::fs::remove_file(root.join("_Console/N64.rbf")).unwrap();
+        assert!(resolve(&n64, &root, Some("standard"), false).is_err());
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
@@ -530,6 +662,7 @@ mod tests {
             label: "JTNGPC (Legacy)".into(),
             rbf: "_Arcade/JTNGPC".into(),
             setname: Some("JTNGPC".into()),
+            same_dir: false,
         }];
         write(&root, "_RA_Cores/NGPC.mgl", b"malformed XML");
         write(&root, "_Arcade/JTNGPC.rbf", b"fixture");
@@ -568,6 +701,7 @@ mod tests {
             label: "JTNGPC (Legacy)".into(),
             rbf: "_Arcade/JTNGPC".into(),
             setname: Some("JTNGPC".into()),
+            same_dir: false,
         }];
         let nightly = "_Unstable/JTNGPC_unstable_20260916_a1.rbf";
         write(&root, nightly, b"fixture");

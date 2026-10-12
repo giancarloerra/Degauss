@@ -492,6 +492,106 @@ fn run_browse_bar_settings_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) 
     }
 }
 
+fn run_connection_indicators_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
+    let mut app = fixture_app(root, window, Settings::default());
+    app.status.clock = "12:34".into();
+    for (wifi, ethernet, bluetooth) in [
+        (false, false, false),
+        (true, false, false),
+        (false, true, false),
+        (true, true, true),
+    ] {
+        app.status.wifi = wifi;
+        app.status.ethernet = ethernet;
+        app.status.bluetooth = bluetooth;
+        app.refresh();
+        assert_eq!(app.ui.get_wifi(), wifi);
+        assert_eq!(app.ui.get_ethernet(), ethernet);
+        assert_eq!(app.ui.get_bluetooth(), bluetooth);
+    }
+    select_option(&mut app, OptionsPage::Appearance, OptionId::ShowBar);
+    app.handle(Action::Accept);
+    app.handle(Action::Quit);
+    app.handle(Action::Quit);
+    app.refresh();
+    assert_eq!(app.screen, Screen::Menu);
+    assert!(
+        app.ui.get_bottom_bar_visible(),
+        "menus keep their operation controls"
+    );
+    app.handle(Action::Quit);
+    app.refresh();
+    assert_eq!(app.screen, Screen::Browse);
+    assert!(
+        !app.ui.get_bottom_bar_visible(),
+        "Ethernet respects the existing bar setting"
+    );
+    assert!(
+        app.ui.get_ethernet(),
+        "bar visibility does not change connection state"
+    );
+    app.ui.hide().unwrap();
+}
+
+fn run_title_strip_scrolling_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
+    for saved in [None, Some(false), Some(true)] {
+        let mut app = fixture_app(
+            root,
+            window.clone(),
+            Settings {
+                scroll_title_strip: saved,
+                ..Default::default()
+            },
+        );
+        app.refresh();
+        assert_eq!(app.ui.get_scroll_title_strip(), saved.unwrap_or(true));
+        assert_eq!(
+            app.settings.scroll_title_strip, saved,
+            "do not rewrite old settings"
+        );
+
+        for _ in 0..2 {
+            let previous = app.ui.get_scroll_title_strip();
+            app.restart_marquee();
+            app.ui.set_marquee_end(true);
+            select_option(
+                &mut app,
+                OptionsPage::Appearance,
+                OptionId::ScrollTitleStrip,
+            );
+            app.handle(Action::Accept);
+            app.handle(Action::Quit);
+            app.handle(Action::Quit);
+            app.handle(Action::Quit);
+            app.refresh();
+            assert_eq!(app.ui.get_scroll_title_strip(), !previous);
+            assert!(
+                app.marquee.running(),
+                "other text still needs the shared timer"
+            );
+            assert_eq!(app.ui.get_heading_detail().as_str(), "1/2");
+            assert_eq!(
+                app.game_list.count(),
+                2,
+                "title-strip changes do not change the library"
+            );
+
+            let reloaded = Settings::load(&app.settings_path).unwrap();
+            assert_eq!(reloaded.scroll_title_strip, Some(!previous));
+            app.ui.hide().unwrap();
+            drop(app);
+            app = fixture_app(root, window.clone(), reloaded);
+            app.refresh();
+            assert_eq!(
+                app.ui.get_scroll_title_strip(),
+                !previous,
+                "the choice survives restart"
+            );
+        }
+        app.ui.hide().unwrap();
+    }
+}
+
 fn run_start_folder_and_game_position_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
     let start_root = root.join("start-folder");
     let games = start_root.join("games/shared");
@@ -614,6 +714,336 @@ fn run_start_folder_and_game_position_flow(root: &Path, window: Rc<MinimalSoftwa
         "the setting hides only game-list position"
     );
     app.ui.hide().unwrap();
+}
+
+fn run_additional_systems_mgl_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
+    for (id, extension, slot) in [
+        ("Apple-III", "2mg", 4),
+        ("MACSE30", "img", 2),
+        ("NeXT-Color", "img", 0),
+        ("MacQuadra800", "vhd", 0),
+        ("Sun-2", "vhd", 0),
+        ("Sun-3", "vhd", 0),
+        ("Marty", "iso", 0),
+    ] {
+        let root = root.join(format!("additional-mgl-{id}"));
+        let folder = root.join("games").join(id);
+        std::fs::create_dir_all(&folder).unwrap();
+        let image = folder.join(format!("Disk.{extension}"));
+        std::fs::write(&image, b"media fixture").unwrap();
+        let launcher = folder.join("Disk Launcher.mgl");
+        let table = crate::systems::load_table(Path::new("assets/systems.toml")).unwrap();
+        let def = table.iter().find(|system| system.id == id).unwrap();
+        let core = root.join(format!("{}.rbf", def.rbf));
+        std::fs::create_dir_all(core.parent().unwrap()).unwrap();
+        std::fs::write(core, b"core fixture").unwrap();
+        let descriptor = format!("<mistergamedescription><rbf>{}</rbf><file delay=\"1\" type=\"s\" index=\"{slot}\" path=\"{}\"/></mistergamedescription>", def.rbf, image.display());
+        std::fs::write(&launcher, &descriptor).unwrap();
+        std::fs::write(folder.join("gamelist.xml"), "<gameList><game><path>Disk Launcher.mgl</path><name>Disk Launcher</name><desc>Existing explicit media launcher</desc></game></gameList>").unwrap();
+        let mut app = unopened_fixture_app_with_systems(
+            &root,
+            window.clone(),
+            Settings {
+                last_played: Some(8),
+                ..Settings::default()
+            },
+            &[id],
+            &format!("games/{id}"),
+        );
+        app.open_system_by_index(0);
+        app.finish_background_work_for_headless();
+        app.leave_splash();
+        select_row_named(&mut app, "Disk Launcher");
+        let Some(Outcome::Launch { plan, history, .. }) = app.handle(Action::Accept) else {
+            panic!(
+                "{id}: an existing MGL must launch without a media chooser: {:?}",
+                app.message
+            );
+        };
+        assert_eq!(plan.command, format!("load_core {}\n", launcher.display()));
+        assert_eq!(std::fs::read_to_string(&launcher).unwrap(), descriptor);
+        let history = history.unwrap();
+        assert_eq!(history.entry.system, id);
+        assert_eq!(history.entry.launch, browse::Launch::File(launcher.clone()));
+        assert_eq!(app.screen, Screen::Browse);
+        assert_eq!(
+            app.here[app.game_list.selected()].details.desc,
+            "Existing explicit media launcher"
+        );
+        if matches!(id, "Apple-III" | "MACSE30" | "NeXT-Color") {
+            assert!(!app.opened_config.as_ref().unwrap().accepts(&image));
+            assert!(
+                !app.here
+                    .iter()
+                    .any(|row| row.kind == browse::Kind::Play(browse::Launch::File(image.clone()))),
+                "ambiguous raw images are not guessed into a slot"
+            );
+        }
+        accept_game_action(&mut app, ADD_FAVORITE);
+        app.handle(Action::Accept);
+        let favorite = root.join("_@Favorites/Disk Launcher.mgl");
+        assert!(
+            favorite.exists(),
+            "{id}: existing launchers can still be favourited"
+        );
+        assert_eq!(std::fs::read_to_string(favorite).unwrap(), descriptor);
+        assert_eq!(std::fs::read_to_string(&launcher).unwrap(), descriptor);
+        app.ui.hide().unwrap();
+    }
+}
+
+fn run_up_level_entry_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
+    use crate::settings::UpLevelEntry;
+    let root = root.join("up-level-entry");
+    let games = root.join("games/NES");
+    std::fs::create_dir_all(games.join("Nested")).unwrap();
+    for path in ["Alpha.nes", "Beta.nes", "Nested/Inner.nes"] {
+        std::fs::write(games.join(path), b"fixture").unwrap();
+    }
+    let mut app = unopened_fixture_app(&root, window.clone(), Settings::default());
+    app.open_system_by_index(0);
+    app.finish_background_work_for_headless();
+    app.leave_splash();
+    assert_eq!(app.here.len(), 3);
+    assert_eq!(app.up_level_index(), None);
+    let indexes = cache_snapshot(&app.cache_dir);
+    select_row_named(&mut app, "Beta.nes");
+    let original = row_key(&app.here[app.game_list.selected()]);
+
+    for position in [UpLevelEntry::Top, UpLevelEntry::Bottom, UpLevelEntry::Off] {
+        select_option(&mut app, OptionsPage::Navigation, OptionId::UpLevelEntry);
+        app.handle(Action::Accept);
+        leave_options_to_browse(&mut app);
+        app.refresh();
+        assert_eq!(app.settings.up_level_entry, Some(position));
+        assert_eq!(
+            Settings::load(&app.settings_path).unwrap().up_level_entry,
+            Some(position)
+        );
+        assert_eq!(
+            row_key(&app.here[app.game_list.selected()]),
+            original,
+            "adding or moving navigation must not change the selected game"
+        );
+        assert_eq!(
+            app.here.len(),
+            3 + usize::from(position != UpLevelEntry::Off)
+        );
+        assert_eq!(
+            app.up_level_index(),
+            match position {
+                UpLevelEntry::Off => None,
+                UpLevelEntry::Top => Some(0),
+                UpLevelEntry::Bottom => Some(3),
+            }
+        );
+    }
+
+    for position in [UpLevelEntry::Top, UpLevelEntry::Bottom] {
+        app.settings.up_level_entry = Some(position);
+        app.apply_geometry();
+        select_row_named(&mut app, "Nested");
+        let parent_selection = row_key(&app.here[app.game_list.selected()]);
+        app.handle(Action::Accept);
+        assert_eq!(app.trail.len(), 2);
+        for (width, height) in [(352, 240), (1920, 1080)] {
+            app.width = width;
+            app.height = height;
+            for layout in Layout::ALL {
+                app.layout = layout;
+                app.apply_geometry();
+                let up = app.up_level_index().unwrap();
+                app.game_list.select(up);
+                app.touch_selection();
+                app.refresh();
+                assert_eq!(app.ui.get_heading_detail(), "0/1");
+                assert!(app.rows.iter().any(|row| row.title == "< UP A LEVEL >"));
+                if let Some(directory) = std::env::var_os("DEGAUSS_UI_CAPTURE_DIR") {
+                    capture_frame(
+                        &mut app,
+                        &PathBuf::from(directory),
+                        &format!("up-level-{}-{}", position.label(), layout.label()),
+                        width,
+                        height,
+                    );
+                }
+                assert!(app.selected_game().is_none());
+                assert!(app.favorite_change().is_none());
+                assert!(app.selected_hidden().is_none());
+                assert!(app.scraper_scope_from_context(SCRAPE_GAME).is_none());
+                app.open_context();
+                for action in [
+                    GAME_INFORMATION,
+                    ADD_FAVORITE,
+                    REMOVE_FAVORITE,
+                    HIDE_THIS,
+                    SCRAPE_GAME,
+                ] {
+                    assert!(
+                        !app.context_actions.iter().any(|entry| entry == action),
+                        "navigation must not offer {action}"
+                    );
+                }
+                app.screen = Screen::Browse;
+                app.game_list.select(up);
+                app.jump_to('Z');
+                assert!(matches!(
+                    app.here[app.game_list.selected()].kind,
+                    browse::Kind::Play(_)
+                ));
+                app.game_list.select(up);
+                app.letter_step(1);
+                assert!(matches!(
+                    app.here[app.game_list.selected()].kind,
+                    browse::Kind::Play(_)
+                ));
+                app.random_launches = false;
+                assert!(app.random_here(false).is_none());
+                assert!(matches!(
+                    app.here[app.game_list.selected()].kind,
+                    browse::Kind::Play(_)
+                ));
+            }
+        }
+        app.filter = "NO MATCH".into();
+        app.apply_filter();
+        assert_eq!(app.here.len(), 1);
+        assert!(matches!(app.here[0].kind, browse::Kind::Up));
+        app.refresh();
+        assert_eq!(app.ui.get_heading_detail(), "0/0");
+        app.filter.clear();
+        app.apply_filter();
+        app.game_list.select(app.up_level_index().unwrap());
+        app.handle(Action::Accept);
+        assert_eq!(app.trail.len(), 1);
+        assert_eq!(
+            row_key(&app.here[app.game_list.selected()]),
+            parent_selection,
+            "A on Up restores the same parent folder as B"
+        );
+        select_row_named(&mut app, "Nested");
+        app.handle(Action::Accept);
+        app.handle(Action::Quit);
+        assert_eq!(
+            row_key(&app.here[app.game_list.selected()]),
+            parent_selection
+        );
+    }
+    assert_eq!(
+        cache_snapshot(&app.cache_dir),
+        indexes,
+        "navigation and filters must not rewrite library data"
+    );
+
+    let trail = app.trail.clone();
+    app.trail.last_mut().unwrap().place = Place::Dir(root.join("missing-folder"));
+    app.show_here();
+    assert!(
+        app.message.is_some(),
+        "a real listing failure remains visible"
+    );
+    assert_eq!(app.here.len(), 1);
+    assert_eq!(app.up_level_index(), Some(0));
+    app.trail = trail;
+    app.show_here();
+    app.message = None;
+
+    app.settings.up_level_entry = Some(UpLevelEntry::Top);
+    app.apply_geometry();
+    app.open_explore(None);
+    app.finish_background_work_for_headless();
+    assert!(app.explore.active);
+    assert_eq!(app.explore.matches.len(), 3);
+    assert_eq!(app.browse_count(), 4);
+    let entries = app
+        .explore
+        .catalogue
+        .as_ref()
+        .unwrap()
+        .entries
+        .iter()
+        .map(|entry| (entry.key(), entry.row.clone()))
+        .collect::<Vec<_>>();
+    for position in [UpLevelEntry::Top, UpLevelEntry::Bottom] {
+        app.settings.up_level_entry = Some(position);
+        app.apply_geometry();
+        for layout in Layout::ALL {
+            app.layout = layout;
+            app.apply_geometry();
+            app.game_list.select(app.up_level_index().unwrap());
+            app.refresh();
+            assert_eq!(app.ui.get_heading_detail(), "0/3");
+            assert!(app.explore_selected().is_none());
+        }
+        app.filter = "NO MATCH".into();
+        app.apply_filter();
+        assert_eq!(app.browse_count(), 1);
+        app.filter.clear();
+        app.apply_filter();
+        app.jump_to('B');
+        assert_eq!(app.explore_selected().unwrap().row.name, "Beta.nes");
+    }
+    assert_eq!(
+        app.explore
+            .catalogue
+            .as_ref()
+            .unwrap()
+            .entries
+            .iter()
+            .map(|entry| (entry.key(), entry.row.clone()))
+            .collect::<Vec<_>>(),
+        entries,
+        "the entry is never inserted into an Explore catalogue"
+    );
+    app.game_list.select(app.up_level_index().unwrap());
+    app.handle(Action::Accept);
+    assert!(!app.explore.active);
+    assert_eq!(app.open_system.as_deref(), Some("NES"));
+
+    app.save_settings();
+    let saved = Settings::load(&app.settings_path).unwrap();
+    app.ui.hide().unwrap();
+    drop(app);
+    let mut restarted = unopened_fixture_app(&root, window.clone(), saved);
+    restarted.open_system_by_index(0);
+    restarted.finish_background_work_for_headless();
+    restarted.leave_splash();
+    assert_eq!(restarted.up_level_index(), Some(3));
+    restarted.game_list.select(3);
+    restarted.handle(Action::Accept);
+    assert_ne!(
+        restarted.browsing,
+        Browsing::Games,
+        "Up from a system root uses the existing parent navigation"
+    );
+    restarted.ui.hide().unwrap();
+
+    let favorites = root.join("favourites");
+    std::fs::create_dir_all(favorites.join("Nested")).unwrap();
+    std::fs::write(
+        favorites.join("Nested/Game.mgl"),
+        "<mistergamedescription><rbf>_Console/NES</rbf></mistergamedescription>",
+    )
+    .unwrap();
+    let mut shelf = unopened_fixture_app_with_systems(
+        &root,
+        window,
+        Settings {
+            up_level_entry: Some(UpLevelEntry::Top),
+            ..Default::default()
+        },
+        &["Favorites"],
+        "favourites",
+    );
+    shelf.open_system_by_index(0);
+    shelf.finish_background_work_for_headless();
+    shelf.leave_splash();
+    select_row_named(&mut shelf, "Nested");
+    shelf.handle(Action::Accept);
+    shelf.game_list.select(0);
+    shelf.handle(Action::Accept);
+    assert_eq!(shelf.here[shelf.game_list.selected()].name, "Nested");
+    shelf.ui.hide().unwrap();
 }
 
 fn run_screen_rotation_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
@@ -1576,6 +2006,7 @@ fn run_storage_pack_rebuild_flow(
     app.source_system_id = Some("NeoGeo".into());
     app.begin_source_switch(crate::source_cache::Target::ArtworkPack {
         docs_root: docs.clone(),
+        picture_type: crate::artwork_pack::PictureType::BoxArt,
     });
     app.finish_background_work_for_headless();
     assert!(
@@ -3632,6 +4063,7 @@ fn run_last_played_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
             label: "Legacy NES".into(),
             rbf: "_Arcade/LegacyNES".into(),
             setname: Some("LegacyNES".into()),
+            same_dir: false,
         });
     app.settings
         .launch_cores
@@ -3991,58 +4423,144 @@ fn run_main_favourites_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
         .iter()
         .any(|row| row.name == "Core Game" && row.favorite));
 
-    // A root-level favourite made outside Degauss, for another file but
-    // under this game's name, is not this game's favourite, so the game is
-    // still offered Add to Favourites. The write is refused by name, and
-    // the refusal is shown rather than lost to the redraw that follows it.
+    // Different targets can share a metadata title. A collision asks for
+    // an unused filename without overwriting or renaming either game.
     std::fs::write(
         &root_favorite,
         "<mistergamedescription><rbf>_Console/NES</rbf><file delay=\"1\" type=\"f\" index=\"1\" path=\"/media/fat/games/NES/Other Game.nes\"/></mistergamedescription>",
     )
     .unwrap();
+    let original_favorite = std::fs::read(&root_favorite).unwrap();
+    let name_key = |app: &mut App, key| {
+        let index = name_keyboard::keys(app.name_keyboard_page, true)
+            .iter()
+            .position(|candidate| *candidate == key)
+            .unwrap();
+        app.name_keyboard_list.select(index);
+        app.handle(Action::Accept);
+    };
     select_row_named(&mut app, "First Game");
     accept_game_action(&mut app, ADD_FAVORITE);
     assert_eq!(app.screen, Screen::FavoriteFolder);
     assert_eq!(app.menu_list.selected(), 0);
     app.handle(Action::Accept);
-    assert_eq!(app.screen, Screen::Browse);
-    let refusal = app.message.clone().expect("a failed write is reported");
-    assert!(
-        refusal.contains("already has a favourite called First Game"),
-        "the real cause is shown: {refusal}"
-    );
+    assert_eq!(app.screen, Screen::NameKeyboard);
+    assert_eq!(app.name_keyboard_draft, "First Game");
+    assert!(app.name_keyboard_controls());
+    assert!(app.message.is_none());
+    if let Some(directory) = std::env::var_os("DEGAUSS_UI_CAPTURE_DIR") {
+        for (width, height) in [(352, 240), (640, 480)] {
+            capture_frame(
+                &mut app,
+                &PathBuf::from(&directory),
+                "favourite-name-collision",
+                width,
+                height,
+            );
+        }
+    }
     assert!(
         !app.favorites.holds(&game),
-        "a refused write does not mark the game"
+        "opening the keyboard does not write a favourite"
     );
-    // The next press dismisses the message and is spent on that.
+    name_key(&mut app, NameKey::Save);
+    assert_eq!(app.screen, Screen::NameKeyboard);
+    assert!(app.message.as_deref().unwrap().contains("already exists"));
     app.handle(Action::Quit);
     assert!(app.message.is_none());
+    assert_eq!(app.screen, Screen::NameKeyboard);
+    app.name_keyboard_draft = "../invalid".into();
+    name_key(&mut app, NameKey::Save);
+    assert_eq!(app.screen, Screen::NameKeyboard);
+    assert!(app
+        .message
+        .as_deref()
+        .unwrap()
+        .contains("valid favourite filename"));
+    app.handle(Action::Quit);
+    name_key(&mut app, NameKey::Cancel);
     assert_eq!(app.screen, Screen::Browse);
+    assert_eq!(std::fs::read(&root_favorite).unwrap(), original_favorite);
+    assert!(!app.favorites.holds(&game));
+    select_row_named(&mut app, "First Game");
+    accept_game_action(&mut app, ADD_FAVORITE);
+    app.handle(Action::Accept);
+    assert_eq!(app.screen, Screen::NameKeyboard);
+    app.handle(Action::Quit);
+    assert_eq!(app.screen, Screen::Browse, "B cancels instead of saving");
+    assert_eq!(std::fs::read(&root_favorite).unwrap(), original_favorite);
+    select_row_named(&mut app, "First Game");
+    accept_game_action(&mut app, ADD_FAVORITE);
+    app.handle(Action::Accept);
+    app.name_keyboard_draft = "First Game (NES)".into();
+    name_key(&mut app, NameKey::Save);
+    assert_eq!(app.screen, Screen::Browse);
+    let renamed_favorite = favorites_root.join("First Game (NES).mgl");
+    let descriptor = std::fs::read_to_string(&renamed_favorite).unwrap();
+    assert!(descriptor.contains(&format!("path=\"{}\"", game.display())));
+    assert_eq!(std::fs::read(&root_favorite).unwrap(), original_favorite);
+    assert!(app.favorites.holds(&game));
+    select_row_named(&mut app, "First Game");
+    accept_game_action(&mut app, REMOVE_FAVORITE);
+    assert!(!renamed_favorite.exists());
+    assert_eq!(std::fs::read(&root_favorite).unwrap(), original_favorite);
 
-    // When the redraw after the refusal cannot list the folder either,
-    // both causes are shown: the refusal alone would leave the emptied
+    // Linked descriptors retain their original extension and source even
+    // when the favourite link needs a different filename.
+    let other_core = root.join("Other Core.mgl");
+    std::fs::write(
+        &other_core,
+        "<mistergamedescription><rbf>_Console/NES</rbf></mistergamedescription>",
+    )
+    .unwrap();
+    std::fs::remove_file(&root_link).unwrap();
+    std::os::unix::fs::symlink(&other_core, &root_link).unwrap();
+    app.reread_favorites();
+    select_row_named(&mut app, "Core Game");
+    app.add_favorite_in(&favorites_root);
+    assert_eq!(app.screen, Screen::NameKeyboard);
+    assert_eq!(app.name_keyboard_draft, "Core Game");
+    app.name_keyboard_draft = "Core Favourite".into();
+    name_key(&mut app, NameKey::Save);
+    assert_eq!(app.screen, Screen::Browse);
+    let renamed_link = favorites_root.join("Core Favourite.mgl");
+    assert_eq!(std::fs::read_link(&renamed_link).unwrap(), core_file);
+    assert_eq!(std::fs::read_link(&root_link).unwrap(), other_core);
+    std::fs::remove_file(&renamed_link).unwrap();
+    std::fs::remove_file(&root_link).unwrap();
+    std::os::unix::fs::symlink(&core_file, &root_link).unwrap();
+    app.reread_favorites();
+
+    // When a real write failure and the redraw both fail, both causes are
+    // shown: the write failure alone would leave the emptied
     // list looking like an empty folder once it was dismissed.
     let place = app.trail.last().unwrap().place.clone();
     select_row_named(&mut app, "First Game");
     accept_game_action(&mut app, ADD_FAVORITE);
     assert_eq!(app.screen, Screen::FavoriteFolder);
     app.trail.last_mut().unwrap().place = Place::Dir(root.join("games/Gone"));
+    let preserved_favorites = root.join("preserved-favorites");
+    std::fs::rename(&favorites_root, &preserved_favorites).unwrap();
+    std::fs::write(&favorites_root, b"blocks folder creation").unwrap();
     app.handle(Action::Accept);
     assert_eq!(app.screen, Screen::Browse);
     let both = app.message.clone().expect("both failures are reported");
     assert!(
-        both.contains("already has a favourite called First Game"),
-        "the refusal comes first: {both}"
+        both.contains("making a favourites folder"),
+        "the write failure comes first: {both}"
     );
     assert!(
         both.contains("reading folder"),
         "the listing failure is kept under it: {both}"
     );
-    assert!(both.find("already has").unwrap() < both.find("reading folder").unwrap());
+    assert!(
+        both.find("making a favourites folder").unwrap() < both.find("reading folder").unwrap()
+    );
     assert!(app.here.is_empty());
     app.handle(Action::Quit);
     assert!(app.message.is_none());
+    std::fs::remove_file(&favorites_root).unwrap();
+    std::fs::rename(&preserved_favorites, &favorites_root).unwrap();
     app.trail.last_mut().unwrap().place = place;
     app.relist_here();
     assert_eq!(app.here.len(), 2);
@@ -6654,6 +7172,7 @@ fn run_manual_pack_match_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
     restarted.source_system_id = Some("NES".into());
     restarted.begin_source_switch(crate::source_cache::Target::ArtworkPack {
         docs_root: docs.clone(),
+        picture_type: crate::artwork_pack::PictureType::BoxArt,
     });
     restarted.finish_background_work_for_headless();
     restarted.message = None;
@@ -6852,6 +7371,202 @@ fn run_manual_pack_match_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
 /// of the question, and every way the Pack or the answer can change, is
 /// walked through the interface here, on the fixture the eager index
 /// used to prepare unasked.
+fn run_artwork_pack_picture_types_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
+    use crate::artwork_pack::PictureType;
+    const PNG: &[u8] = &[
+        0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44,
+        0x52, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x02, 0x08, 0x02, 0x00, 0x00, 0x00, 0xfd,
+        0xd4, 0x9a, 0x73, 0x00, 0x00, 0x00, 0x12, 0x49, 0x44, 0x41, 0x54, 0x78, 0xda, 0x63, 0xf8,
+        0xcf, 0xc0, 0xc0, 0x00, 0xc2, 0x0c, 0xff, 0x81, 0x00, 0x00, 0x1f, 0xee, 0x05, 0xfb, 0xf1,
+        0xab, 0xba, 0x77, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82,
+    ];
+    let root = root.join("pack-picture-types");
+    let docs = root.join("docs");
+    let games = root.join("games/NES");
+    std::fs::create_dir_all(&games).unwrap();
+    for name in ["First Game", "Second Game"] {
+        std::fs::write(games.join(format!("{name}.nes")), b"fixture").unwrap();
+    }
+    for kind in [PictureType::Screenshot, PictureType::TitleScreen] {
+        let art = docs.join("NES").join(kind.folder());
+        std::fs::create_dir_all(&art).unwrap();
+        let mut manifest = "#key\tstyle\tss_system_id\tencoding\n".to_string();
+        let mut index = "#name\tcrc\tsize\tkey\n".to_string();
+        let mut info = "#key\tname\tyear\tgenre\tdeveloper\tplayers\n".to_string();
+        for name in ["First Game", "Second Game"] {
+            let key = format!("{} {name}", kind.label());
+            manifest.push_str(&format!("{key}\tss\t3\tlossless\n"));
+            index.push_str(&format!("{name}\t\t\t{key}\n"));
+            info.push_str(&format!("{key}\t{key}\t1990\tAction\tStudio\t1\n"));
+            std::fs::write(art.join(format!("{key}.png")), PNG).unwrap();
+        }
+        for (file, contents) in [
+            ("manifest.tsv", manifest),
+            ("index.tsv", index),
+            ("gameinfo.tsv", info),
+        ] {
+            std::fs::write(art.join(file), contents).unwrap();
+        }
+    }
+    let mut app = fixture_app(
+        &root,
+        window.clone(),
+        Settings {
+            gamelist_sources: ["NES".into()].into(),
+            ..Default::default()
+        },
+    );
+    assert!(
+        !docs.join("NES/Artwork").exists(),
+        "only the new packs are installed"
+    );
+    let ordinary = std::fs::read(crate::cache::system_path(&app.cache_dir, "NES")).unwrap();
+    for (position, kind) in [(1, PictureType::Screenshot), (2, PictureType::TitleScreen)] {
+        app.screen = Screen::Browse;
+        app.open_game_data_source();
+        app.menu_list.select(2);
+        app.handle(Action::Accept);
+        assert_eq!(app.screen, Screen::ArtworkPackType);
+        assert_eq!(app.menu, ["Box Art", "Screenshot", "Title Screen"]);
+        if let Some(directory) = std::env::var_os("DEGAUSS_UI_CAPTURE_DIR") {
+            for (width, height) in [(352, 240), (640, 480)] {
+                capture_frame(
+                    &mut app,
+                    &PathBuf::from(&directory),
+                    &format!("pack-picture-type-{}", kind.label()),
+                    width,
+                    height,
+                );
+            }
+        }
+        app.menu_list.select(position);
+        app.handle(Action::Accept);
+        app.finish_background_work_for_headless();
+        assert_eq!(app.screen, Screen::ArtworkPackLocation);
+        assert_eq!(app.source_locations.as_slice(), std::slice::from_ref(&docs));
+        if kind == PictureType::TitleScreen {
+            let prepared = cache_snapshot(&app.cache_dir);
+            app.handle(Action::Quit);
+            assert_eq!(app.screen, Screen::ArtworkPackType);
+            app.handle(Action::Quit);
+            assert_eq!(app.screen, Screen::GameDataSource);
+            assert_eq!(
+                crate::artwork_pack::selected_picture_type(&app.settings, "NES"),
+                PictureType::Screenshot
+            );
+            assert_eq!(
+                cache_snapshot(&app.cache_dir),
+                prepared,
+                "cancelling type selection leaves the previous prepared source untouched"
+            );
+            app.menu_list.select(2);
+            app.handle(Action::Accept);
+            app.menu_list.select(position);
+            app.handle(Action::Accept);
+            app.finish_background_work_for_headless();
+        }
+        app.menu_list.select(0);
+        app.handle(Action::Accept);
+        app.finish_background_work_for_headless();
+        assert_eq!(
+            crate::artwork_pack::selected_picture_type(&app.settings, "NES"),
+            kind
+        );
+        assert_eq!(
+            crate::artwork_pack::selected_picture_type(
+                &Settings::load(&app.settings_path).unwrap(),
+                "NES"
+            ),
+            kind
+        );
+        app.message = None;
+        app.screen = Screen::Browse;
+        app.trail.truncate(1);
+        app.enter(Place::Dir(games.clone()));
+        select_row_named(&mut app, &format!("{} First Game", kind.label()));
+        let expected = docs
+            .join("NES")
+            .join(kind.folder())
+            .join(format!("{} First Game.png", kind.label()));
+        assert_eq!(
+            app.here[app.game_list.selected()].cover,
+            Some(expected.clone())
+        );
+        assert_eq!(app.artwork_provider.as_ref().unwrap().picture_type, kind);
+        app.open_pack_matches();
+        app.finish_background_work_for_headless();
+        assert_eq!(app.screen, Screen::ArtworkPackMatch);
+        assert!(!app.pack_match_choices.is_empty());
+        app.menu_list.select(2);
+        app.handle(Action::Accept);
+        app.finish_background_work_for_headless();
+        assert!(app
+            .settings
+            .artwork_pack_matches
+            .contains_key(&kind.match_key("NES")));
+        assert!(
+            !app.settings.artwork_pack_matches.contains_key("NES"),
+            "a PNG match must not overwrite Box Art matches"
+        );
+        app.message = None;
+        app.screen = Screen::Browse;
+        for layout in Layout::ALL {
+            app.layout = layout;
+            app.apply_geometry();
+            app.touch_selection();
+            app.refresh();
+            assert!(
+                app.cover_for(&expected, None, false).is_some(),
+                "the selected PNG decodes through the existing artwork path"
+            );
+        }
+        app.settings.last_played = Some(2);
+        app.last_played.remember(crate::history::Entry {
+            system: "NES".into(),
+            launch: browse::Launch::File(games.join("First Game.nes")),
+            name: "Recorded title".into(),
+        });
+        app.open_last_played();
+        app.finish_background_work_for_headless();
+        assert!(
+            app.here
+                .iter()
+                .any(|row| row.cover.as_ref() == Some(&expected)),
+            "Last Played uses the selected picture type"
+        );
+        app.open_system_by_index(0);
+        app.message = None;
+        app.screen = Screen::Browse;
+        app.trail.truncate(1);
+        app.enter(Place::Dir(games.clone()));
+        assert_eq!(
+            std::fs::read(crate::cache::system_path(&app.cache_dir, "NES")).unwrap(),
+            ordinary,
+            "switching picture types does not rebuild or overwrite the ordinary library"
+        );
+    }
+    app.save_settings();
+    let state = Settings::load(&app.settings_path).unwrap();
+    let prepared = cache_snapshot(&app.cache_dir);
+    app.ui.hide().unwrap();
+    drop(app);
+    let restarted = fixture_app(&root, window, state);
+    assert_eq!(
+        restarted.artwork_provider.as_ref().unwrap().picture_type,
+        PictureType::TitleScreen
+    );
+    assert!(restarted.here.iter().all(|row| row
+        .cover
+        .as_ref()
+        .is_some_and(|path| path.starts_with(docs.join("NES/Titles")))));
+    assert_eq!(
+        cache_snapshot(&restarted.cache_dir),
+        prepared,
+        "restart reuses prepared PNG data without a reset or rebuild"
+    );
+    restarted.ui.hide().unwrap();
+}
+
 fn run_automatic_pack_consent_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
     let root = root.join("automatic-pack-consent");
     let games = root.join("games/NES");
@@ -8278,6 +8993,7 @@ fn run_automatic_pack_consent_flow(root: &Path, window: Rc<MinimalSoftwareWindow
         app.source_system_id = Some("NES".into());
         app.begin_source_switch(crate::source_cache::Target::ArtworkPack {
             docs_root: docs.clone(),
+            picture_type: crate::artwork_pack::PictureType::BoxArt,
         });
         assert!(app.source_job.is_some());
         app.finish_background_work_for_headless();
@@ -8310,6 +9026,7 @@ fn run_automatic_pack_consent_flow(root: &Path, window: Rc<MinimalSoftwareWindow
     app.source_system_id = Some("NES".into());
     app.begin_source_switch(crate::source_cache::Target::ArtworkPack {
         docs_root: docs.clone(),
+        picture_type: crate::artwork_pack::PictureType::BoxArt,
     });
     assert!(app.source_job.is_some());
     assert!(app.pending.is_none());
@@ -9884,6 +10601,7 @@ fn run_auto_source_choice_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
     app.open_game_data_source();
     app.begin_source_switch(crate::source_cache::Target::ArtworkPack {
         docs_root: docs.clone(),
+        picture_type: crate::artwork_pack::PictureType::BoxArt,
     });
     assert!(app.source_job.is_some(), "a new source must be prepared");
     app.finish_background_work_for_headless();
@@ -11095,6 +11813,7 @@ fn run_folder_artwork_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
     assert_eq!(app.screen, Screen::GameDataSource);
     app.begin_source_switch(crate::source_cache::Target::ArtworkPack {
         docs_root: docs.clone(),
+        picture_type: crate::artwork_pack::PictureType::BoxArt,
     });
     assert!(app.source_job.is_some(), "the switch runs on its worker");
     app.finish_background_work_for_headless();
@@ -13072,7 +13791,11 @@ pub(super) fn run_ui_acceptance_flow(window: Rc<MinimalSoftwareWindow>) {
     run_dual_sdram_choices_flow(&root, window.clone());
     run_misterzine_browser_flow(&root, window.clone());
     run_browse_bar_settings_flow(&root, window.clone());
+    run_connection_indicators_flow(&root, window.clone());
+    run_title_strip_scrolling_flow(&root, window.clone());
+    run_additional_systems_mgl_flow(&root, window.clone());
     run_start_folder_and_game_position_flow(&root, window.clone());
+    run_up_level_entry_flow(&root, window.clone());
     run_screen_rotation_flow(&root, window.clone());
     run_game_name_display_flow(&root, window.clone());
     run_mra_filename_display_flow(&root, window.clone());
@@ -13083,6 +13806,7 @@ pub(super) fn run_ui_acceptance_flow(window: Rc<MinimalSoftwareWindow>) {
     run_artwork_matte_flow(&root, window.clone());
     run_automatic_pack_consent_flow(&root, window.clone());
     run_manual_pack_match_flow(&root, window.clone());
+    run_artwork_pack_picture_types_flow(&root, window.clone());
     run_legacy_pack_cache_adoption_flow(&root, window.clone());
     #[cfg(unix)]
     run_arcade_descriptor_failures_flow(&root, window.clone());

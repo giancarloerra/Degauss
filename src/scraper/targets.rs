@@ -372,6 +372,7 @@ fn walk(
         for row in rows {
             check_cancelled(cancelled)?;
             match &row.kind {
+                Kind::Up => {}
                 Kind::Enter(next) => queue.push_back((next.clone(), depth + 1)),
                 Kind::Play(launch) => {
                     match target_for(system, platform, launch, &row.name, &mut archives) {

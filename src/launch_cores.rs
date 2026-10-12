@@ -329,11 +329,13 @@ mod tests {
             rbf: "_Console/NGPC".into(),
             launch: Vec::new(),
             setname: None,
+            same_dir: false,
             compatible_cores: vec![CoreProfile {
                 id: "jtngpc".into(),
                 label: "JTNGPC (Legacy)".into(),
                 rbf: "_Arcade/JTNGPC".into(),
                 setname: Some("JTNGPC".into()),
+                same_dir: false,
             }],
             skip_folders: Vec::new(),
             extra_paths: Vec::new(),
