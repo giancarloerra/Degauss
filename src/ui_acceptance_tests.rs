@@ -725,13 +725,15 @@ fn run_additional_systems_mgl_flow(root: &Path, window: Rc<MinimalSoftwareWindow
     for (id, extension, slot) in [
         ("Apple-III", "2mg", 4),
         ("MACSE30", "img", 2),
+        ("MACIICX", "img", 2),
+        ("MACIICX", "img", 3),
         ("NeXT-Color", "img", 0),
         ("MacQuadra800", "vhd", 0),
         ("Sun-2", "vhd", 0),
         ("Sun-3", "vhd", 0),
         ("Marty", "iso", 0),
     ] {
-        let root = root.join(format!("additional-mgl-{id}"));
+        let root = root.join(format!("additional-mgl-{id}-{slot}"));
         let folder = root.join("games").join(id);
         std::fs::create_dir_all(&folder).unwrap();
         let image = folder.join(format!("Disk.{extension}"));
@@ -774,7 +776,7 @@ fn run_additional_systems_mgl_flow(root: &Path, window: Rc<MinimalSoftwareWindow
             app.here[app.game_list.selected()].details.desc,
             "Existing explicit media launcher"
         );
-        if matches!(id, "Apple-III" | "MACSE30" | "NeXT-Color") {
+        if matches!(id, "Apple-III" | "MACSE30" | "MACIICX" | "NeXT-Color") {
             assert!(!app.opened_config.as_ref().unwrap().accepts(&image));
             assert!(
                 !app.here

@@ -182,6 +182,7 @@ mod tests {
             "Sun-2",
             "Sun-3",
             "MACSE30",
+            "MACIICX",
             "Marty",
         ] {
             assert_eq!(id_for(system, &BTreeMap::new()), None, "{system}");
@@ -234,6 +235,7 @@ mod tests {
             "Homelab",
             "JR100",
             "Laser",
+            "MACIICX",
             "MACSE30",
             "MacQuadra800",
             "Marty",

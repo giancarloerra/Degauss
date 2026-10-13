@@ -937,13 +937,14 @@ Nothing else needs resetting.
 
 ### Additional computer and disc libraries
 
-Apple III, Macintosh Quadra 800, NeXT Color, Sun-2, Sun-3, Macintosh SE/30
-and FM Towns Marty use their normal `games/<core>` folders. SE/30 uses
-`games/MACSE30`. Existing MGL launchers are passed through unchanged.
+Apple III, Macintosh Quadra 800, NeXT Color, Sun-2, Sun-3, Macintosh SE/30,
+Macintosh IIcx and FM Towns Marty use their normal `games/<core>` folders.
+SE/30 uses `games/MACSE30`; IIcx uses `games/MACIICX`.
+Existing MGL launchers are passed through unchanged.
 Existing gamelists provide artwork and metadata normally. These new system IDs
 do not yet have built-in ScreenScraper platform mappings.
 
-SE/30 and NeXT Color `.img` files, and Apple III `.po`/`.2mg` files, can
+SE/30, IIcx and NeXT Color `.img` files, and Apple III `.po`/`.2mg` files, can
 represent different kinds of disk. Use an existing MGL with the correct mount
 slot for these images; Degauss does not list them directly or guess the slot.
 The MGL remains usable from Degauss, Favourites and Last Played.

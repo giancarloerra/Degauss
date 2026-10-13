@@ -2687,6 +2687,28 @@ index = 4
 delay = 1
 
 [[systems]]
+name = "Macintosh IIcx"
+id = "MACIICX"
+folders = ["MACIICX"]
+rbf = "_Computer/MacIIcx"
+extensions = ["dsk", "vhd", "iso", "toast", "mgl"]
+[[systems.launch]]
+extensions = ["dsk"]
+type = "s"
+index = 0
+delay = 1
+[[systems.launch]]
+extensions = ["vhd"]
+type = "s"
+index = 2
+delay = 1
+[[systems.launch]]
+extensions = ["iso", "toast"]
+type = "s"
+index = 4
+delay = 1
+
+[[systems]]
 name = "FM Towns Marty"
 id = "Marty"
 folders = ["Marty"]

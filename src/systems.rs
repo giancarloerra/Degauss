@@ -2170,6 +2170,10 @@ extensions = ["md", "bin"]
             ("MACSE30", "vhd", "s", 2),
             ("MACSE30", "iso", "s", 4),
             ("MACSE30", "toast", "s", 4),
+            ("MACIICX", "dsk", "s", 0),
+            ("MACIICX", "vhd", "s", 2),
+            ("MACIICX", "iso", "s", 4),
+            ("MACIICX", "toast", "s", 4),
             ("Marty", "cue", "s", 0),
             ("Marty", "chd", "s", 0),
             ("Marty", "iso", "s", 0),
@@ -2268,6 +2272,17 @@ extensions = ["md", "bin"]
                 "{id}/{extension}"
             );
             let plan = crate::launch::plan(&config, &game, &card.join("launch.mgl")).unwrap();
+            if id == "MACIICX" {
+                assert!(
+                    !config.extensions.iter().any(|extension| extension == "img"),
+                    "IIcx IMG media needs an explicit MGL, not a guessed slot"
+                );
+                assert_eq!(
+                    plan.mgl.matches("<file ").count(),
+                    1,
+                    "IIcx media must not be mounted in both SCSI slots"
+                );
+            }
             assert!(
                 plan.mgl.contains(&format!("type=\"{kind}\"")),
                 "{id}: {}",
@@ -2303,6 +2318,7 @@ extensions = ["md", "bin"]
             ("Sun-2", "vhd"),
             ("Sun-3", "vhd"),
             ("MACSE30", "dsk"),
+            ("MACIICX", "dsk"),
             ("Marty", "iso"),
         ] {
             let def = table.iter().find(|def| def.id == id).unwrap();
@@ -2312,13 +2328,18 @@ extensions = ["md", "bin"]
             std::fs::write(&game, b"game fixture").unwrap();
             let image = folder.join("media/covers/game.jpg");
             std::fs::write(&image, b"cover path fixture").unwrap();
+            if matches!(id, "MACSE30" | "MACIICX") {
+                std::fs::write(folder.join("Ambiguous.img"), b"ambiguous media fixture").unwrap();
+            }
             for filename in [
                 "boot0.rom",
                 "boot1.rom",
                 "boot2.rom",
+                "boot3.rom",
                 "boot3.vhd",
                 "blank.vhd",
                 "MacSE30.nvr",
+                "MacIIcx.nvr",
                 "mrom.m36",
                 "mrom.m37",
             ] {
