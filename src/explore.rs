@@ -603,13 +603,7 @@ fn read_source(
             request.language.as_deref()
         });
     let provider = crate::artwork_pack::Provider::from_prepared_state(
-        &source.id,
-        root,
-        language,
-        accepted.health,
-        accepted.diagnostics.clone(),
-        accepted.signature.clone(),
-        prepared,
+        &source.id, root, language, accepted, prepared,
     );
     Ok((data.cache, Some(provider)))
 }
@@ -1681,6 +1675,7 @@ mod tests {
             "NES",
             &crate::cache::PackSourceState {
                 accepted: Some(crate::cache::AcceptedSource {
+                    picture_type: crate::artwork_pack::PictureType::BoxArt,
                     docs_root: pack.to_string_lossy().into_owned(),
                     language: None,
                     signature: None,

@@ -282,6 +282,19 @@ fn validate_core_profiles(table: &[SystemDef], origin: &Path) -> Result<()> {
                     ),
                 ));
             }
+            if Path::new(&profile.rbf)
+                .extension()
+                .is_some_and(|extension| extension.eq_ignore_ascii_case("rbf"))
+            {
+                return Err(DegaussError::malformed(
+                    "systems table",
+                    origin,
+                    format!(
+                        "{} compatible core {:?} requires an extensionless rbf; remove the trailing .rbf",
+                        system.id, profile.id
+                    ),
+                ));
+            }
             if profile
                 .id
                 .eq_ignore_ascii_case(crate::launch_cores::PRIMARY_PROFILE_ID)
@@ -335,6 +348,18 @@ pub(crate) fn with_core_overrides(
                     "core overrides",
                     origin,
                     format!("{id} has an empty preferred rbf"),
+                ));
+            }
+            if Path::new(rbf)
+                .extension()
+                .is_some_and(|extension| extension.eq_ignore_ascii_case("rbf"))
+            {
+                return Err(DegaussError::malformed(
+                    "core overrides",
+                    origin,
+                    format!(
+                        "{id} requires an extensionless preferred rbf; remove the trailing .rbf"
+                    ),
                 ));
             }
             system.rbf = rbf.clone();

@@ -209,37 +209,50 @@ fn validate_native_choice(actual: &Path) -> Result<()> {
     Ok(())
 }
 
-/// N64's regular and 80 MHz builds share Main's loose `N64_` prefix.
-/// Keep every other core's released reference unchanged; regular N64 uses
-/// the newest installed regular filename and the existing exact-build check.
+/// N64 and Neo Geo Turbo can share their regular core's loose Main prefix.
+/// Resolve these regular references to the installed build without changing
+/// other core families or explicitly pinned filenames.
 fn standard_reference(reference: &str, root: &Path) -> Result<String> {
     let path = Path::new(reference);
-    if !path
+    let Some(wanted) = path
         .file_name()
-        .is_some_and(|name| name.eq_ignore_ascii_case("N64"))
-    {
+        .and_then(|name| name.to_str())
+        .filter(|name| name.eq_ignore_ascii_case("N64") || name.eq_ignore_ascii_case("NeoGeo"))
+    else {
         return Ok(reference.to_string());
-    }
+    };
     let directory = root.join(path.parent().unwrap_or(Path::new("")));
     let entries = std::fs::read_dir(&directory)
-        .map_err(|error| DegaussError::io("standard N64 core directory", &directory, error))?;
+        .map_err(|error| DegaussError::io("standard core directory", &directory, error))?;
     let mut latest: Option<PathBuf> = None;
+    let mut neogeo_turbo_collision = false;
     for entry in entries {
-        let entry = entry
-            .map_err(|error| DegaussError::io("standard N64 core entry", &directory, error))?;
+        let entry =
+            entry.map_err(|error| DegaussError::io("standard core entry", &directory, error))?;
         let actual = entry.path();
         if !actual
             .extension()
             .is_some_and(|extension| extension.eq_ignore_ascii_case("rbf"))
-            || !actual
-                .file_stem()
-                .and_then(|stem| stem.to_str())
-                .is_some_and(|stem| core_variants::same_core_identity(stem, "N64"))
         {
             continue;
         }
+        let Some(stem) = actual.file_stem().and_then(|stem| stem.to_str()) else {
+            continue;
+        };
+        let regular = core_variants::same_core_identity(stem, wanted);
+        let turbo = wanted.eq_ignore_ascii_case("NeoGeo")
+            && ["NeoGeo_Turbo", "NeoGeo_TurboV2"]
+                .iter()
+                .any(|name| core_variants::same_core_identity(stem, name));
+        if !regular && !turbo {
+            continue;
+        }
         let metadata = std::fs::metadata(&actual)
-            .map_err(|error| DegaussError::io("standard N64 core file", &actual, error))?;
+            .map_err(|error| DegaussError::io("standard core file", &actual, error))?;
+        if turbo {
+            neogeo_turbo_collision |= metadata.is_file();
+            continue;
+        }
         if metadata.is_file()
             && latest
                 .as_ref()
@@ -248,13 +261,20 @@ fn standard_reference(reference: &str, root: &Path) -> Result<String> {
             latest = Some(actual);
         }
     }
+    if wanted.eq_ignore_ascii_case("NeoGeo") && !neogeo_turbo_collision {
+        return Ok(reference.to_string());
+    }
     let actual = latest.ok_or_else(|| {
-        DegaussError::unsupported("standard N64 core", "no regular N64 core is installed")
+        DegaussError::unsupported(
+            "standard core",
+            format!("no regular {wanted} core is installed"),
+        )
     })?;
     validate_native_choice(&actual)?;
-    let selected = actual.strip_prefix(root).unwrap().to_str().ok_or_else(|| {
-        DegaussError::unsupported("standard N64 core", "filename is not valid UTF-8")
-    })?;
+    let selected =
+        actual.strip_prefix(root).unwrap().to_str().ok_or_else(|| {
+            DegaussError::unsupported("standard core", "filename is not valid UTF-8")
+        })?;
     Ok(selected[..selected.len() - 4].to_string())
 }
 
@@ -430,6 +450,43 @@ mod tests {
         let path = root.join(path);
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(path, bytes).unwrap();
+    }
+
+    #[test]
+    fn regular_neogeo_stays_regular_with_user_relocated_turbo_profiles() {
+        let root = directory("neogeo-regular");
+        let mut neo = system();
+        neo.name = "Neo Geo".into();
+        neo.rbf = "_Console/NeoGeo".into();
+        neo.setname = None;
+        write(&root, "_Console/NeoGeo_20260920.rbf", b"regular");
+        write(&root, "_Console/NeoGeo_Turbo_20250814.rbf", b"turbo");
+        write(&root, "_Console/NeoGeo_TurboV2_20260927.rbf", b"turbo v2");
+        for selected in [None, Some("standard")] {
+            assert_eq!(
+                resolve(&neo, &root, selected, false).unwrap().rbf,
+                "_Console/NeoGeo_20260920"
+            );
+        }
+        write(&root, "_Console/NeoGeo_20261013.rbf", b"regular update");
+        assert_eq!(
+            resolve(&neo, &root, None, false).unwrap().rbf,
+            "_Console/NeoGeo_20261013"
+        );
+        neo.rbf = "_Console/NeoGeo_Turbo".into();
+        assert_eq!(
+            resolve(&neo, &root, Some("standard"), false).unwrap().rbf,
+            neo.rbf
+        );
+        neo.rbf = "_Console/NeoGeo".into();
+        std::fs::remove_file(root.join("_Console/NeoGeo_Turbo_20250814.rbf")).unwrap();
+        std::fs::remove_file(root.join("_Console/NeoGeo_TurboV2_20260927.rbf")).unwrap();
+        assert_eq!(
+            resolve(&neo, &root, None, false).unwrap().rbf,
+            neo.rbf,
+            "without a collision, existing native favourites keep their released reference"
+        );
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

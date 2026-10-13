@@ -857,9 +857,7 @@ fn prepared_game_provider(
         system_id,
         docs_root,
         prepared_language.as_deref(),
-        accepted.health,
-        accepted.diagnostics.clone(),
-        accepted.signature.clone(),
+        accepted,
         prepared,
     )))
 }

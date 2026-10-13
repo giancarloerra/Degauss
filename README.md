@@ -955,6 +955,12 @@ these cores, set `main=degauss/MiSTer_Degauss` in that core's section, leaving
 unrelated sections unchanged. BIOS, PRAM and bootable media remain the core's
 normal requirements. Sun-2 needs its own 32 KiB ROM, not the 64 KiB Sun-3 ROM.
 
+The released Marty core retains its upstream limitation for floppy tracks
+with 32 sectors. This update does not change that core protocol.
+
+Apple III DiskCopy 4.2 images are read-only to preserve their container
+checksums. Writable ProDOS and supported 2MG images retain write support.
+
 Sharp MZ keeps its existing library: MZF loads through the tape-download slot;
 MZT mounts as a tape; DSK/D88/D77 mount as a floppy; QDF/MZQ as a Quick Disk.
 Existing MGLs and older native Sharp MZ tape launches remain supported.
@@ -988,7 +994,8 @@ core do not offer it.
 Installed **Nintendo 64 Turbo (80 MHz)** and **Neo Geo Turbo / Turbo V2**
 builds are available through these choosers. Automatic keeps the ordinary core
 preferred when it is installed. Regular N64 resolves its complete installed
-build name so a Turbo file cannot accidentally replace it.
+build name so a Turbo file cannot accidentally replace it. Neo Geo does the
+same when Turbo is installed beside it; ordinary native favourites stay unchanged.
 The Neo Geo Turbo profiles use the published `console_extra` locations; other
 locations can be specified with the manual overrides below. Their
 `NEOGEO_TURBO` set name keeps the standard Neo Geo game/BIOS folder through

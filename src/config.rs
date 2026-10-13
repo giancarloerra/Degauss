@@ -571,6 +571,8 @@ mod tests {
         for invalid in [
             "[app]\nart_cache = 123\n[core_overrides.Unknown]\nrbf = \"_Console/Unknown\"\n",
             "[app]\nart_cache = 123\n[core_overrides.NeoGeo.compatible_cores.incomplete]\nrbf = \"_Console/Custom\"\n",
+            "[app]\nart_cache = 123\n[core_overrides.NeoGeo]\nrbf = \"_Console/NeoGeo.rbf\"\n",
+            "[app]\nart_cache = 123\n[core_overrides.NeoGeo.compatible_cores.custom]\nlabel = \"Custom\"\nrbf = \"_Console/Custom.RBF\"\n",
         ] {
             std::fs::write(&user_path, invalid).unwrap();
             let config = Config::load_for_systems(&path, &table).unwrap();

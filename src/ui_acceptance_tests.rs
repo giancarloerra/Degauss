@@ -717,6 +717,11 @@ fn run_start_folder_and_game_position_flow(root: &Path, window: Rc<MinimalSoftwa
 }
 
 fn run_additional_systems_mgl_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
+    let table = crate::systems::parse_table(
+        include_str!("../assets/systems.toml"),
+        Path::new("assets/systems.toml"),
+    )
+    .unwrap();
     for (id, extension, slot) in [
         ("Apple-III", "2mg", 4),
         ("MACSE30", "img", 2),
@@ -732,7 +737,6 @@ fn run_additional_systems_mgl_flow(root: &Path, window: Rc<MinimalSoftwareWindow
         let image = folder.join(format!("Disk.{extension}"));
         std::fs::write(&image, b"media fixture").unwrap();
         let launcher = folder.join("Disk Launcher.mgl");
-        let table = crate::systems::load_table(Path::new("assets/systems.toml")).unwrap();
         let def = table.iter().find(|system| system.id == id).unwrap();
         let core = root.join(format!("{}.rbf", def.rbf));
         std::fs::create_dir_all(core.parent().unwrap()).unwrap();
@@ -2023,6 +2027,7 @@ fn run_storage_pack_rebuild_flow(
                 .unwrap()
                 .unwrap();
             state.accepted = Some(crate::cache::AcceptedSource {
+                picture_type: crate::artwork_pack::PictureType::BoxArt,
                 docs_root: docs.to_string_lossy().into_owned(),
                 language: None,
                 signature: None,
@@ -4507,29 +4512,32 @@ fn run_main_favourites_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
 
     // Linked descriptors retain their original extension and source even
     // when the favourite link needs a different filename.
-    let other_core = root.join("Other Core.mgl");
-    std::fs::write(
-        &other_core,
-        "<mistergamedescription><rbf>_Console/NES</rbf></mistergamedescription>",
-    )
-    .unwrap();
-    std::fs::remove_file(&root_link).unwrap();
-    std::os::unix::fs::symlink(&other_core, &root_link).unwrap();
-    app.reread_favorites();
-    select_row_named(&mut app, "Core Game");
-    app.add_favorite_in(&favorites_root);
-    assert_eq!(app.screen, Screen::NameKeyboard);
-    assert_eq!(app.name_keyboard_draft, "Core Game");
-    app.name_keyboard_draft = "Core Favourite".into();
-    name_key(&mut app, NameKey::Save);
-    assert_eq!(app.screen, Screen::Browse);
-    let renamed_link = favorites_root.join("Core Favourite.mgl");
-    assert_eq!(std::fs::read_link(&renamed_link).unwrap(), core_file);
-    assert_eq!(std::fs::read_link(&root_link).unwrap(), other_core);
-    std::fs::remove_file(&renamed_link).unwrap();
-    std::fs::remove_file(&root_link).unwrap();
-    std::os::unix::fs::symlink(&core_file, &root_link).unwrap();
-    app.reread_favorites();
+    #[cfg(unix)]
+    {
+        let other_core = root.join("Other Core.mgl");
+        std::fs::write(
+            &other_core,
+            "<mistergamedescription><rbf>_Console/NES</rbf></mistergamedescription>",
+        )
+        .unwrap();
+        std::fs::remove_file(&root_link).unwrap();
+        std::os::unix::fs::symlink(&other_core, &root_link).unwrap();
+        app.reread_favorites();
+        select_row_named(&mut app, "Core Game");
+        app.add_favorite_in(&favorites_root);
+        assert_eq!(app.screen, Screen::NameKeyboard);
+        assert_eq!(app.name_keyboard_draft, "Core Game");
+        app.name_keyboard_draft = "Core Favourite".into();
+        name_key(&mut app, NameKey::Save);
+        assert_eq!(app.screen, Screen::Browse);
+        let renamed_link = favorites_root.join("Core Favourite.mgl");
+        assert_eq!(std::fs::read_link(&renamed_link).unwrap(), core_file);
+        assert_eq!(std::fs::read_link(&root_link).unwrap(), other_core);
+        std::fs::remove_file(&renamed_link).unwrap();
+        std::fs::remove_file(&root_link).unwrap();
+        std::os::unix::fs::symlink(&core_file, &root_link).unwrap();
+        app.reread_favorites();
+    }
 
     // When a real write failure and the redraw both fail, both causes are
     // shown: the write failure alone would leave the emptied
@@ -9503,6 +9511,7 @@ fn run_attract_mode_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
         "NES",
         &crate::cache::PackSourceState {
             accepted: Some(crate::cache::AcceptedSource {
+                picture_type: crate::artwork_pack::PictureType::BoxArt,
                 docs_root: pack_root.to_string_lossy().into_owned(),
                 language: None,
                 signature: None,

@@ -2869,6 +2869,7 @@ category = "Favorites"
             "Arcade",
             &cache::PackSourceState {
                 accepted: Some(cache::AcceptedSource {
+                    picture_type: provider.picture_type,
                     docs_root: docs.to_string_lossy().into_owned(),
                     language: None,
                     signature: Some(signature.clone()),

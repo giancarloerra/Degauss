@@ -1629,6 +1629,7 @@ fn persist_source_choice(
     let label = match target {
         crate::source_cache::Target::Gamelist => {
             changed.artwork_pack_roots.remove(group);
+            changed.artwork_pack_picture_types.remove(group);
             changed.gamelist_sources.insert(group.to_string());
             SOURCE_GAMELIST
         }
@@ -1666,6 +1667,7 @@ fn persist_automatic_source(
 ) -> Result<(Settings, &'static str, Option<String>)> {
     let mut changed = current.clone();
     changed.artwork_pack_roots.remove(group);
+    changed.artwork_pack_picture_types.remove(group);
     changed.gamelist_sources.remove(group);
     let warning = match changed.save(path)? {
         SaveOutcome::Durable => None,
@@ -2898,9 +2900,7 @@ fn read_saver_candidate(
             &candidate.system_id,
             root,
             accepted.language.as_deref(),
-            accepted.health,
-            accepted.diagnostics.clone(),
-            accepted.signature.clone(),
+            accepted,
             prepared,
         ))
     } else {
@@ -7399,9 +7399,7 @@ impl App {
             id,
             root,
             language.as_deref(),
-            accepted.health,
-            accepted.diagnostics.clone(),
-            accepted.signature.clone(),
+            accepted,
             prepared,
         );
         if language != current {
@@ -26077,6 +26075,67 @@ mod tests {
             .gamelist_sources
             .is_empty());
         std::fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn leaving_typed_pack_clears_only_that_groups_explicit_choice() {
+        use crate::artwork_pack::PictureType;
+        let root = picker_temp("typed-source-persistence");
+        let settings_path = root.join("settings.toml");
+        for picture_type in [PictureType::Screenshot, PictureType::TitleScreen] {
+            let mut initial = Settings::default();
+            initial
+                .artwork_pack_roots
+                .insert("NES".into(), "other-docs".into());
+            initial
+                .artwork_pack_picture_types
+                .insert("NES".into(), picture_type);
+            let (pack, _, _) = persist_source_choice(
+                &initial,
+                &settings_path,
+                "SuperGrafx",
+                &crate::source_cache::Target::ArtworkPack {
+                    docs_root: root.join("docs"),
+                    picture_type,
+                },
+            )
+            .unwrap();
+            let reloaded = Settings::load(&settings_path).unwrap();
+            assert_eq!(
+                crate::artwork_pack::selected_picture_type(&reloaded, "SuperGrafx"),
+                picture_type
+            );
+
+            for gamelist in [false, true] {
+                let (changed, _, _) = if gamelist {
+                    persist_source_choice(
+                        &pack,
+                        &settings_path,
+                        "SuperGrafx",
+                        &crate::source_cache::Target::Gamelist,
+                    )
+                } else {
+                    persist_automatic_source(&pack, &settings_path, "SuperGrafx")
+                }
+                .unwrap();
+                assert!(!changed.artwork_pack_roots.contains_key("SuperGrafx"));
+                let reloaded = Settings::load(&settings_path).unwrap();
+                assert_eq!(
+                    crate::artwork_pack::selected_picture_type(&reloaded, "SuperGrafx"),
+                    PictureType::BoxArt
+                );
+                assert_eq!(reloaded.gamelist_sources.contains("SuperGrafx"), gamelist);
+                assert_eq!(
+                    reloaded.artwork_pack_roots.get("NES"),
+                    initial.artwork_pack_roots.get("NES")
+                );
+                assert_eq!(
+                    reloaded.artwork_pack_picture_types.get("NES"),
+                    Some(&picture_type)
+                );
+            }
+        }
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

@@ -388,6 +388,7 @@ mod tests {
                 id,
                 &crate::cache::PackSourceState {
                     accepted: Some(crate::cache::AcceptedSource {
+                        picture_type: artwork_pack::PictureType::BoxArt,
                         docs_root: root.to_string_lossy().into_owned(),
                         language: None,
                         signature: None,

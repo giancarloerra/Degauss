@@ -1087,22 +1087,17 @@ impl Provider {
         system_id: &str,
         docs_root: &Path,
         language: Option<&str>,
-        health: ProviderHealth,
-        diagnostics: Vec<String>,
-        snapshot: Option<SourceFingerprint>,
+        accepted: &crate::cache::AcceptedSource,
         prepared: HashMap<Launch, PackPresentation>,
     ) -> Self {
         Self {
             system_id: system_id.to_string(),
             docs_root: docs_root.to_path_buf(),
-            picture_type: snapshot
-                .as_ref()
-                .map(SourceFingerprint::picture_type)
-                .unwrap_or_default(),
-            health,
-            diagnostics,
+            picture_type: accepted.picture_type,
+            health: accepted.health,
+            diagnostics: accepted.diagnostics.clone(),
             directories: Arc::new(Vec::new()),
-            snapshot,
+            snapshot: accepted.signature.clone(),
             synopsis_language: normalized_language(language),
             prepared: Some(Arc::new(prepared)),
             archive_cache: Arc::new(std::sync::Mutex::new(crate::zip::ArchiveCache::default())),
@@ -6401,6 +6396,7 @@ mod tests {
         let store = temp("prepared-state-store");
         let state = crate::cache::PackSourceState {
             accepted: Some(crate::cache::AcceptedSource {
+                picture_type: provider.picture_type,
                 docs_root: root.to_string_lossy().into_owned(),
                 language: provider.synopsis_language().map(str::to_string),
                 signature: provider.snapshot().cloned(),
@@ -6430,9 +6426,7 @@ mod tests {
             "SuperGrafx",
             &root,
             accepted.language.as_deref(),
-            accepted.health,
-            accepted.diagnostics,
-            accepted.signature,
+            &accepted,
             crate::cache::load_pack_prepared_map(&store, "SuperGrafx")
                 .unwrap()
                 .unwrap(),

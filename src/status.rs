@@ -92,6 +92,15 @@ fn ethernet_up_from(
     })
 }
 
+/// IPv4 aliases use the base interface name followed by a colon.
+#[cfg(any(target_os = "linux", test))]
+fn interface_name_matches(address_name: &[u8], interface_name: &[u8]) -> bool {
+    address_name == interface_name
+        || address_name
+            .strip_prefix(interface_name)
+            .is_some_and(|suffix| suffix.starts_with(b":"))
+}
+
 /// Whether the named interface holds a usable IPv4 address.
 #[cfg(target_os = "linux")]
 fn has_address(want: &std::ffi::OsStr) -> bool {
@@ -115,7 +124,7 @@ fn has_address(want: &std::ffi::OsStr) -> bool {
         }
         // SAFETY: the name is a NUL-terminated string owned by the list.
         let name = unsafe { CStr::from_ptr(node.ifa_name) };
-        if name.to_bytes() != want.as_bytes() {
+        if !interface_name_matches(name.to_bytes(), want.as_bytes()) {
             continue;
         }
         // SAFETY: reading the family tag, which every address carries.
@@ -219,6 +228,12 @@ mod tests {
         }
         assert!(ethernet_up_from(&root, |name| name == "enp1s0"));
         assert!(
+            ethernet_up_from(&root, |name| {
+                interface_name_matches(b"enp1s0:1", name.to_str().unwrap().as_bytes())
+            }),
+            "the sole IPv4 address may belong to a physical interface alias"
+        );
+        assert!(
             !ethernet_up_from(&root, |_| false),
             "an address is required"
         );
@@ -254,6 +269,15 @@ mod tests {
             "unreadable link state is not connected"
         );
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn ipv4_aliases_match_only_their_base_interface() {
+        assert!(interface_name_matches(b"eth0", b"eth0"));
+        assert!(interface_name_matches(b"eth0:1", b"eth0"));
+        assert!(!interface_name_matches(b"eth01", b"eth0"));
+        assert!(!interface_name_matches(b"eth0-other", b"eth0"));
+        assert!(!interface_name_matches(b"eth1:1", b"eth0"));
     }
 
     #[test]

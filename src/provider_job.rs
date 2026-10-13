@@ -328,6 +328,7 @@ fn run(
                 // user sees, not a silent return to validating every time.
                 let state = crate::cache::PackSourceState {
                     accepted: Some(crate::cache::AcceptedSource {
+                        picture_type: provider.picture_type,
                         docs_root: request.docs_root.to_string_lossy().into_owned(),
                         language: provider.synopsis_language().map(str::to_string),
                         signature: provider.snapshot().cloned(),
