@@ -16430,10 +16430,10 @@ impl App {
     }
 
     fn open_artwork_pack_types(&mut self) {
-        let Some(id) = self.source_system_id.as_deref() else {
+        if self.source_system_id.is_none() {
             return;
-        };
-        let selected = crate::artwork_pack::selected_picture_type(&self.settings, id);
+        }
+        let selected = self.source_picture_type;
         self.menu = crate::artwork_pack::PictureType::ALL
             .iter()
             .map(|kind| kind.label().to_string())

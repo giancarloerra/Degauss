@@ -86,7 +86,7 @@ fn ethernet_up_from(
             && !path.join("wireless").exists()
             && std::fs::read_to_string(path.join("type")).is_ok_and(|value| value.trim() == "1")
             && std::fs::read_to_string(path.join("operstate"))
-                .is_ok_and(|value| value.trim() == "up")
+                .is_ok_and(|value| matches!(value.trim(), "up" | "unknown"))
             && std::fs::read_to_string(path.join("carrier")).is_ok_and(|value| value.trim() == "1")
             && addressed(&entry.file_name())
     })
@@ -237,6 +237,17 @@ mod tests {
             !ethernet_up_from(&root, |_| false),
             "an address is required"
         );
+
+        std::fs::write(wired.join("operstate"), "unknown\n").unwrap();
+        assert!(
+            ethernet_up_from(&root, |_| true),
+            "drivers without operational-state reporting can still have a usable link"
+        );
+        assert!(!ethernet_up_from(&root, |_| false));
+        std::fs::write(wired.join("carrier"), "0\n").unwrap();
+        assert!(!ethernet_up_from(&root, |_| true));
+        std::fs::write(wired.join("carrier"), "1\n").unwrap();
+        std::fs::write(wired.join("operstate"), "up\n").unwrap();
 
         for (name, disabled, enabled) in [
             ("operstate", "down\n", "up\n"),

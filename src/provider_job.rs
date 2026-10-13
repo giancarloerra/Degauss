@@ -422,7 +422,7 @@ fn run_matching(
     if !provider.configuration_matches(
         std::path::Path::new(&accepted.docs_root),
         accepted.language.as_deref(),
-        provider.picture_type,
+        accepted.picture_type,
     ) || provider.snapshot() != accepted.signature.as_ref()
     {
         return Err(DegaussError::unsupported(
@@ -1322,6 +1322,54 @@ mod tests {
             5,
             "no image copies"
         );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn manual_match_rejects_a_different_prepared_picture_type_without_signatures() {
+        use crate::artwork_pack::{PictureType, Provider};
+        let (root, docs, cache_dir) = legacy_arcade("manual-worker-type");
+        let mut job = start(vec![adoption(&docs, &cache_dir, true)]).unwrap();
+        assert!(matches!(terminal(&mut job), Event::Loaded { .. }));
+        for picture_type in [PictureType::Screenshot, PictureType::TitleScreen] {
+            let mut state = crate::cache::load_pack_source_state(&cache_dir, "Arcade")
+                .unwrap()
+                .unwrap();
+            let accepted = state.accepted.as_mut().unwrap();
+            accepted.picture_type = picture_type;
+            accepted.signature = None;
+            let mut stale = accepted.clone();
+            stale.picture_type = PictureType::BoxArt;
+            crate::cache::save_pack_source_state(&cache_dir, "Arcade", &state).unwrap();
+            let provider = Provider::from_prepared_state(
+                "Arcade",
+                &docs,
+                stale.language.as_deref(),
+                &stale,
+                Default::default(),
+            );
+            let prepared_path = crate::cache::artwork_pack_prepared_path(&cache_dir, "Arcade");
+            let before = std::fs::read(&prepared_path).unwrap();
+            let result = run_matching(
+                provider,
+                Matching::Save(Box::new(MatchSave {
+                    launch: Launch::File(root.join("_Arcade/Healthy.mra")),
+                    selected: None,
+                    settings: Default::default(),
+                    settings_path: root.join("settings.toml"),
+                })),
+                &cache_dir,
+                &crate::mgl::Homes::default(),
+                &AtomicBool::new(false),
+            );
+            let error = result.unwrap_err();
+            assert!(
+                error.to_string().contains("Artwork Pack changed"),
+                "{error}"
+            );
+            assert_eq!(std::fs::read(&prepared_path).unwrap(), before);
+            assert!(!root.join("settings.toml").exists());
+        }
         std::fs::remove_dir_all(root).unwrap();
     }
 

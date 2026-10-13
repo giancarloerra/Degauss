@@ -7452,6 +7452,13 @@ fn run_artwork_pack_picture_types_flow(root: &Path, window: Rc<MinimalSoftwareWi
         app.finish_background_work_for_headless();
         assert_eq!(app.screen, Screen::ArtworkPackLocation);
         assert_eq!(app.source_locations.as_slice(), std::slice::from_ref(&docs));
+        app.handle(Action::Quit);
+        assert_eq!(app.screen, Screen::ArtworkPackType);
+        assert_eq!(app.menu_list.selected(), position);
+        assert_eq!(app.source_picture_type, kind);
+        app.handle(Action::Accept);
+        app.finish_background_work_for_headless();
+        assert_eq!(app.screen, Screen::ArtworkPackLocation);
         if kind == PictureType::TitleScreen {
             let prepared = cache_snapshot(&app.cache_dir);
             app.handle(Action::Quit);
