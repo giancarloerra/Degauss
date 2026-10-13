@@ -7479,6 +7479,29 @@ fn run_artwork_pack_picture_types_flow(root: &Path, window: Rc<MinimalSoftwareWi
             app.menu_list.select(position);
             app.handle(Action::Accept);
             app.finish_background_work_for_headless();
+            let before = cache_snapshot(&app.cache_dir);
+            let previous_settings = app.settings.clone();
+            let settings_path = app.settings_path.clone();
+            let blocked = root.join("settings-write-blocked");
+            std::fs::create_dir(&blocked).unwrap();
+            app.settings_path = blocked;
+            app.menu_list.select(0);
+            app.handle(Action::Accept);
+            app.finish_background_work_for_headless();
+            assert_eq!(app.settings, previous_settings);
+            assert_eq!(
+                cache_snapshot(&app.cache_dir),
+                before,
+                "a failed preference save must retain the same-root Screenshot cache"
+            );
+            app.settings_path = settings_path;
+            app.message = None;
+            app.open_game_data_source();
+            app.menu_list.select(2);
+            app.handle(Action::Accept);
+            app.menu_list.select(position);
+            app.handle(Action::Accept);
+            app.finish_background_work_for_headless();
         }
         app.menu_list.select(0);
         app.handle(Action::Accept);

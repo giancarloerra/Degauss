@@ -1619,12 +1619,11 @@ fn source_progress_rows(
     rows
 }
 
-fn persist_source_choice(
+fn source_choice(
     current: &Settings,
-    path: &Path,
     group: &str,
     target: &crate::source_cache::Target,
-) -> Result<(Settings, &'static str, Option<String>)> {
+) -> (Settings, &'static str) {
     let mut changed = current.clone();
     let label = match target {
         crate::source_cache::Target::Gamelist => {
@@ -1651,6 +1650,16 @@ fn persist_source_choice(
             SOURCE_ARTWORK_PACK
         }
     };
+    (changed, label)
+}
+
+fn persist_source_choice(
+    current: &Settings,
+    path: &Path,
+    group: &str,
+    target: &crate::source_cache::Target,
+) -> Result<(Settings, &'static str, Option<String>)> {
+    let (changed, label) = source_choice(current, group, target);
     let warning = match changed.save(path)? {
         SaveOutcome::Durable => None,
         SaveOutcome::InstalledWithWarning(warning) => Some(warning.to_string()),
@@ -18077,7 +18086,22 @@ impl App {
         // What the install and the save warned about names files: logged,
         // and on screen as one sentence pointing at the log.
         let mut warnings = Vec::new();
-        let caches = match prepared.install() {
+        let changing_type = match &target {
+            crate::source_cache::Target::ArtworkPack { picture_type, .. } => {
+                *picture_type
+                    != crate::artwork_pack::selected_picture_type(&self.settings, &system_id)
+            }
+            crate::source_cache::Target::Gamelist => false,
+        };
+        let staged_choice = changing_type.then(|| source_choice(&self.settings, group, &target));
+        let installed = if let Some((settings, _)) = &staged_choice {
+            prepared
+                .with_settings(&self.settings_path, settings)
+                .and_then(crate::cache::PreparedCacheGroup::install)
+        } else {
+            prepared.install()
+        };
+        let caches = match installed {
             Ok((caches, installed)) => {
                 warnings.extend(installed);
                 caches
@@ -18089,22 +18113,24 @@ impl App {
                 return;
             }
         };
-        let (settings, label, settings_warning) =
-            match persist_source_choice(&self.settings, &self.settings_path, group, &target) {
-                Ok(saved) => saved,
-                Err(error) => {
-                    crate::note(&format!("game source  settings unchanged: {error}"));
-                    self.open_game_data_source();
-                    let mut message = self.explicit_source_failure_message(&target, &error);
-                    if matches!(target, crate::source_cache::Target::ArtworkPack { .. }) {
-                        message.push_str(
-                            "\nThe prepared Artwork Pack data was saved for a later retry.",
-                        );
-                    }
-                    self.message = Some(message);
-                    return;
+        let saved_choice = match staged_choice {
+            Some((settings, label)) => Ok((settings, label, None)),
+            None => persist_source_choice(&self.settings, &self.settings_path, group, &target),
+        };
+        let (settings, label, settings_warning) = match saved_choice {
+            Ok(saved) => saved,
+            Err(error) => {
+                crate::note(&format!("game source  settings unchanged: {error}"));
+                self.open_game_data_source();
+                let mut message = self.explicit_source_failure_message(&target, &error);
+                if matches!(target, crate::source_cache::Target::ArtworkPack { .. }) {
+                    message
+                        .push_str("\nThe prepared Artwork Pack data was saved for a later retry.");
                 }
-            };
+                self.message = Some(message);
+                return;
+            }
+        };
         warnings.extend(settings_warning);
         self.settings = settings;
         self.artwork_source_errors.remove(group);

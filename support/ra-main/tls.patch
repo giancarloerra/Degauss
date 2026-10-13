@@ -1,3 +1,4 @@
+diff --git a/ra_http.cpp b/ra_http.cpp
 --- a/ra_http.cpp
 +++ b/ra_http.cpp
 @@ -1,6 +1,6 @@
@@ -8,7 +9,7 @@
  // main thread for safe rc_client callback dispatch.
  
  #include "ra_http.h"
-@@ -13,6 +13,14 @@
+@@ -13,6 +13,15 @@
  #include <sched.h>
  #include <errno.h>
  #include <unistd.h>
@@ -18,12 +19,13 @@
 +#include <spawn.h>
 +#include <sys/socket.h>
 +#include <fcntl.h>
++#include <signal.h>
 +
 +extern char **environ;
  
  // ---------------------------------------------------------------------------
  // Debug (uses same style as achievements.cpp)
-@@ -68,7 +76,7 @@
+@@ -68,7 +77,7 @@
  }
  
  // ---------------------------------------------------------------------------
@@ -32,7 +34,7 @@
  // ---------------------------------------------------------------------------
  
  // Grow-able buffer for reading curl output
-@@ -100,49 +108,56 @@
+@@ -100,49 +109,56 @@
  	b->data[b->len] = '\0';
  }
  
@@ -132,7 +134,7 @@
  }
  
  static void execute_request(ra_http_req *req, ra_http_resp *resp)
-@@ -153,104 +168,151 @@
+@@ -153,104 +169,192 @@
  	resp->body = NULL;
  	resp->body_len = 0;
  
@@ -230,34 +232,37 @@
 -	}
 +	memcpy(ca_path + ca_length, ".cacert.pem", sizeof(".cacert.pem"));
 +
-+ // All request values travel through stdin, never process arguments or disk.
++ // Request values use anonymous descriptors, never process arguments or disk.
++ const bool post = req->post_data && req->post_data[0];
 + std::string config = "url = " + config_quote(req->url);
 + config += "user-agent = " + config_quote(s_user_agent);
 + config += "cacert = " + config_quote(ca_path);
-+ if (req->post_data && req->post_data[0]) {
++ if (post) {
 +  const char *ct = req->content_type && req->content_type[0]
 +   ? req->content_type : "application/x-www-form-urlencoded";
 +  config += "request = POST\nheader = " + config_quote((std::string("Content-Type: ") + ct).c_str());
-+  config += "data-raw = " + config_quote(req->post_data);
++  config += "data-binary = \"@-\"\n";
 + }
 + HTTP_LOG("Request: HTTPS %s", req->post_data && req->post_data[0] ? "POST" : "GET");
 +
-+ int input[2] = {-1, -1}, output_fd[2] = {-1, -1};
++ int input[2] = {-1, -1}, output_fd[2] = {-1, -1}, body[2] = {-1, -1};
 + auto close_pipes = [&]() {
-+  for (int fd : {input[0], input[1], output_fd[0], output_fd[1]})
++  for (int fd : {input[0], input[1], output_fd[0], output_fd[1], body[0], body[1]})
 +   if (fd >= 0) close(fd);
 + };
-+ if (socketpair(AF_UNIX, SOCK_STREAM, 0, input) || pipe(output_fd)) {
++ if (pipe(input) || pipe(output_fd) ||
++     (post && socketpair(AF_UNIX, SOCK_STREAM, 0, body))) {
 +  int error = errno;
 +  close_pipes();
 +  process_error(resp, "pipe creation", error);
 +  return;
 + }
-+ // A launcher may leave a standard stream closed. Keep owned descriptors
-+ // above stderr so spawn cleanup cannot close a redirected standard stream.
-+ for (int *fd : {&input[0], &input[1], &output_fd[0], &output_fd[1]}) {
-+  if (*fd < 3) {
-+   int promoted = fcntl(*fd, F_DUPFD_CLOEXEC, 3);
++ // A launcher may leave standard streams closed. Reserve descriptor 3 for
++ // config and keep pipe endpoints above it so spawn cleanup cannot close it.
++ for (int *fd : {&input[0], &input[1], &output_fd[0], &output_fd[1], &body[0], &body[1]}) {
++  if (*fd < 0) continue;
++  if (*fd < 4) {
++   int promoted = fcntl(*fd, F_DUPFD_CLOEXEC, 4);
 +   if (promoted < 0) {
 +    int error = errno;
 +    close_pipes();
@@ -274,15 +279,17 @@
 +   return;
 +  }
 + }
++ if (post) {
 +#ifdef SO_NOSIGPIPE
-+ int no_sigpipe = 1;
-+ if (setsockopt(input[0], SOL_SOCKET, SO_NOSIGPIPE, &no_sigpipe, sizeof(no_sigpipe))) {
-+  int error = errno;
-+  close_pipes();
-+  process_error(resp, "pipe setup", error);
-+  return;
-+ }
++  int no_sigpipe = 1;
++  if (setsockopt(body[0], SOL_SOCKET, SO_NOSIGPIPE, &no_sigpipe, sizeof(no_sigpipe))) {
++   int error = errno;
++   close_pipes();
++   process_error(resp, "pipe setup", error);
++   return;
++  }
 +#endif
++ }
 + posix_spawn_file_actions_t actions;
 + int error = posix_spawn_file_actions_init(&actions);
 + if (error) {
@@ -290,14 +297,17 @@
 +  process_error(resp, "spawn setup", error);
 +  return;
 + }
-+ error = posix_spawn_file_actions_adddup2(&actions, input[1], STDIN_FILENO);
-+ if (!error) error = posix_spawn_file_actions_adddup2(&actions, output_fd[1], STDOUT_FILENO);
++ error = posix_spawn_file_actions_adddup2(&actions, output_fd[1], STDOUT_FILENO);
++ if (!error && post) error = posix_spawn_file_actions_adddup2(&actions, body[1], STDIN_FILENO);
++ if (!error && !post) error = posix_spawn_file_actions_addopen(&actions, STDIN_FILENO, "/dev/null", O_RDONLY, 0);
++ // Duplicate a distinct source so the child config descriptor survives exec.
++ if (!error) error = posix_spawn_file_actions_adddup2(&actions, input[0], 3);
 + // curl config errors can quote request values; expose only its safe exit cause.
 + if (!error) error = posix_spawn_file_actions_addopen(&actions, STDERR_FILENO, "/dev/null", O_WRONLY, 0);
-+ for (int fd : {input[0], input[1], output_fd[0], output_fd[1]})
-+  if (!error) error = posix_spawn_file_actions_addclose(&actions, fd);
++ for (int fd : {input[0], input[1], output_fd[0], output_fd[1], body[0], body[1]})
++  if (!error && fd >= 0 && fd != 3) error = posix_spawn_file_actions_addclose(&actions, fd);
 + const char *args[] = {"curl", "-q", "-s", "-L", "--proto", "=https",
-+  "--proto-redir", "=https", "--max-time", "30", "-w", "\n%{http_code}", "--config", "-", nullptr};
++  "--proto-redir", "=https", "--max-time", "30", "-w", "\n%{http_code}", "--config", "/dev/fd/3", nullptr};
 + pid_t child = -1;
 + if (!error) error = posix_spawnp(&child, "curl", &actions, nullptr,
 +  const_cast<char **>(args), environ);
@@ -308,23 +318,56 @@
 +  else process_error(resp, "spawn", error);
 +  return;
 + }
-+ close(input[1]); input[1] = -1;
++ close(input[0]); input[0] = -1;
 + close(output_fd[1]); output_fd[1] = -1;
-+ // curl consumes its complete config before issuing a request. It cannot fill
-+ // the response pipe while waiting for more config, including large POST data.
++ if (body[1] >= 0) { close(body[1]); body[1] = -1; }
++ // curl reads the config, then the POST stream, before issuing the request.
++ // Keep large bodies out of the config parser's per-line limit.
++ auto send_input = [](int fd, const char *data, size_t length, bool socket) {
++ sigset_t blocked, previous, pending;
++ bool already_pending = false;
++ if (!socket) {
++  sigemptyset(&blocked); sigaddset(&blocked, SIGPIPE);
++  int error = pthread_sigmask(SIG_BLOCK, &blocked, &previous);
++  if (error) return error;
++  if (sigpending(&pending)) {
++   error = errno;
++   pthread_sigmask(SIG_SETMASK, &previous, nullptr);
++   return error;
++  }
++  already_pending = sigismember(&pending, SIGPIPE) == 1;
++ }
 + size_t written = 0;
-+ int write_error = 0;
-+ while (written < config.size()) {
++ int error = 0;
++ while (written < length) {
 +#ifdef MSG_NOSIGNAL
-+  ssize_t count = send(input[0], config.data() + written, config.size() - written, MSG_NOSIGNAL);
++  ssize_t count = socket ? send(fd, data + written, length - written, MSG_NOSIGNAL)
++                         : write(fd, data + written, length - written);
 +#else
-+  ssize_t count = send(input[0], config.data() + written, config.size() - written, 0);
++  ssize_t count = socket ? send(fd, data + written, length - written, 0)
++                         : write(fd, data + written, length - written);
 +#endif
 +  if (count < 0 && errno == EINTR) continue;
-+  if (count <= 0) { write_error = count < 0 ? errno : EIO; break; }
++  if (count <= 0) { error = count < 0 ? errno : EIO; break; }
 +  written += (size_t)count;
 + }
-+ close(input[0]); input[0] = -1;
++ if (!socket) {
++  if (error == EPIPE && !already_pending && !sigpending(&pending) &&
++      sigismember(&pending, SIGPIPE) == 1) {
++   int caught;
++   sigwait(&blocked, &caught);
++  }
++  int restored = pthread_sigmask(SIG_SETMASK, &previous, nullptr);
++  if (!error) error = restored;
++ }
++ return error;
++ };
++ int write_error = send_input(input[1], config.data(), config.size(), false);
++ close(input[1]); input[1] = -1;
++ if (body[0] >= 0) {
++  if (!write_error) write_error = send_input(body[0], req->post_data, strlen(req->post_data), true);
++  close(body[0]); body[0] = -1;
++ }
  
  	// Read all output
  	struct buf output;
@@ -373,9 +416,11 @@
  
  	if (!output.data || output.len == 0) {
  		HTTP_LOG("ERROR: curl returned no output (exit=%d)", exit_code);
+diff --git a/tests/run-ra-http-tests.py b/tests/run-ra-http-tests.py
+new file mode 100644
 --- /dev/null
 +++ b/tests/run-ra-http-tests.py
-@@ -0,0 +1,153 @@
+@@ -0,0 +1,171 @@
 +#!/usr/bin/env python3
 +"""Exercise the production curl request executor against a real local TLS server."""
 +import http.server
@@ -432,6 +477,17 @@
 + request.post_data = argc > 2 ? const_cast<char*>(post.c_str()) : nullptr;
 + request.content_type = argc > 3 ? argv[3] : nullptr;
 + ra_http_resp response = {};
++ const char *mode_text = getenv("TEST_SIGPIPE_MODE");
++ int mode = mode_text ? atoi(mode_text) : 0;
++ if (mode == 1) signal(SIGPIPE, SIG_IGN);
++ if (mode == 2) {
++  sigset_t blocked; sigemptyset(&blocked); sigaddset(&blocked, SIGPIPE);
++  assert(!pthread_sigmask(SIG_BLOCK, &blocked, nullptr));
++  assert(!raise(SIGPIPE));
++ }
++ sigset_t mask_before, mask_after, pending_before, pending_after;
++ assert(!pthread_sigmask(SIG_SETMASK, nullptr, &mask_before));
++ assert(!sigpending(&pending_before));
 + struct sigaction before, after;
 + sigaction(SIGPIPE, nullptr, &before);
 + int saved[3] = {-1, -1, -1};
@@ -453,6 +509,11 @@
 + }
 + sigaction(SIGPIPE, nullptr, &after);
 + assert(before.sa_handler == after.sa_handler);
++ assert(!pthread_sigmask(SIG_SETMASK, nullptr, &mask_after));
++ assert(!sigpending(&pending_after));
++ for (int signal = 1; signal < NSIG; ++signal)
++  assert(sigismember(&mask_before, signal) == sigismember(&mask_after, signal));
++ assert(sigismember(&pending_before, SIGPIPE) == sigismember(&pending_after, SIGPIPE));
 + printf("%d\\n%s", response.http_status, response.body ? response.body : "");
 + free(response.body);
 + fprintf(stderr, "%s", captured_logs.c_str());
@@ -485,16 +546,16 @@
 +    base = 'https://localhost:%d' % server.server_port
 +    (d / '.curlrc').write_text('insecure\n')
 +    sidecar = pathlib.Path(str(exe) + '.cacert.pem')
-+    def request(url, body=None, content_type=None, search_path=None, closed_streams=0):
++    def request(url, body=None, content_type=None, search_path=None, closed_streams=0, sigpipe_mode=0):
 +        args = [str(exe), url] + (['stdin-body'] if body is not None else [])
 +        if content_type is not None: args.append(content_type)
 +        result = subprocess.run(args, input=body.encode() if body is not None else None, capture_output=True, timeout=35, check=True,
-+            env={"PATH": search_path or os.environ["PATH"], "NO_PROXY": "localhost,127.0.0.1", "CURL_HOME": str(d), "TEST_CLOSED_STREAMS": str(closed_streams)})
++            env={"PATH": search_path or os.environ["PATH"], "NO_PROXY": "localhost,127.0.0.1", "CURL_HOME": str(d), "TEST_CLOSED_STREAMS": str(closed_streams), "TEST_SIGPIPE_MODE": str(sigpipe_mode)})
 +        assert url.encode() not in result.stderr and b"synthetic=" not in result.stderr, 'Request details must not be logged'
 +        return result.stdout.decode()
 +    try:
 +        missing = request(base)
-+        assert missing.startswith('-1\n') and 'exit 77' in missing, 'Missing CA must retain its client error'
++        assert missing.startswith('-1\n') and 'exit 77' in missing, 'Missing CA must retain its client error: ' + missing
 +        shutil.copyfile(cert, sidecar)
 +        assert request(base) == '200\ntls verified'
 +        for closed_streams in (1, 2, 4, 7):
@@ -517,6 +578,8 @@
 +        # Early child termination must not SIGPIPE Main or change its policy.
 +        wrapper.write_text('#!/bin/sh\nexit 23\n')
 +        assert 'exit 23' in request(base, 'synthetic=' + 'x' * 2000000, search_path=probe_path)
++        for mode in (1, 2):
++            assert 'exit 23' in request(base, 'synthetic=' + 'x' * 2000000, search_path=probe_path, sigpipe_mode=mode)
 +        empty_path = d / 'empty-path'
 +        empty_path.mkdir()
 +        assert 'exit 127' in request(base, search_path=str(empty_path))

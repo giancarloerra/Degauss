@@ -991,6 +991,30 @@ impl PreparedCacheGroup {
         Ok(self)
     }
 
+    /// Keep a source or manual-match preference in the existing rollback group.
+    pub fn with_settings(
+        mut self,
+        path: &Path,
+        settings: &crate::settings::Settings,
+    ) -> Result<Self> {
+        self.stage_extra_file(
+            path.to_path_buf(),
+            settings.encode(path)?.as_bytes(),
+            "settings",
+            false,
+            |written| {
+                std::str::from_utf8(written)
+                    .is_ok_and(|text| toml::from_str::<crate::settings::Settings>(text).is_ok())
+            },
+        )?;
+        // The old overlay stays readable until the atomic replacement.
+        self.files
+            .last_mut()
+            .expect("staged settings")
+            .keep_live_backup = true;
+        Ok(self)
+    }
+
     /// Write one more file into the transaction: created beside its final
     /// path, synced, read back and decoded before it counts. Tracked from
     /// the moment it exists, so a failure after that cleans it up with the
@@ -1683,24 +1707,7 @@ pub fn prepare_pack_match(
         false,
         |written| matches!(decode_pack_prepared(written), Ok(Some(_))),
     )?;
-    staged.stage_extra_file(
-        settings_path.to_path_buf(),
-        settings.encode(settings_path)?.as_bytes(),
-        "match-settings",
-        false,
-        |written| {
-            std::str::from_utf8(written)
-                .is_ok_and(|text| toml::from_str::<crate::settings::Settings>(text).is_ok())
-        },
-    )?;
-    // Keep the previous settings in place until the atomic replacement,
-    // rather than allowing interruption to leave every preference absent.
-    staged
-        .files
-        .last_mut()
-        .expect("staged settings")
-        .keep_live_backup = true;
-    Ok(staged)
+    staged.with_settings(settings_path, settings)
 }
 
 /// When a folder itself last changed, seconds since the epoch, or 0.

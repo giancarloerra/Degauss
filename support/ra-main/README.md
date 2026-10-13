@@ -67,8 +67,11 @@ A separate `tls.patch` changes only the active HTTP transport and
 adds a real-curl host test. It removes certificate-verification bypass, requires
 HTTPS even for redirects, ignores curl startup configuration, and reports
 transport errors without URLs or credential contents. Curl is started directly;
-request values pass through an anonymous stdin connection, never shell/process
-arguments or request files. This uses curl 7.43 or newer (`data-raw`). The existing 16-byte version 1 shortcut configuration at
+request values pass through anonymous descriptors, never shell/process
+arguments or request files. POST bodies use a separate stdin stream rather than
+a configuration line, preserving large requests on older supported curl versions.
+The request writer preserves the caller's SIGPIPE handler, mask and pending signal.
+This supports curl 7.43 or newer. The existing 16-byte version 1 shortcut configuration at
 `config/degauss/frontend_shortcut.bin` is shared unchanged. There is no second
 shortcut setting. Frontend and the configured keyboard key load `menu.rbf`;
 normal Main profile selection determines the executable used after that load.

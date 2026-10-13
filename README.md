@@ -2523,7 +2523,7 @@ Degauss checks an installed Artwork Pack when its system is opened, not by scann
 3. **Options → Library → Automatic Data Source → Artwork Pack First** makes Artwork Packs the global preference for systems still set to **Automatic**. **Gamelist First** is the default and uses a root `gamelist.xml` when one is present.
 4. To select a pack for only one system, highlight that system or open it, press **X**, then choose **Library → Game Data Source → Artwork Pack**, its picture type and the detected location.
 
-An explicit per-system **Gamelist** or **Artwork Pack** choice always overrides the global Automatic preference. Packs installed normally through Update All are found below `docs/<System>/Artwork` on the SD card or USB storage.
+An explicit per-system **Gamelist** or **Artwork Pack** choice always overrides the global Automatic preference. Packs installed normally through Update All are found below `docs/<System>/Artwork` for Box Art, `docs/<System>/Screenshots` for Screenshot, or `docs/<System>/Titles` for Title Screen on the SD card or USB storage.
 
 ### How do I select Screenshot or Title Screen Artwork Packs?
 
