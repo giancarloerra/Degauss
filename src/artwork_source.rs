@@ -174,14 +174,23 @@ pub fn gamelist_present(system: &FoundSystem) -> Result<bool> {
 /// the accepted root once the user says yes, and the Pack read from that
 /// root covers every mapped folder, so all of it stays under the location
 /// it was found at.
+#[cfg(test)]
 pub fn candidate_root(system_id: &str, bases: &[PathBuf]) -> Result<Option<PathBuf>> {
+    candidate_root_for_type(system_id, bases, artwork_pack::PictureType::BoxArt)
+}
+
+pub fn candidate_root_for_type(
+    system_id: &str,
+    bases: &[PathBuf],
+    picture_type: artwork_pack::PictureType,
+) -> Result<Option<PathBuf>> {
     let folders = artwork_pack::expected_folders(system_id);
     let mut probes = BTreeMap::new();
     for base in bases {
         let docs = base.join("docs");
         let mut present = Vec::new();
         for folder in folders {
-            let artwork = docs.join(folder).join("Artwork");
+            let artwork = docs.join(folder).join(picture_type.folder());
             if exists_checked(&artwork, &mut probes)? {
                 present.push(artwork);
             }
@@ -379,6 +388,7 @@ mod tests {
                 id,
                 &crate::cache::PackSourceState {
                     accepted: Some(crate::cache::AcceptedSource {
+                        picture_type: artwork_pack::PictureType::BoxArt,
                         docs_root: root.to_string_lossy().into_owned(),
                         language: None,
                         signature: None,

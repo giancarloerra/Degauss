@@ -43,14 +43,14 @@ the pinned backend and validate it before shipping another Degauss release.
 
 ## Sources and compatibility
 
-- RA Main v1.13.0: commit `687d5dba7600fa7295aab9b967ff9923573332c9`
-  from https://github.com/odelot/Main_MiSTer/tree/687d5dba7600fa7295aab9b967ff9923573332c9.
+- RA Main v1.14.0: commit `756b4d6a18f742bd48885de2a03008436943dfa9`
+  from https://github.com/odelot/Main_MiSTer/tree/756b4d6a18f742bd48885de2a03008436943dfa9.
 - Source archive SHA-256:
-  `94c738309112228e13e70cee02f2a070ce11dbf4437bb60a1e5ad667aafe10d3`.
+  `5501487cf534afecac062ca1f65bebc61b5a2a55de60035a447dcf44060df768`.
 - Degauss integration: commit `8b6520d90311161a90760816a4821b20c2c5e899`
   from https://github.com/giancarloerra/Degauss-Main.
   The patch omits its unrelated input.cpp blank-line removal.
-- rcheevos 12.4.0 is already bundled in this exact RA source. Its bytes remain
+- rcheevos 12.5.0 is already bundled in this exact RA source. Its bytes remain
   unchanged; the build fails if the dependency or its compiled object is missing.
 - Mozilla CA bundle from https://curl.se/ca/cacert-2026-08-13.pem (MPL-2.0),
   SHA-256 `f66dff1bdf8f96060b8177976f8b7d9254bc89bc4db933d769f7384d28480bc9`.
@@ -67,8 +67,11 @@ A separate `tls.patch` changes only the active HTTP transport and
 adds a real-curl host test. It removes certificate-verification bypass, requires
 HTTPS even for redirects, ignores curl startup configuration, and reports
 transport errors without URLs or credential contents. Curl is started directly;
-request values pass through an anonymous stdin connection, never shell/process
-arguments or request files. This uses curl 7.43 or newer (`data-raw`). The existing 16-byte version 1 shortcut configuration at
+request values pass through anonymous descriptors, never shell/process
+arguments or request files. POST bodies use a separate stdin stream rather than
+a configuration line, preserving large requests on older supported curl versions.
+The request writer preserves the caller's SIGPIPE handler, mask and pending signal.
+This supports curl 7.43 or newer. The existing 16-byte version 1 shortcut configuration at
 `config/degauss/frontend_shortcut.bin` is shared unchanged. There is no second
 shortcut setting. Frontend and the configured keyboard key load `menu.rbf`;
 normal Main profile selection determines the executable used after that load.

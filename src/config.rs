@@ -7,6 +7,7 @@
 //! with MiSTer values (core `.rbf` path, and the `index`/`type`/`delay` an
 //! `.mgl` needs) instead of an emulator command line.
 
+use std::collections::BTreeMap;
 use std::path::Path;
 
 use serde::de::{self, Deserializer};
@@ -178,6 +179,31 @@ pub struct CoreProfile {
     /// Optional set name required by this core family.
     #[serde(default)]
     pub setname: Option<String>,
+    /// Keep the original core's game/BIOS folder with a separate set name.
+    #[serde(default)]
+    pub same_dir: bool,
+}
+
+/// Explicit changes to a built-in compatible profile, or a new named profile.
+#[derive(Debug, Clone, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+pub struct CoreProfileOverride {
+    pub label: Option<String>,
+    pub rbf: Option<String>,
+    /// An explicit empty string removes a set name; omission preserves it.
+    pub setname: Option<String>,
+    pub same_dir: Option<bool>,
+}
+
+/// Launch overrides keyed by the system's stable catalogue ID.
+#[derive(Debug, Clone, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+pub struct CoreOverride {
+    pub rbf: Option<String>,
+    pub setname: Option<String>,
+    pub same_dir: Option<bool>,
+    #[serde(default)]
+    pub compatible_cores: BTreeMap<String, CoreProfileOverride>,
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
@@ -198,6 +224,8 @@ pub struct SystemConfig {
     /// Set name for a core that presents itself as several systems.
     #[serde(default)]
     pub setname: Option<String>,
+    #[serde(default)]
+    pub same_dir: bool,
     /// Ordered compatible core families after the preferred system-level
     /// `rbf` and `setname`.
     #[serde(default)]
@@ -224,6 +252,7 @@ impl SystemConfig {
             let mut family = self.clone();
             family.rbf = profile.rbf.clone();
             family.setname = profile.setname.clone();
+            family.same_dir = profile.same_dir;
             family.compatible_cores.clear();
             family
         }));
@@ -377,6 +406,9 @@ pub struct Config {
     /// to find which group each installed core belongs to.
     #[serde(default = "default_menu_root")]
     pub menu_root: String,
+    /// Manual launch declarations, separate from saved UI choices.
+    #[serde(default)]
+    pub core_overrides: BTreeMap<String, CoreOverride>,
 }
 
 fn default_menu_root() -> String {
@@ -399,7 +431,22 @@ fn default_roots() -> Vec<String> {
 }
 
 impl Config {
+    #[cfg(test)]
     pub fn load(path: &Path) -> Result<Self> {
+        Self::load_with_core_table(path, None)
+    }
+
+    pub(crate) fn load_for_systems(
+        path: &Path,
+        table: &[crate::systems::SystemDef],
+    ) -> Result<Self> {
+        Self::load_with_core_table(path, Some(table))
+    }
+
+    fn load_with_core_table(
+        path: &Path,
+        table: Option<&[crate::systems::SystemDef]>,
+    ) -> Result<Self> {
         let text = std::fs::read_to_string(path)
             .map_err(|e| DegaussError::io("reading config", path, e))?;
         let base = Self::parse(&text, path)?;
@@ -415,7 +462,13 @@ impl Config {
                 return Ok(base);
             }
         };
-        match Self::with_overrides(&text, &user_text, &user_path) {
+        let merged = Self::with_overrides(&text, &user_text, &user_path).and_then(|config| {
+            if let Some(table) = table.filter(|_| !config.core_overrides.is_empty()) {
+                crate::systems::with_core_overrides(table, &config.core_overrides, &user_path)?;
+            }
+            Ok(config)
+        });
+        match merged {
             Ok(config) => Ok(config),
             Err(error) => {
                 crate::note(&format!(
@@ -504,6 +557,38 @@ pub const LEFT_RIGHT_VALUES: [&str; 4] = ["speed", "letter", "page", "direction"
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn invalid_core_overrides_ignore_the_whole_user_file_and_keep_it_intact() {
+        let root =
+            std::env::temp_dir().join(format!("degauss-core-overrides-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let path = root.join("degauss.toml");
+        let user_path = root.join("degauss-user.toml");
+        let base = include_str!("../degauss.toml");
+        std::fs::write(&path, base).unwrap();
+        let table = crate::systems::load_table(Path::new("assets/systems.toml")).unwrap();
+        for invalid in [
+            "[app]\nart_cache = 123\n[core_overrides.Unknown]\nrbf = \"_Console/Unknown\"\n",
+            "[app]\nart_cache = 123\n[core_overrides.NeoGeo.compatible_cores.incomplete]\nrbf = \"_Console/Custom\"\n",
+            "[app]\nart_cache = 123\n[core_overrides.NeoGeo]\nrbf = \"_Console/NeoGeo.rbf\"\n",
+            "[app]\nart_cache = 123\n[core_overrides.NeoGeo.compatible_cores.custom]\nlabel = \"Custom\"\nrbf = \"_Console/Custom.RBF\"\n",
+        ] {
+            std::fs::write(&user_path, invalid).unwrap();
+            let config = Config::load_for_systems(&path, &table).unwrap();
+            assert!(config.core_overrides.is_empty());
+            assert_eq!(config.app.art_cache, Config::parse(base, &path).unwrap().app.art_cache);
+            assert_eq!(std::fs::read_to_string(&user_path).unwrap(), invalid);
+        }
+        let valid = "[app]\nart_cache = 123\n[core_overrides.NeoGeo.compatible_cores.custom]\nlabel = \"Custom\"\nrbf = \"_Console/Custom\"\n";
+        std::fs::write(&user_path, valid).unwrap();
+        let config = Config::load_for_systems(&path, &table).unwrap();
+        assert_eq!(config.app.art_cache, 123);
+        assert!(config.core_overrides.contains_key("NeoGeo"));
+        assert_eq!(std::fs::read_to_string(&user_path).unwrap(), valid);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), base);
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn user_overrides_merge_tables_replace_arrays_and_preserve_defaults() {
@@ -727,6 +812,7 @@ favorite = "#fe2e1d"
             launch: Vec::new(),
             skip_folders: Vec::new(),
             setname: None,
+            same_dir: false,
             compatible_cores: Vec::new(),
             extra_paths: Vec::new(),
         };
@@ -747,6 +833,7 @@ favorite = "#fe2e1d"
             launch: Vec::new(),
             skip_folders: Vec::new(),
             setname: Some("Atari2600".into()),
+            same_dir: false,
             compatible_cores: Vec::new(),
             extra_paths: vec!["/games/Atari2600/ATARI7800".into()],
         };
@@ -778,6 +865,7 @@ favorite = "#fe2e1d"
             }],
             skip_folders: Vec::new(),
             setname: None,
+            same_dir: false,
             compatible_cores: Vec::new(),
             extra_paths: Vec::new(),
         };

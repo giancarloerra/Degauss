@@ -21,7 +21,10 @@ const EVENT_QUEUE: usize = 16;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Target {
     Gamelist,
-    ArtworkPack { docs_root: PathBuf },
+    ArtworkPack {
+        docs_root: PathBuf,
+        picture_type: crate::artwork_pack::PictureType,
+    },
 }
 
 #[derive(Clone)]
@@ -182,11 +185,16 @@ fn run(request: Request, events: &SyncSender<Event>, cancelled: &Arc<AtomicBool>
         progress.current = system.name.clone();
         let _ = events.send(Event::Progress(progress.clone()));
 
-        let mut provider = if let Target::ArtworkPack { docs_root } = &request.target {
-            let Some(provider) = crate::artwork_pack::Provider::load_controlled(
+        let mut provider = if let Target::ArtworkPack {
+            docs_root,
+            picture_type,
+        } = &request.target
+        {
+            let Some(provider) = crate::artwork_pack::Provider::load_controlled_for_type(
                 &system.id,
                 docs_root,
                 request.synopsis_language.as_deref(),
+                *picture_type,
                 cancelled,
             ) else {
                 let _ = events.send(Event::Cancelled(progress));
@@ -310,7 +318,7 @@ fn run(request: Request, events: &SyncSender<Event>, cancelled: &Arc<AtomicBool>
                 &mut skipped,
                 request
                     .manual_matches
-                    .get(&system.id)
+                    .get(&provider.picture_type.match_key(&system.id))
                     .unwrap_or(&crate::artwork_pack::ManualMatches::new()),
             ) {
                 Ok(Some(_)) => {}
@@ -401,7 +409,7 @@ fn stage_pack_state(
     providers: &[crate::artwork_pack::Provider],
     skipped_counts: &[usize],
 ) -> Result<PreparedCacheGroup> {
-    let Target::ArtworkPack { docs_root } = target else {
+    let Target::ArtworkPack { docs_root, .. } = target else {
         return Ok(prepared);
     };
     let markers = prepared.markers().to_vec();
@@ -414,6 +422,7 @@ fn stage_pack_state(
         }
         let state = crate::cache::PackSourceState {
             accepted: Some(crate::cache::AcceptedSource {
+                picture_type: provider.picture_type,
                 docs_root: docs_root.to_string_lossy().into_owned(),
                 language: provider.synopsis_language().map(str::to_string),
                 signature: provider.snapshot().cloned(),
@@ -464,6 +473,7 @@ mod tests {
             rbf: "_Console/Test".to_string(),
             launch: Vec::new(),
             setname: None,
+            same_dir: false,
             compatible_cores: Vec::new(),
             skip_folders: Vec::new(),
             extra_paths: Vec::new(),
@@ -529,7 +539,10 @@ mod tests {
         std::fs::write(games.join("Known.pce"), b"rom").unwrap();
 
         let mut job = start(Request {
-            target: Target::ArtworkPack { docs_root: docs },
+            target: Target::ArtworkPack {
+                docs_root: docs,
+                picture_type: crate::artwork_pack::PictureType::BoxArt,
+            },
             systems: vec![System {
                 id: "SuperGrafx".to_string(),
                 name: "SuperGrafx".to_string(),
@@ -633,7 +646,10 @@ mod tests {
         std::fs::write(arcade_games.join("Known.neo"), b"rom").unwrap();
 
         let mut job = start(Request {
-            target: Target::ArtworkPack { docs_root: docs },
+            target: Target::ArtworkPack {
+                docs_root: docs,
+                picture_type: crate::artwork_pack::PictureType::BoxArt,
+            },
             systems: vec![
                 System {
                     id: "NeoGeo".to_string(),
@@ -726,7 +742,10 @@ mod tests {
         });
 
         let mut job = start(Request {
-            target: Target::ArtworkPack { docs_root: docs },
+            target: Target::ArtworkPack {
+                docs_root: docs,
+                picture_type: crate::artwork_pack::PictureType::BoxArt,
+            },
             systems: systems.to_vec(),
             names: DisplayNames::default(),
             synopsis_language: Some("en".to_string()),
@@ -818,6 +837,7 @@ mod tests {
         let request = |require_usable_provider| Request {
             target: Target::ArtworkPack {
                 docs_root: docs.clone(),
+                picture_type: crate::artwork_pack::PictureType::BoxArt,
             },
             systems: vec![System {
                 id: "SuperGrafx".to_string(),
@@ -930,6 +950,7 @@ mod tests {
             (
                 Target::ArtworkPack {
                     docs_root: docs.clone(),
+                    picture_type: crate::artwork_pack::PictureType::BoxArt,
                 },
                 root.join("pack-cache"),
             ),
@@ -1064,6 +1085,7 @@ mod tests {
         Request {
             target: Target::ArtworkPack {
                 docs_root: docs.to_path_buf(),
+                picture_type: crate::artwork_pack::PictureType::BoxArt,
             },
             systems: vec![System {
                 id: "Arcade".to_string(),
@@ -1128,6 +1150,7 @@ mod tests {
         let mut job = start(Request {
             target: Target::ArtworkPack {
                 docs_root: docs.clone(),
+                picture_type: crate::artwork_pack::PictureType::BoxArt,
             },
             systems: systems.clone(),
             names: DisplayNames::default(),

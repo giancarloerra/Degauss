@@ -679,6 +679,7 @@ mod tests {
             "NeoGeo",
             &crate::cache::PackSourceState {
                 accepted: Some(crate::cache::AcceptedSource {
+                    picture_type: crate::artwork_pack::PictureType::BoxArt,
                     docs_root: f.path("docs").to_string_lossy().into_owned(),
                     language: None,
                     signature: None,

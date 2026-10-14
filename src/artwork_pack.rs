@@ -1,7 +1,7 @@
 //! Read-only support for the MiSTer Artwork Pack database format.
 //!
 //! Pack keys are deliberately transient. A provider snapshot resolves the
-//! current local TSV files and JPEG directory, then projects presentation on
+//! current local TSV files and image directory, then projects presentation on
 //! source-neutral browse rows without writing anything into the Pack.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -25,12 +25,76 @@ const MAX_TOTAL_TSV_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_ROWS: usize = 250_000;
 const MAX_LINE_BYTES: usize = 64 * 1024;
 const MAX_VALUE_BYTES: usize = 1_024;
-const MAX_JPEGS: usize = 100_000;
+const MAX_IMAGES: usize = 100_000;
 // XML metadata stays bounded; embedded ROM bytes do not belong to that budget.
 const MAX_IDENTITY_XML_BYTES: usize = 1024 * 1024;
 const MAX_MGL_REDIRECTS: usize = 8;
 const MAX_HASH_BYTES: u64 = 64 * 1024 * 1024;
 const HASH_BUFFER_BYTES: usize = 128 * 1024;
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum PictureType {
+    #[default]
+    BoxArt,
+    Screenshot,
+    TitleScreen,
+}
+
+impl PictureType {
+    pub const ALL: [Self; 3] = [Self::BoxArt, Self::Screenshot, Self::TitleScreen];
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::BoxArt => "Box Art",
+            Self::Screenshot => "Screenshot",
+            Self::TitleScreen => "Title Screen",
+        }
+    }
+
+    pub const fn folder(self) -> &'static str {
+        match self {
+            Self::BoxArt => "Artwork",
+            Self::Screenshot => "Screenshots",
+            Self::TitleScreen => "Titles",
+        }
+    }
+
+    const fn extension(self) -> &'static str {
+        match self {
+            Self::BoxArt => "jpg",
+            Self::Screenshot | Self::TitleScreen => "png",
+        }
+    }
+
+    const fn format_name(self) -> &'static str {
+        match self {
+            Self::BoxArt => "JPEG",
+            Self::Screenshot | Self::TitleScreen => "PNG",
+        }
+    }
+
+    /// Box identities keep their existing persisted spelling. New types
+    /// identify the actual relative directory in that same field.
+    fn source_folder(self, system_folder: &str) -> String {
+        if self == Self::BoxArt {
+            system_folder.to_string()
+        } else {
+            format!("{system_folder}/{}", self.folder())
+        }
+    }
+
+    pub fn match_key(self, system_id: &str) -> String {
+        self.source_folder(system_id)
+    }
+}
+
+pub fn selected_picture_type(settings: &crate::settings::Settings, system_id: &str) -> PictureType {
+    source_group(system_id)
+        .and_then(|group| settings.artwork_pack_picture_types.get(group))
+        .copied()
+        .unwrap_or_default()
+}
 
 type ImageIndex = (HashMap<String, PathBuf>, Option<String>);
 
@@ -278,6 +342,7 @@ impl PackDirectory {
 pub struct Provider {
     pub system_id: String,
     pub docs_root: PathBuf,
+    pub picture_type: PictureType,
     pub health: ProviderHealth,
     pub diagnostics: Vec<String>,
     directories: Arc<Vec<PackDirectory>>,
@@ -440,7 +505,10 @@ impl Provider {
         let Some(language) = diagnostic.synopsis_language.as_deref() else {
             return Ok(None);
         };
-        let artwork = self.docs_root.join(&diagnostic.pack_folder).join("Artwork");
+        let artwork = self
+            .docs_root
+            .join(&diagnostic.pack_folder)
+            .join(self.picture_type.folder());
         let filename = format!("synopsis_{language}.tsv");
         let mut selected_path = None;
         for entry in std::fs::read_dir(&artwork).map_err(|error| {
@@ -540,21 +608,39 @@ impl Provider {
         Ok(identity)
     }
 
+    #[cfg(test)]
     pub fn load(system_id: &str, docs_root: &Path, language: Option<&str>) -> Self {
+        Self::load_for_type(system_id, docs_root, language, PictureType::BoxArt)
+    }
+
+    pub fn load_for_type(
+        system_id: &str,
+        docs_root: &Path,
+        language: Option<&str>,
+        picture_type: PictureType,
+    ) -> Self {
         let cancelled = AtomicBool::new(false);
-        Self::load_controlled(system_id, docs_root, language, &cancelled)
+        Self::load_controlled_for_type(system_id, docs_root, language, picture_type, &cancelled)
             .expect("a non-cancellable provider load cannot be cancelled")
     }
 
     /// Parse one immutable provider snapshot with cooperative cancellation
     /// between Pack directory entries and table rows.
-    pub fn load_controlled(
+    pub fn load_controlled_for_type(
         system_id: &str,
         docs_root: &Path,
         language: Option<&str>,
+        picture_type: PictureType,
         cancelled: &AtomicBool,
     ) -> Option<Self> {
-        Self::load_observed_controlled(system_id, docs_root, language, cancelled, |_, _| {})
+        Self::load_observed_controlled_for_type(
+            system_id,
+            docs_root,
+            language,
+            picture_type,
+            cancelled,
+            |_, _| {},
+        )
     }
 
     #[cfg(test)]
@@ -569,10 +655,29 @@ impl Provider {
             .expect("a non-cancellable provider load cannot be cancelled")
     }
 
+    #[cfg(test)]
     fn load_observed_controlled(
         system_id: &str,
         docs_root: &Path,
         language: Option<&str>,
+        cancelled: &AtomicBool,
+        after_read: impl FnMut(usize, &Path),
+    ) -> Option<Self> {
+        Self::load_observed_controlled_for_type(
+            system_id,
+            docs_root,
+            language,
+            PictureType::BoxArt,
+            cancelled,
+            after_read,
+        )
+    }
+
+    fn load_observed_controlled_for_type(
+        system_id: &str,
+        docs_root: &Path,
+        language: Option<&str>,
+        picture_type: PictureType,
         cancelled: &AtomicBool,
         mut after_read: impl FnMut(usize, &Path),
     ) -> Option<Self> {
@@ -583,6 +688,7 @@ impl Provider {
             return Some(Self {
                 system_id: system_id.to_string(),
                 docs_root: docs_root.to_path_buf(),
+                picture_type,
                 health: ProviderHealth::Invalid,
                 diagnostics: vec![format!("{system_id} has no Artwork Pack mapping")],
                 directories: Arc::new(Vec::new()),
@@ -594,42 +700,55 @@ impl Provider {
         };
 
         for attempt in 0..2 {
-            let before = match source_fingerprint_controlled(mapping, docs_root, cancelled) {
-                Ok(Some(before)) => before,
-                Ok(None) => return None,
-                Err(error) => {
-                    let mut provider = Self::load_once_controlled(
-                        system_id, docs_root, language, mapping, cancelled,
-                    )?;
-                    provider
-                        .diagnostics
-                        .push(format!("source fingerprint could not be read: {error}"));
-                    if provider.health == ProviderHealth::Ready {
-                        provider.health = ProviderHealth::Degraded;
+            let before =
+                match source_fingerprint_controlled(mapping, docs_root, picture_type, cancelled) {
+                    Ok(Some(before)) => before,
+                    Ok(None) => return None,
+                    Err(error) => {
+                        let mut provider = Self::load_once_controlled(
+                            system_id,
+                            docs_root,
+                            language,
+                            mapping,
+                            picture_type,
+                            cancelled,
+                        )?;
+                        provider
+                            .diagnostics
+                            .push(format!("source fingerprint could not be read: {error}"));
+                        if provider.health == ProviderHealth::Ready {
+                            provider.health = ProviderHealth::Degraded;
+                        }
+                        return Some(provider);
                     }
-                    return Some(provider);
-                }
-            };
-            let mut provider =
-                Self::load_once_controlled(system_id, docs_root, language, mapping, cancelled)?;
+                };
+            let mut provider = Self::load_once_controlled(
+                system_id,
+                docs_root,
+                language,
+                mapping,
+                picture_type,
+                cancelled,
+            )?;
             after_read(attempt, docs_root);
             if cancelled.load(Ordering::Relaxed) {
                 return None;
             }
-            let after = match source_fingerprint_controlled(mapping, docs_root, cancelled) {
-                Ok(Some(after)) => after,
-                Ok(None) => return None,
-                Err(error) => {
-                    provider.snapshot = None;
-                    provider
-                        .diagnostics
-                        .push(format!("source fingerprint could not be re-read: {error}"));
-                    if provider.health == ProviderHealth::Ready {
-                        provider.health = ProviderHealth::Degraded;
+            let after =
+                match source_fingerprint_controlled(mapping, docs_root, picture_type, cancelled) {
+                    Ok(Some(after)) => after,
+                    Ok(None) => return None,
+                    Err(error) => {
+                        provider.snapshot = None;
+                        provider
+                            .diagnostics
+                            .push(format!("source fingerprint could not be re-read: {error}"));
+                        if provider.health == ProviderHealth::Ready {
+                            provider.health = ProviderHealth::Degraded;
+                        }
+                        return Some(provider);
                     }
-                    return Some(provider);
-                }
-            };
+                };
             if before == after {
                 provider.snapshot = Some(after);
                 return Some(provider);
@@ -638,6 +757,7 @@ impl Provider {
                 return Some(Self {
                     system_id: system_id.to_string(),
                     docs_root: docs_root.to_path_buf(),
+                    picture_type,
                     health: ProviderHealth::Invalid,
                     diagnostics: vec![format!(
                         "{} changed repeatedly while it was being read; wait for the Artwork Pack update to finish",
@@ -659,6 +779,7 @@ impl Provider {
         docs_root: &Path,
         language: Option<&str>,
         mapping: Mapping,
+        picture_type: PictureType,
         cancelled: &AtomicBool,
     ) -> Option<Self> {
         let mut directories = Vec::new();
@@ -669,12 +790,12 @@ impl Provider {
             if cancelled.load(Ordering::Relaxed) {
                 return None;
             }
-            let artwork = docs_root.join(folder).join("Artwork");
+            let artwork = docs_root.join(folder).join(picture_type.folder());
             if !artwork.exists() {
                 continue;
             }
             present += 1;
-            match load_stable_directory(folder, &artwork, language, cancelled) {
+            match load_stable_directory(folder, &artwork, language, picture_type, cancelled) {
                 Ok(Some((directory, warnings))) => {
                     primary_usable |= index == 0;
                     diagnostics.extend(warnings);
@@ -688,7 +809,8 @@ impl Provider {
         let health = if directories.is_empty() {
             if present == 0 {
                 diagnostics.push(format!(
-                    "No mapped Artwork directory was found under {}",
+                    "No mapped {} directory was found under {}",
+                    picture_type.folder(),
                     docs_root.display()
                 ));
                 ProviderHealth::Unavailable
@@ -704,6 +826,7 @@ impl Provider {
         Some(Self {
             system_id: system_id.to_string(),
             docs_root: docs_root.to_path_buf(),
+            picture_type,
             health,
             diagnostics,
             directories: Arc::new(directories),
@@ -719,7 +842,7 @@ impl Provider {
     /// Pack system separately clears decoded images, so a style replacement
     /// at an unchanged path still reloads the visible pixels.
     pub fn still_current(&self, docs_root: &Path, language: Option<&str>) -> bool {
-        if !self.configuration_matches(docs_root, language) {
+        if !self.configuration_matches(docs_root, language, self.picture_type) {
             return false;
         }
         let Some(mapping) = mapping(&self.system_id) else {
@@ -728,7 +851,7 @@ impl Provider {
         let Some(snapshot) = self.snapshot.as_ref() else {
             return false;
         };
-        snapshot.still_current(mapping, docs_root)
+        snapshot.still_current(mapping, docs_root, self.picture_type)
     }
 
     /// Whether a worker result still belongs to the selected root and language.
@@ -736,8 +859,15 @@ impl Provider {
     /// Invalid snapshot whose source could not be fingerprinted: that health is
     /// the result the UI must show instead of scheduling the same failed read
     /// forever.
-    pub fn configuration_matches(&self, docs_root: &Path, language: Option<&str>) -> bool {
-        self.docs_root == docs_root && self.synopsis_language == normalized_language(language)
+    pub fn configuration_matches(
+        &self,
+        docs_root: &Path,
+        language: Option<&str>,
+        picture_type: PictureType,
+    ) -> bool {
+        self.docs_root == docs_root
+            && self.synopsis_language == normalized_language(language)
+            && self.picture_type == picture_type
     }
 
     /// A reused parsed provider must not carry presentation prepared against
@@ -957,18 +1087,17 @@ impl Provider {
         system_id: &str,
         docs_root: &Path,
         language: Option<&str>,
-        health: ProviderHealth,
-        diagnostics: Vec<String>,
-        snapshot: Option<SourceFingerprint>,
+        accepted: &crate::cache::AcceptedSource,
         prepared: HashMap<Launch, PackPresentation>,
     ) -> Self {
         Self {
             system_id: system_id.to_string(),
             docs_root: docs_root.to_path_buf(),
-            health,
-            diagnostics,
+            picture_type: accepted.picture_type,
+            health: accepted.health,
+            diagnostics: accepted.diagnostics.clone(),
             directories: Arc::new(Vec::new()),
-            snapshot,
+            snapshot: accepted.signature.clone(),
             synopsis_language: normalized_language(language),
             prepared: Some(Arc::new(prepared)),
             archive_cache: Arc::new(std::sync::Mutex::new(crate::zip::ArchiveCache::default())),
@@ -1659,7 +1788,16 @@ pub fn selected_root<'a>(roots: &'a BTreeMap<String, String>, system_id: &str) -
 
 /// Find bounded structural candidates. The UI validates each candidate with a
 /// full provider read on a worker before it can be offered for selection.
+#[cfg(test)]
 pub fn discover_candidate_roots(system_id: &str, game_roots: &[String]) -> Vec<PathBuf> {
+    discover_candidate_roots_for_type(system_id, game_roots, PictureType::BoxArt)
+}
+
+pub fn discover_candidate_roots_for_type(
+    system_id: &str,
+    game_roots: &[String],
+    picture_type: PictureType,
+) -> Vec<PathBuf> {
     let mut bases = vec![
         PathBuf::from("/media/fat"),
         PathBuf::from("/media/network"),
@@ -1685,7 +1823,7 @@ pub fn discover_candidate_roots(system_id: &str, game_roots: &[String]) -> Vec<P
         };
         let present: Vec<PathBuf> = expected_folders(system_id)
             .iter()
-            .map(|folder| docs.join(folder).join("Artwork"))
+            .map(|folder| docs.join(folder).join(picture_type.folder()))
             .filter(|artwork| artwork.is_dir())
             .collect();
         if present.is_empty() {
@@ -1712,13 +1850,22 @@ pub fn discover_candidate_roots(system_id: &str, game_roots: &[String]) -> Vec<P
     found
 }
 
+#[cfg(test)]
 pub fn normalize_docs_root(system_id: &str, chosen: &Path) -> Option<PathBuf> {
+    normalize_docs_root_for_type(system_id, chosen, PictureType::BoxArt)
+}
+
+pub fn normalize_docs_root_for_type(
+    system_id: &str,
+    chosen: &Path,
+    picture_type: PictureType,
+) -> Option<PathBuf> {
     let canonical = std::fs::canonicalize(chosen).ok()?;
     for ancestor in canonical.ancestors() {
         if ancestor.file_name().is_some_and(|name| name == "docs")
             && expected_folders(system_id)
                 .iter()
-                .any(|folder| ancestor.join(folder).join("Artwork").is_dir())
+                .any(|folder| ancestor.join(folder).join(picture_type.folder()).is_dir())
         {
             return Some(ancestor.to_path_buf());
         }
@@ -1726,7 +1873,7 @@ pub fn normalize_docs_root(system_id: &str, chosen: &Path) -> Option<PathBuf> {
     let direct = canonical.join("docs");
     expected_folders(system_id)
         .iter()
-        .any(|folder| direct.join(folder).join("Artwork").is_dir())
+        .any(|folder| direct.join(folder).join(picture_type.folder()).is_dir())
         .then_some(direct)
 }
 
@@ -1734,13 +1881,14 @@ fn load_stable_directory(
     label: &str,
     artwork: &Path,
     language: Option<&str>,
+    picture_type: PictureType,
     cancelled: &AtomicBool,
 ) -> Result<Option<(PackDirectory, Vec<String>)>> {
     for attempt in 0..2 {
         let Some(before) = fingerprint_controlled(artwork, cancelled)? else {
             return Ok(None);
         };
-        let loaded = load_directory(label, artwork, language, cancelled);
+        let loaded = load_directory(label, artwork, language, picture_type, cancelled);
         if cancelled.load(Ordering::Relaxed) {
             return Ok(None);
         }
@@ -1798,19 +1946,35 @@ pub enum SnapshotStatus {
 }
 
 impl SourceFingerprint {
+    pub fn picture_type(&self) -> PictureType {
+        match self
+            .0
+            .first()
+            .and_then(|(folder, _)| folder.rsplit_once('/'))
+            .map(|(_, kind)| kind)
+        {
+            Some("Screenshots") => PictureType::Screenshot,
+            Some("Titles") => PictureType::TitleScreen,
+            _ => PictureType::BoxArt,
+        }
+    }
     /// Recheck an immutable snapshot without enumerating the image directory.
     /// The directory mtime detects entry replacement/addition/removal, and the
     /// already-known table paths detect in-place table edits. Provider loading
     /// itself still performs the full bounded directory read on its worker.
-    fn still_current(&self, mapping: Mapping, docs_root: &Path) -> bool {
+    fn still_current(&self, mapping: Mapping, docs_root: &Path, picture_type: PictureType) -> bool {
         self.0.len() == mapping.folders.len()
             && self.0.iter().zip(mapping.folders).all(
                 |((recorded_folder, recorded), current_folder)| {
-                    recorded_folder == current_folder
+                    *recorded_folder == picture_type.source_folder(current_folder)
                         && match recorded {
-                            Some(recorded) => recorded
-                                .still_current(&docs_root.join(current_folder).join("Artwork")),
-                            None => !docs_root.join(current_folder).join("Artwork").exists(),
+                            Some(recorded) => recorded.still_current(
+                                &docs_root.join(current_folder).join(picture_type.folder()),
+                            ),
+                            None => !docs_root
+                                .join(current_folder)
+                                .join(picture_type.folder())
+                                .exists(),
                         }
                 },
             )
@@ -1829,6 +1993,7 @@ impl SourceFingerprint {
         mapping: Mapping,
         docs_root: &Path,
         language: Option<&str>,
+        picture_type: PictureType,
     ) -> (SnapshotStatus, SourceFingerprint) {
         match std::fs::metadata(docs_root) {
             Ok(metadata) if metadata.is_dir() => {}
@@ -1848,9 +2013,9 @@ impl SourceFingerprint {
                 .0
                 .iter()
                 .zip(mapping.folders)
-                .all(|((recorded, _), current)| recorded == current);
+                .all(|((recorded, _), current)| *recorded == picture_type.source_folder(current));
         if !same_layout {
-            return match known_tables_fingerprint(mapping, docs_root, language) {
+            return match known_tables_fingerprint(mapping, docs_root, language, picture_type) {
                 Ok(refreshed) => (SnapshotStatus::Changed, refreshed),
                 Err(error) => {
                     crate::note(&format!("artwork pack {}: {error}", docs_root.display()));
@@ -1863,7 +2028,7 @@ impl SourceFingerprint {
         for (index, ((folder, recorded), current_folder)) in
             self.0.iter().zip(mapping.folders).enumerate()
         {
-            let artwork = docs_root.join(current_folder).join("Artwork");
+            let artwork = docs_root.join(current_folder).join(picture_type.folder());
             let now = match refreshed_fingerprint(&artwork, recorded.as_ref(), language) {
                 Ok(now) => now,
                 Err(error) => {
@@ -1897,14 +2062,31 @@ impl SourceFingerprint {
 /// The entry check for one system: see [`SourceFingerprint::status`]. A
 /// system without a Pack mapping has no signature to check against. The
 /// language is the one whose synopsis table is looked for by name.
+#[cfg(test)]
 pub(crate) fn snapshot_status(
     system_id: &str,
     signature: &SourceFingerprint,
     docs_root: &Path,
     language: Option<&str>,
 ) -> (SnapshotStatus, SourceFingerprint) {
+    snapshot_status_for_type(
+        system_id,
+        signature,
+        docs_root,
+        language,
+        PictureType::BoxArt,
+    )
+}
+
+pub(crate) fn snapshot_status_for_type(
+    system_id: &str,
+    signature: &SourceFingerprint,
+    docs_root: &Path,
+    language: Option<&str>,
+    picture_type: PictureType,
+) -> (SnapshotStatus, SourceFingerprint) {
     match mapping(system_id) {
-        Some(mapping) => signature.status(mapping, docs_root, language),
+        Some(mapping) => signature.status(mapping, docs_root, language, picture_type),
         None => (SnapshotStatus::Changed, signature.clone()),
     }
 }
@@ -1917,12 +2099,13 @@ fn known_tables_fingerprint(
     mapping: Mapping,
     docs_root: &Path,
     language: Option<&str>,
+    picture_type: PictureType,
 ) -> Result<SourceFingerprint> {
     let mut directories = Vec::with_capacity(mapping.folders.len());
     for folder in mapping.folders {
-        let artwork = docs_root.join(folder).join("Artwork");
+        let artwork = docs_root.join(folder).join(picture_type.folder());
         directories.push((
-            (*folder).to_string(),
+            picture_type.source_folder(folder),
             refreshed_fingerprint(&artwork, None, language)?,
         ));
     }
@@ -1930,10 +2113,20 @@ fn known_tables_fingerprint(
 }
 
 /// The same for a system id, for callers outside this module.
+#[cfg(test)]
 pub(crate) fn known_tables_signature(
     system_id: &str,
     docs_root: &Path,
     language: Option<&str>,
+) -> Result<SourceFingerprint> {
+    known_tables_signature_for_type(system_id, docs_root, language, PictureType::BoxArt)
+}
+
+pub(crate) fn known_tables_signature_for_type(
+    system_id: &str,
+    docs_root: &Path,
+    language: Option<&str>,
+    picture_type: PictureType,
 ) -> Result<SourceFingerprint> {
     let mapping = mapping(system_id).ok_or_else(|| {
         DegaussError::unsupported(
@@ -1941,7 +2134,7 @@ pub(crate) fn known_tables_signature(
             format!("{system_id} has no Artwork Pack mapping"),
         )
     })?;
-    known_tables_fingerprint(mapping, docs_root, language)
+    known_tables_fingerprint(mapping, docs_root, language, picture_type)
 }
 
 /// The fixed table names, stat'd whether or not they were there last
@@ -2080,6 +2273,7 @@ impl Fingerprint {
 fn source_fingerprint_controlled(
     mapping: Mapping,
     docs_root: &Path,
+    picture_type: PictureType,
     cancelled: &AtomicBool,
 ) -> Result<Option<SourceFingerprint>> {
     let mut directories = Vec::new();
@@ -2087,7 +2281,7 @@ fn source_fingerprint_controlled(
         if cancelled.load(Ordering::Relaxed) {
             return Ok(None);
         }
-        let artwork = docs_root.join(folder).join("Artwork");
+        let artwork = docs_root.join(folder).join(picture_type.folder());
         let fingerprint = if artwork.exists() {
             let Some(fingerprint) = fingerprint_controlled(&artwork, cancelled)? else {
                 return Ok(None);
@@ -2096,7 +2290,7 @@ fn source_fingerprint_controlled(
         } else {
             None
         };
-        directories.push(((*folder).to_string(), fingerprint));
+        directories.push((picture_type.source_folder(folder), fingerprint));
     }
     Ok(Some(SourceFingerprint(directories)))
 }
@@ -2217,26 +2411,36 @@ fn load_directory(
     label: &str,
     artwork: &Path,
     language: Option<&str>,
+    picture_type: PictureType,
     cancelled: &AtomicBool,
 ) -> Result<Option<(PackDirectory, Vec<String>)>> {
     let mut warnings = Vec::new();
     let mut table_budget = TableBudget::default();
-    let Some((all_images, collision)) = image_index(artwork, cancelled)? else {
+    let Some((all_images, collision)) = image_index_for_type(artwork, picture_type, cancelled)?
+    else {
         return Ok(None);
     };
     if let Some(name) = collision {
         return Err(DegaussError::malformed(
             "Artwork Pack",
             artwork,
-            format!("case-insensitive JPEG collision for {name}"),
+            format!(
+                "case-insensitive {} collision for {name}",
+                picture_type.format_name()
+            ),
         ));
     }
 
     let manifest_path = artwork.join("manifest.tsv");
+    let header: &[&str] = if picture_type == PictureType::BoxArt {
+        &["#key", "style", "ss_system_id"]
+    } else {
+        &["#key", "style", "ss_system_id", "encoding"]
+    };
     let Some(manifest_rows) = read_tsv_controlled(
         &manifest_path,
-        &["#key", "style", "ss_system_id"],
-        3,
+        header,
+        header.len(),
         &mut table_budget,
         cancelled,
     )?
@@ -2285,7 +2489,10 @@ fn load_directory(
         return Err(DegaussError::malformed(
             "Artwork Pack manifest",
             &manifest_path,
-            "no manifest key has a matching JPEG",
+            format!(
+                "no manifest key has a matching {}",
+                picture_type.format_name()
+            ),
         ));
     }
     if missing_images > 0 {
@@ -2530,7 +2737,11 @@ fn parse_index_rows_controlled(
     Ok(Some((names, crc_and_size, bare_titles, warnings)))
 }
 
-fn image_index(artwork: &Path, cancelled: &AtomicBool) -> Result<Option<ImageIndex>> {
+fn image_index_for_type(
+    artwork: &Path,
+    picture_type: PictureType,
+    cancelled: &AtomicBool,
+) -> Result<Option<ImageIndex>> {
     if cancelled.load(Ordering::Relaxed) {
         return Ok(None);
     }
@@ -2549,7 +2760,7 @@ fn image_index(artwork: &Path, cancelled: &AtomicBool) -> Result<Option<ImageInd
         let path = item.path();
         if !path
             .extension()
-            .is_some_and(|extension| extension.eq_ignore_ascii_case("jpg"))
+            .is_some_and(|extension| extension.eq_ignore_ascii_case(picture_type.extension()))
         {
             continue;
         }
@@ -2594,7 +2805,7 @@ fn image_index(artwork: &Path, cancelled: &AtomicBool) -> Result<Option<ImageInd
             continue;
         }
         count += 1;
-        validate_jpeg_count(count, artwork)?;
+        validate_image_count(count, artwork, picture_type)?;
         validate_key(&stem, &path)?;
         if let Some(key) = insert_image_entry(&mut images, &stem, path) {
             return Ok(Some((images, Some(key))));
@@ -2612,11 +2823,15 @@ fn insert_image_entry(
     images.insert(key.clone(), path).map(|_| key)
 }
 
-fn validate_jpeg_count(count: usize, artwork: &Path) -> Result<()> {
-    if count > MAX_JPEGS {
+fn validate_image_count(count: usize, artwork: &Path, picture_type: PictureType) -> Result<()> {
+    if count > MAX_IMAGES {
         return Err(DegaussError::unsupported(
             "Artwork Pack",
-            format!("{} has more than {MAX_JPEGS} JPEGs", artwork.display()),
+            format!(
+                "{} has more than {MAX_IMAGES} {}s",
+                artwork.display(),
+                picture_type.format_name()
+            ),
         ));
     }
     Ok(())
@@ -3498,6 +3713,116 @@ mod tests {
     }
 
     #[test]
+    fn screenshot_and_title_packs_use_their_own_tables_keys_and_image_format() {
+        let (docs, boxes) = pack("picture-types");
+        ready_tables(&boxes, "Shared Dump\t\t\tChosen Game (USA)\n", "");
+        let box_provider = Provider::load("SuperGrafx", &docs, None);
+        assert_eq!(box_provider.health, ProviderHealth::Ready);
+        let old_signature = box_provider.snapshot().unwrap().clone();
+        let legacy_bytes = postcard::to_allocvec(&old_signature.0).unwrap();
+        assert_eq!(
+            postcard::to_allocvec(&old_signature).unwrap(),
+            legacy_bytes,
+            "Box Art retains the original serialized signature representation"
+        );
+        assert_eq!(
+            postcard::from_bytes::<SourceFingerprint>(&legacy_bytes)
+                .unwrap()
+                .picture_type(),
+            PictureType::BoxArt
+        );
+
+        for kind in [PictureType::Screenshot, PictureType::TitleScreen] {
+            let art = docs.join("SuperGrafx").join(kind.folder());
+            std::fs::create_dir_all(&art).unwrap();
+            let key = format!("{} Representative", kind.label());
+            std::fs::write(
+                art.join("manifest.tsv"),
+                format!("#key\tstyle\tss_system_id\tencoding\n{key}\tlr-snaps\t105\tlossless\n"),
+            )
+            .unwrap();
+            std::fs::write(art.join(format!("{key}.png")), b"png fixture").unwrap();
+            std::fs::write(art.join("Wrong JPEG.jpg"), b"jpeg fixture").unwrap();
+            ready_tables(
+                &art,
+                &format!("Shared Dump\t\t\t{key}\n"),
+                &format!(
+                    "{key}\t{} metadata\t1990\tAction\tStudio\t1\n",
+                    kind.label()
+                ),
+            );
+            let provider = Provider::load_for_type("SuperGrafx", &docs, None, kind);
+            assert_eq!(
+                provider.health,
+                ProviderHealth::Ready,
+                "{:?}",
+                provider.diagnostics
+            );
+            assert_eq!(provider.picture_type, kind);
+            assert!(provider.still_current(&docs, None));
+            assert!(!box_provider.configuration_matches(&docs, None, kind));
+            assert_eq!(
+                snapshot_status_for_type("SuperGrafx", &old_signature, &docs, None, kind).0,
+                SnapshotStatus::Changed
+            );
+            let selected = provider.resolve(&identity("Shared Dump")).unwrap();
+            assert_eq!(selected.cover, Some(art.join(format!("{key}.png"))));
+            assert_eq!(selected.name, Some(format!("{} metadata", kind.label())));
+            assert_eq!(
+                provider
+                    .presentation_for_match(&ManualMatch {
+                        folder: "SuperGrafx".into(),
+                        name: "Shared Dump".into()
+                    })
+                    .unwrap()
+                    .cover,
+                selected.cover
+            );
+            assert_eq!(provider.snapshot().unwrap().picture_type(), kind);
+            assert_ne!(provider.snapshot(), box_provider.snapshot());
+            assert_ne!(
+                kind.match_key("SuperGrafx"),
+                PictureType::BoxArt.match_key("SuperGrafx")
+            );
+            let canonical_docs = std::fs::canonicalize(&docs).unwrap();
+            assert_eq!(
+                normalize_docs_root_for_type("SuperGrafx", &art, kind),
+                Some(canonical_docs.clone())
+            );
+            let game_roots = vec![docs
+                .parent()
+                .unwrap()
+                .join("games")
+                .to_string_lossy()
+                .into_owned()];
+            assert!(
+                discover_candidate_roots_for_type("SuperGrafx", &game_roots, kind)
+                    .contains(&canonical_docs)
+            );
+            std::fs::write(
+                art.join("manifest.tsv"),
+                "#key\tstyle\tss_system_id\nwrong\tss\t105\n",
+            )
+            .unwrap();
+            assert_eq!(
+                Provider::load_for_type("SuperGrafx", &docs, None, kind).health,
+                ProviderHealth::Invalid,
+                "an invalid selected PNG pack must not select a Box Art pack instead"
+            );
+            std::fs::remove_dir_all(&art).unwrap();
+            assert_eq!(
+                Provider::load_for_type("SuperGrafx", &docs, None, kind).health,
+                ProviderHealth::Unavailable
+            );
+        }
+        assert!(
+            box_provider.still_current(&docs, None),
+            "other picture types cannot invalidate Box Art"
+        );
+        std::fs::remove_dir_all(docs.parent().unwrap()).unwrap();
+    }
+
+    #[test]
     fn manual_match_suggestions_are_bounded_deterministic_and_cancellable() {
         let (docs, art) = pack("manual-suggestions");
         let mut manifest = "#key\tstyle\tss_system_id\n".to_string();
@@ -3821,6 +4146,7 @@ mod tests {
             rbf: "_Console/TurboGrafx16".to_string(),
             launch: Vec::new(),
             setname: Some("SuperGrafx".to_string()),
+            same_dir: false,
             compatible_cores: Vec::new(),
             skip_folders: Vec::new(),
             extra_paths: Vec::new(),
@@ -5145,11 +5471,13 @@ mod tests {
                 .contains("more than 250000 rows")
         );
 
-        assert!(validate_jpeg_count(MAX_JPEGS, &dir).is_ok());
-        assert!(validate_jpeg_count(MAX_JPEGS + 1, &dir)
-            .unwrap_err()
-            .to_string()
-            .contains("more than 100000 JPEGs"));
+        assert!(validate_image_count(MAX_IMAGES, &dir, PictureType::BoxArt).is_ok());
+        assert!(
+            validate_image_count(MAX_IMAGES + 1, &dir, PictureType::BoxArt)
+                .unwrap_err()
+                .to_string()
+                .contains("more than 100000 JPEGs")
+        );
         std::fs::remove_dir_all(dir).ok();
     }
 
@@ -5359,7 +5687,10 @@ mod tests {
         let invalid = std::ffi::OsString::from_vec(b"Bad-\xff.jpg".to_vec());
         std::fs::write(art.join(invalid), b"jpeg").unwrap();
 
-        let (images, collision) = image_index(&art, &AtomicBool::new(false)).unwrap().unwrap();
+        let (images, collision) =
+            image_index_for_type(&art, PictureType::BoxArt, &AtomicBool::new(false))
+                .unwrap()
+                .unwrap();
         assert!(collision.is_none());
         assert_eq!(images.len(), 2);
         assert_eq!(images.get("good"), Some(&art.join("Good.jpg")));
@@ -5378,13 +5709,15 @@ mod tests {
         std::fs::create_dir_all(&invalid_art).unwrap();
         std::fs::write(invalid_art.join("Good.jpg"), b"jpeg").unwrap();
 
-        let (invalid_images, _) = image_index(&invalid_art, &AtomicBool::new(false))
-            .unwrap()
-            .unwrap();
+        let (invalid_images, _) =
+            image_index_for_type(&invalid_art, PictureType::BoxArt, &AtomicBool::new(false))
+                .unwrap()
+                .unwrap();
         assert!(invalid_images.is_empty());
-        let (valid_images, _) = image_index(&valid_art, &AtomicBool::new(false))
-            .unwrap()
-            .unwrap();
+        let (valid_images, _) =
+            image_index_for_type(&valid_art, PictureType::BoxArt, &AtomicBool::new(false))
+                .unwrap()
+                .unwrap();
         assert!(valid_images.contains_key("chosen game (usa)"));
 
         std::fs::remove_dir_all(root.parent().unwrap()).unwrap();
@@ -6063,6 +6396,7 @@ mod tests {
         let store = temp("prepared-state-store");
         let state = crate::cache::PackSourceState {
             accepted: Some(crate::cache::AcceptedSource {
+                picture_type: provider.picture_type,
                 docs_root: root.to_string_lossy().into_owned(),
                 language: provider.synopsis_language().map(str::to_string),
                 signature: provider.snapshot().cloned(),
@@ -6092,9 +6426,7 @@ mod tests {
             "SuperGrafx",
             &root,
             accepted.language.as_deref(),
-            accepted.health,
-            accepted.diagnostics,
-            accepted.signature,
+            &accepted,
             crate::cache::load_pack_prepared_map(&store, "SuperGrafx")
                 .unwrap()
                 .unwrap(),

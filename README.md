@@ -194,6 +194,10 @@ first, then the folders already inside it, then **New folder...**. Choosing
 Main Favourites writes the `.mgl`, or the link for a core file, directly
 under `_@Favorites`; no folder of that name is made, and a folder somebody
 has really called Main Favourites is listed after it as a folder of its own.
+If another favourite already uses the filename, the naming keyboard lets you
+choose an unused name. **Save** keeps the same game or core and its file extension;
+**Cancel** or **B** leaves both favourites unchanged. The chosen name is the
+favourite's filename, not a change to the game's metadata title.
 When a real folder is selected in the Favourites shelf, the same Game group
 also offers **Rename Favourite Folder** and **Delete Favourite Folder**.
 Rename keeps everything inside and never overwrites another entry. Delete
@@ -931,6 +935,41 @@ of Neo Geo and of Neo Geo MVS once each (or run one full rebuild) to pick the
 sets up: the two keep separate caches even when they share the folder.
 Nothing else needs resetting.
 
+### Additional computer and disc libraries
+
+Apple III, Macintosh Quadra 800, NeXT Color, Sun-2, Sun-3, Macintosh SE/30,
+Macintosh IIcx and FM Towns Marty use their normal `games/<core>` folders.
+SE/30 uses `games/MACSE30`; IIcx uses `games/MACIICX`.
+Existing MGL launchers are passed through unchanged.
+Existing gamelists provide artwork and metadata normally. These new system IDs
+do not yet have built-in ScreenScraper platform mappings.
+
+SE/30, IIcx and NeXT Color `.img` files, and Apple III `.po`/`.2mg` files, can
+represent different kinds of disk. Use an existing MGL with the correct mount
+slot for these images; Degauss does not list them directly or guess the slot.
+The MGL remains usable from Degauss, Favourites and Last Played.
+
+Use the Main executable shipped with this version for the newly integrated
+core services. A core-specific `main=...` in `MiSTer.ini` still takes
+precedence. To use Degauss Main instead of an older separate Main for one of
+these cores, set `main=degauss/MiSTer_Degauss` in that core's section, leaving
+unrelated sections unchanged. BIOS, PRAM and bootable media remain the core's
+normal requirements. Sun-2 needs its own 32 KiB ROM, not the 64 KiB Sun-3 ROM.
+Update All preserves an existing `games/Sun-2/boot0.rom`. If that file is 64 KiB,
+replace it with the corrected 32 KiB ROM from the
+[official Sun-2 distribution](https://github.com/MiSTer-devel/Distribution_MiSTer/tree/main/games/Sun-2)
+before launching Sun-2.
+
+The released Marty core retains its upstream limitation for floppy tracks
+with 32 sectors. This update does not change that core protocol.
+
+Apple III DiskCopy 4.2 images are read-only to preserve their container
+checksums. Writable ProDOS and supported 2MG images retain write support.
+
+Sharp MZ keeps its existing library: MZF loads through the tape-download slot;
+MZT mounts as a tape; DSK/D88/D77 mount as a floppy; QDF/MZQ as a Quick Disk.
+Existing MGLs and older native Sharp MZ tape launches remain supported.
+
 ### Installed core launchers, RetroAchievements and Unstable cores
 
 Installed RetroAchievements and Unstable cores can be browsed even when there is
@@ -956,6 +995,52 @@ for only that game. **Use System Setting** removes the game override. The choice
 also applies when the same game is opened through Last Played or a Degauss
 Favourite; self-describing MGL, MRA and RBF launches and formats with a fixed
 core do not offer it.
+
+Installed **Nintendo 64 Turbo (80 MHz)** and **Neo Geo Turbo / Turbo V2**
+builds are available through these choosers. Automatic keeps the ordinary core
+preferred when it is installed. Regular N64 resolves its complete installed
+build name so a Turbo file cannot accidentally replace it. Neo Geo does the
+same when Turbo is installed beside it; ordinary native favourites stay unchanged.
+The Neo Geo Turbo profiles use the published `console_extra` locations; other
+locations can be specified with the manual overrides below. Their
+`NEOGEO_TURBO` set name keeps the standard Neo Geo game/BIOS folder through
+MiSTer's `same_dir` attribute, matching the published Turbo launcher.
+
+#### Persistent core declarations
+
+In `degauss-user.toml`, use the system ID from `systems.toml` to change only its
+preferred core, for example:
+
+```toml
+[core_overrides.NeoGeo]
+rbf = "_Console/console_extra/NeoGeo_TurboV2"
+setname = "NEOGEO_TURBO"
+same_dir = true
+```
+
+To add an explicitly compatible build, or change an existing profile by its ID:
+
+```toml
+[core_overrides.NeoGeo.compatible_cores.my-neogeo]
+label = "My Neo Geo Build"
+rbf = "_Console/MyNeoGeo"
+
+# If an installed Turbo is in _Console instead of console_extra:
+[core_overrides.NeoGeo.compatible_cores.neogeo-turbo]
+rbf = "_Console/NeoGeo_Turbo"
+```
+
+Use extensionless core references. A new profile needs `label` and `rbf`;
+existing profiles retain fields you omit. Optional `setname` follows MiSTer's
+normal launch semantics; `setname = ""` removes a previous set name. Only
+declare a core that supports the system's existing formats and launch slots.
+Optional `same_dir = true` uses the original core's game/BIOS folder while
+keeping the selected set's separate configuration. It defaults to false.
+Untouched profiles, including ones added by future updates, remain available.
+No library rebuild is needed. The user file is preserved by updates and is not
+rewritten by Options. Invalid declarations are logged with the user filename
+and ignored with the rest of that file for the run; an explicitly selected
+missing core remains a launch error rather than silently switching families.
 
 Installed Dual SDRAM builds are labelled **Dual SDRAM** in the Cores browser
 and offered in **System Launch Core** and the per-game **Launch Core** chooser.
@@ -1136,6 +1221,7 @@ require **A** and confirmation, never a sideways press.
 | Navigation | Scroll Speed | How fast a held direction moves through the list. 3x out of the box |
 | Navigation | Skip Artwork Faster Than | Above this speed, pictures wait until the list stops. 6x out of the box |
 | Navigation | Left and Right Behaviour | What left and right do while browsing: Scroll Speed Change (the default), Letter, Page or Direction. Letter and Page repeat while held; in Direction, left and right move one entry and up and down move a whole row in Tiled, Multi List and Gallery |
+| Navigation | Up a Level Entry | Off by default. Top or Bottom adds a selectable `< UP A LEVEL >` to game and Favourites lists. A/Enter performs the same navigation as B/Esc; it is not counted or treated as a game |
 | Navigation | Swap A and B | Off by default. Swap the controller's A and B actions inside Degauss only; keyboard controls and launched software are unchanged |
 | Navigation | Swap X and Y | Off by default. Swap the controller's X and Y actions inside Degauss only; keyboard controls and launched software are unchanged |
 | Navigation | Random Game Behaviour | Whether either random action starts the game, or only moves to it so you can look first |
@@ -1150,11 +1236,12 @@ require **A** and confirmation, never a sideways press.
 | Appearance | Use MRA Filenames for Arcade Titles | Off by default. On shows each Arcade MRA's exact filename without `.mra`, retaining variant tags regardless of Game Name Display. Sorting and search follow the displayed title; artwork, metadata and launch targets stay unchanged |
 | Appearance | Folder Brackets | On by default. Turn off only Degauss's outer `[ name ]` marker for folders; square brackets that are part of the underlying name still follow Game Name Display |
 | Appearance | Game Total/Position | On by default. Turn off the selected-position and total counter while browsing games |
+| Appearance | Scrolling Title Strip | On by default. Off keeps the top title strip still and shortens long names to fit, without changing scrolling in game lists or metadata |
 | Appearance | Text | The typeface: Smooth, Pixel (a DOS font on whole pixels), and the bolder Smooth 2 and Pixel 2 |
 | Appearance | Artwork | Turn pictures off entirely |
 | Appearance | CRT Image Smoothing | On by default for 240p/288p output: smoother artwork and logos in the browsing views and screensaver. Off uses the original, faster scaling; higher-resolution output is unchanged |
 | Appearance | Artwork Scale Factor | Framebuffer keeps the original square-pixel fit and is the default. 4:3 and 16:9 correct game artwork for that physical display shape in Details, Tiled, Carousel and Gallery, including a folder or Last Played showing a game's artwork. Category logos, system logos and the screensaver are unchanged |
-| Appearance | Bottom Bar While Browsing | On by default. Show the time and button hints while browsing. A saved Off choice stays Off after updating or restarting; menus and operation controls remain visible |
+| Appearance | Bottom Bar While Browsing | On by default. Show the time, Ethernet/Wi-Fi/Bluetooth indicators and button hints while browsing. A saved Off choice stays Off after updating or restarting; menus and operation controls remain visible |
 | Appearance | Screensaver | How long with nothing pressed before pictures start |
 | Appearance | Attract Mode | Off by default. When on, A launches the game pictured at the centre and Left/Right moves between systems |
 | Appearance | Show Attract Mode on Home | Off by default. Add an immediate Attract Mode entry to the main browser, independently of idle screensaver settings |
@@ -1211,6 +1298,8 @@ wait_for_mounts = ["/media/fat/cifs"]
 Manual settings include `game_roots` (game search locations and order),
 `wait_for_mounts` (required startup mounts), `menu_root` (a custom MiSTer menu
 root), and optional artwork tuning `cover_size` and `art_cache` under `[app]`.
+Launch declarations use [`core_overrides`](#persistent-core-declarations), keyed
+by stable system and compatible-profile IDs.
 For example, changing only the decode size requires:
 
 ```toml
@@ -1517,13 +1606,21 @@ To choose a pack manually:
 
 1. Highlight a supported system, or browse inside it, and press **X**.
 2. Open **Library → Game Data Source**.
-3. Choose **Artwork Pack**.
-4. Confirm the detected `docs` location. If more than one installation is
+3. Choose **Artwork Pack**, then **Box Art**, **Screenshot** or **Title Screen**.
+   Box Art is the default for existing settings.
+4. Confirm the detected `docs` location for that picture type. If more than one installation is
    present, choose the one Degauss should use.
 
 Degauss checks the normal SD, USB and network mount points and the mounts used
-by configured game roots. A normal installation is under
-`docs/<System>/Artwork`, for example
+by configured game roots. Each picture type reads its own folder and tables:
+
+| Picture type | Installed folder | Images |
+| --- | --- | --- |
+| Box Art | `docs/<System>/Artwork` | JPEG, including the installed 2D, 3D or MixRBV2 style |
+| Screenshot | `docs/<System>/Screenshots` | PNG gameplay captures |
+| Title Screen | `docs/<System>/Titles` | PNG title screens |
+
+A normal Box Art installation is under `docs/<System>/Artwork`, for example
 `/media/fat/docs/SuperGrafx/Artwork` or
 `/media/usb0/docs/SuperGrafx/Artwork`. Games and artwork do not have to be on
 the same device. A directory browser is available for a valid installation in
@@ -1531,6 +1628,14 @@ another permitted MiSTer storage location; it starts at `/media`, above the
 normal SD, USB, network and CIFS mount directories. A directory whose mapped
 Artwork folder is a link to somewhere outside that permitted storage is not
 accepted as a pack, and `degauss.log` names the folder.
+
+Screenshot and Title Screen packs install separately through Update All;
+either can be selected without installing Box Art. Degauss shows one selected
+picture type in the existing artwork area, together with that pack's metadata.
+Switching types prepares only the affected system and keeps the previous
+choice if preparation fails or is cancelled. Manual matches are kept
+separately for each picture type. Existing Box Art settings, preparation and
+manual matches remain usable without a reset or migration.
 
 The choice applies to the complete system, including all of its game folders.
 Neo Geo and Neo Geo MVS share one choice because they use the same library and
@@ -2003,7 +2108,7 @@ folder gets its own gamelist, and the system is still shown as one:
 | System | Gamelist |
 |---|---|
 | Arcade | `/media/fat/_Arcade/gamelist.xml` |
-| PC (DOS) | `/media/fat/games/AO486/gamelist.xml`<br>`/media/fat/_DOS Games/gamelist.xml` |
+| PC (DOS) | `/media/fat/games/AO486/gamelist.xml`<br>`/media/fat/_DOS Games/gamelist.xml`<br>`/media/fat/_Win 3.1 Games/gamelist.xml`<br>`/media/fat/_Win 95 Games/gamelist.xml`<br>`/media/fat/_W95 Games/gamelist.xml` |
 | Genesis | `/media/fat/games/MegaDrive/gamelist.xml`<br>`/media/fat/games/Genesis/gamelist.xml` |
 | Neo Geo CD | `/media/fat/games/NeoGeo-CD/gamelist.xml`<br>`/media/fat/games/NEOGEO/gamelist.xml` |
 | SG-1000 | `/media/fat/games/SG1000/gamelist.xml`<br>`/media/fat/games/Coleco/gamelist.xml`<br>`/media/fat/games/SMS/gamelist.xml` |
@@ -2096,7 +2201,7 @@ system resolved on your own card, which is the answer for that card.
 | OpenBOR | `/media/fat/games/OpenBOR` |
 | Orao | `/media/fat/games/ORAO` |
 | Oric | `/media/fat/games/Oric` |
-| PC (DOS) | `/media/fat/games/AO486`<br>`/media/fat/_DOS Games` |
+| PC (DOS) | `/media/fat/games/AO486`<br>`/media/fat/_DOS Games`<br>`/media/fat/_Win 3.1 Games`<br>`/media/fat/_Win 95 Games`<br>`/media/fat/_W95 Games` |
 | PC/XT | `/media/fat/games/PCXT` |
 | PDP-1 | `/media/fat/games/PDP1` |
 | PICO-8 | `/media/fat/games/PICO-8` |
@@ -2421,19 +2526,19 @@ Degauss checks an installed Artwork Pack when its system is opened, not by scann
 1. Check that **Options → Appearance → Artwork** is **On**.
 2. Enter the affected system. If Degauss finds an unprepared pack, choose **Prepare** when asked.
 3. **Options → Library → Automatic Data Source → Artwork Pack First** makes Artwork Packs the global preference for systems still set to **Automatic**. **Gamelist First** is the default and uses a root `gamelist.xml` when one is present.
-4. To select a pack for only one system, highlight that system or open it, press **X**, then choose **Library → Game Data Source → Artwork Pack** and select the detected location.
+4. To select a pack for only one system, highlight that system or open it, press **X**, then choose **Library → Game Data Source → Artwork Pack**, its picture type and the detected location.
 
-An explicit per-system **Gamelist** or **Artwork Pack** choice always overrides the global Automatic preference. Packs installed normally through Update All are found below `docs/<System>/Artwork` on the SD card or USB storage.
+An explicit per-system **Gamelist** or **Artwork Pack** choice always overrides the global Automatic preference. Packs installed normally through Update All are found below `docs/<System>/Artwork` for Box Art, `docs/<System>/Screenshots` for Screenshot, or `docs/<System>/Titles` for Title Screen on the SD card or USB storage.
 
-### Why are the new Screenshot or Title Screen Artwork Packs not showing?
+### How do I select Screenshot or Title Screen Artwork Packs?
 
-**Degauss 1.0.0 supports the existing 2D, 3D and MixRBV2 box-art packs** in `docs/<System>/Artwork`. These styles share that folder, so Degauss uses whichever style is installed, not three separate style choices. For selection and preparation, see [I installed an Artwork Pack, but its artwork is not showing](#i-installed-an-artwork-pack-but-its-artwork-is-not-showing).
+**Degauss 1.0.1 adds Screenshot and Title Screen pack selection.** Highlight the system or open it, press **X**, then choose **Library → Game Data Source → Artwork Pack → Screenshot** or **Title Screen**, followed by the installed location. Install the corresponding pack through Update All first. A Box Art pack is not required.
 
-The new **Screenshot** and **Title Screen** packs install separately in `docs/<System>/Screenshots` and `docs/<System>/Titles`. They are not yet selectable as Artwork Pack sources in Degauss 1.0.0. Installing or updating them alongside a box-art pack does not stop the existing box art working. Do not rename their folders to `Artwork`: that is not a supported workaround.
+The packs use their own `docs/<System>/Screenshots` and `docs/<System>/Titles` folders and tables. Do not rename them to `Artwork`. Box Art remains the default; installing another picture type does not replace it or automatically switch the selected type.
 
-Support is planned for a future update, with one selectable pack picture type per system, tracked in [issue #198](https://github.com/giancarloerra/Degauss/issues/198). No release version or date is confirmed yet.
+The existing 2D, 3D and MixRBV2 box styles share `docs/<System>/Artwork`, so Degauss uses whichever box style Update All installed. Only one picture type is shown at a time. Existing Box Art preparation and manual matches are retained. See [Using MiSTer Game Artwork Databases](#using-mister-game-artwork-databases) for preparation and source priority.
 
-This limitation is specific to the new packs. JPEG and PNG artwork from `gamelist.xml` or Degauss's scrapers remains supported, including screenshots. See [Artwork and metadata](#artwork-and-metadata) for those workflows.
+Degauss 1.0.0 supports only the box-art packs, not these separately installed PNG packs. JPEG and PNG images from `gamelist.xml` or scrapers remain supported in either version, including screenshots.
 
 ### Degauss stays on “Starting Degauss frontend...”
 

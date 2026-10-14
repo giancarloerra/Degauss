@@ -1,5 +1,5 @@
 diff --git a/menu.qsf b/menu.qsf
-index 577fcc3..66bce68 100644
+index 577fcc3..893716a 100644
 --- a/menu.qsf
 +++ b/menu.qsf
 @@ -15,11 +15,11 @@ set_global_assignment -name PARTITION_NETLIST_TYPE SOURCE -section_id Top
@@ -16,7 +16,7 @@ index 577fcc3..66bce68 100644
  set_global_assignment -name SAVE_DISK_SPACE OFF
  set_global_assignment -name SMART_RECOMPILE ON
  set_global_assignment -name MIN_CORE_JUNCTION_TEMP "-40"
-@@ -54,7 +54,7 @@ set_global_assignment -name ALM_REGISTER_PACKING_EFFORT LOW
+@@ -54,9 +54,9 @@ set_global_assignment -name ALM_REGISTER_PACKING_EFFORT LOW
  set_global_assignment -name OPTIMIZE_POWER_DURING_SYNTHESIS OFF
  set_global_assignment -name ROUTER_REGISTER_DUPLICATION ON
  set_global_assignment -name FITTER_AGGRESSIVE_ROUTABILITY_OPTIMIZATION ALWAYS
@@ -25,32 +25,75 @@ index 577fcc3..66bce68 100644
  
  source sys/sys.tcl
  source sys/sys_analog.tcl
+ source files.qip
+-set_instance_assignment -name PARTITION_HIERARCHY root_partition -to | -section_id Top
+\ No newline at end of file
++set_instance_assignment -name PARTITION_HIERARCHY root_partition -to | -section_id Top
 diff --git a/menu.sv b/menu.sv
-index 7ac4c3b..9f5b047 100644
+index a6ab144..e145c07 100644
 --- a/menu.sv
 +++ b/menu.sv
-@@ -22,7 +22,8 @@
+@@ -22,7 +22,9 @@
  
  module emu
  (
 -	`include "sys/emu_ports.vh"
 +	`include "sys/emu_ports.vh",
-+	output MENU_PAL
++	output MENU_PAL,
++	input MENU_NATIVE
  );
  
  assign ADC_BUS  = 'Z;
-@@ -325,7 +326,8 @@ end
+@@ -194,7 +196,7 @@ always @(posedge clk_sys) begin
+ end
  
+ reg         fb_own = 0;
+-wire        ddr_pause = FB | fb_own;
++wire        ddr_pause = (FB & ~MENU_NATIVE) | fb_own;
+ wire [28:0] clr_addr, fb_addr;
+ wire  [7:0] clr_burst, clr_be, fb_burst;
+ wire        clr_rd, clr_we, fb_rd, fb_idle;
+@@ -231,7 +233,7 @@ end
+ always @(posedge clk_sys) begin
+ 	reg fb_req;
+ 
+-	fb_req <= FB;
++	fb_req <= FB & ~MENU_NATIVE;
+ 	if(fb_req & ~clr_we) fb_own <= 1;
+ 	else if(~fb_req & fb_idle) fb_own <= 0;
+ end
+@@ -352,6 +354,7 @@ end
  localparam lfsr_n = 63;
  
--wire PAL = status[4];
-+wire PAL = status[4];
+ wire PAL = status[4];
 +assign MENU_PAL = PAL;
  wire FB  = status[5];
  wire [2:0] led = status[8:6];
  
+@@ -448,7 +451,7 @@ console_out console_out
+ 
+ 	.clk_vid(CLK_VIDEO),
+ 	.ce_pix(ce_pix),
+-	.show(FB),
++	.show(FB & ~MENU_NATIVE),
+ 	.hc(hc),
+ 	.vc(vc),
+ 	.height(PAL ? (forced_scandoubler ? 10'd576 : 10'd288) : (forced_scandoubler ? 10'd480 : 10'd240)),
+diff --git a/rtl/pll.v b/rtl/pll.v
+index 95208ae..0e80d6d 100644
+--- a/rtl/pll.v
++++ b/rtl/pll.v
+@@ -77,7 +77,7 @@ endmodule
+ // Retrieval info: 	<generic name="gui_actual_phase_shift0" value="0" />
+ // Retrieval info: 	<generic name="gui_duty_cycle0" value="50" />
+ // Retrieval info: 	<generic name="gui_cascade_counter1" value="false" />
+-// Retrieval info: 	<generic name="gui_output_clock_frequency1" value="20.0" />
++// Retrieval info: 	<generic name="gui_output_clock_frequency1" value="25.0" />
+ // Retrieval info: 	<generic name="gui_divide_factor_c1" value="1" />
+ // Retrieval info: 	<generic name="gui_actual_output_clock_frequency1" value="0 MHz" />
+ // Retrieval info: 	<generic name="gui_ps_units1" value="ps" />
 diff --git a/sys/sys_top.v b/sys/sys_top.v
-index a416879..764960c 100644
+index b32361e..e725fac 100644
 --- a/sys/sys_top.v
 +++ b/sys/sys_top.v
 @@ -326,6 +326,14 @@ wire[12:0] ARX, ARY;
@@ -236,7 +279,7 @@ index a416879..764960c 100644
  
  wire  [23:0] hdmi_data;
  wire         hdmi_vs, hdmi_hs, hdmi_de, hdmi_vbl, hdmi_brd;
-@@ -830,8 +949,75 @@ wire         bob_deint;
+@@ -830,8 +949,80 @@ wire         bob_deint;
  	);
  `endif
  
@@ -244,6 +287,11 @@ index a416879..764960c 100644
 +// Menu timing. HDMI retains the existing scaler and its independent mode.
 +wire [23:0] native_fb_rgb;
 +wire native_fb_hs, native_fb_vs, native_fb_de;
++// The command keeps its 20 MHz timing units. Advance four pixels per five
++// 25 MHz clocks through ascal's existing clock-enable input.
++reg [2:0] native_ce_phase = 0;
++always @(posedge clk_vid) native_ce_phase <= native_ce_phase == 3'd4 ? 3'd0 : native_ce_phase + 1'd1;
++wire native_fb_ce = native_ce_phase != 3'd4;
 +reg [11:0] native_htotal = 0, native_hsstart = 0, native_hsend = 0, native_hdisp = 0;
 +reg [11:0] native_vtotal = 0, native_vsstart = 0, native_vsend = 0, native_vdisp = 0;
 +wire native_custom_timing = |native_vtotal;
@@ -264,7 +312,7 @@ index a416879..764960c 100644
 +	.i_hs(1'b0), .i_vs(1'b0), .i_fl(1'b0), .i_de(1'b0),
 +	.iauto(1'b0),
 +	.o_clk(clk_vid),
-+	.o_ce(1'b1),
++	.o_ce(native_fb_ce),
 +	.o_r(native_fb_rgb[23:16]),
 +	.o_g(native_fb_rgb[15:8]),
 +	.o_b(native_fb_rgb[7:0]),
@@ -312,7 +360,7 @@ index a416879..764960c 100644
  reg  [5:0] LFB_FMT    = 0;
  reg [11:0] LFB_WIDTH  = 0;
  reg [11:0] LFB_HEIGHT = 0;
-@@ -1152,6 +1338,32 @@ cyclonev_hps_interface_peripheral_i2c hdmi_i2c
+@@ -1152,6 +1343,32 @@ cyclonev_hps_interface_peripheral_i2c hdmi_i2c
  
  	wire [23:0] hdmi_data_mask;
  	wire        hdmi_de_mask, hdmi_vs_mask, hdmi_hs_mask;
@@ -345,7 +393,7 @@ index a416879..764960c 100644
  
  	reg [15:0] shadowmask_data;
  	reg        shadowmask_wr = 0;
-@@ -1164,12 +1376,12 @@ cyclonev_hps_interface_peripheral_i2c hdmi_i2c
+@@ -1164,12 +1381,12 @@ cyclonev_hps_interface_peripheral_i2c hdmi_i2c
  		.cmd_wr(shadowmask_wr),
  		.cmd_in(shadowmask_data),
  
@@ -364,7 +412,21 @@ index a416879..764960c 100644
  
  		.dout(hdmi_data_mask),
  		.hs_out(hdmi_hs_mask),
-@@ -1318,6 +1530,18 @@ always @(posedge hdmi_tx_clk) begin
+@@ -1301,6 +1518,13 @@ reg hdmi_out_vs;
+ reg hdmi_out_de;
+ reg [23:0] hdmi_out_d;
+ 
++`ifndef MISTER_DUAL_SDRAM
++`ifndef MISTER_DISABLE_YC
++wire [23:0] vgas_yc_o;
++wire vgas_yc_hs, vgas_yc_vs, vgas_yc_cs, vgas_yc_de;
++`endif
++`endif
++
+ always @(posedge hdmi_tx_clk) begin
+ 	reg [23:0] hdmi_dv_data;
+ 	reg        hdmi_dv_hs, hdmi_dv_vs, hdmi_dv_de;
+@@ -1318,6 +1542,18 @@ always @(posedge hdmi_tx_clk) begin
  	vs <= (~vga_fb & direct_video) ? hdmi_dv_vs   : hdmi_vs_osd;
  	de <= (~vga_fb & direct_video) ? hdmi_dv_de   : hdmi_de_osd;
  	d  <= (~vga_fb & direct_video) ? hdmi_dv_data : hdmi_data_osd;
@@ -383,7 +445,7 @@ index a416879..764960c 100644
  `else
  	hs <= hdmi_dv_hs;
  	vs <= hdmi_dv_vs;
-@@ -1343,7 +1567,7 @@ assign HDMI_TX_D  = hdmi_out_d;
+@@ -1343,7 +1579,7 @@ assign HDMI_TX_D  = hdmi_out_d;
  	`ifndef MISTER_DEBUG_NOHDMI
  		cyclonev_clkselect vga_clk_sw
  		( 
@@ -392,7 +454,7 @@ index a416879..764960c 100644
  			.inclk({clk_vid, hdmi_clk_out, 2'b00}),
  			.outclk(vga_tx_clk)
  		);
-@@ -1385,11 +1609,12 @@ scanlines #(0) VGA_scanlines
+@@ -1385,11 +1621,12 @@ scanlines #(0) VGA_scanlines
  	.clk(clk_vid),
  
  	.scanlines(scanlines),
@@ -406,18 +468,15 @@ index a416879..764960c 100644
 +	.hs_in(native_fb_active ? native_fb_hs : hs_fix),
 +	.vs_in(native_fb_active ? native_fb_vs : vs_fix),
 +	.de_in(native_fb_active ? native_fb_de : de_emu),
-+	.ce_in(native_fb_active ? 1'b1 : ce_pix),
++	.ce_in(native_fb_active ? native_fb_ce : ce_pix),
  
  	.dout(vga_data_sl),
  	.hs_out(vga_hs_sl),
-@@ -1489,6 +1714,42 @@ reg  [39:0] PhaseInc;
+@@ -1489,6 +1726,39 @@ reg  [39:0] PhaseInc;
  		assign {vgas_o, vgas_hs, vgas_vs, vgas_cs, vgas_de} = 0;
  	`endif
  
 +	`ifndef MISTER_DISABLE_YC
-+		wire [23:0] vgas_yc_o;
-+		wire vgas_yc_hs, vgas_yc_vs, vgas_yc_cs, vgas_yc_de;
-+
 +		yc_out yc_scaler_out
 +		(
 +			.clk(clk_hdmi),
@@ -453,7 +512,7 @@ index a416879..764960c 100644
  	wire [23:0] vga_o, vga_o_t;
  	wire vga_hs, vga_vs, vga_cs, vga_de, vga_hs_t, vga_vs_t, vga_cs_t, vga_de_t;
  	vga_out vga_out
-@@ -1513,20 +1774,20 @@ reg  [39:0] PhaseInc;
+@@ -1513,20 +1783,20 @@ reg  [39:0] PhaseInc;
  		assign {vga_o, vga_hs, vga_vs, vga_cs, vga_de } =  {vga_o_t, vga_hs_t, vga_vs_t, vga_cs_t, vga_de_t } ;
  	`endif
  
@@ -485,15 +544,16 @@ index a416879..764960c 100644
  `endif
  
  reg video_sync = 0;
-@@ -1757,6 +2018,7 @@ emu emu
+@@ -1757,6 +2027,8 @@ emu emu
  (
  	.CLK_50M(FPGA_CLK2_50),
  	.RESET(reset),
 +	.MENU_PAL(menu_pal),
++	.MENU_NATIVE(native_fb_active),
  	.HPS_BUS({f1, HDMI_TX_VS, 
  				 clk_100m, clk_ihdmi,
  				 ce_hpix, hde_emu, hhs_fix, hvs_fix, 
-@@ -1821,15 +2083,15 @@ emu emu
+@@ -1827,15 +2099,15 @@ emu emu
  	.ADC_BUS({ADC_SCK,ADC_SDO,ADC_SDI,ADC_CONVST}),
  
  	.DDRAM_CLK(ram_clk),
@@ -517,48 +577,206 @@ index a416879..764960c 100644
  
  	.SDRAM_DQ(SDRAM_DQ),
  	.SDRAM_A(SDRAM_A),
-diff --git a/sys/yc_out.sv b/sys/yc_out.sv
-index 04e5f0d..ded7f47 100644
---- a/sys/yc_out.sv
-+++ b/sys/yc_out.sv
-@@ -124,11 +124,9 @@ wire data_de = de_dly6;
- // during active video only, so blanking is not lifted with the black level.
- wire [7:0] luma_raw = luma_d4;
- 
--wire [15:0] luma_setup_scaled =
--	{luma_raw, 8'd0} -
--	{4'd0, luma_raw, 4'd0} -
--	{7'd0, luma_raw, 1'd0} -
--	{8'd0, luma_raw};
-+logic [15:0] luma_setup_main;
-+logic [9:0] luma_setup_trim;
-+logic [15:0] luma_setup_scaled;
- 
- wire [7:0] yc_luma_setup = luma_setup_scaled[15:8] + 8'd19;
- 
-@@ -254,6 +252,9 @@ always_ff @(posedge clk) begin
- 	hsync_o <= hsync_dly[6]; vsync_o <= vsync_dly[6]; csync_o <= csync_dly[6]; de_o <= de_dly6;
- 
- 	luma_d0 <= phase[0].y[17:10];luma_d1 <= luma_d0; luma_d2 <= luma_d1;	luma_d3 <= luma_d2;	luma_d4 <= luma_d3;
-+	luma_setup_main <= {luma_d2, 8'd0} - {4'd0, luma_d2, 4'd0};
-+	luma_setup_trim <= {1'b0, luma_d2, 1'd0} + {2'b0, luma_d2};
-+	luma_setup_scaled <= luma_setup_main - {6'd0, luma_setup_trim};
- 
- 	// Select separate Y/C or packed CVBS output.
- 	C <= CVBS ? 8'd0 : chroma;
-@@ -262,4 +263,4 @@ end
- 
- assign dout = {C, Y, 8'd0};
- 
--endmodule
-\ No newline at end of file
+diff --git a/tests/run-framebuffer-port-tests.py b/tests/run-framebuffer-port-tests.py
+new file mode 100644
+index 0000000..89badd2
+--- /dev/null
++++ b/tests/run-framebuffer-port-tests.py
+@@ -0,0 +1,188 @@
++#!/usr/bin/env python3
++"""Simulate DDR routing, IO Direct and the native 20 MHz timing units."""
++
++from pathlib import Path
++import subprocess
++import tempfile
++import re
++
++root = Path(__file__).resolve().parents[1]
++top = (root / "sys/sys_top.v").read_text()
++menu = (root / "menu.sv").read_text()
++pll = (root / "rtl/pll/pll_0002.v").read_text()
++assert '.output_clock_frequency1("25.000000 MHz")' in pll
++assert '.number_of_clocks(2)' in pll
++assert '.MENU_NATIVE(native_fb_active)' in top
++assert top.count('.inclk({clk_vid, hdmi_clk_out, 2\'b00})') == 2
++assert '.o_ce(native_fb_ce)' in top
++assert '.ce_in(native_fb_active ? native_fb_ce : ce_pix)' in top
++assert '.show(FB & ~MENU_NATIVE)' in menu
++assert 'fb_req <= FB & ~MENU_NATIVE;' in menu
++assert 'ddr_pause = (FB & ~MENU_NATIVE) | fb_own;' in menu
++assert 'assign DDRAM_BURSTCNT = 1;' in (root / "rtl/ddram.sv").read_text()
++ascal = (root / "sys/ascal.vhd").read_text()
++for port in ("o_fb_ena", "o_fb_hsize", "o_fb_vsize", "o_fb_format", "o_fb_base", "o_fb_stride"):
++    assert re.search(r"\b" + port + r"\s*:\s*IN\b", ascal), port
++
++start = top.index("wire [28:0] menu_ram_address;")
++end = top.index("\nwire  [23:0] hdmi_data;", start)
++production = top[start:end]
++prefix = r'''
++module arbiter_tb;
++reg ram_clk = 0;
++always #5 ram_clk = ~ram_clk;
++reg reset = 1;
++reg LFB_EN = 0, LFB_NATIVE = 0, vga_scaler = 0;
++reg ram_waitrequest = 0, ram_readdatavalid = 0;
++wire [28:0] ram_address;
++wire [7:0] ram_burstcount, ram_byteenable;
++wire [63:0] ram_writedata;
++wire ram_read, ram_write;
++reg [28:0] menu_address = 100, native_address = 200;
++reg [7:0] menu_burst = 2, native_burst = 3;
++reg menu_read = 0, menu_write = 0, native_read = 0;
++'''
++checks = r'''
++assign menu_ram_address = menu_address;
++assign native_fb_address = native_address;
++assign menu_ram_burstcount = menu_burst;
++assign native_fb_burstcount = native_burst;
++assign menu_ram_read = menu_read;
++assign menu_ram_write = menu_write;
++assign native_fb_read = native_read;
++assign menu_ram_writedata = 0;
++assign menu_ram_byteenable = 8'hff;
++assign native_fb_byteenable = 8'hff;
++task tick;
++begin @(posedge ram_clk); #1; end
++endtask
++task falling;
++begin @(negedge ram_clk); end
++endtask
++initial begin
++    tick; falling; reset = 0;
++    menu_read = 1;
++    tick;
++    if (!ram_read || ram_address != 100 || menu_ram_waitrequest)
++        $fatal(1,"Stock framebuffer read not granted");
++    tick; falling; menu_read = 0;
++    LFB_EN = 1; LFB_NATIVE = 1; native_read = 1;
++    // The new native request cannot steal an already-issued stock burst.
++    ram_readdatavalid = 1;
++    #1;
++    if (!menu_ram_readdatavalid || native_fb_readdatavalid || ram_read)
++        $fatal(1,"Stock response routed to the other reader");
++    tick;
++    if (ram_owner != RAM_MENU_READ) $fatal(1,"Stock burst ended early");
++    tick; falling; ram_readdatavalid = 0;
++    tick;
++    if (!ram_read || ram_address != 200 || native_fb_waitrequest)
++        $fatal(1,"Native reader not granted after stock burst");
++    // Hold the request under memory backpressure.
++    falling; ram_waitrequest = 1;
++    tick;
++    if (!ram_read || ram_address != 200 || ram_owner != RAM_NATIVE_REQUEST)
++        $fatal(1,"Native request changed under backpressure");
++    falling; ram_waitrequest = 0;
++    tick; falling; native_read = 0; menu_write = 1; menu_burst = 1;
++    ram_readdatavalid = 1;
++    #1;
++    if (!native_fb_readdatavalid || menu_ram_readdatavalid || ram_write)
++        $fatal(1,"Native response routed to the clearing writer");
++    tick; tick;
++    if (ram_owner != RAM_NATIVE_READ) $fatal(1,"Native burst ended early");
++    tick; falling; ram_readdatavalid = 0;
++    tick;
++    if (!ram_write || ram_read) $fatal(1,"Clearing did not resume");
++    tick; falling; menu_write = 0;
++    // An inactive native path must not acquire the port.
++    LFB_NATIVE = 0; native_read = 1;
++    tick; tick;
++    if (ram_read || ram_write) $fatal(1,"Inactive native reader acquired DDR");
++    $display("Stock/native framebuffer arbitration passed");
++    $finish;
++end
 +endmodule
++'''
++with tempfile.TemporaryDirectory(prefix="menu-framebuffer-port-") as temporary:
++    unit = Path(temporary) / "arbiter.sv"
++    binary = Path(temporary) / "arbiter"
++    unit.write_text(prefix + production + checks)
++    subprocess.run(["iverilog", "-g2012", "-s", "arbiter_tb", "-o", str(binary), str(unit)], check=True)
++    subprocess.run(["vvp", str(binary)], check=True)
++    start = top.index("reg [2:0] native_ce_phase = 0;")
++    end = top.index("\nreg [11:0] native_htotal", start)
++    timing = r'''
++module rate_tb;
++reg clk_vid = 0;
++always #20 clk_vid = ~clk_vid;
++'''+ top[start:end] + r'''
++integer clocks = 0, pixels = 0, edge_clocks;
++integer target, i;
++initial begin
++    // The production enable advances exactly 20 times per 25 MHz microsecond.
++    repeat (100) begin
++        @(posedge clk_vid);
++        if (native_fb_ce) pixels = pixels + 1;
++    end
++    if (pixels != 80) $fatal(1,"Native pixel rate changed");
++    // Measure intervals between enabled edges, not from an arbitrary
++    // sample that can start during the four-in-five cadence's idle clock.
++    @(posedge clk_vid);
++    while (!native_fb_ce) @(posedge clk_vid);
++    // Defaults, a custom modeline and the full previously valid range.
++    // Quantization is bounded to one 25 MHz clock, with no accumulated drift.
++    for (i = 0; i < 3; i = i + 1) begin
++        target = i == 0 ? 1276 : i == 1 ? 1186 : 4095;
++        pixels = 0; clocks = 0;
++        while (pixels < target * 4) begin
++            @(posedge clk_vid); clocks = clocks + 1;
++            if (native_fb_ce) pixels = pixels + 1;
++        end
++        edge_clocks = target * 5;
++        if (clocks != edge_clocks) $fatal(1,"Native timing units changed");
++    end
++    $display("20 MHz native timing units on 25 MHz clock passed");
++    $finish;
++end
++endmodule
++'''
++    unit.write_text(timing)
++    subprocess.run(["iverilog", "-g2012", "-s", "rate_tb", "-o", str(binary), str(unit)], check=True)
++    subprocess.run(["vvp", str(binary)], check=True)
++    # Exercise the actual IO Direct mux with its declarations after use,
++    # as in sys_top. Every colour byte must survive, not an implicit bit.
++    start = top.index("if(vga_fb && direct_video && yc_en) begin")
++    end = top.index("\n\tend", start) + len("\n\tend")
++    assert top.index("wire [23:0] vgas_yc_o;") < start
++    mux = r'''
++module mux_tb;
++reg clk = 0;
++always #5 clk = ~clk;
++reg vga_fb = 1, direct_video = 1, yc_en = 1, csync_en = 1;
++reg hs, vs, de;
++reg [23:0] d;
++wire [23:0] vgas_yc_o;
++wire vgas_yc_hs, vgas_yc_vs, vgas_yc_cs, vgas_yc_de;
++always @(posedge clk) begin
++    hs <= 0; vs <= 0; de <= 0; d <= 0;
++'''+ top[start:end] + r'''
++end
++assign vgas_yc_o = 24'ha1b2c3;
++assign {vgas_yc_hs, vgas_yc_cs, vgas_yc_vs, vgas_yc_de} = 4'b0111;
++initial begin
++    @(posedge clk); #1;
++    if (d != 24'ha1b2c3 || !hs || !vs || !de)
++        $fatal(1,"IO Direct did not select the complete Y/C signal");
++    @(negedge clk); yc_en = 0;
++    @(posedge clk); #1;
++    if (d != 0 || hs || vs || de)
++        $fatal(1,"IO Direct changed the non-Y/C path");
++    $display("IO Direct Y/C routing passed");
++    $finish;
++end
++endmodule
++'''
++    unit.write_text(mux)
++    subprocess.run(["iverilog", "-g2012", "-Wall", "-s", "mux_tb", "-o", str(binary), str(unit)], check=True)
++    subprocess.run(["vvp", str(binary)], check=True)
 diff --git a/tests/run-native-timing-tests.py b/tests/run-native-timing-tests.py
 new file mode 100644
-index 0000000..532285b
+index 0000000..6d12ba2
 --- /dev/null
 +++ b/tests/run-native-timing-tests.py
-@@ -0,0 +1,76 @@
+@@ -0,0 +1,70 @@
 +#!/usr/bin/env python3
 +"""Simulate the production framebuffer command, including its extra timing words."""
 +
@@ -629,48 +847,46 @@ index 0000000..532285b
 +    subprocess.run(["iverilog", "-g2012", "-s", "timing_tb", "-o", str(binary),
 +                    str(bench)], check=True)
 +    subprocess.run(["vvp", str(binary)], check=True)
-+    subprocess.run(["verilator", "--binary", "--timing", "-Wno-fatal",
-+                    "--top-module", "yc_luma_setup_tb",
-+                    "--Mdir", str(Path(temporary) / "yc"),
-+                    str(root / "tests/yc_luma_setup_tb.sv"),
-+                    str(root / "sys/yc_out.sv")], check=True)
-+    subprocess.run([str(Path(temporary) / "yc/Vyc_luma_setup_tb")], check=True)
-diff --git a/tests/yc_luma_setup_tb.sv b/tests/yc_luma_setup_tb.sv
+diff --git a/tests/yc_output_tb.sv b/tests/yc_output_tb.sv
 new file mode 100644
-index 0000000..c4242e5
+index 0000000..40b90e1
 --- /dev/null
-+++ b/tests/yc_luma_setup_tb.sv
-@@ -0,0 +1,33 @@
-+module yc_luma_setup_tb;
++++ b/tests/yc_output_tb.sv
+@@ -0,0 +1,37 @@
++module yc_output_tb;
 +	reg clk = 0;
 +	always #5 clk = ~clk;
-+
 +	reg [23:0] din = 0;
++	reg de = 0, hs = 0, vs = 0;
++	reg pal = 0, cvbs = 0;
 +	wire [23:0] dout;
 +	wire hsync_o, vsync_o, csync_o, de_o;
-+
 +	yc_out dut (
-+		.clk(clk), .PHASE_INC(40'd0), .PAL_EN(1'b0), .CVBS(1'b0),
-+		.COLORBURST_RANGE(17'd0), .hsync(1'b0), .vsync(1'b0),
-+		.csync(1'b0), .de(1'b1), .din(din), .dout(dout),
++		.clk(clk), .PHASE_INC(40'd0), .PAL_EN(pal), .CVBS(cvbs),
++		.COLORBURST_RANGE(17'd0), .hsync(hs), .vsync(vs),
++		.csync(hs), .de(de), .din(din), .dout(dout),
 +		.hsync_o(hsync_o), .vsync_o(vsync_o), .csync_o(csync_o), .de_o(de_o)
 +	);
-+
++	reg [7:0] expected_y, expected_c;
++	reg expected_de, expected_hs, expected_vs;
 +	integer sample;
-+	reg [15:0] expected;
 +	initial begin
 +		for (sample = 0; sample < 1024; sample = sample + 1) begin
 +			@(negedge clk);
 +			din = {8'(sample), 8'(sample * 73), 8'(sample * 149)};
-+			@(posedge clk);
-+			#1;
-+			if (sample > 12) begin
-+				expected = dut.luma_d4 * 16'd237;
-+				if (dut.luma_setup_scaled !== expected)
-+					$fatal(1, "Luma setup changed value or pipeline alignment");
-+			end
++			de = sample[4]; hs = sample[5]; vs = sample[6];
++			pal = sample[8]; cvbs = sample[9];
++			expected_y = cvbs ? dut.cvbs_out : dut.yc_luma;
++			expected_c = cvbs ? 8'd0 : dut.chroma;
++			expected_de = dut.de_dly6;
++			expected_hs = dut.hsync_dly[6];
++			expected_vs = dut.vsync_dly[6];
++			@(posedge clk); #1;
++			if (sample > 12 && (dout !== {expected_c, expected_y, 8'd0} ||
++				de_o !== expected_de || hsync_o !== expected_hs || vsync_o !== expected_vs))
++				$fatal(1,"Y/C data and sync lost their pipeline alignment");
 +		end
-+		$display("Luma setup pipeline passed");
++		$display("PAL/NTSC Y/C and CVBS output alignment passed");
 +		$finish;
 +	end
 +endmodule

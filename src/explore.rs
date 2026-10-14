@@ -129,6 +129,7 @@ pub struct Entry {
 impl Entry {
     pub fn key(&self) -> String {
         match &self.row.kind {
+            Kind::Up => format!("{}\0up:", self.system),
             Kind::Play(Launch::File(path)) => format!("{}\0f:{}", self.system, path.display()),
             Kind::Play(Launch::AmigaVision { install, title }) => {
                 format!("{}\0a:{}|{}", self.system, install.display(), title)
@@ -177,6 +178,7 @@ impl Catalogue {
             let filenames: Vec<String> = group
                 .iter()
                 .map(|index| match &self.entries[*index].row.kind {
+                    Kind::Up => self.entries[*index].row.name.clone(),
                     Kind::Play(Launch::File(path)) => path
                         .file_name()
                         .unwrap_or_default()
@@ -536,6 +538,7 @@ impl Drop for Job {
 
 fn hidden_key(row: &Row) -> String {
     match &row.kind {
+        Kind::Up => "up:".into(),
         Kind::Enter(place) => place.key(),
         Kind::Play(Launch::File(path)) => format!("f:{}", path.display()),
         Kind::Play(Launch::AmigaVision { install, title }) => {
@@ -600,13 +603,7 @@ fn read_source(
             request.language.as_deref()
         });
     let provider = crate::artwork_pack::Provider::from_prepared_state(
-        &source.id,
-        root,
-        language,
-        accepted.health,
-        accepted.diagnostics.clone(),
-        accepted.signature.clone(),
-        prepared,
+        &source.id, root, language, accepted, prepared,
     );
     Ok((data.cache, Some(provider)))
 }
@@ -631,6 +628,7 @@ fn deduplicate(
             return Ok(None);
         }
         let launch = match &entry.row.kind {
+            Kind::Up => continue,
             Kind::Play(Launch::File(path)) => {
                 if let Some((_, member)) = crate::zip::split_member_path(path) {
                     format!(
@@ -804,6 +802,7 @@ fn load(
                     continue;
                 }
                 match &row.kind {
+                    Kind::Up => {}
                     Kind::Enter(place) => pending.push(place.clone()),
                     Kind::Play(_) => {
                         // Descriptions are read on demand by the common information worker.
@@ -1676,6 +1675,7 @@ mod tests {
             "NES",
             &crate::cache::PackSourceState {
                 accepted: Some(crate::cache::AcceptedSource {
+                    picture_type: crate::artwork_pack::PictureType::BoxArt,
                     docs_root: pack.to_string_lossy().into_owned(),
                     language: None,
                     signature: None,

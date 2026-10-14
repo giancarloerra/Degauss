@@ -17,6 +17,7 @@ pub enum OptionId {
     /// What left and right do while browsing: speed, letter, page or
     /// direction.
     LeftRight,
+    UpLevelEntry,
     /// Swap the controller's physical A and B actions inside Degauss.
     SwapAB,
     /// Swap the controller's physical X and Y actions inside Degauss.
@@ -40,6 +41,8 @@ pub enum OptionId {
     FolderBrackets,
     /// Whether game browsing shows the selected row position and total.
     ShowGamePosition,
+    /// Move overflowing text in the top title strip only.
+    ScrollTitleStrip,
     /// Which typeface the interface is set in.
     Font,
     /// Which named palette from the themes folder is on, if any.
@@ -127,6 +130,7 @@ pub const OPTIONS: &[OptionId] = &[
     OptionId::Speed,
     OptionId::ArtLimit,
     OptionId::LeftRight,
+    OptionId::UpLevelEntry,
     OptionId::SwapAB,
     OptionId::SwapXY,
     OptionId::Spacer,
@@ -146,6 +150,7 @@ pub const OPTIONS: &[OptionId] = &[
     OptionId::UseMraFilenames,
     OptionId::FolderBrackets,
     OptionId::ShowGamePosition,
+    OptionId::ScrollTitleStrip,
     OptionId::Font,
     OptionId::ShowArt,
     OptionId::CrtSmoothing,
@@ -266,6 +271,7 @@ impl OptionsPage {
                 OptionId::Speed,
                 OptionId::ArtLimit,
                 OptionId::LeftRight,
+                OptionId::UpLevelEntry,
                 OptionId::SwapAB,
                 OptionId::SwapXY,
                 OptionId::RandomLaunches,
@@ -287,6 +293,7 @@ impl OptionsPage {
                 OptionId::UseMraFilenames,
                 OptionId::FolderBrackets,
                 OptionId::ShowGamePosition,
+                OptionId::ScrollTitleStrip,
                 OptionId::Font,
                 OptionId::ShowArt,
                 OptionId::CrtSmoothing,
@@ -336,6 +343,7 @@ impl OptionId {
         match self {
             OptionId::Speed => "Scroll Speed",
             OptionId::LeftRight => "Left and Right Behaviour",
+            OptionId::UpLevelEntry => "Up a Level Entry",
             OptionId::SwapAB => "Swap A and B",
             OptionId::SwapXY => "Swap X and Y",
             OptionId::ArtLimit => "Skip Artwork Faster Than",
@@ -348,6 +356,7 @@ impl OptionId {
             OptionId::UseMraFilenames => "Use MRA Filenames for Arcade Titles",
             OptionId::FolderBrackets => "Folder Brackets",
             OptionId::ShowGamePosition => "Game Total/Position",
+            OptionId::ScrollTitleStrip => "Scrolling Title Strip",
             OptionId::Font => "Text",
             OptionId::Theme => "Theme",
             OptionId::ShowArt => "Artwork",
@@ -405,6 +414,9 @@ impl OptionId {
             OptionId::LeftRight => {
                 "Choose speed changes, letter jumps, page jumps or movement. Direction uses rows in grids."
             }
+            OptionId::UpLevelEntry => {
+                "Show < UP A LEVEL > at the top or bottom of game and folder lists. A goes back; B is unchanged."
+            }
             OptionId::SwapAB => {
                 "Swap controller A and B inside Degauss. Keyboard controls, games and cores are unchanged."
             }
@@ -435,6 +447,9 @@ impl OptionId {
             }
             OptionId::ShowGamePosition => {
                 "Show or hide the selected position and total in game-folder title bars."
+            }
+            OptionId::ScrollTitleStrip => {
+                "Scroll long names in the top title strip. Off keeps them still and shortens them to fit; game-list text is unchanged."
             }
             OptionId::Font => {
                 "Choose Smooth or Pixel text. Smooth 2 and Pixel 2 use bolder lettering."

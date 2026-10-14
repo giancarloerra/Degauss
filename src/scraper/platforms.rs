@@ -173,6 +173,20 @@ mod tests {
         assert_eq!(id_for("UnstableCores", &BTreeMap::new()), None);
         assert_eq!(id_for("Laser", &BTreeMap::new()), None);
         assert_eq!(id_for("TomyTutor", &BTreeMap::new()), None);
+        // Catalogue support does not establish a reviewed scraper catalogue.
+        // Existing gamelists and explicit numeric overrides remain usable.
+        for system in [
+            "Apple-III",
+            "MacQuadra800",
+            "NeXT-Color",
+            "Sun-2",
+            "Sun-3",
+            "MACSE30",
+            "MACIICX",
+            "Marty",
+        ] {
+            assert_eq!(id_for(system, &BTreeMap::new()), None, "{system}");
+        }
     }
 
     #[test]
@@ -201,6 +215,7 @@ mod tests {
             "AmstradPCW",
             "Altair8800",
             "Apogee",
+            "Apple-III",
             "AppleI",
             "AppleLisa",
             "Aquarius",
@@ -220,8 +235,13 @@ mod tests {
             "Homelab",
             "JR100",
             "Laser",
+            "MACIICX",
+            "MACSE30",
+            "MacQuadra800",
+            "Marty",
             "MultiComp",
             "NeXT",
+            "NeXT-Color",
             "Orao",
             "OtherCores",
             "PCXT",
@@ -234,6 +254,8 @@ mod tests {
             "Specialist",
             "SGIIndy",
             "Studio-II",
+            "Sun-2",
+            "Sun-3",
             "SuperVision8000",
             "TRS80",
             "TSConf",

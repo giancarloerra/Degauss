@@ -418,7 +418,12 @@ fn load_everything(args: &Args) -> Result<Loaded> {
         .config
         .clone()
         .unwrap_or_else(|| beside_binary("degauss.toml"));
-    let config = Config::load(&config_path)?;
+    let systems_path = args
+        .systems
+        .clone()
+        .unwrap_or_else(|| beside_binary("systems.toml"));
+    let table = systems::load_table(&systems_path)?;
+    let config = Config::load_for_systems(&config_path, &table)?;
 
     let settings_path = config_path
         .parent()
@@ -426,14 +431,13 @@ fn load_everything(args: &Args) -> Result<Loaded> {
         .unwrap_or_else(|| PathBuf::from("settings.toml"));
     let settings = Settings::load(&settings_path)?;
 
-    let systems_path = args
-        .systems
-        .clone()
-        .unwrap_or_else(|| beside_binary("systems.toml"));
-    let table = systems::prepare_table(
-        systems::load_table(&systems_path)?,
-        Path::new(&config.menu_root),
-    )?;
+    let table = if config.core_overrides.is_empty() {
+        table
+    } else {
+        let origin = config_path.with_file_name("degauss-user.toml");
+        systems::with_core_overrides(&table, &config.core_overrides, &origin)?
+    };
+    let table = systems::prepare_table(table, Path::new(&config.menu_root))?;
 
     let roots: Vec<PathBuf> = config.game_roots.iter().map(PathBuf::from).collect();
     // Logos live beside the configuration, named after the system.
@@ -627,6 +631,7 @@ fn diagnostic_launch_plan(
 fn check_install(config_path: &Path) -> Result<()> {
     let dir = config_path.parent().unwrap_or(Path::new(".")).to_path_buf();
     let mut problems: Vec<String> = Vec::new();
+    let mut user_config = None;
 
     println!("build        {}", build_description());
     println!("folder       {}", dir.display());
@@ -661,7 +666,10 @@ fn check_install(config_path: &Path) -> Result<()> {
                 let user_path = dir.join("degauss-user.toml");
                 match std::fs::read_to_string(&user_path) {
                     Ok(user_text) => match Config::with_overrides(&text, &user_text, &user_path) {
-                        Ok(_) => println!("degauss-user.toml present, parses"),
+                        Ok(config) => {
+                            println!("degauss-user.toml present, parses");
+                            user_config = Some(config);
+                        }
                         Err(error) => {
                             println!("degauss-user.toml PRESENT BUT BROKEN");
                             problems.push(format!("degauss-user.toml does not parse: {error}"));
@@ -688,7 +696,19 @@ fn check_install(config_path: &Path) -> Result<()> {
     let systems_path = dir.join("systems.toml");
     match std::fs::read_to_string(&systems_path) {
         Ok(text) => match systems::parse_table(&text, &systems_path) {
-            Ok(table) => println!("systems.toml present, parses, {} systems", table.len()),
+            Ok(table) => {
+                println!("systems.toml present, parses, {} systems", table.len());
+                if let Some(config) = &user_config {
+                    if let Err(error) = systems::with_core_overrides(
+                        &table,
+                        &config.core_overrides,
+                        &dir.join("degauss-user.toml"),
+                    ) {
+                        println!("core overrides INVALID");
+                        problems.push(error.to_string());
+                    }
+                }
+            }
             Err(e) => {
                 println!("systems.toml PRESENT BUT BROKEN");
                 problems.push(format!("systems.toml does not parse: {e}"));
@@ -722,7 +742,12 @@ fn check_install(config_path: &Path) -> Result<()> {
             println!("artwork pack no explicit roots; Automatic may use installed SD/USB packs");
         } else {
             for (group, root) in &settings.artwork_pack_roots {
-                let provider = artwork_pack::Provider::load(group, Path::new(root), None);
+                let provider = artwork_pack::Provider::load_for_type(
+                    group,
+                    Path::new(root),
+                    None,
+                    artwork_pack::selected_picture_type(settings, group),
+                );
                 println!(
                     "artwork pack {group}: {} at {root}",
                     provider.health.label()
@@ -992,6 +1017,12 @@ fn run() -> Result<()> {
                     return Err(DegaussError::unsupported(
                         "dry run",
                         "the first entry is a folder".to_string(),
+                    ))
+                }
+                browse::Kind::Up => {
+                    return Err(DegaussError::unsupported(
+                        "dry run",
+                        "a navigation entry cannot launch",
                     ))
                 }
             };
@@ -1333,6 +1364,7 @@ fn automatic_source_notes(loaded: &Loaded, system: &FoundSystem) -> Vec<String> 
         return Vec::new();
     }
     let cache_dir = cache::dir_for(&loaded.settings_path);
+    let picture_type = artwork_pack::selected_picture_type(&loaded.settings, id);
     let state = match cache::load_pack_source_state(&cache_dir, id) {
         Ok(state) => state.unwrap_or_default(),
         Err(error) => return vec![format!("Automatic: Artwork Pack state not read: {error}")],
@@ -1343,7 +1375,14 @@ fn automatic_source_notes(loaded: &Loaded, system: &FoundSystem) -> Vec<String> 
         // for: the frontend's own check compares the language separately.
         let language = accepted.language.as_deref();
         let status = match &accepted.signature {
-            Some(signature) => match artwork_pack::snapshot_status(id, signature, root, language).0
+            Some(signature) => match artwork_pack::snapshot_status_for_type(
+                id,
+                signature,
+                root,
+                language,
+                picture_type,
+            )
+            .0
             {
                 artwork_pack::SnapshotStatus::Current => "current",
                 artwork_pack::SnapshotStatus::ImagesOnly => "images changed",
@@ -1366,8 +1405,14 @@ fn automatic_source_notes(loaded: &Loaded, system: &FoundSystem) -> Vec<String> 
     if let Some(declined) = &state.declined {
         let root = Path::new(&declined.docs_root);
         let current = declined.signature.as_ref().is_some_and(|signature| {
-            artwork_pack::snapshot_status(id, signature, root, declined.language.as_deref()).0
-                == artwork_pack::SnapshotStatus::Current
+            artwork_pack::snapshot_status_for_type(
+                id,
+                signature,
+                root,
+                declined.language.as_deref(),
+                picture_type,
+            )
+            .0 == artwork_pack::SnapshotStatus::Current
         });
         return vec![if current {
             format!(
@@ -1381,7 +1426,11 @@ fn automatic_source_notes(loaded: &Loaded, system: &FoundSystem) -> Vec<String> 
             )
         }];
     }
-    match artwork_source::candidate_root(id, &artwork_source::production_bases()) {
+    match artwork_source::candidate_root_for_type(
+        id,
+        &artwork_source::production_bases(),
+        picture_type,
+    ) {
         Ok(Some(root)) => vec![format!(
             "Automatic: Artwork Pack candidate at {}, not prepared (asks on first entry)",
             root.display()
@@ -2083,7 +2132,12 @@ fn effective_library_with_sources(
             )],
         ),
     };
-    let provider = artwork_pack::Provider::load(id, root, language.as_deref());
+    let provider = artwork_pack::Provider::load_for_type(
+        id,
+        root,
+        language.as_deref(),
+        artwork_pack::selected_picture_type(&loaded.settings, id),
+    );
     let library = browse::Library::open_source_neutral(&system.to_config(), loaded.names.clone())?;
     let homes = homes_of(loaded);
     let cancelled = std::sync::atomic::AtomicBool::new(false);
@@ -2815,6 +2869,7 @@ category = "Favorites"
             "Arcade",
             &cache::PackSourceState {
                 accepted: Some(cache::AcceptedSource {
+                    picture_type: provider.picture_type,
                     docs_root: docs.to_string_lossy().into_owned(),
                     language: None,
                     signature: Some(signature.clone()),

@@ -556,6 +556,7 @@ fn walk_controlled(
         }
         omit_non_utf8_cover(row);
         match &row.kind {
+            Kind::Up => dropped.push(index),
             Kind::Play(_) => {
                 games += 1;
                 *games_done += 1;
@@ -987,6 +988,30 @@ impl PreparedCacheGroup {
             false,
             |written| matches!(decode_pack_source(written), Ok(Some(_))),
         )?;
+        Ok(self)
+    }
+
+    /// Keep a source or manual-match preference in the existing rollback group.
+    pub fn with_settings(
+        mut self,
+        path: &Path,
+        settings: &crate::settings::Settings,
+    ) -> Result<Self> {
+        self.stage_extra_file(
+            path.to_path_buf(),
+            settings.encode(path)?.as_bytes(),
+            "settings",
+            false,
+            |written| {
+                std::str::from_utf8(written)
+                    .is_ok_and(|text| toml::from_str::<crate::settings::Settings>(text).is_ok())
+            },
+        )?;
+        // The old overlay stays readable until the atomic replacement.
+        self.files
+            .last_mut()
+            .expect("staged settings")
+            .keep_live_backup = true;
         Ok(self)
     }
 
@@ -1436,6 +1461,7 @@ pub fn save_system_with_index(
 /// version doubles as the matching policy's: a mapping prepared under an
 /// older policy reads as no state, and is prepared again.
 const PACK_SOURCE_FORMAT: u32 = 1;
+const PACK_TYPED_SOURCE_FORMAT: u32 = 2;
 const PACK_PREPARED_FORMAT: u32 = 1;
 
 /// A Pack the user let Degauss prepare for one system, and what it was
@@ -1444,6 +1470,9 @@ const PACK_PREPARED_FORMAT: u32 = 1;
 /// from stats alone whether the rows still stand.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 pub struct AcceptedSource {
+    /// Stored in the outer typed record; legacy Box Art bodies stay unchanged.
+    #[serde(skip)]
+    pub picture_type: crate::artwork_pack::PictureType,
     pub docs_root: String,
     /// The synopsis language the rows were prepared for, normalised.
     pub language: Option<String>,
@@ -1511,11 +1540,20 @@ pub fn artwork_pack_prepared_path(dir: &Path, id: &str) -> PathBuf {
 }
 
 pub fn encode_pack_source(state: &PackSourceState) -> Result<Vec<u8>> {
-    postcard::to_stdvec(&PackSourceFile {
-        format: PACK_SOURCE_FORMAT,
-        state: state.clone(),
-    })
-    .map_err(|error| DegaussError::unsupported("artwork pack state", error.to_string()))
+    let picture_type = state
+        .accepted
+        .as_ref()
+        .map(|accepted| accepted.picture_type)
+        .unwrap_or_default();
+    let encoded = if picture_type == crate::artwork_pack::PictureType::BoxArt {
+        postcard::to_stdvec(&PackSourceFile {
+            format: PACK_SOURCE_FORMAT,
+            state: state.clone(),
+        })
+    } else {
+        postcard::to_stdvec(&(PACK_TYPED_SOURCE_FORMAT, state, picture_type))
+    };
+    encoded.map_err(|error| DegaussError::unsupported("artwork pack state", error.to_string()))
 }
 
 /// The same shape as [`PackPreparedFile`], borrowed: the map handed in
@@ -1544,11 +1582,31 @@ fn written_format(bytes: &[u8]) -> std::result::Result<u32, postcard::Error> {
 fn decode_pack_source(
     bytes: &[u8],
 ) -> std::result::Result<Option<PackSourceState>, postcard::Error> {
-    if written_format(bytes)? != PACK_SOURCE_FORMAT {
-        return Ok(None);
+    match written_format(bytes)? {
+        PACK_SOURCE_FORMAT => {
+            let mut file: PackSourceFile = postcard::from_bytes(bytes)?;
+            if let Some(accepted) = &mut file.state.accepted {
+                accepted.picture_type = accepted
+                    .signature
+                    .as_ref()
+                    .map(crate::artwork_pack::SourceFingerprint::picture_type)
+                    .unwrap_or_default();
+            }
+            Ok(Some(file.state))
+        }
+        PACK_TYPED_SOURCE_FORMAT => {
+            let (_, mut state, picture_type): (
+                u32,
+                PackSourceState,
+                crate::artwork_pack::PictureType,
+            ) = postcard::from_bytes(bytes)?;
+            if let Some(accepted) = &mut state.accepted {
+                accepted.picture_type = picture_type;
+            }
+            Ok(Some(state))
+        }
+        _ => Ok(None),
     }
-    let file: PackSourceFile = postcard::from_bytes(bytes)?;
-    Ok(Some(file.state))
 }
 
 fn decode_pack_prepared(
@@ -1649,24 +1707,7 @@ pub fn prepare_pack_match(
         false,
         |written| matches!(decode_pack_prepared(written), Ok(Some(_))),
     )?;
-    staged.stage_extra_file(
-        settings_path.to_path_buf(),
-        settings.encode(settings_path)?.as_bytes(),
-        "match-settings",
-        false,
-        |written| {
-            std::str::from_utf8(written)
-                .is_ok_and(|text| toml::from_str::<crate::settings::Settings>(text).is_ok())
-        },
-    )?;
-    // Keep the previous settings in place until the atomic replacement,
-    // rather than allowing interruption to leave every preference absent.
-    staged
-        .files
-        .last_mut()
-        .expect("staged settings")
-        .keep_live_backup = true;
-    Ok(staged)
+    staged.with_settings(settings_path, settings)
 }
 
 /// When a folder itself last changed, seconds since the epoch, or 0.
@@ -1963,6 +2004,7 @@ mod tests {
             rbf: "_Computer/Test".into(),
             launch: Vec::new(),
             setname: None,
+            same_dir: false,
             compatible_cores: Vec::new(),
             skip_folders: Vec::new(),
             extra_paths: Vec::new(),
@@ -3734,6 +3776,7 @@ mod tests {
     fn accepted_state(marker: u32) -> PackSourceState {
         PackSourceState {
             accepted: Some(AcceptedSource {
+                picture_type: crate::artwork_pack::PictureType::BoxArt,
                 docs_root: "/docs".into(),
                 language: Some("en".into()),
                 signature: None,
@@ -3744,6 +3787,51 @@ mod tests {
             }),
             declined: None,
         }
+    }
+
+    #[test]
+    fn typed_preparation_without_a_fingerprint_preserves_box_state_bytes() {
+        use crate::artwork_pack::{PictureType, Provider};
+        let legacy = accepted_state(9);
+        let bytes = [
+            1, 1, 5, b'/', b'd', b'o', b'c', b's', 1, 2, b'e', b'n', 0, 9, 0, 0, 2, 0,
+        ];
+        assert_eq!(
+            encode_pack_source(&legacy).unwrap(),
+            bytes,
+            "Box Art keeps the released source-record bytes"
+        );
+        assert_eq!(decode_pack_source(&bytes).unwrap(), Some(legacy.clone()));
+        let store = temp("typed-pack-state");
+        for picture_type in PictureType::ALL {
+            let mut state = legacy.clone();
+            state.accepted.as_mut().unwrap().picture_type = picture_type;
+            save_pack_source_state(&store, "Test", &state).unwrap();
+            let restored = load_pack_source_state(&store, "Test").unwrap().unwrap();
+            assert_eq!(restored, state);
+            let accepted = restored.accepted.unwrap();
+            assert!(accepted.signature.is_none());
+            let provider = Provider::from_prepared_state(
+                "Test",
+                Path::new("/docs"),
+                Some("en"),
+                &accepted,
+                PackPreparedMap::new(),
+            );
+            assert!(provider.configuration_matches(Path::new("/docs"), Some("en"), picture_type));
+            assert_eq!(provider.picture_type, picture_type);
+            if picture_type != PictureType::BoxArt {
+                let mut written = std::fs::read(artwork_pack_source_path(&store, "Test")).unwrap();
+                assert_eq!(written_format(&written).unwrap(), PACK_TYPED_SOURCE_FORMAT);
+                written.pop();
+                std::fs::write(artwork_pack_source_path(&store, "Test"), &written).unwrap();
+                assert!(
+                    load_pack_source_state(&store, "Test").is_err(),
+                    "a missing type in the typed record is corruption, not legacy Box Art"
+                );
+            }
+        }
+        std::fs::remove_dir_all(store).unwrap();
     }
 
     /// The rows, the decision and the prepared presentation of one system
@@ -3904,7 +3992,7 @@ mod tests {
             "an empty file has no version to read: not no state"
         );
         let stale = postcard::to_stdvec(&PackSourceFile {
-            format: PACK_SOURCE_FORMAT + 1,
+            format: PACK_TYPED_SOURCE_FORMAT + 1,
             state: accepted_state(9),
         })
         .unwrap();

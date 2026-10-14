@@ -857,9 +857,7 @@ fn prepared_game_provider(
         system_id,
         docs_root,
         prepared_language.as_deref(),
-        accepted.health,
-        accepted.diagnostics.clone(),
-        accepted.signature.clone(),
+        accepted,
         prepared,
     )))
 }
@@ -3439,6 +3437,7 @@ mod tests {
             rbf: "_Console/Fixture".into(),
             launch: Vec::new(),
             setname: None,
+            same_dir: false,
             compatible_cores: Vec::new(),
             skip_folders: Vec::new(),
             extra_paths: Vec::new(),

@@ -183,13 +183,14 @@ pub fn plan_amiga_vision_with_selections(
     selected_version: Option<&str>,
     selected_family: Option<&str>,
 ) -> Result<LaunchPlan> {
-    let family = crate::launch_cores::resolve_for_version(
+    let mut family = crate::launch_cores::resolve_for_version(
         system,
         menu_root,
         selected_family,
         selected_version,
         ra_first,
     )?;
+    family.setname.get_or_insert_with(|| "Amiga".into());
     let mut plan = plan_amiga_vision(&family, install, title, mgl_path)?;
     let core = crate::core_choices::resolve(&family, menu_root, selected_version, ra_first)?;
     plan.mgl = crate::core_variants::apply(&plan.mgl, mgl_path, &core)?;
@@ -638,13 +639,14 @@ pub fn favorite_mgl_amiga_with_selections(
     selected_version: Option<&str>,
     selected_family: Option<&str>,
 ) -> Result<String> {
-    let family = crate::launch_cores::resolve_for_version(
+    let mut family = crate::launch_cores::resolve_for_version(
         system,
         menu_root,
         selected_family,
         selected_version,
         ra_first,
     )?;
+    family.setname.get_or_insert_with(|| "Amiga".into());
     let text = favorite_mgl_amiga(&family, install, title)?;
     let core = crate::core_choices::resolve(&family, menu_root, selected_version, ra_first)?;
     crate::core_variants::apply(&text, install, &core)
@@ -1054,7 +1056,16 @@ pub fn favorite_mgl_with_selections(
         selected_version,
         ra_first,
     )?;
-    let core = crate::core_choices::resolve(&family, menu_root, selected_version, ra_first)?;
+    let mut core = crate::core_choices::resolve(&family, menu_root, selected_version, ra_first)?;
+    // Resolve the exact regular N64 build for the actual handoff, not in a
+    // durable favourite that must survive the next dated core replacement.
+    if Path::new(&family.rbf)
+        .file_name()
+        .is_some_and(|name| name.eq_ignore_ascii_case("N64"))
+        && core.rbf.starts_with(&format!("{}_", family.rbf))
+    {
+        core.rbf = family.rbf.clone();
+    }
     crate::core_variants::apply(&text, game, &core).map(Some)
 }
 
@@ -1116,11 +1127,14 @@ pub fn plan(system: &SystemConfig, game: &Path, mgl_path: &Path) -> Result<Launc
         items.push(extra);
     }
     items.push(MglItem::new(rule, absolute)?);
-    let mgl = build_mgl(
+    let mut mgl = build_mgl(
         rule.rbf.as_deref().unwrap_or(&system.rbf),
         system.setname.as_deref(),
         &items,
     )?;
+    if system.same_dir && system.setname.as_ref().is_some_and(|name| !name.is_empty()) {
+        mgl = mgl.replacen("<setname>", "<setname same_dir=\"1\">", 1);
+    }
 
     let mgl_path_str = mgl_path.to_str().ok_or_else(|| {
         DegaussError::unsupported(
@@ -1270,6 +1284,7 @@ mod tests {
             ],
             skip_folders: Vec::new(),
             setname: None,
+            same_dir: false,
             compatible_cores: Vec::new(),
             extra_paths: Vec::new(),
         }
@@ -1288,6 +1303,55 @@ mod tests {
             menu_folder: None,
         }
         .to_config()
+    }
+
+    #[test]
+    fn n64_favourites_keep_a_stable_reference_and_resolve_the_current_regular_build_at_launch() {
+        let root =
+            std::env::temp_dir().join(format!("degauss-n64-favourite-{}", std::process::id()));
+        let games = root.join("games/N64");
+        std::fs::create_dir_all(&games).unwrap();
+        std::fs::create_dir_all(root.join("_Console")).unwrap();
+        let first = root.join("_Console/N64_20260726.rbf");
+        std::fs::write(&first, b"standard").unwrap();
+        std::fs::write(root.join("_Console/N64_80MHz_20250811.rbf"), b"turbo").unwrap();
+        let game = games.join("Game.z64");
+        std::fs::write(&game, b"game").unwrap();
+        let system = shipped_system("Nintendo64", vec![games]);
+        let favorite = favorite_mgl_with_selections(&system, &game, &root, false, None, None)
+            .unwrap()
+            .unwrap();
+        assert!(favorite.contains("<rbf>_Console/N64</rbf>"));
+        assert!(!favorite.contains("N64_20260726"));
+        let file = root.join("Game.mgl");
+        std::fs::write(&file, &favorite).unwrap();
+        for date in ["20260726", "20261012"] {
+            if date == "20261012" {
+                std::fs::remove_file(&first).unwrap();
+                std::fs::write(root.join("_Console/N64_20261012.rbf"), b"updated standard")
+                    .unwrap();
+            }
+            let plan = plan_with_selections(
+                &system,
+                &file,
+                &root.join("handoff.mgl"),
+                &root,
+                false,
+                None,
+                None,
+            )
+            .unwrap();
+            assert!(plan
+                .mgl
+                .contains(&format!("<rbf>_Console/N64_{date}</rbf>")));
+            assert_eq!(std::fs::read_to_string(&file).unwrap(), favorite);
+        }
+        let turbo =
+            favorite_mgl_with_selections(&system, &game, &root, false, None, Some("n64-turbo"))
+                .unwrap()
+                .unwrap();
+        assert!(turbo.contains("<rbf>_Console/N64_80MHz</rbf>"));
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
@@ -1766,6 +1830,7 @@ mod tests {
             launch: Vec::new(),
             skip_folders: Vec::new(),
             setname: Some("Amiga".into()),
+            same_dir: false,
             compatible_cores: Vec::new(),
             extra_paths: Vec::new(),
         }
@@ -1778,6 +1843,41 @@ mod tests {
         std::fs::create_dir_all(install.join("listings")).unwrap();
         std::fs::write(install.join("listings/games.txt"), games).unwrap();
         install
+    }
+
+    #[test]
+    fn amigavision_default_set_survives_core_selection_for_titles_and_favourites() {
+        let install = amiga_vision_install("default-set", b"Zool 2\n");
+        let root = install.join("card");
+        std::fs::create_dir_all(root.join("_Computer")).unwrap();
+        std::fs::write(root.join("_Computer/Minimig.rbf"), b"primary").unwrap();
+        let mut system = amiga_vision_system(&install);
+        system.setname = None;
+        for version in [None, Some("standard")] {
+            let plan = plan_amiga_vision_with_selections(
+                &system,
+                &install,
+                "Zool 2",
+                &root.join("degauss.mgl"),
+                &root,
+                false,
+                version,
+                None,
+            )
+            .unwrap();
+            assert!(
+                plan.mgl.contains("<setname>Amiga</setname>"),
+                "AmigaVision must load its configured hard disks after core selection"
+            );
+            assert_eq!(plan.boot_file.unwrap().1, b"Zool 2\n");
+            let favourite = favorite_mgl_amiga_with_selections(
+                &system, &install, "Zool 2", &root, false, version, None,
+            )
+            .unwrap();
+            assert!(favourite.contains("<setname>Amiga</setname>"));
+            assert!(favourite.contains("kind=\"amigavision\""));
+        }
+        std::fs::remove_dir_all(install).unwrap();
     }
 
     #[test]
@@ -1796,7 +1896,8 @@ mod tests {
             id: "legacy".into(),
             label: "Legacy Minimig".into(),
             rbf: "_Computer/MinimigLegacy".into(),
-            setname: Some("Amiga".into()),
+            setname: Some("CustomAmiga".into()),
+            same_dir: false,
         });
 
         let plan = plan_amiga_vision_with_selections(
@@ -1811,6 +1912,7 @@ mod tests {
         )
         .unwrap();
         assert!(plan.mgl.contains("<rbf>_Computer/MinimigLegacy</rbf>"));
+        assert!(plan.mgl.contains("<setname>CustomAmiga</setname>"));
         assert_eq!(plan.boot_file.unwrap().1, b"Zool 2\n");
 
         let favorite = favorite_mgl_amiga_with_selections(
@@ -1824,6 +1926,7 @@ mod tests {
         )
         .unwrap();
         assert!(favorite.contains("<rbf>_Computer/MinimigLegacy</rbf>"));
+        assert!(favorite.contains("<setname>CustomAmiga</setname>"));
         assert!(favorite.contains("kind=\"amigavision\""));
 
         std::fs::remove_dir_all(root).unwrap();
@@ -1908,6 +2011,7 @@ mod tests {
             launch: Vec::new(),
             skip_folders: Vec::new(),
             setname: None,
+            same_dir: false,
             compatible_cores: Vec::new(),
             extra_paths: Vec::new(),
         };
@@ -2035,6 +2139,7 @@ mod tests {
             launch: Vec::new(),
             skip_folders: Vec::new(),
             setname: None,
+            same_dir: false,
             compatible_cores: Vec::new(),
             extra_paths: Vec::new(),
         };
@@ -2061,6 +2166,7 @@ mod tests {
             launch: Vec::new(),
             skip_folders: Vec::new(),
             setname: None,
+            same_dir: false,
             compatible_cores: Vec::new(),
             extra_paths: Vec::new(),
         };
@@ -2096,6 +2202,7 @@ mod tests {
             launch: Vec::new(),
             skip_folders: Vec::new(),
             setname: None,
+            same_dir: false,
             compatible_cores: Vec::new(),
             extra_paths: Vec::new(),
         };
@@ -2164,6 +2271,7 @@ mod tests {
             launch: vec![rule(&["nes", "fds"], "f", 1, 1)],
             skip_folders: Vec::new(),
             setname: None,
+            same_dir: false,
             compatible_cores: Vec::new(),
         };
         (root, system)
@@ -2640,6 +2748,7 @@ mod tests {
             rbf: "_Computer/Minimig".into(),
             launch: Vec::new(),
             setname: Some("Amiga".into()),
+            same_dir: false,
             compatible_cores: Vec::new(),
             skip_folders: Vec::new(),
             extra_paths: Vec::new(),
@@ -2675,6 +2784,7 @@ mod tests {
             rbf: "_Computer/Minimig".into(),
             launch: Vec::new(),
             setname: Some("Amiga".into()),
+            same_dir: false,
             compatible_cores: Vec::new(),
             skip_folders: Vec::new(),
             extra_paths: Vec::new(),
@@ -2708,6 +2818,7 @@ mod tests {
             rbf: "_Computer/Minimig".into(),
             launch: Vec::new(),
             setname: Some("Amiga".into()),
+            same_dir: false,
             compatible_cores: Vec::new(),
             skip_folders: Vec::new(),
             extra_paths: Vec::new(),
@@ -2741,6 +2852,7 @@ mod tests {
             launch: vec![rule(&["neo", "mgl"], "f", 1, 1)],
             skip_folders: Vec::new(),
             setname: None,
+            same_dir: false,
             compatible_cores: Vec::new(),
             extra_paths: Vec::new(),
         }
@@ -2801,6 +2913,62 @@ mod tests {
                 .index,
             1
         );
+    }
+
+    #[test]
+    fn neo_geo_turbo_uses_its_published_set_without_changing_the_bios_folder() {
+        let root = std::env::temp_dir().join(format!("degauss-neo-turbo-{}", std::process::id()));
+        std::fs::create_dir_all(root.join("_Console/console_extra")).unwrap();
+        std::fs::write(root.join("_Console/NeoGeo_20261010.rbf"), b"standard").unwrap();
+        for (profile, reference) in [
+            ("neogeo-turbo-v2", "NeoGeo_TurboV2"),
+            ("neogeo-turbo", "NeoGeo_Turbo"),
+        ] {
+            std::fs::write(
+                root.join(format!("_Console/console_extra/{reference}_20261010.rbf")),
+                b"turbo",
+            )
+            .unwrap();
+            for id in ["NeoGeo", "NeoGeoMVS"] {
+                let system = shipped_system(id, vec![root.join("games/NEOGEO")]);
+                let game = Path::new("/media/fat/games/NEOGEO/mslug.neo");
+                let plan = plan_with_selections(
+                    &system,
+                    game,
+                    Path::new("/tmp/degauss.mgl"),
+                    &root,
+                    false,
+                    None,
+                    Some(profile),
+                )
+                .unwrap();
+                assert!(plan
+                    .mgl
+                    .contains(&format!("<rbf>_Console/console_extra/{reference}</rbf>")));
+                assert!(plan
+                    .mgl
+                    .contains("<setname same_dir=\"1\">NEOGEO_TURBO</setname>"));
+                assert!(plan.mgl.contains("/media/fat/games/NEOGEO/mslug.neo"));
+                let favorite =
+                    favorite_mgl_with_selections(&system, game, &root, false, None, Some(profile))
+                        .unwrap()
+                        .unwrap();
+                assert!(favorite.contains("<setname same_dir=\"1\">NEOGEO_TURBO</setname>"));
+                let standard = plan_with_selections(
+                    &system,
+                    game,
+                    Path::new("/tmp/degauss.mgl"),
+                    &root,
+                    false,
+                    None,
+                    None,
+                )
+                .unwrap();
+                assert!(standard.mgl.contains("<rbf>_Console/NeoGeo</rbf>"));
+                assert!(!standard.mgl.contains("<setname"));
+            }
+        }
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

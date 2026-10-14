@@ -8,8 +8,8 @@
 # Delete settings.toml to reset UI preferences; manual overrides still apply.
 #
 # Which core runs which system, and which slot a file goes into, lives in
-# systems.toml. That file is generated from public community data and is
-# yours to edit.
+# systems.toml. Put preferred-core changes and explicitly compatible core
+# additions under [core_overrides.<system ID>] in degauss-user.toml.
 
 # Where to look for games, in the order MiSTer's own loader searches:
 # USB sticks first, then the network share, then the CIFS mount, then the

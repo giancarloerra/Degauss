@@ -3752,8 +3752,8 @@ index 542ef71..d5790aa 100644
 +	return degauss_native_fb && is_menu() && !cfg.vga_scaler;
 +}
 +
-+// The native Menu reader runs at 20 MHz. Preserve modeline durations by
-+// translating horizontal edges to that clock, rather than changing HDMI's PLL.
++// Native Menu timing words use 20 MHz units, including its 25 MHz reader
++// with a four-in-five enable. Preserve durations without changing HDMI.
 +static bool degauss_native_timing(const vmode_custom_t &mode, uint16_t timing[8])
 +{
 +	if (!isfinite(mode.Fpix) || mode.Fpix <= 0 || mode.param.pr ||
