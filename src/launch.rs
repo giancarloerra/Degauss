@@ -183,13 +183,14 @@ pub fn plan_amiga_vision_with_selections(
     selected_version: Option<&str>,
     selected_family: Option<&str>,
 ) -> Result<LaunchPlan> {
-    let family = crate::launch_cores::resolve_for_version(
+    let mut family = crate::launch_cores::resolve_for_version(
         system,
         menu_root,
         selected_family,
         selected_version,
         ra_first,
     )?;
+    family.setname.get_or_insert_with(|| "Amiga".into());
     let mut plan = plan_amiga_vision(&family, install, title, mgl_path)?;
     let core = crate::core_choices::resolve(&family, menu_root, selected_version, ra_first)?;
     plan.mgl = crate::core_variants::apply(&plan.mgl, mgl_path, &core)?;
@@ -638,13 +639,14 @@ pub fn favorite_mgl_amiga_with_selections(
     selected_version: Option<&str>,
     selected_family: Option<&str>,
 ) -> Result<String> {
-    let family = crate::launch_cores::resolve_for_version(
+    let mut family = crate::launch_cores::resolve_for_version(
         system,
         menu_root,
         selected_family,
         selected_version,
         ra_first,
     )?;
+    family.setname.get_or_insert_with(|| "Amiga".into());
     let text = favorite_mgl_amiga(&family, install, title)?;
     let core = crate::core_choices::resolve(&family, menu_root, selected_version, ra_first)?;
     crate::core_variants::apply(&text, install, &core)
@@ -1844,6 +1846,41 @@ mod tests {
     }
 
     #[test]
+    fn amigavision_default_set_survives_core_selection_for_titles_and_favourites() {
+        let install = amiga_vision_install("default-set", b"Zool 2\n");
+        let root = install.join("card");
+        std::fs::create_dir_all(root.join("_Computer")).unwrap();
+        std::fs::write(root.join("_Computer/Minimig.rbf"), b"primary").unwrap();
+        let mut system = amiga_vision_system(&install);
+        system.setname = None;
+        for version in [None, Some("standard")] {
+            let plan = plan_amiga_vision_with_selections(
+                &system,
+                &install,
+                "Zool 2",
+                &root.join("degauss.mgl"),
+                &root,
+                false,
+                version,
+                None,
+            )
+            .unwrap();
+            assert!(
+                plan.mgl.contains("<setname>Amiga</setname>"),
+                "AmigaVision must load its configured hard disks after core selection"
+            );
+            assert_eq!(plan.boot_file.unwrap().1, b"Zool 2\n");
+            let favourite = favorite_mgl_amiga_with_selections(
+                &system, &install, "Zool 2", &root, false, version, None,
+            )
+            .unwrap();
+            assert!(favourite.contains("<setname>Amiga</setname>"));
+            assert!(favourite.contains("kind=\"amigavision\""));
+        }
+        std::fs::remove_dir_all(install).unwrap();
+    }
+
+    #[test]
     fn amigavision_titles_and_new_favourites_apply_the_selected_family() {
         let install = amiga_vision_install("game-core", b"Zool 2\n");
         let root = install
@@ -1859,7 +1896,7 @@ mod tests {
             id: "legacy".into(),
             label: "Legacy Minimig".into(),
             rbf: "_Computer/MinimigLegacy".into(),
-            setname: Some("Amiga".into()),
+            setname: Some("CustomAmiga".into()),
             same_dir: false,
         });
 
@@ -1875,6 +1912,7 @@ mod tests {
         )
         .unwrap();
         assert!(plan.mgl.contains("<rbf>_Computer/MinimigLegacy</rbf>"));
+        assert!(plan.mgl.contains("<setname>CustomAmiga</setname>"));
         assert_eq!(plan.boot_file.unwrap().1, b"Zool 2\n");
 
         let favorite = favorite_mgl_amiga_with_selections(
@@ -1888,6 +1926,7 @@ mod tests {
         )
         .unwrap();
         assert!(favorite.contains("<rbf>_Computer/MinimigLegacy</rbf>"));
+        assert!(favorite.contains("<setname>CustomAmiga</setname>"));
         assert!(favorite.contains("kind=\"amigavision\""));
 
         std::fs::remove_dir_all(root).unwrap();

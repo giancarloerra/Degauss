@@ -9734,26 +9734,17 @@ impl App {
         for _ in 0..browse::MAX_DEPTH {
             // Through the same door browsing uses, so it reads what was
             // written down rather than opening the system again.
-            let Ok(rows) = self.listing(&place) else {
+            let Ok(mut rows) = self.listing(&place) else {
                 break;
             };
+            if favorites_only {
+                self.mark_favorites(&mut rows);
+            }
             let games: Vec<usize> = rows
                 .iter()
                 .enumerate()
                 .filter(|(_, row)| !row.is_folder())
-                .filter(|(_, row)| {
-                    !favorites_only
-                        || match &row.kind {
-                            browse::Kind::Play(browse::Launch::File(path)) => {
-                                self.favorites.holds(path)
-                            }
-                            browse::Kind::Play(browse::Launch::AmigaVision { install, title }) => {
-                                self.favorites
-                                    .holds(&crate::favorites::amiga_key(install, title))
-                            }
-                            _ => false,
-                        }
-                })
+                .filter(|(_, row)| !favorites_only || row.favorite)
                 .map(|(index, _)| index)
                 .collect();
             if !games.is_empty() {
@@ -15659,7 +15650,9 @@ impl App {
             self.all_here = std::mem::take(&mut self.here);
         }
         if !active {
-            self.here = std::mem::take(&mut self.all_here);
+            if !self.all_here.is_empty() {
+                self.here = std::mem::take(&mut self.all_here);
+            }
         } else {
             let wanted = squashed(&self.filter);
             let mode = self.game_name_display;

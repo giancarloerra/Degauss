@@ -4304,6 +4304,22 @@ fn run_main_favourites_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
         .all(|system| system.def.id != "Favorites"));
     // The existing removal takes it away again, as press-free as before.
     select_row_named(&mut app, "First Game");
+    app.random_launches = false;
+    app.random_here(true);
+    assert!(
+        app.message.is_none(),
+        "ordinary folders still find their favourites"
+    );
+    assert_eq!(
+        row_target(&app.here[app.game_list.selected()]),
+        Some(game.clone())
+    );
+    app.random_here(false);
+    assert!(
+        app.message.is_none(),
+        "Random Game still works in ordinary folders"
+    );
+    select_row_named(&mut app, "First Game");
     accept_game_action(&mut app, REMOVE_FAVORITE);
     assert_eq!(app.screen, Screen::Browse);
     assert!(!root_favorite.exists());
@@ -4397,6 +4413,20 @@ fn run_main_favourites_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
         app.here
     );
     select_row_named(&mut app, "First Game");
+    app.random_here(true);
+    assert!(
+        app.message.is_none(),
+        "a shelf shortcut is itself a favourite"
+    );
+    assert_eq!(
+        row_target(&app.here[app.game_list.selected()]),
+        Some(root_favorite.clone())
+    );
+    app.random_here(false);
+    assert!(
+        app.message.is_none(),
+        "Random Game still works on the shelf"
+    );
     accept_game_action(&mut app, REMOVE_FAVORITE);
     assert_eq!(app.screen, Screen::Browse);
     assert!(app.message.is_none(), "{:?}", app.message);
@@ -4667,6 +4697,18 @@ fn run_main_favourites_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
     assert!(!favorites_root.join("Arcade!").exists());
     assert!(renamed.join("First Game.mgl").is_file());
     assert_eq!(app.here[app.game_list.selected()].name, "Renamed Folder!");
+    app.enter(Place::Dir(renamed.clone()));
+    app.random_launches = false;
+    app.random_here(true);
+    assert!(
+        app.message.is_none(),
+        "nested shelf shortcuts remain favourites"
+    );
+    assert_eq!(
+        row_target(&app.here[app.game_list.selected()]),
+        Some(renamed.join("First Game.mgl"))
+    );
+    app.go_back();
     assert!(
         app.build.is_none(),
         "rename must not start a full-library build"
@@ -13589,6 +13631,64 @@ fn run_metadata_filter_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
         metadata_filter_game("Gamma", Some("action"), "", "", "", "", true),
     ];
     app.game_list = ListState::new(app.here.len(), app.geometry.visible);
+    app.game_list.select(1);
+    let unfiltered = app.here.iter().map(row_key).collect::<Vec<_>>();
+    for position in [
+        crate::settings::UpLevelEntry::Off,
+        crate::settings::UpLevelEntry::Top,
+        crate::settings::UpLevelEntry::Bottom,
+    ] {
+        app.settings.up_level_entry = Some(position);
+        app.apply_geometry();
+        app.open_find(FindMode::Search);
+        let clear = name_keyboard::keys(app.name_keyboard_page, false)
+            .iter()
+            .position(|key| *key == name_keyboard::Key::Clear)
+            .unwrap();
+        for _ in 0..2 {
+            app.find_list.select(clear);
+            app.handle(Action::Accept);
+            assert_eq!(
+                app.here
+                    .iter()
+                    .filter(|row| !matches!(row.kind, browse::Kind::Up))
+                    .map(row_key)
+                    .collect::<Vec<_>>(),
+                unfiltered,
+                "clearing an empty search must preserve the unfiltered list"
+            );
+        }
+        app.handle(Action::Context);
+        assert_eq!(
+            app.here
+                .iter()
+                .filter(|row| !matches!(row.kind, browse::Kind::Up))
+                .map(row_key)
+                .collect::<Vec<_>>(),
+            unfiltered,
+            "deleting from an empty search also preserves the list"
+        );
+        app.filter = "NO MATCH".into();
+        app.apply_filter();
+        assert!(app
+            .here
+            .iter()
+            .all(|row| matches!(row.kind, browse::Kind::Up)));
+        app.find_list.select(clear);
+        app.handle(Action::Accept);
+        assert_eq!(
+            app.here
+                .iter()
+                .filter(|row| !matches!(row.kind, browse::Kind::Up))
+                .map(row_key)
+                .collect::<Vec<_>>(),
+            unfiltered,
+            "Clear restores a search with zero matches"
+        );
+        app.handle(Action::Quit);
+    }
+    app.settings.up_level_entry = Some(crate::settings::UpLevelEntry::Off);
+    app.apply_geometry();
     app.game_list.select(1);
     let settings_before = std::fs::read(&app.settings_path).ok();
     let cache_before = if app.cache_dir.exists() {

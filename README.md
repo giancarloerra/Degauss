@@ -955,6 +955,10 @@ precedence. To use Degauss Main instead of an older separate Main for one of
 these cores, set `main=degauss/MiSTer_Degauss` in that core's section, leaving
 unrelated sections unchanged. BIOS, PRAM and bootable media remain the core's
 normal requirements. Sun-2 needs its own 32 KiB ROM, not the 64 KiB Sun-3 ROM.
+Update All preserves an existing `games/Sun-2/boot0.rom`. If that file is 64 KiB,
+replace it with the corrected 32 KiB ROM from the
+[official Sun-2 distribution](https://github.com/MiSTer-devel/Distribution_MiSTer/tree/main/games/Sun-2)
+before launching Sun-2.
 
 The released Marty core retains its upstream limitation for floppy tracks
 with 32 sectors. This update does not change that core protocol.
