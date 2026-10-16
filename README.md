@@ -140,6 +140,7 @@ Click the image to watch Degauss on YouTube.
   - [An Artwork Pack assigns the wrong picture to a game. How can I correct it?](#an-artwork-pack-assigns-the-wrong-picture-to-a-game-how-can-i-correct-it)
   - [What MiSTer hardware has Degauss been reported working on?](#what-mister-hardware-has-degauss-been-reported-working-on)
   - [Can an AI coding agent maintain my MiSTer after Update All?](#can-an-ai-coding-agent-maintain-my-mister-after-update-all)
+  - [How do I install an Artwork Pack and select it in Degauss?](#how-do-i-install-an-artwork-pack-and-select-it-in-degauss)
   - [I installed an Artwork Pack, but its artwork is not showing](#i-installed-an-artwork-pack-but-its-artwork-is-not-showing)
   - [Degauss stays on “Starting Degauss frontend...”](#degauss-stays-on-starting-degauss-frontend)
   - [Why does Update All warn that Degauss replaces MiSTer firmware with a fork?](#why-does-update-all-warn-that-degauss-replaces-mister-firmware-with-a-fork)
@@ -2518,6 +2519,14 @@ Read [Managing Degauss artwork with an AI coding agent](tools/artwork-agent/DEGA
 Yes. Start with the completed run's exact changes, including files delivered inside archives. Check affected cores, launchers, ROM requirements, Linux state and artwork; preserve manual content and perform only approved repairs. The same-run artwork pass is part of completion, not a separate optional follow-up.
 
 Read [Managing MiSTer with AI after Update All](docs/manage-mister-with-ai.md) and copy its [generic management instruction template](docs/mister-maintenance-AGENTS.example.md) into a separate local management folder. The guide links the existing SSH and artwork instructions, explains safe writes and validation, and includes a copyable agent brief. It does not grant permission to run Update All, reboot, download games or rebuild lists.
+
+### How do I install an Artwork Pack and select it in Degauss?
+
+1. **Update All:** open **Settings → Extra Content → Game Artwork DBs**, select the wanted artwork packs and systems, save, then run Update All to install them. Those selected packs are automatically updated whenever you subsequently run Update All.
+2. **Degauss global setting:** set **Options → Library → Automatic Data Source → Artwork Pack First**. This uses **Box Art** by default, so a Box Art pack must be installed for that default to show pack artwork.
+3. **Screenshot or Title Screen selection (per system):** highlight or enter the system, press **X**, then choose **Library → Game Data Source → Artwork Pack**. Choose **Screenshot** or **Title Screen** and confirm its installed location.
+
+**Box Art remains the default. Installing only Screenshot or Title Screen packs still requires step 3.** If prompted, choose **Prepare** and let preparation finish.
 
 ### I installed an Artwork Pack, but its artwork is not showing
 
