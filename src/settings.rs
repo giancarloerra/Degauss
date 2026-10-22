@@ -445,6 +445,9 @@ pub struct Settings {
     /// the Gamelist-first behaviour shipped before this setting existed.
     #[serde(default)]
     pub automatic_data_source: Option<AutomaticDataSource>,
+    /// Picture type used by Artwork Pack systems without an explicit override.
+    #[serde(default)]
+    pub default_artwork_pack: Option<crate::artwork_pack::PictureType>,
     /// Watch supported physical game discs through an installed provider.
     /// Absent is off, preserving startup and launch behaviour from releases
     /// before physical-disc detection existed.
@@ -470,10 +473,13 @@ pub struct Settings {
     /// game launch. Empty on existing installations; ignored by Gamelist.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub artwork_pack_matches: BTreeMap<String, crate::artwork_pack::ManualMatches>,
-    /// Selected picture type for each source group. Missing entries retain
-    /// the existing Box Art workflow and persisted prepared data.
+    /// Explicit picture type for each source group. A legacy saved root
+    /// without a type remains Box Art unless inheritance is explicitly saved.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub artwork_pack_picture_types: BTreeMap<String, crate::artwork_pack::PictureType>,
+    /// Explicit Use Global choices, distinct from legacy Box Art roots.
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub artwork_pack_inherit: BTreeSet<String>,
     /// The browse strip is visible by default. Both On and Off are explicit
     /// saved choices; only an absent value follows the default.
     pub show_bar: Option<bool>,

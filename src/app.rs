@@ -388,6 +388,7 @@ fn option_operation(option: OptionId, input: OptionInput) -> OptionOperation {
         | OptionId::ShowExplore
         | OptionId::CorePreference
         | OptionId::AutomaticDataSource
+        | OptionId::DefaultArtworkPack
         | OptionId::AutoRunPhysicalDiscs
         | OptionId::SeparateHandheldCategory
         | OptionId::ShowBar
@@ -1623,8 +1624,10 @@ fn source_choice(
     current: &Settings,
     group: &str,
     target: &crate::source_cache::Target,
+    inherit_type: bool,
 ) -> (Settings, &'static str) {
     let mut changed = current.clone();
+    changed.artwork_pack_inherit.remove(group);
     let label = match target {
         crate::source_cache::Target::Gamelist => {
             changed.artwork_pack_roots.remove(group);
@@ -1637,7 +1640,10 @@ fn source_choice(
             picture_type,
         } => {
             changed.gamelist_sources.remove(group);
-            if *picture_type == crate::artwork_pack::PictureType::BoxArt {
+            if inherit_type {
+                changed.artwork_pack_picture_types.remove(group);
+                changed.artwork_pack_inherit.insert(group.to_string());
+            } else if *picture_type == crate::artwork_pack::PictureType::BoxArt {
                 changed.artwork_pack_picture_types.remove(group);
             } else {
                 changed
@@ -1658,8 +1664,9 @@ fn persist_source_choice(
     path: &Path,
     group: &str,
     target: &crate::source_cache::Target,
+    inherit_type: bool,
 ) -> Result<(Settings, &'static str, Option<String>)> {
-    let (changed, label) = source_choice(current, group, target);
+    let (changed, label) = source_choice(current, group, target, inherit_type);
     let warning = match changed.save(path)? {
         SaveOutcome::Durable => None,
         SaveOutcome::InstalledWithWarning(warning) => Some(warning.to_string()),
@@ -1677,6 +1684,7 @@ fn persist_automatic_source(
     let mut changed = current.clone();
     changed.artwork_pack_roots.remove(group);
     changed.artwork_pack_picture_types.remove(group);
+    changed.artwork_pack_inherit.remove(group);
     changed.gamelist_sources.remove(group);
     let warning = match changed.save(path)? {
         SaveOutcome::Durable => None,
@@ -4173,6 +4181,8 @@ pub struct App {
     source_system_id: Option<String>,
     source_locations: Vec<PathBuf>,
     source_picture_type: crate::artwork_pack::PictureType,
+    source_picture_inherit: bool,
+    artwork_default_changed: bool,
     source_directory: Option<PathBuf>,
     /// Canonical directories from the picker root to the current directory.
     /// Children resolving to an identity already in this ancestry are hidden,
@@ -4982,6 +4992,8 @@ impl App {
             source_system_id: None,
             source_locations: Vec::new(),
             source_picture_type: crate::artwork_pack::PictureType::BoxArt,
+            source_picture_inherit: false,
+            artwork_default_changed: false,
             source_directory: None,
             source_directory_history: Vec::new(),
             source_directory_entries: Vec::new(),
@@ -6999,7 +7011,9 @@ impl App {
             Ok(state) => state.unwrap_or_default(),
             Err(error) => return self.source_unresolved(&name, &error),
         };
-        if let Some(accepted) = state.accepted.as_ref() {
+        if let Some(accepted) = state.accepted.as_ref().filter(|accepted| {
+            accepted.picture_type == crate::artwork_pack::selected_picture_type(&self.settings, id)
+        }) {
             let root = PathBuf::from(&accepted.docs_root);
             self.effective_artwork_pack_roots
                 .insert(id.to_string(), accepted.docs_root.clone());
@@ -7381,6 +7395,9 @@ impl App {
         accepted: &crate::cache::AcceptedSource,
         kept: Option<&crate::cache::DeclinedSource>,
     ) -> Result<Option<crate::artwork_pack::Provider>> {
+        if accepted.picture_type != crate::artwork_pack::selected_picture_type(&self.settings, id) {
+            return Ok(None);
+        }
         let current =
             crate::artwork_pack::normalized_language(self.scraper_settings.language.as_deref());
         let language = if kept.is_some_and(|kept| kept.language == current) {
@@ -8329,6 +8346,11 @@ impl App {
         else {
             return Ok(None);
         };
+        if accepted.picture_type
+            != crate::artwork_pack::selected_picture_type(&self.settings, system_id)
+        {
+            return Ok(None);
+        }
         let kept = state.declined.as_ref().filter(|declined| {
             Path::new(&declined.docs_root) == docs_root && declined.signature.is_some()
         });
@@ -13752,6 +13774,26 @@ impl App {
                         .next(),
                 );
             }
+            OptionId::DefaultArtworkPack => {
+                let kinds = crate::artwork_pack::PictureType::ALL;
+                let current = self.settings.default_artwork_pack.unwrap_or_default();
+                let at = kinds.iter().position(|kind| *kind == current).unwrap();
+                self.settings.default_artwork_pack = Some(kinds[step(at, delta, kinds.len())]);
+                self.artwork_default_changed = true;
+                // Each system validates the newly resolved type on its next
+                // entry. Keep durable preparation until replacement succeeds.
+                let groups = self
+                    .all_systems
+                    .iter()
+                    .filter(|system| {
+                        crate::artwork_pack::inherits_picture_type(&self.settings, &system.def.id)
+                    })
+                    .filter_map(|system| crate::artwork_pack::source_group(&system.def.id))
+                    .collect::<std::collections::BTreeSet<_>>();
+                for group in groups {
+                    self.invalidate_artwork_provider_group(group);
+                }
+            }
             OptionId::AutoRunPhysicalDiscs => {
                 self.settings.auto_run_physical_discs =
                     Some(!self.settings.auto_run_physical_discs.unwrap_or(false));
@@ -13988,6 +14030,12 @@ impl App {
             OptionId::AutomaticDataSource => self
                 .settings
                 .automatic_data_source
+                .unwrap_or_default()
+                .label()
+                .to_string(),
+            OptionId::DefaultArtworkPack => self
+                .settings
+                .default_artwork_pack
                 .unwrap_or_default()
                 .label()
                 .to_string(),
@@ -14291,6 +14339,16 @@ impl App {
                 // show no artwork, so without this the details panel would
                 // keep a picture composited against the old surface colour.
                 self.touch_selection();
+                if std::mem::take(&mut self.artwork_default_changed) {
+                    if let Some(id) = self
+                        .open_system
+                        .as_deref()
+                        .filter(|id| crate::artwork_pack::inherits_picture_type(&self.settings, id))
+                        .map(str::to_string)
+                    {
+                        self.reload_open_system_source(&id);
+                    }
+                }
             }
             Screen::Browse => match self.browsing {
                 Browsing::Games if self.in_misterzine_browser() => {
@@ -16368,6 +16426,8 @@ impl App {
         self.source_system_id = Some(system_id.clone());
         self.source_picture_type =
             crate::artwork_pack::selected_picture_type(&self.settings, &system_id);
+        self.source_picture_inherit =
+            crate::artwork_pack::inherits_picture_type(&self.settings, &system_id);
         let mode = crate::artwork_source::mode(&self.settings, &system_id);
         self.menu = source_choice_rows(mode);
         if mode == crate::artwork_source::Mode::Automatic {
@@ -16436,17 +16496,29 @@ impl App {
             return;
         }
         let selected = self.source_picture_type;
-        self.menu = crate::artwork_pack::PictureType::ALL
-            .iter()
-            .map(|kind| kind.label().to_string())
-            .collect();
+        self.menu = std::iter::once(format!(
+            "Use Global ({})",
+            self.settings
+                .default_artwork_pack
+                .unwrap_or_default()
+                .label()
+        ))
+        .chain(
+            crate::artwork_pack::PictureType::ALL
+                .iter()
+                .map(|kind| kind.label().to_string()),
+        )
+        .collect();
         self.menu_list = ListState::new(self.menu.len(), self.geometry.visible);
-        self.menu_list.select(
+        self.menu_list.select(if self.source_picture_inherit {
+            0
+        } else {
             crate::artwork_pack::PictureType::ALL
                 .iter()
                 .position(|kind| *kind == selected)
-                .unwrap_or(0),
-        );
+                .unwrap_or(0)
+                + 1
+        });
         self.screen = Screen::ArtworkPackType;
         self.message = None;
         self.apply_geometry();
@@ -16454,11 +16526,16 @@ impl App {
     }
 
     fn choose_artwork_pack_type(&mut self) {
-        let Some(kind) = crate::artwork_pack::PictureType::ALL.get(self.menu_list.selected())
-        else {
-            return;
+        let selected = self.menu_list.selected();
+        self.source_picture_inherit = selected == 0;
+        self.source_picture_type = if selected == 0 {
+            self.settings.default_artwork_pack.unwrap_or_default()
+        } else {
+            let Some(kind) = crate::artwork_pack::PictureType::ALL.get(selected - 1) else {
+                return;
+            };
+            *kind
         };
-        self.source_picture_type = *kind;
         self.open_artwork_pack_locations();
     }
 
@@ -16466,11 +16543,20 @@ impl App {
         let Some(system_id) = self.source_system_id.clone() else {
             return;
         };
-        let candidates = crate::artwork_pack::discover_candidate_roots_for_type(
+        let mut candidates = crate::artwork_pack::discover_candidate_roots_for_type(
             &system_id,
             &self.config.game_roots,
             self.source_picture_type,
         );
+        if self.source_picture_inherit {
+            if let Some(root) = crate::artwork_pack::source_group(&system_id)
+                .and_then(|group| self.settings.artwork_pack_roots.get(group))
+                .map(PathBuf::from)
+            {
+                candidates.retain(|candidate| *candidate != root);
+                candidates.insert(0, root);
+            }
+        }
 
         if candidates.is_empty() {
             self.source_locations.clear();
@@ -16760,7 +16846,13 @@ impl App {
                 }),
             };
         if unchanged {
-            match persist_source_choice(&self.settings, &self.settings_path, group, &target) {
+            match persist_source_choice(
+                &self.settings,
+                &self.settings_path,
+                group,
+                &target,
+                self.source_picture_inherit,
+            ) {
                 Ok((settings, _, warning)) => {
                     self.settings = settings;
                     self.open_game_data_source();
@@ -18086,7 +18178,8 @@ impl App {
             }
             crate::source_cache::Target::Gamelist => false,
         };
-        let staged_choice = changing_type.then(|| source_choice(&self.settings, group, &target));
+        let staged_choice = (changing_type || self.source_picture_inherit)
+            .then(|| source_choice(&self.settings, group, &target, self.source_picture_inherit));
         let installed = if let Some((settings, _)) = &staged_choice {
             prepared
                 .with_settings(&self.settings_path, settings)
@@ -18108,7 +18201,13 @@ impl App {
         };
         let saved_choice = match staged_choice {
             Some((settings, label)) => Ok((settings, label, None)),
-            None => persist_source_choice(&self.settings, &self.settings_path, group, &target),
+            None => persist_source_choice(
+                &self.settings,
+                &self.settings_path,
+                group,
+                &target,
+                self.source_picture_inherit,
+            ),
         };
         let (settings, label, settings_warning) = match saved_choice {
             Ok(saved) => saved,
@@ -26052,6 +26151,7 @@ mod tests {
                 docs_root: docs.clone(),
                 picture_type: crate::artwork_pack::PictureType::BoxArt,
             },
+            false,
         )
         .unwrap();
         assert_eq!(label, SOURCE_ARTWORK_PACK);
@@ -26069,6 +26169,7 @@ mod tests {
             &settings_path,
             "SuperGrafx",
             &crate::source_cache::Target::Gamelist,
+            false,
         )
         .unwrap();
         assert_eq!(label, SOURCE_GAMELIST);
@@ -26097,6 +26198,72 @@ mod tests {
     }
 
     #[test]
+    fn use_global_keeps_pack_location_and_survives_restart_without_becoming_legacy_box_art() {
+        use crate::artwork_pack::{selected_picture_type, PictureType};
+        let root = picker_temp("global-pack-choice");
+        let path = root.join("settings.toml");
+        let docs = root.join("custom-docs");
+        let mut initial = Settings {
+            default_artwork_pack: Some(PictureType::Screenshot),
+            ..Settings::default()
+        };
+        initial
+            .artwork_pack_roots
+            .insert("NeoGeo".into(), docs.to_string_lossy().into_owned());
+        assert_eq!(
+            selected_picture_type(&initial, "NeoGeo"),
+            PictureType::BoxArt
+        );
+        let (saved, _, _) = persist_source_choice(
+            &initial,
+            &path,
+            "NeoGeo",
+            &crate::source_cache::Target::ArtworkPack {
+                docs_root: docs.clone(),
+                picture_type: PictureType::Screenshot,
+            },
+            true,
+        )
+        .unwrap();
+        assert_eq!(
+            initial.artwork_pack_inherit.len(),
+            0,
+            "staging must not change a cancelled choice"
+        );
+        let mut restarted = Settings::load(&path).unwrap();
+        assert_eq!(restarted.artwork_pack_roots, initial.artwork_pack_roots);
+        assert_eq!(
+            selected_picture_type(&restarted, "NeoGeo"),
+            PictureType::Screenshot
+        );
+        assert_eq!(
+            selected_picture_type(&restarted, "NeoGeoMVS"),
+            PictureType::Screenshot
+        );
+        restarted.default_artwork_pack = Some(PictureType::TitleScreen);
+        assert_eq!(
+            selected_picture_type(&restarted, "NeoGeo"),
+            PictureType::TitleScreen
+        );
+        assert_eq!(saved.artwork_pack_inherit, restarted.artwork_pack_inherit);
+        let (explicit, _) = source_choice(
+            &restarted,
+            "NeoGeo",
+            &crate::source_cache::Target::ArtworkPack {
+                docs_root: docs,
+                picture_type: PictureType::BoxArt,
+            },
+            false,
+        );
+        assert!(!explicit.artwork_pack_inherit.contains("NeoGeo"));
+        assert_eq!(
+            selected_picture_type(&explicit, "NeoGeo"),
+            PictureType::BoxArt
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn leaving_typed_pack_clears_only_that_groups_explicit_choice() {
         use crate::artwork_pack::PictureType;
         let root = picker_temp("typed-source-persistence");
@@ -26117,6 +26284,7 @@ mod tests {
                     docs_root: root.join("docs"),
                     picture_type,
                 },
+                false,
             )
             .unwrap();
             let reloaded = Settings::load(&settings_path).unwrap();
@@ -26132,6 +26300,7 @@ mod tests {
                         &settings_path,
                         "SuperGrafx",
                         &crate::source_cache::Target::Gamelist,
+                        false,
                     )
                 } else {
                     persist_automatic_source(&pack, &settings_path, "SuperGrafx")
@@ -26245,6 +26414,7 @@ mod tests {
                 docs_root: root.join("docs"),
                 picture_type: crate::artwork_pack::PictureType::BoxArt,
             },
+            false,
         );
 
         assert!(result.is_err());

@@ -1252,6 +1252,7 @@ require **A** and confirmation, never a sideways press.
 | Library | Folders Before Games | On, folders lead a system's listing; off, the games come first |
 | Library | Core Preference | Standard First (default) or RetroAchievements First. Used by systems whose Core Version is Default; the other version is used only when the preferred version is absent |
 | Library | Automatic Data Source | Gamelist First (default) or Artwork Pack First. Applies only to systems whose Game Data Source remains Automatic; explicit per-system choices always win |
+| Library | Default Artwork Pack | Box Art (default), Screenshot or Title Screen. Applies when a system has no explicit Artwork Pack choice or uses Use Global; it does not change its Game Data Source |
 | Library | Auto-run Physical Discs | Off by default. Launch supported inserted discs through an installed `MiSTer_Physical-CD` or `MiSTer-disc` provider |
 | Library | Separate Handheld Category | Off by default. When On, recognised handheld systems appear in a Handheld category after Console. This is a display-only grouping and does not change core or game launching |
 | Library | Show Other Folder | Show the Other group, the cores that are not games |
@@ -1600,15 +1601,18 @@ Databases can also be downloaded directly from the original
 [MiSTer Game Artwork Databases repository](https://github.com/chipster6502/MiSTer_artwork_pack).
 Degauss reads the installed database in place rather than importing or copying it.
 **Game Data Source** is selected separately for each supported system from its
-**X Actions → Library** menu. The global option changes only the priority used
-by systems still set to Automatic.
+**X Actions → Library** menu. **Options → Library → Automatic Data Source**
+changes only the priority used by systems still set to Automatic.
+**Default Artwork Pack** separately chooses Box Art, Screenshot or Title Screen
+for systems without an explicit pack choice, including those set to **Use Global**.
 
 To choose a pack manually:
 
 1. Highlight a supported system, or browse inside it, and press **X**.
 2. Open **Library → Game Data Source**.
-3. Choose **Artwork Pack**, then **Box Art**, **Screenshot** or **Title Screen**.
-   Box Art is the default for existing settings.
+3. Choose **Artwork Pack**, then **Use Global**, **Box Art**, **Screenshot** or
+   **Title Screen**. Use Global follows **Options → Library → Default Artwork Pack**.
+   Existing explicit choices and legacy saved Box Art locations remain unchanged.
 4. Confirm the detected `docs` location for that picture type. If more than one installation is
    present, choose the one Degauss should use.
 
@@ -2523,10 +2527,12 @@ Read [Managing MiSTer with AI after Update All](docs/manage-mister-with-ai.md) a
 ### How do I install an Artwork Pack and select it in Degauss?
 
 1. **Update All:** open **Settings → Extra Content → Game Artwork DBs**, select the wanted artwork packs and systems, save, then run Update All to install them. Those selected packs are automatically updated whenever you subsequently run Update All.
-2. **Degauss global setting:** set **Options → Library → Automatic Data Source → Artwork Pack First**. This uses **Box Art** by default, so a Box Art pack must be installed for that default to show pack artwork.
-3. **Screenshot or Title Screen selection (per system):** highlight or enter the system, press **X**, then choose **Library → Game Data Source → Artwork Pack**. Choose **Screenshot** or **Title Screen** and confirm its installed location.
+2. **Degauss global settings:** set **Options → Library → Automatic Data Source → Artwork Pack First**, then choose **Default Artwork Pack → Box Art, Screenshot or Title Screen** to match the packs installed. This selects a picture type, not a download or a different Game Data Source.
+3. **Per-system choices:** highlight or enter the system, press **X**, then choose **Library → Game Data Source → Artwork Pack**. Choose **Use Global** to follow the global picture type, or choose **Box Art**, **Screenshot** or **Title Screen** explicitly, then confirm its installed location. Use Global retains a previously selected pack location.
 
-**Box Art remains the default. Installing only Screenshot or Title Screen packs still requires step 3.** If prompted, choose **Prepare** and let preparation finish.
+**Box Art remains the default.** A Screenshot-only or Title-Screen-only installation works by selecting that global type or an explicit per-system type. Existing explicit system choices, including Box Art selections saved by older versions, are preserved until changed to Use Global. Packs are prepared per system when needed, not all at startup. If prompted, choose **Prepare** and let preparation finish.
+
+The installed **2D Boxes**, **3D Boxes** or **MixRBV2** style is the Box Art choice. Those three styles share the same installation folder, so switching between them is done in Update All. Screenshot and Title Screen packs install separately and can coexist with Box Art.
 
 ### I installed an Artwork Pack, but its artwork is not showing
 

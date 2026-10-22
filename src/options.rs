@@ -73,6 +73,8 @@ pub enum OptionId {
     CorePreference,
     /// Preferred available source for systems left on Automatic.
     AutomaticDataSource,
+    /// Picture type for systems inheriting the global Artwork Pack choice.
+    DefaultArtworkPack,
     /// Watch supported physical game discs through an installed provider.
     AutoRunPhysicalDiscs,
     /// Present recognised handheld systems in their own home category.
@@ -163,6 +165,7 @@ pub const OPTIONS: &[OptionId] = &[
     OptionId::FoldersLast,
     OptionId::CorePreference,
     OptionId::AutomaticDataSource,
+    OptionId::DefaultArtworkPack,
     OptionId::AutoRunPhysicalDiscs,
     OptionId::SeparateHandheldCategory,
     OptionId::Spacer,
@@ -310,6 +313,7 @@ impl OptionsPage {
                 OptionId::FoldersLast,
                 OptionId::CorePreference,
                 OptionId::AutomaticDataSource,
+                OptionId::DefaultArtworkPack,
                 OptionId::AutoRunPhysicalDiscs,
                 OptionId::SeparateHandheldCategory,
                 OptionId::ShowOther,
@@ -374,6 +378,7 @@ impl OptionId {
             OptionId::ShowExplore => "Show Explore Games",
             OptionId::CorePreference => "Core Preference",
             OptionId::AutomaticDataSource => "Automatic Data Source",
+            OptionId::DefaultArtworkPack => "Default Artwork Pack",
             OptionId::AutoRunPhysicalDiscs => "Auto-run Physical Discs",
             OptionId::SeparateHandheldCategory => "Separate Handheld Category",
             OptionId::ShowBar => "Bottom Bar While Browsing",
@@ -487,6 +492,9 @@ impl OptionId {
             OptionId::CorePreference => "Choose the preferred core when standard and RetroAchievements versions are both installed.",
             OptionId::AutomaticDataSource => {
                 "Choose which available source systems left on Automatic try first when they are entered."
+            }
+            OptionId::DefaultArtworkPack => {
+                "Choose the installed Artwork Pack picture type for inheriting systems. Explicit system choices stay unchanged. This does not install packs or change Game Data Source."
             }
             OptionId::AutoRunPhysicalDiscs => {
                 "Launch a supported inserted disc through an installed physical-disc provider."
@@ -681,10 +689,11 @@ mod tests {
             .ids()
             .contains(&OptionId::FavoritesFirst));
         assert!(OptionsPage::Library.ids().contains(&OptionId::FoldersLast));
-        assert!(OptionsPage::Library.ids().windows(4).any(|ids| ids
+        assert!(OptionsPage::Library.ids().windows(5).any(|ids| ids
             == [
                 OptionId::CorePreference,
                 OptionId::AutomaticDataSource,
+                OptionId::DefaultArtworkPack,
                 OptionId::AutoRunPhysicalDiscs,
                 OptionId::SeparateHandheldCategory,
             ]));

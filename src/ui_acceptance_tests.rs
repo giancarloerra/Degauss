@@ -7473,13 +7473,21 @@ fn run_artwork_pack_picture_types_flow(root: &Path, window: Rc<MinimalSoftwareWi
         "only the new packs are installed"
     );
     let ordinary = std::fs::read(crate::cache::system_path(&app.cache_dir, "NES")).unwrap();
-    for (position, kind) in [(1, PictureType::Screenshot), (2, PictureType::TitleScreen)] {
+    for (position, kind) in [(2, PictureType::Screenshot), (3, PictureType::TitleScreen)] {
         app.screen = Screen::Browse;
         app.open_game_data_source();
         app.menu_list.select(2);
         app.handle(Action::Accept);
         assert_eq!(app.screen, Screen::ArtworkPackType);
-        assert_eq!(app.menu, ["Box Art", "Screenshot", "Title Screen"]);
+        assert_eq!(
+            app.menu,
+            [
+                "Use Global (Box Art)",
+                "Box Art",
+                "Screenshot",
+                "Title Screen"
+            ]
+        );
         if let Some(directory) = std::env::var_os("DEGAUSS_UI_CAPTURE_DIR") {
             for (width, height) in [(352, 240), (640, 480)] {
                 capture_frame(
@@ -7627,6 +7635,31 @@ fn run_artwork_pack_picture_types_flow(root: &Path, window: Rc<MinimalSoftwareWi
             "switching picture types does not rebuild or overwrite the ordinary library"
         );
     }
+    app.settings.default_artwork_pack = Some(PictureType::TitleScreen);
+    app.open_game_data_source();
+    app.menu_list.select(2);
+    app.handle(Action::Accept);
+    app.menu_list.select(0);
+    app.handle(Action::Accept);
+    app.finish_background_work_for_headless();
+    app.menu_list.select(0);
+    app.handle(Action::Accept);
+    app.finish_background_work_for_headless();
+    assert!(app.settings.artwork_pack_inherit.contains("NES"));
+    let retained_root = app.settings.artwork_pack_roots["NES"].clone();
+    app.message = None;
+    app.screen = Screen::Browse;
+    app.open_options_page(OptionsPage::Library);
+    app.adjust_option_value(OptionId::DefaultArtworkPack, -1);
+    for _ in 0..3 {
+        app.handle(Action::Quit);
+    }
+    app.finish_background_work_for_headless();
+    assert_eq!(
+        app.artwork_provider.as_ref().unwrap().picture_type,
+        PictureType::Screenshot
+    );
+    assert_eq!(app.settings.artwork_pack_roots["NES"], retained_root);
     app.save_settings();
     let state = Settings::load(&app.settings_path).unwrap();
     let prepared = cache_snapshot(&app.cache_dir);
@@ -7635,12 +7668,12 @@ fn run_artwork_pack_picture_types_flow(root: &Path, window: Rc<MinimalSoftwareWi
     let restarted = fixture_app(&root, window, state);
     assert_eq!(
         restarted.artwork_provider.as_ref().unwrap().picture_type,
-        PictureType::TitleScreen
+        PictureType::Screenshot
     );
     assert!(restarted.here.iter().all(|row| row
         .cover
         .as_ref()
-        .is_some_and(|path| path.starts_with(docs.join("NES/Titles")))));
+        .is_some_and(|path| path.starts_with(docs.join("NES/Screenshots")))));
     assert_eq!(
         cache_snapshot(&restarted.cache_dir),
         prepared,
