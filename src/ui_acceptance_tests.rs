@@ -7660,6 +7660,27 @@ fn run_artwork_pack_picture_types_flow(root: &Path, window: Rc<MinimalSoftwareWi
         PictureType::Screenshot
     );
     assert_eq!(app.settings.artwork_pack_roots["NES"], retained_root);
+    app.open_last_played();
+    app.finish_background_work_for_headless();
+    assert!(app.last_played_open);
+    for (delta, has_screenshot) in [(1, false), (-1, true)] {
+        app.open_options_page(OptionsPage::Library);
+        app.adjust_option_value(OptionId::DefaultArtworkPack, delta);
+        for _ in 0..3 {
+            app.handle(Action::Quit);
+        }
+        app.finish_background_work_for_headless();
+        assert!(app.last_played_open);
+        assert!(!app.here.is_empty());
+        assert_eq!(
+            app.here.iter().any(|row| row
+                .cover
+                .as_ref()
+                .is_some_and(|path| path.starts_with(docs.join("NES/Screenshots")))),
+            has_screenshot,
+            "an open Last Played view must not retain the previous picture type"
+        );
+    }
     app.save_settings();
     let state = Settings::load(&app.settings_path).unwrap();
     let prepared = cache_snapshot(&app.cache_dir);
