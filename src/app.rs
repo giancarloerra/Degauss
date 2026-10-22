@@ -2670,6 +2670,7 @@ enum SourceOperation {
 #[derive(Clone, Copy)]
 enum SourceResolutionAction {
     Startup,
+    ArtworkDefaultChanged,
     OpenSystem,
     Rebuild(Instant),
     StorageRebuild,
@@ -8066,24 +8067,29 @@ impl App {
         if self.source_resolution.is_some() {
             return;
         }
-        let systems: Vec<_> =
-            self.all_systems
-                .iter()
-                .filter(|system| {
-                    !matches!(action, SourceResolutionAction::StorageRebuild)
-                        || self.storage.as_ref().is_some_and(|storage| {
-                            storage.rebuilding.iter().flatten().any(|offer| {
-                                offer.system.def.id == system.def.id
-                                    || crate::artwork_pack::source_group(&system.def.id)
-                                        .is_some_and(|group| {
-                                            crate::artwork_pack::source_group(&offer.system.def.id)
-                                                == Some(group)
-                                        })
-                            })
+        let systems: Vec<_> = self
+            .all_systems
+            .iter()
+            .filter(|system| {
+                !matches!(action, SourceResolutionAction::ArtworkDefaultChanged)
+                    || crate::artwork_pack::inherits_picture_type(&self.settings, &system.def.id)
+            })
+            .filter(|system| {
+                !matches!(action, SourceResolutionAction::StorageRebuild)
+                    || self.storage.as_ref().is_some_and(|storage| {
+                        storage.rebuilding.iter().flatten().any(|offer| {
+                            offer.system.def.id == system.def.id
+                                || crate::artwork_pack::source_group(&system.def.id).is_some_and(
+                                    |group| {
+                                        crate::artwork_pack::source_group(&offer.system.def.id)
+                                            == Some(group)
+                                    },
+                                )
                         })
-                })
-                .cloned()
-                .collect();
+                    })
+            })
+            .cloned()
+            .collect();
         self.source_resolution_groups = systems
             .iter()
             .filter_map(|system| {
@@ -8211,6 +8217,23 @@ impl App {
                 }
             }
             SourceResolutionAction::OpenSystem => self.open_system_now(),
+            SourceResolutionAction::ArtworkDefaultChanged => {
+                if self.last_played_open {
+                    self.relist_here_preserving_game_filters();
+                } else if self.explore.active {
+                    self.open_explore(Some(self.explore.query.clone()));
+                } else if self.in_misterzine_browser() {
+                    self.clear_misterzine_games();
+                    self.start_selected_misterzine_game_job();
+                } else if let Some(id) = self
+                    .open_system
+                    .clone()
+                    .filter(|id| crate::artwork_pack::inherits_picture_type(&self.settings, id))
+                {
+                    self.reload_open_system_source(&id);
+                }
+                self.reroll_category_art();
+            }
             SourceResolutionAction::Rebuild(started) => {
                 self.build = None;
                 self.start_build(true);
@@ -13792,6 +13815,9 @@ impl App {
                     .collect::<std::collections::BTreeSet<_>>();
                 for group in groups {
                     self.invalidate_artwork_provider_group(group);
+                    if !self.settings.artwork_pack_roots.contains_key(group) {
+                        self.clear_group_roots(group);
+                    }
                 }
             }
             OptionId::AutoRunPhysicalDiscs => {
@@ -14340,14 +14366,7 @@ impl App {
                 // keep a picture composited against the old surface colour.
                 self.touch_selection();
                 if std::mem::take(&mut self.artwork_default_changed) {
-                    if let Some(id) = self
-                        .open_system
-                        .as_deref()
-                        .filter(|id| crate::artwork_pack::inherits_picture_type(&self.settings, id))
-                        .map(str::to_string)
-                    {
-                        self.reload_open_system_source(&id);
-                    }
+                    self.resolve_artwork_sources(SourceResolutionAction::ArtworkDefaultChanged);
                 }
             }
             Screen::Browse => match self.browsing {
@@ -18178,7 +18197,9 @@ impl App {
             }
             crate::source_cache::Target::Gamelist => false,
         };
-        let staged_choice = (changing_type || self.source_picture_inherit)
+        let inherited_pack = self.source_picture_inherit
+            && matches!(target, crate::source_cache::Target::ArtworkPack { .. });
+        let staged_choice = (changing_type || inherited_pack)
             .then(|| source_choice(&self.settings, group, &target, self.source_picture_inherit));
         let installed = if let Some((settings, _)) = &staged_choice {
             prepared

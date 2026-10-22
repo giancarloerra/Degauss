@@ -9106,6 +9106,7 @@ fn run_automatic_pack_consent_flow(root: &Path, window: Rc<MinimalSoftwareWindow
         let mode = std::fs::metadata(&root).unwrap().permissions().mode();
         std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o555)).unwrap();
         app.source_system_id = Some("NES".into());
+        app.source_picture_inherit = false;
         app.begin_source_switch(crate::source_cache::Target::ArtworkPack {
             docs_root: docs.clone(),
             picture_type: crate::artwork_pack::PictureType::BoxArt,
@@ -9139,6 +9140,7 @@ fn run_automatic_pack_consent_flow(root: &Path, window: Rc<MinimalSoftwareWindow
         app.artwork_provider_cache.clear();
     }
     app.source_system_id = Some("NES".into());
+    app.source_picture_inherit = false;
     app.begin_source_switch(crate::source_cache::Target::ArtworkPack {
         docs_root: docs.clone(),
         picture_type: crate::artwork_pack::PictureType::BoxArt,
