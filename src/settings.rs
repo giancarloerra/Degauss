@@ -445,6 +445,9 @@ pub struct Settings {
     /// the Gamelist-first behaviour shipped before this setting existed.
     #[serde(default)]
     pub automatic_data_source: Option<AutomaticDataSource>,
+    /// Off unless enabled. Launch the last successful target once per boot.
+    #[serde(default)]
+    pub start_last_game_on_boot: Option<bool>,
     /// Watch supported physical game discs through an installed provider.
     /// Absent is off, preserving startup and launch behaviour from releases
     /// before physical-disc detection existed.

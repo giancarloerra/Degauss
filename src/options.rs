@@ -29,6 +29,7 @@ pub enum OptionId {
     CustomViews,
     /// Which available top-level folder opens after the splash screen.
     StartFolder,
+    StartLastGameOnBoot,
     /// Remove every place-specific view after confirmation.
     ResetCustomViews,
     /// How Details shares its width between the list and the picture, and
@@ -145,6 +146,7 @@ pub const OPTIONS: &[OptionId] = &[
     OptionId::CustomViews,
     OptionId::ResetCustomViews,
     OptionId::StartFolder,
+    OptionId::StartLastGameOnBoot,
     OptionId::DetailsStyle,
     OptionId::GameNameDisplay,
     OptionId::UseMraFilenames,
@@ -288,6 +290,7 @@ impl OptionsPage {
                 OptionId::CustomViews,
                 OptionId::ResetCustomViews,
                 OptionId::StartFolder,
+                OptionId::StartLastGameOnBoot,
                 OptionId::DetailsStyle,
                 OptionId::GameNameDisplay,
                 OptionId::UseMraFilenames,
@@ -350,6 +353,7 @@ impl OptionId {
             OptionId::Layout => "View",
             OptionId::CustomViews => "Custom Views",
             OptionId::StartFolder => "Start Folder",
+            OptionId::StartLastGameOnBoot => "Start Last Game on Boot",
             OptionId::ResetCustomViews => "Reset Views Selections to Global",
             OptionId::DetailsStyle => "Details Style",
             OptionId::GameNameDisplay => "Game Name Display",
@@ -432,6 +436,9 @@ impl OptionId {
             OptionId::CustomViews => "Create, edit or choose a named view from the available templates.",
             OptionId::StartFolder => {
                 "Choose Home or an available top-level folder to open when Degauss starts. A missing folder safely opens Home."
+            }
+            OptionId::StartLastGameOnBoot => {
+                "Start the last successfully launched game once after power-on. Off by default. B cancels before launch. Requires Degauss Main."
             }
             OptionId::ResetCustomViews => {
                 "Reset every place's view selection to the global view after confirmation. Named custom views are kept."

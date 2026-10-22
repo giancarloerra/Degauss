@@ -3681,6 +3681,67 @@ fn run_last_played_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
     assert!(history.is_none());
     assert_eq!(active_game, Some(first.clone()));
     assert!(!crate::history::path_beside(&app.settings_path).exists());
+    let marker = root.join("boot-claimed-while-off");
+    app.prepare_boot_launch(true, &marker);
+    assert!(!app.boot_launch_waiting);
+    app.settings.start_last_game_on_boot = Some(true);
+    app.last_played.remember(crate::history::Entry {
+        system: "NES".into(),
+        launch: browse::Launch::File(first.clone()),
+        name: "First".into(),
+    });
+    app.prepare_boot_launch(true, &marker);
+    assert!(
+        !app.boot_launch_waiting,
+        "enabling later in the same boot must not launch"
+    );
+    for normal_boot in [false, true] {
+        let marker = root.join(format!("boot-cancel-{normal_boot}"));
+        app.prepare_boot_launch(normal_boot, &marker);
+        assert_eq!(app.boot_launch_waiting, normal_boot);
+        let now = Instant::now();
+        assert!(app.poll_boot_launch(now).is_none());
+        assert_eq!(app.boot_launch_deadline.is_some(), normal_boot);
+        app.handle(Action::Quit);
+        assert!(app.poll_boot_launch(now + Duration::from_secs(4)).is_none());
+        app.prepare_boot_launch(true, &marker);
+        assert!(
+            !app.boot_launch_waiting,
+            "cancellation consumes this boot's attempt"
+        );
+    }
+    let now = Instant::now();
+    app.message = None;
+    app.screen = Screen::Browse;
+    app.prepare_boot_launch(true, &root.join("next-boot"));
+    assert!(app.poll_boot_launch(now).is_none());
+    let Some(Outcome::Launch {
+        history: Some(update),
+        ..
+    }) = app.poll_boot_launch(now + Duration::from_secs(4))
+    else {
+        panic!(
+            "boot launch must use the normal successful launch plan: {:?}",
+            app.message
+        );
+    };
+    assert_eq!(update.entry.launch, browse::Launch::File(first.clone()));
+    assert_eq!(update.entry.system, "NES");
+    assert!(!app.boot_launch_waiting);
+    assert!(app
+        .poll_boot_launch(now + Duration::from_secs(10))
+        .is_none());
+    app.last_played.entries[0].launch = browse::Launch::File(root.join("gone.nes"));
+    app.prepare_boot_launch(true, &root.join("missing-target-boot"));
+    app.message = None;
+    app.poll_boot_launch(now);
+    assert!(app.poll_boot_launch(now + Duration::from_secs(4)).is_none());
+    assert!(app
+        .message
+        .as_deref()
+        .unwrap()
+        .contains("gone from the card"));
+    assert!(!app.boot_launch_waiting, "failed launches must not repeat");
     app.ui.hide().unwrap();
     drop(app);
 

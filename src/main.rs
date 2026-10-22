@@ -1805,6 +1805,13 @@ fn run_on_framebuffer(
         Some(path) => Some(PathBuf::from(path)),
         None => state::resuming_script()?,
     };
+    let normal_boot = std::env::var_os(state::BOOT_START_ENV).as_deref()
+        == Some(std::ffi::OsStr::new("1"))
+        && !resuming
+        && script_return.is_none()
+        && chosen.is_none()
+        && deferred_system.is_none();
+    std::env::remove_var(state::BOOT_START_ENV);
     std::env::remove_var(scripts::RETURN_ENV);
     let mut framebuffer = surface::Framebuffer::open(&args.device)?;
     let geometry = framebuffer.geometry();
@@ -1899,6 +1906,8 @@ fn run_on_framebuffer(
                 .and_then(|saved| saved.home.as_ref()),
         );
     }
+
+    app.prepare_boot_launch(normal_boot, Path::new(state::BOOT_ATTEMPT_MARKER));
 
     let mut input = input::InputReader::open()?;
     // Worth printing: when a controller does nothing, the first question is
