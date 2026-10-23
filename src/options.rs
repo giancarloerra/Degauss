@@ -452,7 +452,7 @@ impl OptionId {
                 "Information shows a summary, Large Artwork fills the column, Compact shows more titles."
             }
             OptionId::GameNameDisplay => {
-                "Choose which region, disc, version and translation tags remain visible. Files and saved data are unchanged."
+                "Global default for visible name tags. A folder's explicit Game Name Display choice is unchanged; files and saved data are unchanged."
             }
             OptionId::FolderBrackets => {
                 "Show or hide Degauss's outer [ name ] marker on folder rows. Brackets inside names are unchanged."
@@ -511,7 +511,7 @@ impl OptionId {
             }
             OptionId::ShowBar => "Show the clock, connections and button hints while browsing. Menus keep the bar.",
             OptionId::FoldersLast => {
-                "On puts folders before games. Off puts games before folders."
+                "Global default: On puts folders before games, Off puts games before folders. Explicit Folder Options choices are unchanged."
             }
             OptionId::ResetHidden => {
                 "Unhide all manually hidden systems, folders and games after confirmation."
@@ -538,7 +538,7 @@ impl OptionId {
             OptionId::Present => "Direct draws into the framebuffer. Staged draws into memory before copying the frame.",
             OptionId::SwitchIni => "Choose a MiSTer INI profile. Switching reloads the current core and may leave this display without a signal.",
             OptionId::ScreenRotation => {
-                "Rotate the complete frontend for a vertical CRT. This does not change MiSTer video modes or game rotation."
+                "Global frontend rotation. Explicit Folder Options choices are unchanged. This does not change MiSTer video modes or game rotation."
             }
             OptionId::OverscanX => "Leave side margins so the display does not crop the interface.",
             OptionId::OverscanY => "Leave top and bottom margins so the display does not crop the interface.",

@@ -51,6 +51,7 @@ use crate::list_state::ListState;
 include!("explore_app.rs");
 include!("home_app.rs");
 include!("custom_view_app.rs");
+include!("folder_options_app.rs");
 use crate::metrics::{FrameTimer, StartupTimings};
 use crate::name_display::GameNameDisplay;
 use crate::name_keyboard::{self, Key as NameKey, Page as NamePage};
@@ -251,7 +252,8 @@ enum Pending {
     KeepRotation {
         previous: ScreenRotation,
         proposed: ScreenRotation,
-        previous_setting: Option<ScreenRotation>,
+        setting: Option<ScreenRotation>,
+        folder: Option<(String, String)>,
     },
 }
 
@@ -2207,6 +2209,9 @@ impl ContextPage {
                     | CHANGE_VIEW
                     | USE_GLOBAL_VIEW
                     | MANAGE_VIEWS
+                    | FOLDER_ROTATION
+                    | FOLDER_POSITION
+                    | FOLDER_NAMES
             ),
         }
     }
@@ -2258,6 +2263,9 @@ fn context_help(action: &str) -> &'static str {
         }
         CHANGE_VIEW => "Set the view for this place only. Other folders and systems are unchanged.",
         USE_GLOBAL_VIEW => "Remove this place's custom view and follow the global View setting.",
+        FOLDER_ROTATION => "Rotate the whole frontend in the open folder only. Use Global follows Options. A keeps the preview; B or 15 seconds reverts it.",
+        FOLDER_POSITION => "Place folders before or after games in the open folder only. Use Global follows Options. Child folders keep their own choices.",
+        FOLDER_NAMES => "Choose how names appear in the open folder only, without changing files. Use Global follows Options; explicit MRA filenames still take precedence.",
         _ => "",
     }
 }
@@ -4248,6 +4256,10 @@ pub struct App {
     width: u32,
     height: u32,
     screen_rotation: ScreenRotation,
+    global_screen_rotation: ScreenRotation,
+    /// A temporary CLI override must survive automatic folder transitions.
+    /// As before, explicitly keeping a UI rotation replaces that override.
+    rotation_override: Option<ScreenRotation>,
 
     covers: CoverCache,
     /// Group previews sit on the page background rather than the game surface.
@@ -5037,6 +5049,8 @@ impl App {
             width,
             height,
             screen_rotation,
+            global_screen_rotation: screen_rotation,
+            rotation_override,
             covers,
             group_covers,
             gallery_covers,
@@ -5823,7 +5837,16 @@ impl App {
             Screen::Context => self
                 .menu
                 .get(self.menu_list.selected())
-                .is_some_and(|action| matches!(action.as_str(), CHANGE_VIEW | CORE_VERSION)),
+                .is_some_and(|action| {
+                    matches!(
+                        action.as_str(),
+                        CHANGE_VIEW
+                            | CORE_VERSION
+                            | FOLDER_ROTATION
+                            | FOLDER_POSITION
+                            | FOLDER_NAMES
+                    )
+                }),
             Screen::Scraper => matches!(
                 scraper_rows(&self.scraper_scope, self.scraper_settings.source)
                     .get(self.scraper_list.selected()),
@@ -6218,21 +6241,36 @@ impl App {
     }
 
     fn begin_rotation_preview(&mut self, proposed: ScreenRotation) {
+        self.preview_rotation(proposed, Some(proposed), None);
+    }
+
+    fn preview_rotation(
+        &mut self,
+        proposed: ScreenRotation,
+        setting: Option<ScreenRotation>,
+        folder: Option<(String, String)>,
+    ) {
         let previous = self.screen_rotation;
         if proposed == previous {
+            self.confirm_rotation_preview(previous, proposed, setting, folder);
             return;
         }
-        let previous_setting = self.settings.screen_rotation;
         self.apply_screen_rotation(proposed);
+        let scope = if folder.is_some() {
+            " for this folder"
+        } else {
+            ""
+        };
         self.pending = Some(Pending::KeepRotation {
             previous,
             proposed,
-            previous_setting,
+            setting,
+            folder,
         });
         self.rotation_preview_deadline = Some(Instant::now() + Duration::from_secs(15));
         self.rotation_preview_previous = Some(previous);
         self.message = Some(format!(
-            "Keep {} rotation?\n\nA Keep   B Revert   15 seconds",
+            "Keep {} rotation{scope}?\n\nA Keep   B Revert   15 seconds",
             proposed.label()
         ));
         self.dirty = true;
@@ -6250,20 +6288,39 @@ impl App {
         &mut self,
         previous: ScreenRotation,
         proposed: ScreenRotation,
-        previous_setting: Option<ScreenRotation>,
+        setting: Option<ScreenRotation>,
+        folder: Option<(String, String)>,
     ) {
         self.rotation_preview_deadline = None;
         self.rotation_preview_previous = None;
-        self.settings.screen_rotation = Some(proposed);
-        match self.settings.save(&self.settings_path) {
-            Ok(SaveOutcome::Durable) => {}
-            Ok(SaveOutcome::InstalledWithWarning(warning)) => {
-                self.message = Some(format!(
-                    "Screen rotation was saved, but durability could not be confirmed: {warning}"
-                ));
+        let mut settings = self.settings.clone();
+        if let Some((system, place)) = &folder {
+            let mut preferences = settings
+                .folder_preferences
+                .get(system)
+                .and_then(|places| places.get(place))
+                .cloned()
+                .unwrap_or_default();
+            preferences.screen_rotation = setting;
+            set_folder_preferences(&mut settings, system, place, preferences);
+        } else {
+            settings.screen_rotation = Some(proposed);
+        }
+        match settings.save(&self.settings_path) {
+            Ok(outcome) => {
+                self.settings = settings;
+                self.rotation_override = None;
+                if folder.is_none() {
+                    self.global_screen_rotation = proposed;
+                }
+                self.resolve_folder_preferences();
+                if let SaveOutcome::InstalledWithWarning(warning) = outcome {
+                    self.message = Some(format!(
+                        "Screen rotation was saved, but durability could not be confirmed: {warning}"
+                    ));
+                }
             }
             Err(error) => {
-                self.settings.screen_rotation = previous_setting;
                 self.apply_screen_rotation(previous);
                 self.message = Some(format!(
                     "Screen rotation was not saved and has been reverted: {error}"
@@ -8921,6 +8978,7 @@ impl App {
     /// Resolve from scratch. A missing or unrecognised custom value means the
     /// global default, never whatever view the previous place happened to use.
     fn resolve_view(&mut self) {
+        self.resolve_folder_preferences();
         self.custom_view.active = None;
         self.custom_view.active_id = None;
         self.custom_view.information_focus = false;
@@ -9523,7 +9581,7 @@ impl App {
             return;
         }
         let selected = self.browse_row(self.game_list.selected()).map(row_key);
-        if self.filter.is_empty() {
+        if self.filter.is_empty() && !self.game_filters.is_active() {
             sort_rows_for_display(
                 &mut self.here,
                 self.game_name_display,
@@ -13798,12 +13856,12 @@ impl App {
             }
             OptionId::GameNameDisplay => {
                 let at = step(
-                    self.game_name_display.index(),
+                    self.settings.game_name_display.unwrap_or_default().index(),
                     delta,
                     GameNameDisplay::ALL.len(),
                 );
-                self.game_name_display = GameNameDisplay::ALL[at];
-                self.settings.game_name_display = Some(self.game_name_display);
+                self.settings.game_name_display = Some(GameNameDisplay::ALL[at]);
+                self.resolve_folder_preferences();
                 self.refresh_name_presentation();
             }
             OptionId::UseMraFilenames => {
@@ -13835,7 +13893,7 @@ impl App {
                 self.pending_present_switch = true;
             }
             OptionId::ScreenRotation => {
-                self.begin_rotation_preview(self.screen_rotation.step(delta));
+                self.begin_rotation_preview(self.global_screen_rotation.step(delta));
             }
             OptionId::ShowHidden => {
                 self.show_hidden = !self.show_hidden;
@@ -14024,8 +14082,8 @@ impl App {
                 self.relist_here_preserving_game_filters();
             }
             OptionId::FoldersLast => {
-                self.folders_last = !self.folders_last;
-                self.settings.folders_last = Some(self.folders_last);
+                self.settings.folders_last = Some(!self.settings.folders_last.unwrap_or(false));
+                self.resolve_folder_preferences();
                 self.relist_here_preserving_game_filters();
             }
             OptionId::FavoritesFirst => {
@@ -14138,7 +14196,12 @@ impl App {
                 .unwrap_or_else(|| self.display_mask().unwrap_or("Off").to_string()),
             OptionId::ArtworkScale => self.artwork_scale.shown().to_string(),
             OptionId::DetailsStyle => self.details_style.shown().to_string(),
-            OptionId::GameNameDisplay => self.game_name_display.label().to_string(),
+            OptionId::GameNameDisplay => self
+                .settings
+                .game_name_display
+                .unwrap_or_default()
+                .label()
+                .to_string(),
             OptionId::UseMraFilenames => on_off(self.settings.use_mra_filenames.unwrap_or(false)),
             OptionId::FolderBrackets => on_off(self.folder_brackets),
             OptionId::ShowGamePosition => on_off(self.settings.show_game_position.unwrap_or(true)),
@@ -14162,7 +14225,7 @@ impl App {
                         "Unavailable".to_string()
                     }
                 }),
-            OptionId::ScreenRotation => self.screen_rotation.label().to_string(),
+            OptionId::ScreenRotation => self.global_screen_rotation.label().to_string(),
             OptionId::ShowHidden => on_off(self.show_hidden),
             OptionId::ShowEmpty => on_off(self.show_empty),
             OptionId::ShowOther => on_off(self.show_other),
@@ -14217,7 +14280,7 @@ impl App {
             .to_string(),
             // The label reads Folders before games, so On is the leading
             // position and the stored folders_last flag inverts.
-            OptionId::FoldersLast => on_off(!self.folders_last),
+            OptionId::FoldersLast => on_off(!self.settings.folders_last.unwrap_or(false)),
             OptionId::ResetHidden => {
                 match self.settings.hidden.len() + self.settings.hidden_paths.len() {
                     0 => "Nothing hidden".to_string(),
@@ -14802,6 +14865,9 @@ impl App {
                 })
                 .unwrap_or_else(|| "Default".to_string()),
             Some(CHANGE_VIEW) => self.view_label(),
+            Some(action @ (FOLDER_ROTATION | FOLDER_POSITION | FOLDER_NAMES)) => {
+                self.folder_preference_value(action)
+            }
             Some(GAME_DATA_SOURCE) => self
                 .context_system_id()
                 .map(|id| self.source_label(id))
@@ -14815,6 +14881,15 @@ impl App {
     /// rather than hiding it behind a press.
     fn adjust_context(&mut self, delta: isize) {
         let selected = self.menu_list.selected();
+        if let Some(action) = self.menu.get(selected).cloned() {
+            if matches!(
+                action.as_str(),
+                FOLDER_ROTATION | FOLDER_POSITION | FOLDER_NAMES
+            ) {
+                self.adjust_folder_preference(&action, delta);
+                return;
+            }
+        }
         if self.menu.get(selected).map(String::as_str) == Some(CORE_VERSION) {
             self.adjust_core_version(delta);
             return;
@@ -15628,10 +15703,16 @@ impl App {
                 let refresh_error = if unchanged {
                     None
                 } else {
+                    let preference_error =
+                        self.update_favorite_folder_preferences(&source, Some(&destination));
                     self.reread_favorites();
-                    self.refresh_favorites_system().map(|error| {
+                    let refresh_error = self.refresh_favorites_system().map(|error| {
                         format!("Favourite folder was renamed, but refreshing Favourites failed: {error}")
-                    })
+                    });
+                    match (preference_error, refresh_error) {
+                        (Some(first), Some(second)) => Some(format!("{first}\n\n{second}")),
+                        (first, second) => first.or(second),
+                    }
                 };
                 self.screen = Screen::Browse;
                 self.apply_geometry();
@@ -15651,6 +15732,7 @@ impl App {
     fn delete_favorite_folder(&mut self, path: &Path) {
         match crate::favorites::remove_empty_folder(&self.favorites_root(), path) {
             Ok(()) => {
+                let preference_error = self.update_favorite_folder_preferences(path, None);
                 self.reread_favorites();
                 let refresh_error = self.refresh_favorites_system().map(|error| {
                     format!(
@@ -15660,7 +15742,11 @@ impl App {
                 self.screen = Screen::Browse;
                 self.apply_geometry();
                 self.relist_here_preserving_game_filters();
-                self.report_after_relist(refresh_error);
+                let error = match (preference_error, refresh_error) {
+                    (Some(first), Some(second)) => Some(format!("{first}\n\n{second}")),
+                    (first, second) => first.or(second),
+                };
+                self.report_after_relist(error);
             }
             Err(error) => self.message = Some(error.to_string()),
         }
@@ -18552,6 +18638,13 @@ impl App {
                 }
             }
         }
+        if self.current_folder_place().is_some() {
+            for action in [FOLDER_ROTATION, FOLDER_POSITION, FOLDER_NAMES] {
+                if !self.context_actions.iter().any(|entry| entry == action) {
+                    self.context_actions.push(action.into());
+                }
+            }
+        }
         self.context_page = page;
         self.menu = if self.in_misterzine_browser() || self.browsing == Browsing::Categories {
             self.context_page = None;
@@ -18570,7 +18663,7 @@ impl App {
                         .iter()
                         .any(|action| page.contains(action))
                 })
-                .map(|page| page.label().to_string())
+                .map(|page| self.context_page_label(page).to_string())
                 .collect()
         };
         if self.home_pin_target().is_some() && !self.menu.iter().any(|entry| entry == ADD_HOME) {
@@ -20646,8 +20739,9 @@ impl App {
                         Pending::KeepRotation {
                             previous,
                             proposed,
-                            previous_setting,
-                        } => self.confirm_rotation_preview(previous, proposed, previous_setting),
+                            setting,
+                            folder,
+                        } => self.confirm_rotation_preview(previous, proposed, setting, folder),
                     }
                     return None;
                 }
@@ -20988,7 +21082,7 @@ impl App {
                         if self.context_is_root() {
                             if let Some(page) = ContextPage::ALL
                                 .into_iter()
-                                .find(|page| page.label() == choice)
+                                .find(|page| self.context_page_label(*page) == choice)
                             {
                                 self.show_context_page(Some(page));
                             }
@@ -21061,7 +21155,14 @@ impl App {
                         self.touch_selection();
                     } else if choice == FILTER_RELEASES {
                         self.open_misterzine_filters();
-                    } else if choice == CHANGE_VIEW || choice == CORE_VERSION {
+                    } else if matches!(
+                        choice.as_str(),
+                        CHANGE_VIEW
+                            | CORE_VERSION
+                            | FOLDER_ROTATION
+                            | FOLDER_POSITION
+                            | FOLDER_NAMES
+                    ) {
                         // Stays open, like a setting: the point is to see
                         // the view while choosing it.
                         self.adjust_context(1);
@@ -22801,8 +22902,8 @@ impl App {
                 let help = if self.context_is_root() {
                     ContextPage::ALL
                         .into_iter()
-                        .find(|page| page.label() == selected)
-                        .map(ContextPage::help)
+                        .find(|page| self.context_page_label(*page) == selected)
+                        .map(|page| self.context_page_help(page))
                         .unwrap_or("")
                 } else {
                     context_help(selected)
@@ -22820,7 +22921,7 @@ impl App {
                     self.explore_menu_heading()
                 } else {
                     self.context_page
-                        .map(|page| format!("Actions / {}", page.label()))
+                        .map(|page| format!("Actions / {}", self.context_page_label(page)))
                         .unwrap_or_else(|| "Actions".to_string())
                 };
                 (heading, help.to_string())
