@@ -303,6 +303,7 @@ fn run_cli_rotation(root: &Path, window: Rc<MinimalSoftwareWindow>) {
     std::fs::write(games.join("Game.nes"), b"fixture").unwrap();
     let mut settings = Settings {
         show_empty: Some(true),
+        screen_rotation: Some(ScreenRotation::CounterClockwise),
         ..Default::default()
     };
     set_folder_preferences(
@@ -324,6 +325,12 @@ fn run_cli_rotation(root: &Path, window: Rc<MinimalSoftwareWindow>) {
     );
     app.open_system_by_index(0);
     app.leave_splash();
+    assert_eq!(app.global_screen_rotation, ScreenRotation::CounterClockwise);
+    assert_eq!(
+        app.option_value(OptionId::ScreenRotation),
+        ScreenRotation::CounterClockwise.label(),
+        "Options shows the saved global default, not the temporary CLI rotation"
+    );
     assert_eq!(
         app.screen_rotation,
         ScreenRotation::Off,
@@ -348,7 +355,8 @@ fn run_cli_rotation(root: &Path, window: Rc<MinimalSoftwareWindow>) {
         "an explicit kept UI choice can replace the CLI override"
     );
     assert_eq!(
-        app.settings.screen_rotation, None,
+        app.settings.screen_rotation,
+        Some(ScreenRotation::CounterClockwise),
         "the temporary flag is never saved as a global choice"
     );
     app.ui.hide().unwrap();

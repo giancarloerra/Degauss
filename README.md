@@ -1182,7 +1182,7 @@ view removes its assignments; existing built-in assignments are unchanged.
 Proportions adapt to the screen and its safe area, including portrait.
 Core Updates keeps its dedicated Details presentation.
 
-#### Folder Options
+### Folder Options
 
 Inside a game-library or Favourites folder, **X Actions → Folder Options**
 keeps the view controls together with three independent preferences:

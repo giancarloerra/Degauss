@@ -4595,9 +4595,8 @@ impl App {
     ) -> Self {
         let physical_width = width;
         let physical_height = height;
-        let screen_rotation = rotation_override
-            .or(loaded.settings.screen_rotation)
-            .unwrap_or_default();
+        let global_screen_rotation = loaded.settings.screen_rotation.unwrap_or_default();
+        let screen_rotation = rotation_override.unwrap_or(global_screen_rotation);
         let (width, height) = screen_rotation.logical_size(physical_width, physical_height);
         window.set_size(slint::PhysicalSize::new(width, height));
         let show_empty = loaded.settings.show_empty.unwrap_or(false);
@@ -5049,7 +5048,7 @@ impl App {
             width,
             height,
             screen_rotation,
-            global_screen_rotation: screen_rotation,
+            global_screen_rotation,
             rotation_override,
             covers,
             group_covers,
