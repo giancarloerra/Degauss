@@ -981,9 +981,10 @@ the two `.img` files have different slots. Existing disks and printer output
 are not recreated by Degauss.
 
 Apple II accepts WOZ floppies in its normal first drive; existing disk formats
-and explicit second-drive MGLs are unchanged. Sharp MZ MZF direct loading uses
-F2 on dated builds from 20261015 and F1 on older dated builds. Undated custom
-builds retain the existing profile; an explicit MGL can select their load slot.
+and explicit second-drive MGLs are unchanged. Sharp MZ MZF files use Load Direct
+to RAM (F2) on dated builds from 20261015. Older dated builds retain Load Tape
+to CMT (F1), started from the monitor as before. Undated custom builds retain
+the existing profile; an explicit MGL can select their load slot.
 Generated favourites retain a stable core reference and adapt at Degauss launch
 without rewriting the saved file. MZT, disk and Quick Disk slots are unchanged.
 Existing MGL launchers are passed through unchanged.
@@ -1012,8 +1013,8 @@ with 32 sectors. This update does not change that core protocol.
 Apple III DiskCopy 4.2 images are read-only to preserve their container
 checksums. Writable ProDOS and supported 2MG images retain write support.
 
-Sharp MZ keeps its existing library: MZF loads through the tape-download slot;
-MZT mounts as a tape; DSK/D88/D77 mount as a floppy; QDF/MZQ as a Quick Disk.
+Sharp MZ keeps its existing library: MZF uses the build-dependent download entry
+described above; MZT mounts as a tape; DSK/D88/D77 mount as a floppy; QDF/MZQ as a Quick Disk.
 Existing MGLs and older native Sharp MZ tape launches remain supported.
 
 ### Installed core launchers, RetroAchievements and Unstable cores
