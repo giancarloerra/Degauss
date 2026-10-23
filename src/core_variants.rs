@@ -409,11 +409,10 @@ fn sharp_mz_mzf_patches(
                         .find(|attribute| attribute.key.as_ref().eq_ignore_ascii_case(key))
                 };
                 let is_mzf = get("path")
-                    .map(|attribute| attribute.normalized_value(quick_xml::XmlVersion::Implicit1_0))
-                    .transpose()
-                    .map_err(|error| {
-                        DegaussError::malformed("core launcher", path, error.to_string())
-                    })?
+                    .map(|attribute| {
+                        crate::favorites::main_path_value(attribute, path, "core launcher")
+                    })
+                    .transpose()?
                     .is_some_and(|value| {
                         Path::new(value.as_ref())
                             .extension()
@@ -548,7 +547,7 @@ pub fn convert_favorite(path: &Path, core: &EffectiveCore) -> Result<String> {
 mod tests {
     #[test]
     fn sharp_mz_profiles_recognise_standard_and_unstable_build_dates() {
-        let text = "<mistergamedescription><rbf>_Computer/SharpMZ</rbf><file type=\"f\" index=\"1\" path=\"Game.mzf\"/><file type=\"s\" index=\"3\" path=\"Game.mzf\"/></mistergamedescription>";
+        let text = "<mistergamedescription><rbf>_Computer/SharpMZ</rbf><file type=\"f\" index=\"1\" path=\"Game &amp; One.mzf\"/><file type=\"f\" index=\"1\" path=\"Game & Two.mzf\"/><file type=\"s\" index=\"3\" path=\"Game.mzf\"/></mistergamedescription>";
         for (stem, index) in [
             ("SharpMZ_20261015", 2),
             ("SharpMZ_unstable_20261015_abcd", 2),
@@ -566,6 +565,13 @@ mod tests {
                 "{stem}: {changed}"
             );
             assert!(changed.contains("type=\"s\" index=\"3\""));
+            assert_eq!(
+                changed
+                    .matches(&format!("type=\"f\" index=\"{index}\""))
+                    .count(),
+                2
+            );
+            assert!(changed.contains("path=\"Game & Two.mzf\""));
         }
     }
 
