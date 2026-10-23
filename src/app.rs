@@ -10968,7 +10968,10 @@ impl App {
     fn update_operation_ui(&self) {
         self.ui.set_operation_kind(0);
         self.ui.set_operation_percent(SharedString::default());
-        if self.network_plan.is_some() {
+        if self.network_plan.is_some()
+            && !(self.screen == Screen::NameKeyboard
+                && self.name_keyboard_purpose == NamePurpose::UnlockKiosk)
+        {
             let active = self.network_job.is_some();
             let progress = self.network_progress.as_ref();
             let cancelling = progress.is_some_and(|progress| progress.cancelling);
@@ -11028,6 +11031,10 @@ impl App {
                     } else {
                         "B Cancel"
                     }
+                } else if self.kiosk_locked && self.network_no_local {
+                    "A Retry   Y Unlock"
+                } else if self.kiosk_locked {
+                    "A Retry   B Continue Local   Y Unlock"
                 } else if self.network_no_local {
                     "A Retry   B Exit"
                 } else {
@@ -12006,7 +12013,9 @@ impl App {
             if self.screen == Screen::Information {
                 if let Some(text) = self.misterzine_information_text() {
                     self.ui.set_information_text(SharedString::from(text));
-                    self.ui.set_information_offset(0.0);
+                    if !self.information_scroll_manual {
+                        self.ui.set_information_offset(0.0);
+                    }
                 }
             }
         }
@@ -15755,7 +15764,13 @@ impl App {
     fn handle_name_keyboard(&mut self, action: Action) {
         if self.name_keyboard_purpose == NamePurpose::UnlockKiosk && action == Action::Quit {
             self.name_keyboard_draft.clear();
-            self.open_menu();
+            if self.network_plan.is_some() {
+                self.screen = Screen::Browse;
+                self.apply_geometry();
+                self.dirty = true;
+            } else {
+                self.open_menu();
+            }
             return;
         }
         if matches!(self.name_keyboard_purpose, NamePurpose::FavoriteName(_)) {
@@ -20514,7 +20529,10 @@ impl App {
         if self.handle_explore_input(action) {
             return None;
         }
-        if self.network_plan.is_some() {
+        if self.network_plan.is_some()
+            && !(self.screen == Screen::NameKeyboard
+                && self.name_keyboard_purpose == NamePurpose::UnlockKiosk)
+        {
             if let Some(job) = &self.network_job {
                 if matches!(action, Action::Quit | Action::Context | Action::Menu) {
                     job.cancel();
@@ -20522,6 +20540,9 @@ impl App {
                 }
             } else {
                 match action {
+                    Action::Menu if self.kiosk_locked => {
+                        self.open_name_keyboard(NamePurpose::UnlockKiosk, String::new());
+                    }
                     Action::Accept => self.start_network_startup(false),
                     Action::Quit if self.network_no_local => return Some(Outcome::Quit),
                     Action::Quit => self.start_network_startup(true),

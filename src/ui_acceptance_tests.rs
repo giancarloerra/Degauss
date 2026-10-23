@@ -2436,6 +2436,38 @@ fn run_misterzine_browser_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
     assert!(information.contains("Source: MiSTer Distribution"));
     assert!(information.contains("Game titles\nFirst Game\nSecond Game"));
     assert!(!information.contains("Publisher:"));
+    for manual in [true, false] {
+        app.clear_misterzine_games();
+        app.information_scroll_manual = manual;
+        app.ui.set_information_offset(37.0);
+        let key = app.selected_misterzine_item().unwrap().key().to_string();
+        app.misterzine_game_job = Some(
+            crate::misterzine::start_game_job(crate::misterzine::GameRequest {
+                key: key.clone(),
+                cache_dir: app.cache_dir.clone(),
+                source: crate::misterzine::GameSource::Gamelist,
+                target: crate::misterzine::GameTarget::System { id: "NES".into() },
+            })
+            .unwrap(),
+        );
+        app.misterzine_game_job_key = Some(key);
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while app.misterzine_game_job.is_some() && Instant::now() < deadline {
+            app.maintain_misterzine_games(Instant::now());
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(app.misterzine_game_job.is_none());
+        assert!(app.misterzine_games.as_ref().unwrap().loaded);
+        assert_eq!(
+            app.misterzine_games.as_ref().unwrap().matches.games.len(),
+            2
+        );
+        assert_eq!(
+            app.ui.get_information_offset(),
+            if manual { 37.0 } else { 0.0 },
+            "late Core Updates titles preserve manual reading, but retain the ordinary automatic reset"
+        );
+    }
     app.screen = Screen::Browse;
 
     app.open_context();
@@ -3892,6 +3924,48 @@ fn run_kiosk_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
     ));
     assert_eq!(std::fs::read_to_string(&user_path).unwrap(), user_config);
     assert_eq!(app.settings.home, saved_home);
+    // Required storage can fail before any library is available. The locked
+    // operator must still be able to unlock, without opening maintenance.
+    app.network_plan = Some(crate::network_wait::Plan::fixture(
+        vec![root.join("unavailable")],
+        root.join("missing-mountinfo"),
+        Duration::from_secs(1),
+    ));
+    app.network_no_local = true;
+    app.network_problem = Some("No local game folders are available.".into());
+    app.screen = Screen::Browse;
+    app.update_operation_ui();
+    assert!(app.ui.get_operation_controls().contains("Unlock"));
+    assert!(!app.ui.get_operation_controls().contains("Exit"));
+    assert!(
+        app.handle(Action::Quit).is_none(),
+        "locked exit stays blocked"
+    );
+    app.handle(Action::Menu);
+    assert_eq!(app.screen, Screen::NameKeyboard);
+    assert_eq!(app.name_keyboard_purpose, NamePurpose::UnlockKiosk);
+    app.refresh();
+    assert_eq!(
+        app.ui.get_operation_kind(),
+        0,
+        "the PIN keyboard is not covered by the storage screen"
+    );
+    app.handle(Action::Quit);
+    assert!(app.kiosk_locked);
+    assert_eq!(app.screen, Screen::Browse);
+    app.handle(Action::Menu);
+    for digit in 0..6 {
+        app.name_keyboard_list.select(digit);
+        app.handle(Action::Accept);
+    }
+    assert!(!app.kiosk_locked);
+    assert!(
+        app.network_plan.is_some(),
+        "unlock does not hide the storage failure"
+    );
+    app.update_operation_ui();
+    assert!(app.ui.get_operation_controls().contains("Exit"));
+    assert!(matches!(app.handle(Action::Quit), Some(Outcome::Quit)));
     app.ui.hide().unwrap();
 }
 

@@ -1390,6 +1390,9 @@ digits on the keypad. B cancels; an incorrect code leaves it locked. A correct
 code restores normal access for that Degauss process. Returning after a game
 locks it again. The separate in-game MiSTer OSD is unchanged.
 
+On a required-storage error, Menu opens the PIN keypad so the operator can
+unlock before exiting. B cancels and returns to the storage error, still locked.
+
 The code is stored in clear text only in the user file. Unlocking does not
 remove it or save it in `settings.toml`; updates preserve the user file. For
 manual recovery, remove `kiosk_pin` and restart Degauss. Invalid user settings
