@@ -438,5 +438,33 @@ fn run_favourites(root: &Path, window: Rc<MinimalSoftwareWindow>) {
     app.delete_favorite_folder(&favorites.join("Renamed"));
     assert_eq!(app.settings.folder_preferences["Favorites"].len(), 1);
     assert!(favorites.join("Original Extra").exists());
+    let settings_path = app.settings_path.clone();
+    let saved_bytes = std::fs::read(&settings_path).unwrap();
+    app.settings_path = root.join("absent/settings.toml");
+    app.open_name_keyboard(
+        NamePurpose::RenameFavoriteFolder(favorites.join("Original Extra")),
+        "Unsaved".into(),
+    );
+    app.finish_name_keyboard();
+    assert!(favorites.join("Unsaved").is_dir());
+    let message = app.message.as_deref().unwrap();
+    assert!(
+        message.contains("folder changed")
+            && message.contains("not saved")
+            && message.contains("creating temporary settings"),
+        "{message}"
+    );
+    assert!(app.settings.folder_preferences["Favorites"]
+        .contains_key(&Place::Dir(favorites.join("Unsaved")).key()));
+    assert_eq!(std::fs::read(&settings_path).unwrap(), saved_bytes);
+    app.settings_path = settings_path;
+    app.message = None;
+    assert!(app.save_settings());
+    assert_eq!(
+        Settings::load(&app.settings_path)
+            .unwrap()
+            .folder_preferences,
+        app.settings.folder_preferences
+    );
     app.ui.hide().unwrap();
 }

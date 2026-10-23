@@ -259,11 +259,17 @@ impl App {
         destination: Option<&Path>,
     ) -> Option<String> {
         let system = self.open_system.clone()?;
-        if relocate_folder_preferences(&mut self.settings, &system, source, destination)
-            && !self.save_settings()
-        {
-            return self.message.take();
+        if !relocate_folder_preferences(&mut self.settings, &system, source, destination) {
+            return None;
         }
-        None
+        match self.settings.save(&self.settings_path) {
+            Ok(SaveOutcome::Durable) => None,
+            Ok(SaveOutcome::InstalledWithWarning(warning)) => Some(format!(
+                "Folder options were saved, but durability could not be confirmed: {warning}"
+            )),
+            Err(error) => Some(format!(
+                "The folder changed, but its options were not saved: {error}\n\nThey remain active only in this session."
+            )),
+        }
     }
 }
