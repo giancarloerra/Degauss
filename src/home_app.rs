@@ -36,6 +36,24 @@ const SAVE_HOME: &str = "Save Changes";
 const CANCEL_HOME: &str = "Cancel Changes";
 
 impl App {
+    fn kiosk_category_allowed(&self, name: &str) -> bool {
+        !matches!(name, SCRIPTS_CATEGORY | CORES_CATEGORY | MISTERZINE_CATEGORY | "Other" | "Utility")
+    }
+
+    fn kiosk_target_allowed(&self, target: &crate::home::Target) -> bool {
+        use crate::home::Target;
+        match target {
+            Target::Core { .. } | Target::Script { .. } => false,
+            Target::Category { category } => self.kiosk_category_allowed(category),
+            Target::System { system } | Target::Game { system, .. }
+            | Target::LibraryFolder { system, .. } => self.all_systems.iter()
+                .find(|found| &found.def.id == system)
+                .is_none_or(|found| self.kiosk_category_allowed(display_category(found,
+                    self.settings.separate_handheld_category.unwrap_or(false)))),
+            _ => true,
+        }
+    }
+
     fn home_location_label(&self) -> &'static str {
         if self.home.folder.is_some() {
             "Home Folder"
@@ -70,10 +88,18 @@ impl App {
             .iter()
             .map(|(name, _)| name.clone())
             .collect::<Vec<_>>();
-        self.home.rows = self
+        let rows = self
             .settings
             .home
             .rows(self.home.folder.as_deref(), &categories, false);
+        self.home.rows = rows.into_iter().filter(|key| {
+            !self.kiosk_locked || if let Some(category) = key.strip_prefix("category:") {
+                self.kiosk_category_allowed(category)
+            } else {
+                key.strip_prefix("entry:").and_then(|id| self.settings.home.entries.get(id))
+                    .is_some_and(|entry| self.kiosk_target_allowed(&entry.target))
+            }
+        }).collect();
         self.home.previews.clear();
         self.home.preview_done.clear();
         self.home.preview_job = None;
@@ -106,6 +132,9 @@ impl App {
                 .then(|| "Disabled or unavailable in Library options".into());
         }
         let entry = self.home_store().entries.get(key.strip_prefix("entry:")?)?;
+        if self.kiosk_locked && !self.kiosk_target_allowed(&entry.target) {
+            return Some("Unavailable in kiosk mode".into());
+        }
         use crate::home::Target;
         let owner = match &entry.target {
             Target::System { system }
