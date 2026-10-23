@@ -1056,17 +1056,8 @@ pub fn favorite_mgl_with_selections(
         selected_version,
         ra_first,
     )?;
-    let mut core = crate::core_choices::resolve(&family, menu_root, selected_version, ra_first)?;
-    let text = if family
-        .rbf
-        .rsplit('/')
-        .next()
-        .is_some_and(|stem| crate::core_variants::same_core_identity(stem, "SharpMZ"))
-    {
-        crate::core_variants::apply(&text, game, &core)?
-    } else {
-        text
-    };
+    let core = crate::core_choices::resolve(&family, menu_root, selected_version, ra_first)?;
+    let mut reference = core.rbf.as_str();
     // Resolve the exact regular build for the actual handoff, not in a
     // durable favourite that must survive the next dated core replacement.
     if Path::new(&family.rbf).file_name().is_some_and(|name| {
@@ -1077,9 +1068,9 @@ pub fn favorite_mgl_with_selections(
         .is_some_and(|prefix| prefix.eq_ignore_ascii_case(&family.rbf))
         && core.rbf.as_bytes().get(family.rbf.len()) == Some(&b'_')
     {
-        core.rbf = family.rbf.clone();
+        reference = &family.rbf;
     }
-    crate::core_variants::apply(&text, game, &core).map(Some)
+    crate::core_variants::apply_with_reference(&text, game, &core, reference).map(Some)
 }
 
 /// Work out how to start one entry.

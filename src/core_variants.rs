@@ -445,10 +445,21 @@ fn sharp_mz_mzf_patches(
 /// Replace the selected core/setname and its build-specific MZF load slot;
 /// all unrelated XML remains byte-for-byte.
 pub fn apply(text: &str, path: &Path, core: &EffectiveCore) -> Result<String> {
+    apply_with_reference(text, path, core, &core.rbf)
+}
+
+/// A durable favourite keeps its core prefix while using the installed build's
+/// loading profile. Ordinary handoffs use that build's exact reference too.
+pub(crate) fn apply_with_reference(
+    text: &str,
+    path: &Path,
+    core: &EffectiveCore,
+    reference: &str,
+) -> Result<String> {
     let (rbf, setname) = elements(text, path)?;
     let mut patches = vec![(
         rbf.inner.clone(),
-        quick_xml::escape::escape(&core.rbf).into_owned(),
+        quick_xml::escape::escape(reference).into_owned(),
     )];
     match (setname, &core.setname_xml) {
         (Some(old), replacement) => {
