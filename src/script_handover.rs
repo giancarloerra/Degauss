@@ -156,11 +156,10 @@ mod tests {
                 let parts: Vec<_> = command.split_whitespace().collect();
                 assert_eq!(parts[0], "fb_degauss");
                 assert_eq!(parts[2], mode.label());
-                fs::write(
-                    parent.join(format!("degauss-terminal-{}.status", parts[1])),
-                    reply,
-                )
-                .unwrap();
+                let status = parent.join(format!("degauss-terminal-{}.status", parts[1]));
+                let temporary = status.with_extension("part");
+                fs::write(&temporary, reply).unwrap();
+                fs::rename(&temporary, status).unwrap();
             });
             let result = request(&fifo, &directory, mode);
             main.join().unwrap();
