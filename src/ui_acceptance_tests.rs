@@ -3745,6 +3745,30 @@ fn run_kiosk_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
         assert_eq!(app.screen, Screen::Browse);
     }
     assert_eq!(app.available_hold_shortcuts(), [None; 4]);
+    let saved_speed = app.settings.speed_step;
+    let speed = app.speed;
+    app.horizontal = Horizontal::Speed;
+    app.handle(Action::Faster);
+    assert_ne!(app.speed, speed);
+    assert_eq!(
+        app.settings.speed_step, saved_speed,
+        "guest speed is session-only"
+    );
+    app.pending = Some(Pending::StorageRebuild);
+    app.message = Some("Rebuild storage?".into());
+    app.refresh();
+    assert!(app.ui.get_overlay().contains("Unlock is required"));
+    app.handle(Action::Menu);
+    assert!(app.pending.is_none());
+    assert_eq!(app.menu, ["Unlock"]);
+    app.handle(Action::Accept);
+    assert_eq!(app.screen, Screen::NameKeyboard);
+    assert!(
+        app.build.is_none(),
+        "Unlock must not accept the displaced rebuild offer"
+    );
+    app.handle(Action::Quit);
+    app.handle(Action::Quit);
     app.open_options_page(OptionsPage::Library);
     app.open_scripts();
     assert_eq!(app.screen, Screen::Browse);

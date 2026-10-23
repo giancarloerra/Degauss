@@ -20122,15 +20122,25 @@ impl App {
     }
 
     pub fn handle(&mut self, action: Action) -> Option<Outcome> {
-        if self.kiosk_locked && self.screen != Screen::NameKeyboard {
+        // Game launches do not use Pending. These confirmations change
+        // configuration, perform maintenance or leave the game browser.
+        if self.kiosk_locked && self.pending.is_some() {
+            self.pending = None;
+            self.message = None;
+            self.dirty = true;
+            if action == Action::Menu {
+                self.open_menu();
+            }
+            return None;
+        }
+        if self.kiosk_locked
+            && !(self.screen == Screen::NameKeyboard
+                && self.name_keyboard_purpose == NamePurpose::UnlockKiosk)
+        {
             if matches!(
                 action,
                 Action::Context | Action::CyclePresent | Action::HoldShortcut(_)
             ) {
-                return None;
-            }
-            if action == Action::Menu && self.network_plan.is_none() && self.build.is_none() {
-                self.open_menu();
                 return None;
             }
         }
@@ -20569,7 +20579,9 @@ impl App {
                     match mode {
                         Horizontal::Speed => {
                             self.speed = step(self.speed, delta, SPEED_STEPS.len());
-                            self.settings.speed_step = Some(self.speed);
+                            if !self.kiosk_locked {
+                                self.settings.speed_step = Some(self.speed);
+                            }
                             // The badge answers "what speed is it now".
                             // The other modes move the list, which is its
                             // own confirmation, so this is the only arm
@@ -22856,7 +22868,11 @@ impl App {
         // carry their keys in their own text. Questions keep their "A yes,
         // B no" and build progress replaces itself every frame, so neither
         // takes the hint.
-        let overlay = self.message.as_deref().unwrap_or_default();
+        let overlay = if self.kiosk_locked && self.pending.is_some() {
+            "Unlock is required for maintenance or changes.\n\nB Back   Y Menu"
+        } else {
+            self.message.as_deref().unwrap_or_default()
+        };
         let overlay = if (self.pending.is_some() && !storage_confirmation)
             || self.rotation_preview_deadline.is_some()
         {
