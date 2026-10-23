@@ -210,14 +210,18 @@ fn validate_native_choice(actual: &Path) -> Result<()> {
 }
 
 /// N64 and Neo Geo Turbo can share their regular core's loose Main prefix.
-/// Resolve these regular references to the installed build without changing
-/// other core families or explicitly pinned filenames.
+/// Sharp MZ also needs its installed build date to select the MZF load slot.
+/// Resolve these references without changing other families or pinned filenames.
 fn standard_reference(reference: &str, root: &Path) -> Result<String> {
     let path = Path::new(reference);
     let Some(wanted) = path
         .file_name()
         .and_then(|name| name.to_str())
-        .filter(|name| name.eq_ignore_ascii_case("N64") || name.eq_ignore_ascii_case("NeoGeo"))
+        .filter(|name| {
+            ["N64", "NeoGeo", "SharpMZ"]
+                .iter()
+                .any(|core| name.eq_ignore_ascii_case(core))
+        })
     else {
         return Ok(reference.to_string());
     };

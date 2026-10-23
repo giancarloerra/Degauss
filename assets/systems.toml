@@ -147,10 +147,10 @@ name = "Apple IIe"
 id = "AppleII"
 folders = ["Apple-II"]
 rbf = "_Computer/Apple-II"
-extensions = ["dsk", "do", "po", "nib", "hdv", "mgl"]
+extensions = ["dsk", "do", "po", "nib", "woz", "hdv", "mgl"]
 
 [[systems.launch]]
-extensions = ["nib", "dsk", "do", "po"]
+extensions = ["nib", "dsk", "do", "po", "woz"]
 type = "s"
 index = 0
 delay = 1
@@ -2663,6 +2663,32 @@ extensions = ["qic"]
 type = "s"
 index = 2
 delay = 1
+
+[[systems]]
+name = "Sun SPARCstation 20"
+id = "SunSparcStation"
+folders = ["SunSparcStation"]
+rbf = "_Computer/SunSparcStation20"
+extensions = ["vhd", "img", "hda", "raw", "iso", "cue", "chd", "mgl"]
+category = "Computer"
+[[systems.launch]]
+extensions = ["vhd", "img", "hda", "raw"]
+type = "s"
+index = 0
+delay = 1
+[[systems.launch]]
+extensions = ["iso", "cue", "chd"]
+type = "s"
+index = 2
+delay = 1
+
+[[systems]]
+name = "Cray X-MP"
+id = "Cray-XMP"
+folders = ["Cray-XMP"]
+rbf = "_Computer/Cray-XMP"
+extensions = ["mgl"]
+category = "Computer"
 
 [[systems]]
 name = "Macintosh SE/30"

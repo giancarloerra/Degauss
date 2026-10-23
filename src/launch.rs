@@ -1057,12 +1057,21 @@ pub fn favorite_mgl_with_selections(
         ra_first,
     )?;
     let mut core = crate::core_choices::resolve(&family, menu_root, selected_version, ra_first)?;
-    // Resolve the exact regular N64 build for the actual handoff, not in a
+    let text = if family
+        .rbf
+        .rsplit('/')
+        .next()
+        .is_some_and(|stem| crate::core_variants::same_core_identity(stem, "SharpMZ"))
+    {
+        crate::core_variants::apply(&text, game, &core)?
+    } else {
+        text
+    };
+    // Resolve the exact regular build for the actual handoff, not in a
     // durable favourite that must survive the next dated core replacement.
-    if Path::new(&family.rbf)
-        .file_name()
-        .is_some_and(|name| name.eq_ignore_ascii_case("N64"))
-        && core.rbf.starts_with(&format!("{}_", family.rbf))
+    if Path::new(&family.rbf).file_name().is_some_and(|name| {
+        name.eq_ignore_ascii_case("N64") || name.eq_ignore_ascii_case("SharpMZ")
+    }) && core.rbf.starts_with(&format!("{}_", family.rbf))
     {
         core.rbf = family.rbf.clone();
     }
@@ -1351,6 +1360,120 @@ mod tests {
                 .unwrap()
                 .unwrap();
         assert!(turbo.contains("<rbf>_Console/N64_80MHz</rbf>"));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn sharp_mz_mzf_uses_the_installed_build_and_preserves_saved_favourites() {
+        let root =
+            std::env::temp_dir().join(format!("degauss-sharpmz-build-{}", std::process::id()));
+        let games = root.join("games/SharpMZ");
+        std::fs::create_dir_all(&games).unwrap();
+        std::fs::create_dir_all(root.join("_Computer")).unwrap();
+        let game = games.join("Game.mzf");
+        std::fs::write(&game, b"MZF fixture").unwrap();
+        let system = shipped_system("SharpMZ", vec![games.clone()]);
+        let handoff = root.join("handoff.mgl");
+        let legacy = favorite_mgl(&system, &game).unwrap().unwrap();
+        let favorite = root.join("Game.mgl");
+        std::fs::write(&favorite, &legacy).unwrap();
+        for (date, index) in [("20260702", 1), ("20261012", 1), ("20261015", 2)] {
+            let core = root.join(format!("_Computer/SharpMZ_{date}.rbf"));
+            std::fs::write(&core, b"core fixture").unwrap();
+            for path in [&game, &favorite] {
+                let planned =
+                    plan_with_selections(&system, path, &handoff, &root, false, None, None)
+                        .unwrap();
+                assert!(
+                    planned
+                        .mgl
+                        .contains(&format!("type=\"f\" index=\"{index}\"")),
+                    "{date}: {}",
+                    planned.mgl
+                );
+                assert!(planned.mgl.contains(&format!("SharpMZ_{date}")));
+            }
+            assert_eq!(std::fs::read_to_string(&favorite).unwrap(), legacy);
+            let saved = favorite_mgl_with_selections(&system, &game, &root, false, None, None)
+                .unwrap()
+                .unwrap();
+            assert!(saved.contains("<rbf>_Computer/SharpMZ</rbf>"));
+            assert!(saved.contains(&format!("type=\"f\" index=\"{index}\"")));
+            // A new favourite must also survive installing an older build.
+            std::fs::write(&favorite, saved).unwrap();
+            std::fs::remove_file(core).unwrap();
+        }
+        std::fs::write(root.join("_Computer/SharpMZ_20261012.rbf"), b"older").unwrap();
+        let restored =
+            plan_with_selections(&system, &favorite, &handoff, &root, false, None, None).unwrap();
+        assert!(restored.mgl.contains("type=\"f\" index=\"1\""));
+        for (extension, index) in [("mzt", 0), ("d88", 1), ("qdf", 3)] {
+            let other = games.join(format!("Game.{extension}"));
+            std::fs::write(&other, b"media fixture").unwrap();
+            let planned =
+                plan_with_selections(&system, &other, &handoff, &root, false, None, None).unwrap();
+            assert!(planned
+                .mgl
+                .contains(&format!("type=\"s\" index=\"{index}\"")));
+        }
+        // A caller-selected explicit multi-file descriptor is not rewritten.
+        let explicit = games.join("Tape.mgl");
+        let text = "<mistergamedescription><rbf>_Computer/SharpMZ</rbf><file type=\"s\" index=\"3\" path=\"Game.mzf\"/></mistergamedescription>";
+        std::fs::write(&explicit, text).unwrap();
+        let planned =
+            plan_with_selections(&system, &explicit, &handoff, &root, false, None, None).unwrap();
+        assert_eq!(std::fs::read_to_string(explicit).unwrap(), text);
+        assert!(!planned.mgl.contains("index=\"2\""));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn cray_launcher_mounts_support_media_before_its_boot_file() {
+        let text = include_str!("../docs/launchers/Cray-XMP-COS117.mgl");
+        let root =
+            std::env::temp_dir().join(format!("degauss-cray-launcher-{}", std::process::id()));
+        let games = root.join("games/Cray-XMP");
+        std::fs::create_dir_all(&games).unwrap();
+        std::fs::create_dir_all(root.join("_Computer")).unwrap();
+        std::fs::write(
+            root.join("_Computer/Cray-XMP_20261010.rbf"),
+            b"core fixture",
+        )
+        .unwrap();
+        let launcher = games.join("COS117.mgl");
+        std::fs::write(&launcher, text).unwrap();
+        let system = shipped_system("Cray-XMP", vec![games]);
+        let plan = plan_with_selections(
+            &system,
+            &launcher,
+            &root.join("handoff.mgl"),
+            &root,
+            false,
+            None,
+            None,
+        )
+        .unwrap();
+        assert_eq!(plan.command, format!("load_core {}\n", launcher.display()));
+        assert!(
+            plan.mgl.is_empty(),
+            "the supplied multi-file MGL stays intact"
+        );
+        assert_eq!(std::fs::read_to_string(&launcher).unwrap(), text);
+        let actions: Vec<_> = text
+            .lines()
+            .filter(|line| line.contains("<file "))
+            .collect();
+        assert_eq!(actions.len(), 4);
+        for (action, (kind, index, file)) in actions.iter().zip([
+            ("s", 0, "exp_disk.img"),
+            ("s", 1, "drives.img"),
+            ("s", 2, "printer.txt"),
+            ("f", 1, "cos117.ios"),
+        ]) {
+            assert!(action.contains(&format!(
+                "type=\"{kind}\" index=\"{index}\" path=\"{file}\""
+            )));
+        }
         std::fs::remove_dir_all(root).unwrap();
     }
 

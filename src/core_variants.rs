@@ -360,7 +360,82 @@ fn preserve_setname_attributes(old: &str, new: &str, path: &Path) -> Result<Stri
     Ok(result)
 }
 
-/// Replace only core/setname elements; all unrelated XML remains byte-for-byte.
+/// The 20261015 Sharp MZ build removed F1. Adapt only the MZF direct-load
+/// action of generated/recognised favourites; explicit tape and disk slots stay.
+fn sharp_mz_mzf_patches(
+    text: &str,
+    path: &Path,
+    core: &EffectiveCore,
+) -> Result<Vec<(Range<usize>, String)>> {
+    let stem = Path::new(&core.rbf)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("");
+    if !same_core_identity(stem, "SharpMZ") {
+        return Ok(Vec::new());
+    }
+    let Some(date) = crate::systems::core_build_date(stem) else {
+        return Ok(Vec::new());
+    };
+    let wanted = if date >= "20261015" { "2" } else { "1" };
+    let mut reader = Reader::from_str(text);
+    let mut patches = Vec::new();
+    let mut depth = 0usize;
+    loop {
+        let event = reader
+            .read_event()
+            .map_err(|error| DegaussError::malformed("core launcher", path, error.to_string()))?;
+        let starts = matches!(&event, Event::Start(_));
+        match event {
+            Event::Start(tag) | Event::Empty(tag)
+                if depth == 1 && tag.name().as_ref().eq_ignore_ascii_case("file") =>
+            {
+                let attributes = tag
+                    .attributes()
+                    .collect::<std::result::Result<Vec<_>, _>>()
+                    .map_err(|error| {
+                        DegaussError::malformed("core launcher", path, error.to_string())
+                    })?;
+                let get = |key: &[u8]| {
+                    attributes
+                        .iter()
+                        .find(|attribute| attribute.key.as_ref().eq_ignore_ascii_case(key))
+                };
+                let is_mzf = get(b"path")
+                    .map(|attribute| attribute.unescape_value())
+                    .transpose()
+                    .map_err(|error| {
+                        DegaussError::malformed("core launcher", path, error.to_string())
+                    })?
+                    .is_some_and(|value| {
+                        Path::new(value.as_ref())
+                            .extension()
+                            .is_some_and(|extension| extension.eq_ignore_ascii_case("mzf"))
+                    });
+                if is_mzf && get(b"type").is_some_and(|attribute| attribute.value.as_ref() == b"f")
+                {
+                    if let Some(index) = get(b"index").filter(|attribute| {
+                        matches!(attribute.value.as_ref(), b"1" | b"2")
+                            && attribute.value.as_ref() != wanted.as_bytes()
+                    }) {
+                        let start = index.value.as_ptr() as usize - text.as_ptr() as usize;
+                        patches.push((start..start + index.value.len(), wanted.into()));
+                    }
+                }
+            }
+            Event::End(_) => depth = depth.saturating_sub(1),
+            Event::Eof => break,
+            _ => {}
+        }
+        if starts {
+            depth += 1;
+        }
+    }
+    Ok(patches)
+}
+
+/// Replace the selected core/setname and its build-specific MZF load slot;
+/// all unrelated XML remains byte-for-byte.
 pub fn apply(text: &str, path: &Path, core: &EffectiveCore) -> Result<String> {
     let (rbf, setname) = elements(text, path)?;
     let mut patches = vec![(
@@ -378,6 +453,7 @@ pub fn apply(text: &str, path: &Path, core: &EffectiveCore) -> Result<String> {
         (None, Some(new)) => patches.push((rbf.range.end..rbf.range.end, format!("\n\t{new}"))),
         _ => {}
     }
+    patches.extend(sharp_mz_mzf_patches(text, path, core)?);
     patches.sort_by_key(|(range, _)| std::cmp::Reverse(range.start));
     let mut result = text.to_owned();
     for (range, replacement) in patches {
@@ -450,11 +526,12 @@ pub fn needs_conversion(path: &Path, core: &EffectiveCore) -> Result<bool> {
     if !rbf.value.eq_ignore_ascii_case(&core.rbf) {
         return Ok(true);
     }
-    Ok(match (setname, &core.setname_xml) {
-        (None, None) => false,
-        (Some(old), Some(new)) => text[old.range] != *new,
-        _ => true,
-    })
+    Ok(!sharp_mz_mzf_patches(&text, path, core)?.is_empty()
+        || match (setname, &core.setname_xml) {
+            (None, None) => false,
+            (Some(old), Some(new)) => text[old.range] != *new,
+            _ => true,
+        })
 }
 
 pub fn convert_favorite(path: &Path, core: &EffectiveCore) -> Result<String> {
