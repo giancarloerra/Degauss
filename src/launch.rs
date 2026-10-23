@@ -1439,6 +1439,9 @@ mod tests {
         let games = root.join("games/Cray-XMP");
         std::fs::create_dir_all(&games).unwrap();
         std::fs::create_dir_all(root.join("_Computer")).unwrap();
+        for name in ["exp_disk.img", "drives.img", "printer.txt", "cos117.ios"] {
+            std::fs::write(games.join(name), b"media fixture").unwrap();
+        }
         std::fs::write(
             root.join("_Computer/Cray-XMP_20261010.rbf"),
             b"core fixture",
@@ -1457,13 +1460,13 @@ mod tests {
             None,
         )
         .unwrap();
-        assert_eq!(plan.command, format!("load_core {}\n", launcher.display()));
-        assert!(
-            plan.mgl.is_empty(),
-            "the supplied multi-file MGL stays intact"
+        assert_eq!(
+            plan.command,
+            format!("load_core {}\n", root.join("handoff.mgl").display())
         );
         assert_eq!(std::fs::read_to_string(&launcher).unwrap(), text);
-        let actions: Vec<_> = text
+        let actions: Vec<_> = plan
+            .mgl
             .lines()
             .filter(|line| line.contains("<file "))
             .collect();
@@ -1474,9 +1477,11 @@ mod tests {
             ("s", 2, "printer.txt"),
             ("f", 1, "cos117.ios"),
         ]) {
-            assert!(action.contains(&format!(
-                "type=\"{kind}\" index=\"{index}\" path=\"{file}\""
-            )));
+            assert!(action.contains(&format!("type=\"{kind}\" index=\"{index}\"")));
+            assert!(
+                action.contains(file),
+                "media roles and their order survive path relocation"
+            );
         }
         std::fs::remove_dir_all(root).unwrap();
     }
