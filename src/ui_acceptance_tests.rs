@@ -6656,6 +6656,85 @@ fn run_indexing_ui_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
     app.ui.hide().unwrap();
 }
 
+fn run_information_manual_scroll_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
+    let mut app = fixture_app(root, window, Settings::default());
+    app.open_context();
+    let started = Instant::now();
+    for (action, position) in [
+        (Action::Up, 0.5),
+        (Action::Down, 0.5),
+        (Action::Slower, 0.5),
+        (Action::Faster, 0.5),
+        (Action::PageUp, 0.5),
+        (Action::PageDown, 0.5),
+        (Action::Home, 0.5),
+        (Action::End, 0.5),
+        (Action::Up, 0.0),
+        (Action::Down, 1.0),
+    ] {
+        app.open_information();
+        app.finish_background_work_for_headless();
+        app.refresh();
+        assert_eq!(app.screen, Screen::Information);
+        let limit = app.ui.get_information_max_scroll();
+        assert!(limit > 0.0, "the actual full-description view must scroll");
+        app.ui.set_information_offset(limit * position);
+        app.handle(action);
+        let manual = app.ui.get_information_offset();
+        if action == Action::Home {
+            assert_eq!(manual, 0.0);
+        } else if action == Action::End {
+            assert_eq!(manual, limit);
+            capture_live_if_requested(&mut app, "information-manual-end");
+        }
+        for waits in [1, 2, 10] {
+            let later = started + INFORMATION_SCROLL_WAIT * waits;
+            app.information_scroll_next_at.set(later);
+            app.maintain_information_scroll(later);
+            assert_eq!(
+                app.ui.get_information_offset(),
+                manual,
+                "{action:?} keeps manual control for this visit, even after {waits} waits"
+            );
+        }
+        app.handle(Action::Quit);
+        assert_eq!(app.screen, Screen::Context);
+    }
+
+    // A new visit starts an ordinary automatic reader, not a saved manual mode.
+    app.open_information();
+    app.finish_background_work_for_headless();
+    app.refresh();
+    assert_eq!(app.ui.get_information_offset(), 0.0);
+    capture_live_if_requested(&mut app, "information-reopened-top");
+    let at = Instant::now() + INFORMATION_SCROLL_WAIT;
+    app.information_scroll_next_at.set(at);
+    app.maintain_information_scroll(at - Duration::from_millis(1));
+    assert_eq!(app.ui.get_information_offset(), 0.0);
+    app.maintain_information_scroll(at);
+    assert_eq!(app.ui.get_information_offset(), 1.0);
+    app.maintain_information_scroll(at + INFORMATION_SCROLL_STEP);
+    assert_eq!(app.ui.get_information_offset(), 2.0);
+    let limit = app.ui.get_information_max_scroll();
+    app.ui.set_information_offset(limit);
+    app.information_scroll_next_at.set(at);
+    app.maintain_information_scroll(at);
+    assert_eq!(app.ui.get_information_offset(), 0.0);
+    app.maintain_information_scroll(at + INFORMATION_SCROLL_WAIT);
+    assert_eq!(app.ui.get_information_offset(), 1.0);
+
+    // Manually stopping Game Information must not stop long message overlays.
+    app.handle(Action::End);
+    app.handle(Action::Quit);
+    app.message = Some("Long actionable report.\n".repeat(80));
+    app.refresh();
+    assert!(app.ui.get_overlay_max_scroll() > 0.0);
+    app.information_scroll_next_at.set(at);
+    app.maintain_information_scroll(at);
+    assert_eq!(app.ui.get_overlay_offset(), 1.0);
+    app.ui.hide().unwrap();
+}
+
 fn capture_ui_if_requested(root: &Path, window: Rc<MinimalSoftwareWindow>) {
     let Some(directory) = std::env::var_os("DEGAUSS_UI_CAPTURE_DIR") else {
         return;
@@ -6837,18 +6916,19 @@ fn capture_ui_if_requested(root: &Path, window: Rc<MinimalSoftwareWindow>) {
     app.handle(Action::PageDown);
     capture_frame(&mut app, &directory, "information-middle", 352, 240);
     app.handle(Action::End);
-    assert!(app.ui.get_information_offset() > 0.0);
+    let manual_bottom = app.ui.get_information_offset();
+    assert!(manual_bottom > 0.0);
     capture_frame(&mut app, &directory, "information-bottom", 352, 240);
     let at = Instant::now();
     app.information_scroll_next_at.set(at);
     app.maintain_information_scroll(at);
     assert_eq!(
         app.ui.get_information_offset(),
-        0.0,
-        "automatic reading loops after the bottom pause"
+        manual_bottom,
+        "manual reading keeps its position after the bottom pause"
     );
     app.maintain_information_scroll(at + INFORMATION_SCROLL_WAIT);
-    assert_eq!(app.ui.get_information_offset(), 1.0);
+    assert_eq!(app.ui.get_information_offset(), manual_bottom);
 
     app.set_screen(Screen::Browse);
     app.message = Some(format!(
@@ -14309,6 +14389,7 @@ pub(super) fn run_ui_acceptance_flow(window: Rc<MinimalSoftwareWindow>) {
     let gamelist_path = root.join("games/NES/gamelist.xml");
     let gamelist_xml = format!("<gameList><game><path>First Game.nes</path><desc><![CDATA[{complete_description}]]></desc></game><game><path>Second Game.nes</path><desc><![CDATA[{complete_description}]]></desc></game></gameList>");
     std::fs::write(&gamelist_path, &gamelist_xml).unwrap();
+    run_information_manual_scroll_flow(&root, window.clone());
     explore_acceptance_tests::run(&root, window.clone());
     home_acceptance_tests::run(&root, window.clone());
     custom_view_acceptance_tests::run(&root, window.clone());

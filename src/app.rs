@@ -4431,6 +4431,7 @@ pub struct App {
     /// pace and would be cut off half way on the title's clock.
     detail_marquee: Rc<slint::Timer>,
     information_scroll_next_at: std::cell::Cell<Instant>,
+    information_scroll_manual: bool,
     art_pending: bool,
     cover_prefetch: Option<CoverPrefetchJob>,
     prefetch_direction: isize,
@@ -5050,6 +5051,7 @@ impl App {
             information_scroll_next_at: std::cell::Cell::new(
                 Instant::now() + INFORMATION_SCROLL_WAIT,
             ),
+            information_scroll_manual: false,
             art_pending: true,
             cover_prefetch: None,
             prefetch_direction: 1,
@@ -5874,6 +5876,7 @@ impl App {
     }
 
     fn open_information(&mut self) {
+        self.information_scroll_manual = false;
         if self.in_misterzine_browser() {
             if self.selected_misterzine_item().is_none() {
                 return;
@@ -6046,6 +6049,19 @@ impl App {
     }
 
     fn handle_information(&mut self, action: Action) {
+        if matches!(
+            action,
+            Action::Up
+                | Action::Down
+                | Action::Slower
+                | Action::Faster
+                | Action::PageUp
+                | Action::PageDown
+                | Action::Home
+                | Action::End
+        ) {
+            self.information_scroll_manual = true;
+        }
         let limit = self.ui.get_information_max_scroll().max(0.0);
         let current = self.ui.get_information_offset();
         let line = self.geometry.small_font * 2.0;
@@ -6114,6 +6130,7 @@ impl App {
         } else if self.message.is_none()
             && self.screen == Screen::Information
             && self.information.is_none()
+            && !self.information_scroll_manual
         {
             (
                 self.ui.get_information_offset(),

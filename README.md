@@ -188,6 +188,10 @@ control has an explanation below the list. Home keeps its flat Actions menu
 for personal folders, editing, images and views. Explore has its own search,
 filter and collection actions.
 
+**Game Information** scrolls automatically until a read or page control is used.
+Manual scrolling keeps the reading position for that visit, including at the
+bottom. Close and reopen Game Information to restore automatic reading.
+
 **Game** contains Game Information, separate **Random Game** and **Random
 Favourite** actions, and adding/removing favourites. Adding one opens a
 chooser that lists **Main Favourites** (the `_@Favorites` folder itself)
