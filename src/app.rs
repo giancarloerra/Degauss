@@ -20151,13 +20151,12 @@ impl App {
         if self.kiosk_locked
             && !(self.screen == Screen::NameKeyboard
                 && self.name_keyboard_purpose == NamePurpose::UnlockKiosk)
-        {
-            if matches!(
+            && matches!(
                 action,
                 Action::Context | Action::CyclePresent | Action::HoldShortcut(_)
-            ) {
-                return None;
-            }
+            )
+        {
+            return None;
         }
         let outcome = self.handle_allowed(action);
         if self.kiosk_locked
