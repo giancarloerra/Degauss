@@ -1449,7 +1449,7 @@ mod tests {
         .unwrap();
         let launcher = games.join("COS117.mgl");
         std::fs::write(&launcher, text).unwrap();
-        let system = shipped_system("Cray-XMP", vec![games]);
+        let system = shipped_system("Cray-XMP", vec![games.clone()]);
         let plan = plan_with_selections(
             &system,
             &launcher,
@@ -1465,22 +1465,36 @@ mod tests {
             format!("load_core {}\n", root.join("handoff.mgl").display())
         );
         assert_eq!(std::fs::read_to_string(&launcher).unwrap(), text);
+        let handoff = root.join("handoff.mgl");
+        std::fs::write(&handoff, &plan.mgl).unwrap();
+        let referenced = crate::favorites::descriptor_reference(&handoff, "test handoff")
+            .unwrap()
+            .files;
         let actions: Vec<_> = plan
             .mgl
             .lines()
             .filter(|line| line.contains("<file "))
             .collect();
         assert_eq!(actions.len(), 4);
-        for (action, (kind, index, file)) in actions.iter().zip([
-            ("s", 0, "exp_disk.img"),
-            ("s", 1, "drives.img"),
-            ("s", 2, "printer.txt"),
-            ("f", 1, "cos117.ios"),
-        ]) {
+        for (at, (action, (kind, index, file))) in actions
+            .iter()
+            .zip([
+                ("s", 0, "exp_disk.img"),
+                ("s", 1, "drives.img"),
+                ("s", 2, "printer.txt"),
+                ("f", 1, "cos117.ios"),
+            ])
+            .enumerate()
+        {
             assert!(action.contains(&format!("type=\"{kind}\" index=\"{index}\"")));
-            assert!(
-                action.contains(file),
-                "media roles and their order survive path relocation"
+            // Main joins relative paths to the core home, not beside the MGL.
+            let actual = crate::favorites::normalize_path(
+                Path::new("/media/fat/games/Cray-XMP").join(&referenced[at]),
+            );
+            assert_eq!(
+                actual,
+                games.join(file),
+                "every mount keeps its exact file and role"
             );
         }
         std::fs::remove_dir_all(root).unwrap();
