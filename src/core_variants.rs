@@ -414,7 +414,7 @@ fn sharp_mz_mzf_patches(
                     })
                     .transpose()?
                     .is_some_and(|value| {
-                        Path::new(value.as_ref())
+                        Path::new(value.as_str())
                             .extension()
                             .is_some_and(|extension| extension.eq_ignore_ascii_case("mzf"))
                     });
