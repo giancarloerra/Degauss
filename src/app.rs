@@ -389,6 +389,7 @@ fn option_operation(option: OptionId, input: OptionInput) -> OptionOperation {
         | OptionId::CorePreference
         | OptionId::AutomaticDataSource
         | OptionId::DefaultArtworkPack
+        | OptionId::StartLastGameOnBoot
         | OptionId::AutoRunPhysicalDiscs
         | OptionId::SeparateHandheldCategory
         | OptionId::ShowBar
@@ -4112,6 +4113,8 @@ pub struct App {
     last_played: crate::history::History,
     last_played_problem: Option<String>,
     last_played_open: bool,
+    boot_launch_waiting: bool,
+    boot_launch_deadline: Option<Instant>,
     /// Hidden row key to stable origin. The key is kept in `sort_key` after
     /// the ordinary sort text and never rendered.
     last_played_rows: HashMap<String, crate::history::Entry>,
@@ -4930,6 +4933,8 @@ impl App {
             last_played,
             last_played_problem,
             last_played_open: false,
+            boot_launch_waiting: false,
+            boot_launch_deadline: None,
             last_played_rows: HashMap::new(),
             game_list: ListState::new(0, geometry.visible),
             menu_list: ListState::new(0, geometry.visible),
@@ -9997,6 +10002,81 @@ impl App {
         )
     }
 
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    pub fn prepare_boot_launch(&mut self, normal_boot: bool, marker: &Path) {
+        let first = crate::state::claim_boot_start(marker);
+        if !normal_boot || !self.settings.start_last_game_on_boot.unwrap_or(false) {
+            return;
+        }
+        match first {
+            Ok(true) => self.boot_launch_waiting = true,
+            Ok(false) => {}
+            Err(error) => {
+                self.message = Some(format!("Last game was not started: {error}"));
+                self.dirty = true;
+            }
+        }
+    }
+
+    fn poll_boot_launch(&mut self, now: Instant) -> Option<Outcome> {
+        if !self.boot_launch_waiting {
+            return None;
+        }
+        if let Some(deadline) = self.boot_launch_deadline {
+            if now < deadline {
+                return None;
+            }
+            self.boot_launch_waiting = false;
+            self.boot_launch_deadline = None;
+            self.message = None;
+            let entry = self.last_played.entries.first()?.clone();
+            let Some(system) = self
+                .all_systems
+                .iter()
+                .find(|system| system.def.id == entry.system)
+            else {
+                self.message = Some(format!("{}: its system is no longer available", entry.name));
+                self.dirty = true;
+                return None;
+            };
+            return self.launch_game(
+                entry.name,
+                entry.launch.clone(),
+                system.to_config(),
+                Some(entry.system),
+                entry.launch.clone(),
+                entry.launch,
+            );
+        }
+        if self.network_plan.is_some()
+            || self.network_job.is_some()
+            || self.build.is_some()
+            || self.index_terminal.is_some()
+            || self.source_resolution.is_some()
+            || self.source_job.is_some()
+            || self.provider_job.is_some()
+            || self.screen != Screen::Browse
+            || self.message.is_some()
+        {
+            return None;
+        }
+        if let Some(problem) = &self.last_played_problem {
+            self.boot_launch_waiting = false;
+            self.message = Some(format!("Last game was not started: {problem}"));
+        } else if let Some(entry) = self.last_played.entries.first() {
+            self.boot_launch_deadline = Some(now + Duration::from_secs(3));
+            self.message =
+                Some(self.control_hint(&format!("Starting Last Game\n{}\n\nB Cancel", entry.name)));
+        } else {
+            self.boot_launch_waiting = false;
+            self.message = Some(
+                "Last game was not started: no successful game launch has been recorded.".into(),
+            );
+        }
+        self.dirty = true;
+        None
+    }
+
     fn confirm_attract_launch(&mut self) -> Option<Outcome> {
         let picture = self.saver_center_picture()?;
         let target = picture.target?;
@@ -10108,19 +10188,21 @@ impl App {
                 )
             }
         };
-        let history =
-            if self.settings.last_played.unwrap_or(0) > 0 && self.last_played_problem.is_none() {
-                history_system.map(|system| HistoryUpdate {
-                    path: crate::history::path_beside(&self.settings_path),
-                    entry: crate::history::Entry {
-                        system,
-                        launch: history_launch,
-                        name: name.clone(),
-                    },
-                })
-            } else {
-                None
-            };
+        let history = if (self.settings.last_played.unwrap_or(0) > 0
+            || self.settings.start_last_game_on_boot.unwrap_or(false))
+            && self.last_played_problem.is_none()
+        {
+            history_system.map(|system| HistoryUpdate {
+                path: crate::history::path_beside(&self.settings_path),
+                entry: crate::history::Entry {
+                    system,
+                    launch: history_launch,
+                    name: name.clone(),
+                },
+            })
+        } else {
+            None
+        };
         match plan {
             Ok(plan) => Some(Outcome::Launch {
                 plan: Box::new(plan),
@@ -13820,6 +13902,10 @@ impl App {
                     }
                 }
             }
+            OptionId::StartLastGameOnBoot => {
+                self.settings.start_last_game_on_boot =
+                    Some(!self.settings.start_last_game_on_boot.unwrap_or(false));
+            }
             OptionId::AutoRunPhysicalDiscs => {
                 self.settings.auto_run_physical_discs =
                     Some(!self.settings.auto_run_physical_discs.unwrap_or(false));
@@ -14065,6 +14151,9 @@ impl App {
                 .unwrap_or_default()
                 .label()
                 .to_string(),
+            OptionId::StartLastGameOnBoot => {
+                on_off(self.settings.start_last_game_on_boot.unwrap_or(false))
+            }
             OptionId::AutoRunPhysicalDiscs => {
                 on_off(self.settings.auto_run_physical_discs.unwrap_or(false))
             }
@@ -20174,6 +20263,17 @@ impl App {
     }
 
     pub fn handle(&mut self, action: Action) -> Option<Outcome> {
+        if self.boot_launch_deadline.is_some() {
+            if action == Action::Quit {
+                self.boot_launch_waiting = false;
+                self.boot_launch_deadline = None;
+                self.message = None;
+                self.dirty = true;
+            }
+            return None;
+        }
+        // Navigation before the prompt must not queue a surprise launch later.
+        self.boot_launch_waiting = false;
         self.information_scroll_next_at
             .set(Instant::now() + INFORMATION_SCROLL_WAIT);
         if self.handle_custom_view_input(action) {
@@ -23129,6 +23229,10 @@ impl App {
             // Input must act on the picture already drawn, not on a worker
             // result that has not reached the framebuffer yet.
             self.poll_saver_job();
+            if let Some(outcome) = self.poll_boot_launch(now) {
+                self.save_settings();
+                return Ok(outcome);
+            }
 
             let wanted = Duration::from_millis(self.speed_ms());
             if repeater.interval() != wanted {

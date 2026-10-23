@@ -707,6 +707,18 @@ colour to MiSTer's framebuffer menu wallpapers while this core is active; it is
 not limited to Degauss's own interface. The stock-menu on-demand mode does not
 use this private core.
 
+### Starting the last game on boot
+
+**Options → Appearance → Start Last Game on Boot** is Off by default. With
+Degauss Main installed, enabling it starts the last successfully launched game
+after startup storage and library checks finish. A three-second prompt allows
+**B Cancel**. Cancellation or a failed launch consumes that boot's attempt.
+Returning from a game or script, using the Frontend shortcut, or restarting
+Degauss does not start the game again. The current system and per-game core
+choices are used. A missing game, core or unreadable history is reported instead
+of launching another game. This option records successful game launches even
+when Last Played is hidden. Stock-Main on-demand script launches do not auto-start.
+
 ### Returning to Degauss from a running core
 
 The recommended installation uses Degauss's `MiSTer_Degauss` Main binary.
@@ -1246,6 +1258,7 @@ require **A** and confirmation, never a sideways press.
 | Appearance | Screensaver | How long with nothing pressed before pictures start |
 | Appearance | Attract Mode | Off by default. When on, A launches the game pictured at the centre and Left/Right moves between systems |
 | Appearance | Show Attract Mode on Home | Off by default. Add an immediate Attract Mode entry to the main browser, independently of idle screensaver settings |
+| Appearance | Start Last Game on Boot | Off by default. With Degauss Main, start the last successfully launched game once after power-on. Press B during the three-second prompt to cancel |
 | Appearance | Screensaver Speed | Normal (default), 2x or 4x picture movement, independent of the idle time |
 | Display | Video Effects | Off by default. Choose a supplied or custom Degauss mask, one of the general MiSTer presets, or a user-created preset in `Presets/Degauss`. Core-specific and incomplete presets are not offered. Off removes both kinds of Degauss effect. Effects apply only while Degauss is open, on HDMI and scaled analog output, not games |
 | Library | Favourites First | Show favourites first in each folder, keeping them in alphabetical order |

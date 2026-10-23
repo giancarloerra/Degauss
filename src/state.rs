@@ -308,6 +308,24 @@ pub fn is_resuming() -> bool {
     Path::new(RESUME_MARKER).exists()
 }
 
+pub const BOOT_START_ENV: &str = "DEGAUSS_BOOT_START";
+pub const BOOT_ATTEMPT_MARKER: &str = "/tmp/degauss.boot-launch-attempted";
+
+/// Claim the first frontend startup of this Linux boot, even when the option
+/// is Off. Creating the marker before deciding prevents later restarts and
+/// cancelled or failed attempts from launching a game again.
+pub fn claim_boot_start(path: &Path) -> Result<bool> {
+    match std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
+    {
+        Ok(_) => Ok(true),
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => Ok(false),
+        Err(error) => Err(DegaussError::io("claim boot launch", path, error)),
+    }
+}
+
 pub fn clear_resuming() {
     let _ = std::fs::remove_file(RESUME_MARKER);
 }
