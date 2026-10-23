@@ -2804,10 +2804,10 @@ index 0000000..9472a15
 +const char *degauss_cd_disc_type_name(degauss_cd_disc_type_t type);
 diff --git a/tests/degauss_native_scripts_test.py b/tests/degauss_native_scripts_test.py
 new file mode 100644
-index 0000000..5d256a6
+index 0000000..64031a9
 --- /dev/null
 +++ b/tests/degauss_native_scripts_test.py
-@@ -0,0 +1,214 @@
+@@ -0,0 +1,219 @@
 +#!/usr/bin/env python3
 +"""Check the production native Scripts transitions, not a replacement launcher."""
 +import os
@@ -2871,8 +2871,13 @@ index 0000000..5d256a6
 +    *status = next_status;
 +    return child;
 +}
++static int test_unlink(const char *path) {
++    assert(!strcmp(path, "/tmp/script"));
++    return 0;
++}
 +#define fork test_fork
 +#define waitpid test_waitpid
++#define unlink test_unlink
 +''' + helpers + r'''
 +static void step() {
 +    switch (menustate) {
