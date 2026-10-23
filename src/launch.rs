@@ -1071,7 +1071,11 @@ pub fn favorite_mgl_with_selections(
     // durable favourite that must survive the next dated core replacement.
     if Path::new(&family.rbf).file_name().is_some_and(|name| {
         name.eq_ignore_ascii_case("N64") || name.eq_ignore_ascii_case("SharpMZ")
-    }) && core.rbf.starts_with(&format!("{}_", family.rbf))
+    }) && core
+        .rbf
+        .get(..family.rbf.len())
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case(&family.rbf))
+        && core.rbf.as_bytes().get(family.rbf.len()) == Some(&b'_')
     {
         core.rbf = family.rbf.clone();
     }

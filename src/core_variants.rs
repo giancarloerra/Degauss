@@ -371,10 +371,17 @@ fn sharp_mz_mzf_patches(
         .file_name()
         .and_then(|name| name.to_str())
         .unwrap_or("");
-    if !same_core_identity(stem, "SharpMZ") {
+    if !same_core_identity(stem, "SharpMZ")
+        && !crate::core_choices::nightly_matches(stem, "_Computer/SharpMZ")
+    {
         return Ok(Vec::new());
     }
-    let Some(date) = crate::systems::core_build_date(stem) else {
+    let lower = stem.to_ascii_lowercase();
+    let Some(date) = crate::systems::core_build_date(stem).or_else(|| {
+        lower
+            .rfind("_unstable_")
+            .and_then(|at| stem.get(at + 10..at + 18))
+    }) else {
         return Ok(Vec::new());
     };
     let wanted = if date >= "20261015" { "2" } else { "1" };
@@ -540,6 +547,29 @@ pub fn convert_favorite(path: &Path, core: &EffectiveCore) -> Result<String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn sharp_mz_profiles_recognise_standard_and_unstable_build_dates() {
+        let text = "<mistergamedescription><rbf>_Computer/SharpMZ</rbf><file type=\"f\" index=\"1\" path=\"Game.mzf\"/><file type=\"s\" index=\"3\" path=\"Game.mzf\"/></mistergamedescription>";
+        for (stem, index) in [
+            ("SharpMZ_20261015", 2),
+            ("SharpMZ_unstable_20261015_abcd", 2),
+            ("SharpMZ_unstable_20261015_2315_a1b2c3d_DB9", 2),
+            ("SharpMZ_unstable_20261012_abcd", 1),
+            ("SharpMZ", 1),
+        ] {
+            let core = super::EffectiveCore {
+                rbf: format!("_Unstable/{stem}"),
+                setname_xml: None,
+            };
+            let changed = super::apply(text, std::path::Path::new("Game.mgl"), &core).unwrap();
+            assert!(
+                changed.contains(&format!("type=\"f\" index=\"{index}\"")),
+                "{stem}: {changed}"
+            );
+            assert!(changed.contains("type=\"s\" index=\"3\""));
+        }
+    }
+
     use super::*;
     use std::path::PathBuf;
     fn setup(name: &str) -> (PathBuf, SystemConfig) {
