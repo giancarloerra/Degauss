@@ -2166,6 +2166,14 @@ extensions = ["md", "bin"]
             ("Sun-3", "img", "s", 0),
             ("Sun-3", "vhd", "s", 0),
             ("Sun-3", "qic", "s", 2),
+            ("SunSparcStation", "vhd", "s", 0),
+            ("SunSparcStation", "img", "s", 0),
+            ("SunSparcStation", "hda", "s", 0),
+            ("SunSparcStation", "raw", "s", 0),
+            ("SunSparcStation", "iso", "s", 2),
+            ("SunSparcStation", "cue", "s", 2),
+            ("SunSparcStation", "chd", "s", 2),
+            ("AppleII", "woz", "s", 0),
             ("MACSE30", "dsk", "s", 0),
             ("MACSE30", "vhd", "s", 2),
             ("MACSE30", "iso", "s", 4),
@@ -2317,6 +2325,7 @@ extensions = ["md", "bin"]
             ("NeXT-Color", "vhd"),
             ("Sun-2", "vhd"),
             ("Sun-3", "vhd"),
+            ("SunSparcStation", "vhd"),
             ("MACSE30", "dsk"),
             ("MACIICX", "dsk"),
             ("Marty", "iso"),
@@ -2377,6 +2386,51 @@ extensions = ["md", "bin"]
             assert_eq!(games[0].details.publisher, "Publisher");
             assert_eq!(games[0].details.desc, "Game description");
         }
+        std::fs::remove_dir_all(card).unwrap();
+    }
+
+    #[test]
+    fn cray_index_lists_launchers_not_support_files() {
+        let card = temp_dir("cray-support-files");
+        let table = load_table(Path::new("assets/systems.toml")).unwrap();
+        let def = table.into_iter().find(|def| def.id == "Cray-XMP").unwrap();
+        let folder = card.join("Cray-XMP");
+        std::fs::create_dir_all(&folder).unwrap();
+        for name in [
+            "exp_disk.img",
+            "drives.img",
+            "printer.txt",
+            "cos117.ios",
+            "tape.tap",
+            "Cray-XMP_COS-1.17.zip",
+        ] {
+            std::fs::write(folder.join(name), b"support fixture").unwrap();
+        }
+        let launcher = folder.join("COS117.mgl");
+        std::fs::write(
+            &launcher,
+            include_bytes!("../docs/launchers/Cray-XMP-COS117.mgl"),
+        )
+        .unwrap();
+        let found = FoundSystem {
+            def,
+            paths: vec![folder.clone()],
+            logo_dir: None,
+            menu_folder: None,
+        };
+        assert_eq!(found.category(), "Computer");
+        let library = crate::browse::Library::open(&found.to_config()).unwrap();
+        let cache = crate::cache::build_system(&library);
+        let rows = &cache.get(&crate::browse::Place::Dir(folder)).unwrap().rows;
+        let games: Vec<_> = rows
+            .iter()
+            .filter(|row| matches!(row.kind, crate::browse::Kind::Play(_)))
+            .collect();
+        assert_eq!(games.len(), 1);
+        assert_eq!(
+            games[0].kind,
+            crate::browse::Kind::Play(crate::browse::Launch::File(launcher))
+        );
         std::fs::remove_dir_all(card).unwrap();
     }
 

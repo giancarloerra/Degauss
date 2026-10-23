@@ -951,8 +951,26 @@ Nothing else needs resetting.
 ### Additional computer and disc libraries
 
 Apple III, Macintosh Quadra 800, NeXT Color, Sun-2, Sun-3, Macintosh SE/30,
-Macintosh IIcx and FM Towns Marty use their normal `games/<core>` folders.
+Macintosh IIcx, FM Towns Marty, Sun SPARCstation 20 and Cray X-MP use their normal `games/<core>` folders.
 SE/30 uses `games/MACSE30`; IIcx uses `games/MACIICX`.
+SPARCstation 20 uses `games/SunSparcStation`: hard disks mount in slot 0,
+CDs in slot 2. Use explicit MGLs for secondary disks (slot 1), multiple media
+or a session PROM override. Firmware and NVRAM remain managed by the core.
+
+Cray X-MP entries are MGL launchers, not separate support files. Unpack the
+official `games/Cray-XMP/Cray-XMP_COS-1.17.zip` as described in its supplied
+README, then copy [this COS 1.17 launcher](docs/launchers/Cray-XMP-COS117.mgl)
+into `games/Cray-XMP`. It mounts the expander disk, drives and printer before
+loading `cos117.ios` through the core's native boot-file entry. Keep that order;
+the two `.img` files have different slots. Existing disks and printer output
+are not recreated by Degauss.
+
+Apple II accepts WOZ floppies in its normal first drive; existing disk formats
+and explicit second-drive MGLs are unchanged. Sharp MZ MZF direct loading uses
+F2 on dated builds from 20261015 and F1 on older dated builds. Undated custom
+builds retain the existing profile; an explicit MGL can select their load slot.
+Generated favourites retain a stable core reference and adapt at Degauss launch
+without rewriting the saved file. MZT, disk and Quick Disk slots are unchanged.
 Existing MGL launchers are passed through unchanged.
 Existing gamelists provide artwork and metadata normally. These new system IDs
 do not yet have built-in ScreenScraper platform mappings.
