@@ -1283,6 +1283,31 @@ Delete `settings.toml` to reset UI preferences. Manual overrides still apply.
 
 ### Manual configuration overrides
 
+#### Kiosk mode
+
+To let guests browse and launch games without changing Degauss or exiting to
+MiSTer, add a root-level six-digit string to `degauss-user.toml`, before any
+table headings:
+
+```toml
+kiosk_pin = "012345"
+```
+
+Each new Degauss process starts locked on Home. Options, Actions, editing,
+Scripts, utility/core browsers and pinned non-game shortcuts are hidden and
+disabled without changing the saved Home arrangement. The Menu button offers
+only **Unlock**. Use the controller or keyboard arrows and Select to enter six
+digits on the keypad. B cancels; an incorrect code leaves it locked. A correct
+code restores normal access for that Degauss process. Returning after a game
+locks it again. The separate in-game MiSTer OSD is unchanged.
+
+The code is stored in clear text only in the user file. Unlocking does not
+remove it or save it in `settings.toml`; updates preserve the user file. For
+manual recovery, remove `kiosk_pin` and restart Degauss. Invalid user settings
+follow the normal user-file validation contract below.
+
+#### Other overrides
+
 Create `degauss-user.toml` beside `degauss.toml`, normally at
 `/media/fat/Scripts/.config/degauss/degauss-user.toml`, only when manual
 configuration is needed. Updates deliver `degauss.toml`, not your user file.

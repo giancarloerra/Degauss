@@ -16,6 +16,35 @@ use serde::Serialize;
 
 use crate::error::{DegaussError, Result};
 
+#[derive(Clone)]
+pub struct KioskPin(String);
+
+impl std::fmt::Debug for KioskPin {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("KioskPin([redacted])")
+    }
+}
+
+impl KioskPin {
+    pub fn matches(&self, entered: &str) -> bool {
+        self.0 == entered
+    }
+}
+
+impl<'de> Deserialize<'de> for KioskPin {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> std::result::Result<Self, D::Error> {
+        let value = toml::Value::deserialize(deserializer)?;
+        match value.as_str() {
+            Some(pin) if pin.len() == 6 && pin.bytes().all(|byte| byte.is_ascii_digit()) => {
+                Ok(Self(pin.to_string()))
+            }
+            _ => Err(de::Error::custom(
+                "kiosk_pin must be a string containing exactly six ASCII digits",
+            )),
+        }
+    }
+}
+
 /// 24-bit colour parsed from `"#rrggbb"` at load time, so a typo in the
 /// palette fails when the file is read rather than painting something wrong.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -393,6 +422,9 @@ fn default_art_limit() -> usize {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
+    /// Manual clear-text override, never part of saved UI settings.
+    #[serde(default)]
+    pub kiosk_pin: Option<KioskPin>,
     pub app: AppSettings,
     #[serde(default)]
     pub colors: Colors,
@@ -507,8 +539,17 @@ impl Config {
                 .unwrap()
                 .insert("colors".into(), colors);
         }
-        let overrides = toml::from_str::<toml::Value>(overrides)
-            .map_err(|error| DegaussError::malformed("config", origin, error.to_string()))?;
+        let overrides = toml::from_str::<toml::Value>(overrides).map_err(|error| {
+            DegaussError::malformed(
+                "config",
+                origin,
+                if overrides.contains("kiosk_pin") {
+                    "invalid TOML in user configuration containing kiosk_pin; code omitted".into()
+                } else {
+                    error.to_string()
+                },
+            )
+        })?;
         merge(&mut value, overrides);
         let config: Self = value
             .try_into()
@@ -518,7 +559,10 @@ impl Config {
 
     pub fn parse(text: &str, origin: &Path) -> Result<Self> {
         let config: Config = toml::from_str(text)
-            .map_err(|e| DegaussError::malformed("config", origin, e.to_string()))?;
+            .map_err(|e| DegaussError::malformed("config", origin,
+                if text.contains("kiosk_pin") {
+                    "invalid configuration containing kiosk_pin; expected a six-digit string and valid TOML (code omitted)".into()
+                } else { e.to_string() }))?;
         config.validate(origin)
     }
 
@@ -557,6 +601,43 @@ pub const LEFT_RIGHT_VALUES: [&str; 4] = ["speed", "letter", "page", "direction"
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn kiosk_codes_keep_leading_zeroes_and_never_appear_in_diagnostics() {
+        let base = "[app]";
+        let origin = Path::new("degauss-user.toml");
+        let configured = Config::with_overrides(base, "kiosk_pin = '012345'", origin).unwrap();
+        assert!(configured.kiosk_pin.as_ref().unwrap().matches("012345"));
+        assert!(!configured.kiosk_pin.as_ref().unwrap().matches("12345"));
+        assert!(!format!("{configured:?}").contains("012345"));
+        assert!(Config::parse(base, origin).unwrap().kiosk_pin.is_none());
+        for value in [
+            "'01234'",
+            "'0123456'",
+            "123456",
+            "'abcdef'",
+            "'１２３４５６'",
+            "true",
+            "['012345']",
+        ] {
+            let error = Config::with_overrides(base, &format!("kiosk_pin = {value}"), origin)
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains("kiosk_pin"));
+            assert!(!error.contains(value));
+            assert!(!error.contains("012345"));
+            assert!(!error.contains("123456"));
+        }
+        let malformed = "kiosk_pin = '012345' invalid";
+        assert!(!Config::with_overrides(base, malformed, origin)
+            .unwrap_err()
+            .to_string()
+            .contains("012345"));
+        assert!(!Config::parse(malformed, origin)
+            .unwrap_err()
+            .to_string()
+            .contains("012345"));
+    }
 
     #[test]
     fn invalid_core_overrides_ignore_the_whole_user_file_and_keep_it_intact() {

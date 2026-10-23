@@ -2999,6 +2999,7 @@ enum FindMode {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum NamePurpose {
+    UnlockKiosk,
     SaveView,
     RenameView(String),
     HomeFolder,
@@ -4052,6 +4053,7 @@ impl CoreUpdateGames {
 }
 
 pub struct App {
+    kiosk_locked: bool,
     explore: ExploreBrowser,
     config: Config,
     settings: Settings,
@@ -4795,8 +4797,10 @@ impl App {
                 Some((system.def.id.clone(), root.clone()))
             })
             .collect();
-        let start_folder_pending = settings.start_folder.is_some();
+        let kiosk_locked = config.kiosk_pin.is_some();
+        let start_folder_pending = settings.start_folder.is_some() && !kiosk_locked;
         let mut app = App {
+            kiosk_locked,
             explore: ExploreBrowser::default(),
             speed: settings
                 .speed_step
@@ -5568,6 +5572,10 @@ impl App {
                 || self.screen == Screen::NameKeyboard,
         );
         let grid_explanation = if self.screen == Screen::NameKeyboard
+            && self.name_keyboard_purpose == NamePurpose::UnlockKiosk
+        {
+            "Enter Six Digits · B Cancels"
+        } else if self.screen == Screen::NameKeyboard
             && self.name_keyboard_purpose == NamePurpose::PackMatchSearch
         {
             "B Searches the Pack"
@@ -5623,6 +5631,9 @@ impl App {
             self.ui.set_find_search(false);
         }
         let grid_help = match self.screen {
+            Screen::NameKeyboard if self.name_keyboard_purpose == NamePurpose::UnlockKiosk => {
+                "A Type  B Cancel  X Del"
+            }
             Screen::NameKeyboard if self.name_keyboard_controls() => {
                 "A Type  B Cancel  X Del  Y Page"
             }
@@ -5819,6 +5830,9 @@ impl App {
     }
 
     pub fn open_options_page(&mut self, page: OptionsPage) {
+        if self.kiosk_locked {
+            return;
+        }
         if page == OptionsPage::Display {
             match crate::display_mask::names(&self.display_masks_dir) {
                 Ok(names) => self.display_masks = names,
@@ -12365,6 +12379,9 @@ impl App {
             None => visible,
         };
 
+        if self.kiosk_locked {
+            categories.retain(|(name, _)| self.kiosk_category_allowed(name));
+        }
         self.categories = categories;
         let selected_key = self.selected_home_key().map(str::to_string);
         let selected_category = self.category_list.selected();
@@ -12518,6 +12535,9 @@ impl App {
     }
 
     fn open_category_named(&mut self, name: String) {
+        if self.kiosk_locked && !self.kiosk_category_allowed(&name) {
+            return;
+        }
         if name == crate::explore::NAME {
             self.open_explore(None);
             return;
@@ -14397,13 +14417,20 @@ impl App {
 
     fn open_menu(&mut self) {
         self.invalidate_storage_check();
-        self.menu = menu_entries();
+        self.menu = if self.kiosk_locked {
+            vec!["Unlock".into()]
+        } else {
+            menu_entries()
+        };
         self.menu_list = ListState::new(self.menu.len(), self.geometry.visible);
         self.screen = Screen::Menu;
         self.apply_geometry();
     }
 
     fn open_scripts(&mut self) {
+        if self.kiosk_locked {
+            return;
+        }
         match crate::scripts::Browser::open(Path::new(&self.config.menu_root)) {
             Ok(browser) => {
                 let root = browser.root().to_path_buf();
@@ -15300,7 +15327,11 @@ impl App {
 
     fn open_name_keyboard(&mut self, purpose: NamePurpose, draft: String) {
         self.name_keyboard_purpose = purpose;
-        self.name_keyboard_page = NamePage::Lower;
+        self.name_keyboard_page = if self.name_keyboard_purpose == NamePurpose::UnlockKiosk {
+            NamePage::Pin
+        } else {
+            NamePage::Lower
+        };
         self.name_keyboard_draft = draft;
         let cells =
             name_keyboard::keys(self.name_keyboard_page, self.name_keyboard_controls()).len();
@@ -15343,11 +15374,34 @@ impl App {
             NameKey::Save | NameKey::Cancel => {}
         }
         self.dirty = true;
+        if self.name_keyboard_purpose == NamePurpose::UnlockKiosk
+            && self.name_keyboard_draft.len() == 6
+        {
+            self.finish_name_keyboard();
+        }
     }
 
     fn finish_name_keyboard(&mut self) {
         let draft = self.name_keyboard_draft.clone();
         match self.name_keyboard_purpose.clone() {
+            NamePurpose::UnlockKiosk => {
+                let correct = self
+                    .config
+                    .kiosk_pin
+                    .as_ref()
+                    .is_some_and(|pin| pin.matches(&draft));
+                self.name_keyboard_draft.clear();
+                if correct {
+                    self.kiosk_locked = false;
+                    self.rebuild_system_list();
+                    self.screen = Screen::Browse;
+                    self.resolve_view();
+                    self.apply_geometry();
+                    self.touch_selection();
+                } else {
+                    self.message = Some("Incorrect code. Kiosk mode remains locked.".into());
+                }
+            }
             NamePurpose::PackMatchSearch => {
                 self.pack_match_query = draft;
                 self.begin_pack_matching(crate::provider_job::Matching::Search(
@@ -15429,6 +15483,11 @@ impl App {
     }
 
     fn handle_name_keyboard(&mut self, action: Action) {
+        if self.name_keyboard_purpose == NamePurpose::UnlockKiosk && action == Action::Quit {
+            self.name_keyboard_draft.clear();
+            self.open_menu();
+            return;
+        }
         if matches!(self.name_keyboard_purpose, NamePurpose::FavoriteName(_)) {
             let key = name_keyboard::keys(self.name_keyboard_page, true)
                 .get(self.name_keyboard_list.selected())
@@ -15906,6 +15965,9 @@ impl App {
     }
 
     fn available_hold_shortcuts(&self) -> [Option<HoldShortcut>; 4] {
+        if self.kiosk_locked {
+            return [None; 4];
+        }
         HoldButton::ALL.map(|button| {
             let shortcut = self.hold_shortcuts[button.index()];
             self.hold_shortcut_available(shortcut).then_some(shortcut)
@@ -15924,6 +15986,9 @@ impl App {
     }
 
     fn perform_hold_shortcut(&mut self, shortcut: HoldShortcut) -> Option<Outcome> {
+        if self.kiosk_locked {
+            return None;
+        }
         if !self.hold_shortcut_available(shortcut) {
             return None;
         }
@@ -18207,6 +18272,9 @@ impl App {
 
     /// What can be done with the folder on screen.
     fn open_context(&mut self) {
+        if self.kiosk_locked {
+            return;
+        }
         self.invalidate_storage_check();
         self.context_view_changed = false;
         self.context_page = None;
@@ -20054,6 +20122,32 @@ impl App {
     }
 
     pub fn handle(&mut self, action: Action) -> Option<Outcome> {
+        if self.kiosk_locked && self.screen != Screen::NameKeyboard {
+            if matches!(
+                action,
+                Action::Context | Action::CyclePresent | Action::HoldShortcut(_)
+            ) {
+                return None;
+            }
+            if action == Action::Menu && self.network_plan.is_none() && self.build.is_none() {
+                self.open_menu();
+                return None;
+            }
+        }
+        let outcome = self.handle_allowed(action);
+        if self.kiosk_locked
+            && matches!(
+                outcome,
+                Some(Outcome::Quit | Outcome::Script(_) | Outcome::SwitchIni(_))
+            )
+        {
+            None
+        } else {
+            outcome
+        }
+    }
+
+    fn handle_allowed(&mut self, action: Action) -> Option<Outcome> {
         self.information_scroll_next_at
             .set(Instant::now() + INFORMATION_SCROLL_WAIT);
         if self.handle_custom_view_input(action) {
@@ -20792,6 +20886,8 @@ impl App {
                             .unwrap_or_default();
                         self.pending = Some(Pending::Hide(index));
                         self.message = Some(format!("Hide {name}?\n\nA yes, B no"));
+                    } else if choice == "Unlock" && self.kiosk_locked {
+                        self.open_name_keyboard(NamePurpose::UnlockKiosk, String::new());
                     } else if choice == "Options" {
                         self.screen = Screen::OptionsRoot;
                         self.apply_geometry();
@@ -22069,7 +22165,9 @@ impl App {
             .unwrap_or_default();
         self.ui.set_compact_summary(SharedString::from(summary));
         self.ui.set_compact_publisher(SharedString::from(publisher));
-        let info = if self.in_misterzine_browser() {
+        let info = if self.kiosk_locked {
+            String::new()
+        } else if self.in_misterzine_browser() {
             self.selected_misterzine_game_count()
                 .map(|count| format!("{count} {}", if count == 1 { "Game" } else { "Games" }))
                 .unwrap_or_default()
@@ -22369,6 +22467,7 @@ impl App {
                     NamePurpose::RenameFavoriteFolder(_) => "Rename Favourite Folder".to_string(),
                     NamePurpose::FavoriteName(_) => "Choose Favourite Filename".to_string(),
                     NamePurpose::PackMatchSearch => "Search Artwork Pack".to_string(),
+                    NamePurpose::UnlockKiosk => "Unlock Kiosk Mode".to_string(),
                 },
                 self.name_keyboard_page.label().to_string(),
             ),
@@ -22686,6 +22785,7 @@ impl App {
         self.ui.set_status(SharedString::from(displayed_status));
         let controls_are_mapped = matches!(self.screen.ui_index(), 1 | 4);
         let bottom_controls = match self.screen.ui_index() {
+            0 if self.kiosk_locked => "A Select  B Back  Y Menu".into(),
             0 if self.explore.job.is_some() => String::new(),
             0 if self.custom_view.editor.is_some() => "↑↓ Choose  ←→ Set  X Save  B Cancel".into(),
             0 if self.custom_view.information_focus => "↑↓ Scroll   B List".into(),
@@ -22741,8 +22841,14 @@ impl App {
         if self.screen == Screen::Find && self.find_mode == FindMode::Search {
             self.ui.set_find_query(self.filter.clone().into());
         } else if self.screen == Screen::NameKeyboard {
-            self.ui
-                .set_find_query(self.name_keyboard_draft.clone().into());
+            self.ui.set_find_query(
+                if self.name_keyboard_purpose == NamePurpose::UnlockKiosk {
+                    "*".repeat(self.name_keyboard_draft.len())
+                } else {
+                    self.name_keyboard_draft.clone()
+                }
+                .into(),
+            );
         }
         self.ui.set_show_stats(self.show_stats);
         self.ui.set_stats(SharedString::from(self.stats_line()));
@@ -22966,7 +23072,14 @@ impl App {
                 } else {
                     edge
                 };
-                match ini_chord.intercept(edge) {
+                if self.kiosk_locked {
+                    ini_chord.reset_for_device_loss();
+                }
+                match if self.kiosk_locked {
+                    IniChordResult::Forward
+                } else {
+                    ini_chord.intercept(edge)
+                } {
                     IniChordResult::Forward => {}
                     IniChordResult::Consume => continue,
                     IniChordResult::Switch(slot) => {
@@ -23415,6 +23528,9 @@ impl App {
     /// going back would have led anyway, rather than refusing to start.
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     pub fn restore_position(&mut self, saved: &crate::state::State) {
+        if self.kiosk_locked {
+            return;
+        }
         if let Some(resume) = &saved.home {
             self.restore_home(resume.clone());
             return;

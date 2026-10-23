@@ -3634,6 +3634,177 @@ fn select_row_named(app: &mut App, name: &str) {
     app.game_list.select(index);
 }
 
+fn run_kiosk_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
+    let root = root.join("kiosk");
+    let games = root.join("games/NES");
+    std::fs::create_dir_all(&games).unwrap();
+    std::fs::create_dir_all(root.join("_Console")).unwrap();
+    std::fs::write(root.join("_Console/NES.rbf"), b"fixture core").unwrap();
+    let game = games.join("Guest Game.nes");
+    std::fs::write(&game, b"fixture game").unwrap();
+    let config_path = root.join("degauss.toml");
+    let user_path = root.join("degauss-user.toml");
+    std::fs::write(&config_path, "[app]").unwrap();
+    let user_config = "kiosk_pin = '012345'\n";
+    std::fs::write(&user_path, user_config).unwrap();
+    let mut settings = Settings {
+        show_scripts: Some(true),
+        show_cores: Some(true),
+        show_misterzine: Some(true),
+        start_folder: Some("Console".into()),
+        ..Default::default()
+    };
+    for target in [
+        crate::home::Target::Script {
+            path: root.join("Scripts/Example.sh"),
+        },
+        crate::home::Target::Core {
+            path: root.join("_Console/NES.rbf"),
+        },
+        crate::home::Target::Game {
+            system: "NES".into(),
+            launch: browse::Launch::File(game.clone()),
+        },
+    ] {
+        settings
+            .home
+            .add(
+                crate::home::Entry {
+                    name: "Guest entry".into(),
+                    target,
+                    image: None,
+                },
+                None,
+            )
+            .unwrap();
+    }
+    let saved_home = settings.home.clone();
+    let make_app = |settings: Settings| {
+        let mut config = Config::load(&config_path).unwrap();
+        config.menu_root = root.to_string_lossy().into_owned();
+        config.game_roots = vec![root.join("games").to_string_lossy().into_owned()];
+        let def = crate::systems::load_table(Path::new("assets/systems.toml"))
+            .unwrap()
+            .into_iter()
+            .find(|def| def.id == "NES")
+            .unwrap();
+        let loaded = Loaded {
+            config,
+            settings,
+            settings_path: root.join("settings.toml"),
+            core_catalogue: Default::default(),
+            systems: vec![FoundSystem {
+                def: def.clone(),
+                paths: vec![games.clone()],
+                logo_dir: None,
+                menu_folder: None,
+            }],
+            table: vec![def],
+            names: Default::default(),
+            logo_dir: None,
+            themes_dir: root.join("themes"),
+            themes: crate::theme::load_available(&root.join("themes")),
+            network_boot: None,
+            storage: None,
+        };
+        let mut app = App::new(
+            loaded,
+            window.clone(),
+            DegaussWindow::new().unwrap(),
+            StartupTimings::default(),
+            352,
+            240,
+            None,
+        );
+        app.finish_background_work_for_headless();
+        app.leave_splash();
+        app
+    };
+    let mut app = make_app(settings);
+    assert!(app.kiosk_locked);
+    assert_eq!(app.browsing, Browsing::Categories);
+    assert!(!app.start_folder_pending);
+    assert!(app
+        .categories
+        .iter()
+        .all(|(name, _)| app.kiosk_category_allowed(name)));
+    assert_eq!(
+        app.home
+            .rows
+            .iter()
+            .filter(|row| row.starts_with("entry:"))
+            .count(),
+        1
+    );
+    for action in [
+        Action::Context,
+        Action::CyclePresent,
+        Action::HoldShortcut(HoldShortcut::AddRemoveFavourite),
+    ] {
+        assert!(app.handle(action).is_none());
+        assert_eq!(app.screen, Screen::Browse);
+    }
+    assert_eq!(app.available_hold_shortcuts(), [None; 4]);
+    app.open_options_page(OptionsPage::Library);
+    app.open_scripts();
+    assert_eq!(app.screen, Screen::Browse);
+    app.handle(Action::Menu);
+    assert_eq!(app.menu, ["Unlock"]);
+    app.handle(Action::Accept);
+    assert_eq!(app.name_keyboard_page, NamePage::Pin);
+    for _ in 0..6 {
+        app.name_keyboard_list.select(0);
+        app.handle(Action::Accept);
+    }
+    assert!(app.kiosk_locked);
+    assert!(app.message.as_deref().unwrap().contains("Incorrect code"));
+    assert!(app.name_keyboard_draft.is_empty());
+    app.message = None;
+    app.name_keyboard_list.select(0);
+    app.handle(Action::Accept);
+    app.refresh();
+    assert_eq!(app.ui.get_find_query().as_str(), "*");
+    app.handle(Action::Quit);
+    assert_eq!(app.screen, Screen::Menu);
+    assert!(app.kiosk_locked);
+    app.handle(Action::Accept);
+    for digit in 0..6 {
+        app.name_keyboard_list.select(digit);
+        app.handle(Action::Accept);
+    }
+    assert!(!app.kiosk_locked);
+    assert_eq!(app.screen, Screen::Browse);
+    assert!(app.name_keyboard_draft.is_empty());
+    assert_eq!(app.settings.home, saved_home);
+    app.open_menu();
+    assert!(app.menu.iter().any(|row| row == "Options"));
+    app.save_settings();
+    assert!(!std::fs::read_to_string(&app.settings_path)
+        .unwrap()
+        .contains("kiosk_pin"));
+    let saved = app.settings.clone();
+    app.ui.hide().unwrap();
+    drop(app);
+    let mut app = make_app(saved);
+    assert!(app.kiosk_locked, "unlock must never survive a new process");
+    app.restore_position(&crate::state::State {
+        system: "NES".into(),
+        ..Default::default()
+    });
+    assert_eq!(app.browsing, Browsing::Categories);
+    app.open_category_named("Console".into());
+    app.open_system_by_index(0);
+    app.finish_background_work_for_headless();
+    select_row_named(&mut app, "Guest Game.nes");
+    assert!(matches!(
+        app.handle(Action::Accept),
+        Some(Outcome::Launch { .. })
+    ));
+    assert_eq!(std::fs::read_to_string(&user_path).unwrap(), user_config);
+    assert_eq!(app.settings.home, saved_home);
+    app.ui.hide().unwrap();
+}
+
 fn run_last_played_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
     let root = root.join("last-played");
     let games = root.join("games/NES");
@@ -13960,6 +14131,7 @@ pub(super) fn run_ui_acceptance_flow(window: Rc<MinimalSoftwareWindow>) {
     run_theme_editor_save_changes_flow(&root, window.clone());
     run_metadata_filter_flow(&root, window.clone());
     run_last_played_flow(&root, window.clone());
+    run_kiosk_flow(&root, window.clone());
     run_attract_mode_flow(&root, window.clone());
     let mut app = fixture_app(&root, window.clone(), Settings::default());
     run_selected_controls_flow(&mut app);
