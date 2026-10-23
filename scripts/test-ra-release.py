@@ -18,6 +18,16 @@ spec.loader.exec_module(package_ra)
 
 
 class ReleaseTests(unittest.TestCase):
+    def test_ra_backend_pins_the_1151_source_archive_not_the_runtime_zip(self):
+        build = (ROOT / 'scripts/build-ra-main.sh').read_text()
+        self.assertIn('source_pin=01351569431bb5e8c386658932a1d4796fd96812\n', build)
+        self.assertIn('archive_sha=0705439c963518d56e2adb5d3e38c64151b8ff77940d66e8768d1b3ae54b63e2\n', build)
+        self.assertIn('patch --fuzz=0', build)
+        patch = (ROOT / 'support/ra-main/frontend.patch').read_text()
+        self.assertIn(' { RaProbeScope p(RA_PROBE_INPUT); input_poll(0); }', patch.replace('\t', ' '))
+        self.assertIn('+\t\t\tphysical_cd_autorun_poll();', patch)
+        self.assertNotIn('25bb35de9297dbd394d0cb831f5277074c601824c73240b2b6cb74b5b54c360a', build)
+
     def test_messagepack_licence_is_fetchable_and_uses_repository_bytes(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
