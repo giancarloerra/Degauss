@@ -10159,9 +10159,6 @@ impl App {
             self.message = Some(format!("Starting Last Game\n{}", entry.name));
         } else {
             self.boot_launch_waiting = false;
-            self.message = Some(
-                "Last game was not started: no successful game launch has been recorded.".into(),
-            );
         }
         self.dirty = true;
         None

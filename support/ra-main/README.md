@@ -47,7 +47,7 @@ the pinned backend and validate it before shipping another Degauss release.
   from https://github.com/odelot/Main_MiSTer/tree/01351569431bb5e8c386658932a1d4796fd96812.
 - Source archive SHA-256:
   `0705439c963518d56e2adb5d3e38c64151b8ff77940d66e8768d1b3ae54b63e2`.
-- Degauss integration: commit `8190aa1baccce19d86e8bb315247e89c2b154cab`
+- Degauss integration: commit `396228726551fd1cbeee912be2f9951519d43a03`
   from https://github.com/giancarloerra/Degauss-Main.
   The patch omits its unrelated input.cpp blank-line removal.
 - rcheevos 12.5.0 is already bundled in this exact RA source. Its bytes remain
@@ -81,8 +81,11 @@ Frontend and either configured shortcut load `menu.rbf`;
 normal Main profile selection determines the executable used after that load.
 When a frontend exits from RA Main Scripts mode, cleanup explicitly returns to
 VT1 before disabling its script framebuffer.
-The paired frontend uses the same acknowledged terminal handover for selected
-scripts, and the same cold-boot context for optional last-game startup.
+The paired frontend finishes before Main launches a selected script through
+the native OSD Scripts/agetty path. The native result/key-to-return flow then
+restores one frontend with its original arguments and selection. Initial
+framebuffer readiness remains acknowledged. The cold-boot context for optional
+last-game startup is shared with normal Degauss Main.
 With the private Degauss Menu core active, the native core chooser starts at
 the root. Ordinary core and MRA browsing retain their existing locations.
 Native analog framebuffer output also accepts `degauss_analog_video_mode`

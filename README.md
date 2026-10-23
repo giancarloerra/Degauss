@@ -293,9 +293,10 @@ identity, independently of Home ordering.
 
 ### Running MiSTer scripts
 
-With the current Degauss Main, a selected script switches to MiSTer's normal
-Scripts terminal setup before it starts, with Degauss's video effects removed.
-Degauss's own display state is
+With the current Degauss Main, Degauss finishes and Main launches the selected
+script through the same native Scripts terminal and launch path as MiSTer's
+OSD, with Degauss's display ownership and video effects released first. No
+Degauss-specific script resolution is assigned. Degauss's own display state is
 restored before the frontend reopens. The configured video modes, working
 directory, script arguments and key-to-return behaviour are preserved; no INI
 changes or reboot are needed for the handover.
@@ -730,6 +731,7 @@ choices are used. A missing game, core or unreadable history is reported instead
 of launching another game. This option records successful game launches even
 when Last Played is hidden. Stock-Main on-demand script launches do not auto-start.
 Kiosk mode always starts at Home, even when this option is enabled.
+With no recorded game, Degauss opens normally without a warning.
 
 ### Returning to Degauss from a running core
 

@@ -28,7 +28,10 @@ class ReleaseTests(unittest.TestCase):
         self.assertIn('FBIOGET_VSCREENINFO', patch)
         self.assertIn('offload_add_work([applied, requester, width, height, error]', patch)
         self.assertIn('python3 tests/degauss_script_handover_test.py\n', build)
-        self.assertIn('8190aa1baccce19d86e8bb315247e89c2b154cab', build)
+        self.assertIn('python3 tests/degauss_native_scripts_test.py\n', build)
+        self.assertIn('DEGAUSS_NATIVE_SCRIPTS', patch)
+        self.assertIn('DEGAUSS_NATIVE_SCRIPT_EXIT = 42', patch)
+        self.assertIn('396228726551fd1cbeee912be2f9951519d43a03', build)
 
     def test_ra_backend_pins_the_1151_source_archive_not_the_runtime_zip(self):
         build = (ROOT / 'scripts/build-ra-main.sh').read_text()

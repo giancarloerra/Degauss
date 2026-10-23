@@ -1810,6 +1810,20 @@ fn run_on_framebuffer(
         Some(path) => Some(PathBuf::from(path)),
         None => state::resuming_script()?,
     };
+    let native_scripts = scripts::native_handover_supported();
+    if native_scripts && script_return.is_some() {
+        match std::fs::remove_file(scripts::NATIVE_RETURN_PATH) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(DegaussError::io(
+                    "remove native script return launcher",
+                    scripts::NATIVE_RETURN_PATH,
+                    error,
+                ))
+            }
+        }
+    }
     let normal_boot = std::env::var_os(state::BOOT_START_ENV).as_deref()
         == Some(std::ffi::OsStr::new("1"))
         && !resuming
@@ -1966,7 +1980,7 @@ fn run_on_framebuffer(
         &outcome,
         app.display_mask().is_some(),
         app.video_preset_active(),
-        script_handover,
+        script_handover || native_scripts,
         &mut mask_cleanup,
     );
 
@@ -2032,6 +2046,9 @@ fn run_on_framebuffer(
         }
         Outcome::Script(script) => {
             app.position().save(&state_path)?;
+            if native_scripts {
+                script.prepare_native_return(Path::new(scripts::NATIVE_RETURN_PATH))?;
+            }
             state::mark_script_resuming(script.script())?;
             note(&format!(
                 "ended        running {}",
@@ -2042,6 +2059,13 @@ fn run_on_framebuffer(
             drop(framebuffer);
             let script = script.with_menu_owner(session.owner_token());
             drop(session);
+            if native_scripts {
+                mask_cleanup.armed = false;
+                mask_cleanup.preset_armed = false;
+                // Finish the original launcher session. Main now performs its
+                // normal cleanup, then launches the selected script natively.
+                std::process::exit(scripts::NATIVE_HANDOVER_EXIT);
+            }
             if script_handover {
                 script_handover::request(
                     Path::new(launch::CMD_FIFO),

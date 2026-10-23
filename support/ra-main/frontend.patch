@@ -390,10 +390,18 @@ index 60d94f5..0bb6067 100644
  
  #ifdef USE_SCHEDULER
 diff --git a/menu.cpp b/menu.cpp
-index 981b47a..292f14d 100644
+index 981b47a..f7fd048 100644
 --- a/menu.cpp
 +++ b/menu.cpp
-@@ -50,6 +50,14 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
+@@ -38,6 +38,7 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ #include <stdio.h>
+ #include <sched.h>
+ #include <string.h>
++#include <string>
+ #include <sys/types.h>
+ #include <sys/wait.h>
+ #include <pthread.h>
+@@ -50,6 +51,18 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
  #include "osd.h"
  #include "hardware.h"
  #include "menu.h"
@@ -403,12 +411,16 @@ index 981b47a..292f14d 100644
 +// Degauss: true while the frontend, rather than an ordinary script, owns
 +// the framebuffer terminal.
 +static bool degauss_running = false;
++static bool degauss_resume_after_script = false;
++static bool degauss_starting_script_return = false;
++static constexpr int DEGAUSS_NATIVE_SCRIPT_EXIT = 42;
++static constexpr const char *DEGAUSS_SCRIPT_RETURN = "/tmp/degauss-script-return.sh";
 +static bool degauss_shortcut_save_failed = false;
 +static bool degauss_controller_capture = false;
  #include "user_io.h"
  #include "debug.h"
  #include "fpga_io.h"
-@@ -81,6 +89,10 @@ enum MENU
+@@ -81,6 +94,10 @@ enum MENU
  	MENU_SYSTEM2,
  	MENU_COMMON1,
  	MENU_COMMON2,
@@ -419,7 +431,7 @@ index 981b47a..292f14d 100644
  	MENU_MISC1,
  	MENU_MISC2,
  
-@@ -440,6 +452,8 @@ void SelectFile(const char* path, const char* pFileExt, int Options, unsigned ch
+@@ -440,6 +457,8 @@ void SelectFile(const char* path, const char* pFileExt, int Options, unsigned ch
  			strcat(selPath, get_rbf_name());
  		}
  		ResolveExistingCorePath(selPath);
@@ -428,7 +440,7 @@ index 981b47a..292f14d 100644
  		pFileExt = "RBFMRAMGL";
  		home_dir = NULL;
  	}
-@@ -558,6 +572,11 @@ void menu_key_set(unsigned int c)
+@@ -558,6 +577,11 @@ void menu_key_set(unsigned int c)
  	menu_key = c;
  }
  
@@ -440,7 +452,7 @@ index 981b47a..292f14d 100644
  // get key status
  static int hold_cnt = 0;
  static uint32_t menu_key_get(void)
-@@ -850,9 +869,9 @@ const char* get_rbf_name_bootcore(char *str)
+@@ -850,9 +874,9 @@ const char* get_rbf_name_bootcore(char *str)
  }
  
  
@@ -452,13 +464,12 @@ index 981b47a..292f14d 100644
  	{
  		EnableOsd_on(OSD_VGA);
  		OsdSetSize(16);
-@@ -880,6 +899,41 @@ static void vga_nag()
+@@ -880,6 +904,73 @@ static void vga_nag()
  	EnableOsd_on(OSD_ALL);
  }
  
-+// The launcher remains the owner while its frontend execs a selected script.
-+// Reconfigure through the same path as ordinary Scripts before acknowledging
-+// the handover, then restore the frontend's configuration before it opens fb0.
++// Acknowledge framebuffer readiness on frontend startup. Older frontend
++// versions also use this command for their in-session script handover.
 +bool menu_degauss_terminal_mode(bool frontend, char *error, size_t error_size)
 +{
 +	if (!degauss_running || menustate != MENU_SCRIPTS_FB2 || !is_menu()
@@ -491,10 +502,43 @@ index 981b47a..292f14d 100644
 +	return true;
 +}
 +
++// The frontend has finished, rather than execing a script inside its session.
++// Its existing resume record supplies the selected path for native Scripts.
++static bool degauss_native_script_request(char *path, size_t capacity)
++{
++	char request[1031];
++	FILE *file = fopen("/tmp/degauss.resume", "rb");
++	if (!file) { perror("Degauss native script request"); return false; }
++	const size_t length = fread(request, 1, sizeof(request), file);
++	const bool read_ok = !ferror(file);
++	fclose(file);
++	if (!read_ok) { perror("Reading Degauss native script request"); return false; }
++	if (length <= 7 || length == sizeof(request)
++		|| memcmp(request, "script\0", 7) || request[7] != '/'
++		|| length - 7 >= capacity || memchr(request + 7, 0, length - 7))
++	{
++		fprintf(stderr, "Degauss native script request has an invalid path or format\n");
++		return false;
++	}
++	if (access(DEGAUSS_SCRIPT_RETURN, X_OK)) { perror("Degauss script return launcher"); return false; }
++	memcpy(path, request + 7, length - 7);
++	path[length - 7] = 0;
++	return true;
++}
++
++static std::string degauss_shell_quote(const char *value)
++{
++	std::string result = "'";
++	for (; *value; ++value)
++		if (*value == '\'') result += "'\\''";
++		else result += *value;
++	return result + "'";
++}
++
  void process_addon(char *ext, uint8_t idx)
  {
  	static char name[1024];
-@@ -1098,6 +1152,17 @@ void HandleUI(void)
+@@ -1098,6 +1189,17 @@ void HandleUI(void)
  {
  	PROFILE_FUNCTION();
  
@@ -512,7 +556,7 @@ index 981b47a..292f14d 100644
  	if (bt_timer >= 0)
  	{
  		if (!bt_timer) bt_timer = (int32_t)GetTimer(6000);
-@@ -1593,6 +1658,13 @@ void HandleUI(void)
+@@ -1593,6 +1695,13 @@ void HandleUI(void)
  		break;
  	}
  
@@ -526,7 +570,7 @@ index 981b47a..292f14d 100644
  	// Switch to current menu screen
  	switch (menustate)
  	{
-@@ -2941,6 +3013,14 @@ void HandleUI(void)
+@@ -2941,6 +3050,14 @@ void HandleUI(void)
  			helptext_idx = 0;
  			reboot_req = 0;
  
@@ -541,7 +585,7 @@ index 981b47a..292f14d 100644
  			OsdSetTitle("System", 0);
  			menustate = MENU_COMMON2;
  			parentstate = MENU_COMMON1;
-@@ -2954,6 +3034,19 @@ void HandleUI(void)
+@@ -2954,6 +3071,19 @@ void HandleUI(void)
  				if (!menusub) firstmenu = 0;
  				adjvisible = 0;
  
@@ -561,7 +605,7 @@ index 981b47a..292f14d 100644
  				MenuWrite(n++, " Core                      \x16", menusub == 0, 0);
  				MenuWrite(n++);
  
-@@ -3183,6 +3276,18 @@ void HandleUI(void)
+@@ -3183,6 +3313,18 @@ void HandleUI(void)
  				menusub = 0;
  				break;
  
@@ -580,7 +624,7 @@ index 981b47a..292f14d 100644
  			case 17:
  				{
  					reboot_req = 1;
-@@ -3247,6 +3352,140 @@ void HandleUI(void)
+@@ -3247,6 +3389,140 @@ void HandleUI(void)
  		if(!hold_cnt && reboot_req) fpga_load_rbf("menu.rbf");
  		break;
  
@@ -721,14 +765,22 @@ index 981b47a..292f14d 100644
  	case MENU_VIDEOPROC1:
  		helptext_idx = 0;
  		menumask = 0x7FFF;
-@@ -7250,17 +7489,56 @@ void HandleUI(void)
+@@ -7246,21 +7522,90 @@ void HandleUI(void)
+ 	case MENU_SCRIPTS_FB:
+ 		if (cfg.fb_terminal)
+ 		{
+-			memcpy(Selected_F[0], selPath, sizeof(Selected_F[0]));
++			const bool returning = degauss_starting_script_return;
++			degauss_starting_script_return = false;
++			if (!returning) memcpy(Selected_F[0], selPath, sizeof(Selected_F[0]));
  			static char cmd[1024 * 2];
++			std::string native_command;
  			const char *path = getFullPath(selPath);
  			menustate = MENU_SCRIPTS_FB2;
 +			// Degauss: a frontend is not a script whose output anyone
 +			// reads. Remembered here because the state that ends the run
 +			// no longer knows which path started it.
-+			degauss_running = degauss_is_frontend_script(selPath);
++			degauss_running = returning || degauss_is_frontend_script(selPath);
 +			video_set_degauss_native_fb(degauss_running);
  			video_chvt(2);
  			video_fb_enable(1);
@@ -739,18 +791,36 @@ index 981b47a..292f14d 100644
 +			{
 +				sprintf(cmd, "#!/bin/bash\nexport LC_ALL=en_US.UTF-8\nexport HOME=/root\ncd $(dirname %s)\n%s\n", path, path);
 +			}
++			else if (degauss_resume_after_script)
++			{
++				// The selected script uses the same terminal, agetty and native
++				// Scripts state as the OSD. Only its documented origin/Bash
++				// compatibility and result text differ from ordinary selection.
++				const std::string quoted = degauss_shell_quote(path);
++				native_command = "#!/bin/bash\nexport LC_ALL=en_US.UTF-8\nexport HOME=/root\nexport LAUNCH_ORIGIN_ID=degauss\ncd \"$(dirname " + quoted + ")\" || exit 1\n";
++				if (access(path, X_OK)) native_command += "/bin/bash -- ";
++				native_command += quoted + "\nstatus=$?\nif [ \"$status\" -ne 0 ]; then printf '\\nScript exited with status %s\\n' \"$status\"; fi\necho \"Press any key to continue\"\n";
++			}
 +			else
 +			{
 +				sprintf(cmd, "#!/bin/bash\nexport LC_ALL=en_US.UTF-8\nexport HOME=/root\ncd $(dirname %s)\n%s\necho \"Press any key to continue\"\n", path, path);
 +			}
  
  			unlink("/tmp/script");
- 			FileSave("/tmp/script", cmd, strlen(cmd));
+-			FileSave("/tmp/script", cmd, strlen(cmd));
++			char *command = native_command.empty() ? cmd : &native_command[0];
++			const int written = FileSave("/tmp/script", command, strlen(command));
++			if ((degauss_resume_after_script || returning) && written != static_cast<int>(strlen(command)))
++			{
++				ttypid = 0;
++				InfoMessage("Writing native script launcher failed; check Main log", 5000);
++				break;
++			}
  			ttystatus = 0;
  			ttypid = fork();
 -			if (!ttypid)
 +			if (ttypid < 0)
-+			{
+ 			{
 +				perror("fork");
 +				ttypid = 0;
 +				degauss_running = false;
@@ -762,14 +832,24 @@ index 981b47a..292f14d 100644
 +				menusub = 3;
 +				OsdClear();
 +				OsdEnable(DISABLE_KEYBOARD);
++				if (degauss_resume_after_script)
++				{
++					menustate = MENU_SCRIPTS_FB2;
++					InfoMessage("Starting native script failed; check Main log", 5000);
++				}
 +			}
 +			else if (!ttypid)
- 			{
++			{
 +				if (degauss_running)
 +				{
 +					if (setenv("DEGAUSS_SCRIPT_HANDOVER", "1", 1))
 +					{
 +						perror("Degauss script handover environment");
++						_exit(1);
++					}
++					if (setenv("DEGAUSS_NATIVE_SCRIPTS", "1", 1))
++					{
++						perror("Degauss native Scripts environment");
 +						_exit(1);
 +					}
 +					// -i drops the issue file, -n the login prompt: between
@@ -781,7 +861,12 @@ index 981b47a..292f14d 100644
  				execl("/sbin/agetty", "/sbin/agetty", "-a", "root", "-l", "/tmp/script", "--nohostname", "-L", "tty2", "linux", NULL);
  				exit(0); //should never be reached
  			}
-@@ -7278,6 +7556,21 @@ void HandleUI(void)
+@@ -7274,10 +7619,34 @@ void HandleUI(void)
+ 	case MENU_SCRIPTS_FB2:
+ 		if (ttypid)
+ 		{
+-			if (waitpid(ttypid, 0, WNOHANG) > 0)
++			if (waitpid(ttypid, &ttystatus, WNOHANG) > 0)
  			{
  				ttypid = 0;
  				user_io_osd_key_enable(1);
@@ -799,10 +884,33 @@ index 981b47a..292f14d 100644
 +					menusub = 3;
 +					OsdClear();
 +					OsdEnable(DISABLE_KEYBOARD);
++					if (WIFEXITED(ttystatus) && WEXITSTATUS(ttystatus) == DEGAUSS_NATIVE_SCRIPT_EXIT)
++					{
++						if (degauss_native_script_request(selPath, sizeof(selPath)))
++						{
++							degauss_resume_after_script = true;
++							menustate = MENU_SCRIPTS_FB;
++						}
++						else InfoMessage("Degauss native script request failed; check Main log", 5000);
++					}
 +				}
  			}
  		}
  		else
+@@ -7290,6 +7659,13 @@ void HandleUI(void)
+ 				menusub = 3;
+ 				OsdClear();
+ 				OsdEnable(DISABLE_KEYBOARD);
++				if (degauss_resume_after_script)
++				{
++					degauss_resume_after_script = false;
++					degauss_starting_script_return = true;
++					snprintf(selPath, sizeof(selPath), "%s", DEGAUSS_SCRIPT_RETURN);
++					menustate = MENU_SCRIPTS_FB;
++				}
+ 			}
+ 		}
+ 		break;
 diff --git a/menu.h b/menu.h
 index e26ddd7..5ed79c3 100644
 --- a/menu.h
@@ -844,10 +952,10 @@ index 34fb7b6..8ff6e2e 100644
  		}
 diff --git a/support/degauss/README.md b/support/degauss/README.md
 new file mode 100644
-index 0000000..7ff7637
+index 0000000..d4f54c5
 --- /dev/null
 +++ b/support/degauss/README.md
-@@ -0,0 +1,95 @@
+@@ -0,0 +1,101 @@
 +# Degauss integration in MiSTer Main
 +
 +This directory contains the Degauss-specific integration maintained by the
@@ -916,12 +1024,17 @@ index 0000000..7ff7637
 +
 +## Script display handover
 +
-+The owning Main marks its frontend child with `DEGAUSS_SCRIPT_HANDOVER=1`.
-+The frontend requests `fb_degauss <token> script` before executing a script and
-+`fb_degauss <token> frontend` before opening its framebuffer. Main clears
-+frontend effects for scripts and acknowledges only after the existing video
-+worker has applied the requested terminal geometry and the kernel reports it.
-+Stock-Main script launches retain the existing path without this capability.
++The owning Main marks its frontend child with `DEGAUSS_NATIVE_SCRIPTS=1`.
++For a selected script, the frontend saves its existing script-resume record and
++exact return command, releases its resources and exits with status 42. Main
++finishes the normal frontend cleanup, then starts the selected script through
++the native `MENU_SCRIPTS_FB` and agetty/tty2 path used by OSD Scripts. There is
++no script-specific display mode. After the native result/key-to-return flow,
++Main starts exactly one frontend with its original arguments and selection.
++
++`DEGAUSS_SCRIPT_HANDOVER=1` and the acknowledged `fb_degauss` command remain
++for initial framebuffer readiness and compatibility with older frontends.
++Stock-Main on-demand launches preserve their existing execution path.
 +
 +Only a cold-boot Menu handover sets `DEGAUSS_BOOT_START=1`; game, script and
 +Frontend-shortcut returns clear it. The frontend owns the optional last-game
@@ -936,6 +1049,7 @@ index 0000000..7ff7637
 +./tests/run-degauss-shortcut-tests.sh
 +python3 tests/run-degauss-core-menu-tests.py
 +python3 tests/degauss_script_handover_test.py
++python3 tests/degauss_native_scripts_test.py
 +```
 +
 +The complete fork build uses the existing containerised ARM toolchain:
@@ -2681,6 +2795,203 @@ index 0000000..9472a15
 +const char *degauss_cd_provider_mgl_name(degauss_cd_provider_kind_t provider,
 +	degauss_cd_disc_type_t type);
 +const char *degauss_cd_disc_type_name(degauss_cd_disc_type_t type);
+diff --git a/tests/degauss_native_scripts_test.py b/tests/degauss_native_scripts_test.py
+new file mode 100644
+index 0000000..654d2d0
+--- /dev/null
++++ b/tests/degauss_native_scripts_test.py
+@@ -0,0 +1,191 @@
++#!/usr/bin/env python3
++"""Check the production native Scripts transitions, not a replacement launcher."""
++import os
++from pathlib import Path
++import subprocess
++import tempfile
++
++root = Path(__file__).resolve().parent.parent
++source = (root / "menu.cpp").read_text()
++helpers = source[source.index("static bool degauss_native_script_request("):source.index("\nvoid process_addon(")]
++cases = source[source.index("\tcase MENU_SCRIPTS_FB:"):source.index("\tcase MENU_BTPAIR2:")]
++fixture = r'''
++#include <cassert>
++#include <cerrno>
++#include <cstdio>
++#include <cstdlib>
++#include <cstring>
++#include <string>
++#include <vector>
++#include <sys/wait.h>
++#include <unistd.h>
++static bool degauss_running = false, degauss_resume_after_script = false;
++static bool degauss_starting_script_return = false;
++static constexpr int DEGAUSS_NATIVE_SCRIPT_EXIT = 42;
++static constexpr const char *DEGAUSS_SCRIPT_RETURN = "RETURN_PATH";
++enum { MENU_SCRIPTS_FB = 1, MENU_SCRIPTS_FB2, MENU_SYSTEM1, MENU_SCRIPTS };
++static constexpr int DISABLE_KEYBOARD = 1, UPSTROKE = 0x8000;
++static int menustate = MENU_SCRIPTS_FB, menusub = 0, c = 0;
++static char selPath[1024] = {}, Selected_F[16][1024] = {};
++static pid_t ttypid = 0;
++static int ttystatus = 0, next_status = 0;
++static struct { int fb_terminal = 1; } cfg;
++static std::string saved_command, reported_error;
++static bool fail_save = false, fail_fork = false;
++static std::vector<int> terminal_calls;
++static bool degauss_is_frontend_script(const char *p) { return !strcmp(p, "Scripts/degauss.sh"); }
++static const char *getFullPath(const char *p) { return p; }
++static void video_set_degauss_native_fb(bool n) { terminal_calls.push_back(n ? 10 : 11); }
++static int video_chvt(int n) { terminal_calls.push_back(20 + n); return n; }
++static int video_fb_enable(int n) { terminal_calls.push_back(30 + n); return 1; }
++static void video_menu_bg(int) { terminal_calls.push_back(40); }
++static void vga_nag(bool n) { terminal_calls.push_back(n ? 50 : 51); }
++static int user_io_status_get(const char*) { return 0; }
++static void user_io_osd_key_enable(int) {}
++static void OsdClear() {}
++static void OsdEnable(int) {}
++static void InfoMessage(const char *s, int) { reported_error = s; }
++static int FileSave(const char *p, void *data, int size) {
++    assert(!strcmp(p, "/tmp/script"));
++    saved_command.assign(static_cast<char*>(data), size);
++    return fail_save ? 0 : size;
++}
++static pid_t test_fork() {
++    if (fail_fork) { errno = EAGAIN; return -1; }
++    return 123;
++}
++static pid_t test_waitpid(pid_t child, int *status, int options) {
++    assert(child == 123 && options == WNOHANG);
++    *status = next_status;
++    return child;
++}
++#define fork test_fork
++#define waitpid test_waitpid
++''' + helpers + r'''
++static void step() {
++    switch (menustate) {
++''' + cases + r'''
++    }
++}
++static void reset() {
++    degauss_running = degauss_resume_after_script = degauss_starting_script_return = false;
++    menustate = MENU_SCRIPTS_FB;
++    ttypid = 0;
++    c = 0;
++    terminal_calls.clear();
++    saved_command.clear();
++    reported_error.clear();
++    fail_save = fail_fork = false;
++}
++static void write_file(const char *path, const std::string &body, bool executable = false) {
++    FILE *file = fopen(path, "wb"); assert(file);
++    assert(fwrite(body.data(), 1, body.size(), file) == body.size());
++    assert(!fclose(file));
++    if (executable) assert(!chmod(path, 0700));
++}
++int main(int argc, char **argv) {
++    assert(argc == 2);
++    const std::string directory = argv[1];
++    const std::string selected = directory + "/A 'quoted' script.sh";
++    const std::string output = directory + "/cwd";
++    write_file(selected.c_str(), "#!/bin/bash\npwd > '" + output + "'\nexit 7\n", true);
++    write_file(DEGAUSS_SCRIPT_RETURN, "#!/bin/bash\nexit 0\n", true);
++    const std::string record = std::string("script\0", 7) + selected;
++    write_file("REQUEST_PATH", record);
++
++    reset();
++    degauss_running = true;
++    menustate = MENU_SCRIPTS_FB2;
++    ttypid = 123;
++    next_status = DEGAUSS_NATIVE_SCRIPT_EXIT << 8;
++    step();
++    assert(!degauss_running && degauss_resume_after_script);
++    assert(menustate == MENU_SCRIPTS_FB && ttypid == 0);
++    assert(selected == selPath);
++    // RA Main's existing frontend cleanup also restores VT1 before disabling
++    // the script framebuffer. Preserve that release-specific transition.
++    assert((terminal_calls == std::vector<int>{11, 21, 40, 30}));
++
++    terminal_calls.clear();
++    step();
++    const auto native_calls = terminal_calls;
++    assert((native_calls == std::vector<int>{11, 22, 31, 50}));
++    assert(menustate == MENU_SCRIPTS_FB2 && !degauss_running && ttypid == 123);
++    assert(saved_command.find("LAUNCH_ORIGIN_ID=degauss") != std::string::npos);
++    assert(saved_command.find("/bin/bash -- ") == std::string::npos);
++    assert(saved_command.find("Press any key to continue") != std::string::npos);
++    const std::string command = directory + "/native-script.sh";
++    write_file(command.c_str(), saved_command, true);
++    assert(system(command.c_str()) == 0);
++    FILE *cwd = fopen(output.c_str(), "rb"); assert(cwd);
++    char line[2048] = {}; assert(fgets(line, sizeof(line), cwd)); fclose(cwd);
++    assert(std::string(line) == directory + "\n");
++
++    next_status = 0;
++    step();
++    assert(ttypid == 0 && menustate == MENU_SCRIPTS_FB2);
++    step();
++    assert(menustate == MENU_SCRIPTS_FB2);
++    c = UPSTROKE;
++    step();
++    assert(!degauss_resume_after_script && degauss_starting_script_return);
++    assert(menustate == MENU_SCRIPTS_FB && !strcmp(selPath, DEGAUSS_SCRIPT_RETURN));
++    c = 0;
++    step();
++    assert(degauss_running && !degauss_starting_script_return);
++    assert(selected == Selected_F[0]);
++    assert(saved_command.find(DEGAUSS_SCRIPT_RETURN) != std::string::npos);
++    assert(saved_command.find("Press any key") == std::string::npos);
++
++    reset();
++    snprintf(selPath, sizeof(selPath), "%s", selected.c_str());
++    step();
++    assert(terminal_calls == native_calls); // Same native terminal path as OSD selection.
++    assert(saved_command.find("LAUNCH_ORIGIN_ID") == std::string::npos);
++
++    reset();
++    assert(!chmod(selected.c_str(), 0600));
++    degauss_resume_after_script = true;
++    step();
++    assert(saved_command.find("/bin/bash -- ") != std::string::npos);
++
++    reset();
++    degauss_resume_after_script = true;
++    fail_save = true;
++    step();
++    assert(ttypid == 0 && menustate == MENU_SCRIPTS_FB2);
++    assert(reported_error.find("Writing native") == 0);
++    reset();
++    degauss_resume_after_script = true;
++    fail_fork = true;
++    step();
++    assert(ttypid == 0 && menustate == MENU_SCRIPTS_FB2);
++    assert(reported_error.find("Starting native") == 0);
++    c = UPSTROKE;
++    step();
++    assert(menustate == MENU_SCRIPTS_FB && degauss_starting_script_return);
++
++    reset();
++    write_file("REQUEST_PATH", "malformed");
++    degauss_running = true;
++    menustate = MENU_SCRIPTS_FB2;
++    ttypid = 123;
++    next_status = DEGAUSS_NATIVE_SCRIPT_EXIT << 8;
++    step();
++    assert(!reported_error.empty() && !degauss_resume_after_script);
++    assert(menustate == MENU_SYSTEM1);
++}
++'''
++
++with tempfile.TemporaryDirectory(prefix="degauss-native-scripts-") as directory:
++    request = str(Path(directory) / "request")
++    return_path = str(Path(directory) / "return.sh")
++    fixture = fixture.replace('"/tmp/degauss.resume"', '"REQUEST_PATH"')
++    fixture = fixture.replace("REQUEST_PATH", request).replace("RETURN_PATH", return_path)
++    fixture = fixture.replace("#include <sys/wait.h>", "#include <sys/wait.h>\n#include <sys/stat.h>")
++    source_path = Path(directory) / "test.cpp"
++    executable = Path(directory) / "test"
++    source_path.write_text(fixture)
++    subprocess.run([os.environ.get("CXX", "c++"), "-std=c++14", "-Wall", "-Wextra", "-Werror",
++                    str(source_path), "-o", str(executable)], check=True)
++    subprocess.run([str(executable), directory], check=True)
 diff --git a/tests/degauss_physical_cd_logic_test.cpp b/tests/degauss_physical_cd_logic_test.cpp
 new file mode 100644
 index 0000000..3fe0614
@@ -3612,7 +3923,7 @@ index 0000000..842db34
 +grep -q 'physical_cd_autorun_poll();' scheduler.cpp
 diff --git a/tests/run-degauss-shortcut-tests.sh b/tests/run-degauss-shortcut-tests.sh
 new file mode 100644
-index 0000000..92843aa
+index 0000000..3eecf66
 --- /dev/null
 +++ b/tests/run-degauss-shortcut-tests.sh
 @@ -0,0 +1,81 @@
@@ -3685,12 +3996,12 @@ index 0000000..92843aa
 +# The custom Menu core supports Degauss's native analog framebuffer path.
 +# Keep Main's stock vga_scaler warning for ordinary framebuffer scripts, but
 +# suppress its text for Degauss while retaining the function's OSD shutdown.
-+grep -A4 'degauss_running = degauss_is_frontend_script' menu.cpp \
++grep -A4 'degauss_running = returning || degauss_is_frontend_script' menu.cpp \
 +	| grep -q 'vga_nag(!degauss_running);'
 +
 +# A failed terminal fork must restore the Menu framebuffer immediately rather
 +# than treating pid -1 as a running child and leaving Degauss video active.
-+degauss_launch="$(sed -n '/degauss_running = degauss_is_frontend_script/,/case MENU_SCRIPTS_FB2:/p' menu.cpp)"
++degauss_launch="$(sed -n '/degauss_running = returning || degauss_is_frontend_script/,/case MENU_SCRIPTS_FB2:/p' menu.cpp)"
 +printf '%s\n' "$degauss_launch" | grep -q 'if (ttypid < 0)'
 +fork_failure="$(printf '%s\n' "$degauss_launch" | sed -n '/if (ttypid < 0)/,/else if (!ttypid)/p')"
 +printf '%s\n' "$fork_failure" | grep -q 'video_set_degauss_native_fb(false);'

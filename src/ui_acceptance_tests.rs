@@ -4037,6 +4037,15 @@ fn run_last_played_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
     app.prepare_boot_launch(true, &marker);
     assert!(!app.boot_launch_waiting);
     app.settings.start_last_game_on_boot = Some(true);
+    app.prepare_boot_launch(true, &root.join("empty-history-boot"));
+    assert!(app.boot_launch_waiting);
+    assert!(app.poll_boot_launch(Instant::now()).is_none());
+    assert!(!app.boot_launch_waiting);
+    assert!(app.boot_launch_deadline.is_none());
+    assert!(
+        app.message.is_none(),
+        "no recorded game is a normal startup"
+    );
     app.last_played.remember(crate::history::Entry {
         system: "NES".into(),
         launch: browse::Launch::File(first.clone()),

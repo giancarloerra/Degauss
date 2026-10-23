@@ -8,6 +8,13 @@ use crate::error::{DegaussError, Result};
 
 pub const RETURN_ENV: &str = "DEGAUSS_SCRIPTS_RETURN";
 const ORIGIN_ENV: &str = "LAUNCH_ORIGIN_ID";
+pub const NATIVE_HANDOVER_ENV: &str = "DEGAUSS_NATIVE_SCRIPTS";
+pub const NATIVE_HANDOVER_EXIT: i32 = 42;
+pub const NATIVE_RETURN_PATH: &str = "/tmp/degauss-script-return.sh";
+
+pub fn native_handover_supported() -> bool {
+    std::env::var_os(NATIVE_HANDOVER_ENV).as_deref() == Some(std::ffi::OsStr::new("1"))
+}
 
 /// Main's launcher can supply tty2 descriptors without a controlling terminal.
 /// ISIG needs both that association and a foreground process group to deliver
@@ -408,6 +415,52 @@ impl Launch {
         command
     }
 
+    /// Main starts this through its normal frontend Scripts path after the
+    /// selected native script has finished and its result has been dismissed.
+    #[cfg(unix)]
+    pub fn prepare_native_return(&self, path: &Path) -> Result<()> {
+        use std::io::Write;
+        use std::os::unix::ffi::OsStrExt;
+        use std::os::unix::fs::OpenOptionsExt;
+
+        fn quote(output: &mut Vec<u8>, value: &std::ffi::OsStr) {
+            output.push(b'\'');
+            for byte in value.as_bytes() {
+                if *byte == b'\'' {
+                    output.extend_from_slice(b"'\\''");
+                } else {
+                    output.push(*byte);
+                }
+            }
+            output.push(b'\'');
+        }
+
+        self.validate()?;
+        let mut body = b"#!/bin/bash\nunset LAUNCH_ORIGIN_ID DEGAUSS_BOOT_START\ncd -- ".to_vec();
+        quote(&mut body, self.return_directory.as_os_str());
+        body.extend_from_slice(b" || exit 1\nexport DEGAUSS_SCRIPTS_RETURN=");
+        quote(&mut body, self.script.as_os_str());
+        body.extend_from_slice(b"\nexec ");
+        quote(&mut body, self.executable.as_os_str());
+        for argument in &self.args {
+            body.push(b' ');
+            quote(&mut body, argument);
+        }
+        body.push(b'\n');
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o700)
+            .custom_flags(libc::O_NOFOLLOW)
+            .open(path)
+            .map_err(|error| {
+                DegaussError::io("create native script return launcher", path, error)
+            })?;
+        file.write_all(&body)
+            .map_err(|error| DegaussError::io("write native script return launcher", path, error))
+    }
+
     /// Call only after App, input, framebuffer and console guards are dropped.
     #[cfg(unix)]
     pub fn exec(self) -> Result<std::convert::Infallible> {
@@ -429,6 +482,55 @@ mod tests {
     use std::io::Write;
     use std::process::Stdio;
     use std::sync::atomic::{AtomicU64, Ordering};
+
+    #[cfg(unix)]
+    #[test]
+    fn native_return_retains_the_exact_frontend_arguments_and_script_position() {
+        use std::os::unix::fs::PermissionsExt;
+        let fixture = Fixture::new();
+        let script = fixture.file("Scripts/sub folder/Example 'quoted'.sh", "exit 0\n");
+        let destination = fixture.0.join("return.sh");
+        let output = fixture.0.join("result");
+        let frontend = fixture.file(
+            "frontend.sh",
+            "#!/bin/bash\nprintf '%s\\0' \"$DEGAUSS_SCRIPTS_RETURN\" \"$PWD\" \"${LAUNCH_ORIGIN_ID-unset}\" \"${DEGAUSS_BOOT_START-unset}\" \"$@\" > \"$1\"\n",
+        );
+        std::fs::set_permissions(&frontend, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let arguments = vec![
+            output.clone().into_os_string(),
+            "a 'quoted' argument".into(),
+            "--config".into(),
+            "a path/config.toml".into(),
+        ];
+        let launch = Launch::prepare(
+            &fixture.0.join("Scripts"),
+            &script,
+            &frontend,
+            arguments.clone(),
+        )
+        .unwrap();
+        let return_directory = launch.return_directory.clone();
+        launch.prepare_native_return(&destination).unwrap();
+        let status = Command::new(&destination)
+            .env(ORIGIN_ENV, "degauss")
+            .env(crate::state::BOOT_START_ENV, "1")
+            .status()
+            .unwrap();
+        assert!(status.success());
+        let values = std::fs::read(&output).unwrap();
+        let values: Vec<_> = values
+            .split(|byte| *byte == 0)
+            .filter(|part| !part.is_empty())
+            .collect();
+        use std::os::unix::ffi::OsStrExt;
+        assert_eq!(values[0], script.as_os_str().as_bytes());
+        assert_eq!(values[1], return_directory.as_os_str().as_bytes());
+        assert_eq!(values[2], b"unset");
+        assert_eq!(values[3], b"unset");
+        for (value, argument) in values[4..].iter().zip(arguments) {
+            assert_eq!(*value, argument.as_os_str().as_bytes());
+        }
+    }
 
     struct Fixture(PathBuf);
     impl Fixture {
