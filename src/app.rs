@@ -10082,8 +10082,7 @@ impl App {
             self.message = Some(format!("Last game was not started: {problem}"));
         } else if let Some(entry) = self.last_played.entries.first() {
             self.boot_launch_deadline = Some(now + Duration::from_secs(3));
-            self.message =
-                Some(self.control_hint(&format!("Starting Last Game\n{}\n\nB Cancel", entry.name)));
+            self.message = Some(format!("Starting Last Game\n{}", entry.name));
         } else {
             self.boot_launch_waiting = false;
             self.message = Some(
@@ -23073,7 +23072,7 @@ impl App {
         self.ui.set_overlay_close_controls(
             self.control_hint(if storage_confirmation {
                 "A Rebuild   B Not Now"
-            } else if self.explore.job.is_some() {
+            } else if self.explore.job.is_some() || self.boot_launch_deadline.is_some() {
                 "B Cancel"
             } else {
                 "B Close"
@@ -23083,6 +23082,8 @@ impl App {
         self.ui.set_overlay_read_close_controls(
             self.control_hint(if storage_confirmation {
                 "↑↓ Read   A Rebuild   B Not Now"
+            } else if self.boot_launch_deadline.is_some() {
+                "B Cancel"
             } else {
                 "↑↓ Read   B Close"
             })

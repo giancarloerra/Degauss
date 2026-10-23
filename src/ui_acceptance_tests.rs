@@ -3950,6 +3950,25 @@ fn run_last_played_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
         let now = Instant::now();
         assert!(app.poll_boot_launch(now).is_none());
         assert_eq!(app.boot_launch_deadline.is_some(), normal_boot);
+        if normal_boot {
+            for swapped in [false, true] {
+                app.settings.swap_a_b = Some(swapped);
+                app.refresh();
+                assert_eq!(app.message.as_deref(), Some("Starting Last Game\nFirst"));
+                let cancel = if swapped { "A Cancel" } else { "B Cancel" };
+                assert_eq!(
+                    app.ui.get_overlay_close_controls().as_str(),
+                    cancel,
+                    "the countdown needs one correctly mapped footer, not a second body hint"
+                );
+                assert_eq!(
+                    app.ui.get_overlay_read_close_controls().as_str(),
+                    cancel,
+                    "long game names must not advertise scrolling or a separate Close action during the countdown"
+                );
+            }
+            app.settings.swap_a_b = None;
+        }
         app.handle(Action::Quit);
         assert!(app.poll_boot_launch(now + Duration::from_secs(4)).is_none());
         app.prepare_boot_launch(true, &marker);
