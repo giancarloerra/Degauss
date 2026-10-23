@@ -55,6 +55,7 @@ mod physical_disc;
 mod provider_job;
 mod render;
 mod scraper;
+mod script_handover;
 mod scripts;
 mod settings;
 mod source_cache;
@@ -1806,6 +1807,14 @@ fn run_on_framebuffer(
         None => state::resuming_script()?,
     };
     std::env::remove_var(scripts::RETURN_ENV);
+    let script_handover = script_handover::supported();
+    if script_handover {
+        script_handover::request(
+            Path::new(launch::CMD_FIFO),
+            Path::new("/tmp"),
+            script_handover::Mode::Frontend,
+        )?;
+    }
     let mut framebuffer = surface::Framebuffer::open(&args.device)?;
     let geometry = framebuffer.geometry();
     let vsync = framebuffer.wait_for_vsync()?;
@@ -2019,6 +2028,13 @@ fn run_on_framebuffer(
             drop(framebuffer);
             let script = script.with_menu_owner(session.owner_token());
             drop(session);
+            if script_handover {
+                script_handover::request(
+                    Path::new(launch::CMD_FIFO),
+                    Path::new("/tmp"),
+                    script_handover::Mode::Script,
+                )?;
+            }
             return script.exec().map(|never| match never {});
         }
         Outcome::Launch {
