@@ -289,6 +289,13 @@ identity, independently of Home ordering.
 
 ### Running MiSTer scripts
 
+With the current Degauss Main, a selected script switches to MiSTer's normal
+Scripts terminal setup before it starts, with Degauss's video effects removed.
+Degauss's own display state is
+restored before the frontend reopens. The configured video modes, working
+directory, script arguments and key-to-return behaviour are preserved; no INI
+changes or reboot are needed for the handover.
+
 Open **Scripts** from the main browser to browse the installed scripts and their subfolders.
 The browser starts at `Scripts` under the configured `menu_root`, normally
 `/media/fat/Scripts`. It lists `.sh` files, with folders first. Hidden files

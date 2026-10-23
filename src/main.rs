@@ -55,6 +55,7 @@ mod physical_disc;
 mod provider_job;
 mod render;
 mod scraper;
+mod script_handover;
 mod scripts;
 mod settings;
 mod source_cache;
@@ -1739,6 +1740,7 @@ fn prepare_display_mask_handoff(
     outcome: &Result<Outcome>,
     mask_active: bool,
     preset_active: bool,
+    paired_script_cleanup: bool,
     cleanup: &mut DisplayMaskCleanup<'_>,
 ) -> Result<()> {
     // Resetting a full preset can restore the mask that was active before it.
@@ -1748,7 +1750,10 @@ fn prepare_display_mask_handoff(
     cleanup.preset_armed = preset_active;
     // Main clears this temporary mask when loading a core. Sending Off here
     // would put two commands in its unframed FIFO before it reads either one.
-    if matches!(outcome, Ok(Outcome::Launch { .. } | Outcome::SwitchIni(_))) {
+    // Paired script handovers reset effects inside their acknowledged command.
+    if matches!(outcome, Ok(Outcome::Launch { .. } | Outcome::SwitchIni(_)))
+        || (paired_script_cleanup && matches!(outcome, Ok(Outcome::Script(_))))
+    {
         return Ok(());
     }
     let preset_reset = if preset_active {
@@ -1813,6 +1818,14 @@ fn run_on_framebuffer(
         && deferred_system.is_none();
     std::env::remove_var(state::BOOT_START_ENV);
     std::env::remove_var(scripts::RETURN_ENV);
+    let script_handover = script_handover::supported();
+    if script_handover {
+        script_handover::request(
+            Path::new(launch::CMD_FIFO),
+            Path::new("/tmp"),
+            script_handover::Mode::Frontend,
+        )?;
+    }
     let mut framebuffer = surface::Framebuffer::open(&args.device)?;
     let geometry = framebuffer.geometry();
     let vsync = framebuffer.wait_for_vsync()?;
@@ -1953,6 +1966,7 @@ fn run_on_framebuffer(
         &outcome,
         app.display_mask().is_some(),
         app.video_preset_active(),
+        script_handover,
         &mut mask_cleanup,
     );
 
@@ -2028,6 +2042,15 @@ fn run_on_framebuffer(
             drop(framebuffer);
             let script = script.with_menu_owner(session.owner_token());
             drop(session);
+            if script_handover {
+                script_handover::request(
+                    Path::new(launch::CMD_FIFO),
+                    Path::new("/tmp"),
+                    script_handover::Mode::Script,
+                )?;
+                mask_cleanup.armed = false;
+                mask_cleanup.preset_armed = false;
+            }
             return script.exec().map(|never| match never {});
         }
         Outcome::Launch {
@@ -2539,7 +2562,7 @@ mod tests {
                 armed: true,
                 preset_armed: true,
             };
-            prepare_display_mask_handoff(&core_launch, false, true, &mut cleanup).unwrap();
+            prepare_display_mask_handoff(&core_launch, false, true, false, &mut cleanup).unwrap();
             assert!(cleanup.armed, "a preset may restore its previous mask");
             assert_eq!(std::fs::read_to_string(&fifo).unwrap(), "");
             let Ok(Outcome::Launch { plan, .. }) = &core_launch else {
@@ -2560,8 +2583,14 @@ mod tests {
                 armed: true,
                 preset_armed: true,
             };
-            prepare_display_mask_handoff(&Ok(Outcome::SwitchIni(1)), true, true, &mut cleanup)
-                .unwrap();
+            prepare_display_mask_handoff(
+                &Ok(Outcome::SwitchIni(1)),
+                true,
+                true,
+                false,
+                &mut cleanup,
+            )
+            .unwrap();
             assert_eq!(std::fs::read_to_string(&fifo).unwrap(), "");
             std::fs::write(&fifo, "load_core menu.rbf\n").unwrap();
             cleanup.armed = false;
@@ -2578,10 +2607,62 @@ mod tests {
                 armed: true,
                 preset_armed: false,
             };
-            prepare_display_mask_handoff(&Ok(Outcome::Quit), true, false, &mut cleanup).unwrap();
+            prepare_display_mask_handoff(&Ok(Outcome::Quit), true, false, false, &mut cleanup)
+                .unwrap();
         }
         assert_eq!(std::fs::read_to_string(&fifo).unwrap(), "fb_mask off\n");
         std::fs::remove_file(fifo).unwrap();
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn paired_script_handover_uses_one_acknowledged_command_for_effect_cleanup() {
+        let root = std::env::temp_dir().join(format!(
+            "degauss-script-mask-handoff-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let file = root.join("Probe.sh");
+        std::fs::write(&file, "exit 0\n").unwrap();
+        let script =
+            scripts::Launch::prepare(&root, &file, &std::env::current_exe().unwrap(), Vec::new())
+                .unwrap();
+        let outcome = Ok(Outcome::Script(Box::new(script)));
+        let fifo = root.join("commands");
+        std::fs::write(&fifo, "").unwrap();
+        {
+            let mut cleanup = DisplayMaskCleanup {
+                fifo: &fifo,
+                armed: true,
+                preset_armed: true,
+            };
+            prepare_display_mask_handoff(&outcome, true, true, true, &mut cleanup).unwrap();
+            assert_eq!(
+                std::fs::read_to_string(&fifo).unwrap(),
+                "",
+                "no raw mask command may coalesce with the handover request"
+            );
+            assert!(
+                cleanup.armed && cleanup.preset_armed,
+                "failure cleanup remains armed until Main acknowledges"
+            );
+            cleanup.armed = false;
+            cleanup.preset_armed = false;
+        }
+        {
+            let mut cleanup = DisplayMaskCleanup {
+                fifo: &fifo,
+                armed: true,
+                preset_armed: false,
+            };
+            prepare_display_mask_handoff(&outcome, true, false, false, &mut cleanup).unwrap();
+        }
+        assert_eq!(
+            std::fs::read_to_string(&fifo).unwrap(),
+            "fb_mask off\n",
+            "stock-Main script cleanup is unchanged"
+        );
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     fn parse(words: &[&str]) -> Args {
