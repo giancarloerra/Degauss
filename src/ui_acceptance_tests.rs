@@ -3769,6 +3769,28 @@ fn run_kiosk_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
     );
     app.handle(Action::Quit);
     app.handle(Action::Quit);
+    let state_path = crate::cache::artwork_pack_source_path(&app.cache_dir, "NES");
+    let state_before = std::fs::read(&state_path).ok();
+    app.pending = Some(Pending::PrepareArtworkPack(Box::new(PackOffer {
+        system_id: "NES".into(),
+        docs_root: root.join("unused-pack"),
+        language: None,
+        signature: None,
+        cache_marker: None,
+        then: OfferFollowUp::OpenSystem,
+    })));
+    app.handle(Action::Accept);
+    assert!(
+        app.library.is_some(),
+        "a guest can enter without preparing an offered Pack"
+    );
+    assert!(app.source_job.is_none());
+    assert_eq!(
+        std::fs::read(&state_path).ok(),
+        state_before,
+        "guest browsing must not save a Pack decision"
+    );
+    app.handle(Action::Quit);
     app.open_options_page(OptionsPage::Library);
     app.open_scripts();
     assert_eq!(app.screen, Screen::Browse);

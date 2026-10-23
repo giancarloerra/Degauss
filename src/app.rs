@@ -16966,40 +16966,48 @@ impl App {
                 .accepted
                 .as_ref()
                 .is_some_and(|accepted| accepted.docs_root == docs_root);
-        let signature = match offer.signature {
-            Some(signature) => Ok(signature),
-            None => crate::artwork_pack::known_tables_signature_for_type(
-                &id,
-                &offer.docs_root,
-                offer.language.as_deref(),
-                crate::artwork_pack::selected_picture_type(&self.settings, &id),
-            ),
-        };
-        let signature = match signature {
-            Ok(signature) => {
-                state.declined = Some(crate::cache::DeclinedSource {
-                    docs_root,
-                    language: offer.language.clone(),
-                    signature: Some(signature.clone()),
-                    cache_marker: offer.cache_marker,
-                });
-                match crate::cache::save_pack_source_state(&self.cache_dir, &id, &state) {
-                    Ok(()) => crate::note(&format!("artwork pack {id}: declined recorded")),
-                    Err(error) => {
-                        crate::note(&format!("artwork pack {id}: decline not recorded: {error}"));
-                        self.message = Some(format!(
+        let signature = if self.kiosk_locked {
+            // Browsing may keep the existing rows, but a guest cannot record
+            // a preparation decision or start maintenance.
+            offer.signature
+        } else {
+            let signature = match offer.signature {
+                Some(signature) => Ok(signature),
+                None => crate::artwork_pack::known_tables_signature_for_type(
+                    &id,
+                    &offer.docs_root,
+                    offer.language.as_deref(),
+                    crate::artwork_pack::selected_picture_type(&self.settings, &id),
+                ),
+            };
+            match signature {
+                Ok(signature) => {
+                    state.declined = Some(crate::cache::DeclinedSource {
+                        docs_root,
+                        language: offer.language.clone(),
+                        signature: Some(signature.clone()),
+                        cache_marker: offer.cache_marker,
+                    });
+                    match crate::cache::save_pack_source_state(&self.cache_dir, &id, &state) {
+                        Ok(()) => crate::note(&format!("artwork pack {id}: declined recorded")),
+                        Err(error) => {
+                            crate::note(&format!(
+                                "artwork pack {id}: decline not recorded: {error}"
+                            ));
+                            self.message = Some(format!(
                             "Artwork Pack decision for {name} was not saved, so the question returns on the next entry: {error}"
                         ));
+                        }
                     }
+                    Some(signature)
                 }
-                Some(signature)
-            }
-            Err(error) => {
-                crate::note(&format!("artwork pack {id}: decline not recorded: {error}"));
-                self.message = Some(format!(
+                Err(error) => {
+                    crate::note(&format!("artwork pack {id}: decline not recorded: {error}"));
+                    self.message = Some(format!(
                     "Artwork Pack decision for {name} was not saved, so the question returns on the next entry: {error}"
                 ));
-                None
+                    None
+                }
             }
         };
         let mut provider = None;
@@ -20122,12 +20130,19 @@ impl App {
     }
 
     pub fn handle(&mut self, action: Action) -> Option<Outcome> {
-        // Game launches do not use Pending. These confirmations change
-        // configuration, perform maintenance or leave the game browser.
+        // Game launches do not use Pending. Do not accept maintenance or
+        // configuration questions, but let a Pack question resume browsing.
         if self.kiosk_locked && self.pending.is_some() {
-            self.pending = None;
+            let pending = self.pending.take();
             self.message = None;
             self.dirty = true;
+            if let Some(Pending::PrepareArtworkPack(offer) | Pending::UpdateArtworkPack(offer)) =
+                pending
+            {
+                if offer.then == OfferFollowUp::OpenSystem {
+                    self.decline_pack_offer(*offer);
+                }
+            }
             if action == Action::Menu {
                 self.open_menu();
             }
