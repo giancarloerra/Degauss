@@ -3780,9 +3780,10 @@ fn run_kiosk_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
         then: OfferFollowUp::OpenSystem,
     })));
     app.handle(Action::Accept);
-    assert!(
-        app.library.is_some(),
-        "a guest can enter without preparing an offered Pack"
+    assert_eq!(
+        app.open_system.as_deref(),
+        Some("NES"),
+        "a guest can enter cached or ordinary rows without preparing an offered Pack"
     );
     assert!(app.source_job.is_none());
     assert_eq!(
