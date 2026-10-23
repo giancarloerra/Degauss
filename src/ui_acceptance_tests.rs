@@ -3828,6 +3828,23 @@ fn run_kiosk_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
     app.message = Some("Rebuild storage?".into());
     app.refresh();
     assert!(app.ui.get_overlay().contains("Unlock is required"));
+    assert!(!app.ui.get_overlay_dismissible());
+    assert!(!app.ui.get_overlay_close_controls().contains("Rebuild"));
+    app.settings.swap_a_b = Some(true);
+    app.settings.swap_x_y = Some(true);
+    app.refresh();
+    assert!(
+        app.ui.get_overlay().contains("A Back   X Menu"),
+        "locked storage offers advertise the mapped unlock controls, not unavailable maintenance"
+    );
+    app.settings.swap_a_b = None;
+    app.settings.swap_x_y = None;
+    app.kiosk_locked = false;
+    app.refresh();
+    assert!(app.ui.get_overlay_dismissible());
+    assert_eq!(app.ui.get_overlay_close_controls(), "A Rebuild   B Not Now");
+    app.kiosk_locked = true;
+    app.refresh();
     app.handle(Action::Menu);
     assert!(app.pending.is_none());
     assert!(

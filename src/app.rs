@@ -23206,7 +23206,8 @@ impl App {
         };
         self.ui
             .set_bottom_controls(SharedString::from(bottom_controls));
-        let storage_confirmation = self.pending == Some(Pending::StorageRebuild);
+        let storage_confirmation =
+            self.pending == Some(Pending::StorageRebuild) && !self.kiosk_locked;
         self.ui.set_overlay_close_controls(
             self.control_hint(if storage_confirmation {
                 "A Rebuild   B Not Now"
