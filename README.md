@@ -725,6 +725,7 @@ Degauss does not start the game again. The current system and per-game core
 choices are used. A missing game, core or unreadable history is reported instead
 of launching another game. This option records successful game launches even
 when Last Played is hidden. Stock-Main on-demand script launches do not auto-start.
+Kiosk mode always starts at Home, even when this option is enabled.
 
 ### Returning to Degauss from a running core
 
@@ -734,17 +735,24 @@ Pressing A on **Frontend** keeps the direct route: it closes the current core
 and returns to Degauss.
 
 Select **System → Frontend shortcut**, directly below **Frontend**, and press A
-to open the optional keyboard shortcut setting. It defaults to **Off**, so an
-existing installation keeps its current input behaviour until it is configured.
+to open separate optional **Keyboard** and **Controller** settings. Both default
+to **Off**, so an existing installation keeps its input behaviour until configured.
 
 Select **Keyboard** and press A, then press the physical keyboard key to
 capture. Press X on the row to disable it. Menu or B cancels capture.
 
+Select **Controller** and capture a button in the same way. Hold it continuously
+for **five seconds** to return once, then release before another hold. Ordinary
+presses and holds still reach the game immediately; the selected button is not
+reserved from the game. Opening the OSD, changing cores or disconnecting the
+controller clears an in-progress hold.
+
 A configured shortcut works only while a non-menu core is running, the OSD
-is unlocked, and no other framebuffer script owns the screen. The setting is
+is closed and unlocked, and no other framebuffer script owns the screen. The setting is
 stored in `/media/fat/config/degauss/frontend_shortcut.bin`. A missing file
 means the shortcut is Off. An invalid or unsupported file is identified in the
-shortcut screen and can be replaced by selecting **Reset shortcut**.
+shortcut screen and can be replaced by selecting **Reset shortcut**. Existing
+keyboard assignments remain usable; the new controller choice starts Off.
 
 This screen and shortcut belong to `MiSTer_Degauss`. They are not
 available when Degauss is launched on demand from the stock Main binary as

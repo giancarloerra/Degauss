@@ -3652,6 +3652,7 @@ fn run_kiosk_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
         show_cores: Some(true),
         show_misterzine: Some(true),
         start_folder: Some("Console".into()),
+        start_last_game_on_boot: Some(true),
         ..Default::default()
     };
     for target in [
@@ -3722,6 +3723,14 @@ fn run_kiosk_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
     };
     let mut app = make_app(settings);
     assert!(app.kiosk_locked);
+    let boot_marker = root.join("boot-started");
+    app.prepare_boot_launch(true, &boot_marker);
+    assert!(
+        boot_marker.is_file(),
+        "kiosk still consumes the boot attempt"
+    );
+    assert!(!app.boot_launch_waiting, "kiosk must always stay at Home");
+    assert!(app.poll_boot_launch(Instant::now()).is_none());
     assert_eq!(app.browsing, Browsing::Categories);
     assert!(!app.start_folder_pending);
     assert!(app

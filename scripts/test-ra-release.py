@@ -18,6 +18,18 @@ spec.loader.exec_module(package_ra)
 
 
 class ReleaseTests(unittest.TestCase):
+    def test_ra_integration_keeps_controller_hold_and_script_handover_aligned(self):
+        patch = (ROOT / 'support/ra-main/frontend.patch').read_text()
+        build = (ROOT / 'scripts/build-ra-main.sh').read_text()
+        self.assertIn('+struct ConfigV2', patch)
+        self.assertIn('+inline ConfigV2 make_hold_config', patch)
+        self.assertIn('+bool menu_degauss_terminal_mode', patch)
+        self.assertIn('DEGAUSS_BOOT_START', patch)
+        self.assertIn('FBIOGET_VSCREENINFO', patch)
+        self.assertIn('offload_add_work([applied, requester, width, height, error]', patch)
+        self.assertIn('python3 tests/degauss_script_handover_test.py\n', build)
+        self.assertIn('8190aa1baccce19d86e8bb315247e89c2b154cab', build)
+
     def test_ra_backend_pins_the_1151_source_archive_not_the_runtime_zip(self):
         build = (ROOT / 'scripts/build-ra-main.sh').read_text()
         self.assertIn('source_pin=01351569431bb5e8c386658932a1d4796fd96812\n', build)

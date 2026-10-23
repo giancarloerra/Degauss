@@ -10019,7 +10019,10 @@ impl App {
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     pub fn prepare_boot_launch(&mut self, normal_boot: bool, marker: &Path) {
         let first = crate::state::claim_boot_start(marker);
-        if !normal_boot || !self.settings.start_last_game_on_boot.unwrap_or(false) {
+        if self.kiosk_locked
+            || !normal_boot
+            || !self.settings.start_last_game_on_boot.unwrap_or(false)
+        {
             return;
         }
         match first {
