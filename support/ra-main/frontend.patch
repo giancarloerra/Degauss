@@ -390,7 +390,7 @@ index 60d94f5..0bb6067 100644
  
  #ifdef USE_SCHEDULER
 diff --git a/menu.cpp b/menu.cpp
-index 981b47a..f7fd048 100644
+index 981b47a..aacd6c0 100644
 --- a/menu.cpp
 +++ b/menu.cpp
 @@ -38,6 +38,7 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
@@ -464,7 +464,7 @@ index 981b47a..f7fd048 100644
  	{
  		EnableOsd_on(OSD_VGA);
  		OsdSetSize(16);
-@@ -880,6 +904,73 @@ static void vga_nag()
+@@ -880,6 +904,85 @@ static void vga_nag()
  	EnableOsd_on(OSD_ALL);
  }
  
@@ -535,10 +535,22 @@ index 981b47a..f7fd048 100644
 +	return result + "'";
 +}
 +
++static void degauss_script_error(const char *message)
++{
++	OsdSetSize(16);
++	OsdSetTitle("Script Error", 0);
++	OsdClear();
++	OsdWrite(1, message);
++	OsdWrite(3, "Check Main log for details");
++	OsdWrite(5, "Press any key to continue");
++	OsdEnable(DISABLE_KEYBOARD);
++	menustate = MENU_SCRIPTS_FB2;
++}
++
  void process_addon(char *ext, uint8_t idx)
  {
  	static char name[1024];
-@@ -1098,6 +1189,17 @@ void HandleUI(void)
+@@ -1098,6 +1201,17 @@ void HandleUI(void)
  {
  	PROFILE_FUNCTION();
  
@@ -556,7 +568,7 @@ index 981b47a..f7fd048 100644
  	if (bt_timer >= 0)
  	{
  		if (!bt_timer) bt_timer = (int32_t)GetTimer(6000);
-@@ -1593,6 +1695,13 @@ void HandleUI(void)
+@@ -1593,6 +1707,13 @@ void HandleUI(void)
  		break;
  	}
  
@@ -570,7 +582,7 @@ index 981b47a..f7fd048 100644
  	// Switch to current menu screen
  	switch (menustate)
  	{
-@@ -2941,6 +3050,14 @@ void HandleUI(void)
+@@ -2941,6 +3062,14 @@ void HandleUI(void)
  			helptext_idx = 0;
  			reboot_req = 0;
  
@@ -585,7 +597,7 @@ index 981b47a..f7fd048 100644
  			OsdSetTitle("System", 0);
  			menustate = MENU_COMMON2;
  			parentstate = MENU_COMMON1;
-@@ -2954,6 +3071,19 @@ void HandleUI(void)
+@@ -2954,6 +3083,19 @@ void HandleUI(void)
  				if (!menusub) firstmenu = 0;
  				adjvisible = 0;
  
@@ -605,7 +617,7 @@ index 981b47a..f7fd048 100644
  				MenuWrite(n++, " Core                      \x16", menusub == 0, 0);
  				MenuWrite(n++);
  
-@@ -3183,6 +3313,18 @@ void HandleUI(void)
+@@ -3183,6 +3325,18 @@ void HandleUI(void)
  				menusub = 0;
  				break;
  
@@ -624,7 +636,7 @@ index 981b47a..f7fd048 100644
  			case 17:
  				{
  					reboot_req = 1;
-@@ -3247,6 +3389,140 @@ void HandleUI(void)
+@@ -3247,6 +3401,140 @@ void HandleUI(void)
  		if(!hold_cnt && reboot_req) fpga_load_rbf("menu.rbf");
  		break;
  
@@ -765,7 +777,7 @@ index 981b47a..f7fd048 100644
  	case MENU_VIDEOPROC1:
  		helptext_idx = 0;
  		menumask = 0x7FFF;
-@@ -7246,21 +7522,90 @@ void HandleUI(void)
+@@ -7246,21 +7534,84 @@ void HandleUI(void)
  	case MENU_SCRIPTS_FB:
  		if (cfg.fb_terminal)
  		{
@@ -810,18 +822,15 @@ index 981b47a..f7fd048 100644
 -			FileSave("/tmp/script", cmd, strlen(cmd));
 +			char *command = native_command.empty() ? cmd : &native_command[0];
 +			const int written = FileSave("/tmp/script", command, strlen(command));
-+			if ((degauss_resume_after_script || returning) && written != static_cast<int>(strlen(command)))
-+			{
-+				ttypid = 0;
-+				InfoMessage("Writing native script launcher failed; check Main log", 5000);
-+				break;
-+			}
++			const bool save_failed = (degauss_resume_after_script || returning)
++				&& written != static_cast<int>(strlen(command));
  			ttystatus = 0;
- 			ttypid = fork();
+-			ttypid = fork();
 -			if (!ttypid)
++			ttypid = save_failed ? -1 : fork();
 +			if (ttypid < 0)
  			{
-+				perror("fork");
++				if (!save_failed) perror("fork");
 +				ttypid = 0;
 +				degauss_running = false;
 +				video_set_degauss_native_fb(false);
@@ -832,11 +841,9 @@ index 981b47a..f7fd048 100644
 +				menusub = 3;
 +				OsdClear();
 +				OsdEnable(DISABLE_KEYBOARD);
-+				if (degauss_resume_after_script)
-+				{
-+					menustate = MENU_SCRIPTS_FB2;
-+					InfoMessage("Starting native script failed; check Main log", 5000);
-+				}
++				if (save_failed || degauss_resume_after_script || returning)
++					degauss_script_error(save_failed ? "Cannot write script launcher"
++						: "Cannot start native script");
 +			}
 +			else if (!ttypid)
 +			{
@@ -861,7 +868,7 @@ index 981b47a..f7fd048 100644
  				execl("/sbin/agetty", "/sbin/agetty", "-a", "root", "-l", "/tmp/script", "--nohostname", "-L", "tty2", "linux", NULL);
  				exit(0); //should never be reached
  			}
-@@ -7274,10 +7619,34 @@ void HandleUI(void)
+@@ -7274,10 +7625,34 @@ void HandleUI(void)
  	case MENU_SCRIPTS_FB2:
  		if (ttypid)
  		{
@@ -891,13 +898,13 @@ index 981b47a..f7fd048 100644
 +							degauss_resume_after_script = true;
 +							menustate = MENU_SCRIPTS_FB;
 +						}
-+						else InfoMessage("Degauss native script request failed; check Main log", 5000);
++						else degauss_script_error("Invalid script handover");
 +					}
 +				}
  			}
  		}
  		else
-@@ -7290,6 +7659,13 @@ void HandleUI(void)
+@@ -7290,6 +7665,13 @@ void HandleUI(void)
  				menusub = 3;
  				OsdClear();
  				OsdEnable(DISABLE_KEYBOARD);
@@ -2797,10 +2804,10 @@ index 0000000..9472a15
 +const char *degauss_cd_disc_type_name(degauss_cd_disc_type_t type);
 diff --git a/tests/degauss_native_scripts_test.py b/tests/degauss_native_scripts_test.py
 new file mode 100644
-index 0000000..654d2d0
+index 0000000..5d256a6
 --- /dev/null
 +++ b/tests/degauss_native_scripts_test.py
-@@ -0,0 +1,191 @@
+@@ -0,0 +1,214 @@
 +#!/usr/bin/env python3
 +"""Check the production native Scripts transitions, not a replacement launcher."""
 +import os
@@ -2847,7 +2854,9 @@ index 0000000..654d2d0
 +static void user_io_osd_key_enable(int) {}
 +static void OsdClear() {}
 +static void OsdEnable(int) {}
-+static void InfoMessage(const char *s, int) { reported_error = s; }
++static void OsdSetSize(int n) { assert(n == 16); }
++static void OsdSetTitle(const char*, int) {}
++static void OsdWrite(int row, const char *s) { if (row == 1) reported_error = s; }
 +static int FileSave(const char *p, void *data, int size) {
 +    assert(!strcmp(p, "/tmp/script"));
 +    saved_command.assign(static_cast<char*>(data), size);
@@ -2905,8 +2914,7 @@ index 0000000..654d2d0
 +    assert(!degauss_running && degauss_resume_after_script);
 +    assert(menustate == MENU_SCRIPTS_FB && ttypid == 0);
 +    assert(selected == selPath);
-+    // RA Main's existing frontend cleanup also restores VT1 before disabling
-+    // the script framebuffer. Preserve that release-specific transition.
++    // RA Main restores VT1 as part of its existing frontend cleanup.
 +    assert((terminal_calls == std::vector<int>{11, 21, 40, 30}));
 +
 +    terminal_calls.clear();
@@ -2957,13 +2965,32 @@ index 0000000..654d2d0
 +    fail_save = true;
 +    step();
 +    assert(ttypid == 0 && menustate == MENU_SCRIPTS_FB2);
-+    assert(reported_error.find("Writing native") == 0);
++    assert(reported_error == "Cannot write script launcher");
++    assert(!degauss_running);
++    assert((terminal_calls == std::vector<int>{11, 22, 31, 50, 11, 21, 40, 30}));
++    c = UPSTROKE;
++    step();
++    assert(menustate == MENU_SCRIPTS_FB && degauss_starting_script_return);
++    fail_save = false;
++    c = 0;
++    step();
++    assert(degauss_running);
++    reset();
++    degauss_starting_script_return = true;
++    fail_save = true;
++    step();
++    assert(ttypid == 0 && menustate == MENU_SCRIPTS_FB2 && !degauss_running);
++    assert(reported_error == "Cannot write script launcher");
++    assert((terminal_calls == std::vector<int>{10, 22, 31, 51, 11, 21, 40, 30}));
++    c = UPSTROKE;
++    step();
++    assert(menustate == MENU_SYSTEM1);
 +    reset();
 +    degauss_resume_after_script = true;
 +    fail_fork = true;
 +    step();
 +    assert(ttypid == 0 && menustate == MENU_SCRIPTS_FB2);
-+    assert(reported_error.find("Starting native") == 0);
++    assert(reported_error == "Cannot start native script");
 +    c = UPSTROKE;
 +    step();
 +    assert(menustate == MENU_SCRIPTS_FB && degauss_starting_script_return);
@@ -2976,6 +3003,9 @@ index 0000000..654d2d0
 +    next_status = DEGAUSS_NATIVE_SCRIPT_EXIT << 8;
 +    step();
 +    assert(!reported_error.empty() && !degauss_resume_after_script);
++    assert(menustate == MENU_SCRIPTS_FB2);
++    c = UPSTROKE;
++    step();
 +    assert(menustate == MENU_SYSTEM1);
 +}
 +'''

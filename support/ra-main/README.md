@@ -47,7 +47,7 @@ the pinned backend and validate it before shipping another Degauss release.
   from https://github.com/odelot/Main_MiSTer/tree/01351569431bb5e8c386658932a1d4796fd96812.
 - Source archive SHA-256:
   `0705439c963518d56e2adb5d3e38c64151b8ff77940d66e8768d1b3ae54b63e2`.
-- Degauss integration: commit `396228726551fd1cbeee912be2f9951519d43a03`
+- Degauss integration: commit `79daf6dae42d8ba85d197011d382edf3e3380fd9`
   from https://github.com/giancarloerra/Degauss-Main.
   The patch omits its unrelated input.cpp blank-line removal.
 - rcheevos 12.5.0 is already bundled in this exact RA source. Its bytes remain
