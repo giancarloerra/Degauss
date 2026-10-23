@@ -20152,9 +20152,8 @@ impl App {
             }
             return None;
         }
-        if self.boot_launch_waiting && action == Action::Quit {
-            self.boot_launch_waiting = false;
-        }
+        // Navigation before the prompt must not queue a surprise launch later.
+        self.boot_launch_waiting = false;
         self.information_scroll_next_at
             .set(Instant::now() + INFORMATION_SCROLL_WAIT);
         if self.handle_custom_view_input(action) {

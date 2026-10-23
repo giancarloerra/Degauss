@@ -3710,9 +3710,14 @@ fn run_last_played_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
             "cancellation consumes this boot's attempt"
         );
     }
-    let now = Instant::now();
-    app.message = None;
+    app.prepare_boot_launch(true, &root.join("navigation-before-prompt"));
+    app.handle(Action::Menu);
+    assert!(!app.boot_launch_waiting);
     app.screen = Screen::Browse;
+    app.message = None;
+    assert!(app.poll_boot_launch(Instant::now()).is_none());
+    assert!(app.boot_launch_deadline.is_none());
+    let now = Instant::now();
     app.prepare_boot_launch(true, &root.join("next-boot"));
     assert!(app.poll_boot_launch(now).is_none());
     let Some(Outcome::Launch {
