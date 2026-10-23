@@ -3764,11 +3764,32 @@ fn run_kiosk_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
         "guest speed is session-only"
     );
     app.pending = Some(Pending::StorageRebuild);
+    let mountinfo = root.join("kiosk-mountinfo");
+    std::fs::write(&mountinfo, "").unwrap();
+    let mut storage = crate::storage::State::new(
+        std::sync::Arc::new(crate::systems::CoreIndex::default()),
+        mountinfo,
+        &app.all_systems,
+    )
+    .unwrap();
+    storage.offer = Some(crate::storage::Plan {
+        mounts: Default::default(),
+        systems: app.all_systems.clone(),
+        reused: Vec::new(),
+        offers: Vec::new(),
+        sources: Default::default(),
+    });
+    app.storage = Some(storage);
     app.message = Some("Rebuild storage?".into());
     app.refresh();
     assert!(app.ui.get_overlay().contains("Unlock is required"));
     app.handle(Action::Menu);
     assert!(app.pending.is_none());
+    assert!(
+        app.storage.as_ref().unwrap().offer.is_none(),
+        "a locked dismissal must consume the offer, not repeat it on navigation"
+    );
+    app.storage = None;
     assert_eq!(app.menu, ["Unlock"]);
     app.handle(Action::Accept);
     assert_eq!(app.screen, Screen::NameKeyboard);

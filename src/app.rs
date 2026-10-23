@@ -20346,6 +20346,9 @@ impl App {
         // configuration questions, but let a Pack question resume browsing.
         if self.kiosk_locked && self.pending.is_some() {
             let pending = self.pending.take();
+            if matches!(pending.as_ref(), Some(Pending::StorageRebuild)) {
+                self.decline_storage_offer();
+            }
             self.message = None;
             self.dirty = true;
             if let Some(Pending::PrepareArtworkPack(offer) | Pending::UpdateArtworkPack(offer)) =
