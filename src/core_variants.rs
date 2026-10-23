@@ -403,13 +403,13 @@ fn sharp_mz_mzf_patches(
                     .map_err(|error| {
                         DegaussError::malformed("core launcher", path, error.to_string())
                     })?;
-                let get = |key: &[u8]| {
+                let get = |key: &str| {
                     attributes
                         .iter()
                         .find(|attribute| attribute.key.as_ref().eq_ignore_ascii_case(key))
                 };
-                let is_mzf = get(b"path")
-                    .map(|attribute| attribute.unescape_value())
+                let is_mzf = get("path")
+                    .map(|attribute| attribute.normalized_value(quick_xml::XmlVersion::Implicit1_0))
                     .transpose()
                     .map_err(|error| {
                         DegaussError::malformed("core launcher", path, error.to_string())
@@ -419,11 +419,10 @@ fn sharp_mz_mzf_patches(
                             .extension()
                             .is_some_and(|extension| extension.eq_ignore_ascii_case("mzf"))
                     });
-                if is_mzf && get(b"type").is_some_and(|attribute| attribute.value.as_ref() == b"f")
-                {
-                    if let Some(index) = get(b"index").filter(|attribute| {
-                        matches!(attribute.value.as_ref(), b"1" | b"2")
-                            && attribute.value.as_ref() != wanted.as_bytes()
+                if is_mzf && get("type").is_some_and(|attribute| attribute.value.as_ref() == "f") {
+                    if let Some(index) = get("index").filter(|attribute| {
+                        matches!(attribute.value.as_ref(), "1" | "2")
+                            && attribute.value.as_ref() != wanted
                     }) {
                         let start = index.value.as_ptr() as usize - text.as_ptr() as usize;
                         patches.push((start..start + index.value.len(), wanted.into()));
