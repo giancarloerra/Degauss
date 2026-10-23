@@ -5,6 +5,8 @@ use slint::Model;
 mod custom_view_acceptance_tests;
 #[path = "explore_acceptance_tests.rs"]
 mod explore_acceptance_tests;
+#[path = "folder_options_acceptance_tests.rs"]
+mod folder_options_acceptance_tests;
 #[path = "home_acceptance_tests.rs"]
 mod home_acceptance_tests;
 
@@ -380,6 +382,17 @@ fn unopened_fixture_app_with_systems(
     ids: &[&str],
     games: &str,
 ) -> App {
+    unopened_fixture_app_with_rotation(root, window, settings, ids, games, None)
+}
+
+fn unopened_fixture_app_with_rotation(
+    root: &Path,
+    window: Rc<MinimalSoftwareWindow>,
+    settings: Settings,
+    ids: &[&str],
+    games: &str,
+    rotation: Option<ScreenRotation>,
+) -> App {
     let mut config = Config::parse("[app]", &root.join("degauss.toml")).unwrap();
     config.menu_root = root.to_string_lossy().into_owned();
     config.game_roots = vec![root.join("games").to_string_lossy().into_owned()];
@@ -427,7 +440,7 @@ fn unopened_fixture_app_with_systems(
         StartupTimings::default(),
         352,
         240,
-        None,
+        rotation,
     )
 }
 
@@ -6053,7 +6066,7 @@ fn capture_every_menu_row(app: &mut App, directory: &Path) {
                 app.select(
                     app.menu
                         .iter()
-                        .position(|label| label == page.label())
+                        .position(|label| label == app.context_page_label(page))
                         .unwrap(),
                 );
                 capture_frame(
@@ -6081,7 +6094,10 @@ fn capture_every_menu_row(app: &mut App, directory: &Path) {
                 }
                 app.handle(Action::Quit);
                 assert!(app.context_is_root());
-                assert_eq!(app.menu[app.menu_list.selected()], page.label());
+                assert_eq!(
+                    app.menu[app.menu_list.selected()],
+                    app.context_page_label(page)
+                );
             }
         }
         app.browsing = Browsing::Games;
@@ -14408,6 +14424,7 @@ pub(super) fn run_ui_acceptance_flow(window: Rc<MinimalSoftwareWindow>) {
     run_start_folder_and_game_position_flow(&root, window.clone());
     run_up_level_entry_flow(&root, window.clone());
     run_screen_rotation_flow(&root, window.clone());
+    folder_options_acceptance_tests::run(&root, window.clone());
     run_game_name_display_flow(&root, window.clone());
     run_mra_filename_display_flow(&root, window.clone());
     run_details_style_flow(&root, window.clone());

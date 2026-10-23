@@ -258,6 +258,26 @@ impl CustomViews {
     }
 }
 
+/// Explicit presentation choices for one system and exact browse place.
+/// Missing fields follow the global settings, never a parent folder.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FolderPreferences {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub screen_rotation: Option<ScreenRotation>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub folders_last: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub game_name_display: Option<GameNameDisplay>,
+}
+
+impl FolderPreferences {
+    pub fn is_empty(&self) -> bool {
+        self.screen_rotation.is_none()
+            && self.folders_last.is_none()
+            && self.game_name_display.is_none()
+    }
+}
+
 /// A settings replacement can be installed before the filesystem reports a
 /// directory-flush failure. That state is not a failed install: callers must
 /// keep the installed file and surface the durability warning.
@@ -351,6 +371,9 @@ pub struct Settings {
     /// `layout` applies there.
     #[serde(default, skip_serializing_if = "CustomViews::is_empty")]
     pub custom_views: CustomViews,
+    /// Exact system/place preferences, using the same identity as folder views.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub folder_preferences: BTreeMap<String, BTreeMap<String, FolderPreferences>>,
     /// Named proportional templates. Existing per-place view strings stay intact.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub view_definitions: BTreeMap<String, crate::custom_view::Definition>,

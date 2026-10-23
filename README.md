@@ -1153,14 +1153,16 @@ two thirds of the screen width keeps every picture within its decode.
 **Options → Appearance → View** is the global default. Every browse place can instead
 keep its own custom view: Home, each category's Systems
 screen, each system root, and every folder inside a system. Use **X Actions →
-Appearance → Change View** at that place to create or update its custom view.
+Folder Options → Change View** inside a game-library or Favourites folder,
+or **Appearance → Change View** on a system-list page, to save its view.
 **Use Global View**, in the same group, removes only that place's custom view;
 it then follows later global
 changes again. A custom view remains custom even when it currently matches
 the global setting. At Home these view controls are
 directly in its flat Actions menu.
 
-**X Actions → Appearance → Custom Views** creates named views from four
+**X Actions → Folder Options → Custom Views** inside a game-library or
+Favourites folder creates named views from four
 templates: two columns, a left column with two panels on the right, two
 panels on the left with a right column, or two stacked panels. On Home and
 in Explore, Custom Views is directly in Actions. Exactly one panel is the
@@ -1179,6 +1181,41 @@ Use Here, Use Globally, Edit, Save As, Rename and Delete. Deleting a named
 view removes its assignments; existing built-in assignments are unchanged.
 Proportions adapt to the screen and its safe area, including portrait.
 Core Updates keeps its dedicated Details presentation.
+
+#### Folder Options
+
+Inside a game-library or Favourites folder, **X Actions → Folder Options**
+keeps the view controls together with three independent preferences:
+
+- **Screen Rotation**: Use Global, Off, 90° Clockwise or 90° Counterclockwise.
+  A keeps the preview; B or the 15-second timeout reverts it.
+- **Folder Position**: Use Global, Before Games or After Games.
+- **Game Name Display**: Use Global or any of the existing full/shortened-name choices.
+
+Global defaults are **Options → Display → Screen Rotation**,
+**Options → Library → Folders Before Games** (On means Before Games;
+Off means After Games), and **Options → Appearance → Game Name Display**.
+
+These affect the **folder currently open**, not a highlighted child folder or
+game. The open folder is shown as the action's scope. Use Global follows the
+corresponding setting in Options, including later changes; an explicit choice
+remains local even when it matches the global value. Child and sibling folders
+have their own choices, with no parent inheritance. Change a preference back to
+Use Global independently of the others. Existing custom-view assignments stay
+separate, and Use Global View changes only the view.
+
+Rotation turns the complete frontend image, including menus, on its currently
+selected outputs. It does not change video timings, game rotation or the
+shared-orientation contract between CRT and HDMI. Saved choices apply on
+re-entry and after returning from a game. Name and folder-position changes
+do not rename files, change artwork/metadata or launch targets, or require a
+library rebuild. **Use MRA Filenames for Arcade Titles** still takes precedence
+over shortened names.
+
+An in-app Favourites folder rename preserves its preferences and those of its
+subfolders. Successful in-app deletion removes them; unavailable storage does
+not. External filesystem renames are not tracked. Home, category, system-list
+and special-browser Actions menus retain their existing organisation.
 
 Full information is read only for the settled selected game, from its
 configured Gamelist or Artwork Pack. Long information scrolls slowly after a
