@@ -43,10 +43,10 @@ the pinned backend and validate it before shipping another Degauss release.
 
 ## Sources and compatibility
 
-- RA Main v1.14.0: commit `756b4d6a18f742bd48885de2a03008436943dfa9`
-  from https://github.com/odelot/Main_MiSTer/tree/756b4d6a18f742bd48885de2a03008436943dfa9.
+- RA Main v1.15.1: commit `01351569431bb5e8c386658932a1d4796fd96812`
+  from https://github.com/odelot/Main_MiSTer/tree/01351569431bb5e8c386658932a1d4796fd96812.
 - Source archive SHA-256:
-  `5501487cf534afecac062ca1f65bebc61b5a2a55de60035a447dcf44060df768`.
+  `0705439c963518d56e2adb5d3e38c64151b8ff77940d66e8768d1b3ae54b63e2`.
 - Degauss integration: commit `8b6520d90311161a90760816a4821b20c2c5e899`
   from https://github.com/giancarloerra/Degauss-Main.
   The patch omits its unrelated input.cpp blank-line removal.

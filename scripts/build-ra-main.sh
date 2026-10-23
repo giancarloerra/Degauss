@@ -8,8 +8,8 @@ if [[ $# -ne 1 || -e "$1" ]]; then
 fi
 mkdir -p "$1"
 build_root="$(cd "$1" && pwd)"
-source_pin=756b4d6a18f742bd48885de2a03008436943dfa9
-archive_sha=5501487cf534afecac062ca1f65bebc61b5a2a55de60035a447dcf44060df768
+source_pin=01351569431bb5e8c386658932a1d4796fd96812
+archive_sha=0705439c963518d56e2adb5d3e38c64151b8ff77940d66e8768d1b3ae54b63e2
 curl --fail --location --silent --show-error \
     "https://codeload.github.com/odelot/Main_MiSTer/tar.gz/${source_pin}" \
     -o "$build_root/upstream.tar.gz"
