@@ -377,14 +377,17 @@ fn sharp_mz_mzf_patches(
         return Ok(Vec::new());
     }
     let lower = stem.to_ascii_lowercase();
-    let Some(date) = crate::systems::core_build_date(stem).or_else(|| {
+    let date = crate::systems::core_build_date(stem).or_else(|| {
         lower
             .rfind("_unstable_")
             .and_then(|at| stem.get(at + 10..at + 18))
-    }) else {
-        return Ok(Vec::new());
+    });
+    let wanted = if date.is_some_and(|date| date >= "20261015") {
+        "2"
+    } else {
+        // Undated custom builds retain the original direct-load profile.
+        "1"
     };
-    let wanted = if date >= "20261015" { "2" } else { "1" };
     let mut reader = Reader::from_str(text);
     let mut patches = Vec::new();
     let mut depth = 0usize;
@@ -573,6 +576,18 @@ mod tests {
             );
             assert!(changed.contains("path=\"Game & Two.mzf\""));
         }
+    }
+
+    #[test]
+    fn sharp_mz_undated_core_restores_the_old_slot_for_a_newer_favourite() {
+        let text = "<mistergamedescription><rbf>_Computer/SharpMZ</rbf><file type=\"f\" index=\"2\" path=\"Game.mzf\"/><file type=\"s\" index=\"2\" path=\"Disk.dsk\"/></mistergamedescription>";
+        let core = super::EffectiveCore {
+            rbf: "_Computer/SharpMZ".into(),
+            setname_xml: None,
+        };
+        let changed = super::apply(text, std::path::Path::new("Game.mgl"), &core).unwrap();
+        assert!(changed.contains("type=\"f\" index=\"1\" path=\"Game.mzf\""));
+        assert!(changed.contains("type=\"s\" index=\"2\" path=\"Disk.dsk\""));
     }
 
     use super::*;
