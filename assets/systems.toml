@@ -2665,6 +2665,19 @@ index = 2
 delay = 1
 
 [[systems]]
+name = "Elektronika MS-0511 (UKNC)"
+id = "UKNC"
+folders = ["UKNC"]
+rbf = "_Computer/UKNC"
+extensions = ["dsk", "mgl"]
+category = "Computer"
+[[systems.launch]]
+extensions = ["dsk"]
+type = "s"
+index = 0
+delay = 1
+
+[[systems]]
 name = "Sun SPARCstation 20"
 id = "SunSparcStation"
 folders = ["SunSparcStation"]

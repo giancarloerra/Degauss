@@ -972,8 +972,11 @@ Nothing else needs resetting.
 ### Additional computer and disc libraries
 
 Apple III, Macintosh Quadra 800, NeXT Color, Sun-2, Sun-3, Macintosh SE/30,
-Macintosh IIcx, FM Towns Marty, Sun SPARCstation 20 and Cray X-MP use their normal `games/<core>` folders.
+Macintosh IIcx, FM Towns Marty, UKNC, Sun SPARCstation 20 and Cray X-MP use their normal `games/<core>` folders.
 SE/30 uses `games/MACSE30`; IIcx uses `games/MACIICX`.
+UKNC uses `games/UKNC`: DSK floppies mount in the first drive (slot 0).
+Use an explicit MGL to select the second floppy drive (slot 1) or multiple
+floppies. VHD hard-disk loading is not included.
 SPARCstation 20 uses `games/SunSparcStation`: hard disks mount in slot 0,
 CDs in slot 2. Use explicit MGLs for secondary disks (slot 1), multiple media
 or a session PROM override. Firmware and NVRAM remain managed by the core.
