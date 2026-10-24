@@ -5,6 +5,8 @@ use slint::Model;
 mod custom_view_acceptance_tests;
 #[path = "explore_acceptance_tests.rs"]
 mod explore_acceptance_tests;
+#[path = "folder_options_acceptance_tests.rs"]
+mod folder_options_acceptance_tests;
 #[path = "home_acceptance_tests.rs"]
 mod home_acceptance_tests;
 
@@ -380,6 +382,17 @@ fn unopened_fixture_app_with_systems(
     ids: &[&str],
     games: &str,
 ) -> App {
+    unopened_fixture_app_with_rotation(root, window, settings, ids, games, None)
+}
+
+fn unopened_fixture_app_with_rotation(
+    root: &Path,
+    window: Rc<MinimalSoftwareWindow>,
+    settings: Settings,
+    ids: &[&str],
+    games: &str,
+    rotation: Option<ScreenRotation>,
+) -> App {
     let mut config = Config::parse("[app]", &root.join("degauss.toml")).unwrap();
     config.menu_root = root.to_string_lossy().into_owned();
     config.game_roots = vec![root.join("games").to_string_lossy().into_owned()];
@@ -427,7 +440,7 @@ fn unopened_fixture_app_with_systems(
         StartupTimings::default(),
         352,
         240,
-        None,
+        rotation,
     )
 }
 
@@ -2423,6 +2436,38 @@ fn run_misterzine_browser_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
     assert!(information.contains("Source: MiSTer Distribution"));
     assert!(information.contains("Game titles\nFirst Game\nSecond Game"));
     assert!(!information.contains("Publisher:"));
+    for manual in [true, false] {
+        app.clear_misterzine_games();
+        app.information_scroll_manual = manual;
+        app.ui.set_information_offset(37.0);
+        let key = app.selected_misterzine_item().unwrap().key().to_string();
+        app.misterzine_game_job = Some(
+            crate::misterzine::start_game_job(crate::misterzine::GameRequest {
+                key: key.clone(),
+                cache_dir: app.cache_dir.clone(),
+                source: crate::misterzine::GameSource::Gamelist,
+                target: crate::misterzine::GameTarget::System { id: "NES".into() },
+            })
+            .unwrap(),
+        );
+        app.misterzine_game_job_key = Some(key);
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while app.misterzine_game_job.is_some() && Instant::now() < deadline {
+            app.maintain_misterzine_games(Instant::now());
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(app.misterzine_game_job.is_none());
+        assert!(app.misterzine_games.as_ref().unwrap().loaded);
+        assert_eq!(
+            app.misterzine_games.as_ref().unwrap().matches.games.len(),
+            2
+        );
+        assert_eq!(
+            app.ui.get_information_offset(),
+            if manual { 37.0 } else { 0.0 },
+            "late Core Updates titles preserve manual reading, but retain the ordinary automatic reset"
+        );
+    }
     app.screen = Screen::Browse;
 
     app.open_context();
@@ -3634,6 +3679,313 @@ fn select_row_named(app: &mut App, name: &str) {
     app.game_list.select(index);
 }
 
+fn run_kiosk_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
+    let root = root.join("kiosk");
+    let games = root.join("games/NES");
+    std::fs::create_dir_all(&games).unwrap();
+    std::fs::create_dir_all(root.join("_Console")).unwrap();
+    std::fs::write(root.join("_Console/NES.rbf"), b"fixture core").unwrap();
+    let game = games.join("Guest Game.nes");
+    std::fs::write(&game, b"fixture game").unwrap();
+    let config_path = root.join("degauss.toml");
+    let user_path = root.join("degauss-user.toml");
+    std::fs::write(&config_path, "[app]").unwrap();
+    let user_config = "kiosk_pin = '012345'\n";
+    std::fs::write(&user_path, user_config).unwrap();
+    let mut settings = Settings {
+        show_scripts: Some(true),
+        show_cores: Some(true),
+        show_misterzine: Some(true),
+        start_folder: Some("Console".into()),
+        start_last_game_on_boot: Some(true),
+        ..Default::default()
+    };
+    for target in [
+        crate::home::Target::Script {
+            path: root.join("Scripts/Example.sh"),
+        },
+        crate::home::Target::Core {
+            path: root.join("_Console/NES.rbf"),
+        },
+        crate::home::Target::Game {
+            system: "NES".into(),
+            launch: browse::Launch::File(game.clone()),
+        },
+    ] {
+        settings
+            .home
+            .add(
+                crate::home::Entry {
+                    name: "Guest entry".into(),
+                    target,
+                    image: None,
+                },
+                None,
+            )
+            .unwrap();
+    }
+    let saved_home = settings.home.clone();
+    let make_app = |settings: Settings| {
+        let mut config = Config::load(&config_path).unwrap();
+        config.menu_root = root.to_string_lossy().into_owned();
+        config.game_roots = vec![root.join("games").to_string_lossy().into_owned()];
+        let def = crate::systems::load_table(Path::new("assets/systems.toml"))
+            .unwrap()
+            .into_iter()
+            .find(|def| def.id == "NES")
+            .unwrap();
+        let loaded = Loaded {
+            config,
+            settings,
+            settings_path: root.join("settings.toml"),
+            core_catalogue: Default::default(),
+            systems: vec![FoundSystem {
+                def: def.clone(),
+                paths: vec![games.clone()],
+                logo_dir: None,
+                menu_folder: None,
+            }],
+            table: vec![def],
+            names: Default::default(),
+            logo_dir: None,
+            themes_dir: root.join("themes"),
+            themes: crate::theme::load_available(&root.join("themes")),
+            network_boot: None,
+            storage: None,
+        };
+        let mut app = App::new(
+            loaded,
+            window.clone(),
+            DegaussWindow::new().unwrap(),
+            StartupTimings::default(),
+            352,
+            240,
+            None,
+        );
+        app.finish_background_work_for_headless();
+        app.leave_splash();
+        app
+    };
+    let mut app = make_app(settings);
+    assert!(app.kiosk_locked);
+    let boot_marker = root.join("boot-started");
+    app.prepare_boot_launch(true, &boot_marker);
+    assert!(
+        boot_marker.is_file(),
+        "kiosk still consumes the boot attempt"
+    );
+    assert!(!app.boot_launch_waiting, "kiosk must always stay at Home");
+    assert!(app.poll_boot_launch(Instant::now()).is_none());
+    assert_eq!(app.browsing, Browsing::Categories);
+    assert!(!app.start_folder_pending);
+    assert!(app
+        .categories
+        .iter()
+        .all(|(name, _)| app.kiosk_category_allowed(name)));
+    assert_eq!(
+        app.home
+            .rows
+            .iter()
+            .filter(|row| row.starts_with("entry:"))
+            .count(),
+        1
+    );
+    for action in [
+        Action::Context,
+        Action::CyclePresent,
+        Action::HoldShortcut(HoldShortcut::AddRemoveFavourite),
+    ] {
+        assert!(app.handle(action).is_none());
+        assert_eq!(app.screen, Screen::Browse);
+    }
+    assert_eq!(app.available_hold_shortcuts(), [None; 4]);
+    let saved_speed = app.settings.speed_step;
+    let speed = app.speed;
+    app.horizontal = Horizontal::Speed;
+    app.handle(Action::Faster);
+    assert_ne!(app.speed, speed);
+    assert_eq!(
+        app.settings.speed_step, saved_speed,
+        "guest speed is session-only"
+    );
+    app.pending = Some(Pending::StorageRebuild);
+    let mountinfo = root.join("kiosk-mountinfo");
+    std::fs::write(&mountinfo, "").unwrap();
+    let mut storage = crate::storage::State::new(
+        std::sync::Arc::new(crate::systems::CoreIndex::default()),
+        mountinfo,
+        &app.all_systems,
+    )
+    .unwrap();
+    storage.offer = Some(crate::storage::Plan {
+        mounts: Default::default(),
+        systems: app.all_systems.clone(),
+        reused: Vec::new(),
+        offers: Vec::new(),
+        sources: Default::default(),
+    });
+    app.storage = Some(storage);
+    app.message = Some("Rebuild storage?".into());
+    app.refresh();
+    assert!(app.ui.get_overlay().contains("Unlock is required"));
+    assert!(!app.ui.get_overlay_dismissible());
+    assert!(!app.ui.get_overlay_close_controls().contains("Rebuild"));
+    app.settings.swap_a_b = Some(true);
+    app.settings.swap_x_y = Some(true);
+    app.refresh();
+    assert!(
+        app.ui.get_overlay().contains("A Back   X Menu"),
+        "locked storage offers advertise the mapped unlock controls, not unavailable maintenance"
+    );
+    app.settings.swap_a_b = None;
+    app.settings.swap_x_y = None;
+    app.kiosk_locked = false;
+    app.refresh();
+    assert!(app.ui.get_overlay_dismissible());
+    assert_eq!(app.ui.get_overlay_close_controls(), "A Rebuild   B Not Now");
+    app.kiosk_locked = true;
+    app.refresh();
+    app.handle(Action::Menu);
+    assert!(app.pending.is_none());
+    assert!(
+        app.storage.as_ref().unwrap().offer.is_none(),
+        "a locked dismissal must consume the offer, not repeat it on navigation"
+    );
+    app.storage = None;
+    assert_eq!(app.menu, ["Unlock"]);
+    app.handle(Action::Accept);
+    assert_eq!(app.screen, Screen::NameKeyboard);
+    assert!(
+        app.build.is_none(),
+        "Unlock must not accept the displaced rebuild offer"
+    );
+    app.handle(Action::Quit);
+    app.handle(Action::Quit);
+    let state_path = crate::cache::artwork_pack_source_path(&app.cache_dir, "NES");
+    let state_before = std::fs::read(&state_path).ok();
+    app.pending = Some(Pending::PrepareArtworkPack(Box::new(PackOffer {
+        system_id: "NES".into(),
+        docs_root: root.join("unused-pack"),
+        language: None,
+        signature: None,
+        cache_marker: None,
+        then: OfferFollowUp::OpenSystem,
+    })));
+    app.handle(Action::Accept);
+    assert_eq!(
+        app.open_system.as_deref(),
+        Some("NES"),
+        "a guest can enter cached or ordinary rows without preparing an offered Pack"
+    );
+    assert!(app.source_job.is_none());
+    assert_eq!(
+        std::fs::read(&state_path).ok(),
+        state_before,
+        "guest browsing must not save a Pack decision"
+    );
+    app.handle(Action::Quit);
+    app.open_options_page(OptionsPage::Library);
+    app.open_scripts();
+    assert_eq!(app.screen, Screen::Browse);
+    app.handle(Action::Menu);
+    assert_eq!(app.menu, ["Unlock"]);
+    app.handle(Action::Accept);
+    assert_eq!(app.name_keyboard_page, NamePage::Pin);
+    for _ in 0..6 {
+        app.name_keyboard_list.select(0);
+        app.handle(Action::Accept);
+    }
+    assert!(app.kiosk_locked);
+    assert!(app.message.as_deref().unwrap().contains("Incorrect code"));
+    assert!(app.name_keyboard_draft.is_empty());
+    app.message = None;
+    app.name_keyboard_list.select(0);
+    app.handle(Action::Accept);
+    app.refresh();
+    assert_eq!(app.ui.get_find_query().as_str(), "*");
+    app.handle(Action::Quit);
+    assert_eq!(app.screen, Screen::Menu);
+    assert!(app.kiosk_locked);
+    app.handle(Action::Accept);
+    for digit in 0..6 {
+        app.name_keyboard_list.select(digit);
+        app.handle(Action::Accept);
+    }
+    assert!(!app.kiosk_locked);
+    assert_eq!(app.screen, Screen::Browse);
+    assert!(app.name_keyboard_draft.is_empty());
+    assert_eq!(app.settings.home, saved_home);
+    app.open_menu();
+    assert!(app.menu.iter().any(|row| row == "Options"));
+    app.save_settings();
+    assert!(!std::fs::read_to_string(&app.settings_path)
+        .unwrap()
+        .contains("kiosk_pin"));
+    let saved = app.settings.clone();
+    app.ui.hide().unwrap();
+    drop(app);
+    let mut app = make_app(saved);
+    assert!(app.kiosk_locked, "unlock must never survive a new process");
+    app.restore_position(&crate::state::State {
+        system: "NES".into(),
+        ..Default::default()
+    });
+    assert_eq!(app.browsing, Browsing::Categories);
+    app.open_category_named("Console".into());
+    app.open_system_by_index(0);
+    app.finish_background_work_for_headless();
+    select_row_named(&mut app, "Guest Game.nes");
+    assert!(matches!(
+        app.handle(Action::Accept),
+        Some(Outcome::Launch { .. })
+    ));
+    assert_eq!(std::fs::read_to_string(&user_path).unwrap(), user_config);
+    assert_eq!(app.settings.home, saved_home);
+    // Required storage can fail before any library is available. The locked
+    // operator must still be able to unlock, without opening maintenance.
+    app.network_plan = Some(crate::network_wait::Plan::fixture(
+        vec![root.join("unavailable")],
+        root.join("missing-mountinfo"),
+        Duration::from_secs(1),
+    ));
+    app.network_no_local = true;
+    app.network_problem = Some("No local game folders are available.".into());
+    app.screen = Screen::Browse;
+    app.update_operation_ui();
+    assert!(app.ui.get_operation_controls().contains("Unlock"));
+    assert!(!app.ui.get_operation_controls().contains("Exit"));
+    assert!(
+        app.handle(Action::Quit).is_none(),
+        "locked exit stays blocked"
+    );
+    app.handle(Action::Menu);
+    assert_eq!(app.screen, Screen::NameKeyboard);
+    assert_eq!(app.name_keyboard_purpose, NamePurpose::UnlockKiosk);
+    app.refresh();
+    assert_eq!(
+        app.ui.get_operation_kind(),
+        0,
+        "the PIN keyboard is not covered by the storage screen"
+    );
+    app.handle(Action::Quit);
+    assert!(app.kiosk_locked);
+    assert_eq!(app.screen, Screen::Browse);
+    app.handle(Action::Menu);
+    for digit in 0..6 {
+        app.name_keyboard_list.select(digit);
+        app.handle(Action::Accept);
+    }
+    assert!(!app.kiosk_locked);
+    assert!(
+        app.network_plan.is_some(),
+        "unlock does not hide the storage failure"
+    );
+    app.update_operation_ui();
+    assert!(app.ui.get_operation_controls().contains("Exit"));
+    assert!(matches!(app.handle(Action::Quit), Some(Outcome::Quit)));
+    app.ui.hide().unwrap();
+}
+
 fn run_last_played_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
     let root = root.join("last-played");
     let games = root.join("games/NES");
@@ -3681,6 +4033,100 @@ fn run_last_played_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
     assert!(history.is_none());
     assert_eq!(active_game, Some(first.clone()));
     assert!(!crate::history::path_beside(&app.settings_path).exists());
+    let marker = root.join("boot-claimed-while-off");
+    app.prepare_boot_launch(true, &marker);
+    assert!(!app.boot_launch_waiting);
+    app.settings.start_last_game_on_boot = Some(true);
+    app.prepare_boot_launch(true, &root.join("empty-history-boot"));
+    assert!(app.boot_launch_waiting);
+    assert!(app.poll_boot_launch(Instant::now()).is_none());
+    assert!(!app.boot_launch_waiting);
+    assert!(app.boot_launch_deadline.is_none());
+    assert!(
+        app.message.is_none(),
+        "no recorded game is a normal startup"
+    );
+    app.last_played.remember(crate::history::Entry {
+        system: "NES".into(),
+        launch: browse::Launch::File(first.clone()),
+        name: "First".into(),
+    });
+    app.prepare_boot_launch(true, &marker);
+    assert!(
+        !app.boot_launch_waiting,
+        "enabling later in the same boot must not launch"
+    );
+    for normal_boot in [false, true] {
+        let marker = root.join(format!("boot-cancel-{normal_boot}"));
+        app.prepare_boot_launch(normal_boot, &marker);
+        assert_eq!(app.boot_launch_waiting, normal_boot);
+        let now = Instant::now();
+        assert!(app.poll_boot_launch(now).is_none());
+        assert_eq!(app.boot_launch_deadline.is_some(), normal_boot);
+        if normal_boot {
+            for swapped in [false, true] {
+                app.settings.swap_a_b = Some(swapped);
+                app.refresh();
+                assert_eq!(app.message.as_deref(), Some("Starting Last Game\nFirst"));
+                let cancel = if swapped { "A Cancel" } else { "B Cancel" };
+                assert_eq!(
+                    app.ui.get_overlay_close_controls().as_str(),
+                    cancel,
+                    "the countdown needs one correctly mapped footer, not a second body hint"
+                );
+                assert_eq!(
+                    app.ui.get_overlay_read_close_controls().as_str(),
+                    cancel,
+                    "long game names must not advertise scrolling or a separate Close action during the countdown"
+                );
+            }
+            app.settings.swap_a_b = None;
+        }
+        app.handle(Action::Quit);
+        assert!(app.poll_boot_launch(now + Duration::from_secs(4)).is_none());
+        app.prepare_boot_launch(true, &marker);
+        assert!(
+            !app.boot_launch_waiting,
+            "cancellation consumes this boot's attempt"
+        );
+    }
+    app.prepare_boot_launch(true, &root.join("navigation-before-prompt"));
+    app.handle(Action::Menu);
+    assert!(!app.boot_launch_waiting);
+    app.screen = Screen::Browse;
+    app.message = None;
+    assert!(app.poll_boot_launch(Instant::now()).is_none());
+    assert!(app.boot_launch_deadline.is_none());
+    let now = Instant::now();
+    app.prepare_boot_launch(true, &root.join("next-boot"));
+    assert!(app.poll_boot_launch(now).is_none());
+    let Some(Outcome::Launch {
+        history: Some(update),
+        ..
+    }) = app.poll_boot_launch(now + Duration::from_secs(4))
+    else {
+        panic!(
+            "boot launch must use the normal successful launch plan: {:?}",
+            app.message
+        );
+    };
+    assert_eq!(update.entry.launch, browse::Launch::File(first.clone()));
+    assert_eq!(update.entry.system, "NES");
+    assert!(!app.boot_launch_waiting);
+    assert!(app
+        .poll_boot_launch(now + Duration::from_secs(10))
+        .is_none());
+    app.last_played.entries[0].launch = browse::Launch::File(root.join("gone.nes"));
+    app.prepare_boot_launch(true, &root.join("missing-target-boot"));
+    app.message = None;
+    app.poll_boot_launch(now);
+    assert!(app.poll_boot_launch(now + Duration::from_secs(4)).is_none());
+    assert!(app
+        .message
+        .as_deref()
+        .unwrap()
+        .contains("gone from the card"));
+    assert!(!app.boot_launch_waiting, "failed launches must not repeat");
     app.ui.hide().unwrap();
     drop(app);
 
@@ -5720,7 +6166,7 @@ fn capture_every_menu_row(app: &mut App, directory: &Path) {
                 app.select(
                     app.menu
                         .iter()
-                        .position(|label| label == page.label())
+                        .position(|label| label == app.context_page_label(page))
                         .unwrap(),
                 );
                 capture_frame(
@@ -5748,7 +6194,10 @@ fn capture_every_menu_row(app: &mut App, directory: &Path) {
                 }
                 app.handle(Action::Quit);
                 assert!(app.context_is_root());
-                assert_eq!(app.menu[app.menu_list.selected()], page.label());
+                assert_eq!(
+                    app.menu[app.menu_list.selected()],
+                    app.context_page_label(page)
+                );
             }
         }
         app.browsing = Browsing::Games;
@@ -6323,6 +6772,85 @@ fn run_indexing_ui_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
     app.ui.hide().unwrap();
 }
 
+fn run_information_manual_scroll_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
+    let mut app = fixture_app(root, window, Settings::default());
+    app.open_context();
+    let started = Instant::now();
+    for (action, position) in [
+        (Action::Up, 0.5),
+        (Action::Down, 0.5),
+        (Action::Slower, 0.5),
+        (Action::Faster, 0.5),
+        (Action::PageUp, 0.5),
+        (Action::PageDown, 0.5),
+        (Action::Home, 0.5),
+        (Action::End, 0.5),
+        (Action::Up, 0.0),
+        (Action::Down, 1.0),
+    ] {
+        app.open_information();
+        app.finish_background_work_for_headless();
+        app.refresh();
+        assert_eq!(app.screen, Screen::Information);
+        let limit = app.ui.get_information_max_scroll();
+        assert!(limit > 0.0, "the actual full-description view must scroll");
+        app.ui.set_information_offset(limit * position);
+        app.handle(action);
+        let manual = app.ui.get_information_offset();
+        if action == Action::Home {
+            assert_eq!(manual, 0.0);
+        } else if action == Action::End {
+            assert_eq!(manual, limit);
+            capture_live_if_requested(&mut app, "information-manual-end");
+        }
+        for waits in [1, 2, 10] {
+            let later = started + INFORMATION_SCROLL_WAIT * waits;
+            app.information_scroll_next_at.set(later);
+            app.maintain_information_scroll(later);
+            assert_eq!(
+                app.ui.get_information_offset(),
+                manual,
+                "{action:?} keeps manual control for this visit, even after {waits} waits"
+            );
+        }
+        app.handle(Action::Quit);
+        assert_eq!(app.screen, Screen::Context);
+    }
+
+    // A new visit starts an ordinary automatic reader, not a saved manual mode.
+    app.open_information();
+    app.finish_background_work_for_headless();
+    app.refresh();
+    assert_eq!(app.ui.get_information_offset(), 0.0);
+    capture_live_if_requested(&mut app, "information-reopened-top");
+    let at = Instant::now() + INFORMATION_SCROLL_WAIT;
+    app.information_scroll_next_at.set(at);
+    app.maintain_information_scroll(at - Duration::from_millis(1));
+    assert_eq!(app.ui.get_information_offset(), 0.0);
+    app.maintain_information_scroll(at);
+    assert_eq!(app.ui.get_information_offset(), 1.0);
+    app.maintain_information_scroll(at + INFORMATION_SCROLL_STEP);
+    assert_eq!(app.ui.get_information_offset(), 2.0);
+    let limit = app.ui.get_information_max_scroll();
+    app.ui.set_information_offset(limit);
+    app.information_scroll_next_at.set(at);
+    app.maintain_information_scroll(at);
+    assert_eq!(app.ui.get_information_offset(), 0.0);
+    app.maintain_information_scroll(at + INFORMATION_SCROLL_WAIT);
+    assert_eq!(app.ui.get_information_offset(), 1.0);
+
+    // Manually stopping Game Information must not stop long message overlays.
+    app.handle(Action::End);
+    app.handle(Action::Quit);
+    app.message = Some("Long actionable report.\n".repeat(80));
+    app.refresh();
+    assert!(app.ui.get_overlay_max_scroll() > 0.0);
+    app.information_scroll_next_at.set(at);
+    app.maintain_information_scroll(at);
+    assert_eq!(app.ui.get_overlay_offset(), 1.0);
+    app.ui.hide().unwrap();
+}
+
 fn capture_ui_if_requested(root: &Path, window: Rc<MinimalSoftwareWindow>) {
     let Some(directory) = std::env::var_os("DEGAUSS_UI_CAPTURE_DIR") else {
         return;
@@ -6504,18 +7032,19 @@ fn capture_ui_if_requested(root: &Path, window: Rc<MinimalSoftwareWindow>) {
     app.handle(Action::PageDown);
     capture_frame(&mut app, &directory, "information-middle", 352, 240);
     app.handle(Action::End);
-    assert!(app.ui.get_information_offset() > 0.0);
+    let manual_bottom = app.ui.get_information_offset();
+    assert!(manual_bottom > 0.0);
     capture_frame(&mut app, &directory, "information-bottom", 352, 240);
     let at = Instant::now();
     app.information_scroll_next_at.set(at);
     app.maintain_information_scroll(at);
     assert_eq!(
         app.ui.get_information_offset(),
-        0.0,
-        "automatic reading loops after the bottom pause"
+        manual_bottom,
+        "manual reading keeps its position after the bottom pause"
     );
     app.maintain_information_scroll(at + INFORMATION_SCROLL_WAIT);
-    assert_eq!(app.ui.get_information_offset(), 1.0);
+    assert_eq!(app.ui.get_information_offset(), manual_bottom);
 
     app.set_screen(Screen::Browse);
     app.message = Some(format!(
@@ -7473,13 +8002,21 @@ fn run_artwork_pack_picture_types_flow(root: &Path, window: Rc<MinimalSoftwareWi
         "only the new packs are installed"
     );
     let ordinary = std::fs::read(crate::cache::system_path(&app.cache_dir, "NES")).unwrap();
-    for (position, kind) in [(1, PictureType::Screenshot), (2, PictureType::TitleScreen)] {
+    for (position, kind) in [(2, PictureType::Screenshot), (3, PictureType::TitleScreen)] {
         app.screen = Screen::Browse;
         app.open_game_data_source();
         app.menu_list.select(2);
         app.handle(Action::Accept);
         assert_eq!(app.screen, Screen::ArtworkPackType);
-        assert_eq!(app.menu, ["Box Art", "Screenshot", "Title Screen"]);
+        assert_eq!(
+            app.menu,
+            [
+                "Use Global (Box Art)",
+                "Box Art",
+                "Screenshot",
+                "Title Screen"
+            ]
+        );
         if let Some(directory) = std::env::var_os("DEGAUSS_UI_CAPTURE_DIR") {
             for (width, height) in [(352, 240), (640, 480)] {
                 capture_frame(
@@ -7627,6 +8164,52 @@ fn run_artwork_pack_picture_types_flow(root: &Path, window: Rc<MinimalSoftwareWi
             "switching picture types does not rebuild or overwrite the ordinary library"
         );
     }
+    app.settings.default_artwork_pack = Some(PictureType::TitleScreen);
+    app.open_game_data_source();
+    app.menu_list.select(2);
+    app.handle(Action::Accept);
+    app.menu_list.select(0);
+    app.handle(Action::Accept);
+    app.finish_background_work_for_headless();
+    app.menu_list.select(0);
+    app.handle(Action::Accept);
+    app.finish_background_work_for_headless();
+    assert!(app.settings.artwork_pack_inherit.contains("NES"));
+    let retained_root = app.settings.artwork_pack_roots["NES"].clone();
+    app.message = None;
+    app.screen = Screen::Browse;
+    app.open_options_page(OptionsPage::Library);
+    app.adjust_option_value(OptionId::DefaultArtworkPack, -1);
+    for _ in 0..3 {
+        app.handle(Action::Quit);
+    }
+    app.finish_background_work_for_headless();
+    assert_eq!(
+        app.artwork_provider.as_ref().unwrap().picture_type,
+        PictureType::Screenshot
+    );
+    assert_eq!(app.settings.artwork_pack_roots["NES"], retained_root);
+    app.open_last_played();
+    app.finish_background_work_for_headless();
+    assert!(app.last_played_open);
+    for (delta, has_screenshot) in [(1, false), (-1, true)] {
+        app.open_options_page(OptionsPage::Library);
+        app.adjust_option_value(OptionId::DefaultArtworkPack, delta);
+        for _ in 0..3 {
+            app.handle(Action::Quit);
+        }
+        app.finish_background_work_for_headless();
+        assert!(app.last_played_open);
+        assert!(!app.here.is_empty());
+        assert_eq!(
+            app.here.iter().any(|row| row
+                .cover
+                .as_ref()
+                .is_some_and(|path| path.starts_with(docs.join("NES/Screenshots")))),
+            has_screenshot,
+            "an open Last Played view must not retain the previous picture type"
+        );
+    }
     app.save_settings();
     let state = Settings::load(&app.settings_path).unwrap();
     let prepared = cache_snapshot(&app.cache_dir);
@@ -7635,12 +8218,12 @@ fn run_artwork_pack_picture_types_flow(root: &Path, window: Rc<MinimalSoftwareWi
     let restarted = fixture_app(&root, window, state);
     assert_eq!(
         restarted.artwork_provider.as_ref().unwrap().picture_type,
-        PictureType::TitleScreen
+        PictureType::Screenshot
     );
     assert!(restarted.here.iter().all(|row| row
         .cover
         .as_ref()
-        .is_some_and(|path| path.starts_with(docs.join("NES/Titles")))));
+        .is_some_and(|path| path.starts_with(docs.join("NES/Screenshots")))));
     assert_eq!(
         cache_snapshot(&restarted.cache_dir),
         prepared,
@@ -9073,6 +9656,7 @@ fn run_automatic_pack_consent_flow(root: &Path, window: Rc<MinimalSoftwareWindow
         let mode = std::fs::metadata(&root).unwrap().permissions().mode();
         std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o555)).unwrap();
         app.source_system_id = Some("NES".into());
+        app.source_picture_inherit = false;
         app.begin_source_switch(crate::source_cache::Target::ArtworkPack {
             docs_root: docs.clone(),
             picture_type: crate::artwork_pack::PictureType::BoxArt,
@@ -9106,6 +9690,7 @@ fn run_automatic_pack_consent_flow(root: &Path, window: Rc<MinimalSoftwareWindow
         app.artwork_provider_cache.clear();
     }
     app.source_system_id = Some("NES".into());
+    app.source_picture_inherit = false;
     app.begin_source_switch(crate::source_cache::Target::ArtworkPack {
         docs_root: docs.clone(),
         picture_type: crate::artwork_pack::PictureType::BoxArt,
@@ -13920,6 +14505,7 @@ pub(super) fn run_ui_acceptance_flow(window: Rc<MinimalSoftwareWindow>) {
     let gamelist_path = root.join("games/NES/gamelist.xml");
     let gamelist_xml = format!("<gameList><game><path>First Game.nes</path><desc><![CDATA[{complete_description}]]></desc></game><game><path>Second Game.nes</path><desc><![CDATA[{complete_description}]]></desc></game></gameList>");
     std::fs::write(&gamelist_path, &gamelist_xml).unwrap();
+    run_information_manual_scroll_flow(&root, window.clone());
     explore_acceptance_tests::run(&root, window.clone());
     home_acceptance_tests::run(&root, window.clone());
     custom_view_acceptance_tests::run(&root, window.clone());
@@ -13938,6 +14524,7 @@ pub(super) fn run_ui_acceptance_flow(window: Rc<MinimalSoftwareWindow>) {
     run_start_folder_and_game_position_flow(&root, window.clone());
     run_up_level_entry_flow(&root, window.clone());
     run_screen_rotation_flow(&root, window.clone());
+    folder_options_acceptance_tests::run(&root, window.clone());
     run_game_name_display_flow(&root, window.clone());
     run_mra_filename_display_flow(&root, window.clone());
     run_details_style_flow(&root, window.clone());
@@ -13960,6 +14547,7 @@ pub(super) fn run_ui_acceptance_flow(window: Rc<MinimalSoftwareWindow>) {
     run_theme_editor_save_changes_flow(&root, window.clone());
     run_metadata_filter_flow(&root, window.clone());
     run_last_played_flow(&root, window.clone());
+    run_kiosk_flow(&root, window.clone());
     run_attract_mode_flow(&root, window.clone());
     let mut app = fixture_app(&root, window.clone(), Settings::default());
     run_selected_controls_flow(&mut app);

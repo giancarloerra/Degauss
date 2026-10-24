@@ -8,8 +8,8 @@ if [[ $# -ne 1 || -e "$1" ]]; then
 fi
 mkdir -p "$1"
 build_root="$(cd "$1" && pwd)"
-source_pin=756b4d6a18f742bd48885de2a03008436943dfa9
-archive_sha=5501487cf534afecac062ca1f65bebc61b5a2a55de60035a447dcf44060df768
+source_pin=01351569431bb5e8c386658932a1d4796fd96812
+archive_sha=0705439c963518d56e2adb5d3e38c64151b8ff77940d66e8768d1b3ae54b63e2
 curl --fail --location --silent --show-error \
     "https://codeload.github.com/odelot/Main_MiSTer/tar.gz/${source_pin}" \
     -o "$build_root/upstream.tar.gz"
@@ -37,6 +37,8 @@ bash tests/run-degauss-shortcut-tests.sh
 bash tests/run-degauss-video-tests.sh
 python3 tests/run-degauss-core-menu-tests.py
 python3 tests/run-degauss-analog-timing-tests.py
+python3 tests/degauss_script_handover_test.py
+python3 tests/degauss_native_scripts_test.py
 image=degauss-ra-main-build:bookworm-gcc10
 # Rebuild from the checked-in recipe (Docker may reuse matching layers), rather
 # than trusting whatever an existing local image tag happens to reference.
@@ -70,7 +72,7 @@ for namespace, limit in (("GLIBC", (2, 31)), ("GLIBCXX", (3, 4, 28))):
 PYABI
 cp bin/MiSTer "$build_root/MiSTer_RA_Degauss"
 shasum -a 256 "$build_root/MiSTer_RA_Degauss"
-printf 'RA Main source: %s\nDegauss integration: 8b6520d90311161a90760816a4821b20c2c5e899\n' \
+printf 'RA Main source: %s\nDegauss integration: 809893ddb8e3f7f40797579e0ed8178b03d558f8\n' \
     "$source_pin" > "$build_root/SOURCE-PINS.txt"
 printf 'CA bundle: curl Mozilla 2026-08-13 (MPL-2.0), SHA256 %s\n' "$ca_sha" >> "$build_root/SOURCE-PINS.txt"
 # Keep corresponding patched source and its build instructions with the binary.

@@ -22,6 +22,7 @@ pub enum Page {
     Lower,
     Upper,
     Symbols,
+    Pin,
 }
 
 impl Page {
@@ -30,6 +31,7 @@ impl Page {
             Self::Lower => Self::Upper,
             Self::Upper => Self::Symbols,
             Self::Symbols => Self::Lower,
+            Self::Pin => Self::Pin,
         }
     }
 
@@ -38,6 +40,7 @@ impl Page {
             Self::Lower => "lowercase",
             Self::Upper => "uppercase",
             Self::Symbols => "symbols",
+            Self::Pin => "six digits",
         }
     }
 }
@@ -70,9 +73,12 @@ pub fn keys(page: Page, save_and_cancel: bool) -> Vec<Key> {
         Page::Lower => LOWER,
         Page::Upper => UPPER,
         Page::Symbols => SYMBOLS,
+        Page::Pin => "0123456789",
     };
     let mut keys: Vec<Key> = characters.chars().map(Key::Character).collect();
-    keys.push(Key::Space);
+    if page != Page::Pin {
+        keys.push(Key::Space);
+    }
     keys.push(Key::Clear);
     if save_and_cancel {
         keys.push(Key::Save);
@@ -84,6 +90,17 @@ pub fn keys(page: Page, save_and_cancel: bool) -> Vec<Key> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pin_keyboard_never_offers_letters_or_space_and_cannot_change_pages() {
+        assert_eq!(Page::Pin.next(), Page::Pin);
+        let offered = keys(Page::Pin, false);
+        assert_eq!(offered.len(), 11);
+        assert_eq!(offered[0], Key::Character('0'));
+        assert_eq!(offered[9], Key::Character('9'));
+        assert_eq!(offered[10], Key::Clear);
+        assert!(!offered.contains(&Key::Space));
+    }
 
     #[test]
     fn pages_match_screenscraper_without_forbidden_filename_characters() {

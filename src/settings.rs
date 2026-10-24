@@ -258,6 +258,26 @@ impl CustomViews {
     }
 }
 
+/// Explicit presentation choices for one system and exact browse place.
+/// Missing fields follow the global settings, never a parent folder.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FolderPreferences {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub screen_rotation: Option<ScreenRotation>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub folders_last: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub game_name_display: Option<GameNameDisplay>,
+}
+
+impl FolderPreferences {
+    pub fn is_empty(&self) -> bool {
+        self.screen_rotation.is_none()
+            && self.folders_last.is_none()
+            && self.game_name_display.is_none()
+    }
+}
+
 /// A settings replacement can be installed before the filesystem reports a
 /// directory-flush failure. That state is not a failed install: callers must
 /// keep the installed file and surface the durability warning.
@@ -351,6 +371,9 @@ pub struct Settings {
     /// `layout` applies there.
     #[serde(default, skip_serializing_if = "CustomViews::is_empty")]
     pub custom_views: CustomViews,
+    /// Exact system/place preferences, using the same identity as folder views.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub folder_preferences: BTreeMap<String, BTreeMap<String, FolderPreferences>>,
     /// Named proportional templates. Existing per-place view strings stay intact.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub view_definitions: BTreeMap<String, crate::custom_view::Definition>,
@@ -445,6 +468,12 @@ pub struct Settings {
     /// the Gamelist-first behaviour shipped before this setting existed.
     #[serde(default)]
     pub automatic_data_source: Option<AutomaticDataSource>,
+    /// Picture type used by Artwork Pack systems without an explicit override.
+    #[serde(default)]
+    pub default_artwork_pack: Option<crate::artwork_pack::PictureType>,
+    /// Off unless enabled. Launch the last successful target once per boot.
+    #[serde(default)]
+    pub start_last_game_on_boot: Option<bool>,
     /// Watch supported physical game discs through an installed provider.
     /// Absent is off, preserving startup and launch behaviour from releases
     /// before physical-disc detection existed.
@@ -470,10 +499,13 @@ pub struct Settings {
     /// game launch. Empty on existing installations; ignored by Gamelist.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub artwork_pack_matches: BTreeMap<String, crate::artwork_pack::ManualMatches>,
-    /// Selected picture type for each source group. Missing entries retain
-    /// the existing Box Art workflow and persisted prepared data.
+    /// Explicit picture type for each source group. A legacy saved root
+    /// without a type remains Box Art unless inheritance is explicitly saved.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub artwork_pack_picture_types: BTreeMap<String, crate::artwork_pack::PictureType>,
+    /// Explicit Use Global choices, distinct from legacy Box Art roots.
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub artwork_pack_inherit: BTreeSet<String>,
     /// The browse strip is visible by default. Both On and Off are explicit
     /// saved choices; only an absent value follows the default.
     pub show_bar: Option<bool>,

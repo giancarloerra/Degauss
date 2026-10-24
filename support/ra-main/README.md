@@ -1,7 +1,7 @@
 # RA Main frontend integration
 
 `../../scripts/build-ra-main.sh NEW_OUTPUT_DIRECTORY` builds RetroAchievements
-Main with the existing Degauss Frontend menu and keyboard shortcut. The output
+Main with the Degauss Frontend menu, return shortcuts and script handover. The output
 directory must not exist. The helper installs nothing on a device. The release
 workflow builds it and includes the binary, CA bundle, and source notice in the
 normal archive and Downloader database. Corresponding source is attached to the
@@ -43,11 +43,11 @@ the pinned backend and validate it before shipping another Degauss release.
 
 ## Sources and compatibility
 
-- RA Main v1.14.0: commit `756b4d6a18f742bd48885de2a03008436943dfa9`
-  from https://github.com/odelot/Main_MiSTer/tree/756b4d6a18f742bd48885de2a03008436943dfa9.
+- RA Main v1.15.1: commit `01351569431bb5e8c386658932a1d4796fd96812`
+  from https://github.com/odelot/Main_MiSTer/tree/01351569431bb5e8c386658932a1d4796fd96812.
 - Source archive SHA-256:
-  `5501487cf534afecac062ca1f65bebc61b5a2a55de60035a447dcf44060df768`.
-- Degauss integration: commit `8b6520d90311161a90760816a4821b20c2c5e899`
+  `0705439c963518d56e2adb5d3e38c64151b8ff77940d66e8768d1b3ae54b63e2`.
+- Degauss integration: commit `809893ddb8e3f7f40797579e0ed8178b03d558f8`
   from https://github.com/giancarloerra/Degauss-Main.
   The patch omits its unrelated input.cpp blank-line removal.
 - rcheevos 12.5.0 is already bundled in this exact RA source. Its bytes remain
@@ -71,12 +71,21 @@ request values pass through anonymous descriptors, never shell/process
 arguments or request files. POST bodies use a separate stdin stream rather than
 a configuration line, preserving large requests on older supported curl versions.
 The request writer preserves the caller's SIGPIPE handler, mask and pending signal.
-This supports curl 7.43 or newer. The existing 16-byte version 1 shortcut configuration at
-`config/degauss/frontend_shortcut.bin` is shared unchanged. There is no second
-shortcut setting. Frontend and the configured keyboard key load `menu.rbf`;
+This supports curl 7.43 or newer. Shortcut configuration at
+`config/degauss/frontend_shortcut.bin` is shared with normal Degauss Main.
+Existing 16-byte version 1 records retain the keyboard assignment with Controller
+Off; new version 2 saves preserve the keyboard and controller choices separately.
+The controller gesture is a continuous five-second hold, with normal button input
+still sent to the game. There is no second shortcut setting.
+Frontend and either configured shortcut load `menu.rbf`;
 normal Main profile selection determines the executable used after that load.
 When a frontend exits from RA Main Scripts mode, cleanup explicitly returns to
 VT1 before disabling its script framebuffer.
+The paired frontend finishes before Main launches a selected script through
+the native OSD Scripts/agetty path. The native result/key-to-return flow then
+restores one frontend with its original arguments and selection. Initial
+framebuffer readiness remains acknowledged. The cold-boot context for optional
+last-game startup is shared with normal Degauss Main.
 With the private Degauss Menu core active, the native core chooser starts at
 the root. Ordinary core and MRA browsing retain their existing locations.
 Native analog framebuffer output also accepts `degauss_analog_video_mode`
@@ -106,7 +115,8 @@ startup, Start, release, player swaps and unchanged polls.
 
 Host tests validate persisted shortcut records, disabled and invalid settings,
 key consumption, repeat/release handling, extended Linux keys, runtime gates,
-placement before keyboard remapping, and the Degauss framebuffer video path.
+placement before keyboard remapping, controller-hold timing and passthrough,
+the Degauss framebuffer video path, and ordered script handover acknowledgements.
 The build checks that achievement
 support was enabled and that achievement and frontend implementations were
 linked into the final executable. Real host curl tests exercise trusted TLS,

@@ -562,7 +562,7 @@ fn file_target(
 }
 
 /// Main-compatible decoding shared by descriptor and favourite path readers.
-fn main_path_value(
+pub(crate) fn main_path_value(
     attribute: &quick_xml::events::attributes::Attribute<'_>,
     path: &Path,
     what: &'static str,

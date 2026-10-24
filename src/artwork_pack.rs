@@ -90,10 +90,26 @@ impl PictureType {
 }
 
 pub fn selected_picture_type(settings: &crate::settings::Settings, system_id: &str) -> PictureType {
-    source_group(system_id)
-        .and_then(|group| settings.artwork_pack_picture_types.get(group))
-        .copied()
-        .unwrap_or_default()
+    if let Some(group) = source_group(system_id) {
+        if let Some(kind) = settings.artwork_pack_picture_types.get(group) {
+            return *kind;
+        }
+        if settings.artwork_pack_roots.contains_key(group)
+            && !settings.artwork_pack_inherit.contains(group)
+        {
+            return PictureType::BoxArt;
+        }
+    }
+    settings.default_artwork_pack.unwrap_or_default()
+}
+
+/// Whether the type follows the global preference rather than a saved choice.
+pub fn inherits_picture_type(settings: &crate::settings::Settings, system_id: &str) -> bool {
+    source_group(system_id).is_none_or(|group| {
+        !settings.artwork_pack_picture_types.contains_key(group)
+            && (!settings.artwork_pack_roots.contains_key(group)
+                || settings.artwork_pack_inherit.contains(group))
+    })
 }
 
 type ImageIndex = (HashMap<String, PathBuf>, Option<String>);
@@ -3648,6 +3664,40 @@ fn xml_text_from_reader<R: BufRead>(
 mod tests {
     use super::*;
     use std::io::Write;
+
+    #[test]
+    fn global_picture_type_preserves_legacy_and_explicit_system_choices() {
+        let mut settings = crate::settings::Settings::default();
+        assert_eq!(selected_picture_type(&settings, "NES"), PictureType::BoxArt);
+        settings
+            .artwork_pack_roots
+            .insert("NES".into(), "docs".into());
+        for global in PictureType::ALL {
+            settings.default_artwork_pack = Some(global);
+            assert_eq!(
+                selected_picture_type(&settings, "NES"),
+                PictureType::BoxArt,
+                "legacy saved roots must never begin inheriting after an upgrade"
+            );
+            assert_eq!(selected_picture_type(&settings, "SuperGrafx"), global);
+            for explicit in PictureType::ALL {
+                settings
+                    .artwork_pack_picture_types
+                    .insert("NES".into(), explicit);
+                assert_eq!(selected_picture_type(&settings, "NES"), explicit);
+                assert!(!inherits_picture_type(&settings, "NES"));
+            }
+            settings.artwork_pack_picture_types.remove("NES");
+            settings.artwork_pack_inherit.insert("NES".into());
+            assert_eq!(selected_picture_type(&settings, "NES"), global);
+            assert!(inherits_picture_type(&settings, "NES"));
+            let saved = toml::to_string(&settings).unwrap();
+            let reloaded = toml::from_str(&saved).unwrap();
+            assert_eq!(selected_picture_type(&reloaded, "NES"), global);
+            assert_eq!(reloaded.artwork_pack_roots.get("NES"), Some(&"docs".into()));
+            settings.artwork_pack_inherit.clear();
+        }
+    }
 
     fn temp(tag: &str) -> PathBuf {
         let path = std::env::temp_dir().join(format!(

@@ -287,7 +287,7 @@ echo "Starting Degauss frontend..."
 "${BIN}" --config "${DIR}/degauss.toml" --systems "${DIR}/systems.toml" "$@"
 status=$?
 
-if [ "${status}" != "0" ]; then
+if [ "${status}" != "0" ] && ! { [ "${status}" = "42" ] && [ "${DEGAUSS_NATIVE_SCRIPTS:-}" = "1" ]; }; then
     echo
     echo "Degauss exited with status ${status}"
 fi

@@ -87,7 +87,14 @@ pub fn resolve(
                     continue;
                 }
             };
-            if let Some(root) = state.accepted.map(|accepted| accepted.docs_root) {
+            if let Some(root) = state
+                .accepted
+                .filter(|accepted| {
+                    accepted.picture_type
+                        == artwork_pack::selected_picture_type(settings, &system.def.id)
+                })
+                .map(|accepted| accepted.docs_root)
+            {
                 accepted.entry(group).or_default().push((system, root));
             }
         }
@@ -520,6 +527,39 @@ mod tests {
         assert_eq!(mode(&settings, "NeoGeo"), Mode::Automatic);
         assert!(settings.artwork_pack_roots.is_empty());
         assert!(settings.gamelist_sources.is_empty());
+    }
+
+    #[test]
+    fn automatic_acceptance_does_not_pin_the_previous_global_picture_type() {
+        let fixture = Fixture::new();
+        let systems = [fixture.system("NES", &["nes"])];
+        let docs = fixture.pack("sd", "NES").join("docs");
+        fixture.accept("NES", &docs);
+        let mut settings = Settings {
+            automatic_data_source: Some(AutomaticDataSource::ArtworkPackFirst),
+            ..Settings::default()
+        };
+        assert_eq!(
+            fixture.resolve(&systems, &settings).roots["NES"],
+            docs.to_string_lossy()
+        );
+        settings.default_artwork_pack = Some(artwork_pack::PictureType::Screenshot);
+        assert!(fixture.resolve(&systems, &settings).roots.is_empty());
+        let saved = crate::cache::load_pack_source_state(&fixture.cache_dir(), "NES")
+            .unwrap()
+            .unwrap()
+            .accepted
+            .unwrap();
+        assert_eq!(
+            saved.picture_type,
+            artwork_pack::PictureType::BoxArt,
+            "changing a default must not overwrite the last valid preparation"
+        );
+        settings.default_artwork_pack = Some(artwork_pack::PictureType::BoxArt);
+        assert_eq!(
+            fixture.resolve(&systems, &settings).roots["NES"],
+            docs.to_string_lossy()
+        );
     }
 
     /// An accepted system whose state file is there but cannot be read

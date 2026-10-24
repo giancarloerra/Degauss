@@ -51,6 +51,7 @@ use crate::list_state::ListState;
 include!("explore_app.rs");
 include!("home_app.rs");
 include!("custom_view_app.rs");
+include!("folder_options_app.rs");
 use crate::metrics::{FrameTimer, StartupTimings};
 use crate::name_display::GameNameDisplay;
 use crate::name_keyboard::{self, Key as NameKey, Page as NamePage};
@@ -251,7 +252,8 @@ enum Pending {
     KeepRotation {
         previous: ScreenRotation,
         proposed: ScreenRotation,
-        previous_setting: Option<ScreenRotation>,
+        setting: Option<ScreenRotation>,
+        folder: Option<(String, String)>,
     },
 }
 
@@ -388,6 +390,8 @@ fn option_operation(option: OptionId, input: OptionInput) -> OptionOperation {
         | OptionId::ShowExplore
         | OptionId::CorePreference
         | OptionId::AutomaticDataSource
+        | OptionId::DefaultArtworkPack
+        | OptionId::StartLastGameOnBoot
         | OptionId::AutoRunPhysicalDiscs
         | OptionId::SeparateHandheldCategory
         | OptionId::ShowBar
@@ -1623,8 +1627,10 @@ fn source_choice(
     current: &Settings,
     group: &str,
     target: &crate::source_cache::Target,
+    inherit_type: bool,
 ) -> (Settings, &'static str) {
     let mut changed = current.clone();
+    changed.artwork_pack_inherit.remove(group);
     let label = match target {
         crate::source_cache::Target::Gamelist => {
             changed.artwork_pack_roots.remove(group);
@@ -1637,7 +1643,10 @@ fn source_choice(
             picture_type,
         } => {
             changed.gamelist_sources.remove(group);
-            if *picture_type == crate::artwork_pack::PictureType::BoxArt {
+            if inherit_type {
+                changed.artwork_pack_picture_types.remove(group);
+                changed.artwork_pack_inherit.insert(group.to_string());
+            } else if *picture_type == crate::artwork_pack::PictureType::BoxArt {
                 changed.artwork_pack_picture_types.remove(group);
             } else {
                 changed
@@ -1658,8 +1667,9 @@ fn persist_source_choice(
     path: &Path,
     group: &str,
     target: &crate::source_cache::Target,
+    inherit_type: bool,
 ) -> Result<(Settings, &'static str, Option<String>)> {
-    let (changed, label) = source_choice(current, group, target);
+    let (changed, label) = source_choice(current, group, target, inherit_type);
     let warning = match changed.save(path)? {
         SaveOutcome::Durable => None,
         SaveOutcome::InstalledWithWarning(warning) => Some(warning.to_string()),
@@ -1677,6 +1687,7 @@ fn persist_automatic_source(
     let mut changed = current.clone();
     changed.artwork_pack_roots.remove(group);
     changed.artwork_pack_picture_types.remove(group);
+    changed.artwork_pack_inherit.remove(group);
     changed.gamelist_sources.remove(group);
     let warning = match changed.save(path)? {
         SaveOutcome::Durable => None,
@@ -2198,6 +2209,9 @@ impl ContextPage {
                     | CHANGE_VIEW
                     | USE_GLOBAL_VIEW
                     | MANAGE_VIEWS
+                    | FOLDER_ROTATION
+                    | FOLDER_POSITION
+                    | FOLDER_NAMES
             ),
         }
     }
@@ -2249,6 +2263,9 @@ fn context_help(action: &str) -> &'static str {
         }
         CHANGE_VIEW => "Set the view for this place only. Other folders and systems are unchanged.",
         USE_GLOBAL_VIEW => "Remove this place's custom view and follow the global View setting.",
+        FOLDER_ROTATION => "Rotate the whole frontend in the open folder only. Use Global follows Options. A keeps the preview; B or 15 seconds reverts it.",
+        FOLDER_POSITION => "Place folders before or after games in the open folder only. Use Global follows Options. Child folders keep their own choices.",
+        FOLDER_NAMES => "Choose how names appear in the open folder only, without changing files. Use Global follows Options; explicit MRA filenames still take precedence.",
         _ => "",
     }
 }
@@ -2662,6 +2679,7 @@ enum SourceOperation {
 #[derive(Clone, Copy)]
 enum SourceResolutionAction {
     Startup,
+    ArtworkDefaultChanged,
     OpenSystem,
     Rebuild(Instant),
     StorageRebuild,
@@ -2999,6 +3017,7 @@ enum FindMode {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum NamePurpose {
+    UnlockKiosk,
     SaveView,
     RenameView(String),
     HomeFolder,
@@ -4052,6 +4071,7 @@ impl CoreUpdateGames {
 }
 
 pub struct App {
+    kiosk_locked: bool,
     explore: ExploreBrowser,
     config: Config,
     settings: Settings,
@@ -4103,6 +4123,8 @@ pub struct App {
     last_played: crate::history::History,
     last_played_problem: Option<String>,
     last_played_open: bool,
+    boot_launch_waiting: bool,
+    boot_launch_deadline: Option<Instant>,
     /// Hidden row key to stable origin. The key is kept in `sort_key` after
     /// the ordinary sort text and never rendered.
     last_played_rows: HashMap<String, crate::history::Entry>,
@@ -4173,6 +4195,8 @@ pub struct App {
     source_system_id: Option<String>,
     source_locations: Vec<PathBuf>,
     source_picture_type: crate::artwork_pack::PictureType,
+    source_picture_inherit: bool,
+    artwork_default_changed: bool,
     source_directory: Option<PathBuf>,
     /// Canonical directories from the picker root to the current directory.
     /// Children resolving to an identity already in this ancestry are hidden,
@@ -4232,6 +4256,10 @@ pub struct App {
     width: u32,
     height: u32,
     screen_rotation: ScreenRotation,
+    global_screen_rotation: ScreenRotation,
+    /// A temporary CLI override must survive automatic folder transitions.
+    /// As before, explicitly keeping a UI rotation replaces that override.
+    rotation_override: Option<ScreenRotation>,
 
     covers: CoverCache,
     /// Group previews sit on the page background rather than the game surface.
@@ -4415,6 +4443,7 @@ pub struct App {
     /// pace and would be cut off half way on the title's clock.
     detail_marquee: Rc<slint::Timer>,
     information_scroll_next_at: std::cell::Cell<Instant>,
+    information_scroll_manual: bool,
     art_pending: bool,
     cover_prefetch: Option<CoverPrefetchJob>,
     prefetch_direction: isize,
@@ -4566,9 +4595,8 @@ impl App {
     ) -> Self {
         let physical_width = width;
         let physical_height = height;
-        let screen_rotation = rotation_override
-            .or(loaded.settings.screen_rotation)
-            .unwrap_or_default();
+        let global_screen_rotation = loaded.settings.screen_rotation.unwrap_or_default();
+        let screen_rotation = rotation_override.unwrap_or(global_screen_rotation);
         let (width, height) = screen_rotation.logical_size(physical_width, physical_height);
         window.set_size(slint::PhysicalSize::new(width, height));
         let show_empty = loaded.settings.show_empty.unwrap_or(false);
@@ -4795,8 +4823,10 @@ impl App {
                 Some((system.def.id.clone(), root.clone()))
             })
             .collect();
-        let start_folder_pending = settings.start_folder.is_some();
+        let kiosk_locked = config.kiosk_pin.is_some();
+        let start_folder_pending = settings.start_folder.is_some() && !kiosk_locked;
         let mut app = App {
+            kiosk_locked,
             explore: ExploreBrowser::default(),
             speed: settings
                 .speed_step
@@ -4919,6 +4949,8 @@ impl App {
             last_played,
             last_played_problem,
             last_played_open: false,
+            boot_launch_waiting: false,
+            boot_launch_deadline: None,
             last_played_rows: HashMap::new(),
             game_list: ListState::new(0, geometry.visible),
             menu_list: ListState::new(0, geometry.visible),
@@ -4982,6 +5014,8 @@ impl App {
             source_system_id: None,
             source_locations: Vec::new(),
             source_picture_type: crate::artwork_pack::PictureType::BoxArt,
+            source_picture_inherit: false,
+            artwork_default_changed: false,
             source_directory: None,
             source_directory_history: Vec::new(),
             source_directory_entries: Vec::new(),
@@ -5014,6 +5048,8 @@ impl App {
             width,
             height,
             screen_rotation,
+            global_screen_rotation,
+            rotation_override,
             covers,
             group_covers,
             gallery_covers,
@@ -5028,6 +5064,7 @@ impl App {
             information_scroll_next_at: std::cell::Cell::new(
                 Instant::now() + INFORMATION_SCROLL_WAIT,
             ),
+            information_scroll_manual: false,
             art_pending: true,
             cover_prefetch: None,
             prefetch_direction: 1,
@@ -5568,6 +5605,10 @@ impl App {
                 || self.screen == Screen::NameKeyboard,
         );
         let grid_explanation = if self.screen == Screen::NameKeyboard
+            && self.name_keyboard_purpose == NamePurpose::UnlockKiosk
+        {
+            "Enter Six Digits · B Cancels"
+        } else if self.screen == Screen::NameKeyboard
             && self.name_keyboard_purpose == NamePurpose::PackMatchSearch
         {
             "B Searches the Pack"
@@ -5623,6 +5664,9 @@ impl App {
             self.ui.set_find_search(false);
         }
         let grid_help = match self.screen {
+            Screen::NameKeyboard if self.name_keyboard_purpose == NamePurpose::UnlockKiosk => {
+                "A Type  B Cancel  X Del"
+            }
             Screen::NameKeyboard if self.name_keyboard_controls() => {
                 "A Type  B Cancel  X Del  Y Page"
             }
@@ -5792,7 +5836,16 @@ impl App {
             Screen::Context => self
                 .menu
                 .get(self.menu_list.selected())
-                .is_some_and(|action| matches!(action.as_str(), CHANGE_VIEW | CORE_VERSION)),
+                .is_some_and(|action| {
+                    matches!(
+                        action.as_str(),
+                        CHANGE_VIEW
+                            | CORE_VERSION
+                            | FOLDER_ROTATION
+                            | FOLDER_POSITION
+                            | FOLDER_NAMES
+                    )
+                }),
             Screen::Scraper => matches!(
                 scraper_rows(&self.scraper_scope, self.scraper_settings.source)
                     .get(self.scraper_list.selected()),
@@ -5819,6 +5872,9 @@ impl App {
     }
 
     pub fn open_options_page(&mut self, page: OptionsPage) {
+        if self.kiosk_locked {
+            return;
+        }
         if page == OptionsPage::Display {
             match crate::display_mask::names(&self.display_masks_dir) {
                 Ok(names) => self.display_masks = names,
@@ -5842,6 +5898,7 @@ impl App {
     }
 
     fn open_information(&mut self) {
+        self.information_scroll_manual = false;
         if self.in_misterzine_browser() {
             if self.selected_misterzine_item().is_none() {
                 return;
@@ -6014,6 +6071,19 @@ impl App {
     }
 
     fn handle_information(&mut self, action: Action) {
+        if matches!(
+            action,
+            Action::Up
+                | Action::Down
+                | Action::Slower
+                | Action::Faster
+                | Action::PageUp
+                | Action::PageDown
+                | Action::Home
+                | Action::End
+        ) {
+            self.information_scroll_manual = true;
+        }
         let limit = self.ui.get_information_max_scroll().max(0.0);
         let current = self.ui.get_information_offset();
         let line = self.geometry.small_font * 2.0;
@@ -6082,6 +6152,7 @@ impl App {
         } else if self.message.is_none()
             && self.screen == Screen::Information
             && self.information.is_none()
+            && !self.information_scroll_manual
         {
             (
                 self.ui.get_information_offset(),
@@ -6169,21 +6240,36 @@ impl App {
     }
 
     fn begin_rotation_preview(&mut self, proposed: ScreenRotation) {
+        self.preview_rotation(proposed, Some(proposed), None);
+    }
+
+    fn preview_rotation(
+        &mut self,
+        proposed: ScreenRotation,
+        setting: Option<ScreenRotation>,
+        folder: Option<(String, String)>,
+    ) {
         let previous = self.screen_rotation;
         if proposed == previous {
+            self.confirm_rotation_preview(previous, proposed, setting, folder);
             return;
         }
-        let previous_setting = self.settings.screen_rotation;
         self.apply_screen_rotation(proposed);
+        let scope = if folder.is_some() {
+            " for this folder"
+        } else {
+            ""
+        };
         self.pending = Some(Pending::KeepRotation {
             previous,
             proposed,
-            previous_setting,
+            setting,
+            folder,
         });
         self.rotation_preview_deadline = Some(Instant::now() + Duration::from_secs(15));
         self.rotation_preview_previous = Some(previous);
         self.message = Some(format!(
-            "Keep {} rotation?\n\nA Keep   B Revert   15 seconds",
+            "Keep {} rotation{scope}?\n\nA Keep   B Revert   15 seconds",
             proposed.label()
         ));
         self.dirty = true;
@@ -6201,20 +6287,39 @@ impl App {
         &mut self,
         previous: ScreenRotation,
         proposed: ScreenRotation,
-        previous_setting: Option<ScreenRotation>,
+        setting: Option<ScreenRotation>,
+        folder: Option<(String, String)>,
     ) {
         self.rotation_preview_deadline = None;
         self.rotation_preview_previous = None;
-        self.settings.screen_rotation = Some(proposed);
-        match self.settings.save(&self.settings_path) {
-            Ok(SaveOutcome::Durable) => {}
-            Ok(SaveOutcome::InstalledWithWarning(warning)) => {
-                self.message = Some(format!(
-                    "Screen rotation was saved, but durability could not be confirmed: {warning}"
-                ));
+        let mut settings = self.settings.clone();
+        if let Some((system, place)) = &folder {
+            let mut preferences = settings
+                .folder_preferences
+                .get(system)
+                .and_then(|places| places.get(place))
+                .cloned()
+                .unwrap_or_default();
+            preferences.screen_rotation = setting;
+            set_folder_preferences(&mut settings, system, place, preferences);
+        } else {
+            settings.screen_rotation = Some(proposed);
+        }
+        match settings.save(&self.settings_path) {
+            Ok(outcome) => {
+                self.settings = settings;
+                self.rotation_override = None;
+                if folder.is_none() {
+                    self.global_screen_rotation = proposed;
+                }
+                self.resolve_folder_preferences();
+                if let SaveOutcome::InstalledWithWarning(warning) = outcome {
+                    self.message = Some(format!(
+                        "Screen rotation was saved, but durability could not be confirmed: {warning}"
+                    ));
+                }
             }
             Err(error) => {
-                self.settings.screen_rotation = previous_setting;
                 self.apply_screen_rotation(previous);
                 self.message = Some(format!(
                     "Screen rotation was not saved and has been reverted: {error}"
@@ -6999,7 +7104,9 @@ impl App {
             Ok(state) => state.unwrap_or_default(),
             Err(error) => return self.source_unresolved(&name, &error),
         };
-        if let Some(accepted) = state.accepted.as_ref() {
+        if let Some(accepted) = state.accepted.as_ref().filter(|accepted| {
+            accepted.picture_type == crate::artwork_pack::selected_picture_type(&self.settings, id)
+        }) {
             let root = PathBuf::from(&accepted.docs_root);
             self.effective_artwork_pack_roots
                 .insert(id.to_string(), accepted.docs_root.clone());
@@ -7381,6 +7488,9 @@ impl App {
         accepted: &crate::cache::AcceptedSource,
         kept: Option<&crate::cache::DeclinedSource>,
     ) -> Result<Option<crate::artwork_pack::Provider>> {
+        if accepted.picture_type != crate::artwork_pack::selected_picture_type(&self.settings, id) {
+            return Ok(None);
+        }
         let current =
             crate::artwork_pack::normalized_language(self.scraper_settings.language.as_deref());
         let language = if kept.is_some_and(|kept| kept.language == current) {
@@ -8049,24 +8159,29 @@ impl App {
         if self.source_resolution.is_some() {
             return;
         }
-        let systems: Vec<_> =
-            self.all_systems
-                .iter()
-                .filter(|system| {
-                    !matches!(action, SourceResolutionAction::StorageRebuild)
-                        || self.storage.as_ref().is_some_and(|storage| {
-                            storage.rebuilding.iter().flatten().any(|offer| {
-                                offer.system.def.id == system.def.id
-                                    || crate::artwork_pack::source_group(&system.def.id)
-                                        .is_some_and(|group| {
-                                            crate::artwork_pack::source_group(&offer.system.def.id)
-                                                == Some(group)
-                                        })
-                            })
+        let systems: Vec<_> = self
+            .all_systems
+            .iter()
+            .filter(|system| {
+                !matches!(action, SourceResolutionAction::ArtworkDefaultChanged)
+                    || crate::artwork_pack::inherits_picture_type(&self.settings, &system.def.id)
+            })
+            .filter(|system| {
+                !matches!(action, SourceResolutionAction::StorageRebuild)
+                    || self.storage.as_ref().is_some_and(|storage| {
+                        storage.rebuilding.iter().flatten().any(|offer| {
+                            offer.system.def.id == system.def.id
+                                || crate::artwork_pack::source_group(&system.def.id).is_some_and(
+                                    |group| {
+                                        crate::artwork_pack::source_group(&offer.system.def.id)
+                                            == Some(group)
+                                    },
+                                )
                         })
-                })
-                .cloned()
-                .collect();
+                    })
+            })
+            .cloned()
+            .collect();
         self.source_resolution_groups = systems
             .iter()
             .filter_map(|system| {
@@ -8194,6 +8309,23 @@ impl App {
                 }
             }
             SourceResolutionAction::OpenSystem => self.open_system_now(),
+            SourceResolutionAction::ArtworkDefaultChanged => {
+                if self.last_played_open {
+                    self.relist_here_preserving_game_filters();
+                } else if self.explore.active {
+                    self.open_explore(Some(self.explore.query.clone()));
+                } else if self.in_misterzine_browser() {
+                    self.clear_misterzine_games();
+                    self.start_selected_misterzine_game_job();
+                } else if let Some(id) = self
+                    .open_system
+                    .clone()
+                    .filter(|id| crate::artwork_pack::inherits_picture_type(&self.settings, id))
+                {
+                    self.reload_open_system_source(&id);
+                }
+                self.reroll_category_art();
+            }
             SourceResolutionAction::Rebuild(started) => {
                 self.build = None;
                 self.start_build(true);
@@ -8329,6 +8461,11 @@ impl App {
         else {
             return Ok(None);
         };
+        if accepted.picture_type
+            != crate::artwork_pack::selected_picture_type(&self.settings, system_id)
+        {
+            return Ok(None);
+        }
         let kept = state.declined.as_ref().filter(|declined| {
             Path::new(&declined.docs_root) == docs_root && declined.signature.is_some()
         });
@@ -8840,6 +8977,7 @@ impl App {
     /// Resolve from scratch. A missing or unrecognised custom value means the
     /// global default, never whatever view the previous place happened to use.
     fn resolve_view(&mut self) {
+        self.resolve_folder_preferences();
         self.custom_view.active = None;
         self.custom_view.active_id = None;
         self.custom_view.information_focus = false;
@@ -9442,7 +9580,7 @@ impl App {
             return;
         }
         let selected = self.browse_row(self.game_list.selected()).map(row_key);
-        if self.filter.is_empty() {
+        if self.filter.is_empty() && !self.game_filters.is_active() {
             sort_rows_for_display(
                 &mut self.here,
                 self.game_name_display,
@@ -9952,6 +10090,80 @@ impl App {
         )
     }
 
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    pub fn prepare_boot_launch(&mut self, normal_boot: bool, marker: &Path) {
+        let first = crate::state::claim_boot_start(marker);
+        if self.kiosk_locked
+            || !normal_boot
+            || !self.settings.start_last_game_on_boot.unwrap_or(false)
+        {
+            return;
+        }
+        match first {
+            Ok(true) => self.boot_launch_waiting = true,
+            Ok(false) => {}
+            Err(error) => {
+                self.message = Some(format!("Last game was not started: {error}"));
+                self.dirty = true;
+            }
+        }
+    }
+
+    fn poll_boot_launch(&mut self, now: Instant) -> Option<Outcome> {
+        if !self.boot_launch_waiting {
+            return None;
+        }
+        if let Some(deadline) = self.boot_launch_deadline {
+            if now < deadline {
+                return None;
+            }
+            self.boot_launch_waiting = false;
+            self.boot_launch_deadline = None;
+            self.message = None;
+            let entry = self.last_played.entries.first()?.clone();
+            let Some(system) = self
+                .all_systems
+                .iter()
+                .find(|system| system.def.id == entry.system)
+            else {
+                self.message = Some(format!("{}: its system is no longer available", entry.name));
+                self.dirty = true;
+                return None;
+            };
+            return self.launch_game(
+                entry.name,
+                entry.launch.clone(),
+                system.to_config(),
+                Some(entry.system),
+                entry.launch.clone(),
+                entry.launch,
+            );
+        }
+        if self.network_plan.is_some()
+            || self.network_job.is_some()
+            || self.build.is_some()
+            || self.index_terminal.is_some()
+            || self.source_resolution.is_some()
+            || self.source_job.is_some()
+            || self.provider_job.is_some()
+            || self.screen != Screen::Browse
+            || self.message.is_some()
+        {
+            return None;
+        }
+        if let Some(problem) = &self.last_played_problem {
+            self.boot_launch_waiting = false;
+            self.message = Some(format!("Last game was not started: {problem}"));
+        } else if let Some(entry) = self.last_played.entries.first() {
+            self.boot_launch_deadline = Some(now + Duration::from_secs(3));
+            self.message = Some(format!("Starting Last Game\n{}", entry.name));
+        } else {
+            self.boot_launch_waiting = false;
+        }
+        self.dirty = true;
+        None
+    }
+
     fn confirm_attract_launch(&mut self) -> Option<Outcome> {
         let picture = self.saver_center_picture()?;
         let target = picture.target?;
@@ -10063,19 +10275,21 @@ impl App {
                 )
             }
         };
-        let history =
-            if self.settings.last_played.unwrap_or(0) > 0 && self.last_played_problem.is_none() {
-                history_system.map(|system| HistoryUpdate {
-                    path: crate::history::path_beside(&self.settings_path),
-                    entry: crate::history::Entry {
-                        system,
-                        launch: history_launch,
-                        name: name.clone(),
-                    },
-                })
-            } else {
-                None
-            };
+        let history = if (self.settings.last_played.unwrap_or(0) > 0
+            || self.settings.start_last_game_on_boot.unwrap_or(false))
+            && self.last_played_problem.is_none()
+        {
+            history_system.map(|system| HistoryUpdate {
+                path: crate::history::path_beside(&self.settings_path),
+                entry: crate::history::Entry {
+                    system,
+                    launch: history_launch,
+                    name: name.clone(),
+                },
+            })
+        } else {
+            None
+        };
         match plan {
             Ok(plan) => Some(Outcome::Launch {
                 plan: Box::new(plan),
@@ -10751,7 +10965,10 @@ impl App {
     fn update_operation_ui(&self) {
         self.ui.set_operation_kind(0);
         self.ui.set_operation_percent(SharedString::default());
-        if self.network_plan.is_some() {
+        if self.network_plan.is_some()
+            && !(self.screen == Screen::NameKeyboard
+                && self.name_keyboard_purpose == NamePurpose::UnlockKiosk)
+        {
             let active = self.network_job.is_some();
             let progress = self.network_progress.as_ref();
             let cancelling = progress.is_some_and(|progress| progress.cancelling);
@@ -10811,6 +11028,10 @@ impl App {
                     } else {
                         "B Cancel"
                     }
+                } else if self.kiosk_locked && self.network_no_local {
+                    "A Retry   Y Unlock"
+                } else if self.kiosk_locked {
+                    "A Retry   B Continue Local   Y Unlock"
                 } else if self.network_no_local {
                     "A Retry   B Exit"
                 } else {
@@ -11789,7 +12010,9 @@ impl App {
             if self.screen == Screen::Information {
                 if let Some(text) = self.misterzine_information_text() {
                     self.ui.set_information_text(SharedString::from(text));
-                    self.ui.set_information_offset(0.0);
+                    if !self.information_scroll_manual {
+                        self.ui.set_information_offset(0.0);
+                    }
                 }
             }
         }
@@ -12365,6 +12588,9 @@ impl App {
             None => visible,
         };
 
+        if self.kiosk_locked {
+            categories.retain(|(name, _)| self.kiosk_category_allowed(name));
+        }
         self.categories = categories;
         let selected_key = self.selected_home_key().map(str::to_string);
         let selected_category = self.category_list.selected();
@@ -12518,6 +12744,9 @@ impl App {
     }
 
     fn open_category_named(&mut self, name: String) {
+        if self.kiosk_locked && !self.kiosk_category_allowed(&name) {
+            return;
+        }
         if name == crate::explore::NAME {
             self.open_explore(None);
             return;
@@ -13632,12 +13861,12 @@ impl App {
             }
             OptionId::GameNameDisplay => {
                 let at = step(
-                    self.game_name_display.index(),
+                    self.settings.game_name_display.unwrap_or_default().index(),
                     delta,
                     GameNameDisplay::ALL.len(),
                 );
-                self.game_name_display = GameNameDisplay::ALL[at];
-                self.settings.game_name_display = Some(self.game_name_display);
+                self.settings.game_name_display = Some(GameNameDisplay::ALL[at]);
+                self.resolve_folder_preferences();
                 self.refresh_name_presentation();
             }
             OptionId::UseMraFilenames => {
@@ -13669,7 +13898,7 @@ impl App {
                 self.pending_present_switch = true;
             }
             OptionId::ScreenRotation => {
-                self.begin_rotation_preview(self.screen_rotation.step(delta));
+                self.begin_rotation_preview(self.global_screen_rotation.step(delta));
             }
             OptionId::ShowHidden => {
                 self.show_hidden = !self.show_hidden;
@@ -13752,6 +13981,33 @@ impl App {
                         .next(),
                 );
             }
+            OptionId::DefaultArtworkPack => {
+                let kinds = crate::artwork_pack::PictureType::ALL;
+                let current = self.settings.default_artwork_pack.unwrap_or_default();
+                let at = kinds.iter().position(|kind| *kind == current).unwrap();
+                self.settings.default_artwork_pack = Some(kinds[step(at, delta, kinds.len())]);
+                self.artwork_default_changed = true;
+                // Each system validates the newly resolved type on its next
+                // entry. Keep durable preparation until replacement succeeds.
+                let groups = self
+                    .all_systems
+                    .iter()
+                    .filter(|system| {
+                        crate::artwork_pack::inherits_picture_type(&self.settings, &system.def.id)
+                    })
+                    .filter_map(|system| crate::artwork_pack::source_group(&system.def.id))
+                    .collect::<std::collections::BTreeSet<_>>();
+                for group in groups {
+                    self.invalidate_artwork_provider_group(group);
+                    if !self.settings.artwork_pack_roots.contains_key(group) {
+                        self.clear_group_roots(group);
+                    }
+                }
+            }
+            OptionId::StartLastGameOnBoot => {
+                self.settings.start_last_game_on_boot =
+                    Some(!self.settings.start_last_game_on_boot.unwrap_or(false));
+            }
             OptionId::AutoRunPhysicalDiscs => {
                 self.settings.auto_run_physical_discs =
                     Some(!self.settings.auto_run_physical_discs.unwrap_or(false));
@@ -13831,8 +14087,8 @@ impl App {
                 self.relist_here_preserving_game_filters();
             }
             OptionId::FoldersLast => {
-                self.folders_last = !self.folders_last;
-                self.settings.folders_last = Some(self.folders_last);
+                self.settings.folders_last = Some(!self.settings.folders_last.unwrap_or(false));
+                self.resolve_folder_preferences();
                 self.relist_here_preserving_game_filters();
             }
             OptionId::FavoritesFirst => {
@@ -13945,7 +14201,12 @@ impl App {
                 .unwrap_or_else(|| self.display_mask().unwrap_or("Off").to_string()),
             OptionId::ArtworkScale => self.artwork_scale.shown().to_string(),
             OptionId::DetailsStyle => self.details_style.shown().to_string(),
-            OptionId::GameNameDisplay => self.game_name_display.label().to_string(),
+            OptionId::GameNameDisplay => self
+                .settings
+                .game_name_display
+                .unwrap_or_default()
+                .label()
+                .to_string(),
             OptionId::UseMraFilenames => on_off(self.settings.use_mra_filenames.unwrap_or(false)),
             OptionId::FolderBrackets => on_off(self.folder_brackets),
             OptionId::ShowGamePosition => on_off(self.settings.show_game_position.unwrap_or(true)),
@@ -13969,7 +14230,7 @@ impl App {
                         "Unavailable".to_string()
                     }
                 }),
-            OptionId::ScreenRotation => self.screen_rotation.label().to_string(),
+            OptionId::ScreenRotation => self.global_screen_rotation.label().to_string(),
             OptionId::ShowHidden => on_off(self.show_hidden),
             OptionId::ShowEmpty => on_off(self.show_empty),
             OptionId::ShowOther => on_off(self.show_other),
@@ -13991,6 +14252,15 @@ impl App {
                 .unwrap_or_default()
                 .label()
                 .to_string(),
+            OptionId::DefaultArtworkPack => self
+                .settings
+                .default_artwork_pack
+                .unwrap_or_default()
+                .label()
+                .to_string(),
+            OptionId::StartLastGameOnBoot => {
+                on_off(self.settings.start_last_game_on_boot.unwrap_or(false))
+            }
             OptionId::AutoRunPhysicalDiscs => {
                 on_off(self.settings.auto_run_physical_discs.unwrap_or(false))
             }
@@ -14015,7 +14285,7 @@ impl App {
             .to_string(),
             // The label reads Folders before games, so On is the leading
             // position and the stored folders_last flag inverts.
-            OptionId::FoldersLast => on_off(!self.folders_last),
+            OptionId::FoldersLast => on_off(!self.settings.folders_last.unwrap_or(false)),
             OptionId::ResetHidden => {
                 match self.settings.hidden.len() + self.settings.hidden_paths.len() {
                     0 => "Nothing hidden".to_string(),
@@ -14291,6 +14561,9 @@ impl App {
                 // show no artwork, so without this the details panel would
                 // keep a picture composited against the old surface colour.
                 self.touch_selection();
+                if std::mem::take(&mut self.artwork_default_changed) {
+                    self.resolve_artwork_sources(SourceResolutionAction::ArtworkDefaultChanged);
+                }
             }
             Screen::Browse => match self.browsing {
                 Browsing::Games if self.in_misterzine_browser() => {
@@ -14397,13 +14670,20 @@ impl App {
 
     fn open_menu(&mut self) {
         self.invalidate_storage_check();
-        self.menu = menu_entries();
+        self.menu = if self.kiosk_locked {
+            vec!["Unlock".into()]
+        } else {
+            menu_entries()
+        };
         self.menu_list = ListState::new(self.menu.len(), self.geometry.visible);
         self.screen = Screen::Menu;
         self.apply_geometry();
     }
 
     fn open_scripts(&mut self) {
+        if self.kiosk_locked {
+            return;
+        }
         match crate::scripts::Browser::open(Path::new(&self.config.menu_root)) {
             Ok(browser) => {
                 let root = browser.root().to_path_buf();
@@ -14590,6 +14870,9 @@ impl App {
                 })
                 .unwrap_or_else(|| "Default".to_string()),
             Some(CHANGE_VIEW) => self.view_label(),
+            Some(action @ (FOLDER_ROTATION | FOLDER_POSITION | FOLDER_NAMES)) => {
+                self.folder_preference_value(action)
+            }
             Some(GAME_DATA_SOURCE) => self
                 .context_system_id()
                 .map(|id| self.source_label(id))
@@ -14603,6 +14886,15 @@ impl App {
     /// rather than hiding it behind a press.
     fn adjust_context(&mut self, delta: isize) {
         let selected = self.menu_list.selected();
+        if let Some(action) = self.menu.get(selected).cloned() {
+            if matches!(
+                action.as_str(),
+                FOLDER_ROTATION | FOLDER_POSITION | FOLDER_NAMES
+            ) {
+                self.adjust_folder_preference(&action, delta);
+                return;
+            }
+        }
         if self.menu.get(selected).map(String::as_str) == Some(CORE_VERSION) {
             self.adjust_core_version(delta);
             return;
@@ -15300,7 +15592,11 @@ impl App {
 
     fn open_name_keyboard(&mut self, purpose: NamePurpose, draft: String) {
         self.name_keyboard_purpose = purpose;
-        self.name_keyboard_page = NamePage::Lower;
+        self.name_keyboard_page = if self.name_keyboard_purpose == NamePurpose::UnlockKiosk {
+            NamePage::Pin
+        } else {
+            NamePage::Lower
+        };
         self.name_keyboard_draft = draft;
         let cells =
             name_keyboard::keys(self.name_keyboard_page, self.name_keyboard_controls()).len();
@@ -15343,11 +15639,34 @@ impl App {
             NameKey::Save | NameKey::Cancel => {}
         }
         self.dirty = true;
+        if self.name_keyboard_purpose == NamePurpose::UnlockKiosk
+            && self.name_keyboard_draft.len() == 6
+        {
+            self.finish_name_keyboard();
+        }
     }
 
     fn finish_name_keyboard(&mut self) {
         let draft = self.name_keyboard_draft.clone();
         match self.name_keyboard_purpose.clone() {
+            NamePurpose::UnlockKiosk => {
+                let correct = self
+                    .config
+                    .kiosk_pin
+                    .as_ref()
+                    .is_some_and(|pin| pin.matches(&draft));
+                self.name_keyboard_draft.clear();
+                if correct {
+                    self.kiosk_locked = false;
+                    self.rebuild_system_list();
+                    self.screen = Screen::Browse;
+                    self.resolve_view();
+                    self.apply_geometry();
+                    self.touch_selection();
+                } else {
+                    self.message = Some("Incorrect code. Kiosk mode remains locked.".into());
+                }
+            }
             NamePurpose::PackMatchSearch => {
                 self.pack_match_query = draft;
                 self.begin_pack_matching(crate::provider_job::Matching::Search(
@@ -15389,10 +15708,16 @@ impl App {
                 let refresh_error = if unchanged {
                     None
                 } else {
+                    let preference_error =
+                        self.update_favorite_folder_preferences(&source, Some(&destination));
                     self.reread_favorites();
-                    self.refresh_favorites_system().map(|error| {
+                    let refresh_error = self.refresh_favorites_system().map(|error| {
                         format!("Favourite folder was renamed, but refreshing Favourites failed: {error}")
-                    })
+                    });
+                    match (preference_error, refresh_error) {
+                        (Some(first), Some(second)) => Some(format!("{first}\n\n{second}")),
+                        (first, second) => first.or(second),
+                    }
                 };
                 self.screen = Screen::Browse;
                 self.apply_geometry();
@@ -15412,6 +15737,7 @@ impl App {
     fn delete_favorite_folder(&mut self, path: &Path) {
         match crate::favorites::remove_empty_folder(&self.favorites_root(), path) {
             Ok(()) => {
+                let preference_error = self.update_favorite_folder_preferences(path, None);
                 self.reread_favorites();
                 let refresh_error = self.refresh_favorites_system().map(|error| {
                     format!(
@@ -15421,7 +15747,11 @@ impl App {
                 self.screen = Screen::Browse;
                 self.apply_geometry();
                 self.relist_here_preserving_game_filters();
-                self.report_after_relist(refresh_error);
+                let error = match (preference_error, refresh_error) {
+                    (Some(first), Some(second)) => Some(format!("{first}\n\n{second}")),
+                    (first, second) => first.or(second),
+                };
+                self.report_after_relist(error);
             }
             Err(error) => self.message = Some(error.to_string()),
         }
@@ -15429,6 +15759,17 @@ impl App {
     }
 
     fn handle_name_keyboard(&mut self, action: Action) {
+        if self.name_keyboard_purpose == NamePurpose::UnlockKiosk && action == Action::Quit {
+            self.name_keyboard_draft.clear();
+            if self.network_plan.is_some() {
+                self.screen = Screen::Browse;
+                self.apply_geometry();
+                self.dirty = true;
+            } else {
+                self.open_menu();
+            }
+            return;
+        }
         if matches!(self.name_keyboard_purpose, NamePurpose::FavoriteName(_)) {
             let key = name_keyboard::keys(self.name_keyboard_page, true)
                 .get(self.name_keyboard_list.selected())
@@ -15906,6 +16247,9 @@ impl App {
     }
 
     fn available_hold_shortcuts(&self) -> [Option<HoldShortcut>; 4] {
+        if self.kiosk_locked {
+            return [None; 4];
+        }
         HoldButton::ALL.map(|button| {
             let shortcut = self.hold_shortcuts[button.index()];
             self.hold_shortcut_available(shortcut).then_some(shortcut)
@@ -15924,6 +16268,9 @@ impl App {
     }
 
     fn perform_hold_shortcut(&mut self, shortcut: HoldShortcut) -> Option<Outcome> {
+        if self.kiosk_locked {
+            return None;
+        }
         if !self.hold_shortcut_available(shortcut) {
             return None;
         }
@@ -16368,6 +16715,8 @@ impl App {
         self.source_system_id = Some(system_id.clone());
         self.source_picture_type =
             crate::artwork_pack::selected_picture_type(&self.settings, &system_id);
+        self.source_picture_inherit =
+            crate::artwork_pack::inherits_picture_type(&self.settings, &system_id);
         let mode = crate::artwork_source::mode(&self.settings, &system_id);
         self.menu = source_choice_rows(mode);
         if mode == crate::artwork_source::Mode::Automatic {
@@ -16436,17 +16785,29 @@ impl App {
             return;
         }
         let selected = self.source_picture_type;
-        self.menu = crate::artwork_pack::PictureType::ALL
-            .iter()
-            .map(|kind| kind.label().to_string())
-            .collect();
+        self.menu = std::iter::once(format!(
+            "Use Global ({})",
+            self.settings
+                .default_artwork_pack
+                .unwrap_or_default()
+                .label()
+        ))
+        .chain(
+            crate::artwork_pack::PictureType::ALL
+                .iter()
+                .map(|kind| kind.label().to_string()),
+        )
+        .collect();
         self.menu_list = ListState::new(self.menu.len(), self.geometry.visible);
-        self.menu_list.select(
+        self.menu_list.select(if self.source_picture_inherit {
+            0
+        } else {
             crate::artwork_pack::PictureType::ALL
                 .iter()
                 .position(|kind| *kind == selected)
-                .unwrap_or(0),
-        );
+                .unwrap_or(0)
+                + 1
+        });
         self.screen = Screen::ArtworkPackType;
         self.message = None;
         self.apply_geometry();
@@ -16454,11 +16815,16 @@ impl App {
     }
 
     fn choose_artwork_pack_type(&mut self) {
-        let Some(kind) = crate::artwork_pack::PictureType::ALL.get(self.menu_list.selected())
-        else {
-            return;
+        let selected = self.menu_list.selected();
+        self.source_picture_inherit = selected == 0;
+        self.source_picture_type = if selected == 0 {
+            self.settings.default_artwork_pack.unwrap_or_default()
+        } else {
+            let Some(kind) = crate::artwork_pack::PictureType::ALL.get(selected - 1) else {
+                return;
+            };
+            *kind
         };
-        self.source_picture_type = *kind;
         self.open_artwork_pack_locations();
     }
 
@@ -16466,11 +16832,20 @@ impl App {
         let Some(system_id) = self.source_system_id.clone() else {
             return;
         };
-        let candidates = crate::artwork_pack::discover_candidate_roots_for_type(
+        let mut candidates = crate::artwork_pack::discover_candidate_roots_for_type(
             &system_id,
             &self.config.game_roots,
             self.source_picture_type,
         );
+        if self.source_picture_inherit {
+            if let Some(root) = crate::artwork_pack::source_group(&system_id)
+                .and_then(|group| self.settings.artwork_pack_roots.get(group))
+                .map(PathBuf::from)
+            {
+                candidates.retain(|candidate| *candidate != root);
+                candidates.insert(0, root);
+            }
+        }
 
         if candidates.is_empty() {
             self.source_locations.clear();
@@ -16760,7 +17135,13 @@ impl App {
                 }),
             };
         if unchanged {
-            match persist_source_choice(&self.settings, &self.settings_path, group, &target) {
+            match persist_source_choice(
+                &self.settings,
+                &self.settings_path,
+                group,
+                &target,
+                self.source_picture_inherit,
+            ) {
                 Ok((settings, _, warning)) => {
                     self.settings = settings;
                     self.open_game_data_source();
@@ -16901,40 +17282,48 @@ impl App {
                 .accepted
                 .as_ref()
                 .is_some_and(|accepted| accepted.docs_root == docs_root);
-        let signature = match offer.signature {
-            Some(signature) => Ok(signature),
-            None => crate::artwork_pack::known_tables_signature_for_type(
-                &id,
-                &offer.docs_root,
-                offer.language.as_deref(),
-                crate::artwork_pack::selected_picture_type(&self.settings, &id),
-            ),
-        };
-        let signature = match signature {
-            Ok(signature) => {
-                state.declined = Some(crate::cache::DeclinedSource {
-                    docs_root,
-                    language: offer.language.clone(),
-                    signature: Some(signature.clone()),
-                    cache_marker: offer.cache_marker,
-                });
-                match crate::cache::save_pack_source_state(&self.cache_dir, &id, &state) {
-                    Ok(()) => crate::note(&format!("artwork pack {id}: declined recorded")),
-                    Err(error) => {
-                        crate::note(&format!("artwork pack {id}: decline not recorded: {error}"));
-                        self.message = Some(format!(
+        let signature = if self.kiosk_locked {
+            // Browsing may keep the existing rows, but a guest cannot record
+            // a preparation decision or start maintenance.
+            offer.signature
+        } else {
+            let signature = match offer.signature {
+                Some(signature) => Ok(signature),
+                None => crate::artwork_pack::known_tables_signature_for_type(
+                    &id,
+                    &offer.docs_root,
+                    offer.language.as_deref(),
+                    crate::artwork_pack::selected_picture_type(&self.settings, &id),
+                ),
+            };
+            match signature {
+                Ok(signature) => {
+                    state.declined = Some(crate::cache::DeclinedSource {
+                        docs_root,
+                        language: offer.language.clone(),
+                        signature: Some(signature.clone()),
+                        cache_marker: offer.cache_marker,
+                    });
+                    match crate::cache::save_pack_source_state(&self.cache_dir, &id, &state) {
+                        Ok(()) => crate::note(&format!("artwork pack {id}: declined recorded")),
+                        Err(error) => {
+                            crate::note(&format!(
+                                "artwork pack {id}: decline not recorded: {error}"
+                            ));
+                            self.message = Some(format!(
                             "Artwork Pack decision for {name} was not saved, so the question returns on the next entry: {error}"
                         ));
+                        }
                     }
+                    Some(signature)
                 }
-                Some(signature)
-            }
-            Err(error) => {
-                crate::note(&format!("artwork pack {id}: decline not recorded: {error}"));
-                self.message = Some(format!(
+                Err(error) => {
+                    crate::note(&format!("artwork pack {id}: decline not recorded: {error}"));
+                    self.message = Some(format!(
                     "Artwork Pack decision for {name} was not saved, so the question returns on the next entry: {error}"
                 ));
-                None
+                    None
+                }
             }
         };
         let mut provider = None;
@@ -18086,7 +18475,10 @@ impl App {
             }
             crate::source_cache::Target::Gamelist => false,
         };
-        let staged_choice = changing_type.then(|| source_choice(&self.settings, group, &target));
+        let inherited_pack = self.source_picture_inherit
+            && matches!(target, crate::source_cache::Target::ArtworkPack { .. });
+        let staged_choice = (changing_type || inherited_pack)
+            .then(|| source_choice(&self.settings, group, &target, self.source_picture_inherit));
         let installed = if let Some((settings, _)) = &staged_choice {
             prepared
                 .with_settings(&self.settings_path, settings)
@@ -18108,7 +18500,13 @@ impl App {
         };
         let saved_choice = match staged_choice {
             Some((settings, label)) => Ok((settings, label, None)),
-            None => persist_source_choice(&self.settings, &self.settings_path, group, &target),
+            None => persist_source_choice(
+                &self.settings,
+                &self.settings_path,
+                group,
+                &target,
+                self.source_picture_inherit,
+            ),
         };
         let (settings, label, settings_warning) = match saved_choice {
             Ok(saved) => saved,
@@ -18207,6 +18605,9 @@ impl App {
 
     /// What can be done with the folder on screen.
     fn open_context(&mut self) {
+        if self.kiosk_locked {
+            return;
+        }
         self.invalidate_storage_check();
         self.context_view_changed = false;
         self.context_page = None;
@@ -18248,6 +18649,13 @@ impl App {
                 }
             }
         }
+        if self.current_folder_place().is_some() {
+            for action in [FOLDER_ROTATION, FOLDER_POSITION, FOLDER_NAMES] {
+                if !self.context_actions.iter().any(|entry| entry == action) {
+                    self.context_actions.push(action.into());
+                }
+            }
+        }
         self.context_page = page;
         self.menu = if self.in_misterzine_browser() || self.browsing == Browsing::Categories {
             self.context_page = None;
@@ -18266,7 +18674,7 @@ impl App {
                         .iter()
                         .any(|action| page.contains(action))
                 })
-                .map(|page| page.label().to_string())
+                .map(|page| self.context_page_label(page).to_string())
                 .collect()
         };
         if self.home_pin_target().is_some() && !self.menu.iter().any(|entry| entry == ADD_HOME) {
@@ -20054,6 +20462,62 @@ impl App {
     }
 
     pub fn handle(&mut self, action: Action) -> Option<Outcome> {
+        // Game launches do not use Pending. Do not accept maintenance or
+        // configuration questions, but let a Pack question resume browsing.
+        if self.kiosk_locked && self.pending.is_some() {
+            let pending = self.pending.take();
+            if matches!(pending.as_ref(), Some(Pending::StorageRebuild)) {
+                self.decline_storage_offer();
+            }
+            self.message = None;
+            self.dirty = true;
+            if let Some(Pending::PrepareArtworkPack(offer) | Pending::UpdateArtworkPack(offer)) =
+                pending
+            {
+                if offer.then == OfferFollowUp::OpenSystem {
+                    self.decline_pack_offer(*offer);
+                }
+            }
+            if action == Action::Menu {
+                self.open_menu();
+            }
+            return None;
+        }
+        if self.kiosk_locked
+            && !(self.screen == Screen::NameKeyboard
+                && self.name_keyboard_purpose == NamePurpose::UnlockKiosk)
+            && matches!(
+                action,
+                Action::Context | Action::CyclePresent | Action::HoldShortcut(_)
+            )
+        {
+            return None;
+        }
+        let outcome = self.handle_allowed(action);
+        if self.kiosk_locked
+            && matches!(
+                outcome,
+                Some(Outcome::Quit | Outcome::Script(_) | Outcome::SwitchIni(_))
+            )
+        {
+            None
+        } else {
+            outcome
+        }
+    }
+
+    fn handle_allowed(&mut self, action: Action) -> Option<Outcome> {
+        if self.boot_launch_deadline.is_some() {
+            if action == Action::Quit {
+                self.boot_launch_waiting = false;
+                self.boot_launch_deadline = None;
+                self.message = None;
+                self.dirty = true;
+            }
+            return None;
+        }
+        // Navigation before the prompt must not queue a surprise launch later.
+        self.boot_launch_waiting = false;
         self.information_scroll_next_at
             .set(Instant::now() + INFORMATION_SCROLL_WAIT);
         if self.handle_custom_view_input(action) {
@@ -20062,7 +20526,10 @@ impl App {
         if self.handle_explore_input(action) {
             return None;
         }
-        if self.network_plan.is_some() {
+        if self.network_plan.is_some()
+            && !(self.screen == Screen::NameKeyboard
+                && self.name_keyboard_purpose == NamePurpose::UnlockKiosk)
+        {
             if let Some(job) = &self.network_job {
                 if matches!(action, Action::Quit | Action::Context | Action::Menu) {
                     job.cancel();
@@ -20070,6 +20537,9 @@ impl App {
                 }
             } else {
                 match action {
+                    Action::Menu if self.kiosk_locked => {
+                        self.open_name_keyboard(NamePurpose::UnlockKiosk, String::new());
+                    }
                     Action::Accept => self.start_network_startup(false),
                     Action::Quit if self.network_no_local => return Some(Outcome::Quit),
                     Action::Quit => self.start_network_startup(true),
@@ -20286,8 +20756,9 @@ impl App {
                         Pending::KeepRotation {
                             previous,
                             proposed,
-                            previous_setting,
-                        } => self.confirm_rotation_preview(previous, proposed, previous_setting),
+                            setting,
+                            folder,
+                        } => self.confirm_rotation_preview(previous, proposed, setting, folder),
                     }
                     return None;
                 }
@@ -20475,7 +20946,9 @@ impl App {
                     match mode {
                         Horizontal::Speed => {
                             self.speed = step(self.speed, delta, SPEED_STEPS.len());
-                            self.settings.speed_step = Some(self.speed);
+                            if !self.kiosk_locked {
+                                self.settings.speed_step = Some(self.speed);
+                            }
                             // The badge answers "what speed is it now".
                             // The other modes move the list, which is its
                             // own confirmation, so this is the only arm
@@ -20626,7 +21099,7 @@ impl App {
                         if self.context_is_root() {
                             if let Some(page) = ContextPage::ALL
                                 .into_iter()
-                                .find(|page| page.label() == choice)
+                                .find(|page| self.context_page_label(*page) == choice)
                             {
                                 self.show_context_page(Some(page));
                             }
@@ -20699,7 +21172,14 @@ impl App {
                         self.touch_selection();
                     } else if choice == FILTER_RELEASES {
                         self.open_misterzine_filters();
-                    } else if choice == CHANGE_VIEW || choice == CORE_VERSION {
+                    } else if matches!(
+                        choice.as_str(),
+                        CHANGE_VIEW
+                            | CORE_VERSION
+                            | FOLDER_ROTATION
+                            | FOLDER_POSITION
+                            | FOLDER_NAMES
+                    ) {
                         // Stays open, like a setting: the point is to see
                         // the view while choosing it.
                         self.adjust_context(1);
@@ -20792,6 +21272,8 @@ impl App {
                             .unwrap_or_default();
                         self.pending = Some(Pending::Hide(index));
                         self.message = Some(format!("Hide {name}?\n\nA yes, B no"));
+                    } else if choice == "Unlock" && self.kiosk_locked {
+                        self.open_name_keyboard(NamePurpose::UnlockKiosk, String::new());
                     } else if choice == "Options" {
                         self.screen = Screen::OptionsRoot;
                         self.apply_geometry();
@@ -22069,7 +22551,9 @@ impl App {
             .unwrap_or_default();
         self.ui.set_compact_summary(SharedString::from(summary));
         self.ui.set_compact_publisher(SharedString::from(publisher));
-        let info = if self.in_misterzine_browser() {
+        let info = if self.kiosk_locked {
+            String::new()
+        } else if self.in_misterzine_browser() {
             self.selected_misterzine_game_count()
                 .map(|count| format!("{count} {}", if count == 1 { "Game" } else { "Games" }))
                 .unwrap_or_default()
@@ -22369,6 +22853,7 @@ impl App {
                     NamePurpose::RenameFavoriteFolder(_) => "Rename Favourite Folder".to_string(),
                     NamePurpose::FavoriteName(_) => "Choose Favourite Filename".to_string(),
                     NamePurpose::PackMatchSearch => "Search Artwork Pack".to_string(),
+                    NamePurpose::UnlockKiosk => "Unlock Kiosk Mode".to_string(),
                 },
                 self.name_keyboard_page.label().to_string(),
             ),
@@ -22434,8 +22919,8 @@ impl App {
                 let help = if self.context_is_root() {
                     ContextPage::ALL
                         .into_iter()
-                        .find(|page| page.label() == selected)
-                        .map(ContextPage::help)
+                        .find(|page| self.context_page_label(*page) == selected)
+                        .map(|page| self.context_page_help(page))
                         .unwrap_or("")
                 } else {
                     context_help(selected)
@@ -22453,7 +22938,7 @@ impl App {
                     self.explore_menu_heading()
                 } else {
                     self.context_page
-                        .map(|page| format!("Actions / {}", page.label()))
+                        .map(|page| format!("Actions / {}", self.context_page_label(page)))
                         .unwrap_or_else(|| "Actions".to_string())
                 };
                 (heading, help.to_string())
@@ -22686,6 +23171,7 @@ impl App {
         self.ui.set_status(SharedString::from(displayed_status));
         let controls_are_mapped = matches!(self.screen.ui_index(), 1 | 4);
         let bottom_controls = match self.screen.ui_index() {
+            0 if self.kiosk_locked => "A Select  B Back  Y Menu".into(),
             0 if self.explore.job.is_some() => String::new(),
             0 if self.custom_view.editor.is_some() => "↑↓ Choose  ←→ Set  X Save  B Cancel".into(),
             0 if self.custom_view.information_focus => "↑↓ Scroll   B List".into(),
@@ -22717,11 +23203,12 @@ impl App {
         };
         self.ui
             .set_bottom_controls(SharedString::from(bottom_controls));
-        let storage_confirmation = self.pending == Some(Pending::StorageRebuild);
+        let storage_confirmation =
+            self.pending == Some(Pending::StorageRebuild) && !self.kiosk_locked;
         self.ui.set_overlay_close_controls(
             self.control_hint(if storage_confirmation {
                 "A Rebuild   B Not Now"
-            } else if self.explore.job.is_some() {
+            } else if self.explore.job.is_some() || self.boot_launch_deadline.is_some() {
                 "B Cancel"
             } else {
                 "B Close"
@@ -22731,6 +23218,8 @@ impl App {
         self.ui.set_overlay_read_close_controls(
             self.control_hint(if storage_confirmation {
                 "↑↓ Read   A Rebuild   B Not Now"
+            } else if self.boot_launch_deadline.is_some() {
+                "B Cancel"
             } else {
                 "↑↓ Read   B Close"
             })
@@ -22741,8 +23230,14 @@ impl App {
         if self.screen == Screen::Find && self.find_mode == FindMode::Search {
             self.ui.set_find_query(self.filter.clone().into());
         } else if self.screen == Screen::NameKeyboard {
-            self.ui
-                .set_find_query(self.name_keyboard_draft.clone().into());
+            self.ui.set_find_query(
+                if self.name_keyboard_purpose == NamePurpose::UnlockKiosk {
+                    "*".repeat(self.name_keyboard_draft.len())
+                } else {
+                    self.name_keyboard_draft.clone()
+                }
+                .into(),
+            );
         }
         self.ui.set_show_stats(self.show_stats);
         self.ui.set_stats(SharedString::from(self.stats_line()));
@@ -22750,7 +23245,11 @@ impl App {
         // carry their keys in their own text. Questions keep their "A yes,
         // B no" and build progress replaces itself every frame, so neither
         // takes the hint.
-        let overlay = self.message.as_deref().unwrap_or_default();
+        let overlay = if self.kiosk_locked && self.pending.is_some() {
+            "Unlock is required for maintenance or changes.\n\nB Back   Y Menu"
+        } else {
+            self.message.as_deref().unwrap_or_default()
+        };
         let overlay = if (self.pending.is_some() && !storage_confirmation)
             || self.rotation_preview_deadline.is_some()
         {
@@ -22966,7 +23465,14 @@ impl App {
                 } else {
                     edge
                 };
-                match ini_chord.intercept(edge) {
+                if self.kiosk_locked {
+                    ini_chord.reset_for_device_loss();
+                }
+                match if self.kiosk_locked {
+                    IniChordResult::Forward
+                } else {
+                    ini_chord.intercept(edge)
+                } {
                     IniChordResult::Forward => {}
                     IniChordResult::Consume => continue,
                     IniChordResult::Switch(slot) => {
@@ -23009,6 +23515,10 @@ impl App {
             // Input must act on the picture already drawn, not on a worker
             // result that has not reached the framebuffer yet.
             self.poll_saver_job();
+            if let Some(outcome) = self.poll_boot_launch(now) {
+                self.save_settings();
+                return Ok(outcome);
+            }
 
             let wanted = Duration::from_millis(self.speed_ms());
             if repeater.interval() != wanted {
@@ -23415,6 +23925,9 @@ impl App {
     /// going back would have led anyway, rather than refusing to start.
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     pub fn restore_position(&mut self, saved: &crate::state::State) {
+        if self.kiosk_locked {
+            return;
+        }
         if let Some(resume) = &saved.home {
             self.restore_home(resume.clone());
             return;
@@ -26052,6 +26565,7 @@ mod tests {
                 docs_root: docs.clone(),
                 picture_type: crate::artwork_pack::PictureType::BoxArt,
             },
+            false,
         )
         .unwrap();
         assert_eq!(label, SOURCE_ARTWORK_PACK);
@@ -26069,6 +26583,7 @@ mod tests {
             &settings_path,
             "SuperGrafx",
             &crate::source_cache::Target::Gamelist,
+            false,
         )
         .unwrap();
         assert_eq!(label, SOURCE_GAMELIST);
@@ -26097,6 +26612,72 @@ mod tests {
     }
 
     #[test]
+    fn use_global_keeps_pack_location_and_survives_restart_without_becoming_legacy_box_art() {
+        use crate::artwork_pack::{selected_picture_type, PictureType};
+        let root = picker_temp("global-pack-choice");
+        let path = root.join("settings.toml");
+        let docs = root.join("custom-docs");
+        let mut initial = Settings {
+            default_artwork_pack: Some(PictureType::Screenshot),
+            ..Settings::default()
+        };
+        initial
+            .artwork_pack_roots
+            .insert("NeoGeo".into(), docs.to_string_lossy().into_owned());
+        assert_eq!(
+            selected_picture_type(&initial, "NeoGeo"),
+            PictureType::BoxArt
+        );
+        let (saved, _, _) = persist_source_choice(
+            &initial,
+            &path,
+            "NeoGeo",
+            &crate::source_cache::Target::ArtworkPack {
+                docs_root: docs.clone(),
+                picture_type: PictureType::Screenshot,
+            },
+            true,
+        )
+        .unwrap();
+        assert_eq!(
+            initial.artwork_pack_inherit.len(),
+            0,
+            "staging must not change a cancelled choice"
+        );
+        let mut restarted = Settings::load(&path).unwrap();
+        assert_eq!(restarted.artwork_pack_roots, initial.artwork_pack_roots);
+        assert_eq!(
+            selected_picture_type(&restarted, "NeoGeo"),
+            PictureType::Screenshot
+        );
+        assert_eq!(
+            selected_picture_type(&restarted, "NeoGeoMVS"),
+            PictureType::Screenshot
+        );
+        restarted.default_artwork_pack = Some(PictureType::TitleScreen);
+        assert_eq!(
+            selected_picture_type(&restarted, "NeoGeo"),
+            PictureType::TitleScreen
+        );
+        assert_eq!(saved.artwork_pack_inherit, restarted.artwork_pack_inherit);
+        let (explicit, _) = source_choice(
+            &restarted,
+            "NeoGeo",
+            &crate::source_cache::Target::ArtworkPack {
+                docs_root: docs,
+                picture_type: PictureType::BoxArt,
+            },
+            false,
+        );
+        assert!(!explicit.artwork_pack_inherit.contains("NeoGeo"));
+        assert_eq!(
+            selected_picture_type(&explicit, "NeoGeo"),
+            PictureType::BoxArt
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn leaving_typed_pack_clears_only_that_groups_explicit_choice() {
         use crate::artwork_pack::PictureType;
         let root = picker_temp("typed-source-persistence");
@@ -26117,6 +26698,7 @@ mod tests {
                     docs_root: root.join("docs"),
                     picture_type,
                 },
+                false,
             )
             .unwrap();
             let reloaded = Settings::load(&settings_path).unwrap();
@@ -26132,6 +26714,7 @@ mod tests {
                         &settings_path,
                         "SuperGrafx",
                         &crate::source_cache::Target::Gamelist,
+                        false,
                     )
                 } else {
                     persist_automatic_source(&pack, &settings_path, "SuperGrafx")
@@ -26245,6 +26828,7 @@ mod tests {
                 docs_root: root.join("docs"),
                 picture_type: crate::artwork_pack::PictureType::BoxArt,
             },
+            false,
         );
 
         assert!(result.is_err());

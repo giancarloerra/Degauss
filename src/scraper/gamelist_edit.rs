@@ -700,7 +700,7 @@ fn parse_document(bytes: &[u8], origin: &Path) -> Result<Document> {
     let mut empty_root = None;
 
     loop {
-        let before = usize::try_from(reader.buffer_position()).unwrap_or(usize::MAX);
+        let before = bytes.len() - reader.get_ref().len();
         match reader.read_event() {
             Ok(Event::Eof) => break,
             Err(error) => {
@@ -747,8 +747,7 @@ fn parse_document(bytes: &[u8], origin: &Path) -> Result<Document> {
                         open.field = Some(OpenField {
                             name: name.clone(),
                             whole_start: before,
-                            content_start: usize::try_from(reader.buffer_position())
-                                .unwrap_or(usize::MAX),
+                            content_start: bytes.len() - reader.get_ref().len(),
                             depth,
                             text: String::new(),
                         });
@@ -759,7 +758,7 @@ fn parse_document(bytes: &[u8], origin: &Path) -> Result<Document> {
                 let name = element.name().as_ref().to_ascii_lowercase();
                 xml_attributes(&element, origin)?;
                 if name == "gamelist" && root_depth.is_none() && root_close.is_none() {
-                    let after = usize::try_from(reader.buffer_position()).unwrap_or(usize::MAX);
+                    let after = bytes.len() - reader.get_ref().len();
                     let close = after.checked_sub(2).ok_or_else(|| {
                         Error::local(format!(
                             "{} has an invalid <gameList/> root",
@@ -777,7 +776,7 @@ fn parse_document(bytes: &[u8], origin: &Path) -> Result<Document> {
                             || FIELDS.contains(&name.as_str())
                             || ART_FIELDS.contains(&name.as_str()))
                     {
-                        let after = usize::try_from(reader.buffer_position()).unwrap_or(usize::MAX);
+                        let after = bytes.len() - reader.get_ref().len();
                         if name == "path" {
                             open.path.clear();
                         }
@@ -837,9 +836,7 @@ fn parse_document(bytes: &[u8], origin: &Path) -> Result<Document> {
                         open.fields.insert(
                             name.clone(),
                             Field {
-                                whole: field.whole_start
-                                    ..usize::try_from(reader.buffer_position())
-                                        .unwrap_or(usize::MAX),
+                                whole: field.whole_start..bytes.len() - reader.get_ref().len(),
                                 content: Some(field.content_start..before),
                                 value,
                             },
@@ -848,8 +845,7 @@ fn parse_document(bytes: &[u8], origin: &Path) -> Result<Document> {
                     if name == "game" && open.depth == depth {
                         let open = game.take().expect("checked above");
                         games.push(Game {
-                            whole: open.whole_start
-                                ..usize::try_from(reader.buffer_position()).unwrap_or(usize::MAX),
+                            whole: open.whole_start..bytes.len() - reader.get_ref().len(),
                             close_start: before,
                             id: open.id,
                             parent_id: open.parent_id,
@@ -1459,7 +1455,7 @@ fn append_member_from_legacy(
         }
         opening.push('>');
         replacements.push((
-            game.whole.start..game.whole.start + reader.buffer_position() as usize,
+            game.whole.start..game.whole.start + original.len() - reader.get_ref().len(),
             opening.into_bytes(),
         ));
     }
@@ -1948,6 +1944,131 @@ mod tests {
     }
 
     #[test]
+    fn source_byte_ranges_preserve_bom_and_unrelated_xml_during_scraper_edits() {
+        for bom in [false, true] {
+            for newline in ["\n", "\r\n"] {
+                for operation in ["replace", "missing", "append", "empty", "self-closing"] {
+                    let folder = temp(&format!(
+                        "source-ranges-{bom}-{}-{operation}",
+                        newline.len()
+                    ));
+                    let path = folder.join("gamelist.xml");
+                    let untouched = "  <!-- Préserver 遊戯 --><custom keep=\"yes\">Été</custom>";
+                    let game = match operation {
+                        "replace" => "  <game id=\"7\" custom=\"keep\"><path>./Game.rom</path><name>Ancien</name><desc>Été</desc><image>./old.png</image><unknown>Keep</unknown></game>",
+                        "missing" => "  <game id=\"7\" custom=\"keep\"><path>./Game.rom</path><name>Local</name><desc/><unknown>Keep</unknown></game>",
+                        "append" => "  <game id=\"8\"><path>./Other.rom</path><name><![CDATA[Autre 遊戯]]></name><unknown>Keep</unknown></game>",
+                        _ => "",
+                    };
+                    let root = if operation == "self-closing" {
+                        "<gameList custom=\"yes\" />".to_string()
+                    } else {
+                        format!("<gameList custom=\"yes\">{newline}{untouched}{newline}{game}{newline}</gameList>")
+                    };
+                    let original = format!(
+                        "{}<?xml version=\"1.0\" encoding=\"UTF-8\"?>{newline}{root}{newline}",
+                        if bom { "\u{feff}" } else { "" }
+                    );
+                    std::fs::write(&path, &original).unwrap();
+                    let mut backups = Backups::new();
+                    for name in ["Nouveau 遊戯", "Dernier été"] {
+                        let change = apply(
+                            Apply {
+                                gamelist_path: &path,
+                                folder: &folder,
+                                relative_game_path: "./Game.rom",
+                                metadata: &metadata(name),
+                                image_path: Some("./media/écran.png"),
+                                image_policy: ImagePolicy::ReplaceExisting,
+                                metadata_policy: if operation == "missing" {
+                                    MetadataPolicy::FillMissing
+                                } else {
+                                    MetadataPolicy::ReplaceExisting
+                                },
+                            },
+                            &mut backups,
+                        )
+                        .unwrap_or_else(|error| {
+                            panic!("BOM={bom}, newline={newline:?}, {operation}: {error}")
+                        });
+                        let bytes = std::fs::read(&path).unwrap();
+                        assert_eq!(bytes.starts_with(b"\xef\xbb\xbf"), bom);
+                        let text = std::str::from_utf8(&bytes).unwrap();
+                        let parsed =
+                            crate::gamelist::Gamelist::parse(text, &folder, &path).unwrap();
+                        let (saved, _) = parsed.lookup_exact("./Game.rom").unwrap();
+                        assert_eq!(
+                            saved.name.as_deref(),
+                            Some(if operation == "missing" {
+                                "Local"
+                            } else {
+                                name
+                            })
+                        );
+                        assert!(text.contains("<desc>New &amp; useful &lt;description&gt;</desc>"));
+                        assert!(text.contains("<image>./media/écran.png</image>"));
+                        assert!(text.contains("custom=\"yes\""));
+                        if operation != "self-closing" {
+                            assert!(text.contains(untouched));
+                        }
+                        if !game.is_empty() {
+                            assert!(text.contains("<unknown>Keep</unknown>"));
+                        }
+                        if operation == "append" {
+                            assert!(text.contains(game), "Unrelated game bytes must survive");
+                        }
+                        if newline == "\r\n" {
+                            assert!(text.as_bytes().windows(2).enumerate().all(|(at, pair)| {
+                                pair[1] != b'\n' || text.as_bytes()[at] == b'\r'
+                            }));
+                        }
+                        if operation != "missing" || name == "Nouveau 遊戯" {
+                            assert!(change.changed());
+                        } else {
+                            assert!(!change.changed(), "Repeated fill must not rewrite anything");
+                        }
+                    }
+                    let saved = std::fs::read(&path).unwrap();
+                    let rejected = apply_many(
+                        &path,
+                        &folder,
+                        &[
+                            Update {
+                                relative_game_path: "./Game.rom".into(),
+                                metadata: metadata("Rejected one"),
+                                image_path: None,
+                                image_created: false,
+                                image_policy: ImagePolicy::Off,
+                                metadata_policy: MetadataPolicy::ReplaceExisting,
+                            },
+                            Update {
+                                relative_game_path: "./Game.rom".into(),
+                                metadata: metadata("Rejected two"),
+                                image_path: None,
+                                image_created: false,
+                                image_policy: ImagePolicy::Off,
+                                metadata_policy: MetadataPolicy::ReplaceExisting,
+                            },
+                        ],
+                        &mut backups,
+                    )
+                    .unwrap();
+                    assert!(rejected.iter().all(Result::is_err));
+                    assert_eq!(std::fs::read(&path).unwrap(), saved);
+                    let copies: Vec<_> = std::fs::read_dir(&folder)
+                        .unwrap()
+                        .map(|entry| entry.unwrap().path())
+                        .filter(|path| path.extension().is_some_and(|ext| ext == "bak"))
+                        .collect();
+                    assert_eq!(copies.len(), 1);
+                    assert_eq!(std::fs::read(&copies[0]).unwrap(), original.as_bytes());
+                    std::fs::remove_dir_all(folder).unwrap();
+                }
+            }
+        }
+    }
+
+    #[test]
     fn a_missing_gamelist_is_created_and_passes_the_real_reader() {
         let folder = temp("create");
         let path = folder.join("gamelist.xml");
@@ -2297,31 +2418,34 @@ mod tests {
 
     #[test]
     fn malformed_or_duplicate_gamelists_are_never_replaced() {
-        for (name, original) in [
-            ("malformed", "<gameList><game>"),
-            (
-                "duplicate",
-                "<gameList><game><path>./x</path></game><game><path>x</path></game></gameList>",
-            ),
-        ] {
-            let folder = temp(name);
-            let path = folder.join("gamelist.xml");
-            std::fs::write(&path, original).unwrap();
-            let result = apply(
-                Apply {
-                    gamelist_path: &path,
-                    folder: &folder,
-                    relative_game_path: "./x",
-                    metadata: &metadata("X"),
-                    image_path: None,
-                    image_policy: ImagePolicy::Off,
-                    metadata_policy: MetadataPolicy::FillMissing,
-                },
-                &mut Backups::new(),
-            );
-            assert!(result.is_err());
-            assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
-            let _ = std::fs::remove_dir_all(folder);
+        for bom in ["", "\u{feff}"] {
+            for (name, original) in [
+                ("malformed", "<gameList><game>"),
+                (
+                    "duplicate",
+                    "<gameList><game><path>./x</path></game><game><path>x</path></game></gameList>",
+                ),
+            ] {
+                let original = format!("{bom}{original}");
+                let folder = temp(name);
+                let path = folder.join("gamelist.xml");
+                std::fs::write(&path, &original).unwrap();
+                let result = apply(
+                    Apply {
+                        gamelist_path: &path,
+                        folder: &folder,
+                        relative_game_path: "./x",
+                        metadata: &metadata("X"),
+                        image_path: None,
+                        image_policy: ImagePolicy::Off,
+                        metadata_policy: MetadataPolicy::FillMissing,
+                    },
+                    &mut Backups::new(),
+                );
+                assert!(result.is_err());
+                assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
+                let _ = std::fs::remove_dir_all(folder);
+            }
         }
     }
 
@@ -2798,35 +2922,38 @@ mod tests {
 
     #[test]
     fn single_member_fill_preserves_legacy_fields_and_materializes_exact_entry() {
-        let folder = temp("zip-legacy-fill");
-        let path = folder.join("gamelist.xml");
-        let original = r#"<game ID="old" customFlag="Keep &amp; exact"><path>Only.zip</path><name>Keep name</name><custom>Keep custom</custom></game>"#;
-        std::fs::write(&path, format!("<gameList>{original}</gameList>")).unwrap();
-        let update = Update {
-            relative_game_path: "./Only.zip/Game.rom".into(),
-            metadata: metadata("Replacement name"),
-            image_path: None,
-            image_created: false,
-            image_policy: ImagePolicy::Off,
-            metadata_policy: MetadataPolicy::FillMissing,
-        };
-        apply_many_with_fallback(&path, &folder, &[update], &[true], &mut Backups::default())
-            .unwrap()[0]
-            .as_ref()
-            .unwrap();
-        let text = std::fs::read_to_string(&path).unwrap();
-        assert!(text.contains(original));
-        assert_eq!(text.matches("ID=\"old\"").count(), 1);
-        assert_eq!(text.matches("customFlag=\"Keep &amp; exact\"").count(), 2);
-        assert!(
-            !text.contains("customflag="),
-            "XML attribute names are case-sensitive"
-        );
-        let list = crate::gamelist::Gamelist::load(&path, &folder).unwrap();
-        let (member, _) = list.lookup_exact("./Only.zip/Game.rom").unwrap();
-        assert_eq!(member.name.as_deref(), Some("Keep name"));
-        assert_eq!(member.developer.as_deref(), Some("New developer"));
-        assert_eq!(text.matches("<custom>Keep custom</custom>").count(), 2);
-        std::fs::remove_dir_all(folder).unwrap();
+        for bom in ["", "\u{feff}"] {
+            let folder = temp("zip-legacy-fill");
+            let path = folder.join("gamelist.xml");
+            let original = r#"<game ID="old" customFlag="Keep &amp; exact"><path>Only.zip</path><name>Keep name</name><custom>Keep custom</custom></game>"#;
+            std::fs::write(&path, format!("{bom}<gameList>{original}</gameList>")).unwrap();
+            let update = Update {
+                relative_game_path: "./Only.zip/Game.rom".into(),
+                metadata: metadata("Replacement name"),
+                image_path: None,
+                image_created: false,
+                image_policy: ImagePolicy::Off,
+                metadata_policy: MetadataPolicy::FillMissing,
+            };
+            apply_many_with_fallback(&path, &folder, &[update], &[true], &mut Backups::default())
+                .unwrap()[0]
+                .as_ref()
+                .unwrap();
+            let text = std::fs::read_to_string(&path).unwrap();
+            assert_eq!(text.starts_with('\u{feff}'), !bom.is_empty());
+            assert!(text.contains(original));
+            assert_eq!(text.matches("ID=\"old\"").count(), 1);
+            assert_eq!(text.matches("customFlag=\"Keep &amp; exact\"").count(), 2);
+            assert!(
+                !text.contains("customflag="),
+                "XML attribute names are case-sensitive"
+            );
+            let list = crate::gamelist::Gamelist::load(&path, &folder).unwrap();
+            let (member, _) = list.lookup_exact("./Only.zip/Game.rom").unwrap();
+            assert_eq!(member.name.as_deref(), Some("Keep name"));
+            assert_eq!(member.developer.as_deref(), Some("New developer"));
+            assert_eq!(text.matches("<custom>Keep custom</custom>").count(), 2);
+            std::fs::remove_dir_all(folder).unwrap();
+        }
     }
 }

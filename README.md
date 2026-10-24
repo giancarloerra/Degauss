@@ -188,6 +188,10 @@ control has an explanation below the list. Home keeps its flat Actions menu
 for personal folders, editing, images and views. Explore has its own search,
 filter and collection actions.
 
+**Game Information** scrolls automatically until a read or page control is used.
+Manual scrolling keeps the reading position for that visit, including at the
+bottom. Close and reopen Game Information to restore automatic reading.
+
 **Game** contains Game Information, separate **Random Game** and **Random
 Favourite** actions, and adding/removing favourites. Adding one opens a
 chooser that lists **Main Favourites** (the `_@Favorites` folder itself)
@@ -288,6 +292,14 @@ personal-folder entry. **Start Folder** continues to use the existing category
 identity, independently of Home ordering.
 
 ### Running MiSTer scripts
+
+With the current Degauss Main, Degauss finishes and Main launches the selected
+script through the same native Scripts terminal and launch path as MiSTer's
+OSD, with Degauss's display ownership and video effects released first. No
+Degauss-specific script resolution is assigned. Degauss's own display state is
+restored before the frontend reopens. The configured video modes, working
+directory, script arguments and key-to-return behaviour are preserved; no INI
+changes or reboot are needed for the handover.
 
 Open **Scripts** from the main browser to browse the installed scripts and their subfolders.
 The browser starts at `Scripts` under the configured `menu_root`, normally
@@ -707,6 +719,20 @@ colour to MiSTer's framebuffer menu wallpapers while this core is active; it is
 not limited to Degauss's own interface. The stock-menu on-demand mode does not
 use this private core.
 
+### Starting the last game on boot
+
+**Options → Appearance → Start Last Game on Boot** is Off by default. With
+Degauss Main installed, enabling it starts the last successfully launched game
+after startup storage and library checks finish. A three-second prompt allows
+**B Cancel**. Cancellation or a failed launch consumes that boot's attempt.
+Returning from a game or script, using the Frontend shortcut, or restarting
+Degauss does not start the game again. The current system and per-game core
+choices are used. A missing game, core or unreadable history is reported instead
+of launching another game. This option records successful game launches even
+when Last Played is hidden. Stock-Main on-demand script launches do not auto-start.
+Kiosk mode always starts at Home, even when this option is enabled.
+With no recorded game, Degauss opens normally without a warning.
+
 ### Returning to Degauss from a running core
 
 The recommended installation uses Degauss's `MiSTer_Degauss` Main binary.
@@ -715,17 +741,24 @@ Pressing A on **Frontend** keeps the direct route: it closes the current core
 and returns to Degauss.
 
 Select **System → Frontend shortcut**, directly below **Frontend**, and press A
-to open the optional keyboard shortcut setting. It defaults to **Off**, so an
-existing installation keeps its current input behaviour until it is configured.
+to open separate optional **Keyboard** and **Controller** settings. Both default
+to **Off**, so an existing installation keeps its input behaviour until configured.
 
 Select **Keyboard** and press A, then press the physical keyboard key to
 capture. Press X on the row to disable it. Menu or B cancels capture.
 
+Select **Controller** and capture a button in the same way. Hold it continuously
+for **five seconds** to return once, then release before another hold. Ordinary
+presses and holds still reach the game immediately; the selected button is not
+reserved from the game. Opening the OSD, changing cores or disconnecting the
+controller clears an in-progress hold.
+
 A configured shortcut works only while a non-menu core is running, the OSD
-is unlocked, and no other framebuffer script owns the screen. The setting is
+is closed and unlocked, and no other framebuffer script owns the screen. The setting is
 stored in `/media/fat/config/degauss/frontend_shortcut.bin`. A missing file
 means the shortcut is Off. An invalid or unsupported file is identified in the
-shortcut screen and can be replaced by selecting **Reset shortcut**.
+shortcut screen and can be replaced by selecting **Reset shortcut**. Existing
+keyboard assignments remain usable; the new controller choice starts Off.
 
 This screen and shortcut belong to `MiSTer_Degauss`. They are not
 available when Degauss is launched on demand from the stock Main binary as
@@ -939,8 +972,30 @@ Nothing else needs resetting.
 ### Additional computer and disc libraries
 
 Apple III, Macintosh Quadra 800, NeXT Color, Sun-2, Sun-3, Macintosh SE/30,
-Macintosh IIcx and FM Towns Marty use their normal `games/<core>` folders.
+Macintosh IIcx, FM Towns Marty, UKNC, Sun SPARCstation 20 and Cray X-MP use their normal `games/<core>` folders.
 SE/30 uses `games/MACSE30`; IIcx uses `games/MACIICX`.
+UKNC uses `games/UKNC`: DSK floppies mount in the first drive (slot 0).
+Use an explicit MGL to select the second floppy drive (slot 1) or multiple
+floppies. VHD hard-disk loading is not included.
+SPARCstation 20 uses `games/SunSparcStation`: hard disks mount in slot 0,
+CDs in slot 2. Use explicit MGLs for secondary disks (slot 1), multiple media
+or a session PROM override. Firmware and NVRAM remain managed by the core.
+
+Cray X-MP entries are MGL launchers, not separate support files. Unpack the
+official `games/Cray-XMP/Cray-XMP_COS-1.17.zip` as described in its supplied
+README, then copy [this COS 1.17 launcher](docs/launchers/Cray-XMP-COS117.mgl)
+into `games/Cray-XMP`. It mounts the expander disk, drives and printer before
+loading `cos117.ios` through the core's native boot-file entry. Keep that order;
+the two `.img` files have different slots. Existing disks and printer output
+are not recreated by Degauss.
+
+Apple II accepts WOZ floppies in its normal first drive; existing disk formats
+and explicit second-drive MGLs are unchanged. Sharp MZ MZF files use Load Direct
+to RAM (F2) on dated builds from 20261015. Older dated builds retain Load Tape
+to CMT (F1), started from the monitor as before. Undated custom builds retain
+the existing profile; an explicit MGL can select their load slot.
+Generated favourites retain a stable core reference and adapt at Degauss launch
+without rewriting the saved file. MZT, disk and Quick Disk slots are unchanged.
 Existing MGL launchers are passed through unchanged.
 Existing gamelists provide artwork and metadata normally. These new system IDs
 do not yet have built-in ScreenScraper platform mappings.
@@ -967,8 +1022,8 @@ with 32 sectors. This update does not change that core protocol.
 Apple III DiskCopy 4.2 images are read-only to preserve their container
 checksums. Writable ProDOS and supported 2MG images retain write support.
 
-Sharp MZ keeps its existing library: MZF loads through the tape-download slot;
-MZT mounts as a tape; DSK/D88/D77 mount as a floppy; QDF/MZQ as a Quick Disk.
+Sharp MZ keeps its existing library: MZF uses the build-dependent download entry
+described above; MZT mounts as a tape; DSK/D88/D77 mount as a floppy; QDF/MZQ as a Quick Disk.
 Existing MGLs and older native Sharp MZ tape launches remain supported.
 
 ### Installed core launchers, RetroAchievements and Unstable cores
@@ -1103,14 +1158,16 @@ two thirds of the screen width keeps every picture within its decode.
 **Options → Appearance → View** is the global default. Every browse place can instead
 keep its own custom view: Home, each category's Systems
 screen, each system root, and every folder inside a system. Use **X Actions →
-Appearance → Change View** at that place to create or update its custom view.
+Folder Options → Change View** inside a game-library or Favourites folder,
+or **Appearance → Change View** on a system-list page, to save its view.
 **Use Global View**, in the same group, removes only that place's custom view;
 it then follows later global
 changes again. A custom view remains custom even when it currently matches
 the global setting. At Home these view controls are
 directly in its flat Actions menu.
 
-**X Actions → Appearance → Custom Views** creates named views from four
+**X Actions → Folder Options → Custom Views** inside a game-library or
+Favourites folder creates named views from four
 templates: two columns, a left column with two panels on the right, two
 panels on the left with a right column, or two stacked panels. On Home and
 in Explore, Custom Views is directly in Actions. Exactly one panel is the
@@ -1129,6 +1186,41 @@ Use Here, Use Globally, Edit, Save As, Rename and Delete. Deleting a named
 view removes its assignments; existing built-in assignments are unchanged.
 Proportions adapt to the screen and its safe area, including portrait.
 Core Updates keeps its dedicated Details presentation.
+
+### Folder Options
+
+Inside a game-library or Favourites folder, **X Actions → Folder Options**
+keeps the view controls together with three independent preferences:
+
+- **Screen Rotation**: Use Global, Off, 90° Clockwise or 90° Counterclockwise.
+  A keeps the preview; B or the 15-second timeout reverts it.
+- **Folder Position**: Use Global, Before Games or After Games.
+- **Game Name Display**: Use Global or any of the existing full/shortened-name choices.
+
+Global defaults are **Options → Display → Screen Rotation**,
+**Options → Library → Folders Before Games** (On means Before Games;
+Off means After Games), and **Options → Appearance → Game Name Display**.
+
+These affect the **folder currently open**, not a highlighted child folder or
+game. The open folder is shown as the action's scope. Use Global follows the
+corresponding setting in Options, including later changes; an explicit choice
+remains local even when it matches the global value. Child and sibling folders
+have their own choices, with no parent inheritance. Change a preference back to
+Use Global independently of the others. Existing custom-view assignments stay
+separate, and Use Global View changes only the view.
+
+Rotation turns the complete frontend image, including menus, on its currently
+selected outputs. It does not change video timings, game rotation or the
+shared-orientation contract between CRT and HDMI. Saved choices apply on
+re-entry and after returning from a game. Name and folder-position changes
+do not rename files, change artwork/metadata or launch targets, or require a
+library rebuild. **Use MRA Filenames for Arcade Titles** still takes precedence
+over shortened names.
+
+An in-app Favourites folder rename preserves its preferences and those of its
+subfolders. Successful in-app deletion removes them; unavailable storage does
+not. External filesystem renames are not tracked. Home, category, system-list
+and special-browser Actions menus retain their existing organisation.
 
 Full information is read only for the settled selected game, from its
 configured Gamelist or Artwork Pack. Long information scrolls slowly after a
@@ -1246,12 +1338,14 @@ require **A** and confirmation, never a sideways press.
 | Appearance | Screensaver | How long with nothing pressed before pictures start |
 | Appearance | Attract Mode | Off by default. When on, A launches the game pictured at the centre and Left/Right moves between systems |
 | Appearance | Show Attract Mode on Home | Off by default. Add an immediate Attract Mode entry to the main browser, independently of idle screensaver settings |
+| Appearance | Start Last Game on Boot | Off by default. With Degauss Main, start the last successfully launched game once after power-on. Press B during the three-second prompt to cancel |
 | Appearance | Screensaver Speed | Normal (default), 2x or 4x picture movement, independent of the idle time |
 | Display | Video Effects | Off by default. Choose a supplied or custom Degauss mask, one of the general MiSTer presets, or a user-created preset in `Presets/Degauss`. Core-specific and incomplete presets are not offered. Off removes both kinds of Degauss effect. Effects apply only while Degauss is open, on HDMI and scaled analog output, not games |
 | Library | Favourites First | Show favourites first in each folder, keeping them in alphabetical order |
 | Library | Folders Before Games | On, folders lead a system's listing; off, the games come first |
 | Library | Core Preference | Standard First (default) or RetroAchievements First. Used by systems whose Core Version is Default; the other version is used only when the preferred version is absent |
 | Library | Automatic Data Source | Gamelist First (default) or Artwork Pack First. Applies only to systems whose Game Data Source remains Automatic; explicit per-system choices always win |
+| Library | Default Artwork Pack | Box Art (default), Screenshot or Title Screen. Applies when a system has no explicit Artwork Pack choice or uses Use Global; it does not change its Game Data Source |
 | Library | Auto-run Physical Discs | Off by default. Launch supported inserted discs through an installed `MiSTer_Physical-CD` or `MiSTer-disc` provider |
 | Library | Separate Handheld Category | Off by default. When On, recognised handheld systems appear in a Handheld category after Console. This is a display-only grouping and does not change core or game launching |
 | Library | Show Other Folder | Show the Other group, the cores that are not games |
@@ -1282,6 +1376,34 @@ Changes remain active for the current session; dismiss the message and press
 Delete `settings.toml` to reset UI preferences. Manual overrides still apply.
 
 ### Manual configuration overrides
+
+#### Kiosk mode
+
+To let guests browse and launch games without changing Degauss or exiting to
+MiSTer, add a root-level six-digit string to `degauss-user.toml`, before any
+table headings:
+
+```toml
+kiosk_pin = "012345"
+```
+
+Each new Degauss process starts locked on Home. Options, Actions, editing,
+Scripts, utility/core browsers and pinned non-game shortcuts are hidden and
+disabled without changing the saved Home arrangement. The Menu button offers
+only **Unlock**. Use the controller or keyboard arrows and Select to enter six
+digits on the keypad. B cancels; an incorrect code leaves it locked. A correct
+code restores normal access for that Degauss process. Returning after a game
+locks it again. The separate in-game MiSTer OSD is unchanged.
+
+On a required-storage error, Menu opens the PIN keypad so the operator can
+unlock before exiting. B cancels and returns to the storage error, still locked.
+
+The code is stored in clear text only in the user file. Unlocking does not
+remove it or save it in `settings.toml`; updates preserve the user file. For
+manual recovery, remove `kiosk_pin` and restart Degauss. Invalid user settings
+follow the normal user-file validation contract below.
+
+#### Other overrides
 
 Create `degauss-user.toml` beside `degauss.toml`, normally at
 `/media/fat/Scripts/.config/degauss/degauss-user.toml`, only when manual
@@ -1600,15 +1722,18 @@ Databases can also be downloaded directly from the original
 [MiSTer Game Artwork Databases repository](https://github.com/chipster6502/MiSTer_artwork_pack).
 Degauss reads the installed database in place rather than importing or copying it.
 **Game Data Source** is selected separately for each supported system from its
-**X Actions → Library** menu. The global option changes only the priority used
-by systems still set to Automatic.
+**X Actions → Library** menu. **Options → Library → Automatic Data Source**
+changes only the priority used by systems still set to Automatic.
+**Default Artwork Pack** separately chooses Box Art, Screenshot or Title Screen
+for systems without an explicit pack choice, including those set to **Use Global**.
 
 To choose a pack manually:
 
 1. Highlight a supported system, or browse inside it, and press **X**.
 2. Open **Library → Game Data Source**.
-3. Choose **Artwork Pack**, then **Box Art**, **Screenshot** or **Title Screen**.
-   Box Art is the default for existing settings.
+3. Choose **Artwork Pack**, then **Use Global**, **Box Art**, **Screenshot** or
+   **Title Screen**. Use Global follows **Options → Library → Default Artwork Pack**.
+   Existing explicit choices and legacy saved Box Art locations remain unchanged.
 4. Confirm the detected `docs` location for that picture type. If more than one installation is
    present, choose the one Degauss should use.
 
@@ -2523,10 +2648,12 @@ Read [Managing MiSTer with AI after Update All](docs/manage-mister-with-ai.md) a
 ### How do I install an Artwork Pack and select it in Degauss?
 
 1. **Update All:** open **Settings → Extra Content → Game Artwork DBs**, select the wanted artwork packs and systems, save, then run Update All to install them. Those selected packs are automatically updated whenever you subsequently run Update All.
-2. **Degauss global setting:** set **Options → Library → Automatic Data Source → Artwork Pack First**. This uses **Box Art** by default, so a Box Art pack must be installed for that default to show pack artwork.
-3. **Screenshot or Title Screen selection (per system):** highlight or enter the system, press **X**, then choose **Library → Game Data Source → Artwork Pack**. Choose **Screenshot** or **Title Screen** and confirm its installed location.
+2. **Degauss global settings:** set **Options → Library → Automatic Data Source → Artwork Pack First**, then choose **Default Artwork Pack → Box Art, Screenshot or Title Screen** to match the packs installed. This selects a picture type, not a download or a different Game Data Source.
+3. **Per-system choices:** highlight or enter the system, press **X**, then choose **Library → Game Data Source → Artwork Pack**. Choose **Use Global** to follow the global picture type, or choose **Box Art**, **Screenshot** or **Title Screen** explicitly, then confirm its installed location. Use Global retains a previously selected pack location.
 
-**Box Art remains the default. Installing only Screenshot or Title Screen packs still requires step 3.** If prompted, choose **Prepare** and let preparation finish.
+**Box Art remains the default.** A Screenshot-only or Title-Screen-only installation works by selecting that global type or an explicit per-system type. Existing explicit system choices, including Box Art selections saved by older versions, are preserved until changed to Use Global. Packs are prepared per system when needed, not all at startup. If prompted, choose **Prepare** and let preparation finish.
+
+The installed **2D Boxes**, **3D Boxes** or **MixRBV2** style is the Box Art choice. Those three styles share the same installation folder, so switching between them is done in Update All. Screenshot and Title Screen packs install separately and can coexist with Box Art.
 
 ### I installed an Artwork Pack, but its artwork is not showing
 

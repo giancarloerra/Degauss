@@ -29,6 +29,7 @@ pub enum OptionId {
     CustomViews,
     /// Which available top-level folder opens after the splash screen.
     StartFolder,
+    StartLastGameOnBoot,
     /// Remove every place-specific view after confirmation.
     ResetCustomViews,
     /// How Details shares its width between the list and the picture, and
@@ -73,6 +74,8 @@ pub enum OptionId {
     CorePreference,
     /// Preferred available source for systems left on Automatic.
     AutomaticDataSource,
+    /// Picture type for systems inheriting the global Artwork Pack choice.
+    DefaultArtworkPack,
     /// Watch supported physical game discs through an installed provider.
     AutoRunPhysicalDiscs,
     /// Present recognised handheld systems in their own home category.
@@ -145,6 +148,7 @@ pub const OPTIONS: &[OptionId] = &[
     OptionId::CustomViews,
     OptionId::ResetCustomViews,
     OptionId::StartFolder,
+    OptionId::StartLastGameOnBoot,
     OptionId::DetailsStyle,
     OptionId::GameNameDisplay,
     OptionId::UseMraFilenames,
@@ -163,6 +167,7 @@ pub const OPTIONS: &[OptionId] = &[
     OptionId::FoldersLast,
     OptionId::CorePreference,
     OptionId::AutomaticDataSource,
+    OptionId::DefaultArtworkPack,
     OptionId::AutoRunPhysicalDiscs,
     OptionId::SeparateHandheldCategory,
     OptionId::Spacer,
@@ -288,6 +293,7 @@ impl OptionsPage {
                 OptionId::CustomViews,
                 OptionId::ResetCustomViews,
                 OptionId::StartFolder,
+                OptionId::StartLastGameOnBoot,
                 OptionId::DetailsStyle,
                 OptionId::GameNameDisplay,
                 OptionId::UseMraFilenames,
@@ -310,6 +316,7 @@ impl OptionsPage {
                 OptionId::FoldersLast,
                 OptionId::CorePreference,
                 OptionId::AutomaticDataSource,
+                OptionId::DefaultArtworkPack,
                 OptionId::AutoRunPhysicalDiscs,
                 OptionId::SeparateHandheldCategory,
                 OptionId::ShowOther,
@@ -350,6 +357,7 @@ impl OptionId {
             OptionId::Layout => "View",
             OptionId::CustomViews => "Custom Views",
             OptionId::StartFolder => "Start Folder",
+            OptionId::StartLastGameOnBoot => "Start Last Game on Boot",
             OptionId::ResetCustomViews => "Reset Views Selections to Global",
             OptionId::DetailsStyle => "Details Style",
             OptionId::GameNameDisplay => "Game Name Display",
@@ -374,6 +382,7 @@ impl OptionId {
             OptionId::ShowExplore => "Show Explore Games",
             OptionId::CorePreference => "Core Preference",
             OptionId::AutomaticDataSource => "Automatic Data Source",
+            OptionId::DefaultArtworkPack => "Default Artwork Pack",
             OptionId::AutoRunPhysicalDiscs => "Auto-run Physical Discs",
             OptionId::SeparateHandheldCategory => "Separate Handheld Category",
             OptionId::ShowBar => "Bottom Bar While Browsing",
@@ -433,6 +442,9 @@ impl OptionId {
             OptionId::StartFolder => {
                 "Choose Home or an available top-level folder to open when Degauss starts. A missing folder safely opens Home."
             }
+            OptionId::StartLastGameOnBoot => {
+                "Start the last successfully launched game once after power-on. Off by default. B cancels before launch. Requires Degauss Main."
+            }
             OptionId::ResetCustomViews => {
                 "Reset every place's view selection to the global view after confirmation. Named custom views are kept."
             }
@@ -440,7 +452,7 @@ impl OptionId {
                 "Information shows a summary, Large Artwork fills the column, Compact shows more titles."
             }
             OptionId::GameNameDisplay => {
-                "Choose which region, disc, version and translation tags remain visible. Files and saved data are unchanged."
+                "Global default for visible name tags. A folder's explicit Game Name Display choice is unchanged; files and saved data are unchanged."
             }
             OptionId::FolderBrackets => {
                 "Show or hide Degauss's outer [ name ] marker on folder rows. Brackets inside names are unchanged."
@@ -488,6 +500,9 @@ impl OptionId {
             OptionId::AutomaticDataSource => {
                 "Choose which available source systems left on Automatic try first when they are entered."
             }
+            OptionId::DefaultArtworkPack => {
+                "Choose the installed Artwork Pack picture type for inheriting systems. Explicit system choices stay unchanged. This does not install packs or change Game Data Source."
+            }
             OptionId::AutoRunPhysicalDiscs => {
                 "Launch a supported inserted disc through an installed physical-disc provider."
             }
@@ -496,7 +511,7 @@ impl OptionId {
             }
             OptionId::ShowBar => "Show the clock, connections and button hints while browsing. Menus keep the bar.",
             OptionId::FoldersLast => {
-                "On puts folders before games. Off puts games before folders."
+                "Global default: On puts folders before games, Off puts games before folders. Explicit Folder Options choices are unchanged."
             }
             OptionId::ResetHidden => {
                 "Unhide all manually hidden systems, folders and games after confirmation."
@@ -523,7 +538,7 @@ impl OptionId {
             OptionId::Present => "Direct draws into the framebuffer. Staged draws into memory before copying the frame.",
             OptionId::SwitchIni => "Choose a MiSTer INI profile. Switching reloads the current core and may leave this display without a signal.",
             OptionId::ScreenRotation => {
-                "Rotate the complete frontend for a vertical CRT. This does not change MiSTer video modes or game rotation."
+                "Global frontend rotation. Explicit Folder Options choices are unchanged. This does not change MiSTer video modes or game rotation."
             }
             OptionId::OverscanX => "Leave side margins so the display does not crop the interface.",
             OptionId::OverscanY => "Leave top and bottom margins so the display does not crop the interface.",
@@ -681,10 +696,11 @@ mod tests {
             .ids()
             .contains(&OptionId::FavoritesFirst));
         assert!(OptionsPage::Library.ids().contains(&OptionId::FoldersLast));
-        assert!(OptionsPage::Library.ids().windows(4).any(|ids| ids
+        assert!(OptionsPage::Library.ids().windows(5).any(|ids| ids
             == [
                 OptionId::CorePreference,
                 OptionId::AutomaticDataSource,
+                OptionId::DefaultArtworkPack,
                 OptionId::AutoRunPhysicalDiscs,
                 OptionId::SeparateHandheldCategory,
             ]));

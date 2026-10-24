@@ -360,12 +360,106 @@ fn preserve_setname_attributes(old: &str, new: &str, path: &Path) -> Result<Stri
     Ok(result)
 }
 
-/// Replace only core/setname elements; all unrelated XML remains byte-for-byte.
+/// The 20261015 Sharp MZ build removed F1. Adapt only the MZF direct-load
+/// action of generated/recognised favourites; explicit tape and disk slots stay.
+fn sharp_mz_mzf_patches(
+    text: &str,
+    path: &Path,
+    core: &EffectiveCore,
+) -> Result<Vec<(Range<usize>, String)>> {
+    let stem = Path::new(&core.rbf)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("");
+    if !same_core_identity(stem, "SharpMZ")
+        && !crate::core_choices::nightly_matches(stem, "_Computer/SharpMZ")
+    {
+        return Ok(Vec::new());
+    }
+    let lower = stem.to_ascii_lowercase();
+    let date = crate::systems::core_build_date(stem).or_else(|| {
+        lower
+            .rfind("_unstable_")
+            .and_then(|at| stem.get(at + 10..at + 18))
+    });
+    let wanted = if date.is_some_and(|date| date >= "20261015") {
+        "2"
+    } else {
+        // Undated custom builds retain the original direct-load profile.
+        "1"
+    };
+    let mut reader = Reader::from_str(text);
+    let mut patches = Vec::new();
+    let mut depth = 0usize;
+    loop {
+        let event = reader
+            .read_event()
+            .map_err(|error| DegaussError::malformed("core launcher", path, error.to_string()))?;
+        let starts = matches!(&event, Event::Start(_));
+        match event {
+            Event::Start(tag) | Event::Empty(tag)
+                if depth == 1 && tag.name().as_ref().eq_ignore_ascii_case("file") =>
+            {
+                let attributes = tag
+                    .attributes()
+                    .collect::<std::result::Result<Vec<_>, _>>()
+                    .map_err(|error| {
+                        DegaussError::malformed("core launcher", path, error.to_string())
+                    })?;
+                let get = |key: &str| {
+                    attributes
+                        .iter()
+                        .find(|attribute| attribute.key.as_ref().eq_ignore_ascii_case(key))
+                };
+                let is_mzf = get("path")
+                    .map(|attribute| {
+                        crate::favorites::main_path_value(attribute, path, "core launcher")
+                    })
+                    .transpose()?
+                    .is_some_and(|value| {
+                        Path::new(value.as_str())
+                            .extension()
+                            .is_some_and(|extension| extension.eq_ignore_ascii_case("mzf"))
+                    });
+                if is_mzf && get("type").is_some_and(|attribute| attribute.value.as_ref() == "f") {
+                    if let Some(index) = get("index").filter(|attribute| {
+                        matches!(attribute.value.as_ref(), "1" | "2")
+                            && attribute.value.as_ref() != wanted
+                    }) {
+                        let start = index.value.as_ptr() as usize - text.as_ptr() as usize;
+                        patches.push((start..start + index.value.len(), wanted.into()));
+                    }
+                }
+            }
+            Event::End(_) => depth = depth.saturating_sub(1),
+            Event::Eof => break,
+            _ => {}
+        }
+        if starts {
+            depth += 1;
+        }
+    }
+    Ok(patches)
+}
+
+/// Replace the selected core/setname and its build-specific MZF load slot;
+/// all unrelated XML remains byte-for-byte.
 pub fn apply(text: &str, path: &Path, core: &EffectiveCore) -> Result<String> {
+    apply_with_reference(text, path, core, &core.rbf)
+}
+
+/// A durable favourite keeps its core prefix while using the installed build's
+/// loading profile. Ordinary handoffs use that build's exact reference too.
+pub(crate) fn apply_with_reference(
+    text: &str,
+    path: &Path,
+    core: &EffectiveCore,
+    reference: &str,
+) -> Result<String> {
     let (rbf, setname) = elements(text, path)?;
     let mut patches = vec![(
         rbf.inner.clone(),
-        quick_xml::escape::escape(&core.rbf).into_owned(),
+        quick_xml::escape::escape(reference).into_owned(),
     )];
     match (setname, &core.setname_xml) {
         (Some(old), replacement) => {
@@ -378,6 +472,7 @@ pub fn apply(text: &str, path: &Path, core: &EffectiveCore) -> Result<String> {
         (None, Some(new)) => patches.push((rbf.range.end..rbf.range.end, format!("\n\t{new}"))),
         _ => {}
     }
+    patches.extend(sharp_mz_mzf_patches(text, path, core)?);
     patches.sort_by_key(|(range, _)| std::cmp::Reverse(range.start));
     let mut result = text.to_owned();
     for (range, replacement) in patches {
@@ -450,11 +545,12 @@ pub fn needs_conversion(path: &Path, core: &EffectiveCore) -> Result<bool> {
     if !rbf.value.eq_ignore_ascii_case(&core.rbf) {
         return Ok(true);
     }
-    Ok(match (setname, &core.setname_xml) {
-        (None, None) => false,
-        (Some(old), Some(new)) => text[old.range] != *new,
-        _ => true,
-    })
+    Ok(!sharp_mz_mzf_patches(&text, path, core)?.is_empty()
+        || match (setname, &core.setname_xml) {
+            (None, None) => false,
+            (Some(old), Some(new)) => text[old.range] != *new,
+            _ => true,
+        })
 }
 
 pub fn convert_favorite(path: &Path, core: &EffectiveCore) -> Result<String> {
@@ -463,6 +559,48 @@ pub fn convert_favorite(path: &Path, core: &EffectiveCore) -> Result<String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn sharp_mz_profiles_recognise_standard_and_unstable_build_dates() {
+        let text = "<mistergamedescription><rbf>_Computer/SharpMZ</rbf><file type=\"f\" index=\"1\" path=\"Game &amp; One.mzf\"/><file type=\"f\" index=\"1\" path=\"Game & Two.mzf\"/><file type=\"s\" index=\"3\" path=\"Game.mzf\"/></mistergamedescription>";
+        for (stem, index) in [
+            ("SharpMZ_20261015", 2),
+            ("SharpMZ_unstable_20261015_abcd", 2),
+            ("SharpMZ_unstable_20261015_2315_a1b2c3d_DB9", 2),
+            ("SharpMZ_unstable_20261012_abcd", 1),
+            ("SharpMZ", 1),
+        ] {
+            let core = super::EffectiveCore {
+                rbf: format!("_Unstable/{stem}"),
+                setname_xml: None,
+            };
+            let changed = super::apply(text, std::path::Path::new("Game.mgl"), &core).unwrap();
+            assert!(
+                changed.contains(&format!("type=\"f\" index=\"{index}\"")),
+                "{stem}: {changed}"
+            );
+            assert!(changed.contains("type=\"s\" index=\"3\""));
+            assert_eq!(
+                changed
+                    .matches(&format!("type=\"f\" index=\"{index}\""))
+                    .count(),
+                2
+            );
+            assert!(changed.contains("path=\"Game & Two.mzf\""));
+        }
+    }
+
+    #[test]
+    fn sharp_mz_undated_core_restores_the_old_slot_for_a_newer_favourite() {
+        let text = "<mistergamedescription><rbf>_Computer/SharpMZ</rbf><file type=\"f\" index=\"2\" path=\"Game.mzf\"/><file type=\"s\" index=\"2\" path=\"Disk.dsk\"/></mistergamedescription>";
+        let core = super::EffectiveCore {
+            rbf: "_Computer/SharpMZ".into(),
+            setname_xml: None,
+        };
+        let changed = super::apply(text, std::path::Path::new("Game.mgl"), &core).unwrap();
+        assert!(changed.contains("type=\"f\" index=\"1\" path=\"Game.mzf\""));
+        assert!(changed.contains("type=\"s\" index=\"2\" path=\"Disk.dsk\""));
+    }
+
     use super::*;
     use std::path::PathBuf;
     fn setup(name: &str) -> (PathBuf, SystemConfig) {
