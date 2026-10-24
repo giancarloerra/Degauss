@@ -18,18 +18,20 @@ Degauss plays nice with the standard MiSTer setup, folders and scripts, instead 
 2. **Your existing MiSTer library, as it is**, including SD, external storage and ZIP games that do not need unpacking.
 3. **Six built-in views**, with a different view for each system or folder if you want.
 4. **Layouts Designer** lets you choose a template, arrange list, artwork and information panels, and save your own named layouts.
-5. **Artwork and full game information** from existing files and artwork packs, or Degauss's built-in scraper.
-6. **Libretro Integration** adds an optional, account-free source for game information, screenshots, box art and title screens alongside ScreenScraper.
-7. **Themes** with an on-device editor, font choices and custom system images.
-8. **Home Editor** lets you reorder Home entries and choose which ones to show or hide.
-9. **Custom Folders & Collections** group games, systems and folders your way, keeping filtered searches as reusable collections, with names and custom images.
-10. **Made for CRTs and HDMI**, with smoother CRT artwork, screen-alignment controls and a rotatable interface for vertical displays.
-11. **Optional HDMI CRT effects** for the interface, including scanlines and shadow masks.
-12. **Games Explorer** optionally searches across your library, combines filters and follows metadata links, alongside shared favourites, Last Played and random picks.
-13. **Attract Mode** showcases your collection and lets you switch systems or launch the pictured game.
-14. **Expanded Core Updates** shows installed cores, available updates and What's New, with latest-first sorting and cached browsing while refreshing.
-15. **Core choice per system or game**, including installed RetroAchievements, Unstable and Dual SDRAM builds.
-16. **Fits into MiSTer**: configured controllers work straight away, and you can run installed scripts or use Zaparoo Core launches.
+5. **Folder Options** save rotation, folder position and game-name display per library or Favourites folder, independently of global defaults.
+6. **Artwork and full game information** from existing files and artwork packs, with a global pack-type default and per-system choices, or Degauss's built-in scrapers.
+7. **Libretro Integration** adds an optional, account-free source for game information, screenshots, box art and title screens alongside ScreenScraper.
+8. **Themes** with an on-device editor, font choices and custom system images.
+9. **Home Editor** lets you reorder Home entries and choose which ones to show or hide.
+10. **Custom Folders & Collections** group games, systems and folders your way, keeping filtered searches as reusable collections, with names and custom images.
+11. **Made for CRTs and HDMI**, with smoother CRT artwork, screen-alignment controls and a rotatable interface for vertical displays.
+12. **Optional HDMI CRT effects** for the interface, including scanlines and shadow masks.
+13. **Games Explorer** optionally searches across your library, combines filters and follows metadata links, alongside shared favourites, Last Played and random picks.
+14. **Attract Mode** showcases your collection and lets you switch systems or launch the pictured game.
+15. **Expanded Core Updates** shows installed cores, available updates and What's New, with latest-first sorting and cached browsing while refreshing.
+16. **Core choice per system or game**, including installed RetroAchievements, Unstable and Dual SDRAM builds.
+17. **Startup and guest controls** offer optional last-game startup with cancellation and PIN-protected kiosk mode.
+18. **Fits into MiSTer**: configured controllers work straight away, with an optional five-second controller hold to return from games. Run installed scripts through MiSTer's native terminal or use Zaparoo Core launches.
 
 Source available, written in Rust and using Slint, and licensed for non-commercial use.
 
@@ -58,16 +60,16 @@ separately. CRT presentation is applied for the README.
 | Gallery View | Multi List View | Carousel View |
 | <img src="docs/screenshots/0.6.0/07-tiled.png" alt="Tiled View: Amiga Favourites" height="200"> | <img src="docs/screenshots/1.0.0/06-custom-view.png" alt="Named Custom View" height="200"> | <img src="docs/screenshots/1.0.0/07-custom-view-editor.png" alt="Custom View Editor" height="200"> |
 | Tiled View | Named Custom View | Custom View Editor |
-| <img src="docs/screenshots/0.8.0/02-core-selection.png" alt="Per-system Core Selection" height="200"> | <img src="docs/screenshots/0.6.0/08-options.png" alt="Extensive Options" height="200"> | <img src="docs/screenshots/0.7.0/02-shortcuts.png" alt="Configurable Hold Shortcuts" height="200"> |
+| <img src="docs/screenshots/0.8.0/02-core-selection.png" alt="Per-system Core Selection" height="200"> | <img src="docs/screenshots/1.1.0/01-options.png" alt="Six Options pages (Standard theme)" height="200"> | <img src="docs/screenshots/0.7.0/02-shortcuts.png" alt="Configurable Hold Shortcuts" height="200"> |
 | Per-system Core Selection | Extensive Options | Configurable Hold Shortcuts |
-| <img src="docs/screenshots/0.6.0/10-appearance.png" alt="Appearance" height="200"> | <img src="docs/screenshots/1.0.0/08-library-options.png" alt="Library visibility including Explore Games" height="200"> | <img src="docs/screenshots/0.9.1/02-screen-rotation.png" alt="Complete interface rotated clockwise for a vertical display" height="200"> |
-| Appearance Settings | Library Visibility | 90° Screen Rotation |
+| <img src="docs/screenshots/1.1.0/02-appearance.png" alt="Appearance and optional last-game startup (Standard theme)" height="200"> | <img src="docs/screenshots/1.1.0/03-library.png" alt="Global Artwork Pack default (Standard theme)" height="200"> | <img src="docs/screenshots/0.9.1/02-screen-rotation.png" alt="Complete interface rotated clockwise for a vertical display" height="200"> |
+| Appearance Settings | Library and Artwork Settings | 90° Screen Rotation |
 | <img src="docs/screenshots/1.0.0/09-core-updates.png" alt="Core Updates with All Cores, latest-first sorting and local game artwork" height="200"> | <img src="docs/screenshots/0.8.0/05-cores.png" alt="Installed Cores Browser" height="200"> | <img src="docs/screenshots/0.8.0/06-metadata-filters.png" alt="Metadata Filters" height="200"> |
 | Core Updates | Installed Cores Browser | Metadata Filters |
 | <img src="docs/screenshots/0.6.0/13-developer.png" alt="Developer" height="200"> | <img src="docs/screenshots/0.6.0/14-actions.png" alt="Grouped Actions" height="200"> | <img src="docs/screenshots/0.6.0/15-random-favourite.png" alt="Random Game and Random Favourite" height="200"> |
 | Drawing and Performance Controls | Actions for This Place | Random Game or Random Favourite |
-| <img src="docs/screenshots/0.6.0/16-place-view.png" alt="A Different View for Every Place" height="200"> | <img src="docs/screenshots/0.6.0/17-information.png" alt="Full Game Information" height="200"> | <img src="docs/screenshots/0.6.0/18-index-progress.png" alt="Indexing Progress" height="200"> |
-| A Different View for Every Place | Full Game Information | Indexing Progress |
+| <img src="docs/screenshots/1.1.0/04-folder-options.png" alt="Independent per-folder preferences (Standard theme)" height="200"> | <img src="docs/screenshots/0.6.0/17-information.png" alt="Full Game Information" height="200"> | <img src="docs/screenshots/0.6.0/18-index-progress.png" alt="Indexing Progress" height="200"> |
+| Folder Options | Full Game Information | Indexing Progress |
 | <img src="docs/screenshots/0.6.0/34-index-details.png" alt="Indexing Details" height="200"> | <img src="docs/screenshots/0.6.0/19-index-complete.png" alt="Indexing Complete" height="200"> | <img src="docs/screenshots/0.6.0/28-artwork-source.png" alt="Automatic, Gamelist or Artwork Pack" height="200"> |
 | Indexing Details | Indexing Complete | Automatic, Gamelist or Artwork Pack |
 | <img src="docs/screenshots/0.6.0/36-artwork-pack-location.png" alt="Choose an Installed Artwork Pack" height="200"> | <img src="docs/screenshots/1.0.0/10-libretro-settings.png" alt="Libretro Scraping" height="200"> | <img src="docs/screenshots/1.0.0/11-libretro-match.png" alt="Libretro Match Selection" height="200"> |
@@ -84,8 +86,8 @@ separately. CRT presentation is applied for the README.
 | Green Mono Theme | Modern Theme | Neon Theme |
 | <img src="docs/screenshots/0.4.0/16-theme-editor.png" alt="Theme Editor" height="200"> | <img src="docs/screenshots/0.4.0/17-category-system-image-picker.png" alt="Category &amp; System Image Picker" height="200"> | <img src="docs/screenshots/0.4.0/18-saved-custom-theme.png" alt="A Saved Custom Theme" height="200"> |
 | Theme Editor | Category & System Image Picker | A Saved Custom Theme |
-| <img src="docs/screenshots/0.9.0/01-attract-mode.png" alt="Attract Mode" height="200"> | <img src="docs/screenshots/0.9.1/01-video-effects.png" alt="Display settings with Video Effects and Scanlines selected" height="200"> |  |
-| Attract Mode | Video Effects |  |
+| <img src="docs/screenshots/0.9.0/01-attract-mode.png" alt="Attract Mode" height="200"> | <img src="docs/screenshots/0.9.1/01-video-effects.png" alt="Display settings with Video Effects and Scanlines selected" height="200"> | <img src="docs/screenshots/1.1.0/05-kiosk-unlock.png" alt="PIN-protected kiosk unlock (Standard theme)" height="200"> |
+| Attract Mode | Video Effects | Kiosk Unlock |
 
 ## Watch Degauss in action
 
