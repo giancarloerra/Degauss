@@ -31,7 +31,7 @@ class ReleaseTests(unittest.TestCase):
         self.assertIn('python3 tests/degauss_native_scripts_test.py\n', build)
         self.assertIn('DEGAUSS_NATIVE_SCRIPTS', patch)
         self.assertIn('DEGAUSS_NATIVE_SCRIPT_EXIT = 42', patch)
-        self.assertIn('5fef5a3045ed83c570490ade5f6ca5366e0bf24e', build)
+        self.assertIn('809893ddb8e3f7f40797579e0ed8178b03d558f8', build)
 
     def test_ra_backend_pins_the_1151_source_archive_not_the_runtime_zip(self):
         build = (ROOT / 'scripts/build-ra-main.sh').read_text()

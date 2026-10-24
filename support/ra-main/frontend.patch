@@ -390,7 +390,7 @@ index 60d94f5..0bb6067 100644
  
  #ifdef USE_SCHEDULER
 diff --git a/menu.cpp b/menu.cpp
-index 981b47a..aacd6c0 100644
+index 981b47a..4ebf290 100644
 --- a/menu.cpp
 +++ b/menu.cpp
 @@ -38,6 +38,7 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
@@ -777,7 +777,7 @@ index 981b47a..aacd6c0 100644
  	case MENU_VIDEOPROC1:
  		helptext_idx = 0;
  		menumask = 0x7FFF;
-@@ -7246,21 +7534,84 @@ void HandleUI(void)
+@@ -7246,21 +7534,91 @@ void HandleUI(void)
  	case MENU_SCRIPTS_FB:
  		if (cfg.fb_terminal)
  		{
@@ -847,6 +847,13 @@ index 981b47a..aacd6c0 100644
 +			}
 +			else if (!ttypid)
 +			{
++				// A native script needs its own session for agetty to acquire
++				// tty2 and deliver Ctrl-C to its foreground process group.
++				if (!degauss_running && setsid() < 0)
++				{
++					perror("Native script terminal session");
++					_exit(1);
++				}
 +				if (degauss_running)
 +				{
 +					if (setenv("DEGAUSS_SCRIPT_HANDOVER", "1", 1))
@@ -868,7 +875,7 @@ index 981b47a..aacd6c0 100644
  				execl("/sbin/agetty", "/sbin/agetty", "-a", "root", "-l", "/tmp/script", "--nohostname", "-L", "tty2", "linux", NULL);
  				exit(0); //should never be reached
  			}
-@@ -7274,10 +7625,34 @@ void HandleUI(void)
+@@ -7274,10 +7632,34 @@ void HandleUI(void)
  	case MENU_SCRIPTS_FB2:
  		if (ttypid)
  		{
@@ -904,7 +911,7 @@ index 981b47a..aacd6c0 100644
  			}
  		}
  		else
-@@ -7290,6 +7665,13 @@ void HandleUI(void)
+@@ -7290,6 +7672,13 @@ void HandleUI(void)
  				menusub = 3;
  				OsdClear();
  				OsdEnable(DISABLE_KEYBOARD);
@@ -959,10 +966,10 @@ index 34fb7b6..8ff6e2e 100644
  		}
 diff --git a/support/degauss/README.md b/support/degauss/README.md
 new file mode 100644
-index 0000000..d4f54c5
+index 0000000..ae08209
 --- /dev/null
 +++ b/support/degauss/README.md
-@@ -0,0 +1,101 @@
+@@ -0,0 +1,103 @@
 +# Degauss integration in MiSTer Main
 +
 +This directory contains the Degauss-specific integration maintained by the
@@ -1038,6 +1045,8 @@ index 0000000..d4f54c5
 +the native `MENU_SCRIPTS_FB` and agetty/tty2 path used by OSD Scripts. There is
 +no script-specific display mode. After the native result/key-to-return flow,
 +Main starts exactly one frontend with its original arguments and selection.
++Native script children acquire their own terminal session so Ctrl-C reaches
++foreground jobs in both OSD Scripts and Degauss-selected scripts.
 +
 +`DEGAUSS_SCRIPT_HANDOVER=1` and the acknowledged `fb_degauss` command remain
 +for initial framebuffer readiness and compatibility with older frontends.
@@ -2804,10 +2813,10 @@ index 0000000..9472a15
 +const char *degauss_cd_disc_type_name(degauss_cd_disc_type_t type);
 diff --git a/tests/degauss_native_scripts_test.py b/tests/degauss_native_scripts_test.py
 new file mode 100644
-index 0000000..64031a9
+index 0000000..7e51cc5
 --- /dev/null
 +++ b/tests/degauss_native_scripts_test.py
-@@ -0,0 +1,219 @@
+@@ -0,0 +1,268 @@
 +#!/usr/bin/env python3
 +"""Check the production native Scripts transitions, not a replacement launcher."""
 +import os
@@ -2842,6 +2851,9 @@ index 0000000..64031a9
 +static struct { int fb_terminal = 1; } cfg;
 +static std::string saved_command, reported_error;
 +static bool fail_save = false, fail_fork = false;
++static bool fork_child = false, fail_session = false;
++static int session_calls = 0, exec_calls = 0;
++struct ChildResult { int status; };
 +static std::vector<int> terminal_calls;
 +static bool degauss_is_frontend_script(const char *p) { return !strcmp(p, "Scripts/degauss.sh"); }
 +static const char *getFullPath(const char *p) { return p; }
@@ -2864,8 +2876,20 @@ index 0000000..64031a9
 +}
 +static pid_t test_fork() {
 +    if (fail_fork) { errno = EAGAIN; return -1; }
-+    return 123;
++    return fork_child ? 0 : 123;
 +}
++pid_t test_setsid() {
++    ++session_calls;
++    if (fail_session) { errno = EPERM; return -1; }
++    return 321;
++}
++static int test_execl(const char *path, const char*, ...) {
++    assert(!strcmp(path, "/sbin/agetty"));
++    assert(session_calls == (degauss_running ? 0 : 1));
++    ++exec_calls;
++    throw ChildResult{0};
++}
++[[noreturn]] static void test_exit(int status) { throw ChildResult{status}; }
 +static pid_t test_waitpid(pid_t child, int *status, int options) {
 +    assert(child == 123 && options == WNOHANG);
 +    *status = next_status;
@@ -2878,6 +2902,10 @@ index 0000000..64031a9
 +#define fork test_fork
 +#define waitpid test_waitpid
 +#define unlink test_unlink
++#define setsid test_setsid
++#define execl test_execl
++#define _exit test_exit
++#define exit test_exit
 +''' + helpers + r'''
 +static void step() {
 +    switch (menustate) {
@@ -2893,6 +2921,8 @@ index 0000000..64031a9
 +    saved_command.clear();
 +    reported_error.clear();
 +    fail_save = fail_fork = false;
++    fork_child = fail_session = false;
++    session_calls = exec_calls = 0;
 +}
 +static void write_file(const char *path, const std::string &body, bool executable = false) {
 +    FILE *file = fopen(path, "wb"); assert(file);
@@ -2959,7 +2989,35 @@ index 0000000..64031a9
 +    assert(terminal_calls == native_calls); // Same native terminal path as OSD selection.
 +    assert(saved_command.find("LAUNCH_ORIGIN_ID") == std::string::npos);
 +
++    // Native OSD and Degauss selections must both give agetty a session
++    // leader, otherwise tty2 has no foreground group to receive Ctrl-C.
++    for (bool from_frontend : {false, true}) {
++        reset();
++        snprintf(selPath, sizeof(selPath), "%s", selected.c_str());
++        fork_child = true;
++        degauss_resume_after_script = from_frontend;
++        try { step(); assert(false); }
++        catch (const ChildResult &result) { assert(result.status == 0); }
++        assert(session_calls == 1 && exec_calls == 1);
++
++        reset();
++        snprintf(selPath, sizeof(selPath), "%s", selected.c_str());
++        fork_child = fail_session = true;
++        degauss_resume_after_script = from_frontend;
++        try { step(); assert(false); }
++        catch (const ChildResult &result) { assert(result.status == 1); }
++        assert(session_calls == 1 && exec_calls == 0);
++    }
 +    reset();
++    fork_child = true;
++    degauss_starting_script_return = true;
++    snprintf(selPath, sizeof(selPath), "%s", DEGAUSS_SCRIPT_RETURN);
++    try { step(); assert(false); }
++    catch (const ChildResult &result) { assert(result.status == 0); }
++    assert(session_calls == 0 && exec_calls == 1); // Frontend ownership is unchanged.
++
++    reset();
++    snprintf(selPath, sizeof(selPath), "%s", selected.c_str());
 +    assert(!chmod(selected.c_str(), 0600));
 +    degauss_resume_after_script = true;
 +    step();
