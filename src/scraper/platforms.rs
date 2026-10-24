@@ -266,6 +266,7 @@ mod tests {
             "TK2000",
             "TomyTutor",
             "UK101",
+            "UKNC",
             "UnstableCores",
             "UtilityCores",
             "Vector06C",
