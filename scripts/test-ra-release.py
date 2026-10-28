@@ -18,6 +18,14 @@ spec.loader.exec_module(package_ra)
 
 
 class ReleaseTests(unittest.TestCase):
+    def test_native_yc_correction_is_built_and_keeps_legacy_overrides_scoped(self):
+        patch = (ROOT / 'support/ra-main/frontend.patch').read_text()
+        build = (ROOT / 'scripts/build-ra-main.sh').read_text()
+        self.assertIn('!scaler_timing && !video_degauss_native_fb_active()', patch)
+        self.assertIn('diff --git a/tests/run-degauss-yc-tests.py', patch)
+        self.assertIn('python3 tests/run-degauss-yc-tests.py\n', build)
+        self.assertIn('Degauss frontend patch SHA256:', build)
+
     def test_ra_integration_keeps_controller_hold_and_script_handover_aligned(self):
         patch = (ROOT / 'support/ra-main/frontend.patch').read_text()
         build = (ROOT / 'scripts/build-ra-main.sh').read_text()

@@ -4263,7 +4263,7 @@ index 0000000..88931fd
 +    subprocess.run([str(path / 'test')], check=True)
 +print('Frontend completion restores VT1 before disabling script framebuffer')
 diff --git a/video.cpp b/video.cpp
-index 542ef71..53b5c6b 100644
+index 542ef71..e717afd 100644
 --- a/video.cpp
 +++ b/video.cpp
 @@ -50,6 +50,8 @@
@@ -4283,7 +4283,15 @@ index 542ef71..53b5c6b 100644
  static int brd_x = 0;
  static int brd_y = 0;
  
-@@ -800,10 +803,20 @@ static void loadGammaCfg()
+@@ -193,6 +196,7 @@ static_assert(sizeof(vmode_custom_param_t) == sizeof(vmode_custom_t::item));
+ 
+ // Static fwd decl
+ static void video_fb_config();
++static bool video_degauss_native_fb_active();
+ static void video_calculate_cvt(int horiz_pixels, int vert_pixels, float refresh_rate, int reduced_blanking, vmode_custom_t *vmode);
+ 
+ static vmode_custom_t v_cur = {}, v_def = {}, v_pal = {}, v_ntsc = {};
+@@ -800,10 +804,20 @@ static void loadGammaCfg()
  
  static char shadow_mask_cfg[1024] = { 0 };
  static bool has_shadow_mask = false;
@@ -4304,7 +4312,7 @@ index 542ef71..53b5c6b 100644
  
  #define SM_FLAG(v) ( ( 0x0 << 13 ) | (v) )
  #define SM_VMAX(v) ( ( 0x1 << 13 ) | (v) )
-@@ -834,17 +847,22 @@ static void setShadowMask()
+@@ -834,17 +848,22 @@ static void setShadowMask()
  	}
  
  	has_shadow_mask = 1;
@@ -4333,7 +4341,7 @@ index 542ef71..53b5c6b 100644
  
  	fileTextReader reader;
  	if (FileOpenTextReader(&reader, filename))
-@@ -920,6 +938,7 @@ static void setShadowMask()
+@@ -920,6 +939,7 @@ static void setShadowMask()
  	}
  
  	if (!loaded) spi_w(SM_FLAG(0));
@@ -4341,7 +4349,7 @@ index 542ef71..53b5c6b 100644
  	DisableIO();
  }
  
-@@ -980,6 +999,56 @@ void video_set_shadow_mask(const char *name)
+@@ -980,6 +1000,56 @@ void video_set_shadow_mask(const char *name)
  	video_save_shadow_mask_cfg();
  }
  
@@ -4398,7 +4406,7 @@ index 542ef71..53b5c6b 100644
  static void loadShadowMaskCfg()
  {
  	PROFILE_FUNCTION();
-@@ -1021,6 +1090,194 @@ static char* get_preset_arg(const char *str)
+@@ -1021,6 +1091,194 @@ static char* get_preset_arg(const char *str)
  	return par;
  }
  
@@ -4593,7 +4601,7 @@ index 542ef71..53b5c6b 100644
  static void load_flt_pres(const char *str, int type)
  {
  	char *arg = get_preset_arg(str);
-@@ -1038,7 +1295,7 @@ static void load_flt_pres(const char *str, int type)
+@@ -1038,7 +1296,7 @@ static void load_flt_pres(const char *str, int type)
  	}
  }
  
@@ -4602,7 +4610,7 @@ index 542ef71..53b5c6b 100644
  {
  	char *arg;
  	fileTextReader reader;
-@@ -1046,8 +1303,9 @@ void video_loadPreset(char *name, bool save)
+@@ -1046,8 +1304,9 @@ void video_loadPreset(char *name, bool save)
  	bool scaler_dirty = false;
  	bool mask_dirty = false;
  	bool gamma_dirty = false;
@@ -4613,7 +4621,7 @@ index 542ef71..53b5c6b 100644
  	{
  		const char *line;
  		while ((line = FileReadLine(&reader)))
-@@ -1118,6 +1376,7 @@ void video_loadPreset(char *name, bool save)
+@@ -1118,6 +1377,7 @@ void video_loadPreset(char *name, bool save)
  		if (mask_dirty) video_save_shadow_mask_cfg();
  		if (gamma_dirty) video_save_gamma_cfg();
  	}
@@ -4621,7 +4629,7 @@ index 542ef71..53b5c6b 100644
  }
  
  static void hdmi_packet_enable(uint8_t mask, bool enable)
-@@ -2280,7 +2539,7 @@ static void video_set_mode(vmode_custom_t *v, double Fpix)
+@@ -2280,7 +2540,7 @@ static void video_set_mode(vmode_custom_t *v, double Fpix)
  	setShadowMask();
  }
  
@@ -4630,7 +4638,7 @@ index 542ef71..53b5c6b 100644
  {
  	char *tokens[32];
  	uint32_t val[32];
-@@ -2338,6 +2597,8 @@ static int parse_custom_video_mode(char* vcfg, vmode_custom_t *v)
+@@ -2338,6 +2598,8 @@ static int parse_custom_video_mode(char* vcfg, vmode_custom_t *v)
  	}
  	else if (cnt == 3)
  	{
@@ -4639,7 +4647,7 @@ index 542ef71..53b5c6b 100644
  		video_calculate_cvt(val[0], val[1], valf ? valf : val[2], v->param.rb, v);
  	}
  	else if (cnt >= 21)
-@@ -2366,7 +2627,7 @@ static int parse_custom_video_mode(char* vcfg, vmode_custom_t *v)
+@@ -2366,7 +2628,7 @@ static int parse_custom_video_mode(char* vcfg, vmode_custom_t *v)
  		return -1;
  	}
  
@@ -4648,7 +4656,7 @@ index 542ef71..53b5c6b 100644
  	return -2;
  }
  
-@@ -2653,6 +2914,63 @@ static void video_cfg_init()
+@@ -2653,6 +2915,63 @@ static void video_cfg_init()
  	loadShadowMaskCfg();
  }
  
@@ -4712,7 +4720,7 @@ index 542ef71..53b5c6b 100644
  void video_cfg_reset()
  {
  	FileDeleteConfig(gamma_cfg_path);
-@@ -2668,6 +2986,7 @@ void video_cfg_reset()
+@@ -2668,6 +2987,7 @@ void video_cfg_reset()
  
  void video_init()
  {
@@ -4720,7 +4728,7 @@ index 542ef71..53b5c6b 100644
  	yc_parse(yc_modes, sizeof(yc_modes) / sizeof(yc_modes[0]));
  
  	fb_init();
-@@ -2707,7 +3026,7 @@ void video_reinit()
+@@ -2707,7 +3027,7 @@ void video_reinit()
  	support_FHD = 0;
  	video_mode_load(true);
  
@@ -4729,7 +4737,7 @@ index 542ef71..53b5c6b 100644
  	video_set_mode(&v_def, 0);
  	user_io_send_buttons(1);
  	video_mode_adjust(1);
-@@ -3085,20 +3404,58 @@ bool video_mode_select(uint32_t vtime, vmode_custom_t* out_mode)
+@@ -3085,20 +3405,58 @@ bool video_mode_select(uint32_t vtime, vmode_custom_t* out_mode)
  	return adjustable;
  }
  
@@ -4793,7 +4801,7 @@ index 542ef71..53b5c6b 100644
  
  		int COLORBURST_START = (int)(3.7f * (CLK_VIDEO / CLK_REF));
  		int COLORBURST_END = (int)(9.0f * (CLK_VIDEO / CLK_REF)) + COLORBURST_START;
-@@ -3106,11 +3463,11 @@ static void set_yc_mode()
+@@ -3106,11 +3464,12 @@ static void set_yc_mode()
  
  		char yc_key[64];
  		char yc_key_expand[64];
@@ -4804,11 +4812,12 @@ index 542ef71..53b5c6b 100644
 +		printf("Calculated %sYC parameters for '%s': %s PHASE_INC=%lld, COLORBURST_START=%d, COLORBURST_END=%d\n", scaler_timing ? "scaler " : "", yc_key, pal ? "PAL" : (cfg.ntsc_mode == 1) ? "PAL60" : (cfg.ntsc_mode == 2) ? "PAL-M" : "NTSC", PHASE_INC, COLORBURST_START, COLORBURST_END);
  
 -		for (uint i = 0; i < sizeof(yc_modes) / sizeof(yc_modes[0]); i++)
-+		for (uint i = 0; !scaler_timing && i < sizeof(yc_modes) / sizeof(yc_modes[0]); i++)
++		// Legacy Menu overrides use another clock; retain the native calculation.
++		for (uint i = 0; !scaler_timing && !video_degauss_native_fb_active() && i < sizeof(yc_modes) / sizeof(yc_modes[0]); i++)
  		{
  		if (!strcasecmp(yc_modes[i].key, yc_key) || !strcasecmp(yc_modes[i].key, yc_key_expand))
  			{
-@@ -3334,12 +3691,63 @@ static void fb_write_module_params()
+@@ -3334,12 +3693,63 @@ static void fb_write_module_params()
  	});
  }
  
@@ -4873,7 +4882,7 @@ index 542ef71..53b5c6b 100644
  		int res = spi_uio_cmd_cont(UIO_SET_FBUF);
  		if (res)
  		{
-@@ -3348,7 +3756,12 @@ void video_fb_enable(int enable, int n)
+@@ -3348,7 +3758,12 @@ void video_fb_enable(int enable, int n)
  				enable = 1;
  				n = menu_bgn;
  			}
@@ -4887,7 +4896,7 @@ index 542ef71..53b5c6b 100644
  			if (enable)
  			{
  				uint32_t fb_addr = FB_ADDR + (FB_SIZE * 4 * n) + (n ? 0 : 4096);
-@@ -3362,7 +3775,8 @@ void video_fb_enable(int enable, int n)
+@@ -3362,7 +3777,8 @@ void video_fb_enable(int enable, int n)
  				}
  
  				//printf("Switch to Linux frame buffer\n");
@@ -4897,7 +4906,7 @@ index 542ef71..53b5c6b 100644
  				spi_w((uint16_t)fb_addr); // base address low word
  				spi_w(fb_addr >> 16);     // base address high word
  				spi_w(fb_width);          // frame width
-@@ -3372,6 +3786,14 @@ void video_fb_enable(int enable, int n)
+@@ -3372,6 +3788,14 @@ void video_fb_enable(int enable, int n)
  				spi_w(yoff);                 // scaled top
  				spi_w(yoff + v_cur.item[5] - 1); // scaled bottom
  				spi_w(fb_width * 4);      // stride
@@ -4912,7 +4921,7 @@ index 542ef71..53b5c6b 100644
  
  				//printf("Linux frame buffer: %dx%d, stride = %d bytes\n", fb_width, fb_height, fb_width * 4);
  				if (!fb_num)
-@@ -3400,9 +3822,22 @@ void video_fb_enable(int enable, int n)
+@@ -3400,9 +3824,22 @@ void video_fb_enable(int enable, int n)
  		}
  
  		DisableIO();
@@ -4936,7 +4945,7 @@ index 542ef71..53b5c6b 100644
  }
  
  int video_fb_state()
-@@ -3419,6 +3854,7 @@ int video_fb_state()
+@@ -3419,6 +3856,7 @@ int video_fb_state()
  static void video_fb_config()
  {
  	PROFILE_FUNCTION();
@@ -4944,7 +4953,7 @@ index 542ef71..53b5c6b 100644
  
  	int fb_scale = cfg.fb_size;
  
-@@ -3432,20 +3868,52 @@ static void video_fb_config()
+@@ -3432,20 +3870,52 @@ static void video_fb_config()
  	else if (fb_scale == 3) fb_scale = 2;
  	else if (fb_scale > 4) fb_scale = 4;
  
@@ -5003,7 +5012,7 @@ index 542ef71..53b5c6b 100644
  static void draw_checkers()
  {
  	volatile uint32_t* buf = fb_base + (FB_SIZE*menu_bgn);
-@@ -3453,6 +3921,7 @@ static void draw_checkers()
+@@ -3453,6 +3923,7 @@ static void draw_checkers()
  	uint32_t col1 = 0x888888;
  	uint32_t col2 = 0x666666;
  	int sz = fb_width / 128;
@@ -5011,7 +5020,7 @@ index 542ef71..53b5c6b 100644
  
  	for (int y = brd_y; y < fb_height - brd_y; y++)
  	{
-@@ -3760,6 +4229,8 @@ void video_menu_bg(int n, int idle)
+@@ -3760,6 +4231,8 @@ void video_menu_bg(int n, int idle)
  		imlib_context_set_image(bg1); imlib_free_image(); bg1 = 0;
  		imlib_context_set_image(bg2); imlib_free_image(); bg2 = 0;
  		imlib_context_set_image(curtain); imlib_free_image(); curtain = 0;
@@ -5020,7 +5029,7 @@ index 542ef71..53b5c6b 100644
  	}
  	else
  	{
-@@ -4026,14 +4497,19 @@ int video_chvt(int num)
+@@ -4026,14 +4499,19 @@ int video_chvt(int num)
  	static int cur_vt = 0;
  	if (num)
  	{
@@ -5043,7 +5052,7 @@ index 542ef71..53b5c6b 100644
  	}
  
  	return cur_vt ? cur_vt : 1;
-@@ -4353,4 +4829,3 @@ int video_get_rotated()
+@@ -4353,4 +4831,3 @@ int video_get_rotated()
  {
    return current_video_info.rotated;
  }
@@ -5076,3 +5085,206 @@ index 0f02587..c354369 100644
  void video_menu_bg(int n, int idle = 0);
  int video_bg_has_picture();
  int video_chvt(int num);
+diff --git a/tests/run-degauss-yc-tests.py b/tests/run-degauss-yc-tests.py
+new file mode 100644
+index 0000000..56e31f3
+--- /dev/null
++++ b/tests/run-degauss-yc-tests.py
+@@ -0,0 +1,180 @@
++#!/usr/bin/env python3
++"""Exercise production YC selection with the distributed clock-specific table."""
++
++import os
++import shlex
++from pathlib import Path
++import subprocess
++import tempfile
++
++root = Path(__file__).resolve().parents[1]
++video = (root / 'video.cpp').read_text()
++config = (root / 'cfg.cpp').read_text()
++
++
++def function(source, signature):
++    start = source.index(signature)
++    start = source.rfind('\n', 0, start) + 1
++    end = source.index('\n}', source.index('{', start)) + 2
++    return source[start:end]
++
++
++production = function(config, 'static int yc_parse_mode(')
++production += '\n' + function(video, 'static bool video_degauss_native_fb_active()\n{')
++# RA Main retains its own upstream calculation; never substitute normal Main's.
++for signature in ('static uint64_t div_round_u64(', 'static uint64_t calc_frame_locked_phase('):
++    if signature in video:
++        production += '\n' + function(video, signature)
++production += '\n' + function(video, 'static bool get_scaler_yc_timing(')
++production += '\n' + function(video, 'static void set_yc_mode()\n{')
++
++prefix = r'''
++#include <cassert>
++#include <cmath>
++#include <cstdint>
++#include <cstdio>
++#include <cstdlib>
++#include <cstring>
++#include <fstream>
++#include <string>
++#include <strings.h>
++#include <vector>
++using uint = unsigned int;
++// ARMv7 uses long long for int64_t; some 64-bit hosts use long instead.
++using main_int64_t = long long;
++static_assert(sizeof(main_int64_t) == sizeof(int64_t), "64-bit target word required");
++#define int64_t main_int64_t
++// Match Main's configured policy for its unchanged diagnostic formatting.
++#if defined(__GNUC__) && !defined(__clang__)
++#pragma GCC diagnostic ignored "-Wformat-truncation"
++#endif
++struct yc_mode { char key[64]; int64_t phase_inc; };
++static yc_mode yc_modes[20] = {};
++static struct { int vga_mode_int, vga_scaler, ntsc_mode; } cfg = {};
++static struct { uint32_t width, ptime, frame_clocks, vtime, ctime; bool interlaced; }
++    current_video_info = {};
++static struct {
++    struct { uint32_t hact, hfp, hs, hbp, vact, vfp, vs, vbp; } param;
++    double Fpix;
++} v_cur = {};
++static bool menu_core = true, degauss_native_fb = false;
++static int vga_fb = 0;
++static const char *core_name = "MENU";
++static std::vector<uint16_t> words;
++static bool is_menu() { return menu_core; }
++static int get_vga_fb() { return vga_fb; }
++static const char *user_io_get_core_name(int) { return core_name; }
++constexpr int UIO_SET_YC_PAR = 0x41;
++static void spi_uio_cmd_cont(int command) { assert(command == UIO_SET_YC_PAR); words.clear(); }
++static void spi_uio_cmd8(int command, int value) { assert(command == UIO_SET_YC_PAR); words = {uint16_t(value)}; }
++static void spi_w(uint16_t value) { words.push_back(value); }
++static void DisableIO() {}
++#define CHAR_IS_LINEEND(c) ((c) == '\n' || (c) == '\r')
++#define CHAR_IS_SPACE(c) ((c) == ' ' || (c) == '\t')
++#define ini_parser_debugf(...)
++'''
++
++checks = r'''
++static void load_table(const char *path) {
++    memset(yc_modes, 0, sizeof(yc_modes));
++    std::ifstream input(path); assert(input.good());
++    std::string line; unsigned n = 0;
++    while (std::getline(input, line)) {
++        if (strncasecmp(line.c_str(), core_name, strlen(core_name))) continue;
++        assert(n < 20);
++        std::vector<char> text(line.begin(), line.end()); text.push_back(0);
++        assert(yc_parse_mode(text.data(), &yc_modes[n])); ++n;
++    }
++    assert(n);
++}
++static uint64_t phase() {
++    assert(words.size() == 7);
++    return uint64_t(words[1]) | (uint64_t(words[2]) << 16) | (uint64_t(words[3]) << 32);
++}
++static uint64_t output() { set_yc_mode(); return phase(); }
++static void native_case(const char *table, int mode, bool pal, bool custom) {
++    menu_core = true; core_name = "MENU"; degauss_native_fb = true;
++    cfg = {mode, 0, 0}; vga_fb = 0;
++    assert(video_degauss_native_fb_active());
++    current_video_info = {};
++    current_video_info.width = 1058;
++    // A 1323-clock active interval measured by the 100 MHz counter.
++    current_video_info.ctime = 1323; current_video_info.ptime = 5292;
++    const unsigned htotal = custom ? 1272 : 1276;
++    current_video_info.frame_clocks = htotal * (pal ? 312 : 262) * 5 / 4;
++    current_video_info.vtime = current_video_info.frame_clocks * 4;
++    memset(yc_modes, 0, sizeof(yc_modes));
++    const uint64_t calculated = output();
++    const std::vector<uint16_t> calculated_packet = words;
++    const double frequency = calculated * 25000000.0 / (1ULL << 40);
++    const double reference = pal ? 4433618.75 : 315000000.0 / 88.0;
++    assert(std::abs(frequency - reference) < 100.0);
++    load_table(table);
++    assert(output() == calculated);
++    assert(words == calculated_packet); // Burst timing and enable bits also stay intact.
++    assert((words[0] & 1) == (mode != 4));
++    assert(words[6] == (mode == 4));
++    // The same legacy keys remain honoured for ordinary Menu, not deleted globally.
++    degauss_native_fb = false;
++    const char *key = custom ? "MENU_60.0" : pal ? "MENU_50.2" : "MENU_59.8";
++    uint64_t legacy = 0;
++    for (const auto &entry : yc_modes) if (!strcmp(entry.key, key)) legacy = entry.phase_inc;
++    assert(legacy && legacy != calculated);
++    assert(output() == legacy);
++    degauss_native_fb = true;
++    assert(output() == calculated); // Re-entering native output never retains the old override.
++}
++int main(int argc, char **argv) {
++    assert(argc == 2);
++    for (int mode : {2, 3, 4}) for (bool pal : {false, true})
++        native_case(argv[1], mode, pal, false);
++    for (int mode : {2, 3, 4}) native_case(argv[1], mode, false, true);
++
++    // Game-core calibration remains independent of the private Menu flag.
++    core_name = "NES"; menu_core = false; degauss_native_fb = true;
++    current_video_info = {256, 2048, 714733, 1663900, 880, false};
++    load_table(argv[1]);
++    uint64_t nes = 0;
++    for (const auto &entry : yc_modes) if (!strcmp(entry.key, "NES_60.1")) nes = entry.phase_inc;
++    assert(nes && output() == nes);
++
++    // Existing shared-scaler and Direct Video selection still use the scaler clock.
++    core_name = "MENU"; menu_core = true;
++    v_cur.Fpix = 13.5;
++    v_cur.param = {704, 24, 62, 68, 240, 4, 3, 15};
++    for (bool direct : {false, true}) {
++        cfg.vga_scaler = !direct; vga_fb = direct;
++        memset(yc_modes, 0, sizeof(yc_modes));
++        const uint64_t calculated = output();
++        const std::vector<uint16_t> calculated_packet = words;
++        // A user override matching this mode must remain ignored on scaler output.
++        snprintf(yc_modes[0].key, sizeof(yc_modes[0].key), "MENU_60.1");
++        yc_modes[0].phase_inc = 1;
++        assert(output() == calculated && words == calculated_packet);
++    }
++    for (int mode : {0, 1}) {
++        cfg.vga_mode_int = mode; set_yc_mode();
++        assert(words == std::vector<uint16_t>{0});
++    }
++    puts("Native Y/C carrier and ordinary Menu/game/scaler override compatibility passed");
++}
++'''
++
++with tempfile.TemporaryDirectory(prefix='degauss-yc-test-') as directory:
++    build = Path(directory)
++    unit = build / 'test.cpp'
++    unit.write_text(prefix + production + checks)
++    binary = build / 'test'
++    command = [os.environ.get('CXX', 'c++'), '-std=c++14', '-Wall', '-Wextra', '-Werror']
++    command += shlex.split(os.environ.get('CXXFLAGS', ''))
++    # Keep the Linux production source unchanged on Apple's SDK.
++    if os.uname().sysname == 'Darwin':
++        command += ['-Wno-error=deprecated-declarations']
++    subprocess.run(command + [str(unit), '-o', str(binary)], check=True)
++    table = root / 'tests/fixtures/degauss-yc.txt'
++    runner = shlex.split(os.environ.get('TEST_RUNNER', ''))
++    result = subprocess.run(runner + [str(binary), str(table)], text=True, capture_output=True)
++    if result.returncode:
++        print(result.stdout + result.stderr)
++        result.check_returncode()
++    print(result.stdout.splitlines()[-1])
+diff --git a/tests/fixtures/degauss-yc.txt b/tests/fixtures/degauss-yc.txt
+new file mode 100644
+index 0000000..559be2a
+--- /dev/null
++++ b/tests/fixtures/degauss-yc.txt
+@@ -0,0 +1,11 @@
++; MENU and NES entries from MiSTer-devel/Distribution_MiSTer/yc.txt.
++; Source Git blob: a5affca4b9c7fe2c0e2a85bb62cd25240dd879f4
++; Both Main variants read this same card-root table, not RA's older source copy.
++NES_60.1=91625968981 ;Alternative reduced Dot Crawl from real system:NES_60.1=91626225369
++NES_50.0=114532461227
++NES_50.5=113487382000
++MENU_59.8=196786767482
++MENU_50.2=243746729900
++MENU_60.0=145620875904
++MENU_59.9i=145622662586
++NES_60.1s=113492149000
