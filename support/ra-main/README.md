@@ -47,9 +47,12 @@ the pinned backend and validate it before shipping another Degauss release.
   from https://github.com/odelot/Main_MiSTer/tree/01351569431bb5e8c386658932a1d4796fd96812.
 - Source archive SHA-256:
   `0705439c963518d56e2adb5d3e38c64151b8ff77940d66e8768d1b3ae54b63e2`.
-- Degauss integration: commit `809893ddb8e3f7f40797579e0ed8178b03d558f8`
+- Degauss integration base: commit `809893ddb8e3f7f40797579e0ed8178b03d558f8`
   from https://github.com/giancarloerra/Degauss-Main.
   The patch omits its unrelated input.cpp blank-line removal.
+  Native analog output also keeps its current-clock Y/C calculation instead of
+  applying ordinary Menu's clock-specific overrides. The build records the
+  complete frontend patch checksum alongside the base revision.
 - rcheevos 12.5.0 is already bundled in this exact RA source. Its bytes remain
   unchanged; the build fails if the dependency or its compiled object is missing.
 - Mozilla CA bundle from https://curl.se/ca/cacert-2026-08-13.pem (MPL-2.0),
@@ -117,6 +120,10 @@ Host tests validate persisted shortcut records, disabled and invalid settings,
 key consumption, repeat/release handling, extended Linux keys, runtime gates,
 placement before keyboard remapping, controller-hold timing and passthrough,
 the Degauss framebuffer video path, and ordered script handover acknowledgements.
+`tests/run-degauss-yc-tests.py` checks native NTSC/PAL colour-clock selection and
+preserves ordinary Menu, game-core, shared-scaler and Direct Video overrides.
+Native-state transitions resend Y/C parameters without depending on a later
+video-info change; unchanged state and RGB/component paths do not add writes.
 The build checks that achievement
 support was enabled and that achievement and frontend implementations were
 linked into the final executable. Real host curl tests exercise trusted TLS,

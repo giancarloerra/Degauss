@@ -2354,11 +2354,16 @@ name = "NEC PC-8801"
 id = "PC88"
 folders = ["PC8801", "PC88"]
 rbf = "_Computer/PC88"
-extensions = ["d88", "mgl"]
+extensions = ["d88", "cmt", "t88", "mgl"]
 [[systems.launch]]
 extensions = ["d88"]
 type = "s"
 index = 0
+delay = 1
+[[systems.launch]]
+extensions = ["cmt", "t88"]
+type = "s"
+index = 4
 delay = 1
 
 [[systems]]
@@ -2652,7 +2657,7 @@ name = "Sun-3"
 id = "Sun-3"
 folders = ["Sun-3"]
 rbf = "_Computer/Sun-3"
-extensions = ["img", "vhd", "qic", "mgl"]
+extensions = ["img", "vhd", "qic", "iso", "mgl"]
 [[systems.launch]]
 extensions = ["img", "vhd"]
 type = "s"
@@ -2663,18 +2668,69 @@ extensions = ["qic"]
 type = "s"
 index = 2
 delay = 1
+[[systems.launch]]
+extensions = ["iso"]
+type = "s"
+index = 4
+delay = 1
 
 [[systems]]
 name = "Elektronika MS-0511 (UKNC)"
 id = "UKNC"
 folders = ["UKNC"]
 rbf = "_Computer/UKNC"
-extensions = ["dsk", "mgl"]
+extensions = ["dsk", "vhd", "mgl"]
 category = "Computer"
 [[systems.launch]]
 extensions = ["dsk"]
 type = "s"
 index = 0
+delay = 1
+[[systems.launch]]
+extensions = ["vhd"]
+type = "s"
+index = 2
+delay = 1
+
+[[systems]]
+name = "IQ 151"
+id = "IQ151"
+folders = ["IQ151"]
+rbf = "_Computer/IQ151"
+extensions = ["dsk", "mgl"]
+[[systems.launch]]
+extensions = ["dsk"]
+type = "s"
+index = 1
+delay = 1
+
+[[systems]]
+name = "VideoBrain"
+id = "VideoBrain"
+folders = ["VideoBrain"]
+rbf = "_Computer/VideoBrain"
+extensions = ["bin", "mgl"]
+[[systems.launch]]
+extensions = ["bin"]
+type = "f"
+index = 1
+delay = 1
+
+[[systems]]
+name = "Soyuz-Neon PK-11/16"
+id = "Neon"
+folders = ["Neon"]
+rbf = "_Computer/Neon"
+extensions = ["dsk", "img", "mgl"]
+[[systems.launch]]
+extensions = ["dsk"]
+type = "s"
+index = 0
+delay = 1
+[[systems.launch]]
+extensions = ["img"]
+type = "s"
+index = 2
 delay = 1
 
 [[systems]]

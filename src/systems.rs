@@ -2166,6 +2166,13 @@ extensions = ["md", "bin"]
             ("Sun-3", "img", "s", 0),
             ("Sun-3", "vhd", "s", 0),
             ("Sun-3", "qic", "s", 2),
+            ("Sun-3", "iso", "s", 4),
+            ("UKNC", "dsk", "s", 0),
+            ("UKNC", "vhd", "s", 2),
+            ("IQ151", "dsk", "s", 1),
+            ("VideoBrain", "bin", "f", 1),
+            ("Neon", "dsk", "s", 0),
+            ("Neon", "img", "s", 2),
             ("SunSparcStation", "vhd", "s", 0),
             ("SunSparcStation", "img", "s", 0),
             ("SunSparcStation", "hda", "s", 0),
@@ -2230,6 +2237,8 @@ extensions = ["md", "bin"]
             ("NeXT", "vfd", "s", 4),
             ("NeXT", "mo", "s", 5),
             ("PC88", "d88", "s", 0),
+            ("PC88", "cmt", "s", 4),
+            ("PC88", "t88", "s", 4),
             ("PCjr", "img", "s", 0),
             ("PCjr", "jrc", "f", 2),
             ("SGIIndy", "img", "s", 1),
@@ -2301,6 +2310,28 @@ extensions = ["md", "bin"]
                 "{id}: {}",
                 plan.mgl
             );
+            if matches!(
+                id,
+                "IQ151" | "VideoBrain" | "Neon" | "PC88" | "UKNC" | "Sun-3"
+            ) {
+                assert_eq!(
+                    plan.mgl.matches("<file ").count(),
+                    1,
+                    "{id}: one media entry must mount once"
+                );
+                let favourite = crate::launch::favorite_mgl(&config, &game)
+                    .unwrap()
+                    .unwrap();
+                assert!(
+                    favourite.contains(&format!("type=\"{kind}\"")),
+                    "{id}: {favourite}"
+                );
+                assert!(
+                    favourite.contains(&format!("index=\"{index}\"")),
+                    "{id}: {favourite}"
+                );
+                assert_eq!(favourite.matches("<file ").count(), 1);
+            }
         }
         for (id, core) in [
             ("PCXT", "_Computer/PCXT-EGA"),
@@ -2325,6 +2356,11 @@ extensions = ["md", "bin"]
             ("NeXT-Color", "vhd"),
             ("Sun-2", "vhd"),
             ("Sun-3", "vhd"),
+            ("UKNC", "vhd"),
+            ("IQ151", "dsk"),
+            ("VideoBrain", "bin"),
+            ("Neon", "img"),
+            ("PC88", "cmt"),
             ("SunSparcStation", "vhd"),
             ("MACSE30", "dsk"),
             ("MACIICX", "dsk"),
@@ -2386,6 +2422,93 @@ extensions = ["md", "bin"]
             assert_eq!(games[0].details.publisher, "Publisher");
             assert_eq!(games[0].details.desc, "Game description");
         }
+        std::fs::remove_dir_all(card).unwrap();
+    }
+
+    #[test]
+    fn new_computer_catalogue_entries_preserve_explicit_multi_media_launchers() {
+        let table = load_table(Path::new("assets/systems.toml")).unwrap();
+        let card = temp_dir("computer-multi-media-launchers");
+        for (id, files) in [
+            ("IQ151", "<file delay=\"1\" type=\"s\" index=\"1\" path=\"A.dsk\"/><file delay=\"1\" type=\"s\" index=\"0\" path=\"B.dsk\"/>"),
+            ("VideoBrain", "<file delay=\"1\" type=\"f\" index=\"1\" path=\"Cart.bin\"/><file delay=\"1\" type=\"f\" index=\"4\" path=\"Keys.vbk\"/><file delay=\"1\" type=\"s\" index=\"0\" path=\"Play.vbt\"/><file delay=\"1\" type=\"s\" index=\"1\" path=\"Record.vbt\"/><file delay=\"1\" type=\"s\" index=\"2\" path=\"Print.vbp\"/>"),
+            ("Neon", "<file delay=\"1\" type=\"s\" index=\"0\" path=\"A.dsk\"/><file delay=\"1\" type=\"s\" index=\"1\" path=\"B.dsk\"/><file delay=\"1\" type=\"s\" index=\"2\" path=\"Disk.img\"/>"),
+            ("PC88", "<file delay=\"1\" type=\"s\" index=\"0\" path=\"A.d88\"/><file delay=\"1\" type=\"s\" index=\"1\" path=\"B.d88\"/><file delay=\"1\" type=\"s\" index=\"4\" path=\"Tape.t88\"/>"),
+            ("UKNC", "<file delay=\"1\" type=\"s\" index=\"0\" path=\"A.dsk\"/><file delay=\"1\" type=\"s\" index=\"1\" path=\"B.dsk\"/><file delay=\"1\" type=\"s\" index=\"2\" path=\"Disk.vhd\"/>"),
+            ("Sun-3", "<file delay=\"1\" type=\"s\" index=\"0\" path=\"Disk.img\"/><file delay=\"1\" type=\"s\" index=\"4\" path=\"CD.iso\"/>"),
+        ] {
+            let def = table.iter().find(|def| def.id == id).unwrap();
+            let folder = card.join(&def.folders[0]);
+            std::fs::create_dir_all(&folder).unwrap();
+            let launcher = folder.join("Setup.mgl");
+            let original = format!("<mistergamedescription><rbf>{}</rbf>{files}</mistergamedescription>", def.rbf);
+            std::fs::write(&launcher, &original).unwrap();
+            let found = FoundSystem {
+                def: def.clone(),
+                paths: vec![folder.clone()],
+                logo_dir: None,
+                menu_folder: None,
+            };
+            let config = found.to_config();
+            let library = crate::browse::Library::open(&config).unwrap();
+            let cache = crate::cache::build_system(&library);
+            let rows = &cache.get(&crate::browse::Place::Dir(folder)).unwrap().rows;
+            assert!(rows.iter().any(|row| row.kind == crate::browse::Kind::Play(crate::browse::Launch::File(launcher.clone()))), "{id}: explicit setup must remain indexed");
+            let plan = crate::launch::plan(&config, &launcher, &card.join("launch.mgl")).unwrap();
+            assert!(plan.mgl.is_empty(), "{id}: existing multi-image setup must not be rewritten");
+            assert!(plan.command.contains(launcher.to_str().unwrap()));
+            assert!(crate::launch::favorite_mgl(&config, &launcher).unwrap().is_none());
+            assert_eq!(std::fs::read_to_string(&launcher).unwrap(), original);
+        }
+        std::fs::remove_dir_all(card).unwrap();
+    }
+
+    #[test]
+    fn new_computer_definitions_resolve_delivered_dated_cores_and_native_folders() {
+        let table = load_table(Path::new("assets/systems.toml")).unwrap();
+        let card = temp_dir("computer-dated-core-discovery");
+        let games = card.join("games");
+        std::fs::create_dir_all(card.join("_Computer")).unwrap();
+        for (id, date) in [
+            ("IQ151", "20261028"),
+            ("VideoBrain", "20261027"),
+            ("Neon", "20261025"),
+        ] {
+            let def = table.iter().find(|def| def.id == id).unwrap();
+            std::fs::create_dir_all(games.join(&def.folders[0])).unwrap();
+            std::fs::write(
+                card.join(format!("{}_{date}.rbf", def.rbf)),
+                b"core fixture",
+            )
+            .unwrap();
+        }
+        let index = CoreIndex::read(&card);
+        for id in ["IQ151", "VideoBrain", "Neon"] {
+            let def = table.iter().find(|def| def.id == id).unwrap();
+            let found = discover(
+                std::slice::from_ref(def),
+                std::slice::from_ref(&games),
+                None,
+                &index,
+            );
+            assert_eq!(
+                found.len(),
+                1,
+                "{id}: dated installed core must be discoverable"
+            );
+            assert_eq!(found[0].category(), "Computer");
+            assert_eq!(found[0].menu_folder.as_deref(), Some("Computer"));
+            assert_eq!(found[0].path(), games.join(&def.folders[0]));
+        }
+        let videobrain = table.iter().find(|def| def.id == "VideoBrain").unwrap();
+        for extension in ["rom", "vbt", "vbp", "vbk"] {
+            assert!(
+                !videobrain.extensions.iter().any(|ext| ext == extension),
+                "VideoBrain {extension} is support data, not standalone software"
+            );
+        }
+        let pc88 = table.iter().find(|def| def.id == "PC88").unwrap();
+        assert_eq!(pc88.folders, ["PC8801", "PC88"]);
         std::fs::remove_dir_all(card).unwrap();
     }
 
