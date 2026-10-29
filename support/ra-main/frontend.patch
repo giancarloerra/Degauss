@@ -4263,7 +4263,7 @@ index 0000000..88931fd
 +    subprocess.run([str(path / 'test')], check=True)
 +print('Frontend completion restores VT1 before disabling script framebuffer')
 diff --git a/video.cpp b/video.cpp
-index 542ef71..b22aeb6 100644
+index 542ef71..317466e 100644
 --- a/video.cpp
 +++ b/video.cpp
 @@ -50,6 +50,8 @@
@@ -4953,7 +4953,7 @@ index 542ef71..b22aeb6 100644
  
  	int fb_scale = cfg.fb_size;
  
-@@ -3432,20 +3870,54 @@ static void video_fb_config()
+@@ -3432,20 +3870,57 @@ static void video_fb_config()
  	else if (fb_scale == 3) fb_scale = 2;
  	else if (fb_scale > 4) fb_scale = 4;
  
@@ -5007,14 +5007,17 @@ index 542ef71..b22aeb6 100644
 +	if (degauss_native_fb == enable) return;
 +	degauss_native_fb = enable;
 +	video_fb_config();
-+	if (!cfg.direct_video && cfg.vga_mode_int >= 2)
++	// The first video-info poll supplies native timing and performs its refresh.
++	if (!cfg.direct_video && cfg.vga_mode_int >= 2 &&
++		(cfg.vga_scaler || (current_video_info.ptime && current_video_info.vtime &&
++			current_video_info.ctime)))
 +		set_yc_mode();
 +}
 +
  static void draw_checkers()
  {
  	volatile uint32_t* buf = fb_base + (FB_SIZE*menu_bgn);
-@@ -3453,6 +3925,7 @@ static void draw_checkers()
+@@ -3453,6 +3928,7 @@ static void draw_checkers()
  	uint32_t col1 = 0x888888;
  	uint32_t col2 = 0x666666;
  	int sz = fb_width / 128;
@@ -5022,7 +5025,7 @@ index 542ef71..b22aeb6 100644
  
  	for (int y = brd_y; y < fb_height - brd_y; y++)
  	{
-@@ -3760,6 +4233,8 @@ void video_menu_bg(int n, int idle)
+@@ -3760,6 +4236,8 @@ void video_menu_bg(int n, int idle)
  		imlib_context_set_image(bg1); imlib_free_image(); bg1 = 0;
  		imlib_context_set_image(bg2); imlib_free_image(); bg2 = 0;
  		imlib_context_set_image(curtain); imlib_free_image(); curtain = 0;
@@ -5031,7 +5034,7 @@ index 542ef71..b22aeb6 100644
  	}
  	else
  	{
-@@ -4026,14 +4501,19 @@ int video_chvt(int num)
+@@ -4026,14 +4504,19 @@ int video_chvt(int num)
  	static int cur_vt = 0;
  	if (num)
  	{
@@ -5054,7 +5057,7 @@ index 542ef71..b22aeb6 100644
  	}
  
  	return cur_vt ? cur_vt : 1;
-@@ -4353,4 +4833,3 @@ int video_get_rotated()
+@@ -4353,4 +4836,3 @@ int video_get_rotated()
  {
    return current_video_info.rotated;
  }
@@ -5089,10 +5092,10 @@ index 0f02587..c354369 100644
  int video_chvt(int num);
 diff --git a/tests/run-degauss-yc-tests.py b/tests/run-degauss-yc-tests.py
 new file mode 100644
-index 0000000..abc7741
+index 0000000..22e0b11
 --- /dev/null
 +++ b/tests/run-degauss-yc-tests.py
-@@ -0,0 +1,219 @@
+@@ -0,0 +1,229 @@
 +#!/usr/bin/env python3
 +"""Exercise production YC selection with the distributed clock-specific table."""
 +
@@ -5225,6 +5228,16 @@ index 0000000..abc7741
 +}
 +int main(int argc, char **argv) {
 +    assert(argc == 2);
++    // Main starts the frontend before its first video-info poll. Defer native
++    // refreshes until that poll supplies the measurements used by the carrier.
++    for (int mode : {2, 3, 4}) {
++        cfg = {mode, 0, 0, true, false}; current_video_info = {};
++        degauss_native_fb = false;
++        unsigned updates = yc_updates;
++        video_set_degauss_native_fb(true);
++        video_set_degauss_native_fb(false);
++        assert(yc_updates == updates);
++    }
 +    for (int mode : {2, 3, 4}) for (bool pal : {false, true})
 +        native_case(argv[1], mode, pal, false);
 +    for (int mode : {2, 3, 4}) native_case(argv[1], mode, false, true);

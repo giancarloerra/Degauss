@@ -2430,12 +2430,12 @@ extensions = ["md", "bin"]
         let table = load_table(Path::new("assets/systems.toml")).unwrap();
         let card = temp_dir("computer-multi-media-launchers");
         for (id, files) in [
-            ("IQ151", "<file type=\"s\" index=\"1\" path=\"A.dsk\"/><file type=\"s\" index=\"0\" path=\"B.dsk\"/>"),
-            ("VideoBrain", "<file type=\"f\" index=\"1\" path=\"Cart.bin\"/><file type=\"f\" index=\"4\" path=\"Keys.vbk\"/><file type=\"s\" index=\"0\" path=\"Play.vbt\"/><file type=\"s\" index=\"1\" path=\"Record.vbt\"/><file type=\"s\" index=\"2\" path=\"Print.vbp\"/>"),
-            ("Neon", "<file type=\"s\" index=\"0\" path=\"A.dsk\"/><file type=\"s\" index=\"1\" path=\"B.dsk\"/><file type=\"s\" index=\"2\" path=\"Disk.img\"/>"),
-            ("PC88", "<file type=\"s\" index=\"0\" path=\"A.d88\"/><file type=\"s\" index=\"1\" path=\"B.d88\"/><file type=\"s\" index=\"4\" path=\"Tape.t88\"/>"),
-            ("UKNC", "<file type=\"s\" index=\"0\" path=\"A.dsk\"/><file type=\"s\" index=\"1\" path=\"B.dsk\"/><file type=\"s\" index=\"2\" path=\"Disk.vhd\"/>"),
-            ("Sun-3", "<file type=\"s\" index=\"0\" path=\"Disk.img\"/><file type=\"s\" index=\"4\" path=\"CD.iso\"/>"),
+            ("IQ151", "<file delay=\"1\" type=\"s\" index=\"1\" path=\"A.dsk\"/><file delay=\"1\" type=\"s\" index=\"0\" path=\"B.dsk\"/>"),
+            ("VideoBrain", "<file delay=\"1\" type=\"f\" index=\"1\" path=\"Cart.bin\"/><file delay=\"1\" type=\"f\" index=\"4\" path=\"Keys.vbk\"/><file delay=\"1\" type=\"s\" index=\"0\" path=\"Play.vbt\"/><file delay=\"1\" type=\"s\" index=\"1\" path=\"Record.vbt\"/><file delay=\"1\" type=\"s\" index=\"2\" path=\"Print.vbp\"/>"),
+            ("Neon", "<file delay=\"1\" type=\"s\" index=\"0\" path=\"A.dsk\"/><file delay=\"1\" type=\"s\" index=\"1\" path=\"B.dsk\"/><file delay=\"1\" type=\"s\" index=\"2\" path=\"Disk.img\"/>"),
+            ("PC88", "<file delay=\"1\" type=\"s\" index=\"0\" path=\"A.d88\"/><file delay=\"1\" type=\"s\" index=\"1\" path=\"B.d88\"/><file delay=\"1\" type=\"s\" index=\"4\" path=\"Tape.t88\"/>"),
+            ("UKNC", "<file delay=\"1\" type=\"s\" index=\"0\" path=\"A.dsk\"/><file delay=\"1\" type=\"s\" index=\"1\" path=\"B.dsk\"/><file delay=\"1\" type=\"s\" index=\"2\" path=\"Disk.vhd\"/>"),
+            ("Sun-3", "<file delay=\"1\" type=\"s\" index=\"0\" path=\"Disk.img\"/><file delay=\"1\" type=\"s\" index=\"4\" path=\"CD.iso\"/>"),
         ] {
             let def = table.iter().find(|def| def.id == id).unwrap();
             let folder = card.join(&def.folders[0]);
@@ -2497,6 +2497,7 @@ extensions = ["md", "bin"]
                 "{id}: dated installed core must be discoverable"
             );
             assert_eq!(found[0].category(), "Computer");
+            assert_eq!(found[0].menu_folder.as_deref(), Some("Computer"));
             assert_eq!(found[0].path(), games.join(&def.folders[0]));
         }
         let videobrain = table.iter().find(|def| def.id == "VideoBrain").unwrap();
