@@ -22,7 +22,7 @@ class ReleaseTests(unittest.TestCase):
         patch = (ROOT / 'support/ra-main/frontend.patch').read_text()
         build = (ROOT / 'scripts/build-ra-main.sh').read_text()
         self.assertIn('!scaler_timing && !video_degauss_native_fb_active()', patch)
-        self.assertIn('+\tif (!video_is_direct() && cfg.vga_mode_int >= 2)', patch)
+        self.assertIn('+\tif (!cfg.direct_video && cfg.vga_mode_int >= 2)', patch)
         self.assertIn('+\t\tset_yc_mode();', patch)
         self.assertIn('diff --git a/tests/run-degauss-yc-tests.py', patch)
         self.assertIn('python3 tests/run-degauss-yc-tests.py\n', build)
