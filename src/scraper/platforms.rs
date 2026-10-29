@@ -234,6 +234,7 @@ mod tests {
             "Groovy",
             "Interact",
             "Homelab",
+            "IQ151",
             "JR100",
             "Laser",
             "MACIICX",
@@ -243,6 +244,7 @@ mod tests {
             "MultiComp",
             "NeXT",
             "NeXT-Color",
+            "Neon",
             "Orao",
             "OtherCores",
             "PCXT",
@@ -270,6 +272,7 @@ mod tests {
             "UnstableCores",
             "UtilityCores",
             "Vector06C",
+            "VideoBrain",
             "ZXNext",
         ]
         .into_iter()

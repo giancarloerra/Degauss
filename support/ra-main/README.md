@@ -122,6 +122,8 @@ placement before keyboard remapping, controller-hold timing and passthrough,
 the Degauss framebuffer video path, and ordered script handover acknowledgements.
 `tests/run-degauss-yc-tests.py` checks native NTSC/PAL colour-clock selection and
 preserves ordinary Menu, game-core, shared-scaler and Direct Video overrides.
+Native-state transitions resend Y/C parameters without depending on a later
+video-info change; unchanged state and RGB/component paths do not add writes.
 The build checks that achievement
 support was enabled and that achievement and frontend implementations were
 linked into the final executable. Real host curl tests exercise trusted TLS,

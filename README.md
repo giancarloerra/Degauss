@@ -721,6 +721,10 @@ colour to MiSTer's framebuffer menu wallpapers while this core is active; it is
 not limited to Degauss's own interface. The stock-menu on-demand mode does not
 use this private core.
 
+Version 1.1.1 also corrects native analog colour when a card's `yc.txt` contains
+older Menu clock overrides. Use both Main files supplied with 1.1.1; no change
+to `yc.txt`, the settings above or the private Menu core is needed.
+
 ### Starting the last game on boot
 
 **Options → Appearance → Start Last Game on Boot** is Off by default. With
@@ -978,10 +982,42 @@ Macintosh IIcx, FM Towns Marty, UKNC, Sun SPARCstation 20 and Cray X-MP use thei
 SE/30 uses `games/MACSE30`; IIcx uses `games/MACIICX`.
 UKNC uses `games/UKNC`: DSK floppies mount in the first drive (slot 0).
 Use an explicit MGL to select the second floppy drive (slot 1) or multiple
-floppies. VHD hard-disk loading is not included.
+floppies. With the distributed UKNC build dated 20261025 or later, VHD hard
+disks mount in slot 2. Existing floppy launches remain unchanged.
 SPARCstation 20 uses `games/SunSparcStation`: hard disks mount in slot 0,
 CDs in slot 2. Use explicit MGLs for secondary disks (slot 1), multiple media
 or a session PROM override. Firmware and NVRAM remain managed by the core.
+
+Version 1.1.1 adds these indexed media profiles, using the current distributed
+cores and their normal game folders:
+
+| System and folder | Media | Default MGL slot |
+| --- | --- | --- |
+| IQ 151, `games/IQ151` | DSK floppy | `s`, 1 (Floppy 0/A) |
+| VideoBrain, `games/VideoBrain` | Assembled BIN cartridge | `f`, 1 |
+| Soyuz-Neon PK-11/16, `games/Neon` | DSK floppy / IMG hard disk | `s`, 0 / `s`, 2 |
+| PC-88, `games/PC8801` or `games/PC88` | CMT or T88 tape | `s`, 4 |
+| UKNC, `games/UKNC` | VHD hard disk | `s`, 2 |
+| Sun-3, `games/Sun-3` | ISO CD, 2048-byte sectors | `s`, 4 |
+
+IQ 151 floppy support requires the 20261028 build or later. Follow its
+[Disc 2 instructions](https://github.com/MiSTer-devel/Distribution_MiSTer/blob/main/docs/IQ151/Readme.md#disc2-floppy-module-use):
+select the CPM monitor, reset the core, mount drive A, leave BASIC with Esc if
+needed, enter `CFFF8`, then `0` to boot. An explicit MGL can select drive B at
+slot 0. The separate secondary-SD SD-ROM workflow is unchanged.
+
+VideoBrain needs `boot0.rom`; Expander 1 and tape use also need `boot1.rom`, as
+described in its [installation instructions](https://github.com/MiSTer-devel/Distribution_MiSTer/blob/main/docs/VideoBrain/README.md#installing).
+Use an explicit MGL for a cartridge plus keyboard input (`f`, 4), playback tape
+(`s`, 0), recording tape (`s`, 1) or printer capture (`s`, 2). These auxiliary
+files are not listed as standalone games.
+
+Use an explicit MGL for secondary or multiple disks on Neon, PC-88 and UKNC;
+their second floppy uses slot 1. Existing MGLs are not rewritten or duplicated.
+Sun-3 CD support requires the 20261024 build or later and accepts ISO, not BIN,
+CUE or CHD. Preserve its existing PROM and EEPROM files. The newer GX colour
+option needs PROM Rev 3.0.1; Update All does not overwrite an existing
+`boot0.rom`. See the [Sun-3 instructions](https://github.com/MiSTer-devel/Distribution_MiSTer/blob/main/docs/Sun-3/README.md#the-cd-rom).
 
 Cray X-MP entries are MGL launchers, not separate support files. Unpack the
 official `games/Cray-XMP/Cray-XMP_COS-1.17.zip` as described in its supplied
