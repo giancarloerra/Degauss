@@ -321,6 +321,10 @@ pub struct Settings {
     /// keyboard controls and launched software are unchanged. Absent is Off.
     #[serde(default)]
     pub swap_x_y: Option<bool>,
+    /// Degauss-only mappings, keyed by Main's existing controller identity.
+    /// An empty map preserves MiSTer input handling without a migration.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub controller_profiles: std::collections::BTreeMap<String, crate::controller::Profile>,
     /// Which typeface the interface is set in. Absent means whatever the
     /// shipped configuration says.
     #[serde(default)]
@@ -1140,6 +1144,39 @@ mod tests {
         let disabled: Settings =
             toml::from_str("hold_x_favorite = false\nhold_y_random = false\n").unwrap();
         assert_eq!(disabled.resolved_hold_shortcuts(), [HoldShortcut::None; 4]);
+    }
+
+    #[test]
+    fn controller_profiles_preserve_legacy_swaps_holds_and_other_preferences() {
+        let mut settings: Settings = toml::from_str(
+            "swap_a_b = true\nswap_x_y = true\nhold_x_favorite = true\nlayout = 'gallery'\n",
+        )
+        .unwrap();
+        assert!(settings.controller_profiles.is_empty());
+        assert!(!toml::to_string(&settings)
+            .unwrap()
+            .contains("controller_profiles"));
+        let shortcuts = settings.resolved_hold_shortcuts();
+        settings.controller_profiles.insert(
+            "pad".into(),
+            crate::controller::Profile {
+                custom: true,
+                bindings: [(crate::controller::Control::Select, 310)].into(),
+            },
+        );
+        let restored: Settings = toml::from_str(&toml::to_string(&settings).unwrap()).unwrap();
+        assert_eq!(restored, settings);
+        assert_eq!(restored.resolved_hold_shortcuts(), shortcuts);
+        let mut inherited = restored.clone();
+        inherited.controller_profiles.get_mut("pad").unwrap().custom = false;
+        assert_eq!(inherited.swap_a_b, Some(true));
+        assert_eq!(inherited.swap_x_y, Some(true));
+        assert_eq!(inherited.layout.as_deref(), Some("gallery"));
+        assert_eq!(inherited.resolved_hold_shortcuts(), shortcuts);
+        assert_eq!(
+            inherited.controller_profiles["pad"].bindings[&crate::controller::Control::Select],
+            310
+        );
     }
 
     #[test]

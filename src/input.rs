@@ -663,6 +663,9 @@ pub struct InputEdge {
     pub edge: KeyEdge,
     pub physical_button: Option<HoldButton>,
     pub controller: bool,
+    /// Event-node number distinguishes raw keyboard-style pad events from
+    /// Main's translated virtual input without copying paths per event.
+    pub source_node: Option<u16>,
 }
 
 /// The edge a Linux key event value means. 1 is a press and 0 a release;
@@ -1010,6 +1013,11 @@ mod linux {
                                     edge,
                                     physical_button,
                                     controller: *is_mister_virtual,
+                                    source_node: path
+                                        .file_name()
+                                        .and_then(|name| name.to_str())
+                                        .and_then(|name| name.strip_prefix("event"))
+                                        .and_then(|number| number.parse().ok()),
                                 },
                                 at,
                             ));

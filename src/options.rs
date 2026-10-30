@@ -13,6 +13,7 @@ use crate::settings::HoldButton;
 /// One adjustable setting.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OptionId {
+    Controllers,
     Speed,
     /// What left and right do while browsing: speed, letter, page or
     /// direction.
@@ -130,6 +131,7 @@ pub enum OptionId {
 /// The original flat ordering, retained for existing callers.
 #[allow(dead_code)]
 pub const OPTIONS: &[OptionId] = &[
+    OptionId::Controllers,
     OptionId::Speed,
     OptionId::ArtLimit,
     OptionId::LeftRight,
@@ -273,6 +275,7 @@ impl OptionsPage {
     pub const fn ids(self) -> &'static [OptionId] {
         match self {
             Self::Navigation => &[
+                OptionId::Controllers,
                 OptionId::Speed,
                 OptionId::ArtLimit,
                 OptionId::LeftRight,
@@ -351,6 +354,7 @@ impl OptionId {
             OptionId::Speed => "Scroll Speed",
             OptionId::LeftRight => "Left and Right Behaviour",
             OptionId::UpLevelEntry => "Up a Level Entry",
+            OptionId::Controllers => "Controllers",
             OptionId::SwapAB => "Swap A and B",
             OptionId::SwapXY => "Swap X and Y",
             OptionId::ArtLimit => "Skip Artwork Faster Than",
@@ -426,6 +430,7 @@ impl OptionId {
             OptionId::UpLevelEntry => {
                 "Show < UP A LEVEL > at the top or bottom of game and folder lists. A goes back; B is unchanged."
             }
+            OptionId::Controllers => "Test a connected controller, remap it for Degauss only, or return to its MiSTer mapping. Games and return-to-Degauss shortcuts are unchanged.",
             OptionId::SwapAB => {
                 "Swap controller A and B inside Degauss. Keyboard controls, games and cores are unchanged."
             }

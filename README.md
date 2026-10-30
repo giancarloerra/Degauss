@@ -170,13 +170,38 @@ Click the image to watch Degauss on YouTube.
 | **X** (tab) | **Actions** for the current selection and location: Game Information, random game, random favourite, keep a favourite in Main Favourites or in a folder, drop a favourite, rename or remove an empty Favourites folder, jump to letter, search or filter games, hide a row, rebuild this system, change view, etc. |
 | **Y** (space) | **Menu**: Options, Help, About, Exit to MiSTer. Scripts and optional Attract Mode are on Home |
 
-**Custom controller mappings:** Degauss uses MiSTer's **Menu: OK** and
-**Menu: Back** assignments when set, which take precedence over ordinary A and B
-for menu navigation. With the default Degauss controls, the "B Back" hint means
-the Back action, not necessarily the physical B button. For example, if
-**Menu: Back** is assigned to L, use L to go back. B remains mapped to B in games.
-To use physical B for Back in Degauss, assign it to **Menu: Back** in MiSTer's
-controller mapping.
+**Controller mappings:** MiSTer's mapping remains the default, including its
+**Menu: OK** and **Menu: Back** assignments. **Options → Navigation → Controllers**
+lists connected controllers and offers **Test Controller** without changing any
+mapping. The tester shows raw buttons, D-pad, sticks and triggers where present,
+alongside the latest translated Degauss action from any controller. Actions being tested do not navigate or launch
+anything. Hold the displayed Back control for two seconds to leave, or press
+Escape on a keyboard. Keyboard arrows scroll the tester's rows.
+
+Choose **Remap Degauss Controls** to assign directions, Select, Back, Actions,
+Menu and page controls for Degauss only. Select a row, then press and release a
+button or move an axis. Holding that control for two seconds cancels capture;
+keyboard Escape also cancels. **X Clear** unassigns an optional action and
+**Y MiSTer** restores the selected row's inherited assignment. Directions,
+Select and Back are required; conflicting assignments must be corrected before
+**Save Degauss Mapping** applies and saves the changes. Back cancels the editor.
+If a newly connected controller has not been used yet, press one of its controls
+first so MiSTer loads its native mapping. The raw tester is available before
+that press. If devices change during editing, return to the refreshed controller
+list and select the controller again; unsaved edits are not applied.
+
+**Use MiSTer Mapping** restores inherited controls without deleting the saved
+Degauss mapping; **Use Saved Degauss Mapping** enables it again. These settings
+live in Degauss's `settings.toml`, not MiSTer's controller files. They use the
+same controller identity as MiSTer's mapping: identical controllers sharing a
+MiSTer identity also share this profile, while input numbers distinguish the
+connected instances in the tester. MiSTer's unique-controller configuration
+continues to determine separate mapping identities.
+
+The matching Degauss Main is required for the tester and custom mappings.
+Native OSD controls, scripts, game controls, keyboard input and the configured
+keyboard/controller return-to-Degauss shortcuts are unchanged. On-screen hints
+use the active controller's effective assignments, including non-face buttons.
 
 **Options → Shortcuts** can assign an optional one-second hold to A, B, X or Y.
 A short press keeps the button's normal action. An available hold runs once and
@@ -235,7 +260,8 @@ within 40 ms; held scrolling and deliberate repeated taps are not affected.
 **Options → Navigation → Swap A and B / Swap X and Y** can independently swap
 the controller actions inside Degauss. Keyboard controls, MiSTer's controller
 mapping and launched games remain unchanged. On-screen control hints follow
-the selected swaps; the **Hold A/B/X/Y** rows always name the physical buttons.
+the selected swaps. Hold rows name the effective physical controls before those
+swaps; their existing saved shortcut assignments are preserved when remapping.
 
 ### Explore Games and saved collections
 

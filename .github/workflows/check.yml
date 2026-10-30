@@ -11,6 +11,44 @@ permissions:
   contents: read
 
 jobs:
+  ra-controller-integration:
+    runs-on: ubuntu-latest
+    container: debian:bookworm
+    steps:
+      - name: Install source-check tools
+        run: |
+          printf 'deb http://deb.debian.org/debian bullseye main\n' > /etc/apt/sources.list.d/bullseye.list
+          printf 'Package: *\nPin: release n=bullseye\nPin-Priority: 1\n\nPackage: *-armhf-cross\nPin: release n=bullseye\nPin-Priority: 990\n' > /etc/apt/preferences.d/mister-target
+          apt-get update
+          apt-get install -y --no-install-recommends git ca-certificates curl patch python3 g++ gcc-10-arm-linux-gnueabihf g++-10-arm-linux-gnueabihf
+      - uses: actions/checkout@v5
+      - name: Replay the pinned RA integration without producing release assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          source_pin="$(sed -n 's/^source_pin=//p' scripts/build-ra-main.sh)"
+          archive_sha="$(sed -n 's/^archive_sha=//p' scripts/build-ra-main.sh)"
+          curl --fail --location --silent --show-error "https://codeload.github.com/odelot/Main_MiSTer/tar.gz/${source_pin}" -o upstream.tar.gz
+          printf '%s  upstream.tar.gz\n' "$archive_sha" | sha256sum -c -
+          mkdir ra-check
+          tar -xzf upstream.tar.gz --strip-components=1 -C ra-check
+          cd ra-check
+          patch --fuzz=0 -p1 < ../support/ra-main/frontend.patch
+          patch --fuzz=0 -p1 < ../support/ra-main/tls.patch
+          patch --fuzz=0 -p1 < ../support/ra-main/controller.patch
+          python3 tests/run-degauss-controls-tests.py
+          bash tests/run-degauss-shortcut-tests.sh
+          python3 tests/run-ra-controller-tests.py
+          python3 tests/degauss_script_handover_test.py
+          python3 tests/degauss_native_scripts_test.py
+          python3 tests/run-degauss-core-menu-tests.py
+          arm-linux-gnueabihf-g++-10 -std=gnu++14 -mcpu=cortex-a9 -mfpu=neon -mfloat-abi=hard \
+            -I. -Ilib/libco -Ilib/miniz -Ilib/md5 -Ilib/lzma -Ilib/zstd/lib \
+            -Ilib/libchdr/include -Ilib/bluetooth -Ilib/serial_server/library \
+            -D_7ZIP_ST -DHAVE_LROUND -DHAVE_STDINT_H -DHAVE_STDLIB_H -DHAVE_SYS_PARAM_H \
+            -DENABLE_64_BIT_WORDS=0 -D_FILE_OFFSET_BITS=64 -D_LARGEFILE64_SOURCE \
+            -Wall -Wextra -Werror -Wno-psabi -fsyntax-only input.cpp menu.cpp
+
   test:
     runs-on: ubuntu-latest
     env:
@@ -25,6 +63,7 @@ jobs:
       - run: rustup component add clippy rustfmt
       - run: rustup target add armv7-unknown-linux-musleabihf
       - run: cargo fmt --check
+      - run: rustfmt --edition 2021 --check src/controller_app.rs
       - name: Check RA release delivery compatibility
         run: python3 scripts/test-ra-release.py
       # Embedded font packs need extra compiler memory. Use a separate
