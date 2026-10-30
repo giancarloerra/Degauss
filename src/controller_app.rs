@@ -612,7 +612,10 @@ impl App {
     }
 
     fn receive_controller_discovery(&mut self, snapshot: controller::Snapshot) {
-        if self.controllers.report_error.is_some() {
+        if let Some(error) = self.controllers.report_error.clone() {
+            if self.message.is_none() {
+                self.controller_error(error);
+            }
             return;
         }
         if self.controllers.report_generation != Some(snapshot.generation) {
@@ -714,6 +717,16 @@ fn test_controller_menu_flow(app: &mut App) {
         app.controllers.report_error,
         "a failed report remains visible even when the last generation matches discovery"
     );
+    app.receive_controller_discovery(controller::Snapshot::default());
+    assert!(app.message.as_ref().is_some_and(|message| message.contains("Reading active controller: Permission denied")),
+        "explicit discovery repeats a dismissed underlying report error");
+    let retry_message = app.message.clone();
+    app.receive_controller_discovery(controller::Snapshot::default());
+    assert_eq!(
+        app.message, retry_message,
+        "an error already on screen is not duplicated"
+    );
+    app.message = None;
     app.controllers.report_error = None;
     app.receive_controller_discovery(controller::Snapshot::default());
     assert!(app
