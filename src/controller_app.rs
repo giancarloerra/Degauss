@@ -56,6 +56,24 @@ impl App {
         self.controllers.raw_keys.clear();
     }
 
+    fn controller_consumes_raw_key(&self, node: u16, code: u16) -> bool {
+        self.controllers.raw_nodes.contains(&node)
+            || self.controllers.raw_keys.contains(&(node, code))
+            || (self.controllers.report_revision.is_some()
+                && (self.controllers.menu == Some(ControllerMenu::Test)
+                    || matches!(self.controllers.job, Some((ControllerJob::Capture(_), _))))
+                && self.controllers.devices.iter().any(|device| {
+                    device.keyboard_joystick
+                        && device.paths.iter().any(|path| {
+                            path.file_name()
+                                .and_then(|name| name.to_str())
+                                .and_then(|name| name.strip_prefix("event"))
+                                .and_then(|number| number.parse::<u16>().ok())
+                                == Some(node)
+                        })
+                }))
+    }
+
     fn open_controllers(&mut self) {
         self.controllers.menu = Some(ControllerMenu::List);
         self.controllers.devices.clear();
@@ -638,7 +656,7 @@ impl App {
             .unwrap_or("Controllers");
         if let Some((ControllerJob::Capture(role), _)) = &self.controllers.job {
             return (format!("Set {}", self.controller_role_source(*role).label()),
-                "Press and release a button or move an axis. Hold that control for two seconds to cancel. Keyboard Esc also cancels.".into(), String::new());
+                "Press and release a button or move an axis. Hold that control for two seconds to cancel. Ordinary keyboard Esc also cancels.".into(), String::new());
         }
         if self.controllers.job.is_some() {
             return (
@@ -651,7 +669,7 @@ impl App {
             Some(ControllerMenu::List) => ("Controllers".into(), "Choose a connected controller. Separate input numbers identify connected instances.".into(), self.control_hint("A Select   B Back")),
             Some(ControllerMenu::Device) => (name.into(), "Changes apply only to Degauss. MiSTer, games, scripts and return shortcuts are unchanged.".into(), self.control_hint("A Select   B Back")),
             Some(ControllerMenu::Editor) => (format!("{name} / Degauss Controls"), "Set replaces this action's controls. Save keeps a complete Degauss-only mapping. Existing swaps and holds remain in effect.".into(), self.control_hint("A Set   X Clear   B Cancel")),
-            Some(ControllerMenu::Test) => (format!("{name} / Test"), "Raw input is for this controller; Latest Action includes any controller. Keyboard arrows scroll; Esc exits.".into(), format!("Hold {} 2s to exit", self.controllers.active.as_ref().or_else(|| self.controller_device())
+            Some(ControllerMenu::Test) => (format!("{name} / Test"), "Raw input is for this controller; Latest Action includes any controller. Ordinary keyboard arrows scroll; Esc exits.".into(), format!("Hold {} 2s to exit", self.controllers.active.as_ref().or_else(|| self.controller_device())
                 .filter(|device| device.custom || device.mapped).map(|device| device.hint("B", self.settings.swap_a_b.unwrap_or(false), self.settings.swap_x_y.unwrap_or(false)))
                 .unwrap_or_else(|| "Back".into()))),
             None => (String::new(), String::new(), String::new()),
@@ -823,6 +841,35 @@ fn test_controller_menu_flow(app: &mut App) {
         !app.controllers.raw_keys.contains(&(4, 10)),
         "an ordinary keyboard node is not filtered"
     );
+    app.controllers.devices = vec![keyboard_pad.clone()];
+    assert!(
+        !app.controller_consumes_raw_key(3, 1),
+        "native browsing retains unassigned Escape"
+    );
+    assert!(
+        app.controller_consumes_raw_key(3, 10),
+        "Main-translated keys are never duplicated"
+    );
+    app.controllers.menu = Some(ControllerMenu::Test);
+    assert!(
+        app.controller_consumes_raw_key(3, 1),
+        "a controller's raw Escape cannot exit its own tester"
+    );
+    assert!(
+        app.controller_consumes_raw_key(3, 96),
+        "unmapped controller keys remain diagnostic input"
+    );
+    assert!(
+        !app.controller_consumes_raw_key(4, 1),
+        "ordinary keyboard Escape remains available"
+    );
+    app.invalidate_controller_report();
+    assert!(
+        !app.controller_consumes_raw_key(3, 1),
+        "stale device paths cannot suppress a reused keyboard node"
+    );
+    app.controllers.menu = None;
+    app.controllers.devices.clear();
     std::fs::write(&next, b"invalid report").unwrap();
     std::fs::rename(&next, &report).unwrap();
     app.poll_controller_report_at(Instant::now(), true, &report);

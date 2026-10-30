@@ -176,12 +176,12 @@ lists connected controllers and offers **Test Controller** without changing any
 mapping. The tester shows raw buttons, D-pad, sticks and triggers where present,
 alongside the latest translated Degauss action from any controller. Actions being tested do not navigate or launch
 anything. Hold the displayed Back control for two seconds to leave, or press
-Escape on a keyboard. Keyboard arrows scroll the tester's rows.
+Escape on an ordinary keyboard. Ordinary keyboard arrows scroll the tester's rows.
 
 Choose **Remap Degauss Controls** to assign directions, Select, Back, Actions,
 Menu and page controls for Degauss only. Select a row, then press and release a
 button or move an axis. Setting a row replaces its controls. Holding that control
-for two seconds cancels capture; keyboard Escape also cancels. **X Clear**
+for two seconds cancels capture; ordinary keyboard Escape also cancels. **X Clear**
 unassigns an optional action. Directions,
 Select and Back are required; conflicting assignments must be corrected before
 **Save Degauss Mapping** applies and saves the changes. Back cancels the editor.
@@ -202,8 +202,10 @@ connected instances in the tester. MiSTer's unique-controller configuration
 continues to determine separate mapping identities.
 
 For a keyboard configured as a MiSTer joystick, custom mode uses only the saved
-controller bindings. MiSTer mode also preserves unmapped keyboard keys without
-duplicating mapped controls; ordinary keyboards are unchanged. If a saved mapping cannot be applied, the error is
+controller bindings. MiSTer mode also preserves unmapped keyboard keys while
+browsing without duplicating mapped controls. During testing and capture, these
+controller keys remain isolated from keyboard shortcuts; ordinary keyboards are
+unchanged. If a saved mapping cannot be applied, the error is
 shown and the saved mapping is retained. Correct the cause and choose **Use
 Saved Degauss Mapping** to retry.
 

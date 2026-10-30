@@ -23505,11 +23505,7 @@ impl App {
                 }
                 if !input_edge.controller
                     && input_edge.source_node.is_some_and(|node| {
-                        self.controllers.raw_nodes.contains(&node)
-                            || self
-                                .controllers
-                                .raw_keys
-                                .contains(&(node, input_edge.key_code))
+                        self.controller_consumes_raw_key(node, input_edge.key_code)
                     })
                 {
                     continue;
