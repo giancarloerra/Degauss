@@ -52,6 +52,7 @@ include!("explore_app.rs");
 include!("home_app.rs");
 include!("custom_view_app.rs");
 include!("folder_options_app.rs");
+include!("controller_app.rs");
 use crate::metrics::{FrameTimer, StartupTimings};
 use crate::name_display::GameNameDisplay;
 use crate::name_keyboard::{self, Key as NameKey, Page as NamePage};
@@ -308,6 +309,7 @@ impl OptionInput {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum OptionOperation {
     None,
+    OpenControllers,
     Adjust(isize),
     OpenThemeEditor,
     OpenCustomViews,
@@ -326,6 +328,10 @@ enum OptionOperation {
 fn option_operation(option: OptionId, input: OptionInput) -> OptionOperation {
     match option {
         OptionId::Spacer => OptionOperation::None,
+        OptionId::Controllers => match input {
+            OptionInput::Activate => OptionOperation::OpenControllers,
+            OptionInput::Previous | OptionInput::Next => OptionOperation::None,
+        },
         OptionId::CustomViews => match input {
             OptionInput::Activate => OptionOperation::OpenCustomViews,
             OptionInput::Previous | OptionInput::Next => OptionOperation::None,
@@ -4071,6 +4077,7 @@ impl CoreUpdateGames {
 }
 
 pub struct App {
+    controllers: ControllerBrowser,
     kiosk_locked: bool,
     explore: ExploreBrowser,
     config: Config,
@@ -4927,6 +4934,7 @@ impl App {
             saver_candidates: None,
             config,
             settings,
+            controllers: ControllerBrowser::default(),
             settings_path,
             themes_dir,
             display_masks_dir,
@@ -13434,6 +13442,7 @@ impl App {
         };
         match option_operation(option, input) {
             OptionOperation::None => (),
+            OptionOperation::OpenControllers => self.open_controllers(),
             OptionOperation::Adjust(delta) => self.adjust_option_value(option, delta),
             OptionOperation::OpenThemeEditor => self.open_theme_editor(),
             OptionOperation::OpenCustomViews => {
@@ -14136,7 +14145,8 @@ impl App {
                 self.config.app.overscan_y = next;
                 self.apply_geometry();
             }
-            OptionId::CustomViews
+            OptionId::Controllers
+            | OptionId::CustomViews
             | OptionId::ResetCustomViews
             | OptionId::RebuildCache
             | OptionId::ScrapeAll
@@ -14151,6 +14161,7 @@ impl App {
 
     fn option_value(&self, option: OptionId) -> String {
         match option {
+            OptionId::Controllers => ">".into(),
             OptionId::Speed => speed_label(self.speed),
             OptionId::ArtLimit => {
                 let limit = self.art_limit();
@@ -16247,7 +16258,7 @@ impl App {
     }
 
     fn available_hold_shortcuts(&self) -> [Option<HoldShortcut>; 4] {
-        if self.kiosk_locked {
+        if self.kiosk_locked || self.controllers.menu.is_some() {
             return [None; 4];
         }
         HoldButton::ALL.map(|button| {
@@ -20840,6 +20851,10 @@ impl App {
             return None;
         }
 
+        if self.handle_controller_menu(action) {
+            return None;
+        }
+
         if let Some(outcome) = self.handle_home_input(action) {
             self.dirty = true;
             return outcome;
@@ -22378,7 +22393,14 @@ impl App {
             }
             Screen::Context => {
                 for index in range {
-                    let value = self.context_value(index);
+                    let value = if self.controllers.menu.is_some() {
+                        self.controller_rows()
+                            .get(index)
+                            .map(|(_, value)| value.clone())
+                            .unwrap_or_default()
+                    } else {
+                        self.context_value(index)
+                    };
                     if self.menu[index] == CORE_VERSION {
                         // Full nightly paths use the existing title marquee on small screens.
                         rows.push(plain_row(&format!("{CORE_VERSION}: {value}"), ""));
@@ -22391,7 +22413,10 @@ impl App {
                 let list = self.option_ids();
                 for index in range {
                     let option = list[index];
-                    rows.push(plain_row(option.label(), &self.option_value(option)));
+                    rows.push(plain_row(
+                        &self.controller_option_label(option),
+                        &self.option_value(option),
+                    ));
                 }
             }
             Screen::OptionsRoot => {
@@ -22807,7 +22832,7 @@ impl App {
         self.ui
             .set_lr_word(SharedString::from(self.horizontal.legend_word()));
 
-        let (mut heading, status) = match self.screen {
+        let (mut heading, mut status) = match self.screen {
             Screen::Screensaver => (String::new(), String::new()),
             Screen::FavoriteFolder => ("Keep it in".to_string(), String::new()),
             Screen::Find => match self.find_mode {
@@ -23156,6 +23181,13 @@ impl App {
             }
         }
         self.ui.set_heading(SharedString::from(heading));
+        if self.controllers.menu.is_some() {
+            let (heading, help, controls) = self.controller_heading_help();
+            self.ui.set_heading(heading.into());
+            self.ui.set_plain_scope("Controllers".into());
+            self.ui.set_plain_help(controls.into());
+            status = help;
+        }
         let displayed_status = if matches!(
             self.screen,
             Screen::Scripts
@@ -23302,7 +23334,15 @@ impl App {
     }
 
     fn control_hint(&self, text: &str) -> String {
-        self.controller_mapping().map_hint(text)
+        if let Some(device) = &self.controllers.active {
+            device.hint(
+                text,
+                self.settings.swap_a_b.unwrap_or(false),
+                self.settings.swap_x_y.unwrap_or(false),
+            )
+        } else {
+            self.controller_mapping().map_hint(text)
+        }
     }
 
     /// Resolve startup presentation without persisting an implicit device default.
@@ -23421,6 +23461,7 @@ impl App {
             self.poll_information();
             self.poll_explore();
             self.poll_home_preview();
+            self.poll_controllers(now);
             self.maintain_custom_information();
             self.maintain_information_scroll(now);
             if let Some(outcome) = self.poll_home_open() {
@@ -23445,11 +23486,30 @@ impl App {
             repeater.set_hold_shortcuts(self.available_hold_shortcuts());
             let controller_mapping = self.controller_mapping();
             let edges = input.poll();
+            if self.controllers.reset_input {
+                repeater.clear_all();
+                ini_chord.reset_for_device_loss();
+                self.controllers.reset_input = false;
+            }
             if input.take_device_loss() {
+                self.invalidate_controller_report();
                 ini_chord.reset_for_device_loss();
                 repeater.clear_all();
             }
             for (input_edge, at) in edges {
+                self.poll_controller_report(now, true);
+                if self.controllers.reset_input {
+                    repeater.clear_all();
+                    ini_chord.reset_for_device_loss();
+                    self.controllers.reset_input = false;
+                }
+                if !input_edge.controller
+                    && input_edge.source_node.is_some_and(|node| {
+                        self.controller_consumes_raw_key(node, input_edge.key_code)
+                    })
+                {
+                    continue;
+                }
                 // Some controllers deliver one press as two very fast press
                 // and release pairs. The second pair is dropped here, before
                 // the repeater, so the held-scroll cadence is not touched.
@@ -23465,6 +23525,14 @@ impl App {
                 } else {
                     edge
                 };
+                if self.controller_intercept_edge(edge, input_edge.controller, now) {
+                    repeater.clear_all();
+                    ini_chord.reset_for_device_loss();
+                    if self.controllers.reset_input {
+                        break;
+                    }
+                    continue;
+                }
                 if self.kiosk_locked {
                     ini_chord.reset_for_device_loss();
                 }
@@ -23501,6 +23569,11 @@ impl App {
             repeater.set_horizontal_repeats(self.horizontal_scrolls());
             repeater.set_hold_context(self.selection_revision);
             repeater.set_hold_shortcuts(self.available_hold_shortcuts());
+            if self.controllers.reset_input {
+                repeater.clear_all();
+                ini_chord.reset_for_device_loss();
+                self.controllers.reset_input = false;
+            }
             for action in repeater.tick(now) {
                 if matches!(action, Action::HoldShortcut(_)) {
                     ini_chord.back_hold_fired();
@@ -23562,6 +23635,7 @@ impl App {
                 && self.information.is_none()
                 && self.custom_view.editor.is_none()
                 && self.explore.job.is_none()
+                && self.controllers.menu.is_none()
                 && !matches!(
                     self.screen,
                     Screen::Screensaver
@@ -25825,6 +25899,8 @@ pub(crate) fn test_library_launch_flow(window: Rc<MinimalSoftwareWindow>) {
         "B Open   A Back   Y Actions   X Menu"
     );
 
+    test_controller_menu_flow(&mut app);
+
     let disc_launcher = root.join("_Disc_Cores/Saturn.mgl");
     std::fs::create_dir_all(disc_launcher.parent().unwrap()).unwrap();
     std::fs::write(root.join("_Console/Saturn.rbf"), b"core").unwrap();
@@ -26955,6 +27031,7 @@ mod tests {
     #[test]
     fn option_actions_are_reachable_only_through_a() {
         let actions = [
+            (OptionId::Controllers, OptionOperation::OpenControllers),
             (OptionId::CustomViews, OptionOperation::OpenCustomViews),
             (
                 OptionId::ResetCustomViews,
@@ -27015,6 +27092,7 @@ mod tests {
     #[test]
     fn every_value_uses_left_for_previous_and_right_or_a_for_next() {
         let actions = [
+            OptionId::Controllers,
             OptionId::CustomViews,
             OptionId::ResetCustomViews,
             OptionId::ResetHidden,

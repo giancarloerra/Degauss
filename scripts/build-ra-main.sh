@@ -32,6 +32,7 @@ patch --fuzz=0 -p1 < "$here/support/ra-main/frontend.patch"
 patch --fuzz=0 -p1 < "$here/support/ra-main/tls.patch"
 patch --fuzz=0 -p1 < "$here/support/ra-main/controller.patch"
 python3 tests/run-ra-controller-tests.py
+python3 tests/run-degauss-controls-tests.py
 bash tests/run-degauss-physical-cd-tests.sh
 bash tests/run-degauss-shortcut-tests.sh
 bash tests/run-degauss-video-tests.sh

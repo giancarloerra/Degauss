@@ -18,6 +18,15 @@ spec.loader.exec_module(package_ra)
 
 
 class ReleaseTests(unittest.TestCase):
+    def test_controller_controls_ship_with_the_ra_frontend_integration(self):
+        patch = (ROOT / 'support/ra-main/frontend.patch').read_text()
+        build = (ROOT / 'scripts/build-ra-main.sh').read_text()
+        self.assertIn('diff --git a/support/degauss/degauss_controls.h', patch)
+        self.assertIn('degauss_controller_custom_key(dev, ev->code, ev->value)', patch)
+        self.assertIn('degauss_controller_capture_key(dev, ev->code, ev->value)', patch)
+        self.assertIn('menu_degauss_controls_active()', patch)
+        self.assertIn('python3 tests/run-degauss-controls-tests.py\n', build)
+
     def test_native_yc_correction_is_built_and_keeps_legacy_overrides_scoped(self):
         patch = (ROOT / 'support/ra-main/frontend.patch').read_text()
         build = (ROOT / 'scripts/build-ra-main.sh').read_text()

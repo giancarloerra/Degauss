@@ -15,6 +15,7 @@ mod browse;
 mod cache;
 mod category_images;
 mod config;
+mod controller;
 mod core_changes;
 mod core_choices;
 mod core_variants;
