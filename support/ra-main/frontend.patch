@@ -5343,7 +5343,7 @@ index 0000000..559be2a
 +MENU_59.9i=145622662586
 +NES_60.1s=113492149000
 diff --git a/input.cpp b/input.cpp
-index f7d0ad1..f7fc6ef 100644
+index f7d0ad1..e6d086f 100644
 --- a/input.cpp
 +++ b/input.cpp
 @@ -39,6 +39,7 @@
@@ -5354,7 +5354,7 @@ index f7d0ad1..f7fc6ef 100644
  #include "offload.h"
  
  #define NUMDEV 30
-@@ -2032,6 +2033,431 @@ static int keyrah_trans(int key, int press)
+@@ -2032,6 +2033,432 @@ static int keyrah_trans(int key, int press)
  }
  
  static void input_cb(struct input_event *ev, struct input_absinfo *absinfo, int dev, bool menu_event = false);
@@ -5546,6 +5546,7 @@ index f7d0ad1..f7fc6ef 100644
 +
 +static bool degauss_controller_is_pad(int dev)
 +{
++	if (JOYCON_COMBINED(dev) && JOYCON_RIGHT(dev)) return false;
 +	if (pool[dev].fd < 0 || input[dev].mouse
 +		|| (!JOYCON_COMBINED(dev) && input[dev].bind >= 0 && input[dev].bind != dev)) return false;
 +	for (int node = 0; node < NUMDEV; ++node) if (pool[node].fd >= 0 && !input[node].mouse
@@ -5786,7 +5787,7 @@ index f7d0ad1..f7fc6ef 100644
  
  static int kbd_toggle = 0;
  
-@@ -2959,6 +3385,7 @@ static void assign_player(int dev, int num, int force = 0)
+@@ -2959,6 +3386,7 @@ static void assign_player(int dev, int num, int force = 0)
  	printf("Device %s %sassigned to player %d\n", input[dev].id, force ? "forcebly " : "", input[dev].num);
  }
  
@@ -5794,7 +5795,7 @@ index f7d0ad1..f7fc6ef 100644
  static void input_cb(struct input_event *ev, struct input_absinfo *absinfo, int dev, bool menu_event)
  {
  	if (ev->type != EV_KEY && ev->type != EV_ABS && ev->type != EV_REL) return;
-@@ -3013,6 +3440,7 @@ static void input_cb(struct input_event *ev, struct input_absinfo *absinfo, int
+@@ -3013,6 +3441,7 @@ static void input_cb(struct input_event *ev, struct input_absinfo *absinfo, int
  
  	if (ev->type == EV_KEY && ev->code < 256 && !(mapping && mapping_type == 2) && !input[dev].force_joy)
  	{
@@ -5802,7 +5803,7 @@ index f7d0ad1..f7fc6ef 100644
  		if (!input[dev].has_kbdmap)
  		{
  			if (!FileLoadConfig(get_kbdmap_name(dev), &input[dev].kbdmap, sizeof(input[dev].kbdmap)))
-@@ -3099,6 +3527,7 @@ static void input_cb(struct input_event *ev, struct input_absinfo *absinfo, int
+@@ -3099,6 +3528,7 @@ static void input_cb(struct input_event *ev, struct input_absinfo *absinfo, int
  			}
  		}
  		input[dev].has_mmap++;
@@ -5810,7 +5811,7 @@ index f7d0ad1..f7fc6ef 100644
  	}
  
  	if (!input[dev].has_map)
-@@ -3661,6 +4090,12 @@ static void input_cb(struct input_event *ev, struct input_absinfo *absinfo, int
+@@ -3661,6 +4091,12 @@ static void input_cb(struct input_event *ev, struct input_absinfo *absinfo, int
  
  				if (user_io_osd_is_visible() || video_fb_state())
  				{
@@ -5823,7 +5824,7 @@ index f7d0ad1..f7fc6ef 100644
  					if (ev->value <= 1)
  					{
  						if ((input[dev].mmap[SYS_BTN_MENU_FUNC] & 0xFFFF) ?
-@@ -5619,6 +6054,7 @@ int input_test(int getchar)
+@@ -5619,6 +6055,7 @@ int input_test(int getchar)
  			unflag_players();
  		}
  		cur_leds |= 0x80;
@@ -5831,7 +5832,7 @@ index f7d0ad1..f7fc6ef 100644
  		state++;
  	}
  
-@@ -6131,6 +6567,7 @@ int input_test(int getchar)
+@@ -6131,6 +6568,7 @@ int input_test(int getchar)
  									}
  								}
  
@@ -5839,7 +5840,7 @@ index f7d0ad1..f7fc6ef 100644
  								// redirect further actions to left joycon in combined mode
  								if (JOYCON_COMBINED(i))
  								{
-@@ -6159,6 +6596,7 @@ int input_test(int getchar)
+@@ -6159,6 +6597,7 @@ int input_test(int getchar)
  
  										int only_max = 1;
  										for (int n = 0; n < 4; n++) if (input[dev].mmap[SYS_AXIS1_X + n] && ((input[dev].mmap[SYS_AXIS1_X + n] & 0xFFFF) == ev.code)) only_max = 0;
@@ -5847,7 +5848,7 @@ index f7d0ad1..f7fc6ef 100644
  
  										if (ev.value < center - treshold && !only_max) axis_edge = 1;
  										if (ev.value > center + treshold) axis_edge = 2;
-@@ -6294,6 +6732,7 @@ int input_test(int getchar)
+@@ -6294,6 +6733,7 @@ int input_test(int getchar)
  					cmd[len] = 0;
  					printf("MiSTer_cmd: %s\n", cmd);
  					if (!strncmp(cmd, "fb_cmd", 6)) video_cmd(cmd);
@@ -5855,7 +5856,7 @@ index f7d0ad1..f7fc6ef 100644
  					else if (!strcmp(cmd, "fb_mask off")) video_set_degauss_display_mask(nullptr);
  					else if (!strncmp(cmd, "fb_mask ", 8)) video_set_degauss_display_mask(cmd + 8);
  					else if (!strncmp(cmd, "fb_degauss ", 11))
-@@ -6507,6 +6946,7 @@ int input_poll(int getchar)
+@@ -6507,6 +6947,7 @@ int input_poll(int getchar)
  	#ifdef PROFILING
  		PROFILE_FUNCTION();
  	#endif
@@ -6157,10 +6158,10 @@ index 0000000..41208c3
 +}
 diff --git a/tests/run-degauss-controls-tests.py b/tests/run-degauss-controls-tests.py
 new file mode 100644
-index 0000000..0db5edc
+index 0000000..e0da23d
 --- /dev/null
 +++ b/tests/run-degauss-controls-tests.py
-@@ -0,0 +1,515 @@
+@@ -0,0 +1,524 @@
 +#!/usr/bin/env python3
 +"""Validate controller profile compatibility and Main's frontend-only hooks."""
 +
@@ -6628,11 +6629,12 @@ index 0000000..0db5edc
 +#include "support/degauss/degauss_controls.h"
 +#define NUMDEV 4
 +#define KEY_EMU (KEY_MAX + 1)
-+#define JOYCON_COMBINED(dev) 0
++#define JOYCON_COMBINED(dev) input[dev].combined
++#define JOYCON_RIGHT(dev) input[dev].right
 +#define test_bit(bit, array) (array[(bit) / 8] & (1 << ((bit) % 8)))
 +static constexpr int QUIRK_LIGHTGUN_MOUSE = 1;
 +static struct { int fd; } pool[NUMDEV];
-+static struct { bool mouse, force_joy, has_mmap; int bind, quirk; uint32_t mmap[10]; } input[NUMDEV] = {};
++static struct { bool mouse, force_joy, has_mmap, combined, right; int bind, quirk; uint32_t mmap[10]; } input[NUMDEV] = {};
 +static degauss_controls::Bindings degauss_controller_native(int dev) {
 +    degauss_controls::Bindings result{}; result[0] = input[dev].mmap[0]; return result;
 +}
@@ -6664,6 +6666,14 @@ index 0000000..0db5edc
 +    assert(degauss_controller_is_pad(2)); // a nonstandard control explicitly mapped by MiSTer
 +    input[2].mmap[0] = KEY_EMU + ABS_VOLUME * 2;
 +    assert(degauss_controller_is_pad(2)); // an axis explicitly configured for native menu navigation
++    // Main binds paired Joy-Cons reciprocally and routes both halves to the left.
++    input[0].bind = 1; input[1].bind = 0;
++    input[0].combined = input[1].combined = true; input[1].right = true;
++    assert(degauss_controller_is_pad(0));
++    assert(!degauss_controller_is_pad(1)); // the redirected right half cannot be captured independently
++    input[1].combined = false; input[1].bind = 1;
++    assert(degauss_controller_is_pad(1)); // an unpaired right Joy-Con remains selectable
++    input[0].combined = false; input[0].bind = 0; input[1].bind = 0;
 +    pool[1].fd = -1;
 +    assert(!degauss_controller_is_pad(0));
 +}
