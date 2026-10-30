@@ -5343,7 +5343,7 @@ index 0000000..559be2a
 +MENU_59.9i=145622662586
 +NES_60.1s=113492149000
 diff --git a/input.cpp b/input.cpp
-index f7d0ad1..6caa63a 100644
+index f7d0ad1..f7fc6ef 100644
 --- a/input.cpp
 +++ b/input.cpp
 @@ -39,6 +39,7 @@
@@ -5354,7 +5354,7 @@ index f7d0ad1..6caa63a 100644
  #include "offload.h"
  
  #define NUMDEV 30
-@@ -2032,6 +2033,390 @@ static int keyrah_trans(int key, int press)
+@@ -2032,6 +2033,431 @@ static int keyrah_trans(int key, int press)
  }
  
  static void input_cb(struct input_event *ev, struct input_absinfo *absinfo, int dev, bool menu_event = false);
@@ -5365,6 +5365,7 @@ index f7d0ad1..6caa63a 100644
 +static unsigned degauss_controller_capture = 0;
 +static int degauss_controller_capture_device = -1;
 +static uint16_t degauss_controller_capture_code = 0;
++static std::array<std::array<bool, ABS_CNT>, NUMDEV> degauss_controller_capture_negative_axes{};
 +static uint32_t degauss_controller_capture_since = 0;
 +static uint32_t degauss_controller_capture_started = 0;
 +static std::string degauss_controller_capture_identity;
@@ -5487,11 +5488,45 @@ index f7d0ad1..6caa63a 100644
 +	return profile ? profile->primary() : native;
 +}
 +
-+static bool degauss_controller_negative_axis(int dev, unsigned axis)
++static bool degauss_controller_negative_axis(int dev, unsigned axis, int source_dev)
 +{
 +	if (!menu_degauss_controls_active() || user_io_osd_is_visible()) return false;
++	if (degauss_controller_capture && dev == degauss_controller_capture_device
++		&& source_dev >= 0 && static_cast<unsigned>(source_dev) < degauss_controller_capture_negative_axes.size()
++		&& axis < degauss_controller_capture_negative_axes[source_dev].size())
++		return degauss_controller_capture_negative_axes[source_dev][axis];
 +	const auto *profile = degauss_controller_profiles.find(degauss_controller_identity(dev));
 +	return profile && profile->contains(KEY_EMU + axis * 2);
++}
++
++static bool degauss_controller_prepare_capture_axes(int dev, unsigned threshold_percent, std::string &error)
++{
++	degauss_controller_capture_negative_axes = {};
++	for (int node = 0; node < NUMDEV; ++node) if (pool[node].fd >= 0 && !input[node].mouse
++		&& (node == dev || input[node].bind == dev)) {
++		unsigned char axes[(ABS_CNT + 7) / 8] = {};
++		if (ioctl(pool[node].fd, EVIOCGBIT(EV_ABS, sizeof(axes)), axes) < 0) {
++			error = std::string("Reading controller axis capabilities: ") + strerror(errno);
++			return false;
++		}
++		for (unsigned axis = 0; axis < ABS_CNT; ++axis) if (test_bit(axis, axes)) {
++			input_absinfo info{};
++			if (ioctl(pool[node].fd, EVIOCGABS(axis), &info) < 0) {
++				error = std::string("Reading controller axis position: ") + strerror(errno);
++				return false;
++			}
++			if (info.maximum <= info.minimum) continue;
++			const int64_t range = static_cast<int64_t>(info.maximum) - info.minimum + 1;
++			const int64_t center = info.minimum + range / 2;
++			const int64_t threshold = range * threshold_percent / 200;
++			// Observe the resting position before capture: an unmapped centered
++			// stick needs both edges, while a resting trigger stays one-sided.
++			if (info.value > info.minimum && info.value < info.maximum
++				&& info.value >= center - threshold && info.value <= center + threshold)
++				degauss_controller_capture_negative_axes[node][axis] = true;
++		}
++	}
++	return true;
 +}
 +
 +static bool degauss_controller_custom_key(int dev, uint16_t code, int value)
@@ -5602,6 +5637,7 @@ index f7d0ad1..6caa63a 100644
 +	degauss_controller_capture = 0;
 +	degauss_controller_capture_device = -1;
 +	degauss_controller_capture_code = 0;
++	degauss_controller_capture_negative_axes = {};
 +	degauss_controller_capture_identity.clear();
 +}
 +
@@ -5715,6 +5751,11 @@ index f7d0ad1..6caa63a 100644
 +			return;
 +		}
 +		degauss_controller_cancel_capture();
++		std::string error;
++		if (!degauss_controller_prepare_capture_axes(instance, cfg.dpad_threshold, error)) {
++			degauss_controller_error(token, error);
++			return;
++		}
 +		degauss_controller_capture = token;
 +		degauss_controller_capture_device = instance;
 +		degauss_controller_capture_identity = degauss_controller_identity(instance);
@@ -5745,7 +5786,7 @@ index f7d0ad1..6caa63a 100644
  
  static int kbd_toggle = 0;
  
-@@ -2959,6 +3344,7 @@ static void assign_player(int dev, int num, int force = 0)
+@@ -2959,6 +3385,7 @@ static void assign_player(int dev, int num, int force = 0)
  	printf("Device %s %sassigned to player %d\n", input[dev].id, force ? "forcebly " : "", input[dev].num);
  }
  
@@ -5753,7 +5794,7 @@ index f7d0ad1..6caa63a 100644
  static void input_cb(struct input_event *ev, struct input_absinfo *absinfo, int dev, bool menu_event)
  {
  	if (ev->type != EV_KEY && ev->type != EV_ABS && ev->type != EV_REL) return;
-@@ -3013,6 +3399,7 @@ static void input_cb(struct input_event *ev, struct input_absinfo *absinfo, int
+@@ -3013,6 +3440,7 @@ static void input_cb(struct input_event *ev, struct input_absinfo *absinfo, int
  
  	if (ev->type == EV_KEY && ev->code < 256 && !(mapping && mapping_type == 2) && !input[dev].force_joy)
  	{
@@ -5761,7 +5802,7 @@ index f7d0ad1..6caa63a 100644
  		if (!input[dev].has_kbdmap)
  		{
  			if (!FileLoadConfig(get_kbdmap_name(dev), &input[dev].kbdmap, sizeof(input[dev].kbdmap)))
-@@ -3099,6 +3486,7 @@ static void input_cb(struct input_event *ev, struct input_absinfo *absinfo, int
+@@ -3099,6 +3527,7 @@ static void input_cb(struct input_event *ev, struct input_absinfo *absinfo, int
  			}
  		}
  		input[dev].has_mmap++;
@@ -5769,7 +5810,7 @@ index f7d0ad1..6caa63a 100644
  	}
  
  	if (!input[dev].has_map)
-@@ -3661,6 +4049,12 @@ static void input_cb(struct input_event *ev, struct input_absinfo *absinfo, int
+@@ -3661,6 +4090,12 @@ static void input_cb(struct input_event *ev, struct input_absinfo *absinfo, int
  
  				if (user_io_osd_is_visible() || video_fb_state())
  				{
@@ -5782,7 +5823,7 @@ index f7d0ad1..6caa63a 100644
  					if (ev->value <= 1)
  					{
  						if ((input[dev].mmap[SYS_BTN_MENU_FUNC] & 0xFFFF) ?
-@@ -5619,6 +6013,7 @@ int input_test(int getchar)
+@@ -5619,6 +6054,7 @@ int input_test(int getchar)
  			unflag_players();
  		}
  		cur_leds |= 0x80;
@@ -5790,15 +5831,23 @@ index f7d0ad1..6caa63a 100644
  		state++;
  	}
  
-@@ -6159,6 +6554,7 @@ int input_test(int getchar)
+@@ -6131,6 +6567,7 @@ int input_test(int getchar)
+ 									}
+ 								}
+ 
++								const int degauss_source_dev = i;
+ 								// redirect further actions to left joycon in combined mode
+ 								if (JOYCON_COMBINED(i))
+ 								{
+@@ -6159,6 +6596,7 @@ int input_test(int getchar)
  
  										int only_max = 1;
  										for (int n = 0; n < 4; n++) if (input[dev].mmap[SYS_AXIS1_X + n] && ((input[dev].mmap[SYS_AXIS1_X + n] & 0xFFFF) == ev.code)) only_max = 0;
-+										if (degauss_controller_negative_axis(dev, ev.code)) only_max = 0;
++										if (degauss_controller_negative_axis(dev, ev.code, degauss_source_dev)) only_max = 0;
  
  										if (ev.value < center - treshold && !only_max) axis_edge = 1;
  										if (ev.value > center + treshold) axis_edge = 2;
-@@ -6294,6 +6690,7 @@ int input_test(int getchar)
+@@ -6294,6 +6732,7 @@ int input_test(int getchar)
  					cmd[len] = 0;
  					printf("MiSTer_cmd: %s\n", cmd);
  					if (!strncmp(cmd, "fb_cmd", 6)) video_cmd(cmd);
@@ -5806,7 +5855,7 @@ index f7d0ad1..6caa63a 100644
  					else if (!strcmp(cmd, "fb_mask off")) video_set_degauss_display_mask(nullptr);
  					else if (!strncmp(cmd, "fb_mask ", 8)) video_set_degauss_display_mask(cmd + 8);
  					else if (!strncmp(cmd, "fb_degauss ", 11))
-@@ -6507,6 +6904,7 @@ int input_poll(int getchar)
+@@ -6507,6 +6946,7 @@ int input_poll(int getchar)
  	#ifdef PROFILING
  		PROFILE_FUNCTION();
  	#endif
@@ -5844,10 +5893,10 @@ index 0a45871..54c84bb 100644
  void PrintDirectory(int expand = 0);
  void ScrollLongName(void);
 diff --git a/support/degauss/README.md b/support/degauss/README.md
-index 18016de..3642826 100644
+index 18016de..57216c1 100644
 --- a/support/degauss/README.md
 +++ b/support/degauss/README.md
-@@ -20,6 +20,20 @@ read its shortcut configuration.
+@@ -20,6 +20,22 @@ read its shortcut configuration.
  - Exiting the frontend opens the native core chooser at the root when the
    private Degauss Menu core is active. Ordinary core and MRA locations are unchanged.
  
@@ -5862,6 +5911,8 @@ index 18016de..3642826 100644
 +D-pad, mouse-navigation and stick alternatives. They are validated before activation and do not merge
 +later native mapping changes. Native mode continues to follow MiSTer's mapping.
 +Profiles stop applying when the native OSD, a script or a game owns input.
++Capture observes resting axis positions so centered sticks can use either
++direction without native calibration, while resting triggers stay one-sided.
 +The active-controller report lets the frontend display the effective bindings
 +and avoid reading keyboard-style controller events a second time.
 +
@@ -6106,10 +6157,10 @@ index 0000000..41208c3
 +}
 diff --git a/tests/run-degauss-controls-tests.py b/tests/run-degauss-controls-tests.py
 new file mode 100644
-index 0000000..714d9ec
+index 0000000..0db5edc
 --- /dev/null
 +++ b/tests/run-degauss-controls-tests.py
-@@ -0,0 +1,421 @@
+@@ -0,0 +1,515 @@
 +#!/usr/bin/env python3
 +"""Validate controller profile compatibility and Main's frontend-only hooks."""
 +
@@ -6148,7 +6199,84 @@ index 0000000..714d9ec
 +assert "uinp_send_key" in custom and ".mmap[" not in custom
 +negative_start = source.index("static bool degauss_controller_negative_axis(")
 +negative = source[negative_start:source.index("\n}\n", negative_start) + 3]
-+assert "degauss_controller_negative_axis(dev, ev.code)" in source
++assert "degauss_controller_negative_axis(dev, ev.code, degauss_source_dev)" in source
++assert source.index("const int degauss_source_dev = i;") < source.index("// redirect further actions to left joycon in combined mode")
++config_threshold = "int treshold = (range * cfg.dpad_threshold) / 200;" in source
++fixed_threshold = "int treshold = range / 4;" in source
++assert config_threshold != fixed_threshold
++threshold_argument = "cfg.dpad_threshold" if config_threshold else "50"
++assert f"degauss_controller_prepare_capture_axes(instance, {threshold_argument}, error)" in source
++axes_start = source.index("static bool degauss_controller_prepare_capture_axes(")
++capture_axes = source[axes_start:source.index("\n}\n", axes_start) + 3]
++axes_harness = r'''
++#include <array>
++#include <cassert>
++#include <cerrno>
++#include <cstdint>
++#include <cstring>
++#include <string>
++#include <linux/input.h>
++#define NUMDEV 3
++static std::array<std::array<bool, ABS_CNT>, NUMDEV> degauss_controller_capture_negative_axes{};
++static struct { int fd; } pool[NUMDEV] = {{0}, {1}, {2}};
++static struct { bool mouse; int bind; } input[NUMDEV] = {{false,-1}, {false,0}, {false,-1}};
++static int rest_value = 128;
++static bool failed_read = false;
++static bool test_bit(unsigned axis, const unsigned char *bits) { return bits[axis / 8] & (1u << (axis % 8)); }
++static int capture_ioctl(int fd, unsigned long request, void *output) {
++    assert(fd != 2); // another controller's neutral positions cannot affect capture
++    if (failed_read) { errno = ENODEV; return -1; }
++    if (request == EVIOCGBIT(EV_ABS, (ABS_CNT + 7) / 8)) {
++        auto *bits = static_cast<unsigned char *>(output);
++        if (!fd) for (unsigned axis : {0u,1u,2u,3u,5u,16u}) bits[axis/8] |= 1u << (axis%8);
++        else { bits[0] |= 1u; bits[4/8] |= 1u << (4%8); }
++        return 0;
++    }
++    auto *info = static_cast<input_absinfo *>(output);
++    if (request == EVIOCGABS(0)) *info = {fd ? 0 : rest_value,0,255,0,0,0};
++    else if (request == EVIOCGABS(1)) *info = {0,-32768,32767,0,0,0};
++    else if (request == EVIOCGABS(2)) *info = {0,0,255,0,0,0};
++    else if (request == EVIOCGABS(3)) *info = {0,0,0,0,0,0};
++    else if (request == EVIOCGABS(4)) *info = {0,-100,100,0,0,0};
++    else if (request == EVIOCGABS(5)) *info = {255,0,255,0,0,0};
++    else if (request == EVIOCGABS(16)) *info = {0,-1,1,0,0,0};
++    else return -1;
++    return 0;
++}
++#define ioctl capture_ioctl
++'''
++axes_cases = r'''
++int main() {
++    std::string error;
++    assert(degauss_controller_prepare_capture_axes(0, 50, error));
++    assert(degauss_controller_capture_negative_axes[0][0]); // unsigned centered stick, no native axis mapping
++    assert(degauss_controller_capture_negative_axes[0][1]); // signed centered stick
++    assert(degauss_controller_capture_negative_axes[1][4]); // bound node belongs to the same controller
++    assert(!degauss_controller_capture_negative_axes[1][0]); // same ABS code on a bound trigger cannot inherit the stick's center
++    assert(degauss_controller_capture_negative_axes[0][16]); // centered hat remains two-sided
++    assert(!degauss_controller_capture_negative_axes[0][2]); // zero-rest trigger cannot become a negative press
++    assert(!degauss_controller_capture_negative_axes[0][5]); // maximum-rest trigger also remains one-sided
++    assert(!degauss_controller_capture_negative_axes[0][3]); // invalid range is not a centered axis
++    rest_value = 160;
++    assert(degauss_controller_prepare_capture_axes(0, 10, error));
++    assert(!degauss_controller_capture_negative_axes[0][0]); // native sensitivity controls its center window
++    assert(degauss_controller_prepare_capture_axes(0, 50, error));
++    assert(degauss_controller_capture_negative_axes[0][0]);
++    rest_value = 0;
++    assert(degauss_controller_prepare_capture_axes(0, 50, error));
++    assert(!degauss_controller_capture_negative_axes[0][0]); // every capture observes fresh resting state
++    failed_read = true;
++    assert(!degauss_controller_prepare_capture_axes(0, 50, error));
++    assert(error == std::string("Reading controller axis capabilities: ") + strerror(ENODEV));
++}
++'''
++with tempfile.TemporaryDirectory(prefix="degauss-control-axis-capture-") as temporary:
++    unit = Path(temporary) / "axes.cpp"
++    unit.write_text(axes_harness + capture_axes + axes_cases)
++    binary = Path(temporary) / "axes"
++    subprocess.run(["c++", "-std=c++14", "-Wall", "-Wextra", "-Werror",
++                    "-fsanitize=address,undefined", str(unit), "-o", str(binary)], check=True)
++    subprocess.run([str(binary)], check=True)
 +menu = (ROOT / "menu.cpp").read_text()
 +predicate_start = menu.index("bool menu_degauss_controls_active()")
 +predicate = menu[predicate_start:menu.index("\n}", predicate_start)]
@@ -6227,6 +6355,9 @@ index 0000000..714d9ec
 +#include <utility>
 +static degauss_controls::Store degauss_controller_profiles;
 +static bool frontend = true, osd = false;
++static unsigned degauss_controller_capture = 0;
++static int degauss_controller_capture_device = -1;
++static std::array<std::array<bool, 64>, 2> degauss_controller_capture_negative_axes{};
 +static bool menu_degauss_controls_active() { return frontend; }
 +static bool user_io_osd_is_visible() { return osd; }
 +static std::string degauss_controller_identity(int dev) { return dev ? "other" : "pad"; }
@@ -6242,6 +6373,17 @@ index 0000000..714d9ec
 +'''
 +checks = r'''
 +int main() {
++    degauss_controller_capture = 123456789;
++    degauss_controller_capture_device = 0;
++    degauss_controller_capture_negative_axes[0][0] = true;
++    assert(degauss_controller_negative_axis(0, 0, 0)); // centered axis can first be captured leftward without a native mapping
++    assert(!degauss_controller_negative_axis(0, 0, 1)); // a bound trigger using the same ABS code stays one-sided
++    assert(!degauss_controller_negative_axis(1, 0, 1)); // no policy change for another controller
++    assert(!degauss_controller_negative_axis(0, 2, 0)); // resting unipolar trigger stays one-sided
++    frontend = false; assert(!degauss_controller_negative_axis(0, 0, 0));
++    frontend = true; osd = true; assert(!degauss_controller_negative_axis(0, 0, 0));
++    osd = false; degauss_controller_capture = 0;
++    assert(!degauss_controller_negative_axis(0, 0, 0)); // no lasting native-axis policy change after capture
 +    assert(!degauss_controller_custom_key(0, 10, 1));
 +    auto data = degauss_controls::reply("DGCP");
 +    degauss_controls::word(data, 1);
@@ -6259,13 +6401,16 @@ index 0000000..714d9ec
 +    }
 +    std::string error;
 +    assert(degauss_controller_profiles.read(data, error));
++    degauss_controller_capture = 123456789;
++    assert(!degauss_controller_negative_axis(0, 3, 1)); // capture uses this source's rest state, not a saved stick on another bound node
++    degauss_controller_capture = 0;
 +    assert(!degauss_controller_custom_key(1, 300, 1));
 +    frontend = false;
 +    assert(!degauss_controller_custom_key(0, 300, 1));
-+    assert(!degauss_controller_negative_axis(0, 3));
++    assert(!degauss_controller_negative_axis(0, 3, 0));
 +    frontend = true; osd = true;
 +    assert(!degauss_controller_custom_key(0, 300, 1));
-+    assert(!degauss_controller_negative_axis(0, 3));
++    assert(!degauss_controller_negative_axis(0, 3, 0));
 +    osd = false;
 +    assert(events.empty());
 +    for (unsigned role = 0; role < 10; ++role) {
@@ -6280,8 +6425,8 @@ index 0000000..714d9ec
 +    assert(degauss_controller_custom_key(0, 300, 2));
 +    assert(events.size() == count);
 +    input[0].mmap[0] = 0x20000 | 4;
-+    assert(degauss_controller_negative_axis(0, 3)); // saved stick remains two-sided after native axes change
-+    assert(!degauss_controller_negative_axis(1, 3)); // never changes another controller's native axis policy
++    assert(degauss_controller_negative_axis(0, 3, 0)); // saved stick remains two-sided after native axes change
++    assert(!degauss_controller_negative_axis(1, 3, 1)); // never changes another controller's native axis policy
 +    assert(degauss_controller_custom_key(0, KEY_EMU + 6, 1));
 +    assert(events.back() == std::make_pair(KEY_LEFT, 1));
 +    assert(degauss_controller_custom_key(0, KEY_EMU + 7, 0));

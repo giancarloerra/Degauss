@@ -47,7 +47,15 @@ impl App {
 
     fn controller_error(&mut self, detail: String) {
         crate::note(&format!("controller   {detail}"));
-        self.add_to_message(format!("Controller settings failed: {detail}"));
+        let error = format!("Controller settings failed: {detail}");
+        if self
+            .message
+            .as_ref()
+            .is_some_and(|message| message.split("\n\n").any(|part| part == error))
+        {
+            return;
+        }
+        self.add_to_message(error);
     }
 
     fn invalidate_controller_report(&mut self) {
@@ -769,11 +777,12 @@ fn test_controller_menu_flow(app: &mut App) {
     app.pending = Some(Pending::Exit);
     app.message = Some("Exit Degauss?".into());
     app.controller_error("Controller disconnected".into());
+    app.controller_error("Controller disconnected".into());
     assert_eq!(app.pending, Some(Pending::Exit));
     assert_eq!(
         app.message.as_deref(),
         Some("Exit Degauss?\n\nController settings failed: Controller disconnected"),
-        "a controller error cannot hide the question whose action is pending"
+        "a repeated hotplug error appears once without hiding the pending question"
     );
     assert!(app.handle(Action::Quit).is_none());
     assert!(app.pending.is_none() && app.message.is_none());

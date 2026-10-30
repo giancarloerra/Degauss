@@ -179,7 +179,8 @@ anything. Hold the displayed Back control for two seconds to leave, or press
 Escape on an ordinary keyboard. Ordinary keyboard arrows scroll the tester's rows.
 
 Choose **Remap Degauss Controls** to assign directions, Select, Back, Actions,
-Menu and page controls for Degauss only. Select a row, then press and release a
+Menu and page controls for Degauss only. Let sticks and triggers rest before
+selecting a row, then press and release a
 button or move an axis. Setting a row replaces its controls. Holding that control
 for two seconds cancels capture; ordinary keyboard Escape also cancels. **X Clear**
 unassigns an optional action. Directions,
