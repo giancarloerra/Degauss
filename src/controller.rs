@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 use serde::{Deserialize, Serialize};
 
 pub const ROLE_COUNT: usize = 10;
-const VERSION: u16 = 2;
+const VERSION: u16 = 3;
 const MAX_DEVICES: usize = 30;
 static SEQUENCE: AtomicU32 = AtomicU32::new(0);
 
@@ -93,7 +93,7 @@ pub struct Profile {
     #[serde(default)]
     pub custom: bool,
     /// Complete saved controls. Empty optional rows are explicitly unassigned.
-    /// Directions may retain the native D-pad and stick binding copied at setup.
+    /// Directions retain native D-pad, mouse-navigation and stick bindings.
     #[serde(default)]
     pub bindings: BTreeMap<Control, Vec<Binding>>,
 }
@@ -102,27 +102,7 @@ impl Profile {
     pub fn from_device(device: &Device) -> Self {
         let bindings = Control::ALL
             .into_iter()
-            .map(|role| {
-                let at = role.index();
-                let code = device.native[at];
-                let mut bindings = Vec::new();
-                if code != 0 {
-                    bindings.push(Binding {
-                        code,
-                        label: device.native_labels[at].clone(),
-                    });
-                }
-                if at < 4 {
-                    let code = device.native_alternates[at];
-                    if code != 0 && !bindings.iter().any(|binding| binding.code == code) {
-                        bindings.push(Binding {
-                            code,
-                            label: device.native_alternate_labels[at].clone(),
-                        });
-                    }
-                }
-                (role, bindings)
-            })
+            .map(|role| (role, device.native[role.index()].clone()))
             .collect();
         Self {
             custom: true,
@@ -143,7 +123,7 @@ impl Profile {
             if role.required() && bindings.is_empty() {
                 return Err(format!("{} must have a control", role.label()));
             }
-            if bindings.len() > if role.index() < 4 { 2 } else { 1 } {
+            if bindings.len() > if role.index() < 4 { 3 } else { 1 } {
                 return Err(format!("Too many bindings for {}", role.label()));
             }
             for binding in bindings {
@@ -175,11 +155,8 @@ pub struct Device {
     pub id: String,
     pub name: String,
     pub paths: Vec<PathBuf>,
-    pub native: [u16; ROLE_COUNT],
-    pub native_alternates: [u16; 4],
+    pub native: [Vec<Binding>; ROLE_COUNT],
     pub effective: [u16; ROLE_COUNT],
-    pub native_labels: [String; ROLE_COUNT],
-    pub native_alternate_labels: [String; 4],
     pub labels: [String; ROLE_COUNT],
 }
 
@@ -327,21 +304,22 @@ pub fn parse_reply(bytes: &[u8]) -> io::Result<Reply> {
                     }
                     paths.push(path);
                 }
-                let native = reader.controls()?;
-                let mut native_alternates = [0; 4];
-                for code in &mut native_alternates {
-                    *code = reader.word()?;
+                let mut native: [Vec<Binding>; ROLE_COUNT] = std::array::from_fn(|_| Vec::new());
+                for (role, bindings) in native.iter_mut().enumerate() {
+                    let count = reader.word()? as usize;
+                    if count > if role < 4 { 3 } else { 1 } {
+                        return Err(invalid("invalid native binding count"));
+                    }
+                    for _ in 0..count {
+                        let code = reader.word()?;
+                        let label = reader.text()?;
+                        if code == 0 || label.is_empty() || label.len() > 48 {
+                            return Err(invalid("invalid native binding"));
+                        }
+                        bindings.push(Binding { code, label });
+                    }
                 }
                 let effective = reader.controls()?;
-                let mut native_labels: [String; ROLE_COUNT] =
-                    std::array::from_fn(|_| String::new());
-                for label in &mut native_labels {
-                    *label = reader.text()?;
-                }
-                let mut native_alternate_labels = std::array::from_fn(|_| String::new());
-                for label in &mut native_alternate_labels {
-                    *label = reader.text()?;
-                }
                 let mut labels: [String; ROLE_COUNT] = std::array::from_fn(|_| String::new());
                 for label in &mut labels {
                     *label = reader.text()?;
@@ -361,10 +339,7 @@ pub fn parse_reply(bytes: &[u8]) -> io::Result<Reply> {
                     name,
                     paths,
                     native,
-                    native_alternates,
                     effective,
-                    native_labels,
-                    native_alternate_labels,
                     labels,
                 });
             }
@@ -530,7 +505,7 @@ fn exchange_cancellable(fifo: &Path, request: Request, cancel: &AtomicBool) -> i
                 cancel_sent = true;
             }
             match std::fs::read(&status) {
-                Ok(bytes) if bytes == b"DGCB\x02\0" && operation.starts_with("capture ") => {
+                Ok(bytes) if bytes == b"DGCB\x03\0" && operation.starts_with("capture ") => {
                     capture_started = true
                 }
                 Ok(bytes) => {
@@ -710,12 +685,14 @@ pub(crate) mod tests {
             id: "pad".into(),
             name: "Controller".into(),
             paths: vec!["/dev/input/event3".into()],
-            native: [10, 11, 12, 13, 14, 15, 16, 17, 18, 19],
-            native_alternates: [0; 4],
+            native: std::array::from_fn(|role| {
+                vec![Binding {
+                    code: 10 + role as u16,
+                    label: ["Up", "Down", "Left", "Right", "A", "B", "X", "Y", "L", "R"][role]
+                        .into(),
+                }]
+            }),
             effective: [10, 11, 12, 13, 18, 19, 16, 17, 300, 301],
-            native_labels: ["Up", "Down", "Left", "Right", "A", "B", "X", "Y", "L", "R"]
-                .map(str::to_owned),
-            native_alternate_labels: std::array::from_fn(|_| "Unassigned".into()),
             labels: [
                 "Up",
                 "Down",
@@ -755,9 +732,9 @@ pub(crate) mod tests {
             out.extend(text.as_bytes());
         }
         let mut bytes = if active {
-            b"DGCR\x02\0".to_vec()
+            b"DGCR\x03\0".to_vec()
         } else {
-            b"DGCS\x02\0".to_vec()
+            b"DGCS\x03\0".to_vec()
         };
         if active {
             bytes.extend(device.instance.to_le_bytes());
@@ -777,20 +754,17 @@ pub(crate) mod tests {
         for path in &device.paths {
             text(&mut bytes, path.to_str().unwrap());
         }
-        for code in device
-            .native
-            .into_iter()
-            .chain(device.native_alternates)
-            .chain(device.effective)
-        {
+        for bindings in &device.native {
+            bytes.extend((bindings.len() as u16).to_le_bytes());
+            for binding in bindings {
+                bytes.extend(binding.code.to_le_bytes());
+                text(&mut bytes, &binding.label);
+            }
+        }
+        for code in device.effective {
             bytes.extend(code.to_le_bytes());
         }
-        for label in device
-            .native_labels
-            .iter()
-            .chain(&device.native_alternate_labels)
-            .chain(&device.labels)
-        {
+        for label in &device.labels {
             text(&mut bytes, label);
         }
         bytes
@@ -817,13 +791,13 @@ pub(crate) mod tests {
             }
         );
         assert_eq!(
-            parse_reply(b"DGCR\x02\0\xff\xff\0\0\0\0").unwrap(),
+            parse_reply(b"DGCR\x03\0\xff\xff\0\0\0\0").unwrap(),
             Reply::Active {
                 instance: None,
                 snapshot: Snapshot::default()
             }
         );
-        assert!(parse_reply(b"DGCR\x02\0\x01\0\0\0\0\0").is_err());
+        assert!(parse_reply(b"DGCR\x03\0\x01\0\0\0\0\0").is_err());
     }
 
     #[cfg(unix)]
@@ -878,15 +852,15 @@ pub(crate) mod tests {
                     "apply" => {
                         let bytes =
                             std::fs::read(format!("/tmp/degauss-controller-{token}.data")).unwrap();
-                        assert_eq!(bytes, b"DGCP\x02\0\0\0");
-                        b"DGCA\x02\0".to_vec()
+                        assert_eq!(bytes, b"DGCP\x03\0\0\0");
+                        b"DGCA\x03\0".to_vec()
                     }
                     "capture-cancel" => {
-                        status(token, b"DGCB\x02\0");
+                        status(token, b"DGCB\x03\0");
                         let mut cancel = String::new();
                         reader.read_line(&mut cancel).unwrap();
                         assert_eq!(cancel, format!("degauss_controller {token} cancel\n"));
-                        b"DGCX\x02\0".to_vec()
+                        b"DGCX\x03\0".to_vec()
                     }
                     _ => b"error The selected controller disconnected\n".to_vec(),
                 };
@@ -945,7 +919,7 @@ pub(crate) mod tests {
         assert_eq!(profile.bindings[&Control::Select][0].code, 14);
         assert_eq!(
             runtime_profiles(&[("pad".into(), profile)].into()).unwrap(),
-            b"DGCP\x02\0\0\0"
+            b"DGCP\x03\0\0\0"
         );
     }
 
@@ -963,8 +937,8 @@ pub(crate) mod tests {
         assert_eq!(profile.bindings[&Control::Back][0].code, 15);
         assert_eq!(profile.validate(), Ok(()));
         let before = runtime_profiles(&[(device.id.clone(), profile.clone())].into()).unwrap();
-        device.native[Control::Back.index()] = 100;
-        device.native_labels[Control::Select.index()] = "R".into();
+        device.native[Control::Back.index()][0].code = 100;
+        device.native[Control::Select.index()][0].label = "R".into();
         assert_eq!(
             runtime_profiles(&[(device.id.clone(), profile.clone())].into()).unwrap(),
             before
@@ -994,19 +968,43 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn complete_profiles_preserve_stick_alternatives_and_explicit_unassignment() {
+    fn complete_profiles_preserve_all_native_directions_and_explicit_unassignment() {
         let mut device = device();
-        device.native_alternates = [770, 771, 768, 769];
-        device.native_alternate_labels =
-            ["Axis 1 -", "Axis 1 +", "Axis 0 -", "Axis 0 +"].map(str::to_owned);
+        for (at, code) in [770, 771, 768, 769].into_iter().enumerate() {
+            device.native[at].push(Binding {
+                code: 100 + at as u16,
+                label: "Mouse direction".into(),
+            });
+            device.native[at].push(Binding {
+                code,
+                label: "Stick direction".into(),
+            });
+        }
         let mut profile = Profile::from_device(&device);
-        assert_eq!(profile.bindings[&Control::Up].len(), 2);
-        assert_eq!(profile.bindings[&Control::Up][1].code, 770);
+        assert_eq!(profile.bindings[&Control::Up].len(), 3);
+        assert_eq!(profile.bindings[&Control::Up][2].code, 770);
+        assert_eq!(
+            parse_reply(&snapshot_bytes(&device, false)).unwrap(),
+            Reply::Snapshot(Snapshot {
+                generation: 42,
+                devices: vec![device]
+            })
+        );
         profile.bindings.insert(Control::Actions, Vec::new());
         assert_eq!(profile.validate(), Ok(()));
         let text = toml::to_string(&profile).unwrap();
         assert_eq!(toml::from_str::<Profile>(&text).unwrap(), profile);
         assert!(profile.bindings[&Control::Actions].is_empty());
+        profile
+            .bindings
+            .get_mut(&Control::Up)
+            .unwrap()
+            .push(Binding {
+                code: 900,
+                label: "Fourth".into(),
+            });
+        assert!(profile.validate().unwrap_err().contains("Too many"));
+        profile.bindings.get_mut(&Control::Up).unwrap().pop();
         profile.bindings.remove(&Control::Menu);
         assert!(profile.validate().unwrap_err().contains("missing"));
     }
@@ -1016,13 +1014,14 @@ pub(crate) mod tests {
         for bytes in [
             &b""[..],
             &b"DGCS\x01\0\0\0"[..],
-            &b"DGCS\x02\0\0\0\x1f\0"[..],
-            &b"DGCA\x02\0x"[..],
+            &b"DGCS\x02\0\0\0\0\0"[..],
+            &b"DGCS\x03\0\0\0\x1f\0"[..],
+            &b"DGCA\x03\0x"[..],
         ] {
             assert!(parse_reply(bytes).is_err());
         }
         assert_eq!(
-            parse_reply(b"DGCS\x02\0\0\0\0\0").unwrap(),
+            parse_reply(b"DGCS\x03\0\0\0\0\0").unwrap(),
             Reply::Snapshot(Snapshot::default())
         );
         assert!(parse_reply(b"error Degauss controls are not active\n")

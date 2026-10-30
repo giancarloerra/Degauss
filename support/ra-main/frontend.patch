@@ -5343,7 +5343,7 @@ index 0000000..559be2a
 +MENU_59.9i=145622662586
 +NES_60.1s=113492149000
 diff --git a/input.cpp b/input.cpp
-index f7d0ad1..cb77260 100644
+index f7d0ad1..6caa63a 100644
 --- a/input.cpp
 +++ b/input.cpp
 @@ -39,6 +39,7 @@
@@ -5354,7 +5354,7 @@ index f7d0ad1..cb77260 100644
  #include "offload.h"
  
  #define NUMDEV 30
-@@ -2032,6 +2033,386 @@ static int keyrah_trans(int key, int press)
+@@ -2032,6 +2033,390 @@ static int keyrah_trans(int key, int press)
  }
  
  static void input_cb(struct input_event *ev, struct input_absinfo *absinfo, int dev, bool menu_event = false);
@@ -5405,39 +5405,6 @@ index f7d0ad1..cb77260 100644
 +	return id;
 +}
 +
-+static degauss_controls::Bindings degauss_controller_native(int dev)
-+{
-+	const uint32_t *map = input[dev].mmap;
-+	auto result = degauss_controls::Bindings{{static_cast<uint16_t>(map[SYS_BTN_UP]), static_cast<uint16_t>(map[SYS_BTN_DOWN]),
-+		static_cast<uint16_t>(map[SYS_BTN_LEFT]), static_cast<uint16_t>(map[SYS_BTN_RIGHT]),
-+		static_cast<uint16_t>((map[SYS_BTN_MENU_FUNC] & 0xFFFF) ? map[SYS_BTN_MENU_FUNC] : map[SYS_BTN_A]),
-+		static_cast<uint16_t>((map[SYS_BTN_MENU_FUNC] >> 16) ? (map[SYS_BTN_MENU_FUNC] >> 16) : map[SYS_BTN_B]),
-+		static_cast<uint16_t>(map[SYS_BTN_X]), static_cast<uint16_t>(map[SYS_BTN_Y]),
-+		static_cast<uint16_t>(map[SYS_BTN_L]), static_cast<uint16_t>(map[SYS_BTN_R])}};
-+	if (input[dev].quirk != QUIRK_WHEEL) {
-+		const uint16_t x = map[SYS_AXIS_X] && static_cast<uint16_t>(map[SYS_AXIS_X]) < ABS_CNT ? KEY_EMU + static_cast<uint16_t>(map[SYS_AXIS_X]) * 2 : 0;
-+		const uint16_t y = map[SYS_AXIS_Y] && static_cast<uint16_t>(map[SYS_AXIS_Y]) < ABS_CNT ? KEY_EMU + static_cast<uint16_t>(map[SYS_AXIS_Y]) * 2 : 0;
-+		if (!result[degauss_controls::UP]) result[degauss_controls::UP] = y;
-+		if (!result[degauss_controls::DOWN] && y) result[degauss_controls::DOWN] = y + 1;
-+		if (!result[degauss_controls::LEFT]) result[degauss_controls::LEFT] = x;
-+		if (!result[degauss_controls::RIGHT] && x) result[degauss_controls::RIGHT] = x + 1;
-+	}
-+	// Match the native handler's priority, including Menu OK/Back overrides.
-+	// A shoulder used for OK cannot also reach its lower-priority page action.
-+	const unsigned priority[] = {degauss_controls::SELECT, degauss_controls::BACK,
-+		degauss_controls::ACTIONS, degauss_controls::MENU, degauss_controls::PAGE_PREVIOUS,
-+		degauss_controls::PAGE_NEXT, degauss_controls::RIGHT, degauss_controls::LEFT,
-+		degauss_controls::DOWN, degauss_controls::UP};
-+	for (unsigned at = 0; at < degauss_controls::ROLE_COUNT; ++at) {
-+		const unsigned role = priority[at];
-+		if (role < degauss_controls::SELECT && result[role]
-+			&& (result[role] == map[SYS_BTN_START] || result[role] == map[SYS_BTN_SELECT])) result[role] = 0;
-+		for (unsigned previous = 0; previous < at; ++previous)
-+			if (result[role] && result[role] == result[priority[previous]]) result[role] = 0;
-+	}
-+	return result;
-+}
-+
 +static std::array<uint16_t, 4> degauss_controller_native_alternates(int dev)
 +{
 +	std::array<uint16_t, 4> result{};
@@ -5451,12 +5418,45 @@ index f7d0ad1..cb77260 100644
 +			result[role + 1] = result[role] + 1;
 +		}
 +	}
-+	const auto primary = degauss_controller_native(dev);
-+	for (unsigned role = 0; role < result.size(); ++role) if (result[role]) {
-+		if (result[role] == input[dev].mmap[SYS_BTN_START] || result[role] == input[dev].mmap[SYS_BTN_SELECT]) result[role] = 0;
-+		for (unsigned other = 0; other < primary.size(); ++other)
-+			if (other != role && result[role] == primary[other]) result[role] = 0;
-+	}
++	return result;
++}
++
++using DegaussNativeControls = std::array<std::array<uint16_t, degauss_controls::DIRECTION_BINDINGS>, degauss_controls::ROLE_COUNT>;
++
++static DegaussNativeControls degauss_controller_native_controls(int dev)
++{
++	DegaussNativeControls result{};
++	unsigned counts[degauss_controls::ROLE_COUNT] = {};
++	const uint32_t *map = input[dev].mmap;
++	const auto add = [&](unsigned role, uint32_t code) {
++		if (!code || code > UINT16_MAX) return;
++		if (role < degauss_controls::SELECT && (code == map[SYS_BTN_START] || code == map[SYS_BTN_SELECT])) return;
++		for (const auto &bindings : result) for (auto previous : bindings) if (previous == code) return;
++		result[role][counts[role]++] = static_cast<uint16_t>(code);
++	};
++	// Preserve the native handler's priority and every reachable alternative.
++	add(degauss_controls::SELECT, (map[SYS_BTN_MENU_FUNC] & 0xFFFF) ? (map[SYS_BTN_MENU_FUNC] & 0xFFFF) : map[SYS_BTN_A]);
++	add(degauss_controls::BACK, (map[SYS_BTN_MENU_FUNC] >> 16) ? (map[SYS_BTN_MENU_FUNC] >> 16) : map[SYS_BTN_B]);
++	add(degauss_controls::ACTIONS, map[SYS_BTN_X]);
++	add(degauss_controls::MENU, map[SYS_BTN_Y]);
++	add(degauss_controls::PAGE_PREVIOUS, map[SYS_BTN_L]);
++	add(degauss_controls::PAGE_NEXT, map[SYS_BTN_R]);
++	const unsigned directions[] = {degauss_controls::RIGHT, degauss_controls::LEFT, degauss_controls::DOWN, degauss_controls::UP};
++	for (unsigned i = 0; i < 4; ++i) add(directions[i], map[i]);
++	for (unsigned i = 0; i < 4; ++i) add(directions[i], map[SYS_MS_RIGHT + i]);
++	const auto axes = degauss_controller_native_alternates(dev);
++	add(degauss_controls::LEFT, axes[degauss_controls::LEFT]);
++	add(degauss_controls::RIGHT, axes[degauss_controls::RIGHT]);
++	add(degauss_controls::UP, axes[degauss_controls::UP]);
++	add(degauss_controls::DOWN, axes[degauss_controls::DOWN]);
++	return result;
++}
++
++static degauss_controls::Bindings degauss_controller_native(int dev)
++{
++	const auto controls = degauss_controller_native_controls(dev);
++	degauss_controls::Bindings result{};
++	for (unsigned role = 0; role < result.size(); ++role) result[role] = controls[role][0];
 +	return result;
 +}
 +
@@ -5554,14 +5554,18 @@ index f7d0ad1..cb77260 100644
 +		&& (i == dev || input[i].bind == dev)) paths.push_back(input[i].devname);
 +	degauss_controls::word(out, paths.size());
 +	for (const auto &path : paths) degauss_controls::text(out, path);
-+	const auto native = degauss_controller_native(dev);
-+	const auto alternates = degauss_controller_native_alternates(dev);
++	const auto native = degauss_controller_native_controls(dev);
 +	const auto effective = degauss_controller_effective(dev);
-+	for (auto code : native) degauss_controls::word(out, code);
-+	for (auto code : alternates) degauss_controls::word(out, code);
++	for (const auto &role : native) {
++		unsigned count = 0;
++		for (auto code : role) if (code) ++count;
++		degauss_controls::word(out, count);
++		for (auto code : role) if (code) {
++			degauss_controls::word(out, code);
++			degauss_controls::text(out, degauss_controller_label(dev, code));
++		}
++	}
 +	for (auto code : effective) degauss_controls::word(out, code);
-+	for (auto code : native) degauss_controls::text(out, degauss_controller_label(dev, code));
-+	for (auto code : alternates) degauss_controls::text(out, degauss_controller_label(dev, code));
 +	for (unsigned role = 0; role < degauss_controls::ROLE_COUNT; ++role)
 +		degauss_controls::text(out, profile ? profile->label(role) : degauss_controller_label(dev, effective[role]));
 +}
@@ -5741,7 +5745,7 @@ index f7d0ad1..cb77260 100644
  
  static int kbd_toggle = 0;
  
-@@ -2959,6 +3340,7 @@ static void assign_player(int dev, int num, int force = 0)
+@@ -2959,6 +3344,7 @@ static void assign_player(int dev, int num, int force = 0)
  	printf("Device %s %sassigned to player %d\n", input[dev].id, force ? "forcebly " : "", input[dev].num);
  }
  
@@ -5749,7 +5753,7 @@ index f7d0ad1..cb77260 100644
  static void input_cb(struct input_event *ev, struct input_absinfo *absinfo, int dev, bool menu_event)
  {
  	if (ev->type != EV_KEY && ev->type != EV_ABS && ev->type != EV_REL) return;
-@@ -3013,6 +3395,7 @@ static void input_cb(struct input_event *ev, struct input_absinfo *absinfo, int
+@@ -3013,6 +3399,7 @@ static void input_cb(struct input_event *ev, struct input_absinfo *absinfo, int
  
  	if (ev->type == EV_KEY && ev->code < 256 && !(mapping && mapping_type == 2) && !input[dev].force_joy)
  	{
@@ -5757,7 +5761,7 @@ index f7d0ad1..cb77260 100644
  		if (!input[dev].has_kbdmap)
  		{
  			if (!FileLoadConfig(get_kbdmap_name(dev), &input[dev].kbdmap, sizeof(input[dev].kbdmap)))
-@@ -3099,6 +3482,7 @@ static void input_cb(struct input_event *ev, struct input_absinfo *absinfo, int
+@@ -3099,6 +3486,7 @@ static void input_cb(struct input_event *ev, struct input_absinfo *absinfo, int
  			}
  		}
  		input[dev].has_mmap++;
@@ -5765,7 +5769,7 @@ index f7d0ad1..cb77260 100644
  	}
  
  	if (!input[dev].has_map)
-@@ -3661,6 +4045,12 @@ static void input_cb(struct input_event *ev, struct input_absinfo *absinfo, int
+@@ -3661,6 +4049,12 @@ static void input_cb(struct input_event *ev, struct input_absinfo *absinfo, int
  
  				if (user_io_osd_is_visible() || video_fb_state())
  				{
@@ -5778,7 +5782,7 @@ index f7d0ad1..cb77260 100644
  					if (ev->value <= 1)
  					{
  						if ((input[dev].mmap[SYS_BTN_MENU_FUNC] & 0xFFFF) ?
-@@ -5619,6 +6009,7 @@ int input_test(int getchar)
+@@ -5619,6 +6013,7 @@ int input_test(int getchar)
  			unflag_players();
  		}
  		cur_leds |= 0x80;
@@ -5786,7 +5790,7 @@ index f7d0ad1..cb77260 100644
  		state++;
  	}
  
-@@ -6159,6 +6550,7 @@ int input_test(int getchar)
+@@ -6159,6 +6554,7 @@ int input_test(int getchar)
  
  										int only_max = 1;
  										for (int n = 0; n < 4; n++) if (input[dev].mmap[SYS_AXIS1_X + n] && ((input[dev].mmap[SYS_AXIS1_X + n] & 0xFFFF) == ev.code)) only_max = 0;
@@ -5794,7 +5798,7 @@ index f7d0ad1..cb77260 100644
  
  										if (ev.value < center - treshold && !only_max) axis_edge = 1;
  										if (ev.value > center + treshold) axis_edge = 2;
-@@ -6294,6 +6686,7 @@ int input_test(int getchar)
+@@ -6294,6 +6690,7 @@ int input_test(int getchar)
  					cmd[len] = 0;
  					printf("MiSTer_cmd: %s\n", cmd);
  					if (!strncmp(cmd, "fb_cmd", 6)) video_cmd(cmd);
@@ -5802,7 +5806,7 @@ index f7d0ad1..cb77260 100644
  					else if (!strcmp(cmd, "fb_mask off")) video_set_degauss_display_mask(nullptr);
  					else if (!strncmp(cmd, "fb_mask ", 8)) video_set_degauss_display_mask(cmd + 8);
  					else if (!strncmp(cmd, "fb_degauss ", 11))
-@@ -6507,6 +6900,7 @@ int input_poll(int getchar)
+@@ -6507,6 +6904,7 @@ int input_poll(int getchar)
  	#ifdef PROFILING
  		PROFILE_FUNCTION();
  	#endif
@@ -5840,7 +5844,7 @@ index 0a45871..54c84bb 100644
  void PrintDirectory(int expand = 0);
  void ScrollLongName(void);
 diff --git a/support/degauss/README.md b/support/degauss/README.md
-index 18016de..d47938d 100644
+index 18016de..3642826 100644
 --- a/support/degauss/README.md
 +++ b/support/degauss/README.md
 @@ -20,6 +20,20 @@ read its shortcut configuration.
@@ -5855,7 +5859,7 @@ index 18016de..d47938d 100644
 +versioned status records in `/tmp`; the frontend owns persistence in its
 +`settings.toml`. Main's native menu and game mappings are never overwritten.
 +Custom profiles contain complete saved controls and labels, including copied
-+D-pad/stick alternatives. They are validated before activation and do not merge
++D-pad, mouse-navigation and stick alternatives. They are validated before activation and do not merge
 +later native mapping changes. Native mode continues to follow MiSTer's mapping.
 +Profiles stop applying when the native OSD, a script or a game owns input.
 +The active-controller report lets the frontend display the effective bindings
@@ -5866,10 +5870,10 @@ index 18016de..d47938d 100644
  The System menu's **Frontend shortcut** row, directly below **Frontend**, opens
 diff --git a/support/degauss/degauss_controls.h b/support/degauss/degauss_controls.h
 new file mode 100644
-index 0000000..5f391d0
+index 0000000..7bcce1e
 --- /dev/null
 +++ b/support/degauss/degauss_controls.h
-@@ -0,0 +1,149 @@
+@@ -0,0 +1,150 @@
 +// Copyright (C) 2026 Giancarlo Erra
 +// SPDX-License-Identifier: GPL-3.0-or-later
 +#ifndef DEGAUSS_CONTROLS_H
@@ -5883,6 +5887,7 @@ index 0000000..5f391d0
 +namespace degauss_controls {
 +
 +constexpr unsigned ROLE_COUNT = 10;
++constexpr unsigned DIRECTION_BINDINGS = 3;
 +constexpr unsigned MAX_DEVICES = 30;
 +enum Role { UP, DOWN, LEFT, RIGHT, SELECT, BACK, ACTIONS, MENU, PAGE_PREVIOUS, PAGE_NEXT };
 +using Bindings = std::array<uint16_t, ROLE_COUNT>;
@@ -5904,7 +5909,7 @@ index 0000000..5f391d0
 +inline std::vector<uint8_t> reply(const char *magic)
 +{
 +	std::vector<uint8_t> out(magic, magic + 4);
-+	word(out, 2);
++	word(out, 3);
 +	return out;
 +}
 +
@@ -5948,7 +5953,7 @@ index 0000000..5f391d0
 +			error = "A required direction, Select or Back is unassigned";
 +			return false;
 +		}
-+		if (bindings[i].size() > (i < SELECT ? 2U : 1U)) {
++		if (bindings[i].size() > (i < SELECT ? DIRECTION_BINDINGS : 1U)) {
 +			error = "Too many bindings for a Degauss control"; return false;
 +		}
 +		for (unsigned at = 0; at < bindings[i].size(); ++at) {
@@ -5984,7 +5989,7 @@ index 0000000..5f391d0
 +		Reader reader{data};
 +		reader.at = 4;
 +		uint16_t version, count;
-+		if (!reader.u16(version) || version != 2 || !reader.u16(count) || count > MAX_DEVICES) {
++		if (!reader.u16(version) || version != 3 || !reader.u16(count) || count > MAX_DEVICES) {
 +			error = "Unsupported Degauss controller profile version or count";
 +			return false;
 +		}
@@ -5997,7 +6002,7 @@ index 0000000..5f391d0
 +			}
 +			for (unsigned role = 0; role < ROLE_COUNT; ++role) {
 +				uint16_t size;
-+				if (!reader.u16(size) || size > (role < SELECT ? 2U : 1U)) {
++				if (!reader.u16(size) || size > (role < SELECT ? DIRECTION_BINDINGS : 1U)) {
 +					error = "Invalid controller binding count"; return false;
 +				}
 +				for (unsigned n = 0; n < size; ++n) {
@@ -6021,10 +6026,10 @@ index 0000000..5f391d0
 +#endif
 diff --git a/tests/degauss_controls_test.cpp b/tests/degauss_controls_test.cpp
 new file mode 100644
-index 0000000..2d5e0e1
+index 0000000..41208c3
 --- /dev/null
 +++ b/tests/degauss_controls_test.cpp
-@@ -0,0 +1,67 @@
+@@ -0,0 +1,74 @@
 +#include "../support/degauss/degauss_controls.h"
 +#include <cassert>
 +
@@ -6048,12 +6053,17 @@ index 0000000..2d5e0e1
 +	Controls bindings;
 +	for (unsigned role = 0; role < ROLE_COUNT; ++role) bindings[role].push_back({native[role], "Native"});
 +	bindings[LEFT].push_back({1000, "Stick Left"});
++	bindings[LEFT].push_back({1001, "Mouse Left"});
 +	Store store;
 +	std::string error;
 +	assert(store.empty());
 +	assert(store.read(profile("controller", bindings), error));
 +	assert(store.find("controller")->primary() == native);
 +	assert(store.find("controller")->contains(1000));
++	assert(store.find("controller")->contains(1001));
++	bindings[LEFT].push_back({1002, "Fourth Left"});
++	assert(!store.read(profile("controller", bindings), error));
++	bindings[LEFT].pop_back();
 +	assert(!store.find("different controller"));
 +	bindings[SELECT] = {{300, "L"}};
 +	bindings[ACTIONS].clear();
@@ -6075,8 +6085,10 @@ index 0000000..2d5e0e1
 +	assert(!store.read(profile("controller", bindings), error));
 +	bindings[UP] = up;
 +	auto valid = profile("controller", bindings);
-+	auto legacy = valid; legacy[4] = 1;
-+	assert(!store.read(legacy, error)); // never interpret an old partial profile as a complete map
++	for (uint8_t version : {1, 2}) {
++		auto legacy = valid; legacy[4] = version;
++		assert(!store.read(legacy, error)); // never interpret another controller protocol as a complete map
++	}
 +	for (size_t length = 0; length < valid.size(); ++length) {
 +		assert(!store.read(std::vector<uint8_t>(valid.begin(), valid.begin() + length), error));
 +	}
@@ -6094,10 +6106,10 @@ index 0000000..2d5e0e1
 +}
 diff --git a/tests/run-degauss-controls-tests.py b/tests/run-degauss-controls-tests.py
 new file mode 100644
-index 0000000..41fd653
+index 0000000..714d9ec
 --- /dev/null
 +++ b/tests/run-degauss-controls-tests.py
-@@ -0,0 +1,408 @@
+@@ -0,0 +1,421 @@
 +#!/usr/bin/env python3
 +"""Validate controller profile compatibility and Main's frontend-only hooks."""
 +
@@ -6403,12 +6415,12 @@ index 0000000..41fd653
 +                    "-fsanitize=address,undefined", str(unit), "-o", str(binary)], check=True)
 +    subprocess.run([str(binary)], check=True)
 +
-+native_start = source.index("static degauss_controls::Bindings degauss_controller_native(")
-+native_function = source[native_start:source.index("\n}\n", native_start) + 3]
 +alternate_start = source.index("static std::array<uint16_t, 4> degauss_controller_native_alternates(")
-+alternate_function = source[alternate_start:source.index("\n}\n", alternate_start) + 3]
++native_start = source.index("static degauss_controls::Bindings degauss_controller_native(")
++native_function = source[alternate_start:source.index("\n}\n", native_start) + 3]
 +definitions = "\n".join(line for line in (ROOT / "input.h").read_text().splitlines()
 +                        if line.startswith("#define SYS_BTN_") or line.startswith("#define SYS_AXIS_")
++                        or line.startswith("#define SYS_MS_")
 +                        or line.startswith("#define KEY_EMU "))
 +native_harness = r'''
 +#include <linux/input.h>
@@ -6420,6 +6432,7 @@ index 0000000..41fd653
 +native_cases = r'''
 +int main() {
 +    input[0].mmap[SYS_BTN_UP] = 300;
++    input[0].mmap[SYS_MS_UP] = 301;
 +    input[0].mmap[SYS_AXIS_X] = 0x20000;
 +    input[0].mmap[SYS_AXIS_Y] = 0x20001;
 +    auto primary = degauss_controller_native(0);
@@ -6428,11 +6441,23 @@ index 0000000..41fd653
 +    assert(primary[degauss_controls::LEFT] == KEY_EMU);
 +    assert(alternate[degauss_controls::LEFT] == KEY_EMU);
 +    assert(alternate[degauss_controls::UP] == KEY_EMU + 2);
++    auto controls = degauss_controller_native_controls(0);
++    assert((controls[degauss_controls::UP] == std::array<uint16_t, 3>{{300, 301, KEY_EMU + 2}}));
 +    input[0].mmap[SYS_BTN_L] = 310;
 +    input[0].mmap[SYS_BTN_MENU_FUNC] = 310;
 +    primary = degauss_controller_native(0);
 +    assert(primary[degauss_controls::SELECT] == 310);
 +    assert(!primary[degauss_controls::PAGE_PREVIOUS]); // native OK wins over the same shoulder's page action
++    input[0].mmap[SYS_MS_LEFT] = 302;
++    assert(degauss_controller_native(0)[degauss_controls::LEFT] == 302); // mouse navigation precedes stick fallback
++    input[0].mmap[SYS_BTN_START] = 302;
++    assert(degauss_controller_native(0)[degauss_controls::LEFT] == KEY_EMU); // Start consumes this key without a frontend action
++    input[0].mmap[SYS_MS_LEFT] = 0;
++    input[0].mmap[SYS_MS_UP] = KEY_EMU;
++    controls = degauss_controller_native_controls(0);
++    assert(!controls[degauss_controls::LEFT][0]); // earlier mouse Up owns the same physical code
++    assert(controls[degauss_controls::UP][1] == KEY_EMU);
++    input[0].mmap[SYS_MS_UP] = 0;
 +    input[0].mmap[SYS_AXIS_X] = UINT32_MAX;
 +    input[0].mmap[SYS_AXIS_Y] = UINT32_MAX;
 +    assert(!degauss_controller_native_alternates(0)[degauss_controls::LEFT]);
@@ -6442,7 +6467,7 @@ index 0000000..41fd653
 +if sys.platform.startswith("linux"):
 +    with tempfile.TemporaryDirectory(prefix="degauss-control-native-copy-") as temporary:
 +        unit = Path(temporary) / "native.cpp"
-+        unit.write_text(native_harness + definitions + '\n' + native_function + alternate_function + native_cases)
++        unit.write_text(native_harness + definitions + '\n' + native_function + native_cases)
 +        binary = Path(temporary) / "native"
 +        subprocess.run(["c++", "-std=c++14", "-Wall", "-Wextra", "-Werror", "-I", str(ROOT),
 +                        "-fsanitize=address,undefined", str(unit), "-o", str(binary)], check=True)

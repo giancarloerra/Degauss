@@ -23492,6 +23492,7 @@ impl App {
                 self.controllers.reset_input = false;
             }
             if input.take_device_loss() {
+                self.invalidate_controller_report();
                 ini_chord.reset_for_device_loss();
                 repeater.clear_all();
             }
@@ -23503,9 +23504,13 @@ impl App {
                     self.controllers.reset_input = false;
                 }
                 if !input_edge.controller
-                    && input_edge
-                        .source_node
-                        .is_some_and(|node| self.controllers.raw_nodes.contains(&node))
+                    && input_edge.source_node.is_some_and(|node| {
+                        self.controllers.raw_nodes.contains(&node)
+                            || self
+                                .controllers
+                                .raw_keys
+                                .contains(&(node, input_edge.key_code))
+                    })
                 {
                     continue;
                 }

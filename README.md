@@ -186,7 +186,7 @@ unassigns an optional action. Directions,
 Select and Back are required; conflicting assignments must be corrected before
 **Save Degauss Mapping** applies and saves the changes. Back cancels the editor.
 The first custom mapping starts as a complete copy of MiSTer's current controls,
-including its D-pad and stick alternatives. Once saved, its controls and labels
+including its D-pad, mouse-navigation and stick alternatives. Once saved, its controls and labels
 are independent of later MiSTer mapping changes. If a new controller has not been
 used yet, press a control first so MiSTer loads the initial mapping. The raw
 tester and previously saved Degauss mappings do not need that first press.
@@ -201,8 +201,14 @@ MiSTer identity also share this profile, while input numbers distinguish the
 connected instances in the tester. MiSTer's unique-controller configuration
 continues to determine separate mapping identities.
 
+For a keyboard configured as a MiSTer joystick, custom mode uses only the saved
+controller bindings. MiSTer mode also preserves unmapped keyboard keys without
+duplicating mapped controls; ordinary keyboards are unchanged. If a saved mapping cannot be applied, the error is
+shown and the saved mapping is retained. Correct the cause and choose **Use
+Saved Degauss Mapping** to retry.
+
 The matching Degauss Main is required for the tester and custom mappings.
-Native OSD controls, scripts, game controls, keyboard input and the configured
+Native OSD controls, scripts, game controls, ordinary keyboard input and the configured
 keyboard/controller return-to-Degauss shortcuts are unchanged. On-screen hints
 use the active controller's effective assignments, including non-face buttons.
 

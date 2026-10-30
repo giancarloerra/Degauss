@@ -27,6 +27,7 @@ struct ControllerBrowser {
     test_back_since: Option<Instant>,
     active: Option<ControllerDevice>,
     raw_nodes: std::collections::BTreeSet<u16>,
+    raw_keys: std::collections::BTreeSet<(u16, u16)>,
     report_revision: Option<(std::time::SystemTime, u64)>,
     report_generation: Option<u16>,
     report_next: Option<Instant>,
@@ -47,6 +48,12 @@ impl App {
     fn controller_error(&mut self, detail: String) {
         crate::note(&format!("controller   {detail}"));
         self.add_to_message(format!("Controller settings failed: {detail}"));
+    }
+
+    fn invalidate_controller_report(&mut self) {
+        self.controllers.report_revision = None;
+        self.controllers.raw_nodes.clear();
+        self.controllers.raw_keys.clear();
     }
 
     fn open_controllers(&mut self) {
@@ -415,11 +422,10 @@ impl App {
             let metadata = match std::fs::metadata(path) {
                 Ok(metadata) => metadata,
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                    self.controllers.report_revision = None;
+                    self.invalidate_controller_report();
                     if self.controllers.report_generation.take().is_some() {
                         self.controllers.reset_input = true;
                     }
-                    self.controllers.raw_nodes.clear();
                     return Ok(None);
                 }
                 Err(error) => return Err(error),
@@ -462,17 +468,35 @@ impl App {
                 self.controllers.devices = snapshot.devices.clone();
                 self.controllers.inventory_generation = generation;
             }
-            self.controllers.raw_nodes = snapshot
+            self.controllers.raw_nodes.clear();
+            self.controllers.raw_keys.clear();
+            for device in snapshot
                 .devices
                 .iter()
                 .filter(|device| device.keyboard_joystick)
-                .flat_map(|device| &device.paths)
-                .filter_map(|path| path.file_name().and_then(|name| name.to_str()))
-                .filter_map(|name| {
-                    name.strip_prefix("event")
+            {
+                for path in &device.paths {
+                    let Some(node) = path
+                        .file_name()
+                        .and_then(|name| name.to_str())
+                        .and_then(|name| name.strip_prefix("event"))
                         .and_then(|number| number.parse().ok())
-                })
-                .collect();
+                    else {
+                        continue;
+                    };
+                    if device.custom {
+                        self.controllers.raw_nodes.insert(node);
+                    } else {
+                        self.controllers.raw_keys.extend(
+                            device
+                                .native
+                                .iter()
+                                .flatten()
+                                .map(|binding| (node, binding.code)),
+                        );
+                    }
+                }
+            }
             self.controllers.report_revision = Some(revision);
             Ok(instance.and_then(|id| {
                 snapshot
@@ -490,6 +514,7 @@ impl App {
                 }
             }
             Err(error) => {
+                self.invalidate_controller_report();
                 let detail = format!("Reading active controller: {error}");
                 if self.controllers.report_error.as_deref() != Some(&detail) {
                     self.controller_error(detail.clone());
@@ -523,18 +548,7 @@ impl App {
             match (purpose, result) {
                 (ControllerJob::Discover, Ok(controller::Reply::Snapshot(snapshot))) => {
                     self.poll_controller_report(now, true);
-                    if self.controllers.report_generation != Some(snapshot.generation) {
-                        self.controller_error(
-                            "Controllers changed during discovery. Choose Refresh Controllers."
-                                .into(),
-                        );
-                    } else {
-                        self.controllers.inventory_generation = snapshot.generation;
-                        self.controllers.devices = snapshot.devices;
-                    }
-                    if self.controllers.devices.is_empty() {
-                        self.message = Some("No controllers are connected. Connect a controller, then choose Refresh Controllers.".into());
-                    }
+                    self.receive_controller_discovery(snapshot);
                 }
                 (ControllerJob::Apply(profiles), Ok(controller::Reply::Applied)) => {
                     self.settings.controller_profiles = profiles;
@@ -597,6 +611,23 @@ impl App {
         }
     }
 
+    fn receive_controller_discovery(&mut self, snapshot: controller::Snapshot) {
+        if self.controllers.report_error.is_some() {
+            return;
+        }
+        if self.controllers.report_generation != Some(snapshot.generation) {
+            self.controller_error(
+                "Controllers changed during discovery. Choose Refresh Controllers.".into(),
+            );
+        } else {
+            self.controllers.inventory_generation = snapshot.generation;
+            self.controllers.devices = snapshot.devices;
+            if self.controllers.devices.is_empty() {
+                self.message = Some("No controllers are connected. Connect a controller, then choose Refresh Controllers.".into());
+            }
+        }
+    }
+
     fn controller_heading_help(&self) -> (String, String, String) {
         let name = self
             .controller_device()
@@ -647,6 +678,49 @@ fn test_controller_menu_flow(app: &mut App) {
     let menu_list = app.menu_list.clone();
     let saved = app.settings.clone();
     let message = app.message.take();
+    app.settings.controller_profiles.insert(
+        "invalid".into(),
+        ControllerProfile {
+            custom: true,
+            bindings: Default::default(),
+        },
+    );
+    app.poll_controllers(Instant::now());
+    assert!(app.controllers.initialized && app.controllers.job.is_none());
+    assert!(app
+        .message
+        .take()
+        .is_some_and(|text| text.contains("missing")));
+    assert!(app.settings.controller_profiles["invalid"].custom);
+    app.poll_controllers(Instant::now());
+    assert!(
+        app.message.is_none(),
+        "an invalid saved profile is not retried every frame"
+    );
+    app.settings = saved.clone();
+    app.receive_controller_discovery(controller::Snapshot::default());
+    assert!(
+        app.message
+            .take()
+            .is_some_and(|text| text.contains("Controllers changed")),
+        "a failed discovery cannot be presented as an empty controller list"
+    );
+    app.controllers.report_generation = Some(0);
+    app.controllers.report_error = Some("Reading active controller: Permission denied".into());
+    app.message = app.controllers.report_error.clone();
+    app.receive_controller_discovery(controller::Snapshot::default());
+    assert_eq!(
+        app.message.take(),
+        app.controllers.report_error,
+        "a failed report remains visible even when the last generation matches discovery"
+    );
+    app.controllers.report_error = None;
+    app.receive_controller_discovery(controller::Snapshot::default());
+    assert!(app
+        .message
+        .take()
+        .is_some_and(|text| text.contains("No controllers are connected")));
+    app.controllers.report_generation = None;
     app.pending = Some(Pending::Exit);
     app.message = Some("Exit Degauss?".into());
     app.controller_error("Controller disconnected".into());
@@ -699,9 +773,73 @@ fn test_controller_menu_flow(app: &mut App) {
     );
     assert!(
         app.controllers.raw_nodes.contains(&3),
-        "keyboard-as-joystick input is read only through Main's translation"
+        "custom keyboard-style controls cannot bypass the saved controller mapping"
     );
-    std::fs::remove_file(report).unwrap();
+    keyboard_pad.custom = false;
+    keyboard_pad.effective = std::array::from_fn(|role| keyboard_pad.native[role][0].code);
+    keyboard_pad.labels = std::array::from_fn(|role| keyboard_pad.native[role][0].label.clone());
+    keyboard_pad.native[Control::Up.index()].push(controller::Binding {
+        code: 100,
+        label: "Mouse Up".into(),
+    });
+    keyboard_pad.native[Control::Up.index()].push(controller::Binding {
+        code: 770,
+        label: "Stick Up".into(),
+    });
+    let mut bytes = controller::tests::snapshot_bytes(&keyboard_pad, true);
+    bytes[8..10].copy_from_slice(&43_u16.to_le_bytes());
+    std::fs::write(&next, bytes).unwrap();
+    std::fs::rename(&next, &report).unwrap();
+    app.poll_controller_report_at(Instant::now(), true, &report);
+    assert!(
+        !app.controllers.raw_nodes.contains(&3),
+        "inherited mode preserves existing raw keyboard actions, including unassigned Escape"
+    );
+    assert!(app.controllers.raw_keys.contains(&(3, 10)));
+    assert!(app.controllers.raw_keys.contains(&(3, 100)));
+    assert!(app.controllers.raw_keys.contains(&(3, 770)));
+    assert!(
+        !app.controllers.raw_keys.contains(&(3, 1)),
+        "unassigned raw Escape is retained"
+    );
+    assert!(
+        !app.controllers.raw_keys.contains(&(3, 96)),
+        "unassigned keypad Enter is retained"
+    );
+    assert!(
+        !app.controllers.raw_keys.contains(&(4, 10)),
+        "an ordinary keyboard node is not filtered"
+    );
+    std::fs::write(&next, b"invalid report").unwrap();
+    std::fs::rename(&next, &report).unwrap();
+    app.poll_controller_report_at(Instant::now(), true, &report);
+    assert!(app.controllers.raw_nodes.is_empty() && app.controllers.raw_keys.is_empty());
+    assert!(app.controllers.report_revision.is_none());
+    assert!(app
+        .message
+        .take()
+        .is_some_and(|text| text.contains("Reading active controller")));
+    std::fs::write(
+        &next,
+        controller::tests::snapshot_bytes(&keyboard_pad, true),
+    )
+    .unwrap();
+    std::fs::rename(&next, &report).unwrap();
+    app.poll_controller_report_at(Instant::now(), true, &report);
+    assert!(
+        app.controllers.raw_keys.contains(&(3, 10)),
+        "a corrected report restores current key routing"
+    );
+    app.invalidate_controller_report();
+    assert!(app.controllers.raw_nodes.is_empty() && app.controllers.raw_keys.is_empty());
+    app.poll_controller_report_at(Instant::now(), true, &report);
+    assert!(
+        app.controllers.raw_keys.contains(&(3, 10)),
+        "device loss forces the report to be reread"
+    );
+    std::fs::remove_file(&report).unwrap();
+    app.poll_controller_report_at(Instant::now(), true, &report);
+    assert!(app.controllers.raw_nodes.is_empty() && app.controllers.raw_keys.is_empty());
     app.controllers.devices = vec![device.clone()];
     app.controllers.inventory_generation = 43;
     app.controllers.active = Some(device);
