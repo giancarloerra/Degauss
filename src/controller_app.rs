@@ -444,7 +444,11 @@ impl App {
             let metadata = match std::fs::metadata(path) {
                 Ok(metadata) => metadata,
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                    self.invalidate_controller_report();
+                    if self.controllers.report_revision.is_some()
+                        || self.controllers.report_generation.is_some()
+                    {
+                        self.invalidate_controller_report();
+                    }
                     if self.controllers.report_generation.take().is_some() {
                         self.controllers.reset_input = true;
                     }
@@ -542,9 +546,9 @@ impl App {
                 }
             }
             Err(error) => {
-                self.invalidate_controller_report();
                 let detail = format!("Reading active controller: {error}");
                 if self.controllers.report_error.as_deref() != Some(&detail) {
+                    self.invalidate_controller_report();
                     self.controller_error(detail.clone());
                     self.controllers.report_error = Some(detail);
                 }
@@ -925,6 +929,17 @@ fn test_controller_menu_flow(app: &mut App) {
         .message
         .take()
         .is_some_and(|text| text.contains("Reading active controller")));
+    app.controllers.menu = Some(ControllerMenu::Test);
+    let held_during_error = Instant::now();
+    app.controller_intercept_edge(KeyEdge::Down(Action::Quit), true, held_during_error);
+    app.poll_controller_report_at(Instant::now(), true, &report);
+    assert_eq!(
+        app.controllers.test_back_since,
+        Some(held_during_error),
+        "a repeated report error cannot prevent a subsequent Back hold from exiting"
+    );
+    app.controller_intercept_edge(KeyEdge::Up(Action::Quit), true, Instant::now());
+    app.controllers.menu = None;
     std::fs::write(
         &next,
         controller::tests::snapshot_bytes(&keyboard_pad, true),
@@ -946,6 +961,17 @@ fn test_controller_menu_flow(app: &mut App) {
     std::fs::remove_file(&report).unwrap();
     app.poll_controller_report_at(Instant::now(), true, &report);
     assert!(app.controllers.raw_nodes.is_empty() && app.controllers.raw_keys.is_empty());
+    app.controllers.menu = Some(ControllerMenu::Test);
+    let held_without_report = Instant::now();
+    app.controller_intercept_edge(KeyEdge::Down(Action::Quit), true, held_without_report);
+    app.poll_controller_report_at(Instant::now(), true, &report);
+    assert_eq!(
+        app.controllers.test_back_since,
+        Some(held_without_report),
+        "stable report absence cannot continually cancel a new tester exit hold"
+    );
+    app.controller_intercept_edge(KeyEdge::Up(Action::Quit), true, Instant::now());
+    app.controllers.menu = None;
     app.controllers.devices = vec![device.clone()];
     app.controllers.inventory_generation = 43;
     app.controllers.active = Some(device);
