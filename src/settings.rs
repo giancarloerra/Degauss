@@ -1157,13 +1157,16 @@ mod tests {
             .unwrap()
             .contains("controller_profiles"));
         let shortcuts = settings.resolved_hold_shortcuts();
-        settings.controller_profiles.insert(
-            "pad".into(),
-            crate::controller::Profile {
-                custom: true,
-                bindings: [(crate::controller::Control::Select, 310)].into(),
-            },
+        let mut profile =
+            crate::controller::Profile::from_device(&crate::controller::tests::device());
+        profile.bindings.insert(
+            crate::controller::Control::Select,
+            vec![crate::controller::Binding {
+                code: 310,
+                label: "L".into(),
+            }],
         );
+        settings.controller_profiles.insert("pad".into(), profile);
         let restored: Settings = toml::from_str(&toml::to_string(&settings).unwrap()).unwrap();
         assert_eq!(restored, settings);
         assert_eq!(restored.resolved_hold_shortcuts(), shortcuts);
@@ -1174,7 +1177,8 @@ mod tests {
         assert_eq!(inherited.layout.as_deref(), Some("gallery"));
         assert_eq!(inherited.resolved_hold_shortcuts(), shortcuts);
         assert_eq!(
-            inherited.controller_profiles["pad"].bindings[&crate::controller::Control::Select],
+            inherited.controller_profiles["pad"].bindings[&crate::controller::Control::Select][0]
+                .code,
             310
         );
     }

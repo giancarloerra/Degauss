@@ -180,14 +180,17 @@ Escape on a keyboard. Keyboard arrows scroll the tester's rows.
 
 Choose **Remap Degauss Controls** to assign directions, Select, Back, Actions,
 Menu and page controls for Degauss only. Select a row, then press and release a
-button or move an axis. Holding that control for two seconds cancels capture;
-keyboard Escape also cancels. **X Clear** unassigns an optional action and
-**Y MiSTer** restores the selected row's inherited assignment. Directions,
+button or move an axis. Setting a row replaces its controls. Holding that control
+for two seconds cancels capture; keyboard Escape also cancels. **X Clear**
+unassigns an optional action. Directions,
 Select and Back are required; conflicting assignments must be corrected before
 **Save Degauss Mapping** applies and saves the changes. Back cancels the editor.
-If a newly connected controller has not been used yet, press one of its controls
-first so MiSTer loads its native mapping. The raw tester is available before
-that press. If devices change during editing, return to the refreshed controller
+The first custom mapping starts as a complete copy of MiSTer's current controls,
+including its D-pad and stick alternatives. Once saved, its controls and labels
+are independent of later MiSTer mapping changes. If a new controller has not been
+used yet, press a control first so MiSTer loads the initial mapping. The raw
+tester and previously saved Degauss mappings do not need that first press.
+If devices change during editing, return to the refreshed controller
 list and select the controller again; unsaved edits are not applied.
 
 **Use MiSTer Mapping** restores inherited controls without deleting the saved
@@ -1380,6 +1383,7 @@ require **A** and confirmation, never a sideways press.
 | Navigation | Left and Right Behaviour | What left and right do while browsing: Scroll Speed Change (the default), Letter, Page or Direction. Letter and Page repeat while held; in Direction, left and right move one entry and up and down move a whole row in Tiled, Multi List and Gallery |
 | Navigation | Up a Level Entry | Off by default. Top or Bottom adds a selectable `< UP A LEVEL >` to game and Favourites lists. A/Enter performs the same navigation as B/Esc; it is not counted or treated as a game |
 | Navigation | Swap A and B | Off by default. Swap the controller's A and B actions inside Degauss only; keyboard controls and launched software are unchanged |
+| Navigation | Controllers | Test connected controllers, save an independent Degauss-only mapping, or switch back to MiSTer's mapping |
 | Navigation | Swap X and Y | Off by default. Swap the controller's X and Y actions inside Degauss only; keyboard controls and launched software are unchanged |
 | Navigation | Random Game Behaviour | Whether either random action starts the game, or only moves to it so you can look first |
 | Shortcuts | Hold A / Hold B / Hold X / Hold Y | Off by default. Assign None, Cycle View, Random Game, Random Favourite, Add/Remove Favourite, Game Information, Search This Folder, Jump to Letter, Actions, Menu or Start Attract Mode to each one-second hold. Assign Actions and Menu to A/B for two-button controllers. Short presses retain their normal action. Holds work only while browsing and only where the chosen command is available; otherwise the normal press is immediate |

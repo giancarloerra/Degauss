@@ -21,7 +21,6 @@ struct ControllerBrowser {
     inventory_generation: u16,
     selected: usize,
     draft: ControllerProfile,
-    captured_labels: std::collections::BTreeMap<u16, String>,
     job: Option<(ControllerJob, controller::Job)>,
     tester: Option<controller::Tester>,
     test_action: String,
@@ -47,8 +46,7 @@ impl App {
 
     fn controller_error(&mut self, detail: String) {
         crate::note(&format!("controller   {detail}"));
-        self.message = Some(format!("Controller settings failed: {detail}"));
-        self.dirty = true;
+        self.add_to_message(format!("Controller settings failed: {detail}"));
     }
 
     fn open_controllers(&mut self) {
@@ -83,13 +81,7 @@ impl App {
                     .devices
                     .iter()
                     .map(|device| {
-                        let mode = if !device.mapping_error.is_empty() {
-                            "Invalid mapping"
-                        } else if device.custom {
-                            "Degauss"
-                        } else {
-                            "MiSTer"
-                        };
+                        let mode = if device.custom { "Degauss" } else { "MiSTer" };
                         (
                             format!("{} (input {})", device.name, device.instance + 1),
                             mode.into(),
@@ -124,26 +116,21 @@ impl App {
             }
             ControllerMenu::Editor => {
                 let mut rows = Vec::new();
-                if let Some(device) = self.controller_device() {
-                    let effective = self.controllers.draft.effective(&device.native);
+                if self.controller_device().is_some() {
                     for role in Control::ALL {
                         let source = self.controller_role_source(role);
-                        let code = effective[source.index()];
-                        let label = self
-                            .controllers
-                            .captured_labels
-                            .get(&code)
-                            .cloned()
-                            .unwrap_or_else(|| device.label(code));
-                        let inherited = !self.controllers.draft.bindings.contains_key(&source);
-                        rows.push((
-                            role.label().into(),
-                            if inherited {
-                                format!("{label} (MiSTer)")
-                            } else {
-                                label
-                            },
-                        ));
+                        let bindings = self.controllers.draft.bindings.get(&source);
+                        let label = bindings
+                            .filter(|bindings| !bindings.is_empty())
+                            .map(|bindings| {
+                                bindings
+                                    .iter()
+                                    .map(|binding| binding.label.as_str())
+                                    .collect::<Vec<_>>()
+                                    .join(" / ")
+                            })
+                            .unwrap_or_else(|| "Unassigned".into());
+                        rows.push((role.label().into(), label));
                     }
                 }
                 rows.push(("Save Degauss Mapping".into(), String::new()));
@@ -273,25 +260,22 @@ impl App {
                             Err(error) => self.controller_error(error.to_string()),
                         },
                         1 => {
-                            if !device.mapped {
+                            let saved = self.settings.controller_profiles.get(&device.id).cloned();
+                            if saved
+                                .as_ref()
+                                .is_none_or(|profile| profile.bindings.is_empty())
+                                && !device.mapped
+                            {
                                 self.controller_error("Press a control on this controller first, so MiSTer loads its native mapping. Then choose Remap Degauss Controls again.".into());
                                 return true;
                             }
-                            self.controllers.draft = self
-                                .settings
-                                .controller_profiles
-                                .get(&device.id)
-                                .cloned()
-                                .unwrap_or_default();
+                            self.controllers.draft = saved
+                                .filter(|profile| !profile.bindings.is_empty())
+                                .unwrap_or_else(|| ControllerProfile::from_device(&device));
                             self.controllers.draft.custom = true;
-                            self.controllers.captured_labels.clear();
                             self.controller_menu_to(ControllerMenu::Editor);
                         }
                         at => {
-                            if at == 3 && !device.mapped {
-                                self.controller_error("Press a control on this controller first, so MiSTer loads its native mapping. Then choose Use Saved Degauss Mapping again.".into());
-                                return true;
-                            }
                             let mut profiles = self.settings.controller_profiles.clone();
                             let profile = profiles.entry(device.id).or_default();
                             if at == 3 && profile.bindings.is_empty() {
@@ -300,7 +284,7 @@ impl App {
                                 );
                             } else {
                                 profile.custom = at == 3;
-                                if let Err(error) = profile.validate(&device.native) {
+                                if let Err(error) = profile.validate() {
                                     self.controller_error(error);
                                 } else {
                                     self.apply_controller_profiles(profiles);
@@ -322,7 +306,7 @@ impl App {
                                 generation: self.controllers.inventory_generation,
                             },
                         );
-                    } else if let Err(error) = self.controllers.draft.validate(&device.native) {
+                    } else if let Err(error) = self.controllers.draft.validate() {
                         self.controller_error(error);
                     } else {
                         let mut profiles = self.settings.controller_profiles.clone();
@@ -332,15 +316,13 @@ impl App {
                 }
                 ControllerMenu::Test => {}
             },
-            Action::Context | Action::Menu if menu == ControllerMenu::Editor => {
+            Action::Context if menu == ControllerMenu::Editor => {
                 if let Some(role) = Control::ALL.get(self.menu_list.selected()).copied() {
                     let source = self.controller_role_source(role);
-                    if action == Action::Menu {
-                        self.controllers.draft.bindings.remove(&source);
-                    } else if role.required() {
+                    if role.required() {
                         self.controller_error(format!("{} is required", role.label()));
                     } else {
-                        self.controllers.draft.bindings.insert(source, 0);
+                        self.controllers.draft.bindings.insert(source, Vec::new());
                     }
                     self.rebuild_controller_menu();
                 }
@@ -501,21 +483,7 @@ impl App {
         })();
         match result {
             Ok(device) => {
-                let error = device
-                    .as_ref()
-                    .filter(|device| !device.mapping_error.is_empty())
-                    .map(|device| {
-                        format!(
-                            "{}: {}. Use MiSTer Mapping or correct the saved Degauss mapping.",
-                            device.name, device.mapping_error
-                        )
-                    });
-                if error != self.controllers.report_error {
-                    if let Some(detail) = &error {
-                        self.controller_error(detail.clone());
-                    }
-                    self.controllers.report_error = error;
-                }
+                self.controllers.report_error = None;
                 if self.controllers.active != device {
                     self.controllers.active = device;
                     self.dirty = true;
@@ -593,8 +561,10 @@ impl App {
                         .controller_device()
                         .is_some_and(|device| device.instance == instance) =>
                 {
-                    self.controllers.draft.bindings.insert(role, code);
-                    self.controllers.captured_labels.insert(code, label);
+                    self.controllers
+                        .draft
+                        .bindings
+                        .insert(role, vec![controller::Binding { code, label }]);
                 }
                 (ControllerJob::Capture(_), Ok(controller::Reply::Cancelled)) => {}
                 (ControllerJob::Capture(_), Ok(controller::Reply::Captured { .. })) => {
@@ -646,9 +616,9 @@ impl App {
         match self.controllers.menu {
             Some(ControllerMenu::List) => ("Controllers".into(), "Choose a connected controller. Separate input numbers identify connected instances.".into(), self.control_hint("A Select   B Back")),
             Some(ControllerMenu::Device) => (name.into(), "Changes apply only to Degauss. MiSTer, games, scripts and return shortcuts are unchanged.".into(), self.control_hint("A Select   B Back")),
-            Some(ControllerMenu::Editor) => (format!("{name} / Degauss Controls"), "Changes are applied only after Save. Existing button swaps and hold shortcuts remain in effect.".into(), self.control_hint("A Set   X Clear   Y MiSTer   B Cancel")),
+            Some(ControllerMenu::Editor) => (format!("{name} / Degauss Controls"), "Set replaces this action's controls. Save keeps a complete Degauss-only mapping. Existing swaps and holds remain in effect.".into(), self.control_hint("A Set   X Clear   B Cancel")),
             Some(ControllerMenu::Test) => (format!("{name} / Test"), "Raw input is for this controller; Latest Action includes any controller. Keyboard arrows scroll; Esc exits.".into(), format!("Hold {} 2s to exit", self.controllers.active.as_ref().or_else(|| self.controller_device())
-                .filter(|device| device.mapped).map(|device| device.hint("B", self.settings.swap_a_b.unwrap_or(false), self.settings.swap_x_y.unwrap_or(false)))
+                .filter(|device| device.custom || device.mapped).map(|device| device.hint("B", self.settings.swap_a_b.unwrap_or(false), self.settings.swap_x_y.unwrap_or(false)))
                 .unwrap_or_else(|| "Back".into()))),
             None => (String::new(), String::new(), String::new()),
         }
@@ -677,6 +647,22 @@ fn test_controller_menu_flow(app: &mut App) {
     let menu_list = app.menu_list.clone();
     let saved = app.settings.clone();
     let message = app.message.take();
+    app.pending = Some(Pending::Exit);
+    app.message = Some("Exit Degauss?".into());
+    app.controller_error("Controller disconnected".into());
+    assert_eq!(app.pending, Some(Pending::Exit));
+    assert_eq!(
+        app.message.as_deref(),
+        Some("Exit Degauss?\n\nController settings failed: Controller disconnected"),
+        "a controller error cannot hide the question whose action is pending"
+    );
+    assert!(app.handle(Action::Quit).is_none());
+    assert!(app.pending.is_none() && app.message.is_none());
+    app.controller_error("Controller disconnected".into());
+    assert!(
+        app.handle(Action::Accept).is_none(),
+        "dismissing a plain controller error cannot execute an old confirmation"
+    );
     let device = controller::tests::device();
     let report = app
         .settings_path
@@ -757,11 +743,14 @@ fn test_controller_menu_flow(app: &mut App) {
     assert!(app.handle_controller_menu(Action::Context));
     assert_eq!(
         app.controllers.draft.bindings.get(&Control::Menu),
-        Some(&0),
+        Some(&Vec::new()),
         "the editor inverts Swap X/Y once"
     );
     assert!(app.handle_controller_menu(Action::Menu));
-    assert!(app.controllers.draft.bindings.is_empty());
+    assert!(
+        app.controllers.draft.bindings[&Control::Menu].is_empty(),
+        "custom editing has no live per-row MiSTer inheritance"
+    );
     assert_eq!(
         app.controller_option_label(OptionId::HoldA),
         "Hold L",

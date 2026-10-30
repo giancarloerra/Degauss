@@ -10,9 +10,8 @@ use std::time::{Duration, Instant};
 use serde::{Deserialize, Serialize};
 
 pub const ROLE_COUNT: usize = 10;
-const VERSION: u16 = 1;
+const VERSION: u16 = 2;
 const MAX_DEVICES: usize = 30;
-const INHERIT: u32 = u32::MAX;
 static SEQUENCE: AtomicU32 = AtomicU32::new(0);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -83,48 +82,84 @@ impl Control {
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Binding {
+    pub code: u16,
+    pub label: String,
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Profile {
     #[serde(default)]
     pub custom: bool,
-    /// An absent role inherits MiSTer; zero explicitly unassigns an optional role.
+    /// Complete saved controls. Empty optional rows are explicitly unassigned.
+    /// Directions may retain the native D-pad and stick binding copied at setup.
     #[serde(default)]
-    pub bindings: BTreeMap<Control, u16>,
+    pub bindings: BTreeMap<Control, Vec<Binding>>,
 }
 
 impl Profile {
-    pub fn effective(&self, native: &[u16; ROLE_COUNT]) -> [u16; ROLE_COUNT] {
-        std::array::from_fn(|index| {
-            if self.custom {
-                self.bindings
-                    .get(&Control::ALL[index])
-                    .copied()
-                    .unwrap_or(native[index])
-            } else {
-                native[index]
-            }
-        })
+    pub fn from_device(device: &Device) -> Self {
+        let bindings = Control::ALL
+            .into_iter()
+            .map(|role| {
+                let at = role.index();
+                let code = device.native[at];
+                let mut bindings = Vec::new();
+                if code != 0 {
+                    bindings.push(Binding {
+                        code,
+                        label: device.native_labels[at].clone(),
+                    });
+                }
+                if at < 4 {
+                    let code = device.native_alternates[at];
+                    if code != 0 && !bindings.iter().any(|binding| binding.code == code) {
+                        bindings.push(Binding {
+                            code,
+                            label: device.native_alternate_labels[at].clone(),
+                        });
+                    }
+                }
+                (role, bindings)
+            })
+            .collect();
+        Self {
+            custom: true,
+            bindings,
+        }
     }
 
-    pub fn validate(&self, native: &[u16; ROLE_COUNT]) -> Result<(), String> {
+    pub fn validate(&self) -> Result<(), String> {
         if !self.custom {
             return Ok(());
         }
-        let effective = self.effective(native);
+        let mut seen = BTreeMap::new();
         for role in Control::ALL {
-            let code = effective[role.index()];
-            if self.custom && role.required() && code == 0 {
+            let bindings = self
+                .bindings
+                .get(&role)
+                .ok_or_else(|| format!("{} is missing from the saved mapping", role.label()))?;
+            if role.required() && bindings.is_empty() {
                 return Err(format!("{} must have a control", role.label()));
             }
-            if code != 0 {
-                for previous in &Control::ALL[..role.index()] {
-                    if effective[previous.index()] == code {
-                        return Err(format!(
-                            "{} and {} use the same control",
-                            previous.label(),
-                            role.label()
-                        ));
-                    }
+            if bindings.len() > if role.index() < 4 { 2 } else { 1 } {
+                return Err(format!("Too many bindings for {}", role.label()));
+            }
+            for binding in bindings {
+                if binding.code == 0
+                    || binding.label.is_empty()
+                    || binding.label.len() > 48
+                    || binding.label.contains('\0')
+                {
+                    return Err(format!("Invalid binding for {}", role.label()));
+                }
+                if let Some(previous) = seen.insert(binding.code, role) {
+                    return Err(format!(
+                        "{} and {} use the same control",
+                        previous.label(),
+                        role.label()
+                    ));
                 }
             }
         }
@@ -138,34 +173,18 @@ pub struct Device {
     pub keyboard_joystick: bool,
     pub custom: bool,
     pub mapped: bool,
-    pub mapping_error: String,
     pub id: String,
     pub name: String,
     pub paths: Vec<PathBuf>,
     pub native: [u16; ROLE_COUNT],
+    pub native_alternates: [u16; 4],
     pub effective: [u16; ROLE_COUNT],
     pub native_labels: [String; ROLE_COUNT],
+    pub native_alternate_labels: [String; 4],
     pub labels: [String; ROLE_COUNT],
 }
 
 impl Device {
-    pub fn label(&self, code: u16) -> String {
-        if code == 0 {
-            return "Unassigned".into();
-        }
-        self.native
-            .iter()
-            .position(|value| *value == code)
-            .map(|at| self.native_labels[at].clone())
-            .or_else(|| {
-                self.effective
-                    .iter()
-                    .position(|value| *value == code)
-                    .map(|at| self.labels[at].clone())
-            })
-            .unwrap_or_else(|| format!("Control {code}"))
-    }
-
     pub fn hint(&self, text: &str, swap_ab: bool, swap_xy: bool) -> String {
         let chars: Vec<_> = text.chars().collect();
         let mut result = String::new();
@@ -310,10 +329,18 @@ pub fn parse_reply(bytes: &[u8]) -> io::Result<Reply> {
                     paths.push(path);
                 }
                 let native = reader.controls()?;
+                let mut native_alternates = [0; 4];
+                for code in &mut native_alternates {
+                    *code = reader.word()?;
+                }
                 let effective = reader.controls()?;
                 let mut native_labels: [String; ROLE_COUNT] =
                     std::array::from_fn(|_| String::new());
                 for label in &mut native_labels {
+                    *label = reader.text()?;
+                }
+                let mut native_alternate_labels = std::array::from_fn(|_| String::new());
+                for label in &mut native_alternate_labels {
                     *label = reader.text()?;
                 }
                 let mut labels: [String; ROLE_COUNT] = std::array::from_fn(|_| String::new());
@@ -331,13 +358,14 @@ pub fn parse_reply(bytes: &[u8]) -> io::Result<Reply> {
                     keyboard_joystick: flags & 1 != 0,
                     custom: flags & 2 != 0,
                     mapped: flags & 4 != 0,
-                    mapping_error: reader.text()?,
                     id,
                     name,
                     paths,
                     native,
+                    native_alternates,
                     effective,
                     native_labels,
+                    native_alternate_labels,
                     labels,
                 });
             }
@@ -377,21 +405,24 @@ pub fn runtime_profiles(profiles: &BTreeMap<String, Profile>) -> io::Result<Vec<
     bytes.extend(VERSION.to_le_bytes());
     bytes.extend((selected.len() as u16).to_le_bytes());
     for (id, profile) in selected {
+        profile.validate().map_err(|error| invalid(&error))?;
         if id.is_empty() || id.len() > 255 {
             return Err(invalid("invalid profile identity"));
         }
         bytes.extend((id.len() as u16).to_le_bytes());
         bytes.extend(id.as_bytes());
         for role in Control::ALL {
-            let code = profile
-                .bindings
-                .get(&role)
-                .map_or(INHERIT, |code| u32::from(*code));
-            if code == 0 && role.required() {
-                return Err(invalid("required control is unassigned"));
+            let bindings = &profile.bindings[&role];
+            bytes.extend((bindings.len() as u16).to_le_bytes());
+            for binding in bindings {
+                bytes.extend(binding.code.to_le_bytes());
+                bytes.extend((binding.label.len() as u16).to_le_bytes());
+                bytes.extend(binding.label.as_bytes());
             }
-            bytes.extend(code.to_le_bytes());
         }
+    }
+    if bytes.len() > 32768 {
+        return Err(invalid("controller profile payload is too large"));
     }
     Ok(bytes)
 }
@@ -500,7 +531,7 @@ fn exchange_cancellable(fifo: &Path, request: Request, cancel: &AtomicBool) -> i
                 cancel_sent = true;
             }
             match std::fs::read(&status) {
-                Ok(bytes) if bytes == b"DGCB\x01\0" && operation.starts_with("capture ") => {
+                Ok(bytes) if bytes == b"DGCB\x02\0" && operation.starts_with("capture ") => {
                     capture_started = true
                 }
                 Ok(bytes) => {
@@ -677,14 +708,15 @@ pub(crate) mod tests {
             keyboard_joystick: false,
             custom: true,
             mapped: true,
-            mapping_error: String::new(),
             id: "pad".into(),
             name: "Controller".into(),
             paths: vec!["/dev/input/event3".into()],
             native: [10, 11, 12, 13, 14, 15, 16, 17, 18, 19],
+            native_alternates: [0; 4],
             effective: [10, 11, 12, 13, 18, 19, 16, 17, 300, 301],
             native_labels: ["Up", "Down", "Left", "Right", "A", "B", "X", "Y", "L", "R"]
                 .map(str::to_owned),
+            native_alternate_labels: std::array::from_fn(|_| "Unassigned".into()),
             labels: [
                 "Up",
                 "Down",
@@ -724,9 +756,9 @@ pub(crate) mod tests {
             out.extend(text.as_bytes());
         }
         let mut bytes = if active {
-            b"DGCR\x01\0".to_vec()
+            b"DGCR\x02\0".to_vec()
         } else {
-            b"DGCS\x01\0".to_vec()
+            b"DGCS\x02\0".to_vec()
         };
         if active {
             bytes.extend(device.instance.to_le_bytes());
@@ -746,13 +778,22 @@ pub(crate) mod tests {
         for path in &device.paths {
             text(&mut bytes, path.to_str().unwrap());
         }
-        for code in device.native.into_iter().chain(device.effective) {
+        for code in device
+            .native
+            .into_iter()
+            .chain(device.native_alternates)
+            .chain(device.effective)
+        {
             bytes.extend(code.to_le_bytes());
         }
-        for label in device.native_labels.iter().chain(&device.labels) {
+        for label in device
+            .native_labels
+            .iter()
+            .chain(&device.native_alternate_labels)
+            .chain(&device.labels)
+        {
             text(&mut bytes, label);
         }
-        text(&mut bytes, &device.mapping_error);
         bytes
     }
 
@@ -777,13 +818,13 @@ pub(crate) mod tests {
             }
         );
         assert_eq!(
-            parse_reply(b"DGCR\x01\0\xff\xff\0\0\0\0").unwrap(),
+            parse_reply(b"DGCR\x02\0\xff\xff\0\0\0\0").unwrap(),
             Reply::Active {
                 instance: None,
                 snapshot: Snapshot::default()
             }
         );
-        assert!(parse_reply(b"DGCR\x01\0\x01\0\0\0\0\0").is_err());
+        assert!(parse_reply(b"DGCR\x02\0\x01\0\0\0\0\0").is_err());
     }
 
     #[cfg(unix)]
@@ -838,15 +879,15 @@ pub(crate) mod tests {
                     "apply" => {
                         let bytes =
                             std::fs::read(format!("/tmp/degauss-controller-{token}.data")).unwrap();
-                        assert_eq!(bytes, b"DGCP\x01\0\0\0");
-                        b"DGCA\x01\0".to_vec()
+                        assert_eq!(bytes, b"DGCP\x02\0\0\0");
+                        b"DGCA\x02\0".to_vec()
                     }
                     "capture-cancel" => {
-                        status(token, b"DGCB\x01\0");
+                        status(token, b"DGCB\x02\0");
                         let mut cancel = String::new();
                         reader.read_line(&mut cancel).unwrap();
                         assert_eq!(cancel, format!("degauss_controller {token} cancel\n"));
-                        b"DGCX\x01\0".to_vec()
+                        b"DGCX\x02\0".to_vec()
                     }
                     _ => b"error The selected controller disconnected\n".to_vec(),
                 };
@@ -899,35 +940,45 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn inherited_profiles_do_not_change_native_controls() {
-        let native = [10, 11, 12, 13, 14, 15, 16, 17, 18, 19];
-        let profile = Profile {
-            custom: false,
-            bindings: [(Control::Select, 100)].into(),
-        };
-        assert_eq!(profile.effective(&native), native);
+    fn disabled_profiles_leave_main_in_native_mode_without_deleting_the_saved_map() {
+        let mut profile = Profile::from_device(&device());
+        profile.custom = false;
+        assert_eq!(profile.bindings[&Control::Select][0].code, 14);
         assert_eq!(
             runtime_profiles(&[("pad".into(), profile)].into()).unwrap(),
-            b"DGCP\x01\0\0\0"
+            b"DGCP\x02\0\0\0"
         );
     }
 
     #[test]
-    fn explicit_only_overrides_keep_other_roles_and_reject_conflicts() {
-        let native = [10, 11, 12, 13, 14, 15, 16, 17, 18, 19];
-        let mut profile = Profile {
-            custom: true,
-            bindings: [(Control::Select, 100)].into(),
-        };
-        let effective = profile.effective(&native);
-        assert_eq!(effective[Control::Select.index()], 100);
-        assert_eq!(effective[Control::Back.index()], 15);
-        assert_eq!(profile.validate(&native), Ok(()));
-        profile.bindings.insert(Control::Back, 100);
-        assert!(profile
-            .validate(&native)
-            .unwrap_err()
-            .contains("same control"));
+    fn saved_controls_and_labels_do_not_follow_later_native_mapping_changes() {
+        let mut device = device();
+        let mut profile = Profile::from_device(&device);
+        profile.bindings.insert(
+            Control::Select,
+            vec![Binding {
+                code: 100,
+                label: "L".into(),
+            }],
+        );
+        assert_eq!(profile.bindings[&Control::Back][0].code, 15);
+        assert_eq!(profile.validate(), Ok(()));
+        let before = runtime_profiles(&[(device.id.clone(), profile.clone())].into()).unwrap();
+        device.native[Control::Back.index()] = 100;
+        device.native_labels[Control::Select.index()] = "R".into();
+        assert_eq!(
+            runtime_profiles(&[(device.id.clone(), profile.clone())].into()).unwrap(),
+            before
+        );
+        assert_eq!(profile.bindings[&Control::Select][0].label, "L");
+        profile.bindings.insert(
+            Control::Back,
+            vec![Binding {
+                code: 100,
+                label: "R".into(),
+            }],
+        );
+        assert!(profile.validate().unwrap_err().contains("same control"));
     }
 
     #[test]
@@ -944,28 +995,35 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn saved_profile_distinguishes_inherit_and_explicit_optional_unassignment() {
-        let profile = Profile {
-            custom: true,
-            bindings: [(Control::Actions, 0), (Control::Select, 313)].into(),
-        };
+    fn complete_profiles_preserve_stick_alternatives_and_explicit_unassignment() {
+        let mut device = device();
+        device.native_alternates = [770, 771, 768, 769];
+        device.native_alternate_labels =
+            ["Axis 1 -", "Axis 1 +", "Axis 0 -", "Axis 0 +"].map(str::to_owned);
+        let mut profile = Profile::from_device(&device);
+        assert_eq!(profile.bindings[&Control::Up].len(), 2);
+        assert_eq!(profile.bindings[&Control::Up][1].code, 770);
+        profile.bindings.insert(Control::Actions, Vec::new());
+        assert_eq!(profile.validate(), Ok(()));
         let text = toml::to_string(&profile).unwrap();
         assert_eq!(toml::from_str::<Profile>(&text).unwrap(), profile);
-        assert!(!profile.bindings.contains_key(&Control::Back));
+        assert!(profile.bindings[&Control::Actions].is_empty());
+        profile.bindings.remove(&Control::Menu);
+        assert!(profile.validate().unwrap_err().contains("missing"));
     }
 
     #[test]
     fn malformed_or_incompatible_main_replies_are_errors_not_empty_successes() {
         for bytes in [
             &b""[..],
-            &b"DGCS\x02\0\0\0"[..],
-            &b"DGCS\x01\0\0\0\x1f\0"[..],
-            &b"DGCA\x01\0x"[..],
+            &b"DGCS\x01\0\0\0"[..],
+            &b"DGCS\x02\0\0\0\x1f\0"[..],
+            &b"DGCA\x02\0x"[..],
         ] {
             assert!(parse_reply(bytes).is_err());
         }
         assert_eq!(
-            parse_reply(b"DGCS\x01\0\0\0\0\0").unwrap(),
+            parse_reply(b"DGCS\x02\0\0\0\0\0").unwrap(),
             Reply::Snapshot(Snapshot::default())
         );
         assert!(parse_reply(b"error Degauss controls are not active\n")
