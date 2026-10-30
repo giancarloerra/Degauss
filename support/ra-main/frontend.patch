@@ -5343,7 +5343,7 @@ index 0000000..559be2a
 +MENU_59.9i=145622662586
 +NES_60.1s=113492149000
 diff --git a/input.cpp b/input.cpp
-index f7d0ad1..56188ab 100644
+index f7d0ad1..cb77260 100644
 --- a/input.cpp
 +++ b/input.cpp
 @@ -39,6 +39,7 @@
@@ -5765,11 +5765,12 @@ index f7d0ad1..56188ab 100644
  	}
  
  	if (!input[dev].has_map)
-@@ -3661,6 +4045,11 @@ static void input_cb(struct input_event *ev, struct input_absinfo *absinfo, int
+@@ -3661,6 +4045,12 @@ static void input_cb(struct input_event *ev, struct input_absinfo *absinfo, int
  
  				if (user_io_osd_is_visible() || video_fb_state())
  				{
-+					if (menu_degauss_controls_active() && !user_io_osd_is_visible()) {
++					if (menu_degauss_controls_active() && !user_io_osd_is_visible()
++						&& degauss_controller_is_pad(dev)) {
 +						degauss_controller_active(dev);
 +						if (degauss_controller_capture_key(dev, ev->code, ev->value)
 +							|| degauss_controller_custom_key(dev, ev->code, ev->value)) return;
@@ -5777,7 +5778,7 @@ index f7d0ad1..56188ab 100644
  					if (ev->value <= 1)
  					{
  						if ((input[dev].mmap[SYS_BTN_MENU_FUNC] & 0xFFFF) ?
-@@ -5619,6 +6008,7 @@ int input_test(int getchar)
+@@ -5619,6 +6009,7 @@ int input_test(int getchar)
  			unflag_players();
  		}
  		cur_leds |= 0x80;
@@ -5785,7 +5786,7 @@ index f7d0ad1..56188ab 100644
  		state++;
  	}
  
-@@ -6159,6 +6549,7 @@ int input_test(int getchar)
+@@ -6159,6 +6550,7 @@ int input_test(int getchar)
  
  										int only_max = 1;
  										for (int n = 0; n < 4; n++) if (input[dev].mmap[SYS_AXIS1_X + n] && ((input[dev].mmap[SYS_AXIS1_X + n] & 0xFFFF) == ev.code)) only_max = 0;
@@ -5793,7 +5794,7 @@ index f7d0ad1..56188ab 100644
  
  										if (ev.value < center - treshold && !only_max) axis_edge = 1;
  										if (ev.value > center + treshold) axis_edge = 2;
-@@ -6294,6 +6685,7 @@ int input_test(int getchar)
+@@ -6294,6 +6686,7 @@ int input_test(int getchar)
  					cmd[len] = 0;
  					printf("MiSTer_cmd: %s\n", cmd);
  					if (!strncmp(cmd, "fb_cmd", 6)) video_cmd(cmd);
@@ -5801,7 +5802,7 @@ index f7d0ad1..56188ab 100644
  					else if (!strcmp(cmd, "fb_mask off")) video_set_degauss_display_mask(nullptr);
  					else if (!strncmp(cmd, "fb_mask ", 8)) video_set_degauss_display_mask(cmd + 8);
  					else if (!strncmp(cmd, "fb_degauss ", 11))
-@@ -6507,6 +6899,7 @@ int input_poll(int getchar)
+@@ -6507,6 +6900,7 @@ int input_poll(int getchar)
  	#ifdef PROFILING
  		PROFILE_FUNCTION();
  	#endif
@@ -6093,10 +6094,10 @@ index 0000000..2d5e0e1
 +}
 diff --git a/tests/run-degauss-controls-tests.py b/tests/run-degauss-controls-tests.py
 new file mode 100644
-index 0000000..0cf3935
+index 0000000..41fd653
 --- /dev/null
 +++ b/tests/run-degauss-controls-tests.py
-@@ -0,0 +1,367 @@
+@@ -0,0 +1,408 @@
 +#!/usr/bin/env python3
 +"""Validate controller profile compatibility and Main's frontend-only hooks."""
 +
@@ -6126,7 +6127,9 @@ index 0000000..0cf3935
 +overlay = source.index("degauss_controller_custom_key(dev, ev->code", callback)
 +native = source.index("if (ev->code == input[dev].mmap[SYS_BTN_X])", overlay)
 +assert shortcut < capture < overlay < native
-+assert "if (menu_degauss_controls_active() && !user_io_osd_is_visible())" in source[capture - 170:capture]
++dispatch_start = source.rfind("if (menu_degauss_controls_active()", callback, capture)
++dispatch_end = source.index("\n\t\t\t\t\tif (ev->value <= 1)", capture)
++dispatch = source[dispatch_start:dispatch_end]
 +custom_start = source.index("static bool degauss_controller_custom_key(")
 +custom = source[custom_start:source.index("\n}\n", custom_start) + 3]
 +assert "!menu_degauss_controls_active() || user_io_osd_is_visible()" in custom
@@ -6162,6 +6165,45 @@ index 0000000..0cf3935
 +    unit.write_text(ownership_harness + predicate + '\n}\n' + ownership_cases)
 +    binary = Path(temporary) / "ownership"
 +    subprocess.run(["c++", "-std=c++14", "-Wall", "-Wextra", "-Werror",
++                    "-fsanitize=address,undefined", str(unit), "-o", str(binary)], check=True)
++    subprocess.run([str(binary)], check=True)
++
++# Non-controller multimedia buttons share the EV_KEY branch. They must not
++# replace the active pad, clear its labels, or enter capture/custom routing.
++dispatch_harness = r'''
++#include <cassert>
++static bool frontend = true, osd = false, eligible = true;
++static int active = 1, captures = 0, customs = 0;
++static bool menu_degauss_controls_active() { return frontend; }
++static bool user_io_osd_is_visible() { return osd; }
++static bool degauss_controller_is_pad(int) { return eligible; }
++static void degauss_controller_active(int dev) { active = dev; }
++static bool degauss_controller_capture_key(int, int, int) { ++captures; return false; }
++static bool degauss_controller_custom_key(int, int, int) { ++customs; return false; }
++static void dispatch_event(int dev) {
++    struct { int code, value; } event = {352, 1}; // KEY_OK on an ordinary multimedia device
++    auto *ev = &event;
++'''
++dispatch_cases = r'''
++}
++int main() {
++    eligible = false;
++    assert(!degauss_controller_is_pad(2));
++    dispatch_event(2);
++    assert(active == 1 && !captures && !customs);
++    eligible = true;
++    dispatch_event(2);
++    assert(active == 2 && captures == 1 && customs == 1);
++    frontend = false; dispatch_event(3);
++    frontend = true; osd = true; dispatch_event(3);
++    assert(active == 2 && captures == 1 && customs == 1);
++}
++'''
++with tempfile.TemporaryDirectory(prefix="degauss-control-dispatch-") as temporary:
++    unit = Path(temporary) / "dispatch.cpp"
++    unit.write_text(dispatch_harness + dispatch + dispatch_cases)
++    binary = Path(temporary) / "dispatch"
++    subprocess.run(["c++", "-std=c++14", "-Wall", "-Wextra", "-Werror", "-I", str(ROOT),
 +                    "-fsanitize=address,undefined", str(unit), "-o", str(binary)], check=True)
 +    subprocess.run([str(binary)], check=True)
 +
