@@ -52,8 +52,12 @@ impl App {
 
     fn invalidate_controller_report(&mut self) {
         self.controllers.report_revision = None;
+        if !self.controllers.raw_nodes.is_empty() || !self.controllers.raw_keys.is_empty() {
+            self.controllers.reset_input = true;
+        }
         self.controllers.raw_nodes.clear();
         self.controllers.raw_keys.clear();
+        self.controllers.test_back_since = None;
     }
 
     fn controller_consumes_raw_key(&self, node: u16, code: u16) -> bool {
@@ -486,8 +490,8 @@ impl App {
                 self.controllers.devices = snapshot.devices.clone();
                 self.controllers.inventory_generation = generation;
             }
-            self.controllers.raw_nodes.clear();
-            self.controllers.raw_keys.clear();
+            let previous_raw_nodes = std::mem::take(&mut self.controllers.raw_nodes);
+            let previous_raw_keys = std::mem::take(&mut self.controllers.raw_keys);
             for device in snapshot
                 .devices
                 .iter()
@@ -514,6 +518,12 @@ impl App {
                         );
                     }
                 }
+            }
+            if previous_raw_nodes != self.controllers.raw_nodes
+                || previous_raw_keys != self.controllers.raw_keys
+            {
+                self.controllers.reset_input = true;
+                self.controllers.test_back_since = None;
             }
             self.controllers.report_revision = Some(revision);
             Ok(instance.and_then(|id| {
@@ -807,6 +817,7 @@ fn test_controller_menu_flow(app: &mut App) {
         "custom keyboard-style controls cannot bypass the saved controller mapping"
     );
     keyboard_pad.custom = false;
+    app.controllers.reset_input = false;
     keyboard_pad.effective = std::array::from_fn(|role| keyboard_pad.native[role][0].code);
     keyboard_pad.labels = std::array::from_fn(|role| keyboard_pad.native[role][0].label.clone());
     keyboard_pad.native[Control::Up.index()].push(controller::Binding {
@@ -822,6 +833,10 @@ fn test_controller_menu_flow(app: &mut App) {
     std::fs::write(&next, bytes).unwrap();
     std::fs::rename(&next, &report).unwrap();
     app.poll_controller_report_at(Instant::now(), true, &report);
+    assert!(
+        app.controllers.reset_input,
+        "raw filter changes cancel pending input even at the same generation"
+    );
     assert!(
         !app.controllers.raw_nodes.contains(&3),
         "inherited mode preserves existing raw keyboard actions, including unassigned Escape"
@@ -841,6 +856,21 @@ fn test_controller_menu_flow(app: &mut App) {
         !app.controllers.raw_keys.contains(&(4, 10)),
         "an ordinary keyboard node is not filtered"
     );
+    app.controllers.reset_input = false;
+    keyboard_pad.native[Control::Left.index()].push(controller::Binding {
+        code: 103,
+        label: "Up key".into(),
+    });
+    let mut bytes = controller::tests::snapshot_bytes(&keyboard_pad, true);
+    bytes[8..10].copy_from_slice(&43_u16.to_le_bytes());
+    std::fs::write(&next, bytes).unwrap();
+    std::fs::rename(&next, &report).unwrap();
+    app.poll_controller_report_at(Instant::now(), true, &report);
+    assert!(
+        app.controllers.reset_input,
+        "first native mapping publication cannot leave a raw key held"
+    );
+    assert!(app.controllers.raw_keys.contains(&(3, 103)));
     app.controllers.devices = vec![keyboard_pad.clone()];
     assert!(
         !app.controller_consumes_raw_key(3, 1),
@@ -863,7 +893,23 @@ fn test_controller_menu_flow(app: &mut App) {
         !app.controller_consumes_raw_key(4, 1),
         "ordinary keyboard Escape remains available"
     );
+    app.controllers.test_back_since = Some(Instant::now());
+    app.controllers.reset_input = false;
     app.invalidate_controller_report();
+    assert!(
+        app.controllers.test_back_since.is_none(),
+        "report or device loss cancels a pending tester exit hold"
+    );
+    assert!(
+        app.controllers.reset_input,
+        "invalidating nonempty filters clears pending presses"
+    );
+    app.controllers.reset_input = false;
+    app.invalidate_controller_report();
+    assert!(
+        !app.controllers.reset_input,
+        "repeated absent reports do not interrupt ordinary input"
+    );
     assert!(
         !app.controller_consumes_raw_key(3, 1),
         "stale device paths cannot suppress a reused keyboard node"
