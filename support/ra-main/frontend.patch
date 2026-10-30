@@ -5343,7 +5343,7 @@ index 0000000..559be2a
 +MENU_59.9i=145622662586
 +NES_60.1s=113492149000
 diff --git a/input.cpp b/input.cpp
-index f7d0ad1..ce2f841 100644
+index f7d0ad1..960088c 100644
 --- a/input.cpp
 +++ b/input.cpp
 @@ -39,6 +39,7 @@
@@ -5354,7 +5354,7 @@ index f7d0ad1..ce2f841 100644
  #include "offload.h"
  
  #define NUMDEV 30
-@@ -2032,6 +2033,359 @@ static int keyrah_trans(int key, int press)
+@@ -2032,6 +2033,361 @@ static int keyrah_trans(int key, int press)
  }
  
  static void input_cb(struct input_event *ev, struct input_absinfo *absinfo, int dev, bool menu_event = false);
@@ -5592,6 +5592,8 @@ index f7d0ad1..ce2f841 100644
 +{
 +	if (!degauss_controller_capture || dev != degauss_controller_capture_device
 +		|| user_io_osd_is_visible()) return false;
++	// A control held before capture opened still needs its normal key release.
++	if (!value && code != degauss_controller_capture_code) return false;
 +	const uint32_t first = input[dev].mmap[SYS_BTN_OSD_KTGL + 1];
 +	const uint32_t second = input[dev].mmap[SYS_BTN_OSD_KTGL + 2];
 +	if (code && code == first && first == second) {
@@ -5714,7 +5716,7 @@ index f7d0ad1..ce2f841 100644
  
  static int kbd_toggle = 0;
  
-@@ -2959,6 +3313,7 @@ static void assign_player(int dev, int num, int force = 0)
+@@ -2959,6 +3315,7 @@ static void assign_player(int dev, int num, int force = 0)
  	printf("Device %s %sassigned to player %d\n", input[dev].id, force ? "forcebly " : "", input[dev].num);
  }
  
@@ -5722,7 +5724,7 @@ index f7d0ad1..ce2f841 100644
  static void input_cb(struct input_event *ev, struct input_absinfo *absinfo, int dev, bool menu_event)
  {
  	if (ev->type != EV_KEY && ev->type != EV_ABS && ev->type != EV_REL) return;
-@@ -3013,6 +3368,7 @@ static void input_cb(struct input_event *ev, struct input_absinfo *absinfo, int
+@@ -3013,6 +3370,7 @@ static void input_cb(struct input_event *ev, struct input_absinfo *absinfo, int
  
  	if (ev->type == EV_KEY && ev->code < 256 && !(mapping && mapping_type == 2) && !input[dev].force_joy)
  	{
@@ -5730,7 +5732,7 @@ index f7d0ad1..ce2f841 100644
  		if (!input[dev].has_kbdmap)
  		{
  			if (!FileLoadConfig(get_kbdmap_name(dev), &input[dev].kbdmap, sizeof(input[dev].kbdmap)))
-@@ -3099,6 +3455,7 @@ static void input_cb(struct input_event *ev, struct input_absinfo *absinfo, int
+@@ -3099,6 +3457,7 @@ static void input_cb(struct input_event *ev, struct input_absinfo *absinfo, int
  			}
  		}
  		input[dev].has_mmap++;
@@ -5738,7 +5740,7 @@ index f7d0ad1..ce2f841 100644
  	}
  
  	if (!input[dev].has_map)
-@@ -3661,6 +4018,11 @@ static void input_cb(struct input_event *ev, struct input_absinfo *absinfo, int
+@@ -3661,6 +4020,11 @@ static void input_cb(struct input_event *ev, struct input_absinfo *absinfo, int
  
  				if (user_io_osd_is_visible() || video_fb_state())
  				{
@@ -5750,7 +5752,7 @@ index f7d0ad1..ce2f841 100644
  					if (ev->value <= 1)
  					{
  						if ((input[dev].mmap[SYS_BTN_MENU_FUNC] & 0xFFFF) ?
-@@ -5619,6 +5981,7 @@ int input_test(int getchar)
+@@ -5619,6 +5983,7 @@ int input_test(int getchar)
  			unflag_players();
  		}
  		cur_leds |= 0x80;
@@ -5758,7 +5760,7 @@ index f7d0ad1..ce2f841 100644
  		state++;
  	}
  
-@@ -6294,6 +6657,7 @@ int input_test(int getchar)
+@@ -6294,6 +6659,7 @@ int input_test(int getchar)
  					cmd[len] = 0;
  					printf("MiSTer_cmd: %s\n", cmd);
  					if (!strncmp(cmd, "fb_cmd", 6)) video_cmd(cmd);
@@ -5766,7 +5768,7 @@ index f7d0ad1..ce2f841 100644
  					else if (!strcmp(cmd, "fb_mask off")) video_set_degauss_display_mask(nullptr);
  					else if (!strncmp(cmd, "fb_mask ", 8)) video_set_degauss_display_mask(cmd + 8);
  					else if (!strncmp(cmd, "fb_degauss ", 11))
-@@ -6507,6 +6871,7 @@ int input_poll(int getchar)
+@@ -6507,6 +6873,7 @@ int input_poll(int getchar)
  	#ifdef PROFILING
  		PROFILE_FUNCTION();
  	#endif
@@ -5775,7 +5777,7 @@ index f7d0ad1..ce2f841 100644
  	static bool autofire_cfg_parsed = false;
   	if (!autofire_cfg_parsed) autofire_cfg_parsed = parse_autofire_cfg();
 diff --git a/menu.cpp b/menu.cpp
-index 27067c7..17b7bf6 100644
+index 27067c7..78ac56f 100644
 --- a/menu.cpp
 +++ b/menu.cpp
 @@ -925,6 +925,12 @@ static void vga_nag(bool show_warning = true)
@@ -5785,7 +5787,7 @@ index 27067c7..17b7bf6 100644
 +bool menu_degauss_controls_active()
 +{
 +	return degauss_running && menustate == MENU_SCRIPTS_FB2 && is_menu()
-+		&& video_get_degauss_native_fb() && video_fb_state();
++		&& video_fb_state();
 +}
 +
  bool menu_degauss_terminal_mode(bool frontend, char *error, size_t error_size)
@@ -6035,10 +6037,10 @@ index 0000000..52ec9ef
 +}
 diff --git a/tests/run-degauss-controls-tests.py b/tests/run-degauss-controls-tests.py
 new file mode 100644
-index 0000000..0a480d6
+index 0000000..6844aa5
 --- /dev/null
 +++ b/tests/run-degauss-controls-tests.py
-@@ -0,0 +1,173 @@
+@@ -0,0 +1,234 @@
 +#!/usr/bin/env python3
 +"""Validate controller profile compatibility and Main's frontend-only hooks."""
 +
@@ -6077,7 +6079,32 @@ index 0000000..0a480d6
 +predicate_start = menu.index("bool menu_degauss_controls_active()")
 +predicate = menu[predicate_start:menu.index("\n}", predicate_start)]
 +assert "degauss_running && menustate == MENU_SCRIPTS_FB2 && is_menu()" in predicate
-+assert "video_get_degauss_native_fb() && video_fb_state()" in predicate
++assert "video_fb_state()" in predicate
++assert "video_get_degauss_native_fb" not in predicate
++ownership_harness = r'''
++#include <cassert>
++static bool degauss_running = true, menu_core = true, framebuffer = true;
++static constexpr int MENU_SCRIPTS_FB2 = 1;
++static int menustate = MENU_SCRIPTS_FB2;
++static bool is_menu() { return menu_core; }
++static bool video_fb_state() { return framebuffer; }
++'''
++ownership_cases = r'''
++int main() {
++    assert(menu_degauss_controls_active()); // frontend ownership, independent of analog output selection
++    degauss_running = false; assert(!menu_degauss_controls_active());
++    degauss_running = true; menustate = 0; assert(!menu_degauss_controls_active());
++    menustate = MENU_SCRIPTS_FB2; menu_core = false; assert(!menu_degauss_controls_active());
++    menu_core = true; framebuffer = false; assert(!menu_degauss_controls_active());
++}
++'''
++with tempfile.TemporaryDirectory(prefix="degauss-control-ownership-") as temporary:
++    unit = Path(temporary) / "ownership.cpp"
++    unit.write_text(ownership_harness + predicate + '\n}\n' + ownership_cases)
++    binary = Path(temporary) / "ownership"
++    subprocess.run(["c++", "-std=c++14", "-Wall", "-Wextra", "-Werror",
++                    "-fsanitize=address,undefined", str(unit), "-o", str(binary)], check=True)
++    subprocess.run([str(binary)], check=True)
 +
 +# Execute the production routing function with isolated Main state. The
 +# device/library boundary is covered separately on MiSTer, not by this test.
@@ -6152,6 +6179,42 @@ index 0000000..0a480d6
 +        "c++", "-std=c++14", "-Wall", "-Wextra", "-Werror", "-I", str(ROOT),
 +        "-fsanitize=address,undefined", str(unit), "-o", str(binary),
 +    ], check=True)
++    subprocess.run([str(binary)], check=True)
++
++capture_start = source.index("static bool degauss_controller_capture_key(")
++capture_function = source[capture_start:source.index("\n}\n", capture_start) + 3]
++capture_harness = r'''
++#include "support/degauss/degauss_controls.h"
++#include <cassert>
++static unsigned degauss_controller_capture = 123;
++static int degauss_controller_capture_device = 0;
++static uint16_t degauss_controller_capture_code = 0;
++static uint32_t degauss_controller_capture_since = 0;
++static constexpr unsigned SYS_BTN_OSD_KTGL = 0;
++static struct { uint32_t mmap[3]; } input[1] = {};
++static bool user_io_osd_is_visible() { return false; }
++static uint32_t GetTimer(unsigned) { return 100; }
++static void degauss_controller_error(unsigned, const std::string &) {}
++static void degauss_controller_cancel_capture() { degauss_controller_capture = 0; }
++static void degauss_controller_reply(unsigned, const std::vector<uint8_t> &) {}
++static std::string degauss_controller_label(int, uint16_t) { return "A"; }
++'''
++capture_cases = r'''
++int main() {
++    assert(!degauss_controller_capture_key(0, 300, 0)); // release of the Select that opened capture
++    assert(degauss_controller_capture_key(0, 301, 1));
++    assert(degauss_controller_capture_code == 301);
++    assert(!degauss_controller_capture_key(0, 302, 0)); // other previously held controls also release
++    assert(degauss_controller_capture_key(0, 301, 0));
++    assert(!degauss_controller_capture && !degauss_controller_capture_code);
++}
++'''
++with tempfile.TemporaryDirectory(prefix="degauss-control-capture-") as temporary:
++    unit = Path(temporary) / "capture.cpp"
++    unit.write_text(capture_harness + capture_function + capture_cases)
++    binary = Path(temporary) / "capture"
++    subprocess.run(["c++", "-std=c++14", "-Wall", "-Wextra", "-Werror", "-I", str(ROOT),
++                    "-fsanitize=address,undefined", str(unit), "-o", str(binary)], check=True)
 +    subprocess.run([str(binary)], check=True)
 +
 +if sys.platform.startswith("linux"):
