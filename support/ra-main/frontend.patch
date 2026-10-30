@@ -5343,7 +5343,7 @@ index 0000000..559be2a
 +MENU_59.9i=145622662586
 +NES_60.1s=113492149000
 diff --git a/input.cpp b/input.cpp
-index f7d0ad1..b8c1ff2 100644
+index f7d0ad1..130203e 100644
 --- a/input.cpp
 +++ b/input.cpp
 @@ -39,6 +39,7 @@
@@ -5550,7 +5550,7 @@ index f7d0ad1..b8c1ff2 100644
 +	degauss_controls::word(out, devices.size());
 +	for (int dev : devices) degauss_controller_encode(out, dev);
 +	degauss_controller_reply(token, out);
-+	degauss_controller_inventory_changed = false;
++	if (!token) degauss_controller_inventory_changed = false;
 +}
 +
 +static void degauss_controller_active(int dev)
@@ -6038,10 +6038,10 @@ index 0000000..52ec9ef
 +}
 diff --git a/tests/run-degauss-controls-tests.py b/tests/run-degauss-controls-tests.py
 new file mode 100644
-index 0000000..bb73ab1
+index 0000000..8c3f0d8
 --- /dev/null
 +++ b/tests/run-degauss-controls-tests.py
-@@ -0,0 +1,280 @@
+@@ -0,0 +1,309 @@
 +#!/usr/bin/env python3
 +"""Validate controller profile compatibility and Main's frontend-only hooks."""
 +
@@ -6260,6 +6260,35 @@ index 0000000..bb73ab1
 +    unit = Path(temporary) / "handover.cpp"
 +    unit.write_text(poll_harness + poll_function + poll_cases)
 +    binary = Path(temporary) / "handover"
++    subprocess.run(["c++", "-std=c++14", "-Wall", "-Wextra", "-Werror", "-I", str(ROOT),
++                    "-fsanitize=address,undefined", str(unit), "-o", str(binary)], check=True)
++    subprocess.run([str(binary)], check=True)
++
++snapshot_start = source.index("static void degauss_controller_snapshot(unsigned token)\n{")
++snapshot_function = source[snapshot_start:source.index("\n}\n", snapshot_start) + 3]
++snapshot_harness = r'''
++#include "support/degauss/degauss_controls.h"
++#include <cassert>
++#define NUMDEV 1
++static int degauss_controller_active_device = -1;
++static uint16_t degauss_controller_generation = 1;
++static bool degauss_controller_inventory_changed = true;
++static bool degauss_controller_is_pad(int) { return false; }
++static void degauss_controller_encode(std::vector<uint8_t> &, int) {}
++static void degauss_controller_reply(unsigned, const std::vector<uint8_t> &) {}
++'''
++snapshot_cases = r'''
++int main() {
++    degauss_controller_snapshot(123456789);
++    assert(degauss_controller_inventory_changed); // a list reply does not refresh the active report
++    degauss_controller_snapshot(0);
++    assert(!degauss_controller_inventory_changed);
++}
++'''
++with tempfile.TemporaryDirectory(prefix="degauss-control-snapshot-") as temporary:
++    unit = Path(temporary) / "snapshot.cpp"
++    unit.write_text(snapshot_harness + snapshot_function + snapshot_cases)
++    binary = Path(temporary) / "snapshot"
 +    subprocess.run(["c++", "-std=c++14", "-Wall", "-Wextra", "-Werror", "-I", str(ROOT),
 +                    "-fsanitize=address,undefined", str(unit), "-o", str(binary)], check=True)
 +    subprocess.run([str(binary)], check=True)
