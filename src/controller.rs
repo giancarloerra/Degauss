@@ -154,11 +154,10 @@ impl Profile {
                 {
                     return Err(format!("Invalid binding for {}", role.label()));
                 }
-                if let Some(previous) = seen.insert(binding.code, role) {
+                if seen.insert(binding.code, role).is_some() {
                     return Err(format!(
-                        "{} and {} use the same control",
-                        previous.label(),
-                        role.label()
+                        "The same control is assigned more than once: {}",
+                        binding.label
                     ));
                 }
             }

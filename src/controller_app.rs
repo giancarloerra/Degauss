@@ -739,6 +739,20 @@ fn test_controller_menu_flow(app: &mut App) {
         app.settings.controller_profiles.is_empty(),
         "editing does not change saved settings before Save"
     );
+    let draft = app.controllers.draft.clone();
+    app.controllers
+        .draft
+        .bindings
+        .insert(Control::Select, draft.bindings[&Control::Menu].clone());
+    app.menu_list.select(controller::ROLE_COUNT);
+    assert!(app.handle_controller_menu(Action::Accept));
+    assert_eq!(
+        app.message.as_deref(),
+        Some("Controller settings failed: The same control is assigned more than once: Y"),
+        "conflicts identify the duplicated physical control after both button swaps"
+    );
+    app.handle(Action::Quit);
+    app.controllers.draft = draft;
     app.menu_list.select(Control::Actions.index());
     assert!(app.handle_controller_menu(Action::Context));
     assert_eq!(
