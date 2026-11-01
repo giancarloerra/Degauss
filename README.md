@@ -31,7 +31,7 @@ Degauss plays nice with the standard MiSTer setup, folders and scripts, instead 
 15. **Expanded Core Updates** shows installed cores, available updates and What's New, with latest-first sorting and cached browsing while refreshing.
 16. **Core choice per system or game**, including installed RetroAchievements, Unstable and Dual SDRAM builds.
 17. **Startup and guest controls** offer optional last-game startup with cancellation and PIN-protected kiosk mode.
-18. **Fits into MiSTer**: configured controllers work straight away, with an optional five-second controller hold to return from games. Run installed scripts through MiSTer's native terminal or use Zaparoo Core launches.
+18. **Fits into MiSTer**: configured controllers work straight away, with a controller tester, optional Degauss-only mappings and a five-second controller hold to return from games. Run installed scripts through MiSTer's native terminal or use Zaparoo Core launches.
 
 Source available, written in Rust and using Slint, and licensed for non-commercial use.
 
@@ -214,6 +214,16 @@ The matching Degauss Main is required for the tester and custom mappings.
 Native OSD controls, scripts, game controls, ordinary keyboard input and the configured
 keyboard/controller return-to-Degauss shortcuts are unchanged. On-screen hints
 use the active controller's effective assignments, including non-face buttons.
+
+<p align="center">
+  <img src="docs/screenshots/1.1.2/01-controller-tester.png" alt="Live controller tester" width="720">
+</p>
+<p align="center"><em>Test the controller without changing its mapping.</em></p>
+
+<p align="center">
+  <img src="docs/screenshots/1.1.2/02-controller-mapping.png" alt="Degauss-only controller mapping editor" width="720">
+</p>
+<p align="center"><em>Optional Degauss controls, independent of game and native MiSTer mappings.</em></p>
 
 **Options → Shortcuts** can assign an optional one-second hold to A, B, X or Y.
 A short press keeps the button's normal action. An available hold runs once and
@@ -1014,6 +1024,16 @@ sets up: the two keep separate caches even when they share the folder.
 Nothing else needs resetting.
 
 ### Additional computer and disc libraries
+
+Version 1.1.2 adds **Hitachi Basic Master Jr.** in `games/BasicMasterJr`.
+Its `bmt`, `bin`, `sav` and raw `cmt` tape images use file-transfer slot 1;
+explicit MGL launchers remain unchanged. These are demodulated tape bytes, not
+WAV audio. Mounting a tape still requires the core's normal LOAD/RUN or monitor
+commands; follow its [tape instructions](https://github.com/MiSTer-devel/Distribution_MiSTer/blob/main/docs/BasicMasterJr/Readme.md#loading-tapes).
+Recordings use the core's normal `saves/BasicMasterJr/<name>.sav` sidecar.
+The editable `boot1.rom` tape-hint list is preserved and is not a game or BIOS.
+The library follows the installed core's folder, currently Console in the
+official Distribution, even though Basic Master Jr. is a computer.
 
 Apple III, Macintosh Quadra 800, NeXT Color, Sun-2, Sun-3, Macintosh SE/30,
 Macintosh IIcx, FM Towns Marty, UKNC, Sun SPARCstation 20 and Cray X-MP use their normal `games/<core>` folders.

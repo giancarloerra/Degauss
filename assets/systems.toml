@@ -2527,6 +2527,18 @@ index = 1
 delay = 1
 
 [[systems]]
+name = "Hitachi Basic Master Jr."
+id = "BasicMasterJr"
+folders = ["BasicMasterJr"]
+rbf = "_Console/BasicMasterJr"
+extensions = ["bmt", "bin", "sav", "cmt", "mgl"]
+[[systems.launch]]
+extensions = ["bmt", "bin", "sav", "cmt"]
+type = "f"
+index = 1
+delay = 1
+
+[[systems]]
 name = "Super Cassette Vision"
 id = "SCV"
 folders = ["SCV"]
