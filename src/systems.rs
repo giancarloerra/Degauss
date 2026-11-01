@@ -2171,6 +2171,10 @@ extensions = ["md", "bin"]
             ("UKNC", "vhd", "s", 2),
             ("IQ151", "dsk", "s", 1),
             ("VideoBrain", "bin", "f", 1),
+            ("BasicMasterJr", "bmt", "f", 1),
+            ("BasicMasterJr", "bin", "f", 1),
+            ("BasicMasterJr", "sav", "f", 1),
+            ("BasicMasterJr", "cmt", "f", 1),
             ("Neon", "dsk", "s", 0),
             ("Neon", "img", "s", 2),
             ("SunSparcStation", "vhd", "s", 0),
@@ -2312,7 +2316,7 @@ extensions = ["md", "bin"]
             );
             if matches!(
                 id,
-                "IQ151" | "VideoBrain" | "Neon" | "PC88" | "UKNC" | "Sun-3"
+                "IQ151" | "VideoBrain" | "BasicMasterJr" | "Neon" | "PC88" | "UKNC" | "Sun-3"
             ) {
                 assert_eq!(
                     plan.mgl.matches("<file ").count(),
@@ -2359,6 +2363,7 @@ extensions = ["md", "bin"]
             ("UKNC", "vhd"),
             ("IQ151", "dsk"),
             ("VideoBrain", "bin"),
+            ("BasicMasterJr", "bmt"),
             ("Neon", "img"),
             ("PC88", "cmt"),
             ("SunSparcStation", "vhd"),
@@ -2399,7 +2404,11 @@ extensions = ["md", "bin"]
             };
             assert_eq!(
                 found.category(),
-                if id == "Marty" { "Console" } else { "Computer" }
+                if matches!(id, "Marty" | "BasicMasterJr") {
+                    "Console"
+                } else {
+                    "Computer"
+                }
             );
             let library = crate::browse::Library::open(&found.to_config()).unwrap();
             let cache = crate::cache::build_system(&library);
@@ -2430,6 +2439,7 @@ extensions = ["md", "bin"]
         let table = load_table(Path::new("assets/systems.toml")).unwrap();
         let card = temp_dir("computer-multi-media-launchers");
         for (id, files) in [
+            ("BasicMasterJr", "<file delay=\"1\" type=\"f\" index=\"1\" path=\"Tape.bmt\"/>"),
             ("IQ151", "<file delay=\"1\" type=\"s\" index=\"1\" path=\"A.dsk\"/><file delay=\"1\" type=\"s\" index=\"0\" path=\"B.dsk\"/>"),
             ("VideoBrain", "<file delay=\"1\" type=\"f\" index=\"1\" path=\"Cart.bin\"/><file delay=\"1\" type=\"f\" index=\"4\" path=\"Keys.vbk\"/><file delay=\"1\" type=\"s\" index=\"0\" path=\"Play.vbt\"/><file delay=\"1\" type=\"s\" index=\"1\" path=\"Record.vbt\"/><file delay=\"1\" type=\"s\" index=\"2\" path=\"Print.vbp\"/>"),
             ("Neon", "<file delay=\"1\" type=\"s\" index=\"0\" path=\"A.dsk\"/><file delay=\"1\" type=\"s\" index=\"1\" path=\"B.dsk\"/><file delay=\"1\" type=\"s\" index=\"2\" path=\"Disk.img\"/>"),
@@ -2469,10 +2479,12 @@ extensions = ["md", "bin"]
         let card = temp_dir("computer-dated-core-discovery");
         let games = card.join("games");
         std::fs::create_dir_all(card.join("_Computer")).unwrap();
+        std::fs::create_dir_all(card.join("_Console")).unwrap();
         for (id, date) in [
             ("IQ151", "20261028"),
             ("VideoBrain", "20261027"),
             ("Neon", "20261025"),
+            ("BasicMasterJr", "20261028"),
         ] {
             let def = table.iter().find(|def| def.id == id).unwrap();
             std::fs::create_dir_all(games.join(&def.folders[0])).unwrap();
@@ -2483,7 +2495,7 @@ extensions = ["md", "bin"]
             .unwrap();
         }
         let index = CoreIndex::read(&card);
-        for id in ["IQ151", "VideoBrain", "Neon"] {
+        for id in ["IQ151", "VideoBrain", "Neon", "BasicMasterJr"] {
             let def = table.iter().find(|def| def.id == id).unwrap();
             let found = discover(
                 std::slice::from_ref(def),
@@ -2496,8 +2508,13 @@ extensions = ["md", "bin"]
                 1,
                 "{id}: dated installed core must be discoverable"
             );
-            assert_eq!(found[0].category(), "Computer");
-            assert_eq!(found[0].menu_folder.as_deref(), Some("Computer"));
+            let category = if id == "BasicMasterJr" {
+                "Console"
+            } else {
+                "Computer"
+            };
+            assert_eq!(found[0].category(), category);
+            assert_eq!(found[0].menu_folder.as_deref(), Some(category));
             assert_eq!(found[0].path(), games.join(&def.folders[0]));
         }
         let videobrain = table.iter().find(|def| def.id == "VideoBrain").unwrap();

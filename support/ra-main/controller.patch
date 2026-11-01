@@ -146,3 +146,14 @@
 +    subprocess.run(['c++', '-std=c++11', '-Wall', '-Wextra', '-Werror', str(path / 'test.cpp'), '-o', str(path / 'test')], check=True)
 +    subprocess.run([str(path / 'test')], check=True)
 +print('Joystick first-poll clearing, full-word updates, release and swap checks passed')
+diff --git a/input.cpp b/input.cpp
+--- a/input.cpp
++++ b/input.cpp
+@@ -2429,6 +2429,6 @@
+ 		degauss_controller_cancel_capture();
+ 		std::string error;
+-		if (!degauss_controller_prepare_capture_axes(instance, cfg.dpad_threshold, error)) {
++		if (!degauss_controller_prepare_capture_axes(instance, 50, error)) {
+ 			degauss_controller_error(token, error);
+ 			return;
+ 		}

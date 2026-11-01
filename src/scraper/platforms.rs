@@ -221,6 +221,7 @@ mod tests {
             "Aquarius",
             "Audio",
             "BBCBridgeCompanion",
+            "BasicMasterJr",
             "C128",
             "CBM-II",
             "CasioPV2000",

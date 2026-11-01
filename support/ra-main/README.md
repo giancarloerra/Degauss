@@ -78,6 +78,9 @@ This supports curl 7.43 or newer. Shortcut configuration at
 `config/degauss/frontend_shortcut.bin` is shared with normal Degauss Main.
 Existing 16-byte version 1 records retain the keyboard assignment with Controller
 Off; new version 2 saves preserve the keyboard and controller choices separately.
+The frontend-only controller tester and custom mappings use the same acknowledged
+Main interface as normal Degauss Main. They leave these return-shortcut records,
+native OSD mappings and game mappings unchanged.
 The controller gesture is a continuous five-second hold, with normal button input
 still sent to the game. There is no second shortcut setting.
 Frontend and either configured shortcut load `menu.rbf`;
