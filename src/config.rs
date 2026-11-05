@@ -519,6 +519,7 @@ impl Config {
                     crate::systems::with_library_folders(
                         table,
                         &config.library_folders,
+                        Path::new(&config.menu_root),
                         &user_path,
                     )?;
                 }

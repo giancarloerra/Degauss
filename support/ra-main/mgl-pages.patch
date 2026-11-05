@@ -1,11 +1,11 @@
 diff --git a/menu.cpp b/menu.cpp
-index 78ac56f..38238b1 100644
 --- a/menu.cpp
 +++ b/menu.cpp
-@@ -1135,6 +1135,42 @@ static int gun_idx = 0;
+@@ -1115,6 +1115,43 @@
+ static int gun_idx = 0;
  static int32_t gun_pos[4] = {};
  static int page = 0;
- 
++
 +// MGL media can live in a core submenu. Keep the normal visible-row parser
 +// and transfer path, but render the page containing the requested slot first.
 +static int MglFilePage(char type, int index, int current_page, uint32_t hdmask)
@@ -13,6 +13,7 @@ index 78ac56f..38238b1 100644
 +	int found = -1;
 +	for (int i = 2; const char *p = user_io_get_confstr(i); ++i)
 +	{
++		if (!strncmp(p, "DEFMRA,", 7)) continue;
 +		int hidden = 0, disabled = 0;
 +		while ((p[0] == 'H' || p[0] == 'D' || p[0] == 'h' || p[0] == 'd') && strlen(p) > 2)
 +		{
@@ -26,7 +27,7 @@ index 78ac56f..38238b1 100644
 +		int option_page = 0;
 +		if (p[0] == 'P')
 +		{
-+			if (strlen(p) < 3 || p[1] < '1' || p[1] > '9' || p[2] == ',') continue;
++			if (strlen(p) < 3 || p[1] < '0' || p[1] > '9' || p[2] == ',') continue;
 +			option_page = p[1] - '0';
 +			p += 2;
 +		}
@@ -41,14 +42,14 @@ index 78ac56f..38238b1 100644
 +	}
 +	return found < 0 ? current_page : found;
 +}
-+
+ 
  static void menu_button_name(int button, char *buf, size_t bsize)
  {
- 	switch(button)
-@@ -2132,6 +2168,25 @@ void HandleUI(void)
+@@ -2038,6 +2075,26 @@
  	case MENU_GENERIC_MAIN1: {
  		hdmask = spi_uio_cmd16(UIO_GET_OSDMASK, 0);
  		user_io_read_confstr();
++		if (!mgl->done) mgl->item[mgl->current].submenu = -1;
 +		if (!flat && !mgl->done)
 +		{
 +			const int next_page = MglFilePage(mgl->item[mgl->current].type,
@@ -71,7 +72,7 @@ index 78ac56f..38238b1 100644
  		uint32_t s_entry = 0;
  		int entry = 0;
  		while(1)
-@@ -2256,7 +2311,7 @@ void HandleUI(void)
+@@ -2163,7 +2220,7 @@
  							if (p[idx] == 'C') idx++;
  
  							int num = (p[idx] >= '0' && p[idx] <= '9') ? p[idx] - '0' : 0;
@@ -80,12 +81,19 @@ index 78ac56f..38238b1 100644
  
  							if (is_x86() && x86_get_image_name(num))
  							{
+@@ -2418,6 +2475,7 @@
+ 		{
+ 			menustate = MENU_NONE1;
+ 			mgl->state = 3;
++			break;
+ 		}
+ 
+ 		if (menu_save_timer && !CheckTimer(menu_save_timer))
 diff --git a/tests/run-degauss-mgl-page-tests.py b/tests/run-degauss-mgl-page-tests.py
 new file mode 100644
-index 0000000..4b972bd
 --- /dev/null
 +++ b/tests/run-degauss-mgl-page-tests.py
-@@ -0,0 +1,105 @@
+@@ -0,0 +1,139 @@
 +#!/usr/bin/env python3
 +"""Run the production MGL page resolver against core configuration rows."""
 +from pathlib import Path
@@ -102,6 +110,9 @@ index 0000000..4b972bd
 +hook = source[hook_start:hook_end]
 +binding = next(line.strip() for line in source.splitlines()
 +               if 'mgl->item[mgl->current].submenu = selentry;' in line)
++reject_start = source.index('\t\t// F/S option not found -> deactivate mgl.')
++reject_end = source.index('\n\t\t}\n', reject_start) + len('\n\t\t}\n')
++rejection = source[reject_start:reject_end]
 +test = r'''
 +#include <cassert>
 +#include <cstdint>
@@ -116,7 +127,7 @@ index 0000000..4b972bd
 +static const int UIO_GET_OSDMASK = 0;
 +static char title[32];
 +struct File { char type; int index; int submenu; };
-+struct Mgl { bool done; int current; File item[2]; } description;
++struct Mgl { bool done; int current; File item[2]; int state = 0; } description;
 +static Mgl *mgl = &description;
 +static uint32_t spi_uio_cmd16(int, int) { return test_mask; }
 +static void user_io_read_confstr() {}
@@ -133,6 +144,18 @@ index 0000000..4b972bd
 +static void bind_mgl_slot(char type, int num, int d, int selentry) {
 +    const char p[] = {type, 0};
 +BINDING
++}
++static int consume_mgl_slot() {
++    int menustate = -1;
++    const int MENU_NONE1 = 1;
++    int continued = 0;
++    switch (0) {
++        case 0:
++REJECTION
++        ++continued;
++    }
++    assert(menustate == -1 || menustate == MENU_NONE1);
++    return continued;
 +}
 +int main() {
 +    // Real PCXT layout: cartridge slots are on page 1 and only visible for PCjr.
@@ -168,22 +191,41 @@ index 0000000..4b972bd
 +    assert(MglFilePage('F', 5, 1, 0) == 1); // Preserve the already selected matching page.
 +    assert(MglFilePage('F', 3, 0, 0) == 2);
 +    assert(MglFilePage('S', 3, 0, 0) == 0); // File and image slots are distinct.
++    rows = {"Core", "", "DEFMRA,default.mra;", "P1F0,ROM,Nested;"};
++    assert(MglFilePage('F', 0, 0, 0) == 1);
++    rows = {"Core", "", "P0F5,JRC,Root page;"};
++    assert(MglFilePage('F', 5, 1, 0) == 0);
 +    rows = {"Core", "", "H1h2P3F1,ROM,Conditional;", "P4D1F2,ROM,Literal;", "P1,Header;"};
 +    assert(MglFilePage('F', 1, 0, 1U << 2) == 3);
 +    assert(MglFilePage('F', 1, 0, (1U << 1) | (1U << 2)) == 0);
 +    assert(MglFilePage('R', 0, 0, 0) == 0);
-+    rows = {"Core", "", "D1P2F5,JRC,Disabled;", "d2P3F6,JRC,Inverse disabled;"};
++    rows = {"Core", "", "S0,IMG,Enabled first row;", "D1P2F5,JRC,Disabled;", "d2P3F6,JRC,Inverse disabled;"};
 +    assert(MglFilePage('F', 5, 0, 1U << 1) == 0);
 +    assert(MglFilePage('F', 5, 0, 0) == 2);
 +    assert(MglFilePage('F', 6, 0, 0) == 0);
 +    assert(MglFilePage('F', 6, 0, 1U << 2) == 3);
-+    description = {false, 0, {{'F', 5, -1}, {'S', 0, -1}}};
++    // mgl_parse zero-initializes every item. A disabled or missing slot
++    // must not retain that zero and activate the first enabled media row.
++    description = {false, 0, {{'F', 5, 0}, {'S', 0, 0}}};
++    test_mask = 1U << 1;
++    page = flat = 0;
++    render_mgl_page();
 +    bind_mgl_slot('F', 5, 1, 4);
 +    assert(description.item[0].submenu == -1);
 +    bind_mgl_slot('F', 5, 0, 4);
 +    assert(description.item[0].submenu == 4);
++    description.item[0] = {'F', 9, 0};
++    render_mgl_page();
++    assert(description.item[0].submenu == -1);
++    assert(consume_mgl_slot() == 0 && description.state == 3);
++    description.item[0].submenu = 2;
++    description.state = 0;
++    assert(consume_mgl_slot() == 1 && description.state == 0);
++    description.done = true;
++    description.item[0].submenu = -1;
++    assert(consume_mgl_slot() == 1 && description.state == 0);
 +}
-+'''.replace('PRODUCTION', production).replace('HOOK', hook).replace('BINDING', binding)
++'''.replace('PRODUCTION', production).replace('HOOK', hook).replace('BINDING', binding).replace('REJECTION', rejection)
 +with tempfile.TemporaryDirectory(prefix='degauss-mgl-pages-') as tmp:
 +    cpp = Path(tmp) / 'test.cpp'
 +    binary = Path(tmp) / 'test'

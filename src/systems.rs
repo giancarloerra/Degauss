@@ -427,20 +427,36 @@ pub(crate) fn with_core_overrides(
 pub(crate) fn with_library_folders(
     table: &[SystemDef],
     additions: &BTreeMap<String, Vec<String>>,
+    menu_root: &Path,
     origin: &Path,
 ) -> Result<Vec<SystemDef>> {
     let mut updated = table.to_vec();
     for (id, folders) in additions {
-        let system = updated
-            .iter_mut()
-            .find(|system| system.id == *id)
-            .ok_or_else(|| {
-                DegaussError::malformed(
-                    "library folders",
-                    origin,
-                    format!("unknown system ID {id:?}"),
-                )
-            })?;
+        let mut position = table.iter().position(|system| system.id == *id);
+        if position.is_none() {
+            if let Some((_, category, folder)) =
+                COLLECTIONS.iter().find(|(builtin, _, _)| *builtin == id)
+            {
+                let target = collection_identity(&menu_root.join(folder))?;
+                for (index, system) in table.iter().enumerate() {
+                    if direct_collection(system)
+                        && system.category.as_deref() == Some(*category)
+                        && collection_identity(Path::new(&system.folders[0]))? == target
+                    {
+                        position = Some(index);
+                        break;
+                    }
+                }
+            }
+        }
+        let position = position.ok_or_else(|| {
+            DegaussError::malformed(
+                "library folders",
+                origin,
+                format!("unknown system ID {id:?}"),
+            )
+        })?;
+        let system = &mut updated[position];
         for folder in folders {
             if folder.trim().is_empty() {
                 return Err(DegaussError::malformed(
@@ -478,6 +494,14 @@ fn direct_collection(def: &SystemDef) -> bool {
         && def.extensions.len() == 3
 }
 
+fn collection_identity(path: &Path) -> Result<PathBuf> {
+    match std::fs::canonicalize(path) {
+        Ok(path) => Ok(path),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(path.to_path_buf()),
+        Err(error) => Err(DegaussError::io("resolving collection folder", path, error)),
+    }
+}
+
 /// Resolve shipped collection paths without rewriting the user's table.
 /// Existing equivalent rows keep their IDs, labels, artwork and hidden state.
 pub fn prepare_table(mut table: Vec<SystemDef>, menu_root: &Path) -> Result<Vec<SystemDef>> {
@@ -496,22 +520,15 @@ pub fn prepare_table(mut table: Vec<SystemDef>, menu_root: &Path) -> Result<Vec<
     }
     // Compare resolved directory identities, including symlink aliases when
     // present. A missing folder remains a literal identity until discovery.
-    let identity = |path: &Path| -> Result<PathBuf> {
-        match std::fs::canonicalize(path) {
-            Ok(path) => Ok(path),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(path.to_path_buf()),
-            Err(error) => Err(DegaussError::io("resolving collection folder", path, error)),
-        }
-    };
     let mut targets = Vec::new();
     for (_, category, folder) in COLLECTIONS {
-        targets.push((category, identity(&menu_root.join(folder))?));
+        targets.push((category, collection_identity(&menu_root.join(folder))?));
     }
     let mut seen = BTreeMap::<&str, usize>::new();
     let mut prepared: Vec<SystemDef> = Vec::new();
     for mut def in table {
         if direct_collection(&def) && Path::new(&def.folders[0]).is_absolute() {
-            let path = identity(Path::new(&def.folders[0]))?;
+            let path = collection_identity(Path::new(&def.folders[0]))?;
             if let Some((category, _)) = targets.iter().find(|(_, target)| *target == path) {
                 def.category = Some((*category).to_string());
                 if let Some(&position) = seen.get(category) {
@@ -1631,7 +1648,8 @@ mod tests {
             ],
         )]);
         let updated =
-            with_library_folders(&table, &additions, Path::new("degauss-user.toml")).unwrap();
+            with_library_folders(&table, &additions, &card, Path::new("degauss-user.toml"))
+                .unwrap();
         let original = table.iter().find(|system| system.id == "Arcade").unwrap();
         let arcade = updated.iter().find(|system| system.id == "Arcade").unwrap();
         assert_eq!(&arcade.folders[..2], &original.folders);
@@ -1654,6 +1672,46 @@ mod tests {
                 .folders
         );
         std::fs::remove_dir_all(card).unwrap();
+    }
+
+    #[test]
+    fn library_folders_follow_the_retained_collection_identity() {
+        let menu = temp_dir("retained-library-identity");
+        std::fs::create_dir_all(menu.join("_Unstable")).unwrap();
+        let mut table = load_table(Path::new("assets/systems.toml")).unwrap();
+        let mut custom = table
+            .iter()
+            .find(|def| def.id == "UnstableCores")
+            .unwrap()
+            .clone();
+        custom.id = "MyNightlies".into();
+        custom.name = "My existing cores".into();
+        custom.folders = vec![menu.join("_Unstable").to_string_lossy().into_owned()];
+        let mut outside = custom.clone();
+        outside.id = "OutsideNightlies".into();
+        outside.folders = vec![menu.join("outside").to_string_lossy().into_owned()];
+        table.insert(0, outside);
+        table.push(custom);
+        let prepared = prepare_table(table, &menu).unwrap();
+        assert!(!prepared.iter().any(|def| def.id == "UnstableCores"));
+        let extra = menu.join("more-cores").to_string_lossy().into_owned();
+        let additions = BTreeMap::from([("UnstableCores".into(), vec![extra.clone()])]);
+        let updated =
+            with_library_folders(&prepared, &additions, &menu, Path::new("degauss-user.toml"))
+                .unwrap();
+        let held = updated.iter().find(|def| def.id == "MyNightlies").unwrap();
+        assert_eq!(held.name, "My existing cores");
+        assert_eq!(held.folders.last(), Some(&extra));
+        assert_eq!(
+            updated
+                .iter()
+                .find(|def| def.id == "OutsideNightlies")
+                .unwrap()
+                .folders
+                .len(),
+            1
+        );
+        std::fs::remove_dir_all(menu).unwrap();
     }
 
     #[test]

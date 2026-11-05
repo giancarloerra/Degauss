@@ -146,7 +146,12 @@ fn walk_nightlies(
                 })?;
             if nightly_matches(stem, &system.rbf)
                 && system.minimum_build.as_deref().is_none_or(|minimum| {
-                    crate::systems::core_build_date(stem).is_some_and(|date| date >= minimum)
+                    let lower = stem.to_ascii_lowercase();
+                    lower
+                        .rfind("_unstable_")
+                        .and_then(|at| stem.get(at + 10..at + 18))
+                        .or_else(|| crate::systems::core_build_date(stem))
+                        .is_some_and(|date| date >= minimum)
                 })
             {
                 let relative = path.strip_prefix(root).expect("scan remains beneath root");
@@ -480,6 +485,33 @@ mod tests {
         let path = root.join(path);
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(path, bytes).unwrap();
+    }
+
+    #[test]
+    fn minimum_build_keeps_qualifying_unstable_versions_for_pcxt_profiles() {
+        let root = directory("pcxt-nightly-floor");
+        let table = crate::systems::load_table(Path::new("assets/systems.toml")).unwrap();
+        let config = crate::systems::FoundSystem {
+            def: table.iter().find(|def| def.id == "PCjr").unwrap().clone(),
+            paths: vec![root.join("games/PCjr")],
+            logo_dir: None,
+            menu_folder: None,
+        }
+        .to_config()
+        .core_family_configs()
+        .remove(1);
+        let older = "_Unstable/PCXT_unstable_20261102_ffffffff.rbf";
+        let current = "_Unstable/PCXT_unstable_20261103_12345678.rbf";
+        let standard_name = "_Unstable/PCXT_20261104.rbf";
+        for path in [older, current, standard_name] {
+            write(&root, path, b"core");
+        }
+        let versions = nightlies(&config, &root).unwrap();
+        assert!(!versions.iter().any(|v| v.key == older));
+        assert!(versions.iter().any(|v| v.key == current));
+        assert!(versions.iter().any(|v| v.key == standard_name));
+        assert!(has_unstable_version(&config, &root).unwrap());
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

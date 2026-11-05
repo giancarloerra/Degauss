@@ -826,109 +826,6 @@ fn favorite_profile_slots(
     Ok(result)
 }
 
-#[cfg(test)]
-mod profile_slot_tests {
-    use super::*;
-
-    #[test]
-    fn pcjr_core_selection_updates_favourite_slots_without_rewriting_saved_files() {
-        let root =
-            std::env::temp_dir().join(format!("degauss-pcjr-profiles-{}", std::process::id()));
-        std::fs::create_dir_all(root.join("_Computer")).unwrap();
-        for core in ["PCXT", "PCjr"] {
-            std::fs::write(root.join(format!("_Computer/{core}_20261103.rbf")), b"core").unwrap();
-        }
-        let table = crate::systems::load_table(Path::new("assets/systems.toml")).unwrap();
-        let system = crate::systems::FoundSystem {
-            def: table
-                .iter()
-                .find(|system| system.id == "PCjr")
-                .unwrap()
-                .clone(),
-            paths: vec![root.join("games/PCjr")],
-            logo_dir: None,
-            menu_folder: None,
-        }
-        .to_config();
-        let game = root.join("games/PCjr/game.jrc");
-        std::fs::create_dir_all(game.parent().unwrap()).unwrap();
-        std::fs::write(&game, b"cartridge").unwrap();
-        let output = root.join("launch.mgl");
-        let generated = plan_with_selections(
-            &system,
-            &game,
-            &output,
-            &root,
-            false,
-            None,
-            Some("pcxt-pcjr"),
-        )
-        .unwrap();
-        assert!(generated.mgl.contains("index=\"5\""));
-        assert!(generated
-            .mgl
-            .contains("<setname same_dir=\"1\">PCXT-PCjr</setname>"));
-        let saved = root.join("game.mgl");
-        let old = favorite_mgl_with_selections(&system, &game, &root, false, None, Some("primary"))
-            .unwrap()
-            .unwrap();
-        assert!(old.contains("index=\"2\""));
-        std::fs::write(&saved, &old).unwrap();
-        let selected = plan_with_selections(
-            &system,
-            &saved,
-            &output,
-            &root,
-            false,
-            None,
-            Some("pcxt-pcjr"),
-        )
-        .unwrap();
-        assert!(selected.mgl.contains("index=\"5\""));
-        assert_eq!(std::fs::read_to_string(&saved).unwrap(), old);
-        let new =
-            favorite_mgl_with_selections(&system, &game, &root, false, None, Some("pcxt-pcjr"))
-                .unwrap()
-                .unwrap();
-        assert!(new.contains("index=\"5\""));
-        std::fs::write(&saved, &new).unwrap();
-        let selected = plan_with_selections(
-            &system,
-            &saved,
-            &output,
-            &root,
-            false,
-            None,
-            Some("primary"),
-        )
-        .unwrap();
-        assert!(selected.mgl.contains("index=\"2\""));
-        assert_eq!(std::fs::read_to_string(&saved).unwrap(), new);
-        // An explicit two-cartridge PCXT launcher already declares its
-        // machine and slots. Automatic must preserve that declaration.
-        let explicit = game.parent().unwrap().join("Two cartridges.mgl");
-        std::fs::write(
-            game.parent().unwrap().join("other.jrc"),
-            b"second cartridge",
-        )
-        .unwrap();
-        let explicit_xml = "<mistergamedescription><rbf>_Computer/PCXT</rbf><setname same_dir=\"1\">PCXT-PCjr</setname><file type=\"f\" index=\"5\" path=\"game.jrc\"/><file type=\"f\" index=\"6\" path=\"other.jrc\"/></mistergamedescription>";
-        std::fs::write(&explicit, explicit_xml).unwrap();
-        let automatic =
-            plan_with_selections(&system, &explicit, &output, &root, false, None, None).unwrap();
-        let effective = if automatic.mgl.is_empty() {
-            explicit_xml
-        } else {
-            &automatic.mgl
-        };
-        assert!(effective.contains("_Computer/PCXT"));
-        assert!(effective.contains("index=\"5\""));
-        assert!(effective.contains("index=\"6\""));
-        assert_eq!(std::fs::read_to_string(&explicit).unwrap(), explicit_xml);
-        std::fs::remove_dir_all(root).unwrap();
-    }
-}
-
 /// The fixed core named by a format-specific rule, after confirming MiSTer
 /// can actually load it from the menu root.
 fn rule_core(
@@ -1403,6 +1300,93 @@ pub fn publish_active_game(game: Option<&Path>, target: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pcjr_core_selection_updates_favourite_slots_without_rewriting_saved_files() {
+        let root =
+            std::env::temp_dir().join(format!("degauss-pcjr-profiles-{}", std::process::id()));
+        std::fs::create_dir_all(root.join("_Computer")).unwrap();
+        for core in ["PCXT", "PCjr"] {
+            std::fs::write(root.join(format!("_Computer/{core}_20261103.rbf")), b"core").unwrap();
+        }
+        let system = shipped_system("PCjr", vec![root.join("games/PCjr")]);
+        let game = root.join("games/PCjr/game.jrc");
+        std::fs::create_dir_all(game.parent().unwrap()).unwrap();
+        std::fs::write(&game, b"cartridge").unwrap();
+        let output = root.join("launch.mgl");
+        let generated = plan_with_selections(
+            &system,
+            &game,
+            &output,
+            &root,
+            false,
+            None,
+            Some("pcxt-pcjr"),
+        )
+        .unwrap();
+        assert!(generated.mgl.contains("index=\"5\""));
+        assert!(generated
+            .mgl
+            .contains("<setname same_dir=\"1\">PCXT-PCjr</setname>"));
+        let saved = root.join("game.mgl");
+        let old = favorite_mgl_with_selections(&system, &game, &root, false, None, Some("primary"))
+            .unwrap()
+            .unwrap();
+        assert!(old.contains("index=\"2\""));
+        std::fs::write(&saved, &old).unwrap();
+        let selected = plan_with_selections(
+            &system,
+            &saved,
+            &output,
+            &root,
+            false,
+            None,
+            Some("pcxt-pcjr"),
+        )
+        .unwrap();
+        assert!(selected.mgl.contains("index=\"5\""));
+        assert_eq!(std::fs::read_to_string(&saved).unwrap(), old);
+        let new =
+            favorite_mgl_with_selections(&system, &game, &root, false, None, Some("pcxt-pcjr"))
+                .unwrap()
+                .unwrap();
+        assert!(new.contains("index=\"5\""));
+        std::fs::write(&saved, &new).unwrap();
+        let selected = plan_with_selections(
+            &system,
+            &saved,
+            &output,
+            &root,
+            false,
+            None,
+            Some("primary"),
+        )
+        .unwrap();
+        assert!(selected.mgl.contains("index=\"2\""));
+        assert_eq!(std::fs::read_to_string(&saved).unwrap(), new);
+        // An explicit two-cartridge PCXT launcher already declares its
+        // machine and slots. Automatic must preserve that declaration.
+        let explicit = game.parent().unwrap().join("Two cartridges.mgl");
+        std::fs::write(
+            game.parent().unwrap().join("other.jrc"),
+            b"second cartridge",
+        )
+        .unwrap();
+        let explicit_xml = "<mistergamedescription><rbf>_Computer/PCXT</rbf><setname same_dir=\"1\">PCXT-PCjr</setname><file type=\"f\" index=\"5\" path=\"game.jrc\"/><file type=\"f\" index=\"6\" path=\"other.jrc\"/></mistergamedescription>";
+        std::fs::write(&explicit, explicit_xml).unwrap();
+        let automatic =
+            plan_with_selections(&system, &explicit, &output, &root, false, None, None).unwrap();
+        let effective = if automatic.mgl.is_empty() {
+            explicit_xml
+        } else {
+            &automatic.mgl
+        };
+        assert!(effective.contains("_Computer/PCXT"));
+        assert!(effective.contains("index=\"5\""));
+        assert!(effective.contains("index=\"6\""));
+        assert_eq!(std::fs::read_to_string(&explicit).unwrap(), explicit_xml);
+        std::fs::remove_dir_all(root).unwrap();
+    }
     use crate::config::LaunchRule;
 
     const AMIGAVISION_2026_04_GAMES: &[u8] =

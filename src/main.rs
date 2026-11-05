@@ -446,6 +446,7 @@ fn load_everything(args: &Args) -> Result<Loaded> {
         systems::with_library_folders(
             &table,
             &config.library_folders,
+            Path::new(&config.menu_root),
             &config_path.with_file_name("degauss-user.toml"),
         )?
     };
@@ -639,10 +640,10 @@ fn diagnostic_launch_plan(
     )
 }
 
-fn check_install(config_path: &Path) -> Result<()> {
+fn check_install(config_path: &Path, selected_systems: Option<&Path>) -> Result<()> {
     let dir = config_path.parent().unwrap_or(Path::new(".")).to_path_buf();
     let mut problems: Vec<String> = Vec::new();
-    let mut user_config = None;
+    let mut checked_config = None;
 
     println!("build        {}", build_description());
     println!("folder       {}", dir.display());
@@ -672,14 +673,15 @@ fn check_install(config_path: &Path) -> Result<()> {
 
     match std::fs::read_to_string(config_path) {
         Ok(text) => match Config::parse(&text, config_path) {
-            Ok(_) => {
+            Ok(config) => {
                 println!("degauss.toml present, parses");
+                checked_config = Some((config, config_path.to_path_buf()));
                 let user_path = dir.join("degauss-user.toml");
                 match std::fs::read_to_string(&user_path) {
                     Ok(user_text) => match Config::with_overrides(&text, &user_text, &user_path) {
                         Ok(config) => {
                             println!("degauss-user.toml present, parses");
-                            user_config = Some(config);
+                            checked_config = Some((config, user_path.clone()));
                         }
                         Err(error) => {
                             println!("degauss-user.toml PRESENT BUT BROKEN");
@@ -704,25 +706,26 @@ fn check_install(config_path: &Path) -> Result<()> {
         }
     }
 
-    let systems_path = dir.join("systems.toml");
+    let systems_path = selected_systems
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| dir.join("systems.toml"));
     match std::fs::read_to_string(&systems_path) {
         Ok(text) => match systems::parse_table(&text, &systems_path) {
             Ok(table) => {
                 println!("systems.toml present, parses, {} systems", table.len());
-                if let Some(config) = &user_config {
+                if let Some((config, origin)) = &checked_config {
                     if let Err(error) = systems::with_library_folders(
                         &table,
                         &config.library_folders,
-                        &dir.join("degauss-user.toml"),
+                        Path::new(&config.menu_root),
+                        origin,
                     ) {
                         println!("library folders INVALID");
                         problems.push(error.to_string());
                     }
-                    if let Err(error) = systems::with_core_overrides(
-                        &table,
-                        &config.core_overrides,
-                        &dir.join("degauss-user.toml"),
-                    ) {
+                    if let Err(error) =
+                        systems::with_core_overrides(&table, &config.core_overrides, origin)
+                    {
                         println!("core overrides INVALID");
                         problems.push(error.to_string());
                     }
@@ -950,7 +953,7 @@ fn run() -> Result<()> {
             .config
             .clone()
             .unwrap_or_else(|| beside_binary("degauss.toml"));
-        return check_install(&config_path);
+        return check_install(&config_path, args.systems.as_deref());
     }
 
     let started = Instant::now();
@@ -2521,7 +2524,25 @@ mod tests {
             use std::os::unix::fs::PermissionsExt;
             std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o755)).unwrap();
         }
-        assert!(check_install(&config_path).is_ok());
+        assert!(check_install(&config_path, None).is_ok());
+        for folders in ["Unknown = ['/extra']", "Arcade = ['']"] {
+            std::fs::write(
+                &config_path,
+                format!("{base}[library_folders]\n{folders}\n"),
+            )
+            .unwrap();
+            assert!(
+                check_install(&config_path, None).is_err(),
+                "invalid base library folders must be reported without a user file"
+            );
+        }
+        std::fs::write(
+            &config_path,
+            format!("{base}[library_folders]\nArcade = ['/extra']\n"),
+        )
+        .unwrap();
+        assert!(check_install(&config_path, None).is_ok());
+        std::fs::write(&config_path, base).unwrap();
         let user_path = root.join("degauss-user.toml");
         for invalid in [
             "[app\n",
@@ -2530,7 +2551,7 @@ mod tests {
         ] {
             std::fs::write(&user_path, invalid).unwrap();
             assert!(
-                check_install(&config_path).is_err(),
+                check_install(&config_path, None).is_err(),
                 "a broken user override must not receive a healthy installation verdict"
             );
             assert_eq!(Config::load(&config_path).unwrap().app.art_cache, 200);
@@ -2538,12 +2559,21 @@ mod tests {
         }
         std::fs::remove_file(&user_path).unwrap();
         std::fs::create_dir(&user_path).unwrap();
-        assert!(check_install(&config_path).is_err());
+        assert!(check_install(&config_path, None).is_err());
         assert_eq!(Config::load(&config_path).unwrap().app.art_cache, 200);
         std::fs::remove_dir(&user_path).unwrap();
         std::fs::write(&user_path, "[app]\nart_cache = 123\n").unwrap();
-        assert!(check_install(&config_path).is_ok());
+        assert!(check_install(&config_path, None).is_ok());
         assert_eq!(Config::load(&config_path).unwrap().app.art_cache, 123);
+        let selected_table = root.join("custom-systems.toml");
+        std::fs::write(
+            &selected_table,
+            include_str!("../assets/systems.toml").replace("id = \"Arcade\"", "id = \"MyArcade\""),
+        )
+        .unwrap();
+        std::fs::write(&user_path, "[library_folders]\nMyArcade = ['/extra']\n").unwrap();
+        assert!(check_install(&config_path, None).is_err());
+        assert!(check_install(&config_path, Some(&selected_table)).is_ok());
         assert_eq!(std::fs::read_to_string(&config_path).unwrap(), base);
         std::fs::remove_dir_all(root).unwrap();
     }

@@ -1546,7 +1546,8 @@ the first matching root winning for each name. This does not add a new system.
 
 Restart Degauss after changing this file, then use **Rebuild This System List**
 for each affected existing library to add or remove its cached entries.
-Other libraries need no rebuild. Multiple locations appear as separate folder
+**Options → Library → Show Systems with No Games** makes a hidden empty library
+available to enter and rebuild. Other libraries need no rebuild. Multiple locations appear as separate folder
 rows, each with its own gamelist and artwork. Equal folder names show their
 paths so the locations can be distinguished. Keep existing MRA/MGL files in
 place, including an isolated collection's support-core directory.
