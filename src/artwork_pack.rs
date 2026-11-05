@@ -4198,6 +4198,7 @@ mod tests {
             setname: Some("SuperGrafx".to_string()),
             same_dir: false,
             compatible_cores: Vec::new(),
+            minimum_build: None,
             skip_folders: Vec::new(),
             extra_paths: Vec::new(),
         };

@@ -440,6 +440,15 @@ fn load_everything(args: &Args) -> Result<Loaded> {
         systems::with_core_overrides(&table, &config.core_overrides, &origin)?
     };
     let table = systems::prepare_table(table, Path::new(&config.menu_root))?;
+    let table = if config.library_folders.is_empty() {
+        table
+    } else {
+        systems::with_library_folders(
+            &table,
+            &config.library_folders,
+            &config_path.with_file_name("degauss-user.toml"),
+        )?
+    };
 
     let roots: Vec<PathBuf> = config.game_roots.iter().map(PathBuf::from).collect();
     // Logos live beside the configuration, named after the system.
@@ -701,6 +710,14 @@ fn check_install(config_path: &Path) -> Result<()> {
             Ok(table) => {
                 println!("systems.toml present, parses, {} systems", table.len());
                 if let Some(config) = &user_config {
+                    if let Err(error) = systems::with_library_folders(
+                        &table,
+                        &config.library_folders,
+                        &dir.join("degauss-user.toml"),
+                    ) {
+                        println!("library folders INVALID");
+                        problems.push(error.to_string());
+                    }
                     if let Err(error) = systems::with_core_overrides(
                         &table,
                         &config.core_overrides,

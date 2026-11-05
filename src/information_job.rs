@@ -193,6 +193,7 @@ mod tests {
             setname: None,
             same_dir: false,
             compatible_cores: Vec::new(),
+            minimum_build: None,
             skip_folders: vec![],
             extra_paths: vec![],
             preserve_rbf_stem: false,

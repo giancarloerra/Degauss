@@ -4517,6 +4517,8 @@ fn run_last_played_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
             rbf: "_Arcade/LegacyNES".into(),
             setname: Some("LegacyNES".into()),
             same_dir: false,
+            launch: Vec::new(),
+            minimum_build: None,
         });
     app.settings
         .launch_cores

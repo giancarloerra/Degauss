@@ -36,12 +36,14 @@ jobs:
           patch --fuzz=0 -p1 < ../support/ra-main/frontend.patch
           patch --fuzz=0 -p1 < ../support/ra-main/tls.patch
           patch --fuzz=0 -p1 < ../support/ra-main/controller.patch
+          patch --fuzz=0 -p1 < ../support/ra-main/mgl-pages.patch
           python3 tests/run-degauss-controls-tests.py
           bash tests/run-degauss-shortcut-tests.sh
           python3 tests/run-ra-controller-tests.py
           python3 tests/degauss_script_handover_test.py
           python3 tests/degauss_native_scripts_test.py
           python3 tests/run-degauss-core-menu-tests.py
+          python3 tests/run-degauss-mgl-page-tests.py
           arm-linux-gnueabihf-g++-10 -std=gnu++14 -mcpu=cortex-a9 -mfpu=neon -mfloat-abi=hard \
             -I. -Ilib/libco -Ilib/miniz -Ilib/md5 -Ilib/lzma -Ilib/zstd/lib \
             -Ilib/libchdr/include -Ilib/bluetooth -Ilib/serial_server/library \

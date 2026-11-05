@@ -134,6 +134,7 @@ const PLATFORMS: &[(&[&str], u32, &str)] = &[
     (&["SCV"], 1064, "Epoch - Super Cassette Vision"),
     (&["Studio-II"], 1065, "RCA - Studio II"),
     (&["AtariST"], 1066, "Atari - ST"),
+    (&["SharpX1"], 1067, "Sharp - X1"),
 ];
 
 pub fn platform(system_id: &str) -> Option<(u32, &'static str)> {

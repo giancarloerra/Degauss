@@ -71,7 +71,7 @@ pub fn has_alternatives(system: &SystemConfig) -> bool {
 /// is installed. Core Version reports why that particular version cannot be
 /// used. I/O failures remain real failures and must not be hidden.
 fn family_present(system: &SystemConfig, root: &Path) -> Result<bool> {
-    if crate::core_variants::core_present(root, &system.rbf)? {
+    if crate::core_variants::installed_standard(system, root)?.is_some() {
         return Ok(true);
     }
     match crate::core_variants::installed_ra(system, root) {
@@ -176,9 +176,18 @@ pub fn resolve_for_version(
             )
         })?;
     if !family_present(&family.config, root)? {
+        let requirement = family
+            .config
+            .minimum_build
+            .as_deref()
+            .map(|date| format!(" (build {date} or newer)"))
+            .unwrap_or_default();
         return Err(DegaussError::unsupported(
             "selected launch core",
-            format!("{} is not installed for {}", family.label, system.name),
+            format!(
+                "{}{requirement} is not installed for {}",
+                family.label, system.name
+            ),
         ));
     }
     Ok(family.config)
@@ -312,6 +321,56 @@ mod tests {
 
     use super::*;
 
+    #[test]
+    fn pcxt_machine_profiles_require_the_delivered_build_and_follow_later_updates() {
+        let root = directory("pcxt-machine-builds");
+        write(&root, "_Computer/PCXT_20261012.rbf");
+        let table = crate::systems::load_table(Path::new("assets/systems.toml")).unwrap();
+        for (id, profile) in [("PCjr", "pcxt-pcjr"), ("Tandy1000", "pcxt-tandy")] {
+            let config = crate::systems::FoundSystem {
+                def: table.iter().find(|system| system.id == id).unwrap().clone(),
+                paths: vec![root.join("games").join(id)],
+                logo_dir: None,
+                menu_folder: None,
+            }
+            .to_config();
+            assert!(!choices(&config, &root, None)
+                .iter()
+                .any(|choice| choice.id == profile));
+            assert!(
+                !choices(&config, &root, Some(profile))
+                    .iter()
+                    .find(|choice| choice.id == profile)
+                    .unwrap()
+                    .available
+            );
+            let error = resolve(&config, &root, Some(profile))
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains("20261103"), "{error}");
+            write(&root, "_Computer/PCXT_20261103.rbf");
+            let family = resolve(&config, &root, Some(profile)).unwrap();
+            assert_eq!(
+                crate::core_choices::resolve(&family, &root, Some("standard"), false)
+                    .unwrap()
+                    .rbf,
+                "_Computer/PCXT_20261103"
+            );
+            write(&root, "_Computer/PCXT_20261104.rbf");
+            assert_eq!(
+                crate::core_choices::resolve(&family, &root, None, false)
+                    .unwrap()
+                    .rbf,
+                "_Computer/PCXT_20261104"
+            );
+            for date in ["20261103", "20261104"] {
+                std::fs::remove_file(root.join(format!("_Computer/PCXT_{date}.rbf"))).unwrap();
+            }
+            assert!(resolve(&config, &root, Some(profile)).is_err());
+        }
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
     fn directory(tag: &str) -> PathBuf {
         let root =
             std::env::temp_dir().join(format!("degauss-launch-cores-{tag}-{}", std::process::id()));
@@ -336,7 +395,10 @@ mod tests {
                 rbf: "_Arcade/JTNGPC".into(),
                 setname: Some("JTNGPC".into()),
                 same_dir: false,
+                launch: Vec::new(),
+                minimum_build: None,
             }],
+            minimum_build: None,
             skip_folders: Vec::new(),
             extra_paths: Vec::new(),
         }

@@ -220,20 +220,44 @@ pub(crate) fn standard(system: &SystemConfig) -> EffectiveCore {
     }
 }
 
+/// Resolve a standard family only when its declared build requirement is met.
+pub(crate) fn installed_standard(
+    system: &SystemConfig,
+    root: &Path,
+) -> Result<Option<EffectiveCore>> {
+    if !core_present(root, &system.rbf)? {
+        return Ok(None);
+    }
+    let mut core = standard(system);
+    if let Some(minimum) = system.minimum_build.as_deref() {
+        let Some(reference) =
+            crate::core_choices::standard_reference_after(&system.rbf, root, Some(minimum))?
+        else {
+            return Ok(None);
+        };
+        core.rbf = reference;
+    }
+    Ok(Some(core))
+}
+
 /// Resolve the installer launcher for the configured RBF. Shared systems keep
 /// their existing file index and extension rules, which select the hardware
 /// mode. RA's attributed setname selects the Main profile and retains the
 /// original core's game directory; it must not be synthesized from a system ID.
 pub fn resolve(system: &SystemConfig, root: &Path, ra_first: bool) -> Result<EffectiveCore> {
     for family in system.core_family_configs() {
-        if !ra_first && core_present(root, &family.rbf)? {
-            return Ok(standard(&family));
+        if !ra_first {
+            if let Some(core) = installed_standard(&family, root)? {
+                return Ok(core);
+            }
         }
         if let Some(core) = installed_ra(&family, root)? {
             return Ok(core);
         }
-        if ra_first && core_present(root, &family.rbf)? {
-            return Ok(standard(&family));
+        if ra_first {
+            if let Some(core) = installed_standard(&family, root)? {
+                return Ok(core);
+            }
         }
     }
     Err(DegaussError::unsupported(
@@ -246,7 +270,7 @@ pub fn resolve(system: &SystemConfig, root: &Path, ra_first: bool) -> Result<Eff
 }
 
 pub(crate) fn installed_ra(system: &SystemConfig, root: &Path) -> Result<Option<EffectiveCore>> {
-    if crate::systems::dual_sdram_folder(&system.rbf) {
+    if crate::systems::dual_sdram_folder(&system.rbf) || system.minimum_build.is_some() {
         return Ok(None);
     }
     let basename = Path::new(&system.rbf)
@@ -483,15 +507,21 @@ pub(crate) fn apply_with_reference(
 
 /// Only known standard/RA references are eligible for conversion. Custom MGLs
 /// remain direct launches, including launchers for unrelated cores or sets.
+#[cfg(test)]
 pub fn recognized_favorite(path: &Path, system: &SystemConfig) -> Result<bool> {
+    Ok(favorite_family(path, system)?.is_some())
+}
+
+/// The declared source family supplies the media-slot meaning of a favourite.
+pub(crate) fn favorite_family(path: &Path, system: &SystemConfig) -> Result<Option<SystemConfig>> {
     let text = read_launcher(path)?;
     let (rbf, setname) = elements(&text, path)?;
     let descriptor = crate::favorites::descriptor_reference(path, "favourite MGL")?;
     let game = descriptor.files.last().map(Path::new);
     Ok(system
         .core_family_configs()
-        .iter()
-        .any(|family| recognized_family(&rbf, setname.as_ref(), family, game)))
+        .into_iter()
+        .find(|family| recognized_family(&rbf, setname.as_ref(), family, game)))
 }
 
 fn recognized_family(
@@ -621,6 +651,7 @@ mod tests {
             setname: None,
             same_dir: false,
             compatible_cores: Vec::new(),
+            minimum_build: None,
             skip_folders: vec![],
             launch: vec![crate::config::LaunchRule {
                 extensions: vec!["nes".into()],

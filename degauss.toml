@@ -10,6 +10,10 @@
 # Which core runs which system, and which slot a file goes into, lives in
 # systems.toml. Put preferred-core changes and explicitly compatible core
 # additions under [core_overrides.<system ID>] in degauss-user.toml.
+# Add locations without replacing the system's normal folders in that file:
+# [library_folders]
+# Arcade = ["/media/fat/_Ongo/_Arcade"]
+# Restart Degauss, then rebuild only the affected system list.
 
 # Where to look for games, in the order MiSTer's own loader searches:
 # USB sticks first, then the network share, then the CIFS mount, then the

@@ -144,7 +144,11 @@ fn walk_nightlies(
                 .ok_or_else(|| {
                     DegaussError::unsupported("Unstable core", "filename is not valid UTF-8")
                 })?;
-            if nightly_matches(stem, &system.rbf) {
+            if nightly_matches(stem, &system.rbf)
+                && system.minimum_build.as_deref().is_none_or(|minimum| {
+                    crate::systems::core_build_date(stem).is_some_and(|date| date >= minimum)
+                })
+            {
                 let relative = path.strip_prefix(root).expect("scan remains beneath root");
                 let key = relative.to_str().ok_or_else(|| {
                     DegaussError::unsupported("Unstable core", "path is not valid UTF-8")
@@ -213,17 +217,37 @@ fn validate_native_choice(actual: &Path) -> Result<()> {
 /// Sharp MZ also needs its installed build date to select the MZF load slot.
 /// Resolve these references without changing other families or pinned filenames.
 fn standard_reference(reference: &str, root: &Path) -> Result<String> {
+    standard_reference_after(reference, root, None)?.ok_or_else(|| {
+        DegaussError::unsupported(
+            "standard core",
+            format!(
+                "no regular {} core is installed",
+                Path::new(reference)
+                    .file_name()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+            ),
+        )
+    })
+}
+
+pub(crate) fn standard_reference_after(
+    reference: &str,
+    root: &Path,
+    minimum: Option<&str>,
+) -> Result<Option<String>> {
     let path = Path::new(reference);
     let Some(wanted) = path
         .file_name()
         .and_then(|name| name.to_str())
         .filter(|name| {
-            ["N64", "NeoGeo", "SharpMZ"]
-                .iter()
-                .any(|core| name.eq_ignore_ascii_case(core))
+            minimum.is_some()
+                || ["N64", "NeoGeo", "SharpMZ"]
+                    .iter()
+                    .any(|core| name.eq_ignore_ascii_case(core))
         })
     else {
-        return Ok(reference.to_string());
+        return Ok(Some(reference.to_string()));
     };
     let directory = root.join(path.parent().unwrap_or(Path::new("")));
     let entries = std::fs::read_dir(&directory)
@@ -243,6 +267,11 @@ fn standard_reference(reference: &str, root: &Path) -> Result<String> {
         let Some(stem) = actual.file_stem().and_then(|stem| stem.to_str()) else {
             continue;
         };
+        if minimum.is_some_and(|minimum| {
+            !crate::systems::core_build_date(stem).is_some_and(|date| date >= minimum)
+        }) {
+            continue;
+        }
         let regular = core_variants::same_core_identity(stem, wanted);
         let turbo = wanted.eq_ignore_ascii_case("NeoGeo")
             && ["NeoGeo_Turbo", "NeoGeo_TurboV2"]
@@ -265,27 +294,24 @@ fn standard_reference(reference: &str, root: &Path) -> Result<String> {
             latest = Some(actual);
         }
     }
-    if wanted.eq_ignore_ascii_case("NeoGeo") && !neogeo_turbo_collision {
-        return Ok(reference.to_string());
+    if minimum.is_none() && wanted.eq_ignore_ascii_case("NeoGeo") && !neogeo_turbo_collision {
+        return Ok(Some(reference.to_string()));
     }
-    let actual = latest.ok_or_else(|| {
-        DegaussError::unsupported(
-            "standard core",
-            format!("no regular {wanted} core is installed"),
-        )
-    })?;
+    let Some(actual) = latest else {
+        return Ok(None);
+    };
     validate_native_choice(&actual)?;
     let selected =
         actual.strip_prefix(root).unwrap().to_str().ok_or_else(|| {
             DegaussError::unsupported("standard core", "filename is not valid UTF-8")
         })?;
-    Ok(selected[..selected.len() - 4].to_string())
+    Ok(Some(selected[..selected.len() - 4].to_string()))
 }
 
 fn first_installed_family(system: &SystemConfig, root: &Path) -> Result<SystemConfig> {
     let families = system.core_family_configs();
     for family in &families {
-        if core_variants::core_present(root, &family.rbf)? {
+        if core_variants::installed_standard(family, root)?.is_some() {
             return Ok(family.clone());
         }
         match core_variants::installed_ra(family, root) {
@@ -307,7 +333,7 @@ fn available_for_family(system: &SystemConfig, root: &Path) -> Result<Vec<CoreCh
         return Ok(Vec::new());
     }
     let mut choices = Vec::new();
-    if core_variants::core_present(root, &system.rbf)? {
+    if core_variants::installed_standard(system, root)?.is_some() {
         choices.push(CoreChoice {
             key: "standard".into(),
             label: "Standard".into(),
@@ -367,8 +393,7 @@ pub fn resolve(
     match selected {
         "standard" => {
             for family in system.core_family_configs() {
-                if core_variants::core_present(root, &family.rbf)? {
-                    let mut core = core_variants::standard(&family);
+                if let Some(mut core) = core_variants::installed_standard(&family, root)? {
                     core.rbf = standard_reference(&core.rbf, root)?;
                     return Ok(core);
                 }
@@ -445,6 +470,7 @@ mod tests {
             setname: Some("NES".into()),
             same_dir: false,
             compatible_cores: Vec::new(),
+            minimum_build: None,
             skip_folders: Vec::new(),
             extra_paths: Vec::new(),
         }
@@ -724,6 +750,8 @@ mod tests {
             rbf: "_Arcade/JTNGPC".into(),
             setname: Some("JTNGPC".into()),
             same_dir: false,
+            launch: Vec::new(),
+            minimum_build: None,
         }];
         write(&root, "_RA_Cores/NGPC.mgl", b"malformed XML");
         write(&root, "_Arcade/JTNGPC.rbf", b"fixture");
@@ -763,6 +791,8 @@ mod tests {
             rbf: "_Arcade/JTNGPC".into(),
             setname: Some("JTNGPC".into()),
             same_dir: false,
+            launch: Vec::new(),
+            minimum_build: None,
         }];
         let nightly = "_Unstable/JTNGPC_unstable_20260916_a1.rbf";
         write(&root, nightly, b"fixture");
