@@ -714,20 +714,28 @@ fn check_install(config_path: &Path, selected_systems: Option<&Path>) -> Result<
             Ok(table) => {
                 println!("systems.toml present, parses, {} systems", table.len());
                 if let Some((config, origin)) = &checked_config {
-                    if let Err(error) = systems::with_library_folders(
-                        &table,
-                        &config.library_folders,
-                        Path::new(&config.menu_root),
-                        origin,
-                    ) {
-                        println!("library folders INVALID");
-                        problems.push(error.to_string());
-                    }
-                    if let Err(error) =
-                        systems::with_core_overrides(&table, &config.core_overrides, origin)
-                    {
-                        println!("core overrides INVALID");
-                        problems.push(error.to_string());
+                    match systems::with_core_overrides(&table, &config.core_overrides, origin) {
+                        Ok(table) if !config.library_folders.is_empty() => {
+                            let folders =
+                                systems::prepare_table(table, Path::new(&config.menu_root))
+                                    .and_then(|table| {
+                                        systems::with_library_folders(
+                                            &table,
+                                            &config.library_folders,
+                                            Path::new(&config.menu_root),
+                                            origin,
+                                        )
+                                    });
+                            if let Err(error) = folders {
+                                println!("library folders INVALID");
+                                problems.push(error.to_string());
+                            }
+                        }
+                        Ok(_) => {}
+                        Err(error) => {
+                            println!("core overrides INVALID");
+                            problems.push(error.to_string());
+                        }
                     }
                 }
             }
@@ -2574,6 +2582,41 @@ mod tests {
         std::fs::write(&user_path, "[library_folders]\nMyArcade = ['/extra']\n").unwrap();
         assert!(check_install(&config_path, None).is_err());
         assert!(check_install(&config_path, Some(&selected_table)).is_ok());
+        let mut legacy: toml::Value =
+            toml::from_str(include_str!("../assets/systems.toml")).unwrap();
+        legacy["systems"]
+            .as_array_mut()
+            .unwrap()
+            .retain(|system| system["id"].as_str() != Some("UnstableCores"));
+        std::fs::write(&selected_table, toml::to_string(&legacy).unwrap()).unwrap();
+        std::fs::write(
+            &user_path,
+            "[app]\nart_cache=123\n[library_folders]\nUnstableCores=['/extra-cores']\n",
+        )
+        .unwrap();
+        let legacy_config = root.join("legacy.toml");
+        std::fs::write(
+            &legacy_config,
+            format!("menu_root = {:?}\n{base}", root.to_str().unwrap()),
+        )
+        .unwrap();
+        assert!(check_install(&legacy_config, Some(&selected_table)).is_ok());
+        let args = Args {
+            config: Some(legacy_config),
+            systems: Some(selected_table),
+            report: true,
+            ..Args::default()
+        };
+        let loaded = load_everything(&args).unwrap();
+        assert_eq!(loaded.config.app.art_cache, 123);
+        assert_eq!(
+            loaded.config.library_folders["UnstableCores"],
+            ["/extra-cores"]
+        );
+        assert!(loaded
+            .table
+            .iter()
+            .any(|system| system.id == "UnstableCores"));
         assert_eq!(std::fs::read_to_string(&config_path).unwrap(), base);
         std::fs::remove_dir_all(root).unwrap();
     }

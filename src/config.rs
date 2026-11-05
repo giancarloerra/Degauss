@@ -512,16 +512,22 @@ impl Config {
         };
         let merged = Self::with_overrides(&text, &user_text, &user_path).and_then(|config| {
             if let Some(table) = table {
-                if !config.core_overrides.is_empty() {
-                    crate::systems::with_core_overrides(table, &config.core_overrides, &user_path)?;
-                }
-                if !config.library_folders.is_empty() {
-                    crate::systems::with_library_folders(
+                if !config.core_overrides.is_empty() || !config.library_folders.is_empty() {
+                    let table = crate::systems::with_core_overrides(
                         table,
-                        &config.library_folders,
-                        Path::new(&config.menu_root),
+                        &config.core_overrides,
                         &user_path,
                     )?;
+                    if !config.library_folders.is_empty() {
+                        let table =
+                            crate::systems::prepare_table(table, Path::new(&config.menu_root))?;
+                        crate::systems::with_library_folders(
+                            &table,
+                            &config.library_folders,
+                            Path::new(&config.menu_root),
+                            &user_path,
+                        )?;
+                    }
                 }
             }
             Ok(config)
@@ -673,6 +679,17 @@ mod tests {
             );
             assert_eq!(std::fs::read_to_string(&user).unwrap(), invalid);
         }
+        let legacy: Vec<_> = table
+            .iter()
+            .filter(|system| system.id != "UnstableCores")
+            .cloned()
+            .collect();
+        let user_text = "[app]\nart_cache=123\n[library_folders]\nUnstableCores=['/extra-cores']\n";
+        std::fs::write(&user, user_text).unwrap();
+        let config = Config::load_for_systems(&path, &legacy).unwrap();
+        assert_eq!(config.app.art_cache, 123);
+        assert_eq!(config.library_folders["UnstableCores"], ["/extra-cores"]);
+        assert_eq!(std::fs::read_to_string(&user).unwrap(), user_text);
         assert_eq!(std::fs::read_to_string(&path).unwrap(), base);
         std::fs::remove_dir_all(root).unwrap();
     }
