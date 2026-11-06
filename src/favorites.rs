@@ -1393,7 +1393,7 @@ extensions = ["fds"]
         );
         assert!(!favorites.holds(&secondary.join("Game.fds")));
         assert_eq!(favorites.file_for(&favorite), Some(favorite.as_path()));
-        let logged = std::fs::read_to_string(crate::LOG_PATH).unwrap();
+        let logged = std::fs::read_to_string(crate::log_path()).unwrap();
         assert!(
             logged.contains(&format!("mgl          {}: ", favorite.display())),
             "the read says which favourite cannot be placed"

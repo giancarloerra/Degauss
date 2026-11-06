@@ -81,19 +81,17 @@ diff --git a/menu.cpp b/menu.cpp
  
  							if (is_x86() && x86_get_image_name(num))
  							{
-@@ -2418,6 +2475,7 @@
- 		{
- 			menustate = MENU_NONE1;
- 			mgl->state = 3;
+@@ -2433,0 +2491,4 @@ void HandleUI(void)
++		else if (!mgl->done && mgl->item[mgl->current].submenu < 0)
++		{
 +			break;
- 		}
- 
- 		if (menu_save_timer && !CheckTimer(menu_save_timer))
++		}
 diff --git a/tests/run-degauss-mgl-page-tests.py b/tests/run-degauss-mgl-page-tests.py
 new file mode 100644
+index 0000000..9a56126
 --- /dev/null
 +++ b/tests/run-degauss-mgl-page-tests.py
-@@ -0,0 +1,139 @@
+@@ -0,0 +1,169 @@
 +#!/usr/bin/env python3
 +"""Run the production MGL page resolver against core configuration rows."""
 +from pathlib import Path
@@ -111,7 +109,7 @@ new file mode 100644
 +binding = next(line.strip() for line in source.splitlines()
 +               if 'mgl->item[mgl->current].submenu = selentry;' in line)
 +reject_start = source.index('\t\t// F/S option not found -> deactivate mgl.')
-+reject_end = source.index('\n\t\t}\n', reject_start) + len('\n\t\t}\n')
++reject_end = source.index('\n\t\telse if (menu)', reject_start)
 +rejection = source[reject_start:reject_end]
 +test = r'''
 +#include <cassert>
@@ -145,16 +143,30 @@ new file mode 100644
 +    const char p[] = {type, 0};
 +BINDING
 +}
++static uint32_t menu_save_timer;
++static bool timer_expired, arcade, upload;
++static int save_calls, saving_messages, last_menustate;
++static bool CheckTimer(uint32_t) { return timer_expired; }
++static uint32_t GetTimer(int delay) { return delay; }
++static bool is_arcade() { return arcade; }
++static const int UIO_CHK_UPLOAD = 1;
++static bool spi_uio_cmd(int) { return upload; }
++static void arcade_nvm_save() { ++save_calls; }
++static void OsdWrite(int) {}
++static void OsdWrite(int, const char *) { ++saving_messages; }
 +static int consume_mgl_slot() {
 +    int menustate = -1;
 +    const int MENU_NONE1 = 1;
++    const int MENU_GENERIC_SAVE_WAIT = 2;
++    int m = 0;
 +    int continued = 0;
 +    switch (0) {
 +        case 0:
 +REJECTION
-+        ++continued;
++        else ++continued;
 +    }
-+    assert(menustate == -1 || menustate == MENU_NONE1);
++    last_menustate = menustate;
++    assert(menustate == -1 || menustate == MENU_NONE1 || menustate == MENU_GENERIC_SAVE_WAIT);
 +    return continued;
 +}
 +int main() {
@@ -224,6 +236,22 @@ new file mode 100644
 +    description.done = true;
 +    description.item[0].submenu = -1;
 +    assert(consume_mgl_slot() == 1 && description.state == 0);
++    // Rejected slots still stop MGL immediately, while the existing save
++    // handlers run before any ordinary menu navigation.
++    description.done = false;
++    description.state = 0;
++    menu_save_timer = 500;
++    assert(consume_mgl_slot() == 0 && description.state == 3);
++    assert(last_menustate == 2 && saving_messages == 1);
++    menu_save_timer = 0;
++    arcade = upload = true;
++    assert(consume_mgl_slot() == 0 && description.state == 3);
++    assert(save_calls == 1 && menu_save_timer == 1000);
++    arcade = upload = false;
++    description.state = 0;
++    description.item[0].submenu = 2;
++    assert(consume_mgl_slot() == 0 && description.state == 0);
++    assert(last_menustate == 2 && saving_messages == 2);
 +}
 +'''.replace('PRODUCTION', production).replace('HOOK', hook).replace('BINDING', binding).replace('REJECTION', rejection)
 +with tempfile.TemporaryDirectory(prefix='degauss-mgl-pages-') as tmp:

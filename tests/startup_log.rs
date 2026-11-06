@@ -32,6 +32,9 @@ fn rejected_overrides_remain_logged_after_framebuffer_startup() {
         let mut command = Command::new(env!("CARGO_BIN_EXE_degauss"));
         command
             .env_remove("DEGAUSS_MENU_OWNER")
+            .env_remove("DEGAUSS_SCRIPT_HANDOVER")
+            .env_remove("DEGAUSS_NATIVE_SCRIPTS")
+            .env_remove("DEGAUSS_SCRIPTS_RETURN")
             .env("DEGAUSS_LOG_PATH", &log_path)
             .arg("--config")
             .arg(root.join("degauss.toml"))

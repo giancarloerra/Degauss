@@ -1676,6 +1676,32 @@ mod tests {
     }
 
     #[test]
+    fn additional_folders_preserve_literal_nonempty_whitespace_names() {
+        let root = temp_dir("literal-library-spaces");
+        for name in ["Original", " leading", "trailing "] {
+            std::fs::create_dir_all(root.join(name)).unwrap();
+        }
+        let mut system = one_system(&["Original"]);
+        system.id = "LiteralFolders".into();
+        let additions = BTreeMap::from([(
+            "LiteralFolders".into(),
+            vec![" leading".into(), "trailing ".into()],
+        )]);
+        let updated =
+            with_library_folders(&[system], &additions, &root, Path::new("degauss-user.toml"))
+                .unwrap();
+        assert_eq!(
+            existing_folders_checked(&updated[0], std::slice::from_ref(&root)).unwrap(),
+            vec![
+                root.join("Original"),
+                root.join(" leading"),
+                root.join("trailing ")
+            ]
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn library_folders_follow_the_retained_collection_identity() {
         let menu = temp_dir("retained-library-identity");
         std::fs::create_dir_all(menu.join("_Unstable")).unwrap();

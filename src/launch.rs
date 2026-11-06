@@ -1053,9 +1053,19 @@ pub fn plan_with_selections(
         let (core, family) = match fixed {
             Some(core) => (core, source_family.clone()),
             None => {
-                // An MGL with a distinct media-slot contract already chooses
-                // its family. Only an explicit Launch Core choice changes it.
-                let family = if selected_family.is_none() && source_family.launch != system.launch {
+                // Preserve the descriptor's slots unless the requested
+                // variant belongs to another compatible family.
+                let family = if selected_family.is_none()
+                    && source_family.launch != system.launch
+                    && match selected_version {
+                        None | Some("standard") => true,
+                        Some("ra") => {
+                            crate::core_variants::installed_ra(&source_family, menu_root)?.is_some()
+                        }
+                        Some(version) => {
+                            crate::core_choices::is_unstable_reference(&source_family, version)
+                        }
+                    } {
                     source_family.clone()
                 } else {
                     crate::launch_cores::resolve_for_version(
@@ -1364,6 +1374,23 @@ mod tests {
         .unwrap();
         assert!(selected.mgl.contains("index=\"2\""));
         assert_eq!(std::fs::read_to_string(&saved).unwrap(), new);
+        std::fs::create_dir_all(root.join("_RA_Cores/Cores")).unwrap();
+        std::fs::write(root.join("_RA_Cores/Cores/PCjr.rbf"), b"core").unwrap();
+        std::fs::write(root.join("_RA_Cores/PCjr.mgl"), "<mistergamedescription><rbf>_RA_Cores/Cores/PCjr</rbf><setname same_dir=\"1\">RA_PCjr</setname></mistergamedescription>").unwrap();
+        let nightly = "_Unstable/PCjr_unstable_20261104_abcd.rbf";
+        std::fs::create_dir_all(root.join("_Unstable")).unwrap();
+        std::fs::write(root.join(nightly), b"core").unwrap();
+        for (version, reference) in [
+            ("ra", "_RA_Cores/Cores/PCjr"),
+            (nightly, nightly.trim_end_matches(".rbf")),
+        ] {
+            let selected =
+                plan_with_selections(&system, &saved, &output, &root, false, Some(version), None)
+                    .unwrap();
+            assert!(selected.mgl.contains(&format!("<rbf>{reference}</rbf>")));
+            assert!(selected.mgl.contains("index=\"2\""));
+            assert_eq!(std::fs::read_to_string(&saved).unwrap(), new);
+        }
         // An explicit two-cartridge PCXT launcher already declares its
         // machine and slots. Automatic must preserve that declaration.
         let explicit = game.parent().unwrap().join("Two cartridges.mgl");
@@ -1384,6 +1411,36 @@ mod tests {
         assert!(effective.contains("_Computer/PCXT"));
         assert!(effective.contains("index=\"5\""));
         assert!(effective.contains("index=\"6\""));
+        let standard = plan_with_selections(
+            &system,
+            &explicit,
+            &output,
+            &root,
+            false,
+            Some("standard"),
+            None,
+        )
+        .unwrap();
+        let effective = if standard.mgl.is_empty() {
+            explicit_xml
+        } else {
+            &standard.mgl
+        };
+        assert!(effective.contains("index=\"5\"") && effective.contains("index=\"6\""));
+        for version in ["ra", nightly] {
+            let error = plan_with_selections(
+                &system,
+                &explicit,
+                &output,
+                &root,
+                false,
+                Some(version),
+                None,
+            )
+            .err()
+            .unwrap();
+            assert!(error.to_string().contains("media slot"));
+        }
         assert_eq!(std::fs::read_to_string(&explicit).unwrap(), explicit_xml);
         std::fs::remove_dir_all(root).unwrap();
     }

@@ -3151,7 +3151,7 @@ mod tests {
         .unwrap();
         // The log may not exist yet on a fresh machine; `note` creates it.
         let log_since = |from: usize| {
-            let log = std::fs::read_to_string(crate::LOG_PATH).unwrap_or_default();
+            let log = std::fs::read_to_string(crate::log_path()).unwrap_or_default();
             log[from.min(log.len())..].to_string()
         };
         let before = log_since(0).len();

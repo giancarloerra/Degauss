@@ -433,11 +433,12 @@ fn load_everything(args: &Args) -> Result<Loaded> {
         .unwrap_or_else(|| PathBuf::from("settings.toml"));
     let settings = Settings::load(&settings_path)?;
 
+    // User declarations have already passed load_for_systems validation.
+    // Invalid declarations reaching these steps belong to the base file.
     let table = if config.core_overrides.is_empty() {
         table
     } else {
-        let origin = config_path.with_file_name("degauss-user.toml");
-        systems::with_core_overrides(&table, &config.core_overrides, &origin)?
+        systems::with_core_overrides(&table, &config.core_overrides, &config_path)?
     };
     let table = systems::prepare_table(table, Path::new(&config.menu_root))?;
     let table = if config.library_folders.is_empty() {
@@ -447,7 +448,7 @@ fn load_everything(args: &Args) -> Result<Loaded> {
             &table,
             &config.library_folders,
             Path::new(&config.menu_root),
-            &config_path.with_file_name("degauss-user.toml"),
+            &config_path,
         )?
     };
 
@@ -2537,6 +2538,37 @@ fn truncate(text: &str, width: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn invalid_base_library_folders_name_the_base_configuration() {
+        let root = std::env::temp_dir().join(format!("degauss-base-origin-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let config_path = root.join("base.toml");
+        let systems_path = root.join("systems.toml");
+        std::fs::write(
+            &config_path,
+            "[app]\nart_cache=200\n[library_folders]\nUnknown = ['/extra']\n",
+        )
+        .unwrap();
+        std::fs::write(&systems_path, include_str!("../assets/systems.toml")).unwrap();
+        let user_path = root.join("degauss-user.toml");
+        for user in [None, Some("[app\n"), Some("[app]\nart_cache=123\n")] {
+            if let Some(text) = user {
+                std::fs::write(&user_path, text).unwrap();
+            }
+            let args = Args {
+                config: Some(config_path.clone()),
+                systems: Some(systems_path.clone()),
+                list_systems: true,
+                ..Args::default()
+            };
+            let error = load_everything(&args).err().unwrap().to_string();
+            assert!(error.contains("unknown system ID"), "{error}");
+            assert!(error.contains(config_path.to_str().unwrap()), "{error}");
+            assert!(!error.contains(user_path.to_str().unwrap()), "{error}");
+        }
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn install_check_reports_invalid_user_overrides_without_changing_startup() {

@@ -2340,7 +2340,7 @@ mod tests {
         let broken = dir.join("broken.zip");
         std::fs::write(&broken, b"broken archive").unwrap();
         let log_since = |from: usize| {
-            let log = std::fs::read_to_string(crate::LOG_PATH).unwrap_or_default();
+            let log = std::fs::read_to_string(crate::log_path()).unwrap_or_default();
             log[from.min(log.len())..].to_string()
         };
         let held_line = format!("zip          {}", held.display());
@@ -2413,7 +2413,7 @@ mod tests {
         )
         .unwrap();
         let log_since = |from: usize| {
-            let log = std::fs::read_to_string(crate::LOG_PATH).unwrap_or_default();
+            let log = std::fs::read_to_string(crate::log_path()).unwrap_or_default();
             log[from.min(log.len())..].to_string()
         };
         let library = Library::open(&system(&dir)).unwrap();
