@@ -1778,6 +1778,59 @@ mod tests {
     }
 
     #[test]
+    fn level3_and_mz2500_mount_native_media_without_resetting_running_snapshots() {
+        let table = load_table(Path::new("assets/systems.toml")).unwrap();
+        for (id, extension, kind, index, reset) in [
+            ("BasicMasterL3", "d88", "s", 0, Some(1)),
+            ("BasicMasterL3", "l3", "s", 2, None),
+            ("SharpMZ2500", "d88", "s", 0, Some(1)),
+            ("SharpMZ2500", "mzt", "f", 1, Some(1)),
+            ("SharpMZ2500", "bin", "f", 2, None),
+            ("SharpMZ2500", "dat", "f", 2, None),
+        ] {
+            let def = table.iter().find(|system| system.id == id).unwrap();
+            let config = FoundSystem {
+                def: def.clone(),
+                paths: vec![PathBuf::from(format!("/games/{id}"))],
+                logo_dir: None,
+                menu_folder: None,
+            }
+            .to_config();
+            let game = PathBuf::from(format!("/games/{id}/game.{extension}"));
+            let rule = config.rule_for(&game).unwrap();
+            assert_eq!(
+                (rule.kind.as_str(), rule.index, rule.reset_delay),
+                (kind, index, reset)
+            );
+            let plan = crate::launch::plan(&config, &game, Path::new("/tmp/launch.mgl")).unwrap();
+            assert!(
+                plan.mgl
+                    .contains(&format!("type=\"{kind}\" index=\"{index}\"")),
+                "{id}/{extension}: native media slot"
+            );
+            assert_eq!(
+                plan.mgl.contains("<reset"),
+                reset.is_some(),
+                "{id}/{extension}: snapshots must run without a later reset"
+            );
+            for unsupported in [
+                "boot.rom",
+                "boot0.rom",
+                "source.dsk",
+                "source.mfi",
+                "source.wav",
+                "source.l3b",
+                "source.l3c",
+            ] {
+                assert!(
+                    !config.accepts(Path::new(unsupported)),
+                    "{id}: {unsupported} needs firmware handling or conversion"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn user_core_overrides_merge_by_stable_ids_without_replacing_shipped_profiles() {
         let table = load_table(Path::new("assets/systems.toml")).unwrap();
         let origin = Path::new("degauss-user.toml");
@@ -2669,6 +2722,8 @@ extensions = ["md", "bin"]
         let table = load_table(Path::new("assets/systems.toml")).unwrap();
         let card = temp_dir("computer-multi-media-launchers");
         for (id, files) in [
+            ("BasicMasterL3", "<file delay=\"1\" type=\"s\" index=\"0\" path=\"A.d88\"/><file delay=\"1\" type=\"s\" index=\"1\" path=\"B.d88\"/><reset delay=\"1\" hold=\"1\"/>"),
+            ("SharpMZ2500", "<file delay=\"1\" type=\"s\" index=\"0\" path=\"Program.d88\"/><file delay=\"1\" type=\"s\" index=\"1\" path=\"User.d88\"/><reset delay=\"1\" hold=\"1\"/>"),
             ("BasicMasterJr", "<file delay=\"1\" type=\"f\" index=\"1\" path=\"Tape.bmt\"/>"),
             ("IQ151", "<file delay=\"1\" type=\"s\" index=\"1\" path=\"A.dsk\"/><file delay=\"1\" type=\"s\" index=\"0\" path=\"B.dsk\"/>"),
             ("VideoBrain", "<file delay=\"1\" type=\"f\" index=\"1\" path=\"Cart.bin\"/><file delay=\"1\" type=\"f\" index=\"4\" path=\"Keys.vbk\"/><file delay=\"1\" type=\"s\" index=\"0\" path=\"Play.vbt\"/><file delay=\"1\" type=\"s\" index=\"1\" path=\"Record.vbt\"/><file delay=\"1\" type=\"s\" index=\"2\" path=\"Print.vbp\"/>"),
@@ -2711,6 +2766,8 @@ extensions = ["md", "bin"]
         std::fs::create_dir_all(card.join("_Computer")).unwrap();
         std::fs::create_dir_all(card.join("_Console")).unwrap();
         for (id, date) in [
+            ("BasicMasterL3", "20261104"),
+            ("SharpMZ2500", "20261104"),
             ("IQ151", "20261028"),
             ("VideoBrain", "20261027"),
             ("Neon", "20261025"),
@@ -2725,7 +2782,14 @@ extensions = ["md", "bin"]
             .unwrap();
         }
         let index = CoreIndex::read(&card);
-        for id in ["IQ151", "VideoBrain", "Neon", "BasicMasterJr"] {
+        for id in [
+            "BasicMasterL3",
+            "SharpMZ2500",
+            "IQ151",
+            "VideoBrain",
+            "Neon",
+            "BasicMasterJr",
+        ] {
             let def = table.iter().find(|def| def.id == id).unwrap();
             let found = discover(
                 std::slice::from_ref(def),

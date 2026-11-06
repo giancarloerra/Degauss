@@ -2877,6 +2877,48 @@ delay = 1
 
 # Delivered computer cores; support files remain excluded by normal browsing.
 [[systems]]
+name = "Hitachi Basic Master Level 3 / MB-S1"
+id = "BasicMasterL3"
+folders = ["BasicMasterL3"]
+rbf = "_Computer/BasicMasterL3"
+extensions = ["d88", "l3", "mgl"]
+[[systems.launch]]
+extensions = ["d88"]
+type = "s"
+index = 0
+delay = 2
+reset_delay = 1
+[[systems.launch]]
+extensions = ["l3"]
+type = "s"
+index = 2
+delay = 2
+
+[[systems]]
+name = "Sharp MZ-2500 / MZ-2520"
+id = "SharpMZ2500"
+folders = ["SharpMZ2500"]
+rbf = "_Computer/SharpMZ2500"
+extensions = ["d88", "mzt", "bin", "dat", "mgl"]
+[[systems.launch]]
+extensions = ["d88"]
+type = "s"
+index = 0
+delay = 2
+reset_delay = 1
+[[systems.launch]]
+extensions = ["mzt"]
+type = "f"
+index = 1
+delay = 2
+reset_delay = 1
+[[systems.launch]]
+extensions = ["bin", "dat"]
+type = "f"
+index = 2
+delay = 1
+
+[[systems]]
 name = "Sharp X1"
 id = "SharpX1"
 folders = ["SharpX1"]

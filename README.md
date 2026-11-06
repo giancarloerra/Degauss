@@ -1025,6 +1025,29 @@ Nothing else needs resetting.
 
 ### Additional computer and disc libraries
 
+Version 1.1.3 also adds **Hitachi Basic Master Level 3 / MB-S1**
+(`games/BasicMasterL3`) and **Sharp MZ-2500 / MZ-2520**
+(`games/SharpMZ2500`). Both mount D88 disks in drive 1 at image slot 0 and
+reset; explicit MGLs can also mount drive 2 at slot 1. These are separate
+libraries from Basic Master Jr. and the existing Sharp MZ core.
+
+Basic Master Level 3 requires `boot0.rom` built using the
+[core's firmware instructions](https://github.com/MiSTer-devel/Distribution_MiSTer/blob/main/docs/BasicMasterL3/README.md).
+L3 tapes use image slot 2 without an extra reset. Use `LOADM"",,R` for machine
+code or `LOAD` then `RUN` for BASIC. Convert L3B/L3C tapes to native L3 first.
+Saved model, S1 SYSTEM and floppy-card settings remain in the core's OSD.
+
+Sharp MZ-2500 requires `boot.rom` containing the IPL and kanji ROMs. MZT tapes
+use file-transfer slot 1 and reset: save MZ-2000 or MZ-80B Boot mode, launch
+the tape, then press C at the IPL. BIN/DAT RAM snapshots use file-transfer
+slot 2 and start immediately in MZ-2000 mode, without a reset that would
+return to the IPL. Convert DSK/MFI disks and WAV tapes to D88/MZT first.
+For a 15 kHz CRT, select **200 (15 kHz)** under the core's **Lines (reset)**
+option; its default is 400 lines at 24 kHz. Follow the
+[core's instructions](https://github.com/MiSTer-devel/Distribution_MiSTer/blob/main/docs/SharpMZ2500/README.md)
+for firmware, saved models, boot modes and writable program/user disks.
+Firmware is excluded from both libraries; existing MGLs remain unchanged.
+
 Version 1.1.3 adds **Sharp X1** (`games/SharpX1`) and **Sony SMC-777**
 (`games/SonySMC777`). Both use drive A at image slot 0 and accept explicit MGLs
 with drive B at slot 1. Sharp X1 accepts D88/2D disks and TAP tapes (slot 2);
