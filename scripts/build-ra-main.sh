@@ -31,6 +31,7 @@ test -s lib/rcheevos/src/rc_client.c
 patch --fuzz=0 -p1 < "$here/support/ra-main/frontend.patch"
 patch --fuzz=0 -p1 < "$here/support/ra-main/tls.patch"
 patch --fuzz=0 -p1 < "$here/support/ra-main/controller.patch"
+patch --fuzz=0 -p1 < "$here/support/ra-main/mgl-pages.patch"
 python3 tests/run-ra-controller-tests.py
 python3 tests/run-degauss-controls-tests.py
 bash tests/run-degauss-physical-cd-tests.sh
@@ -38,6 +39,7 @@ bash tests/run-degauss-shortcut-tests.sh
 bash tests/run-degauss-video-tests.sh
 python3 tests/run-degauss-yc-tests.py
 python3 tests/run-degauss-core-menu-tests.py
+python3 tests/run-degauss-mgl-page-tests.py
 python3 tests/run-degauss-analog-timing-tests.py
 python3 tests/degauss_script_handover_test.py
 python3 tests/degauss_native_scripts_test.py
@@ -77,6 +79,7 @@ shasum -a 256 "$build_root/MiSTer_RA_Degauss"
 printf 'RA Main source: %s\nDegauss integration base: 809893ddb8e3f7f40797579e0ed8178b03d558f8\n' \
     "$source_pin" > "$build_root/SOURCE-PINS.txt"
 printf 'Degauss frontend patch SHA256: %s\n' "$(shasum -a 256 "$here/support/ra-main/frontend.patch" | awk '{print $1}')" >> "$build_root/SOURCE-PINS.txt"
+printf 'Degauss MGL pages patch SHA256: %s\n' "$(shasum -a 256 "$here/support/ra-main/mgl-pages.patch" | awk '{print $1}')" >> "$build_root/SOURCE-PINS.txt"
 printf 'CA bundle: curl Mozilla 2026-08-13 (MPL-2.0), SHA256 %s\n' "$ca_sha" >> "$build_root/SOURCE-PINS.txt"
 # Keep corresponding patched source and its build instructions with the binary.
 mkdir -p "$build_root/rebuild/scripts" "$build_root/rebuild/support"

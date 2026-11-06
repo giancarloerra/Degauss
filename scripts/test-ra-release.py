@@ -267,7 +267,7 @@ class ReleaseTests(unittest.TestCase):
                             'source/LICENSE', 'source/Makefile', 'source/ra_http.cpp',
                             'rebuild/scripts/build-ra-main.sh', 'rebuild/scripts/package-ra-main.py',
                             'rebuild/support/ra-main/frontend.patch', 'rebuild/support/ra-main/tls.patch',
-                            'rebuild/support/ra-main/controller.patch', 'rebuild/support/ra-main/Dockerfile')
+                            'rebuild/support/ra-main/controller.patch', 'rebuild/support/ra-main/mgl-pages.patch', 'rebuild/support/ra-main/Dockerfile')
                 previous_mask = os.umask(mask)
                 try:
                     for name in required:
@@ -299,7 +299,7 @@ class ReleaseTests(unittest.TestCase):
                         'source/LICENSE', 'source/Makefile', 'source/ra_http.cpp',
                         'rebuild/scripts/build-ra-main.sh', 'rebuild/scripts/package-ra-main.py',
                         'rebuild/support/ra-main/frontend.patch', 'rebuild/support/ra-main/tls.patch',
-                        'rebuild/support/ra-main/controller.patch',
+                        'rebuild/support/ra-main/controller.patch', 'rebuild/support/ra-main/mgl-pages.patch',
                         'rebuild/support/ra-main/Dockerfile', 'source/bin/MiSTer',
                         'source/lib/example/bin/build-input')
             for name in required:

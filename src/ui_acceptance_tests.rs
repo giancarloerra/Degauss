@@ -4517,6 +4517,8 @@ fn run_last_played_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
             rbf: "_Arcade/LegacyNES".into(),
             setname: Some("LegacyNES".into()),
             same_dir: false,
+            launch: Vec::new(),
+            minimum_build: None,
         });
     app.settings
         .launch_cores
@@ -5331,7 +5333,7 @@ fn run_scraper_cache_refresh_flow(root: &Path, window: Rc<MinimalSoftwareWindow>
     .unwrap();
     let before_outer = cache_snapshot(&app.cache_dir);
     let log_since = |from: usize| {
-        let log = std::fs::read_to_string(crate::LOG_PATH).unwrap_or_default();
+        let log = std::fs::read_to_string(crate::log_path()).unwrap_or_default();
         log[from.min(log.len())..].to_string()
     };
     let log_before = log_since(0).len();
@@ -7443,12 +7445,12 @@ fn pack_files(cache_dir: &Path, id: &str) -> [Option<Vec<u8>>; 3] {
 
 /// What the log has said since `from`.
 fn log_since(from: u64) -> String {
-    let logged = std::fs::read(crate::LOG_PATH).unwrap_or_default();
+    let logged = std::fs::read(crate::log_path()).unwrap_or_default();
     String::from_utf8_lossy(&logged[(from as usize).min(logged.len())..]).into_owned()
 }
 
 fn log_len() -> u64 {
-    std::fs::metadata(crate::LOG_PATH)
+    std::fs::metadata(crate::log_path())
         .map(|metadata| metadata.len())
         .unwrap_or(0)
 }
@@ -9500,7 +9502,7 @@ fn run_automatic_pack_consent_flow(root: &Path, window: Rc<MinimalSoftwareWindow
     // counts, and the warning is the only line of its kind for this
     // fixture's archive path.
     let log_since = |from: usize| {
-        let log = std::fs::read_to_string(crate::LOG_PATH).unwrap_or_default();
+        let log = std::fs::read_to_string(crate::log_path()).unwrap_or_default();
         log[from.min(log.len())..].to_string()
     };
     let recovery_line = format!("cache        recovery warning: {warning}");
@@ -11416,10 +11418,10 @@ fn run_degraded_pack_acknowledgement_flow(root: &Path, window: Rc<MinimalSoftwar
     // no reason to fail, and a log that cannot be read at all is named. A
     // log nobody has started yet holds no lines.
     let logged = |line: &str| {
-        let bytes = match std::fs::read(crate::LOG_PATH) {
+        let bytes = match std::fs::read(crate::log_path()) {
             Ok(bytes) => bytes,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Vec::new(),
-            Err(error) => panic!("{} could not be read: {error}", crate::LOG_PATH),
+            Err(error) => panic!("{} could not be read: {error}", crate::log_path().display()),
         };
         String::from_utf8_lossy(&bytes).matches(line).count()
     };
@@ -11437,7 +11439,7 @@ fn run_degraded_pack_acknowledgement_flow(root: &Path, window: Rc<MinimalSoftwar
         logged(&probe),
         probed_before + 1,
         "{} must take what note() appends on this host; the log counts below depend on it",
-        crate::LOG_PATH
+        crate::log_path().display()
     );
 
     // 6. A complete pack: no warning, and nothing written down.
@@ -11592,7 +11594,7 @@ fn run_degraded_pack_acknowledgement_flow(root: &Path, window: Rc<MinimalSoftwar
         logged(&logged_line),
         logged_before + 1,
         "an acknowledged warning must still be written to {} in full: {logged_line:?}",
-        crate::LOG_PATH
+        crate::log_path().display()
     );
     assert_eq!(std::fs::read_to_string(&warnings).unwrap(), no_index_file);
     app.ui.hide().unwrap();
@@ -11652,7 +11654,7 @@ fn run_degraded_pack_acknowledgement_flow(root: &Path, window: Rc<MinimalSoftwar
         logged(&malformed_line(&cause)),
         malformed_before + 1,
         "the replacement of a file that broke meanwhile must reach {} with its cause",
-        crate::LOG_PATH
+        crate::log_path().display()
     );
     assert!(
         acknowledged("NES", &extra_digest),
@@ -11714,7 +11716,7 @@ fn run_degraded_pack_acknowledgement_flow(root: &Path, window: Rc<MinimalSoftwar
         logged(&malformed_line(&cause)),
         malformed_before + 1,
         "one broken file is one line in {}, with its cause, not one per read of it",
-        crate::LOG_PATH
+        crate::log_path().display()
     );
     let acknowledged_file = std::fs::read_to_string(&warnings).unwrap();
     app.ui.hide().unwrap();
@@ -11989,7 +11991,7 @@ fn run_arcade_core_descriptor_favourite_flow(root: &Path, window: Rc<MinimalSoft
         row.cover.as_deref(),
         Some(artwork.join("Battletoads.jpg").as_path())
     );
-    let logged = std::fs::read_to_string(crate::LOG_PATH).unwrap();
+    let logged = std::fs::read_to_string(crate::log_path()).unwrap();
     assert!(
         !logged.contains(&arcade.join("btc0-s.bin").display().to_string()),
         "nothing is looked for beside the descriptor"
@@ -13385,7 +13387,7 @@ fn run_details_style_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
     // the screen before it and would leave the substitution without a
     // trace.
     {
-        let log_before = std::fs::metadata(crate::LOG_PATH)
+        let log_before = std::fs::metadata(crate::log_path())
             .map(|meta| meta.len() as usize)
             .unwrap_or(0);
         let mut app = unopened_fixture_app(
@@ -13404,11 +13406,11 @@ fn run_details_style_flow(root: &Path, window: Rc<MinimalSoftwareWindow>) {
         );
         // The log is the one path outside the fixture; a log that cannot
         // be read fails the same assertion, with the reason in its place.
-        let logged = match std::fs::read(crate::LOG_PATH) {
+        let logged = match std::fs::read(crate::log_path()) {
             Ok(log) => String::from_utf8_lossy(&log[log_before.min(log.len())..]).into_owned(),
             Err(error) => format!(
                 "(the log at {} could not be read: {error})",
-                crate::LOG_PATH
+                crate::log_path().display()
             ),
         };
         assert!(

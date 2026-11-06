@@ -13,7 +13,7 @@ def package(build):
                 'SOURCE-PINS.txt', 'source/LICENSE', 'source/Makefile',
                 'source/ra_http.cpp', 'rebuild/scripts/build-ra-main.sh',
                 'rebuild/scripts/package-ra-main.py', 'rebuild/support/ra-main/frontend.patch',
-                'rebuild/support/ra-main/tls.patch', 'rebuild/support/ra-main/controller.patch', 'rebuild/support/ra-main/Dockerfile')
+                'rebuild/support/ra-main/tls.patch', 'rebuild/support/ra-main/controller.patch', 'rebuild/support/ra-main/mgl-pages.patch', 'rebuild/support/ra-main/Dockerfile')
     for name in required:
         if not (build / name).is_file():
             raise SystemExit(f'package-ra-main: missing {name}')

@@ -752,6 +752,80 @@ fn favorite_rule<'a>(system: &'a SystemConfig, favorite: &Path) -> Result<Option
         .and_then(|path| system.rule_for(Path::new(path))))
 }
 
+/// Keep a favourite's payload and explicit XML while translating declared
+/// primary media slots between families with different loading contracts.
+fn favorite_profile_slots(
+    text: &str,
+    path: &Path,
+    source: &SystemConfig,
+    target: &SystemConfig,
+) -> Result<String> {
+    if source.launch == target.launch {
+        return Ok(text.to_string());
+    }
+    let mut reader = quick_xml::Reader::from_str(text);
+    let mut patches = Vec::new();
+    loop {
+        match reader
+            .read_event()
+            .map_err(|error| DegaussError::malformed("favourite MGL", path, error.to_string()))?
+        {
+            quick_xml::events::Event::Start(tag) | quick_xml::events::Event::Empty(tag)
+                if tag.name().as_ref().eq_ignore_ascii_case("file") =>
+            {
+                let attributes = tag
+                    .attributes()
+                    .collect::<std::result::Result<Vec<_>, _>>()
+                    .map_err(|error| {
+                        DegaussError::malformed("favourite MGL", path, error.to_string())
+                    })?;
+                let get = |key: &str| {
+                    attributes
+                        .iter()
+                        .find(|a| a.key.as_ref().eq_ignore_ascii_case(key))
+                };
+                let Some(file) = get("path") else { continue };
+                let file = crate::favorites::main_path_value(file, path, "favourite MGL")?;
+                let Some(old) = source.rule_for(Path::new(&file)) else {
+                    continue;
+                };
+                let new = rule_for(target, Path::new(&file))?;
+                let kind = get("type").ok_or_else(|| {
+                    DegaussError::malformed("favourite MGL", path, "missing file type".to_string())
+                })?;
+                let index = get("index").ok_or_else(|| {
+                    DegaussError::malformed("favourite MGL", path, "missing file index".to_string())
+                })?;
+                let old_index = old.index.to_string();
+                if kind.value.as_ref() != old.kind || index.value.as_ref() != old_index {
+                    // An explicit secondary drive/cartridge is not the primary
+                    // slot declared by this profile, so it cannot be guessed.
+                    if source.rbf != target.rbf || source.setname != target.setname {
+                        return Err(DegaussError::unsupported("selected launch core", "this explicit MGL uses a media slot that the selected family does not declare; launch it with its original core"));
+                    }
+                    continue;
+                }
+                for (attribute, replacement) in
+                    [(kind, new.kind.clone()), (index, new.index.to_string())]
+                {
+                    if attribute.value.as_ref() != replacement {
+                        let start = attribute.value.as_ptr() as usize - text.as_ptr() as usize;
+                        patches.push((start..start + attribute.value.len(), replacement));
+                    }
+                }
+            }
+            quick_xml::events::Event::Eof => break,
+            _ => {}
+        }
+    }
+    let mut result = text.to_string();
+    patches.sort_by_key(|(range, _)| range.start);
+    for (range, replacement) in patches.into_iter().rev() {
+        result.replace_range(range, &replacement);
+    }
+    Ok(result)
+}
+
 /// The fixed core named by a format-specific rule, after confirming MiSTer
 /// can actually load it from the menu root.
 fn rule_core(
@@ -956,9 +1030,9 @@ pub fn plan_with_selections(
         .is_some_and(|s| s.eq_ignore_ascii_case("mgl"))
         && amiga_marker(game).is_none()
     {
-        if !crate::core_variants::recognized_favorite(game, system)? {
+        let Some(source_family) = crate::core_variants::favorite_family(game, system)? else {
             return plan_self_describing(system, game, mgl_path, menu_root);
-        }
+        };
         let referenced = crate::favorites::descriptor_reference(game, "favourite MGL")?
             .files
             .last()
@@ -976,25 +1050,57 @@ pub fn plan_with_selections(
             Some(rule) => rule_core(system, rule, menu_root)?,
             None => None,
         };
-        let core = match fixed {
-            Some(core) => core,
+        let (core, family) = match fixed {
+            Some(core) => (core, source_family.clone()),
             None => {
-                let family = crate::launch_cores::resolve_for_version(
-                    system,
-                    menu_root,
-                    selected_family,
-                    selected_version,
-                    ra_first,
-                )?;
-                crate::core_choices::resolve(&family, menu_root, selected_version, ra_first)?
+                // Preserve the descriptor's slots unless the requested
+                // variant belongs to another compatible family.
+                let family = if selected_family.is_none()
+                    && source_family.launch != system.launch
+                    && match selected_version {
+                        None | Some("standard") => true,
+                        Some("ra") => {
+                            crate::core_variants::installed_ra(&source_family, menu_root)?.is_some()
+                        }
+                        Some(version) => {
+                            crate::core_choices::is_unstable_reference(&source_family, version)
+                        }
+                    } {
+                    crate::launch_cores::resolve_for_version(
+                        &source_family,
+                        menu_root,
+                        Some(crate::launch_cores::PRIMARY_PROFILE_ID),
+                        selected_version,
+                        ra_first,
+                    )?
+                } else {
+                    crate::launch_cores::resolve_for_version(
+                        system,
+                        menu_root,
+                        selected_family,
+                        selected_version,
+                        ra_first,
+                    )?
+                };
+                (
+                    crate::core_choices::resolve(&family, menu_root, selected_version, ra_first)?,
+                    family,
+                )
             }
         };
         if !crate::core_variants::needs_conversion(game, &core)?
             && !crate::favorites::has_home_relative_paths(game)?
+            && source_family.launch == family.launch
         {
             return plan_self_describing(system, game, mgl_path, menu_root);
         }
-        let text = crate::core_variants::convert_favorite(game, &core)?;
+        let text = if source_family.launch == family.launch {
+            crate::core_variants::convert_favorite(game, &core)?
+        } else {
+            let text = crate::favorites::read_mgl_text(game, "favourite MGL")?;
+            let text = favorite_profile_slots(&text, game, &source_family, &family)?;
+            crate::core_variants::apply(&text, game, &core)?
+        };
         let mgl = crate::favorites::relocate_mgl(&text, game, system)?;
         return Ok(LaunchPlan {
             mgl,
@@ -1056,16 +1162,21 @@ pub fn favorite_mgl_with_selections(
         selected_version,
         ra_first,
     )?;
+    let Some(text) = favorite_mgl(&family, game)? else {
+        return Ok(None);
+    };
     let core = crate::core_choices::resolve(&family, menu_root, selected_version, ra_first)?;
     let mut reference = core.rbf.as_str();
     // Resolve the exact regular build for the actual handoff, not in a
     // durable favourite that must survive the next dated core replacement.
-    if Path::new(&family.rbf).file_name().is_some_and(|name| {
-        name.eq_ignore_ascii_case("N64") || name.eq_ignore_ascii_case("SharpMZ")
-    }) && core
-        .rbf
-        .get(..family.rbf.len())
-        .is_some_and(|prefix| prefix.eq_ignore_ascii_case(&family.rbf))
+    if (family.minimum_build.is_some()
+        || Path::new(&family.rbf).file_name().is_some_and(|name| {
+            name.eq_ignore_ascii_case("N64") || name.eq_ignore_ascii_case("SharpMZ")
+        }))
+        && core
+            .rbf
+            .get(..family.rbf.len())
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case(&family.rbf))
         && core.rbf.as_bytes().get(family.rbf.len()) == Some(&b'_')
     {
         reference = &family.rbf;
@@ -1205,6 +1316,157 @@ pub fn publish_active_game(game: Option<&Path>, target: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pcjr_core_selection_updates_favourite_slots_without_rewriting_saved_files() {
+        let root =
+            std::env::temp_dir().join(format!("degauss-pcjr-profiles-{}", std::process::id()));
+        std::fs::create_dir_all(root.join("_Computer")).unwrap();
+        for core in ["PCXT", "PCjr"] {
+            std::fs::write(root.join(format!("_Computer/{core}_20261103.rbf")), b"core").unwrap();
+        }
+        let system = shipped_system("PCjr", vec![root.join("games/PCjr")]);
+        let game = root.join("games/PCjr/game.jrc");
+        std::fs::create_dir_all(game.parent().unwrap()).unwrap();
+        std::fs::write(&game, b"cartridge").unwrap();
+        let output = root.join("launch.mgl");
+        let generated = plan_with_selections(
+            &system,
+            &game,
+            &output,
+            &root,
+            false,
+            None,
+            Some("pcxt-pcjr"),
+        )
+        .unwrap();
+        assert!(generated.mgl.contains("index=\"5\""));
+        assert!(generated
+            .mgl
+            .contains("<setname same_dir=\"1\">PCXT-PCjr</setname>"));
+        let saved = root.join("game.mgl");
+        let old = favorite_mgl_with_selections(&system, &game, &root, false, None, Some("primary"))
+            .unwrap()
+            .unwrap();
+        assert!(old.contains("index=\"2\""));
+        std::fs::write(&saved, &old).unwrap();
+        let selected = plan_with_selections(
+            &system,
+            &saved,
+            &output,
+            &root,
+            false,
+            None,
+            Some("pcxt-pcjr"),
+        )
+        .unwrap();
+        assert!(selected.mgl.contains("index=\"5\""));
+        assert_eq!(std::fs::read_to_string(&saved).unwrap(), old);
+        let new =
+            favorite_mgl_with_selections(&system, &game, &root, false, None, Some("pcxt-pcjr"))
+                .unwrap()
+                .unwrap();
+        assert!(new.contains("index=\"5\""));
+        std::fs::write(&saved, &new).unwrap();
+        let selected = plan_with_selections(
+            &system,
+            &saved,
+            &output,
+            &root,
+            false,
+            None,
+            Some("primary"),
+        )
+        .unwrap();
+        assert!(selected.mgl.contains("index=\"2\""));
+        assert_eq!(std::fs::read_to_string(&saved).unwrap(), new);
+        std::fs::create_dir_all(root.join("_RA_Cores/Cores")).unwrap();
+        std::fs::write(root.join("_RA_Cores/Cores/PCjr.rbf"), b"core").unwrap();
+        std::fs::write(root.join("_RA_Cores/PCjr.mgl"), "<mistergamedescription><rbf>_RA_Cores/Cores/PCjr</rbf><setname same_dir=\"1\">RA_PCjr</setname></mistergamedescription>").unwrap();
+        let nightly = "_Unstable/PCjr_unstable_20261104_abcd.rbf";
+        std::fs::create_dir_all(root.join("_Unstable")).unwrap();
+        std::fs::write(root.join(nightly), b"core").unwrap();
+        for (version, reference) in [
+            ("ra", "_RA_Cores/Cores/PCjr"),
+            (nightly, nightly.trim_end_matches(".rbf")),
+        ] {
+            let selected =
+                plan_with_selections(&system, &saved, &output, &root, false, Some(version), None)
+                    .unwrap();
+            assert!(selected.mgl.contains(&format!("<rbf>{reference}</rbf>")));
+            assert!(selected.mgl.contains("index=\"2\""));
+            assert_eq!(std::fs::read_to_string(&saved).unwrap(), new);
+        }
+        // An explicit two-cartridge PCXT launcher already declares its
+        // machine and slots. Automatic must preserve that declaration.
+        let explicit = game.parent().unwrap().join("Two cartridges.mgl");
+        std::fs::write(
+            game.parent().unwrap().join("other.jrc"),
+            b"second cartridge",
+        )
+        .unwrap();
+        let explicit_xml = "<mistergamedescription><rbf>_Computer/PCXT</rbf><setname same_dir=\"1\">PCXT-PCjr</setname><file type=\"f\" index=\"5\" path=\"game.jrc\"/><file type=\"f\" index=\"6\" path=\"other.jrc\"/></mistergamedescription>";
+        std::fs::write(&explicit, explicit_xml).unwrap();
+        let automatic =
+            plan_with_selections(&system, &explicit, &output, &root, false, None, None).unwrap();
+        let effective = if automatic.mgl.is_empty() {
+            explicit_xml
+        } else {
+            &automatic.mgl
+        };
+        assert!(effective.contains("_Computer/PCXT"));
+        assert!(effective.contains("index=\"5\""));
+        assert!(effective.contains("index=\"6\""));
+        let standard = plan_with_selections(
+            &system,
+            &explicit,
+            &output,
+            &root,
+            false,
+            Some("standard"),
+            None,
+        )
+        .unwrap();
+        let effective = if standard.mgl.is_empty() {
+            explicit_xml
+        } else {
+            &standard.mgl
+        };
+        assert!(effective.contains("index=\"5\"") && effective.contains("index=\"6\""));
+        for version in ["ra", nightly] {
+            let error = plan_with_selections(
+                &system,
+                &explicit,
+                &output,
+                &root,
+                false,
+                Some(version),
+                None,
+            )
+            .err()
+            .unwrap();
+            assert!(error.to_string().contains("media slot"));
+        }
+        assert_eq!(std::fs::read_to_string(&explicit).unwrap(), explicit_xml);
+        std::fs::remove_file(root.join("_Computer/PCXT_20261103.rbf")).unwrap();
+        for old in [false, true] {
+            if old {
+                std::fs::write(root.join("_Computer/PCXT_20261102.rbf"), b"core").unwrap();
+            }
+            for version in [None, Some("standard")] {
+                let error =
+                    plan_with_selections(&system, &saved, &output, &root, false, version, None)
+                        .err()
+                        .unwrap()
+                        .to_string();
+                assert!(
+                    error.contains("PCXT") && error.contains("20261103"),
+                    "{error}"
+                );
+            }
+        }
+        std::fs::remove_dir_all(root).unwrap();
+    }
     use crate::config::LaunchRule;
 
     const AMIGAVISION_2026_04_GAMES: &[u8] =
@@ -1290,6 +1552,7 @@ mod tests {
             setname: None,
             same_dir: false,
             compatible_cores: Vec::new(),
+            minimum_build: None,
             extra_paths: Vec::new(),
         }
     }
@@ -1969,6 +2232,7 @@ mod tests {
             setname: Some("Amiga".into()),
             same_dir: false,
             compatible_cores: Vec::new(),
+            minimum_build: None,
             extra_paths: Vec::new(),
         }
     }
@@ -2035,6 +2299,8 @@ mod tests {
             rbf: "_Computer/MinimigLegacy".into(),
             setname: Some("CustomAmiga".into()),
             same_dir: false,
+            launch: Vec::new(),
+            minimum_build: None,
         });
 
         let plan = plan_amiga_vision_with_selections(
@@ -2150,6 +2416,7 @@ mod tests {
             setname: None,
             same_dir: false,
             compatible_cores: Vec::new(),
+            minimum_build: None,
             extra_paths: Vec::new(),
         };
         let plan = plan_amiga_vision(
@@ -2278,6 +2545,7 @@ mod tests {
             setname: None,
             same_dir: false,
             compatible_cores: Vec::new(),
+            minimum_build: None,
             extra_paths: Vec::new(),
         };
         let err = plan_amiga_vision(
@@ -2305,6 +2573,7 @@ mod tests {
             setname: None,
             same_dir: false,
             compatible_cores: Vec::new(),
+            minimum_build: None,
             extra_paths: Vec::new(),
         };
         let plan = plan_amiga_vision(
@@ -2341,6 +2610,7 @@ mod tests {
             setname: None,
             same_dir: false,
             compatible_cores: Vec::new(),
+            minimum_build: None,
             extra_paths: Vec::new(),
         };
         let plan = plan_amiga_vision(&system, &dir, "Lotus II", &dir.join("degauss.mgl")).unwrap();
@@ -2410,6 +2680,7 @@ mod tests {
             setname: None,
             same_dir: false,
             compatible_cores: Vec::new(),
+            minimum_build: None,
         };
         (root, system)
     }
@@ -2887,6 +3158,7 @@ mod tests {
             setname: Some("Amiga".into()),
             same_dir: false,
             compatible_cores: Vec::new(),
+            minimum_build: None,
             skip_folders: Vec::new(),
             extra_paths: Vec::new(),
         };
@@ -2923,6 +3195,7 @@ mod tests {
             setname: Some("Amiga".into()),
             same_dir: false,
             compatible_cores: Vec::new(),
+            minimum_build: None,
             skip_folders: Vec::new(),
             extra_paths: Vec::new(),
         };
@@ -2957,6 +3230,7 @@ mod tests {
             setname: Some("Amiga".into()),
             same_dir: false,
             compatible_cores: Vec::new(),
+            minimum_build: None,
             skip_folders: Vec::new(),
             extra_paths: Vec::new(),
         };
@@ -2991,6 +3265,7 @@ mod tests {
             setname: None,
             same_dir: false,
             compatible_cores: Vec::new(),
+            minimum_build: None,
             extra_paths: Vec::new(),
         }
     }

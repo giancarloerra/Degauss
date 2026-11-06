@@ -1,0 +1,263 @@
+diff --git a/menu.cpp b/menu.cpp
+--- a/menu.cpp
++++ b/menu.cpp
+@@ -1115,6 +1115,43 @@
+ static int gun_idx = 0;
+ static int32_t gun_pos[4] = {};
+ static int page = 0;
++
++// MGL media can live in a core submenu. Keep the normal visible-row parser
++// and transfer path, but render the page containing the requested slot first.
++static int MglFilePage(char type, int index, int current_page, uint32_t hdmask)
++{
++	int found = -1;
++	for (int i = 2; const char *p = user_io_get_confstr(i); ++i)
++	{
++		if (!strncmp(p, "DEFMRA,", 7)) continue;
++		int hidden = 0, disabled = 0;
++		while ((p[0] == 'H' || p[0] == 'D' || p[0] == 'h' || p[0] == 'd') && strlen(p) > 2)
++		{
++			const int flag = (hdmask & (1U << user_io_hd_mask(p + 1))) ? 1 : 0;
++			if (p[0] == 'H') hidden |= flag;
++			if (p[0] == 'h') hidden |= (flag ^ 1);
++			if (p[0] == 'D') disabled |= flag;
++			if (p[0] == 'd') disabled |= (flag ^ 1);
++			p += 2;
++		}
++		int option_page = 0;
++		if (p[0] == 'P')
++		{
++			if (strlen(p) < 3 || p[1] < '0' || p[1] > '9' || p[2] == ',') continue;
++			option_page = p[1] - '0';
++			p += 2;
++		}
++		if (hidden || disabled || p[0] != type || (type != 'F' && type != 'S')) continue;
++		int offset = 1;
++		if (p[offset] == 'S') ++offset;
++		if (p[offset] == 'C') ++offset;
++		const int slot = (p[offset] >= '0' && p[offset] <= '9') ? p[offset] - '0' : 0;
++		if (slot != index) continue;
++		if (option_page == current_page) return current_page;
++		if (found < 0) found = option_page;
++	}
++	return found < 0 ? current_page : found;
++}
+ 
+ static void menu_button_name(int button, char *buf, size_t bsize)
+ {
+@@ -2038,6 +2075,26 @@
+ 	case MENU_GENERIC_MAIN1: {
+ 		hdmask = spi_uio_cmd16(UIO_GET_OSDMASK, 0);
+ 		user_io_read_confstr();
++		if (!mgl->done) mgl->item[mgl->current].submenu = -1;
++		if (!flat && !mgl->done)
++		{
++			const int next_page = MglFilePage(mgl->item[mgl->current].type,
++				mgl->item[mgl->current].index, page, hdmask);
++			if (next_page != page)
++			{
++				page = next_page;
++				menusub = firstmenu = 0;
++				for (int i = 2; (p = user_io_get_confstr(i)); ++i)
++				{
++					while ((p[0] == 'H' || p[0] == 'D' || p[0] == 'h' || p[0] == 'd') && strlen(p) > 2) p += 2;
++					if (p[0] == 'P' && p[1] == '0' + page && p[2] == ',')
++					{
++						substrcpy(title, p, 1);
++						break;
++					}
++				}
++			}
++		}
+ 		uint32_t s_entry = 0;
+ 		int entry = 0;
+ 		while(1)
+@@ -2163,7 +2220,7 @@
+ 							if (p[idx] == 'C') idx++;
+ 
+ 							int num = (p[idx] >= '0' && p[idx] <= '9') ? p[idx] - '0' : 0;
+-							if (!mgl->done && num == mgl->item[mgl->current].index && (p[0] == mgl->item[mgl->current].type)) mgl->item[mgl->current].submenu = selentry;
++							if (!mgl->done && !d && num == mgl->item[mgl->current].index && (p[0] == mgl->item[mgl->current].type)) mgl->item[mgl->current].submenu = selentry;
+ 
+ 							if (is_x86() && x86_get_image_name(num))
+ 							{
+@@ -2433,0 +2491,4 @@ void HandleUI(void)
++		else if (!mgl->done && mgl->item[mgl->current].submenu < 0)
++		{
++			break;
++		}
+diff --git a/tests/run-degauss-mgl-page-tests.py b/tests/run-degauss-mgl-page-tests.py
+new file mode 100644
+index 0000000..9a56126
+--- /dev/null
++++ b/tests/run-degauss-mgl-page-tests.py
+@@ -0,0 +1,169 @@
++#!/usr/bin/env python3
++"""Run the production MGL page resolver against core configuration rows."""
++from pathlib import Path
++import subprocess
++import tempfile
++
++root = Path(__file__).resolve().parents[1]
++source = (root / 'menu.cpp').read_text()
++start = source.index('static int MglFilePage(')
++end = source.index('\n}\n', start) + 3
++production = source[start:end]
++hook_start = source.index('\t\thdmask = spi_uio_cmd16(UIO_GET_OSDMASK, 0);')
++hook_end = source.index('\t\tuint32_t s_entry = 0;', hook_start)
++hook = source[hook_start:hook_end]
++binding = next(line.strip() for line in source.splitlines()
++               if 'mgl->item[mgl->current].submenu = selentry;' in line)
++reject_start = source.index('\t\t// F/S option not found -> deactivate mgl.')
++reject_end = source.index('\n\t\telse if (menu)', reject_start)
++rejection = source[reject_start:reject_end]
++test = r'''
++#include <cassert>
++#include <cstdint>
++#include <cstring>
++#include <vector>
++static std::vector<const char *> rows;
++static char *user_io_get_confstr(int i) { return i < int(rows.size()) ? const_cast<char *>(rows[i]) : nullptr; }
++static int user_io_hd_mask(const char *s) { return s[0] >= 'A' ? s[0] - 'A' + 10 : s[0] - '0'; }
++PRODUCTION
++static int page, flat, menusub, firstmenu;
++static uint32_t hdmask, test_mask;
++static const int UIO_GET_OSDMASK = 0;
++static char title[32];
++struct File { char type; int index; int submenu; };
++struct Mgl { bool done; int current; File item[2]; int state = 0; } description;
++static Mgl *mgl = &description;
++static uint32_t spi_uio_cmd16(int, int) { return test_mask; }
++static void user_io_read_confstr() {}
++static void substrcpy(char *out, const char *in, int) {
++    const char *label = std::strchr(in, ',');
++    assert(label);
++    std::strncpy(out, label + 1, 31);
++    out[31] = 0;
++}
++static void render_mgl_page() {
++    char *p;
++HOOK
++}
++static void bind_mgl_slot(char type, int num, int d, int selentry) {
++    const char p[] = {type, 0};
++BINDING
++}
++static uint32_t menu_save_timer;
++static bool timer_expired, arcade, upload;
++static int save_calls, saving_messages, last_menustate;
++static bool CheckTimer(uint32_t) { return timer_expired; }
++static uint32_t GetTimer(int delay) { return delay; }
++static bool is_arcade() { return arcade; }
++static const int UIO_CHK_UPLOAD = 1;
++static bool spi_uio_cmd(int) { return upload; }
++static void arcade_nvm_save() { ++save_calls; }
++static void OsdWrite(int) {}
++static void OsdWrite(int, const char *) { ++saving_messages; }
++static int consume_mgl_slot() {
++    int menustate = -1;
++    const int MENU_NONE1 = 1;
++    const int MENU_GENERIC_SAVE_WAIT = 2;
++    int m = 0;
++    int continued = 0;
++    switch (0) {
++        case 0:
++REJECTION
++        else ++continued;
++    }
++    last_menustate = menustate;
++    assert(menustate == -1 || menustate == MENU_NONE1 || menustate == MENU_GENERIC_SAVE_WAIT);
++    return continued;
++}
++int main() {
++    // Real PCXT layout: cartridge slots are on page 1 and only visible for PCjr.
++    rows = {"PCXT", "", "S0,IMG,Floppy;", "hEP1FC5,JRC,Cartridge 1;",
++        "hEP1FC6,JRC,Cartridge 2;", "hEP1,System & BIOS;", "S2,VHD,Hard disk;"};
++    assert(MglFilePage('F', 5, 0, 1U << 14) == 1);
++    assert(MglFilePage('F', 6, 0, 1U << 14) == 1);
++    assert(MglFilePage('F', 5, 0, 0) == 0); // Hidden in another machine mode.
++    assert(MglFilePage('S', 0, 1, 0) == 0); // Next MGL item returns to the top.
++    assert(MglFilePage('S', 2, 0, 0) == 0);
++    assert(MglFilePage('F', 7, 1, ~0U) == 1); // Missing slot keeps the existing failure path.
++    // Execute the actual render-state integration, not just the helper.
++    test_mask = 1U << 14;
++    page = flat = 0;
++    menusub = firstmenu = 7;
++    description = {false, 0, {{'F', 5, -1}, {'S', 0, -1}}};
++    render_mgl_page();
++    assert(page == 1 && menusub == 0 && firstmenu == 0);
++    assert(std::strcmp(title, "System & BIOS;") == 0);
++    description.current = 1;
++    render_mgl_page();
++    assert(page == 0);
++    flat = 1;
++    description.current = 0;
++    render_mgl_page();
++    assert(page == 0); // Flat layout still uses its existing top-level parser.
++    flat = 0;
++    description.done = true;
++    render_mgl_page();
++    assert(page == 0); // Normal interactive menus are untouched.
++    rows = {"Core", "", "F5,JRC,Top;", "P1FC5,JRC,Nested;", "P2FS3,ROM,Nested;"};
++    assert(MglFilePage('F', 5, 0, 0) == 0);
++    assert(MglFilePage('F', 5, 1, 0) == 1); // Preserve the already selected matching page.
++    assert(MglFilePage('F', 3, 0, 0) == 2);
++    assert(MglFilePage('S', 3, 0, 0) == 0); // File and image slots are distinct.
++    rows = {"Core", "", "DEFMRA,default.mra;", "P1F0,ROM,Nested;"};
++    assert(MglFilePage('F', 0, 0, 0) == 1);
++    rows = {"Core", "", "P0F5,JRC,Root page;"};
++    assert(MglFilePage('F', 5, 1, 0) == 0);
++    rows = {"Core", "", "H1h2P3F1,ROM,Conditional;", "P4D1F2,ROM,Literal;", "P1,Header;"};
++    assert(MglFilePage('F', 1, 0, 1U << 2) == 3);
++    assert(MglFilePage('F', 1, 0, (1U << 1) | (1U << 2)) == 0);
++    assert(MglFilePage('R', 0, 0, 0) == 0);
++    rows = {"Core", "", "S0,IMG,Enabled first row;", "D1P2F5,JRC,Disabled;", "d2P3F6,JRC,Inverse disabled;"};
++    assert(MglFilePage('F', 5, 0, 1U << 1) == 0);
++    assert(MglFilePage('F', 5, 0, 0) == 2);
++    assert(MglFilePage('F', 6, 0, 0) == 0);
++    assert(MglFilePage('F', 6, 0, 1U << 2) == 3);
++    // mgl_parse zero-initializes every item. A disabled or missing slot
++    // must not retain that zero and activate the first enabled media row.
++    description = {false, 0, {{'F', 5, 0}, {'S', 0, 0}}};
++    test_mask = 1U << 1;
++    page = flat = 0;
++    render_mgl_page();
++    bind_mgl_slot('F', 5, 1, 4);
++    assert(description.item[0].submenu == -1);
++    bind_mgl_slot('F', 5, 0, 4);
++    assert(description.item[0].submenu == 4);
++    description.item[0] = {'F', 9, 0};
++    render_mgl_page();
++    assert(description.item[0].submenu == -1);
++    assert(consume_mgl_slot() == 0 && description.state == 3);
++    description.item[0].submenu = 2;
++    description.state = 0;
++    assert(consume_mgl_slot() == 1 && description.state == 0);
++    description.done = true;
++    description.item[0].submenu = -1;
++    assert(consume_mgl_slot() == 1 && description.state == 0);
++    // Rejected slots still stop MGL immediately, while the existing save
++    // handlers run before any ordinary menu navigation.
++    description.done = false;
++    description.state = 0;
++    menu_save_timer = 500;
++    assert(consume_mgl_slot() == 0 && description.state == 3);
++    assert(last_menustate == 2 && saving_messages == 1);
++    menu_save_timer = 0;
++    arcade = upload = true;
++    assert(consume_mgl_slot() == 0 && description.state == 3);
++    assert(save_calls == 1 && menu_save_timer == 1000);
++    arcade = upload = false;
++    description.state = 0;
++    description.item[0].submenu = 2;
++    assert(consume_mgl_slot() == 0 && description.state == 0);
++    assert(last_menustate == 2 && saving_messages == 2);
++}
++'''.replace('PRODUCTION', production).replace('HOOK', hook).replace('BINDING', binding).replace('REJECTION', rejection)
++with tempfile.TemporaryDirectory(prefix='degauss-mgl-pages-') as tmp:
++    cpp = Path(tmp) / 'test.cpp'
++    binary = Path(tmp) / 'test'
++    cpp.write_text(test)
++    subprocess.run(['c++', '-std=c++14', '-Wall', '-Wextra', '-Werror', str(cpp), '-o', str(binary)], check=True)
++    subprocess.run([str(binary)], check=True)
++print('MGL page resolver: passed')

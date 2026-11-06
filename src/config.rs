@@ -192,7 +192,7 @@ pub struct LaunchRule {
 }
 
 /// An additional core family that is explicitly compatible with a system's
-/// existing file extensions and launch rules.
+/// existing file extensions, with explicit media-slot rules when needed.
 ///
 /// The system-level `rbf` and `setname` remain the first, preferred family.
 /// These profiles are ordered fallbacks; they do not change library identity.
@@ -211,6 +211,12 @@ pub struct CoreProfile {
     /// Keep the original core's game/BIOS folder with a separate set name.
     #[serde(default)]
     pub same_dir: bool,
+    /// When supplied, this family's media slots replace the system's rules.
+    #[serde(default)]
+    pub launch: Vec<LaunchRule>,
+    /// Require a dated core build carrying this family's supported machine.
+    #[serde(default)]
+    pub minimum_build: Option<String>,
 }
 
 /// Explicit changes to a built-in compatible profile, or a new named profile.
@@ -259,6 +265,9 @@ pub struct SystemConfig {
     /// `rbf` and `setname`.
     #[serde(default)]
     pub compatible_cores: Vec<CoreProfile>,
+    /// Optional build requirement of the selected compatible family.
+    #[serde(default)]
+    pub minimum_build: Option<String>,
     /// Folder names the scan skips for this system.
     #[serde(default)]
     pub skip_folders: Vec<String>,
@@ -270,8 +279,8 @@ pub struct SystemConfig {
 impl SystemConfig {
     /// One launch configuration per compatible core family, preferred first.
     ///
-    /// Paths, extensions and launch rules are shared deliberately: a profile
-    /// belongs here only when the same game hand-off is valid for that core.
+    /// Paths and extensions keep one library identity. A family can declare
+    /// its own media slots while older profiles inherit the system rules.
     pub fn core_family_configs(&self) -> Vec<Self> {
         let mut primary = self.clone();
         primary.compatible_cores.clear();
@@ -282,6 +291,10 @@ impl SystemConfig {
             family.rbf = profile.rbf.clone();
             family.setname = profile.setname.clone();
             family.same_dir = profile.same_dir;
+            family.minimum_build = profile.minimum_build.clone();
+            if !profile.launch.is_empty() {
+                family.launch = profile.launch.clone();
+            }
             family.compatible_cores.clear();
             family
         }));
@@ -441,6 +454,9 @@ pub struct Config {
     /// Manual launch declarations, separate from saved UI choices.
     #[serde(default)]
     pub core_overrides: BTreeMap<String, CoreOverride>,
+    /// Extra folder candidates appended to each system's existing locations.
+    #[serde(default)]
+    pub library_folders: BTreeMap<String, Vec<String>>,
 }
 
 fn default_menu_root() -> String {
@@ -495,8 +511,24 @@ impl Config {
             }
         };
         let merged = Self::with_overrides(&text, &user_text, &user_path).and_then(|config| {
-            if let Some(table) = table.filter(|_| !config.core_overrides.is_empty()) {
-                crate::systems::with_core_overrides(table, &config.core_overrides, &user_path)?;
+            if let Some(table) = table {
+                if !config.core_overrides.is_empty() || !config.library_folders.is_empty() {
+                    let table = crate::systems::with_core_overrides(
+                        table,
+                        &config.core_overrides,
+                        &user_path,
+                    )?;
+                    if !config.library_folders.is_empty() {
+                        let table =
+                            crate::systems::prepare_table(table, Path::new(&config.menu_root))?;
+                        crate::systems::with_library_folders(
+                            &table,
+                            &config.library_folders,
+                            Path::new(&config.menu_root),
+                            &user_path,
+                        )?;
+                    }
+                }
             }
             Ok(config)
         });
@@ -601,6 +633,66 @@ pub const LEFT_RIGHT_VALUES: [&str; 4] = ["speed", "letter", "page", "direction"
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn extra_library_locations_preserve_base_config_and_reject_invalid_user_files_as_a_unit() {
+        let root =
+            std::env::temp_dir().join(format!("degauss-library-config-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let path = root.join("custom.toml");
+        let user = root.join("degauss-user.toml");
+        let base = include_str!("../degauss.toml");
+        std::fs::write(&path, base).unwrap();
+        let table = crate::systems::load_table(Path::new("assets/systems.toml")).unwrap();
+        assert!(Config::load_for_systems(&path, &table)
+            .unwrap()
+            .library_folders
+            .is_empty());
+        let valid = "[library_folders]\nArcade = ['/media/fat/_Ongo/_Arcade']\nC64 = ['Extra C64']\n[core_overrides.NeoGeo]\nrbf = '_Console/CustomNeoGeo'\n";
+        std::fs::write(&user, valid).unwrap();
+        let config = Config::load_for_systems(&path, &table).unwrap();
+        assert_eq!(
+            config.library_folders["Arcade"],
+            ["/media/fat/_Ongo/_Arcade"]
+        );
+        assert_eq!(
+            config.core_overrides["NeoGeo"].rbf.as_deref(),
+            Some("_Console/CustomNeoGeo")
+        );
+        assert_eq!(
+            config.game_roots,
+            Config::parse(base, &path).unwrap().game_roots
+        );
+        assert_eq!(std::fs::read_to_string(&user).unwrap(), valid);
+        for invalid in [
+            "[app]\nart_cache=123\n[library_folders]\nUnknown=['/games']",
+            "[app]\nart_cache=123\n[library_folders]\nArcade=['  ']",
+            "[app]\nart_cache=123\n[library_folders]\nArcade='/games'",
+            "[library_folders\nArcade=['/games']",
+        ] {
+            std::fs::write(&user, invalid).unwrap();
+            let config = Config::load_for_systems(&path, &table).unwrap();
+            assert!(config.library_folders.is_empty());
+            assert_eq!(
+                config.app.art_cache,
+                Config::parse(base, &path).unwrap().app.art_cache
+            );
+            assert_eq!(std::fs::read_to_string(&user).unwrap(), invalid);
+        }
+        let legacy: Vec<_> = table
+            .iter()
+            .filter(|system| system.id != "UnstableCores")
+            .cloned()
+            .collect();
+        let user_text = "[app]\nart_cache=123\n[library_folders]\nUnstableCores=['/extra-cores']\n";
+        std::fs::write(&user, user_text).unwrap();
+        let config = Config::load_for_systems(&path, &legacy).unwrap();
+        assert_eq!(config.app.art_cache, 123);
+        assert_eq!(config.library_folders["UnstableCores"], ["/extra-cores"]);
+        assert_eq!(std::fs::read_to_string(&user).unwrap(), user_text);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), base);
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn kiosk_codes_keep_leading_zeroes_and_never_appear_in_diagnostics() {
@@ -895,6 +987,7 @@ favorite = "#fe2e1d"
             setname: None,
             same_dir: false,
             compatible_cores: Vec::new(),
+            minimum_build: None,
             extra_paths: Vec::new(),
         };
         assert!(system.accepts(Path::new("/x/Game.D64")));
@@ -916,6 +1009,7 @@ favorite = "#fe2e1d"
             setname: Some("Atari2600".into()),
             same_dir: false,
             compatible_cores: Vec::new(),
+            minimum_build: None,
             extra_paths: vec!["/games/Atari2600/ATARI7800".into()],
         };
         assert!(!system.accepts(Path::new("/games/Atari2600/ATARI7800/Game.bin")));
@@ -948,6 +1042,7 @@ favorite = "#fe2e1d"
             setname: None,
             same_dir: false,
             compatible_cores: Vec::new(),
+            minimum_build: None,
             extra_paths: Vec::new(),
         };
         let rule = system.rule_for(Path::new("/x/Game.D64")).expect("d64 rule");

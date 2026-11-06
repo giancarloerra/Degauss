@@ -565,11 +565,16 @@ impl Library {
                 stats.empty_folders_hidden += 1;
                 continue;
             }
-            let name = root
+            let mut name = root
                 .path
                 .file_name()
                 .map(|name| name.to_string_lossy().into_owned())
                 .unwrap_or_else(|| root.path.to_string_lossy().into_owned());
+            if self.roots.iter().any(|other| {
+                other.path != root.path && other.path.file_name() == root.path.file_name()
+            }) {
+                name = root.path.to_string_lossy().into_owned();
+            }
             stats.folders += 1;
             rows.push(folder_row(name, Place::Dir(root.path.clone())));
         }
@@ -1633,6 +1638,7 @@ mod tests {
             setname: None,
             same_dir: false,
             compatible_cores: Vec::new(),
+            minimum_build: None,
             extra_paths: Vec::new(),
         }
     }
@@ -2334,7 +2340,7 @@ mod tests {
         let broken = dir.join("broken.zip");
         std::fs::write(&broken, b"broken archive").unwrap();
         let log_since = |from: usize| {
-            let log = std::fs::read_to_string(crate::LOG_PATH).unwrap_or_default();
+            let log = std::fs::read_to_string(crate::log_path()).unwrap_or_default();
             log[from.min(log.len())..].to_string()
         };
         let held_line = format!("zip          {}", held.display());
@@ -2407,7 +2413,7 @@ mod tests {
         )
         .unwrap();
         let log_since = |from: usize| {
-            let log = std::fs::read_to_string(crate::LOG_PATH).unwrap_or_default();
+            let log = std::fs::read_to_string(crate::log_path()).unwrap_or_default();
             log[from.min(log.len())..].to_string()
         };
         let library = Library::open(&system(&dir)).unwrap();
@@ -2639,6 +2645,38 @@ mod tests {
             "no pointless extra level"
         );
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn equal_root_names_remain_distinguishable_without_changing_their_targets() {
+        let card = temp("same-root-names");
+        let first = card.join("_Arcade");
+        let second = card.join("_Ongo/_Arcade");
+        for root in [&first, &second] {
+            std::fs::create_dir_all(root).unwrap();
+            std::fs::write(root.join("same.d64"), b"game").unwrap();
+        }
+        let mut config = system(&first);
+        config
+            .extra_paths
+            .push(second.to_string_lossy().into_owned());
+        let library = Library::open(&config).unwrap();
+        let (rows, _) = library.list(&library.start(), false).unwrap();
+        assert_eq!(rows.len(), 2);
+        let names = names_of(&rows);
+        assert!(names.contains(&first.to_string_lossy().into_owned()));
+        assert!(names.contains(&second.to_string_lossy().into_owned()));
+        for row in rows {
+            let Kind::Enter(Place::Dir(path)) = row.kind else {
+                panic!("root target")
+            };
+            assert!(path == first || path == second);
+            let (games, _) = library.list(&Place::Dir(path.clone()), false).unwrap();
+            assert!(
+                matches!(&games[0].kind, Kind::Play(Launch::File(file)) if file == &path.join("same.d64"))
+            );
+        }
+        std::fs::remove_dir_all(card).unwrap();
     }
 
     #[test]
@@ -2975,6 +3013,7 @@ mod tests {
             setname: None,
             same_dir: false,
             compatible_cores: Vec::new(),
+            minimum_build: None,
             extra_paths: Vec::new(),
         }
     }

@@ -2006,6 +2006,7 @@ mod tests {
             setname: None,
             same_dir: false,
             compatible_cores: Vec::new(),
+            minimum_build: None,
             skip_folders: Vec::new(),
             extra_paths: Vec::new(),
         }
@@ -3150,7 +3151,7 @@ mod tests {
         .unwrap();
         // The log may not exist yet on a fresh machine; `note` creates it.
         let log_since = |from: usize| {
-            let log = std::fs::read_to_string(crate::LOG_PATH).unwrap_or_default();
+            let log = std::fs::read_to_string(crate::log_path()).unwrap_or_default();
             log[from.min(log.len())..].to_string()
         };
         let before = log_since(0).len();

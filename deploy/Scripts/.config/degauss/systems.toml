@@ -2372,6 +2372,23 @@ id = "PCjr"
 folders = ["PCjr"]
 rbf = "_Computer/PCjr"
 extensions = ["img", "ima", "vfd", "jrc", "jrt", "mgl"]
+[[systems.compatible_cores]]
+id = "pcxt-pcjr"
+label = "PCXT PCjr"
+rbf = "_Computer/PCXT"
+setname = "PCXT-PCjr"
+same_dir = true
+minimum_build = "20261103"
+[[systems.compatible_cores.launch]]
+extensions = ["img", "ima", "vfd"]
+type = "s"
+index = 0
+delay = 1
+[[systems.compatible_cores.launch]]
+extensions = ["jrc"]
+type = "f"
+index = 5
+delay = 1
 [[systems.launch]]
 extensions = ["img", "ima", "vfd"]
 type = "s"
@@ -2423,6 +2440,13 @@ id = "Tandy1000"
 folders = ["Tandy1000"]
 rbf = "_Computer/Tandy1000"
 extensions = ["img", "ima", "vfd", "vhd", "mgl"]
+[[systems.compatible_cores]]
+id = "pcxt-tandy"
+label = "PCXT Tandy 1000"
+rbf = "_Computer/PCXT"
+setname = "PCXT-Tandy"
+same_dir = true
+minimum_build = "20261103"
 [[systems.launch]]
 extensions = ["img", "ima", "vfd"]
 type = "s"
@@ -2523,6 +2547,22 @@ delay = 1
 [[systems.launch]]
 extensions = ["mcd"]
 type = "s"
+index = 1
+delay = 1
+
+[[systems]]
+name = "Hitachi Basic Master Jr."
+id = "BasicMasterJr"
+folders = ["BasicMasterJr"]
+rbf = "_Computer/BasicMasterJr"
+extensions = ["bmt", "bin", "sav", "cmt", "mgl"]
+[[systems.compatible_cores]]
+id = "basicmasterjr-console"
+label = "Basic Master Jr. (legacy Console)"
+rbf = "_Console/BasicMasterJr"
+[[systems.launch]]
+extensions = ["bmt", "bin", "sav", "cmt"]
+type = "f"
 index = 1
 delay = 1
 
@@ -2834,3 +2874,84 @@ extensions = ["h1"]
 type = "s"
 index = 6
 delay = 1
+
+# Delivered computer cores; support files remain excluded by normal browsing.
+[[systems]]
+name = "Hitachi Basic Master Level 3 / MB-S1"
+id = "BasicMasterL3"
+folders = ["BasicMasterL3"]
+rbf = "_Computer/BasicMasterL3"
+extensions = ["d88", "l3", "mgl"]
+[[systems.launch]]
+extensions = ["d88"]
+type = "s"
+index = 0
+delay = 2
+reset_delay = 1
+[[systems.launch]]
+extensions = ["l3"]
+type = "s"
+index = 2
+delay = 2
+
+[[systems]]
+name = "Sharp MZ-2500 / MZ-2520"
+id = "SharpMZ2500"
+folders = ["SharpMZ2500"]
+rbf = "_Computer/SharpMZ2500"
+extensions = ["d88", "mzt", "bin", "dat", "mgl"]
+[[systems.launch]]
+extensions = ["d88"]
+type = "s"
+index = 0
+delay = 2
+reset_delay = 1
+[[systems.launch]]
+extensions = ["mzt"]
+type = "f"
+index = 1
+delay = 2
+reset_delay = 1
+[[systems.launch]]
+extensions = ["bin", "dat"]
+type = "f"
+index = 2
+delay = 1
+
+[[systems]]
+name = "Sharp X1"
+id = "SharpX1"
+folders = ["SharpX1"]
+rbf = "_Computer/SharpX1"
+extensions = ["d88", "2d", "tap", "mgl"]
+[[systems.launch]]
+extensions = ["d88", "2d"]
+type = "s"
+index = 0
+delay = 2
+reset_delay = 1
+[[systems.launch]]
+extensions = ["tap"]
+type = "s"
+index = 2
+delay = 2
+reset_delay = 1
+
+[[systems]]
+name = "Sony SMC-777"
+id = "SonySMC777"
+folders = ["SonySMC777"]
+rbf = "_Computer/SonySMC777"
+extensions = ["d88", "1dd", "d77", "wav", "mgl"]
+[[systems.launch]]
+extensions = ["d88", "1dd", "d77"]
+type = "s"
+index = 0
+delay = 2
+reset_delay = 1
+[[systems.launch]]
+extensions = ["wav"]
+type = "s"
+index = 2
+delay = 2
+reset_delay = 1

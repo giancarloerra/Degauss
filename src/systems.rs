@@ -219,6 +219,7 @@ impl FoundSystem {
             setname: self.def.setname.clone(),
             same_dir: self.def.same_dir,
             compatible_cores: self.def.compatible_cores.clone(),
+            minimum_build: None,
         }
     }
 
@@ -269,6 +270,21 @@ fn validate_core_profiles(table: &[SystemDef], origin: &Path) -> Result<()> {
     for system in table {
         let mut profile_ids = BTreeSet::new();
         for profile in &system.compatible_cores {
+            if profile
+                .minimum_build
+                .as_deref()
+                .is_some_and(|date| date.len() != 8 || !date.bytes().all(|b| b.is_ascii_digit()))
+            {
+                return Err(DegaussError::malformed(
+                    "systems table",
+                    origin,
+                    format!(
+                        "{} compatible core {:?} requires minimum_build in YYYYMMDD form",
+                        system.id, profile.id
+                    ),
+                ));
+            }
+
             if profile.id.trim().is_empty()
                 || profile.label.trim().is_empty()
                 || profile.rbf.trim().is_empty()
@@ -384,6 +400,8 @@ pub(crate) fn with_core_overrides(
                     rbf: String::new(),
                     setname: None,
                     same_dir: false,
+                    launch: Vec::new(),
+                    minimum_build: None,
                 });
                 system.compatible_cores.last_mut().unwrap()
             };
@@ -402,6 +420,57 @@ pub(crate) fn with_core_overrides(
         }
     }
     validate_core_profiles(&updated, origin)?;
+    Ok(updated)
+}
+
+/// Append user locations without replacing the selected table's defaults.
+pub(crate) fn with_library_folders(
+    table: &[SystemDef],
+    additions: &BTreeMap<String, Vec<String>>,
+    menu_root: &Path,
+    origin: &Path,
+) -> Result<Vec<SystemDef>> {
+    let mut updated = table.to_vec();
+    for (id, folders) in additions {
+        let mut position = table.iter().position(|system| system.id == *id);
+        if position.is_none() {
+            if let Some((_, category, folder)) =
+                COLLECTIONS.iter().find(|(builtin, _, _)| *builtin == id)
+            {
+                let target = collection_identity(&menu_root.join(folder))?;
+                for (index, system) in table.iter().enumerate() {
+                    if direct_collection(system)
+                        && system.category.as_deref() == Some(*category)
+                        && Path::new(&system.folders[0]).is_absolute()
+                        && collection_identity(Path::new(&system.folders[0]))? == target
+                    {
+                        position = Some(index);
+                        break;
+                    }
+                }
+            }
+        }
+        let position = position.ok_or_else(|| {
+            DegaussError::malformed(
+                "library folders",
+                origin,
+                format!("unknown system ID {id:?}"),
+            )
+        })?;
+        let system = &mut updated[position];
+        for folder in folders {
+            if folder.trim().is_empty() {
+                return Err(DegaussError::malformed(
+                    "library folders",
+                    origin,
+                    format!("{id} has an empty folder path"),
+                ));
+            }
+            if !system.folders.contains(folder) {
+                system.folders.push(folder.clone());
+            }
+        }
+    }
     Ok(updated)
 }
 
@@ -426,6 +495,14 @@ fn direct_collection(def: &SystemDef) -> bool {
         && def.extensions.len() == 3
 }
 
+fn collection_identity(path: &Path) -> Result<PathBuf> {
+    match std::fs::canonicalize(path) {
+        Ok(path) => Ok(path),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(path.to_path_buf()),
+        Err(error) => Err(DegaussError::io("resolving collection folder", path, error)),
+    }
+}
+
 /// Resolve shipped collection paths without rewriting the user's table.
 /// Existing equivalent rows keep their IDs, labels, artwork and hidden state.
 pub fn prepare_table(mut table: Vec<SystemDef>, menu_root: &Path) -> Result<Vec<SystemDef>> {
@@ -444,22 +521,15 @@ pub fn prepare_table(mut table: Vec<SystemDef>, menu_root: &Path) -> Result<Vec<
     }
     // Compare resolved directory identities, including symlink aliases when
     // present. A missing folder remains a literal identity until discovery.
-    let identity = |path: &Path| -> Result<PathBuf> {
-        match std::fs::canonicalize(path) {
-            Ok(path) => Ok(path),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(path.to_path_buf()),
-            Err(error) => Err(DegaussError::io("resolving collection folder", path, error)),
-        }
-    };
     let mut targets = Vec::new();
     for (_, category, folder) in COLLECTIONS {
-        targets.push((category, identity(&menu_root.join(folder))?));
+        targets.push((category, collection_identity(&menu_root.join(folder))?));
     }
     let mut seen = BTreeMap::<&str, usize>::new();
     let mut prepared: Vec<SystemDef> = Vec::new();
     for mut def in table {
         if direct_collection(&def) && Path::new(&def.folders[0]).is_absolute() {
-            let path = identity(Path::new(&def.folders[0]))?;
+            let path = collection_identity(Path::new(&def.folders[0]))?;
             if let Some((category, _)) = targets.iter().find(|(_, target)| *target == path) {
                 def.category = Some((*category).to_string());
                 if let Some(&position) = seen.get(category) {
@@ -959,15 +1029,23 @@ impl CoreIndex {
             system.rbf.as_str(),
             system.setname.as_ref(),
             system.same_dir,
+            system.launch.as_slice(),
+            None,
         ))
         .chain(system.compatible_cores.iter().map(|profile| {
             (
                 profile.rbf.as_str(),
                 profile.setname.as_ref(),
                 profile.same_dir,
+                if profile.launch.is_empty() {
+                    system.launch.as_slice()
+                } else {
+                    profile.launch.as_slice()
+                },
+                profile.minimum_build.as_ref(),
             )
         }));
-        for (rbf, setname, same_dir) in families {
+        for (rbf, setname, same_dir, launch, minimum_build) in families {
             let reference = Path::new(rbf);
             let Some(name) = reference.file_name().and_then(|name| name.to_str()) else {
                 continue;
@@ -1040,6 +1118,8 @@ impl CoreIndex {
                     rbf: variant,
                     setname: setname.cloned(),
                     same_dir,
+                    launch: launch.to_vec(),
+                    minimum_build: minimum_build.cloned(),
                 });
             }
         }
@@ -1546,6 +1626,264 @@ mod tests {
     use super::*;
 
     #[test]
+    fn user_library_folders_append_to_custom_tables_and_keep_root_priority() {
+        let card = temp_dir("user-library-folders");
+        let usb = card.join("usb");
+        let fat = card.join("fat");
+        let isolated = fat.join("_Ongo/_Arcade");
+        for folder in [usb.join("_Arcade"), fat.join("_Arcade"), isolated.clone()] {
+            std::fs::create_dir_all(folder).unwrap();
+        }
+        let mut table = load_table(Path::new("assets/systems.toml")).unwrap();
+        let arcade = table
+            .iter_mut()
+            .find(|system| system.id == "Arcade")
+            .unwrap();
+        arcade.folders.push("Custom Arcade".into());
+        let additions = BTreeMap::from([(
+            "Arcade".into(),
+            vec![
+                isolated.to_string_lossy().into_owned(),
+                "_Arcade".into(),
+                isolated.to_string_lossy().into_owned(),
+            ],
+        )]);
+        let updated =
+            with_library_folders(&table, &additions, &card, Path::new("degauss-user.toml"))
+                .unwrap();
+        let original = table.iter().find(|system| system.id == "Arcade").unwrap();
+        let arcade = updated.iter().find(|system| system.id == "Arcade").unwrap();
+        assert_eq!(&arcade.folders[..2], &original.folders);
+        assert_eq!(arcade.folders.len(), 3);
+        assert_eq!(arcade.launch, original.launch);
+        assert_eq!(
+            existing_folders_checked(arcade, &[usb.clone(), fat]).unwrap(),
+            [usb.join("_Arcade"), isolated]
+        );
+        assert_eq!(
+            table
+                .iter()
+                .find(|system| system.id == "C64")
+                .unwrap()
+                .folders,
+            updated
+                .iter()
+                .find(|system| system.id == "C64")
+                .unwrap()
+                .folders
+        );
+        std::fs::remove_dir_all(card).unwrap();
+    }
+
+    #[test]
+    fn additional_folders_preserve_literal_nonempty_whitespace_names() {
+        let root = temp_dir("literal-library-spaces");
+        for name in ["Original", " leading", "trailing "] {
+            std::fs::create_dir_all(root.join(name)).unwrap();
+        }
+        let mut system = one_system(&["Original"]);
+        system.id = "LiteralFolders".into();
+        let additions = BTreeMap::from([(
+            "LiteralFolders".into(),
+            vec![" leading".into(), "trailing ".into()],
+        )]);
+        let updated =
+            with_library_folders(&[system], &additions, &root, Path::new("degauss-user.toml"))
+                .unwrap();
+        assert_eq!(
+            existing_folders_checked(&updated[0], std::slice::from_ref(&root)).unwrap(),
+            vec![
+                root.join("Original"),
+                root.join(" leading"),
+                root.join("trailing ")
+            ]
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn library_folders_follow_the_retained_collection_identity() {
+        let menu = temp_dir("retained-library-identity");
+        std::fs::create_dir_all(menu.join("_Unstable")).unwrap();
+        let mut table = load_table(Path::new("assets/systems.toml")).unwrap();
+        let mut custom = table
+            .iter()
+            .find(|def| def.id == "UnstableCores")
+            .unwrap()
+            .clone();
+        custom.id = "MyNightlies".into();
+        custom.name = "My existing cores".into();
+        custom.folders = vec![menu.join("_Unstable").to_string_lossy().into_owned()];
+        let mut outside = custom.clone();
+        outside.id = "OutsideNightlies".into();
+        outside.folders = vec![menu.join("outside").to_string_lossy().into_owned()];
+        table.insert(0, outside);
+        table.push(custom);
+        #[cfg(unix)]
+        {
+            let mut relative = table.last().unwrap().clone();
+            relative.id = "RelativeNightlies".into();
+            let cwd = std::env::current_dir().unwrap();
+            let path = PathBuf::from("../".repeat(cwd.components().count()))
+                .join(menu.strip_prefix("/").unwrap())
+                .join("_Unstable");
+            assert_eq!(
+                path.canonicalize().unwrap(),
+                menu.join("_Unstable").canonicalize().unwrap()
+            );
+            relative.folders = vec![path.to_string_lossy().into_owned()];
+            table.insert(0, relative);
+        }
+        let prepared = prepare_table(table, &menu).unwrap();
+        assert!(!prepared.iter().any(|def| def.id == "UnstableCores"));
+        let extra = menu.join("more-cores").to_string_lossy().into_owned();
+        let additions = BTreeMap::from([("UnstableCores".into(), vec![extra.clone()])]);
+        let updated =
+            with_library_folders(&prepared, &additions, &menu, Path::new("degauss-user.toml"))
+                .unwrap();
+        let held = updated.iter().find(|def| def.id == "MyNightlies").unwrap();
+        assert_eq!(held.name, "My existing cores");
+        assert_eq!(held.folders.last(), Some(&extra));
+        #[cfg(unix)]
+        assert_eq!(
+            updated
+                .iter()
+                .find(|def| def.id == "RelativeNightlies")
+                .unwrap()
+                .folders
+                .len(),
+            1,
+            "relative folders retain their game-root identity"
+        );
+        assert_eq!(
+            updated
+                .iter()
+                .find(|def| def.id == "OutsideNightlies")
+                .unwrap()
+                .folders
+                .len(),
+            1
+        );
+        std::fs::remove_dir_all(menu).unwrap();
+    }
+
+    #[test]
+    fn delivered_computer_media_and_pcxt_profiles_keep_distinct_slots() {
+        let table = load_table(Path::new("assets/systems.toml")).unwrap();
+        for (id, extension, index) in [
+            ("SharpX1", "d88", 0),
+            ("SharpX1", "2d", 0),
+            ("SharpX1", "tap", 2),
+            ("SonySMC777", "1dd", 0),
+            ("SonySMC777", "d77", 0),
+            ("SonySMC777", "wav", 2),
+        ] {
+            let def = table.iter().find(|system| system.id == id).unwrap();
+            let config = FoundSystem {
+                def: def.clone(),
+                paths: vec![PathBuf::from("/games")],
+                logo_dir: None,
+                menu_folder: None,
+            }
+            .to_config();
+            let game = PathBuf::from(format!("game.{extension}"));
+            let rule = config.rule_for(&game).unwrap();
+            assert_eq!(
+                (rule.kind.as_str(), rule.index, rule.reset_delay),
+                ("s", index, Some(1))
+            );
+            assert!(!config.accepts(Path::new("boot.rom")));
+        }
+        let pcjr = FoundSystem {
+            def: table
+                .iter()
+                .find(|system| system.id == "PCjr")
+                .unwrap()
+                .clone(),
+            paths: vec![PathBuf::from("/games/PCjr")],
+            logo_dir: None,
+            menu_folder: None,
+        }
+        .to_config();
+        let families = pcjr.core_family_configs();
+        assert_eq!(
+            families[0].rule_for(Path::new("game.jrc")).unwrap().index,
+            2
+        );
+        assert_eq!(
+            families[0].rule_for(Path::new("game.jrt")).unwrap().index,
+            4
+        );
+        assert_eq!(
+            families[1].rule_for(Path::new("game.jrc")).unwrap().index,
+            5
+        );
+        assert!(families[1].rule_for(Path::new("game.jrt")).is_none());
+        assert_eq!(families[1].setname.as_deref(), Some("PCXT-PCjr"));
+        assert!(families[1].same_dir);
+        let basic = table
+            .iter()
+            .find(|system| system.id == "BasicMasterJr")
+            .unwrap();
+        assert_eq!(basic.rbf, "_Computer/BasicMasterJr");
+        assert_eq!(basic.compatible_cores[0].rbf, "_Console/BasicMasterJr");
+        assert_eq!(basic.launch[0].index, 1);
+    }
+
+    #[test]
+    fn level3_and_mz2500_mount_native_media_without_resetting_running_snapshots() {
+        let table = load_table(Path::new("assets/systems.toml")).unwrap();
+        for (id, extension, kind, index, reset) in [
+            ("BasicMasterL3", "d88", "s", 0, Some(1)),
+            ("BasicMasterL3", "l3", "s", 2, None),
+            ("SharpMZ2500", "d88", "s", 0, Some(1)),
+            ("SharpMZ2500", "mzt", "f", 1, Some(1)),
+            ("SharpMZ2500", "bin", "f", 2, None),
+            ("SharpMZ2500", "dat", "f", 2, None),
+        ] {
+            let def = table.iter().find(|system| system.id == id).unwrap();
+            let config = FoundSystem {
+                def: def.clone(),
+                paths: vec![PathBuf::from(format!("/games/{id}"))],
+                logo_dir: None,
+                menu_folder: None,
+            }
+            .to_config();
+            let game = PathBuf::from(format!("/games/{id}/game.{extension}"));
+            let rule = config.rule_for(&game).unwrap();
+            assert_eq!(
+                (rule.kind.as_str(), rule.index, rule.reset_delay),
+                (kind, index, reset)
+            );
+            let plan = crate::launch::plan(&config, &game, Path::new("/tmp/launch.mgl")).unwrap();
+            assert!(
+                plan.mgl
+                    .contains(&format!("type=\"{kind}\" index=\"{index}\"")),
+                "{id}/{extension}: native media slot"
+            );
+            assert_eq!(
+                plan.mgl.contains("<reset"),
+                reset.is_some(),
+                "{id}/{extension}: snapshots must run without a later reset"
+            );
+            for unsupported in [
+                "boot.rom",
+                "boot0.rom",
+                "source.dsk",
+                "source.mfi",
+                "source.wav",
+                "source.l3b",
+                "source.l3c",
+            ] {
+                assert!(
+                    !config.accepts(Path::new(unsupported)),
+                    "{id}: {unsupported} needs firmware handling or conversion"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn user_core_overrides_merge_by_stable_ids_without_replacing_shipped_profiles() {
         let table = load_table(Path::new("assets/systems.toml")).unwrap();
         let origin = Path::new("degauss-user.toml");
@@ -1599,6 +1937,8 @@ mod tests {
                 rbf: "_Console/FutureNeoGeo".into(),
                 setname: None,
                 same_dir: false,
+                launch: Vec::new(),
+                minimum_build: None,
             });
         let updated = with_core_overrides(&next_release, &config.core_overrides, origin).unwrap();
         let updated_neo = updated.iter().find(|system| system.id == "NeoGeo").unwrap();
@@ -2404,11 +2744,7 @@ extensions = ["md", "bin"]
             };
             assert_eq!(
                 found.category(),
-                if matches!(id, "Marty" | "BasicMasterJr") {
-                    "Console"
-                } else {
-                    "Computer"
-                }
+                if id == "Marty" { "Console" } else { "Computer" }
             );
             let library = crate::browse::Library::open(&found.to_config()).unwrap();
             let cache = crate::cache::build_system(&library);
@@ -2439,6 +2775,8 @@ extensions = ["md", "bin"]
         let table = load_table(Path::new("assets/systems.toml")).unwrap();
         let card = temp_dir("computer-multi-media-launchers");
         for (id, files) in [
+            ("BasicMasterL3", "<file delay=\"1\" type=\"s\" index=\"0\" path=\"A.d88\"/><file delay=\"1\" type=\"s\" index=\"1\" path=\"B.d88\"/><reset delay=\"1\" hold=\"1\"/>"),
+            ("SharpMZ2500", "<file delay=\"1\" type=\"s\" index=\"0\" path=\"Program.d88\"/><file delay=\"1\" type=\"s\" index=\"1\" path=\"User.d88\"/><reset delay=\"1\" hold=\"1\"/>"),
             ("BasicMasterJr", "<file delay=\"1\" type=\"f\" index=\"1\" path=\"Tape.bmt\"/>"),
             ("IQ151", "<file delay=\"1\" type=\"s\" index=\"1\" path=\"A.dsk\"/><file delay=\"1\" type=\"s\" index=\"0\" path=\"B.dsk\"/>"),
             ("VideoBrain", "<file delay=\"1\" type=\"f\" index=\"1\" path=\"Cart.bin\"/><file delay=\"1\" type=\"f\" index=\"4\" path=\"Keys.vbk\"/><file delay=\"1\" type=\"s\" index=\"0\" path=\"Play.vbt\"/><file delay=\"1\" type=\"s\" index=\"1\" path=\"Record.vbt\"/><file delay=\"1\" type=\"s\" index=\"2\" path=\"Print.vbp\"/>"),
@@ -2481,6 +2819,8 @@ extensions = ["md", "bin"]
         std::fs::create_dir_all(card.join("_Computer")).unwrap();
         std::fs::create_dir_all(card.join("_Console")).unwrap();
         for (id, date) in [
+            ("BasicMasterL3", "20261104"),
+            ("SharpMZ2500", "20261104"),
             ("IQ151", "20261028"),
             ("VideoBrain", "20261027"),
             ("Neon", "20261025"),
@@ -2495,7 +2835,14 @@ extensions = ["md", "bin"]
             .unwrap();
         }
         let index = CoreIndex::read(&card);
-        for id in ["IQ151", "VideoBrain", "Neon", "BasicMasterJr"] {
+        for id in [
+            "BasicMasterL3",
+            "SharpMZ2500",
+            "IQ151",
+            "VideoBrain",
+            "Neon",
+            "BasicMasterJr",
+        ] {
             let def = table.iter().find(|def| def.id == id).unwrap();
             let found = discover(
                 std::slice::from_ref(def),
@@ -2508,11 +2855,7 @@ extensions = ["md", "bin"]
                 1,
                 "{id}: dated installed core must be discoverable"
             );
-            let category = if id == "BasicMasterJr" {
-                "Console"
-            } else {
-                "Computer"
-            };
+            let category = "Computer";
             assert_eq!(found[0].category(), category);
             assert_eq!(found[0].menu_folder.as_deref(), Some(category));
             assert_eq!(found[0].path(), games.join(&def.folders[0]));

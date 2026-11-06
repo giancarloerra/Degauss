@@ -475,6 +475,7 @@ mod tests {
             setname: None,
             same_dir: false,
             compatible_cores: Vec::new(),
+            minimum_build: None,
             skip_folders: Vec::new(),
             extra_paths: Vec::new(),
         }

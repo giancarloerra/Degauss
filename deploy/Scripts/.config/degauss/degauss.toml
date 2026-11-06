@@ -8,8 +8,13 @@
 # Delete settings.toml to reset UI preferences; manual overrides still apply.
 #
 # Which core runs which system, and which slot a file goes into, lives in
-# systems.toml. That file is generated from public community data and is
-# yours to edit.
+# systems.toml. Put preferred-core changes and explicitly compatible core
+# additions under [core_overrides.<system ID>] in degauss-user.toml.
+# Add locations without replacing the system's normal folders in that file:
+# [library_folders]
+# Arcade = ["/media/fat/_Ongo/_Arcade"]
+# Restart Degauss, then rebuild only the affected system list. If it is hidden
+# because it is empty, enable Options > Library > Show Systems with No Games.
 
 # Where to look for games, in the order MiSTer's own loader searches:
 # USB sticks first, then the network share, then the CIFS mount, then the

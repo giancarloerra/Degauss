@@ -1025,6 +1025,55 @@ Nothing else needs resetting.
 
 ### Additional computer and disc libraries
 
+Version 1.1.3 also adds **Hitachi Basic Master Level 3 / MB-S1**
+(`games/BasicMasterL3`) and **Sharp MZ-2500 / MZ-2520**
+(`games/SharpMZ2500`). Both mount D88 disks in drive 1 at image slot 0 and
+reset; explicit MGLs can also mount drive 2 at slot 1. These are separate
+libraries from Basic Master Jr. and the existing Sharp MZ core.
+
+Basic Master Level 3 requires `boot0.rom` built using the
+[core's firmware instructions](https://github.com/MiSTer-devel/Distribution_MiSTer/blob/main/docs/BasicMasterL3/README.md).
+L3 tapes use image slot 2 without an extra reset. Use `LOADM"",,R` for machine
+code or `LOAD` then `RUN` for BASIC. Convert L3B/L3C tapes to native L3 first.
+Saved model, S1 SYSTEM and floppy-card settings remain in the core's OSD.
+
+Sharp MZ-2500 requires `boot.rom` containing the IPL and kanji ROMs. MZT tapes
+use file-transfer slot 1 and reset: save MZ-2000 or MZ-80B Boot mode, launch
+the tape, then press C at the IPL. BIN/DAT RAM snapshots use file-transfer
+slot 2 and start immediately in MZ-2000 mode, without a reset that would
+return to the IPL. Convert DSK/MFI disks and WAV tapes to D88/MZT first.
+For a 15 kHz CRT, select **200 (15 kHz)** under the core's **Lines (reset)**
+option; its default is 400 lines at 24 kHz. Follow the
+[core's instructions](https://github.com/MiSTer-devel/Distribution_MiSTer/blob/main/docs/SharpMZ2500/README.md)
+for firmware, saved models, boot modes and writable program/user disks.
+Firmware is excluded from both libraries; existing MGLs remain unchanged.
+
+Version 1.1.3 adds **Sharp X1** (`games/SharpX1`) and **Sony SMC-777**
+(`games/SonySMC777`). Both use drive A at image slot 0 and accept explicit MGLs
+with drive B at slot 1. Sharp X1 accepts D88/2D disks and TAP tapes (slot 2);
+Sony SMC-777 accepts D88/1DD/D77 disks and WAV tapes (slot 2). Generated
+launchers mount the chosen image and reset the core. BASIC tapes still need
+the machine's normal BASIC loading commands.
+
+Keep firmware in the core's game folder. Sharp X1 uses `boot.rom` for its
+Turbo IPL and needs `boot1.rom` for tapes. Optional `boot2.rom` supplies the X1
+IPL; without it, X1 mode uses the start of the Turbo IPL. Optional `boot3.rom`
+adds kanji. Sony SMC-777 uses `boot.rom` containing its IPL, optionally followed
+by the kanji ROM; omitting kanji only removes kanji text. Firmware is not listed as games. Follow the distributed
+[Sharp X1](https://github.com/MiSTer-devel/Distribution_MiSTer/blob/main/docs/SharpX1/README.md)
+and [Sony SMC-777](https://github.com/MiSTer-devel/Distribution_MiSTer/blob/main/docs/SonySMC777/Readme.md)
+instructions for firmware, saved model settings and writable disks.
+
+The existing **IBM PCjr** and **Tandy 1000** libraries can also use the current
+PCXT core (build 20261103 or newer) through **System Launch Core** or the per-game **Launch Core**
+chooser. PCXT uses separate `PCXT-PCjr` and `PCXT-Tandy` settings while keeping
+firmware in `games/PCXT`. Configure the machine and BIOS once and save its
+settings as described by the [PCXT profile instructions](https://github.com/MiSTer-devel/Distribution_MiSTer/blob/main/docs/PCXT/README.md#profiles-mgl).
+PCjr JRC cartridges use slot 5 in PCXT and slot 2 in the standalone PCjr core.
+The existing standalone JRT declaration is retained; the PCXT profile does
+not support JRT. Explicit multi-file MGLs retain
+their selected drive/cartridge slots. The standalone cores remain available.
+
 Version 1.1.2 adds **Hitachi Basic Master Jr.** in `games/BasicMasterJr`.
 Its `bmt`, `bin`, `sav` and raw `cmt` tape images use file-transfer slot 1;
 explicit MGL launchers remain unchanged. These are demodulated tape bytes, not
@@ -1032,8 +1081,9 @@ WAV audio. Mounting a tape still requires the core's normal LOAD/RUN or monitor
 commands; follow its [tape instructions](https://github.com/MiSTer-devel/Distribution_MiSTer/blob/main/docs/BasicMasterJr/Readme.md#loading-tapes).
 Recordings use the core's normal `saves/BasicMasterJr/<name>.sav` sidecar.
 The editable `boot1.rom` tape-hint list is preserved and is not a game or BIOS.
-The library follows the installed core's folder, currently Console in the
-official Distribution, even though Basic Master Jr. is a computer.
+Version 1.1.3 follows the current Computer build while retaining the previous
+Console build as a compatible launch core. The library follows the installed
+core's folder and retains its existing ID, tapes and saved data.
 
 Apple III, Macintosh Quadra 800, NeXT Color, Sun-2, Sun-3, Macintosh SE/30,
 Macintosh IIcx, FM Towns Marty, UKNC, Sun SPARCstation 20 and Cray X-MP use their normal `games/<core>` folders.
@@ -1499,6 +1549,36 @@ The code is stored in clear text only in the user file. Unlocking does not
 remove it or save it in `settings.toml`; updates preserve the user file. For
 manual recovery, remove `kiosk_pin` and restart Degauss. Invalid user settings
 follow the normal user-file validation contract below.
+
+#### Additional library folders
+
+From 1.1.3, add locations to an existing library in
+`/media/fat/Scripts/.config/degauss/degauss-user.toml`:
+
+```toml
+[library_folders]
+Arcade = ["/media/fat/_Ongo/_Arcade"]
+C64 = ["Extra C64"]
+```
+
+Keys are the stable `id` values in `systems.toml`, such as `Arcade` and `C64`.
+These folders are appended to the selected system table's existing folders;
+normal Arcade and future shipped additions remain available. Absolute paths
+are used directly. Relative names use the existing `game_roots` order, with
+the first matching root winning for each name. This does not add a new system.
+
+Restart Degauss after changing this file, then use **Rebuild This System List**
+for each affected existing library to add or remove its cached entries.
+**Options → Library → Show Systems with No Games** makes a hidden empty library
+available to enter and rebuild. Other libraries need no rebuild. Multiple locations appear as separate folder
+rows, each with its own gamelist and artwork. Equal folder names show their
+paths so the locations can be distinguished. Keep existing MRA/MGL files in
+place, including an isolated collection's support-core directory.
+
+The user file survives updates and is not rewritten by Options. Removing an
+entry restores the system table's normal locations after the same restart
+and system rebuild. Invalid declarations follow the user-file error handling
+below; absent optional directories follow normal folder discovery.
 
 #### Other overrides
 

@@ -4198,6 +4198,7 @@ mod tests {
             setname: Some("SuperGrafx".to_string()),
             same_dir: false,
             compatible_cores: Vec::new(),
+            minimum_build: None,
             skip_folders: Vec::new(),
             extra_paths: Vec::new(),
         };
@@ -6854,20 +6855,20 @@ mod tests {
         // appended from here on is read, and the line counted carries
         // this fixture's path. A probe line first: a host whose log
         // cannot be written fails on the probe, not on the count.
-        let log_from = std::fs::metadata(crate::LOG_PATH)
+        let log_from = std::fs::metadata(crate::log_path())
             .map(|metadata| metadata.len() as usize)
             .unwrap_or(0);
         let probe = format!("skipped-once probe at {}", root.display());
         crate::note(&probe);
         let log_since = || {
-            let logged = std::fs::read(crate::LOG_PATH).unwrap_or_default();
+            let logged = std::fs::read(crate::log_path()).unwrap_or_default();
             String::from_utf8_lossy(&logged[log_from.min(logged.len())..]).into_owned()
         };
         assert_eq!(
             log_since().matches(&probe).count(),
             1,
             "{} must take what note() appends on this host",
-            crate::LOG_PATH
+            crate::log_path().display()
         );
         let mut skipped = SkippedEntries::new();
         assert_eq!(

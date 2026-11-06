@@ -433,13 +433,24 @@ fn load_everything(args: &Args) -> Result<Loaded> {
         .unwrap_or_else(|| PathBuf::from("settings.toml"));
     let settings = Settings::load(&settings_path)?;
 
+    // User declarations have already passed load_for_systems validation.
+    // Invalid declarations reaching these steps belong to the base file.
     let table = if config.core_overrides.is_empty() {
         table
     } else {
-        let origin = config_path.with_file_name("degauss-user.toml");
-        systems::with_core_overrides(&table, &config.core_overrides, &origin)?
+        systems::with_core_overrides(&table, &config.core_overrides, &config_path)?
     };
     let table = systems::prepare_table(table, Path::new(&config.menu_root))?;
+    let table = if config.library_folders.is_empty() {
+        table
+    } else {
+        systems::with_library_folders(
+            &table,
+            &config.library_folders,
+            Path::new(&config.menu_root),
+            &config_path,
+        )?
+    };
 
     let roots: Vec<PathBuf> = config.game_roots.iter().map(PathBuf::from).collect();
     // Logos live beside the configuration, named after the system.
@@ -630,10 +641,10 @@ fn diagnostic_launch_plan(
     )
 }
 
-fn check_install(config_path: &Path) -> Result<()> {
+fn check_install(config_path: &Path, selected_systems: Option<&Path>) -> Result<()> {
     let dir = config_path.parent().unwrap_or(Path::new(".")).to_path_buf();
     let mut problems: Vec<String> = Vec::new();
-    let mut user_config = None;
+    let mut checked_config = None;
 
     println!("build        {}", build_description());
     println!("folder       {}", dir.display());
@@ -663,14 +674,15 @@ fn check_install(config_path: &Path) -> Result<()> {
 
     match std::fs::read_to_string(config_path) {
         Ok(text) => match Config::parse(&text, config_path) {
-            Ok(_) => {
+            Ok(config) => {
                 println!("degauss.toml present, parses");
+                checked_config = Some((config, config_path.to_path_buf()));
                 let user_path = dir.join("degauss-user.toml");
                 match std::fs::read_to_string(&user_path) {
                     Ok(user_text) => match Config::with_overrides(&text, &user_text, &user_path) {
                         Ok(config) => {
                             println!("degauss-user.toml present, parses");
-                            user_config = Some(config);
+                            checked_config = Some((config, user_path.clone()));
                         }
                         Err(error) => {
                             println!("degauss-user.toml PRESENT BUT BROKEN");
@@ -695,19 +707,36 @@ fn check_install(config_path: &Path) -> Result<()> {
         }
     }
 
-    let systems_path = dir.join("systems.toml");
+    let systems_path = selected_systems
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| dir.join("systems.toml"));
     match std::fs::read_to_string(&systems_path) {
         Ok(text) => match systems::parse_table(&text, &systems_path) {
             Ok(table) => {
                 println!("systems.toml present, parses, {} systems", table.len());
-                if let Some(config) = &user_config {
-                    if let Err(error) = systems::with_core_overrides(
-                        &table,
-                        &config.core_overrides,
-                        &dir.join("degauss-user.toml"),
-                    ) {
-                        println!("core overrides INVALID");
-                        problems.push(error.to_string());
+                if let Some((config, origin)) = &checked_config {
+                    match systems::with_core_overrides(&table, &config.core_overrides, origin) {
+                        Ok(table) if !config.library_folders.is_empty() => {
+                            let folders =
+                                systems::prepare_table(table, Path::new(&config.menu_root))
+                                    .and_then(|table| {
+                                        systems::with_library_folders(
+                                            &table,
+                                            &config.library_folders,
+                                            Path::new(&config.menu_root),
+                                            origin,
+                                        )
+                                    });
+                            if let Err(error) = folders {
+                                println!("library folders INVALID");
+                                problems.push(error.to_string());
+                            }
+                        }
+                        Ok(_) => {}
+                        Err(error) => {
+                            println!("core overrides INVALID");
+                            problems.push(error.to_string());
+                        }
                     }
                 }
             }
@@ -933,10 +962,22 @@ fn run() -> Result<()> {
             .config
             .clone()
             .unwrap_or_else(|| beside_binary("degauss.toml"));
-        return check_install(&config_path);
+        return check_install(&config_path, args.systems.as_deref());
     }
 
     let started = Instant::now();
+    #[cfg(target_os = "linux")]
+    let session = if args.interactive_startup() {
+        let Some(session) = frontend_session::UiSession::acquire(&args.device)? else {
+            return Ok(());
+        };
+        // Configuration can report rejected user overrides. Start this run's
+        // log before loading them, once this process owns the frontend.
+        log_start();
+        Some(session)
+    } else {
+        None
+    };
     let loaded = load_everything(&args)?;
 
     if loaded.systems.is_empty() && loaded.network_boot.is_none() && loaded.storage.is_none() {
@@ -1055,7 +1096,14 @@ fn run() -> Result<()> {
         return bench(loaded, args, chosen.unwrap_or(0), frames);
     }
 
-    run_on_framebuffer(loaded, args, chosen, started)
+    run_on_framebuffer(
+        loaded,
+        args,
+        chosen,
+        started,
+        #[cfg(target_os = "linux")]
+        session.expect("interactive startup acquired the frontend session"),
+    )
 }
 
 fn build_app(
@@ -1099,10 +1147,17 @@ fn build_app(
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 pub const LOG_PATH: &str = "/tmp/degauss.log";
 
+/// Allow diagnostic child processes to keep their log separate from a running frontend.
+fn log_path() -> PathBuf {
+    std::env::var_os("DEGAUSS_LOG_PATH")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(LOG_PATH))
+}
+
 /// Begin a fresh log for this run.
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 fn log_start() {
-    let _ = std::fs::write(LOG_PATH, b"");
+    let _ = std::fs::write(log_path(), b"");
 }
 
 /// Add one line to it. Failing to log is never a reason to stop. The line
@@ -1115,7 +1170,7 @@ pub fn note(line: &str) {
     if let Ok(mut file) = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
-        .open(LOG_PATH)
+        .open(log_path())
     {
         let _ = file.write_all(format!("{line}\n").as_bytes());
     }
@@ -1795,16 +1850,16 @@ fn run_on_framebuffer(
     args: Args,
     chosen: Option<usize>,
     started: Instant,
+    session: frontend_session::UiSession,
 ) -> Result<()> {
     let deferred_system = loaded
         .network_boot
         .as_ref()
         .and_then(|_| args.system.clone());
-    let Some(session) = frontend_session::UiSession::acquire(&args.device)? else {
+    if !session.owner_alive()? {
         return Ok(());
-    };
+    }
     let system_count = loaded.systems.len();
-    log_start();
     let state_path = state_path_for(&loaded.settings_path);
     let resuming = state::is_resuming();
     let script_return = match std::env::var_os(scripts::RETURN_ENV) {
@@ -2485,6 +2540,37 @@ mod tests {
     use super::*;
 
     #[test]
+    fn invalid_base_library_folders_name_the_base_configuration() {
+        let root = std::env::temp_dir().join(format!("degauss-base-origin-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let config_path = root.join("base.toml");
+        let systems_path = root.join("systems.toml");
+        std::fs::write(
+            &config_path,
+            "[app]\nart_cache=200\n[library_folders]\nUnknown = ['/extra']\n",
+        )
+        .unwrap();
+        std::fs::write(&systems_path, include_str!("../assets/systems.toml")).unwrap();
+        let user_path = root.join("degauss-user.toml");
+        for user in [None, Some("[app\n"), Some("[app]\nart_cache=123\n")] {
+            if let Some(text) = user {
+                std::fs::write(&user_path, text).unwrap();
+            }
+            let args = Args {
+                config: Some(config_path.clone()),
+                systems: Some(systems_path.clone()),
+                list_systems: true,
+                ..Args::default()
+            };
+            let error = load_everything(&args).err().unwrap().to_string();
+            assert!(error.contains("unknown system ID"), "{error}");
+            assert!(error.contains(config_path.to_str().unwrap()), "{error}");
+            assert!(!error.contains(user_path.to_str().unwrap()), "{error}");
+        }
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn install_check_reports_invalid_user_overrides_without_changing_startup() {
         let root =
             std::env::temp_dir().join(format!("degauss-install-overrides-{}", std::process::id()));
@@ -2504,7 +2590,25 @@ mod tests {
             use std::os::unix::fs::PermissionsExt;
             std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o755)).unwrap();
         }
-        assert!(check_install(&config_path).is_ok());
+        assert!(check_install(&config_path, None).is_ok());
+        for folders in ["Unknown = ['/extra']", "Arcade = ['']"] {
+            std::fs::write(
+                &config_path,
+                format!("{base}[library_folders]\n{folders}\n"),
+            )
+            .unwrap();
+            assert!(
+                check_install(&config_path, None).is_err(),
+                "invalid base library folders must be reported without a user file"
+            );
+        }
+        std::fs::write(
+            &config_path,
+            format!("{base}[library_folders]\nArcade = ['/extra']\n"),
+        )
+        .unwrap();
+        assert!(check_install(&config_path, None).is_ok());
+        std::fs::write(&config_path, base).unwrap();
         let user_path = root.join("degauss-user.toml");
         for invalid in [
             "[app\n",
@@ -2513,7 +2617,7 @@ mod tests {
         ] {
             std::fs::write(&user_path, invalid).unwrap();
             assert!(
-                check_install(&config_path).is_err(),
+                check_install(&config_path, None).is_err(),
                 "a broken user override must not receive a healthy installation verdict"
             );
             assert_eq!(Config::load(&config_path).unwrap().app.art_cache, 200);
@@ -2521,12 +2625,56 @@ mod tests {
         }
         std::fs::remove_file(&user_path).unwrap();
         std::fs::create_dir(&user_path).unwrap();
-        assert!(check_install(&config_path).is_err());
+        assert!(check_install(&config_path, None).is_err());
         assert_eq!(Config::load(&config_path).unwrap().app.art_cache, 200);
         std::fs::remove_dir(&user_path).unwrap();
         std::fs::write(&user_path, "[app]\nart_cache = 123\n").unwrap();
-        assert!(check_install(&config_path).is_ok());
+        assert!(check_install(&config_path, None).is_ok());
         assert_eq!(Config::load(&config_path).unwrap().app.art_cache, 123);
+        let selected_table = root.join("custom-systems.toml");
+        std::fs::write(
+            &selected_table,
+            include_str!("../assets/systems.toml").replace("id = \"Arcade\"", "id = \"MyArcade\""),
+        )
+        .unwrap();
+        std::fs::write(&user_path, "[library_folders]\nMyArcade = ['/extra']\n").unwrap();
+        assert!(check_install(&config_path, None).is_err());
+        assert!(check_install(&config_path, Some(&selected_table)).is_ok());
+        let mut legacy: toml::Value =
+            toml::from_str(include_str!("../assets/systems.toml")).unwrap();
+        legacy["systems"]
+            .as_array_mut()
+            .unwrap()
+            .retain(|system| system["id"].as_str() != Some("UnstableCores"));
+        std::fs::write(&selected_table, toml::to_string(&legacy).unwrap()).unwrap();
+        std::fs::write(
+            &user_path,
+            "[app]\nart_cache=123\n[library_folders]\nUnstableCores=['/extra-cores']\n",
+        )
+        .unwrap();
+        let legacy_config = root.join("legacy.toml");
+        std::fs::write(
+            &legacy_config,
+            format!("menu_root = {:?}\n{base}", root.to_str().unwrap()),
+        )
+        .unwrap();
+        assert!(check_install(&legacy_config, Some(&selected_table)).is_ok());
+        let args = Args {
+            config: Some(legacy_config),
+            systems: Some(selected_table),
+            report: true,
+            ..Args::default()
+        };
+        let loaded = load_everything(&args).unwrap();
+        assert_eq!(loaded.config.app.art_cache, 123);
+        assert_eq!(
+            loaded.config.library_folders["UnstableCores"],
+            ["/extra-cores"]
+        );
+        assert!(loaded
+            .table
+            .iter()
+            .any(|system| system.id == "UnstableCores"));
         assert_eq!(std::fs::read_to_string(&config_path).unwrap(), base);
         std::fs::remove_dir_all(root).unwrap();
     }
@@ -3849,7 +3997,7 @@ category = "Favorites"
         let (a, b) = (writer("a"), writer("b"));
         a.join().unwrap();
         b.join().unwrap();
-        let log = std::fs::read_to_string(LOG_PATH).unwrap();
+        let log = std::fs::read_to_string(log_path()).unwrap();
         let whole = log
             .lines()
             .filter(|line| line.starts_with(&marker) && line.ends_with(suffix))

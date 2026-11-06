@@ -24790,6 +24790,8 @@ pub(crate) fn test_library_launch_flow(window: Rc<MinimalSoftwareWindow>) {
         rbf: "_Arcade/LegacyNES".into(),
         setname: Some("LegacyNES".into()),
         same_dir: false,
+        launch: Vec::new(),
+        minimum_build: None,
     });
     let found = FoundSystem {
         def: def.clone(),
@@ -26868,6 +26870,7 @@ mod tests {
             setname: None,
             same_dir: false,
             compatible_cores: Vec::new(),
+            minimum_build: None,
             skip_folders: Vec::new(),
             extra_paths: Vec::new(),
         };
@@ -27729,6 +27732,7 @@ mod tests {
             setname: Some("SuperGrafx".to_string()),
             same_dir: false,
             compatible_cores: Vec::new(),
+            minimum_build: None,
             skip_folders: Vec::new(),
             extra_paths: Vec::new(),
         };
