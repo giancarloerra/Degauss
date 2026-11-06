@@ -441,6 +441,7 @@ pub(crate) fn with_library_folders(
                 for (index, system) in table.iter().enumerate() {
                     if direct_collection(system)
                         && system.category.as_deref() == Some(*category)
+                        && Path::new(&system.folders[0]).is_absolute()
                         && collection_identity(Path::new(&system.folders[0]))? == target
                     {
                         position = Some(index);
@@ -1692,6 +1693,21 @@ mod tests {
         outside.folders = vec![menu.join("outside").to_string_lossy().into_owned()];
         table.insert(0, outside);
         table.push(custom);
+        #[cfg(unix)]
+        {
+            let mut relative = table.last().unwrap().clone();
+            relative.id = "RelativeNightlies".into();
+            let cwd = std::env::current_dir().unwrap();
+            let path = PathBuf::from("../".repeat(cwd.components().count()))
+                .join(menu.strip_prefix("/").unwrap())
+                .join("_Unstable");
+            assert_eq!(
+                path.canonicalize().unwrap(),
+                menu.join("_Unstable").canonicalize().unwrap()
+            );
+            relative.folders = vec![path.to_string_lossy().into_owned()];
+            table.insert(0, relative);
+        }
         let prepared = prepare_table(table, &menu).unwrap();
         assert!(!prepared.iter().any(|def| def.id == "UnstableCores"));
         let extra = menu.join("more-cores").to_string_lossy().into_owned();
@@ -1702,6 +1718,17 @@ mod tests {
         let held = updated.iter().find(|def| def.id == "MyNightlies").unwrap();
         assert_eq!(held.name, "My existing cores");
         assert_eq!(held.folders.last(), Some(&extra));
+        #[cfg(unix)]
+        assert_eq!(
+            updated
+                .iter()
+                .find(|def| def.id == "RelativeNightlies")
+                .unwrap()
+                .folders
+                .len(),
+            1,
+            "relative folders retain their game-root identity"
+        );
         assert_eq!(
             updated
                 .iter()

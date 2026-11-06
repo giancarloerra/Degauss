@@ -24,6 +24,17 @@ fn core_stem(reference: &str) -> &str {
     }
 }
 
+fn nightly_meets_minimum(stem: &str, minimum: Option<&str>) -> bool {
+    minimum.is_none_or(|minimum| {
+        let lower = stem.to_ascii_lowercase();
+        lower
+            .rfind("_unstable_")
+            .and_then(|at| stem.get(at + 10..at + 18))
+            .or_else(|| crate::systems::core_build_date(stem))
+            .is_some_and(|date| date >= minimum)
+    })
+}
+
 pub(crate) fn nightly_matches(stem: &str, reference: &str) -> bool {
     if crate::systems::dual_sdram_folder(reference) {
         return false;
@@ -145,14 +156,7 @@ fn walk_nightlies(
                     DegaussError::unsupported("Unstable core", "filename is not valid UTF-8")
                 })?;
             if nightly_matches(stem, &system.rbf)
-                && system.minimum_build.as_deref().is_none_or(|minimum| {
-                    let lower = stem.to_ascii_lowercase();
-                    lower
-                        .rfind("_unstable_")
-                        .and_then(|at| stem.get(at + 10..at + 18))
-                        .or_else(|| crate::systems::core_build_date(stem))
-                        .is_some_and(|date| date >= minimum)
-                })
+                && nightly_meets_minimum(stem, system.minimum_build.as_deref())
             {
                 let relative = path.strip_prefix(root).expect("scan remains beneath root");
                 let key = relative.to_str().ok_or_else(|| {
@@ -434,6 +438,9 @@ pub fn resolve(
                     format!("invalid Unstable choice {selected}"),
                 ));
             };
+            if !nightly_meets_minimum(core_stem(selected), family.minimum_build.as_deref()) {
+                return Err(missing());
+            }
             let actual = root.join(path);
             match std::fs::metadata(&actual) {
                 Ok(metadata) if metadata.is_file() => {}
@@ -511,6 +518,28 @@ mod tests {
         assert!(versions.iter().any(|v| v.key == current));
         assert!(versions.iter().any(|v| v.key == standard_name));
         assert!(has_unstable_version(&config, &root).unwrap());
+        assert!(
+            resolve(&config, &root, Some(older), false).is_err(),
+            "a saved selection must obey the same minimum as the chooser"
+        );
+        for selected in [current, standard_name] {
+            assert_eq!(
+                resolve(&config, &root, Some(selected), false).unwrap().rbf,
+                selected.trim_end_matches(".rbf")
+            );
+        }
+        let undated = "_Unstable/PCXT.rbf";
+        write(&root, undated, b"core");
+        assert!(resolve(&config, &root, Some(undated), false).is_err());
+        let mut unrestricted = config.clone();
+        unrestricted.minimum_build = None;
+        assert_eq!(
+            resolve(&unrestricted, &root, Some(older), false)
+                .unwrap()
+                .rbf,
+            older.trim_end_matches(".rbf"),
+            "families without a minimum keep their saved versions"
+        );
         std::fs::remove_dir_all(root).unwrap();
     }
 

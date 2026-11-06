@@ -1146,10 +1146,17 @@ fn build_app(
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 pub const LOG_PATH: &str = "/tmp/degauss.log";
 
+/// Allow diagnostic child processes to keep their log separate from a running frontend.
+fn log_path() -> PathBuf {
+    std::env::var_os("DEGAUSS_LOG_PATH")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(LOG_PATH))
+}
+
 /// Begin a fresh log for this run.
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 fn log_start() {
-    let _ = std::fs::write(LOG_PATH, b"");
+    let _ = std::fs::write(log_path(), b"");
 }
 
 /// Add one line to it. Failing to log is never a reason to stop. The line
@@ -1162,7 +1169,7 @@ pub fn note(line: &str) {
     if let Ok(mut file) = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
-        .open(LOG_PATH)
+        .open(log_path())
     {
         let _ = file.write_all(format!("{line}\n").as_bytes());
     }
@@ -3958,7 +3965,7 @@ category = "Favorites"
         let (a, b) = (writer("a"), writer("b"));
         a.join().unwrap();
         b.join().unwrap();
-        let log = std::fs::read_to_string(LOG_PATH).unwrap();
+        let log = std::fs::read_to_string(log_path()).unwrap();
         let whole = log
             .lines()
             .filter(|line| line.starts_with(&marker) && line.ends_with(suffix))
