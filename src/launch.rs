@@ -1066,7 +1066,13 @@ pub fn plan_with_selections(
                             crate::core_choices::is_unstable_reference(&source_family, version)
                         }
                     } {
-                    source_family.clone()
+                    crate::launch_cores::resolve_for_version(
+                        &source_family,
+                        menu_root,
+                        Some(crate::launch_cores::PRIMARY_PROFILE_ID),
+                        selected_version,
+                        ra_first,
+                    )?
                 } else {
                     crate::launch_cores::resolve_for_version(
                         system,
@@ -1442,6 +1448,23 @@ mod tests {
             assert!(error.to_string().contains("media slot"));
         }
         assert_eq!(std::fs::read_to_string(&explicit).unwrap(), explicit_xml);
+        std::fs::remove_file(root.join("_Computer/PCXT_20261103.rbf")).unwrap();
+        for old in [false, true] {
+            if old {
+                std::fs::write(root.join("_Computer/PCXT_20261102.rbf"), b"core").unwrap();
+            }
+            for version in [None, Some("standard")] {
+                let error =
+                    plan_with_selections(&system, &saved, &output, &root, false, version, None)
+                        .err()
+                        .unwrap()
+                        .to_string();
+                assert!(
+                    error.contains("PCXT") && error.contains("20261103"),
+                    "{error}"
+                );
+            }
+        }
         std::fs::remove_dir_all(root).unwrap();
     }
     use crate::config::LaunchRule;
