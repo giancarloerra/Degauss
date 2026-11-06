@@ -965,6 +965,18 @@ fn run() -> Result<()> {
     }
 
     let started = Instant::now();
+    #[cfg(target_os = "linux")]
+    let session = if args.interactive_startup() {
+        let Some(session) = frontend_session::UiSession::acquire(&args.device)? else {
+            return Ok(());
+        };
+        // Configuration can report rejected user overrides. Start this run's
+        // log before loading them, once this process owns the frontend.
+        log_start();
+        Some(session)
+    } else {
+        None
+    };
     let loaded = load_everything(&args)?;
 
     if loaded.systems.is_empty() && loaded.network_boot.is_none() && loaded.storage.is_none() {
@@ -1083,7 +1095,14 @@ fn run() -> Result<()> {
         return bench(loaded, args, chosen.unwrap_or(0), frames);
     }
 
-    run_on_framebuffer(loaded, args, chosen, started)
+    run_on_framebuffer(
+        loaded,
+        args,
+        chosen,
+        started,
+        #[cfg(target_os = "linux")]
+        session.expect("interactive startup acquired the frontend session"),
+    )
 }
 
 fn build_app(
@@ -1823,16 +1842,16 @@ fn run_on_framebuffer(
     args: Args,
     chosen: Option<usize>,
     started: Instant,
+    session: frontend_session::UiSession,
 ) -> Result<()> {
     let deferred_system = loaded
         .network_boot
         .as_ref()
         .and_then(|_| args.system.clone());
-    let Some(session) = frontend_session::UiSession::acquire(&args.device)? else {
+    if !session.owner_alive()? {
         return Ok(());
-    };
+    }
     let system_count = loaded.systems.len();
-    log_start();
     let state_path = state_path_for(&loaded.settings_path);
     let resuming = state::is_resuming();
     let script_return = match std::env::var_os(scripts::RETURN_ENV) {
