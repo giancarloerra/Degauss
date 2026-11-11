@@ -7,5 +7,5 @@ RUN printf 'deb http://deb.debian.org/debian bullseye main\n' > /etc/apt/sources
  && apt-get update \
  && apt-get install -y --no-install-recommends \
       gcc-10-arm-linux-gnueabihf g++-10-arm-linux-gnueabihf \
-      binutils-arm-linux-gnueabihf make ca-certificates \
+      binutils-arm-linux-gnueabihf make ca-certificates g++ python3 curl openssl \
  && rm -rf /var/lib/apt/lists/*

@@ -1,15 +1,40 @@
 #!/bin/bash
 # Build Degauss for the MiSTer and assemble the folder that goes on the card.
 #
-# No Docker and no C cross-compiler. The dependency tree is pure Rust, so
-# rustup's own linker and its self-contained musl are enough; the linker is
-# selected in .cargo/config.toml.
+# Rust's linker and self-contained musl produce the static binary. HTTPS's
+# ring dependency also needs Clang to compile its ARM cryptography routines.
 
 set -euo pipefail
 
 TARGET="armv7-unknown-linux-musleabihf"
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "${HERE}"
+
+if [[ -z "${CC_armv7_unknown_linux_musleabihf:-}" ]]; then
+    if [[ "$(uname -s)" == Darwin && -x /Library/Developer/CommandLineTools/usr/bin/clang ]]; then
+        export CC_armv7_unknown_linux_musleabihf=/Library/Developer/CommandLineTools/usr/bin/clang
+    elif command -v clang >/dev/null 2>&1; then
+        export CC_armv7_unknown_linux_musleabihf=clang
+    else
+        echo "Install Clang with ARM support, or set CC_armv7_unknown_linux_musleabihf to a suitable Clang compiler." >&2
+        exit 1
+    fi
+fi
+
+# Apple's ar/ranlib only index Mach-O objects and can silently discard ARM ELF
+# members. Use LLVM's cross-target archiver on macOS for ring's static library.
+if [[ "$(uname -s)" == Darwin && -z "${AR_armv7_unknown_linux_musleabihf:-}" ]]; then
+    degauss_rust_host="$(rustc -vV | sed -n 's/^host: //p')"
+    degauss_llvm_ar="$(rustc --print sysroot)/lib/rustlib/${degauss_rust_host}/bin/llvm-ar"
+    if [[ -x "${degauss_llvm_ar}" ]]; then
+        export AR_armv7_unknown_linux_musleabihf="${degauss_llvm_ar}"
+    elif command -v llvm-ar >/dev/null 2>&1; then
+        export AR_armv7_unknown_linux_musleabihf=llvm-ar
+    else
+        echo "Install Rust's LLVM tools with: rustup component add llvm-tools" >&2
+        exit 1
+    fi
+fi
 
 # Official MiSTer packages always contain the application credentials issued
 # to Degauss. They remain outside Git and are never copied into deploy/. A

@@ -387,6 +387,18 @@ fn entry_is_dir_checked(item: &std::fs::DirEntry) -> Result<bool> {
         // case, but permission/device failures must not hide a subtree.
         match std::fs::metadata(item.path()) {
             Ok(metadata) => Ok(metadata.is_dir()),
+            // MiSTer's exFAT driver uses Windows' System attribute for links.
+            // A desktop.ini then has its INI contents interpreted as a path,
+            // commonly exceeding NAME_MAX. It is folder metadata, not a game
+            // subtree. Working directory links with this name still resolve
+            // above; other names and genuine I/O failures remain errors.
+            #[cfg(unix)]
+            Err(error)
+                if error.raw_os_error() == Some(libc::ENAMETOOLONG)
+                    && item.file_name().eq_ignore_ascii_case("desktop.ini") =>
+            {
+                Ok(false)
+            }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
             Err(error) => Err(DegaussError::io("reading link target", item.path(), error)),
         }
@@ -1615,6 +1627,53 @@ impl Library {
 mod tests {
     use super::*;
     use crate::config::SystemConfig;
+
+    #[test]
+    #[cfg(unix)]
+    fn windows_folder_metadata_does_not_abort_browse_or_index() {
+        let root = temp("desktop-ini-system");
+        let nested = root.join("Nested");
+        let actual = root.join("Actual/desktop.ini");
+        std::fs::create_dir_all(&nested).unwrap();
+        std::fs::create_dir_all(&actual).unwrap();
+        let metadata = format!(
+            "[.ShellClassInfo]\nInfoTip={}",
+            "Folder metadata ".repeat(30)
+        );
+        for (folder, name) in [(&root, "desktop.ini"), (&nested, "Desktop.INI")] {
+            std::os::unix::fs::symlink(&metadata, folder.join(name)).unwrap();
+            assert_eq!(
+                std::fs::metadata(folder.join(name))
+                    .unwrap_err()
+                    .raw_os_error(),
+                Some(libc::ENAMETOOLONG)
+            );
+            std::fs::write(folder.join("Game.prg"), b"game").unwrap();
+        }
+        std::fs::write(actual.join("Game.prg"), b"game").unwrap();
+        let linked = root.join("Linked");
+        std::fs::create_dir(&linked).unwrap();
+        std::os::unix::fs::symlink(&actual, linked.join("desktop.ini")).unwrap();
+        std::fs::write(root.join("ordinary.ini"), &metadata).unwrap();
+        let library = Library::open(&system(&root)).unwrap();
+        let (rows, _) = library.list(&Place::Dir(root.clone()), false).unwrap();
+        assert!(rows.iter().any(|row| row.name == "Nested"));
+        assert!(!rows
+            .iter()
+            .any(|row| row.name.eq_ignore_ascii_case("desktop.ini")));
+        let cache = crate::cache::build_system_checked(&library, &mut Vec::new()).unwrap();
+        assert!(cache.folders.contains_key(&Place::Dir(actual).key()));
+        assert!(cache
+            .folders
+            .contains_key(&Place::Dir(linked.join("desktop.ini")).key()));
+        std::os::unix::fs::symlink(&metadata, root.join("broken-game.prg")).unwrap();
+        assert!(library
+            .list(&Place::Dir(root.clone()), false)
+            .unwrap_err()
+            .to_string()
+            .contains("reading link target"));
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     fn temp(tag: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!(

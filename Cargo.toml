@@ -1,6 +1,6 @@
 [package]
 name = "degauss"
-version = "1.1.3"
+version = "1.2.0"
 edition = "2021"
 rust-version = "1.96"
 description = "A fast, software-rendered frontend for MiSTer FPGA"
@@ -39,6 +39,16 @@ toml = "1.1"
 sha1 = "0.11"
 sha2 = "0.11"
 zune-jpeg = "0.5.15"
+# Optional at runtime: no listener or worker exists while Web Access is Off.
+axum = { version = "0.8", default-features = false, features = ["http1", "json", "query", "tokio"] }
+axum-server = { version = "0.9", default-features = false, features = ["tls-rustls-no-provider"] }
+tokio = { version = "1", features = ["rt", "net", "sync", "time", "macros"] }
+tokio-stream = { version = "0.1", features = ["sync"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+rcgen = { version = "0.14", default-features = false, features = ["ring", "pem"] }
+ring = "0.17"
+argon2 = "0.5"
+qrcode = { version = "0.14", default-features = false }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 evdev = "0.13"

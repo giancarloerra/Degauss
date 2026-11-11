@@ -528,6 +528,32 @@ impl Gamelist {
         Self::parse_descriptions::<false, _>(text, folder, origin, &mut first_line, None)
     }
 
+    /// One browser information source, using the same matching and inheritance
+    /// as native information. Browsing and the persisted indexes stay compact.
+    pub(crate) fn load_descriptions(
+        path: &Path,
+        folder: &Path,
+        cancelled: &std::sync::atomic::AtomicBool,
+    ) -> Result<Self> {
+        let text = Self::description_text(path)?;
+        let mut list = Self::parse_descriptions::<true, _>(
+            &text,
+            folder,
+            path,
+            &mut str::to_string,
+            Some(cancelled),
+        )?;
+        // Keep the lookup winners (including entries without a description),
+        // but do not retain a second copy of the browser's other metadata.
+        for meta in &mut list.entries {
+            *meta = GameMeta {
+                desc: meta.desc.take(),
+                ..Default::default()
+            };
+        }
+        Ok(list)
+    }
+
     /// Read one complete description without retaining long descriptions for
     /// every game or changing the compact metadata used by browsing/caches.
     pub fn full_description(
@@ -537,6 +563,11 @@ impl Gamelist {
         exact: bool,
         cancelled: &std::sync::atomic::AtomicBool,
     ) -> Result<Option<String>> {
+        let text = Self::description_text(path)?;
+        Self::description_from_text(&text, folder, path, key, exact, cancelled)
+    }
+
+    fn description_text(path: &Path) -> Result<String> {
         let file = std::fs::File::open(path)
             .map_err(|error| DegaussError::io("reading game information", path, error))?;
         use std::io::Read;
@@ -550,7 +581,7 @@ impl Gamelist {
                 "gamelist exceeds its supported size limit",
             ));
         }
-        Self::description_from_text(&text, folder, path, key, exact, cancelled)
+        Ok(text)
     }
 
     fn description_from_text(

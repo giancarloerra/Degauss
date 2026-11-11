@@ -29,6 +29,15 @@ index f9ace49..291b34a 100644
  	{ "FB_TERMINAL", (void*)(&(cfg.fb_terminal)), UINT8, 0, 1 },
  	{ "OSD_TIMEOUT", (void*)(&(cfg.osd_timeout)), INT16, 0, 3600 },
  	{ "DIRECT_VIDEO", (void*)(&(cfg.direct_video)), UINT8, 0, 2 },
+@@ -441,7 +444,7 @@ static void ini_parse_var(char *buf)
+ 				if (cfg.debug == 2 && !debug_file)
+ 				{
+-					debug_file = fopen("/tmp/debug.txt", "w");
++					debug_file = fopen("/tmp/debug.txt", "we");
+ 					setvbuf(debug_file, NULL, _IONBF, 0);
+ 				}
+ 				stdout = (cfg.debug == 2) ? debug_file : cfg.debug ? orig_stdout : dev_null;
+ 			}
 @@ -593,6 +596,7 @@ void cfg_parse()
  	memset(&cfg, 0, sizeof(cfg));
  	cfg.csync = 1;
@@ -6686,3 +6695,77 @@ index 0000000..e0da23d
 +                        "-fsanitize=address,undefined", str(unit), "-o", str(binary)], check=True)
 +        subprocess.run([str(binary)], check=True)
 +print("Controller profile, independent mapping, conflict, malformed-input and frontend-only hook tests passed")
+diff --git a/tests/run-ra-debug-log-tests.py b/tests/run-ra-debug-log-tests.py
+new file mode 100644
+--- /dev/null
++++ b/tests/run-ra-debug-log-tests.py
+@@ -0,0 +1,69 @@
++#!/usr/bin/env python3
++"""Check the production debug opener across repeated parse and real exec."""
++from pathlib import Path
++import subprocess
++import tempfile
++
++root = Path(__file__).resolve().parents[1]
++source = (root / "cfg.cpp").read_text()
++start = source.index("if (cfg.debug == 2 && !debug_file)")
++opening = source.index("{", start)
++depth = 1
++end = opening + 1
++while depth:
++    depth += (source[end] == "{") - (source[end] == "}")
++    end += 1
++opener = source[start:end]
++with tempfile.TemporaryDirectory(prefix="ra-debug-log-") as temporary:
++    folder = Path(temporary)
++    # Keep the real fopen/FILE/exec behaviour; isolate the log pathname.
++    opener = opener.replace('"/tmp/debug.txt"', '"' + str(folder / "debug.txt") + '"')
++    unit = r"""
++#include <cassert>
++#include <cerrno>
++#include <cstdio>
++#include <cstdlib>
++#include <fcntl.h>
++#include <sys/wait.h>
++#include <unistd.h>
++static struct { int debug = 2; } cfg;
++static FILE *debug_file = nullptr;
++static void open_debug() {
++""" + opener + r"""
++}
++int main(int argc, char **argv) {
++    if (argc == 2) {
++        errno = 0;
++        assert(fcntl(atoi(argv[1]), F_GETFD) == -1 && errno == EBADF);
++        return 0;
++    }
++    open_debug();
++    assert(debug_file);
++    const int descriptor = fileno(debug_file);
++    assert(fcntl(descriptor, F_GETFD) & FD_CLOEXEC);
++    for (int i = 0; i < 3; ++i) {
++        open_debug();
++        assert(fileno(debug_file) == descriptor);
++        const pid_t child = fork();
++        assert(child >= 0);
++        if (!child) {
++            char value[32];
++            snprintf(value, sizeof(value), "%d", descriptor);
++            execl(argv[0], argv[0], value, static_cast<char*>(nullptr));
++            _exit(127);
++        }
++        int status = 0;
++        assert(waitpid(child, &status, 0) == child);
++        assert(WIFEXITED(status) && WEXITSTATUS(status) == 0);
++        assert(fputs("still open in parent\n", debug_file) >= 0);
++    }
++    assert(fclose(debug_file) == 0);
++}
++"""
++    path = folder / "test.cpp"
++    path.write_text(unit)
++    binary = folder / "test"
++    subprocess.run(["c++", "-std=c++14", "-Wall", "-Wextra", "-Werror",
++                    str(path), "-o", str(binary)], check=True)
++    subprocess.run([str(binary)], check=True)
++print("RA debug log stays reusable within Main and closes across exec")

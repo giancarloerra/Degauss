@@ -213,6 +213,7 @@ mod tests {
             .map(|system| system.id.as_str())
             .collect();
         let expected: BTreeSet<_> = [
+            "3B1",
             "AmstradPCW",
             "Altair8800",
             "Apogee",

@@ -3,6 +3,27 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
+/// Remove a definition and its assignments in either editor. The caller owns
+/// saving and presentation, so the browser never changes native navigation.
+pub(crate) fn remove(settings: &mut crate::settings::Settings, id: &str) {
+    let key = key(id);
+    settings.view_definitions.remove(id);
+    if settings.layout.as_deref() == Some(&key) {
+        settings.layout = Some("details".into());
+    }
+    if settings.custom_views.categories.as_deref() == Some(&key) {
+        settings.custom_views.categories = None;
+    }
+    settings
+        .custom_views
+        .systems
+        .retain(|_, value| *value != key);
+    for places in settings.custom_views.games.values_mut() {
+        places.retain(|_, value| *value != key);
+    }
+    settings.folder_views.retain(|_, value| *value != key);
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Template {

@@ -126,8 +126,12 @@ jobs:
       - name: Install the ARM target
         run: rustup target add armv7-unknown-linux-musleabihf
 
+      - name: Install the HTTPS cryptography compiler
+        run: sudo apt-get update && sudo apt-get install -y clang
+
       - name: Build
         env:
+          CC_armv7_unknown_linux_musleabihf: clang
           DEGAUSS_SCREENSCRAPER_DEVID: ${{ secrets.DEGAUSS_SCREENSCRAPER_DEVID }}
           DEGAUSS_SCREENSCRAPER_DEVPASSWORD: ${{ secrets.DEGAUSS_SCREENSCRAPER_DEVPASSWORD }}
         run: ./scripts/build-arm.sh

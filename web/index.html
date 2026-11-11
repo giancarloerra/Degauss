@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="color-scheme" content="dark">
+  <title>Degauss</title>
+  <link rel="icon" href="/logo.png" type="image/png">
+  <link rel="stylesheet" href="/style.css">
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <a class="skip" href="#content">Skip to content</a>
+  <section id="login" class="login" hidden aria-labelledby="login-title">
+    <a href="#home" aria-label="Degauss Home" class="home-link"><img src="/logo.png" alt="Degauss" width="240" height="78" class="wordmark"></a>
+    <h1 id="login-title">Your MiSTer, in your browser</h1>
+    <form id="login-form">
+      <label>Password<input id="password" type="password" autocomplete="current-password" required maxlength="128"></label>
+      <label class="check"><input id="remember" type="checkbox" checked>Remember this browser for 30 days</label>
+      <p id="transport" class="notice"></p>
+      <p id="login-error" role="alert"></p>
+      <button class="primary" type="submit">Sign in</button>
+    </form>
+    <p class="muted">Set the password on MiSTer in Options → Web Access. Degauss must be open to connect.</p>
+    <details><summary>Connection help</summary><p>HTTPS encrypts the connection. On first use, trust the certificate belonging to this MiSTer. A renewed certificate needs to be trusted again. HTTP is unencrypted and should only be used on a trusted local network.</p><p>Open the full address or scan the QR code shown in Options → Web Access → Open Address / QR Code.</p></details>
+  </section>
+  <div id="shell" class="shell" hidden>
+    <aside class="rail">
+      <div class="brand"><a href="#home" aria-label="Degauss Home" class="home-link"><img src="/logo.png" alt="Degauss" width="176" height="58"></a><button id="nav-toggle" aria-expanded="false" aria-controls="navigation">Menu</button></div>
+      <nav id="navigation" aria-label="Degauss">
+        <a href="#home">Home</a><a href="#library">Library</a><a href="#explore">Explore Games</a><a href="#collections">Collections</a><a href="#history">Last Played</a>
+        <hr><a href="#updates">Core Updates</a><a href="#cores">Cores</a><a href="#scripts">Scripts</a>
+        <hr><a href="#layouts">Layouts Designer</a><a href="#themes">Themes</a><a href="#settings">Settings</a><a href="#remote">Remote Control</a>
+      </nav>
+      <div class="rail-foot"><span id="version"></span><button id="logout">Sign out</button></div>
+    </aside>
+    <main id="content" tabindex="-1">
+      <header class="page-head"><div><div id="breadcrumb" class="muted" role="navigation" aria-label="Breadcrumb"></div><h1 id="page-title">Home</h1></div><div id="page-actions" class="actions"></div></header>
+      <label id="web-view-control" class="web-view-control" hidden>View as<select id="web-view" aria-describedby="web-view-help"><option value="grid">Grid</option><option value="list">List</option><option value="details">Details</option><option value="gallery">Gallery</option><option value="carousel">Carousel</option></select><small id="web-view-help">This browser session only. MiSTer layouts stay unchanged.</small></label>
+      <div id="connection" class="notice" role="status" hidden></div>
+      <div id="page-error" class="notice error" role="alert" hidden></div>
+      <p id="page-loading" role="status" hidden></p>
+      <section id="jobs" aria-label="Operations" aria-live="polite"></section>
+      <div id="page"></div>
+    </main>
+  </div>
+  <dialog id="editor" aria-labelledby="editor-title"><form method="dialog" class="dialog-head"><h2 id="editor-title"></h2><button aria-label="Close editor">Close</button></form><div id="editor-body"></div></dialog>
+  <noscript>JavaScript is required for the Degauss interface. No scripts are loaded from other websites.</noscript>
+</body>
+</html>

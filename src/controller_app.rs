@@ -46,6 +46,9 @@ impl App {
     }
 
     fn controller_error(&mut self, detail: String) {
+        if let Some(id) = self.web.controller_job.take() {
+            self.web_finish_job(id, Err(web_error(&detail)));
+        }
         crate::note(&format!("controller   {detail}"));
         let error = format!("Controller settings failed: {detail}");
         if self
@@ -592,7 +595,19 @@ impl App {
                 }
                 (ControllerJob::Apply(profiles), Ok(controller::Reply::Applied)) => {
                     self.settings.controller_profiles = profiles;
-                    self.save_settings();
+                    let saved = self.save_settings();
+                    if let Some(id) = self.web.controller_job.take() {
+                        let result = if saved {
+                            Ok(json!({"revision":self.web_revision()}))
+                        } else {
+                            Err(web_error(
+                                self.message
+                                    .as_deref()
+                                    .unwrap_or("Saving controller preferences failed."),
+                            ))
+                        };
+                        self.web_finish_job(id, result);
+                    }
                     if self.controllers.menu == Some(ControllerMenu::Editor) {
                         self.controller_menu_to(ControllerMenu::Device);
                     }

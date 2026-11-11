@@ -13,6 +13,12 @@ use crate::settings::HoldButton;
 /// One adjustable setting.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OptionId {
+    WebMode,
+    WebPort,
+    WebPassword,
+    WebAddress,
+    WebCertificate,
+    WebCrtImages,
     Controllers,
     Speed,
     /// What left and right do while browsing: speed, letter, page or
@@ -212,16 +218,18 @@ pub enum OptionsPage {
     Library,
     Display,
     Developer,
+    WebAccess,
 }
 
 impl OptionsPage {
-    pub const ALL: [Self; 6] = [
+    pub const ALL: [Self; 7] = [
         Self::Navigation,
         Self::Shortcuts,
         Self::Appearance,
         Self::Library,
         Self::Display,
         Self::Developer,
+        Self::WebAccess,
     ];
 
     pub const fn index(self) -> usize {
@@ -232,6 +240,7 @@ impl OptionsPage {
             Self::Library => 3,
             Self::Display => 4,
             Self::Developer => 5,
+            Self::WebAccess => 6,
         }
     }
 
@@ -243,6 +252,7 @@ impl OptionsPage {
             Self::Library => "library",
             Self::Display => "display",
             Self::Developer => "developer",
+            Self::WebAccess => "web-access",
         }
     }
 
@@ -258,6 +268,7 @@ impl OptionsPage {
             Self::Library => "Library",
             Self::Display => "Display",
             Self::Developer => "Developer",
+            Self::WebAccess => "Web Access",
         }
     }
 
@@ -269,6 +280,7 @@ impl OptionsPage {
             Self::Library => "Ordering, visible systems, core preference and library maintenance.",
             Self::Display => "Fit the picture to the screen with margins and position controls.",
             Self::Developer => "Drawing path and frame timing diagnostics.",
+            Self::WebAccess => "Open Degauss in a browser on your local network. Available only while Degauss is open.",
         }
     }
 
@@ -344,6 +356,14 @@ impl OptionsPage {
                 OptionId::ShiftY,
             ],
             Self::Developer => &ADVANCED,
+            Self::WebAccess => &[
+                OptionId::WebMode,
+                OptionId::WebPort,
+                OptionId::WebPassword,
+                OptionId::WebAddress,
+                OptionId::WebCertificate,
+                OptionId::WebCrtImages,
+            ],
         }
     }
 }
@@ -351,6 +371,12 @@ impl OptionsPage {
 impl OptionId {
     pub fn label(self) -> &'static str {
         match self {
+            OptionId::WebMode => "Web Server",
+            OptionId::WebPort => "Web Port",
+            OptionId::WebPassword => "Web Password",
+            OptionId::WebAddress => "Open Address / QR Code",
+            OptionId::WebCertificate => "Renew HTTPS Certificate",
+            OptionId::WebCrtImages => "CRT Image Effect",
             OptionId::Speed => "Scroll Speed",
             OptionId::LeftRight => "Left and Right Behaviour",
             OptionId::UpLevelEntry => "Up a Level Entry",
@@ -422,6 +448,12 @@ impl OptionId {
     /// explain are settings nobody should have.
     pub fn help(self) -> &'static str {
         match self {
+            OptionId::WebMode => "HTTPS encrypts the connection; trust the device certificate in your browser. HTTP is unencrypted: trusted networks only.",
+            OptionId::WebPort => "Choose a port from 1024 to 65535. The complete address below includes this port.",
+            OptionId::WebPassword => "Set a password before enabling Web Access. Changing it signs out every browser. It does not change the kiosk PIN.",
+            OptionId::WebAddress => "Open the complete address on a device connected to the same network, or scan its QR code.",
+            OptionId::WebCertificate => "Renew after the network address changes. Browsers will need to trust the new HTTPS certificate.",
+            OptionId::WebCrtImages => "CRT-style browser artwork and logos. Text, QR codes and MiSTer video stay unchanged.",
             OptionId::UseMraFilenames => "Show the full Arcade MRA filename, including region and revision, instead of its metadata title. Other game names are unchanged.",
             OptionId::Speed => "Set how quickly the selection moves while a direction is held.",
             OptionId::LeftRight => {
@@ -636,6 +668,8 @@ mod tests {
         let expected: Vec<_> = OPTIONS
             .iter()
             .chain(ADVANCED.iter())
+            // Web Access is appended without changing the legacy flat ordering.
+            .chain(OptionsPage::WebAccess.ids().iter())
             .copied()
             .filter(|option| !matches!(option, OptionId::Advanced | OptionId::Spacer))
             .collect();
@@ -676,7 +710,8 @@ mod tests {
                 "appearance",
                 "library",
                 "display",
-                "developer"
+                "developer",
+                "web-access"
             ]
         );
         assert_eq!(OptionsPage::parse(""), None);
@@ -714,7 +749,7 @@ mod tests {
 
     #[test]
     fn every_option_has_a_label_and_an_explanation() {
-        for option in OPTIONS.iter().chain(ADVANCED.iter()).copied() {
+        for option in OptionsPage::ALL.iter().flat_map(|page| page.ids()).copied() {
             if option == OptionId::Spacer {
                 continue;
             }

@@ -2478,6 +2478,8 @@ extensions = ["md", "bin"]
     fn additional_game_systems_use_their_native_loader_slots() {
         let table = load_table(Path::new("assets/systems.toml")).unwrap();
         let cases = [
+            ("3B1", "vhd", "s", 0),
+            ("3B1", "img", "s", 1),
             ("Apple-III", "woz", "s", 0),
             ("Apple-III", "dsk", "s", 0),
             ("Apple-III", "do", "s", 0),
@@ -2588,6 +2590,7 @@ extensions = ["md", "bin"]
             ("SGIIndy", "img", "s", 1),
             ("SGIIndy", "chd", "s", 3),
             ("TK2000", "nib", "s", 0),
+            ("TK2000", "ct2", "f", 2),
             ("Tandy1000", "vhd", "s", 2),
             ("EG2000", "cas", "f", 1),
             ("BBCBridgeCompanion", "bin", "f", 1),
@@ -2695,6 +2698,8 @@ extensions = ["md", "bin"]
         let table = load_table(Path::new("assets/systems.toml")).unwrap();
         let card = temp_dir("new-system-library-data");
         for (id, extension) in [
+            ("3B1", "vhd"),
+            ("TK2000", "ct2"),
             ("Apple-III", "dsk"),
             ("MacQuadra800", "vhd"),
             ("NeXT-Color", "vhd"),
@@ -2775,6 +2780,8 @@ extensions = ["md", "bin"]
         let table = load_table(Path::new("assets/systems.toml")).unwrap();
         let card = temp_dir("computer-multi-media-launchers");
         for (id, files) in [
+            ("3B1", "<file delay=\"1\" type=\"s\" index=\"0\" path=\"Disk.vhd\"/><file delay=\"1\" type=\"s\" index=\"1\" path=\"Floppy.img\"/>"),
+            ("TK2000", "<file delay=\"1\" type=\"s\" index=\"0\" path=\"A.dsk\"/><file delay=\"1\" type=\"s\" index=\"1\" path=\"B.dsk\"/>"),
             ("BasicMasterL3", "<file delay=\"1\" type=\"s\" index=\"0\" path=\"A.d88\"/><file delay=\"1\" type=\"s\" index=\"1\" path=\"B.d88\"/><reset delay=\"1\" hold=\"1\"/>"),
             ("SharpMZ2500", "<file delay=\"1\" type=\"s\" index=\"0\" path=\"Program.d88\"/><file delay=\"1\" type=\"s\" index=\"1\" path=\"User.d88\"/><reset delay=\"1\" hold=\"1\"/>"),
             ("BasicMasterJr", "<file delay=\"1\" type=\"f\" index=\"1\" path=\"Tape.bmt\"/>"),
