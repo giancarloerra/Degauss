@@ -588,6 +588,9 @@ fn native_web_compatibility(app: &mut App, root: &Path) {
     }
     app.web_select_theme(None).unwrap();
 
+    app.open_system_by_index(0);
+    assert_eq!(app.browsing, Browsing::Games);
+    assert!(app.here.len() >= 2);
     let question = "Reset view selections?";
     app.message = Some(question.into());
     app.pending = Some(Pending::SwitchIni(1));
