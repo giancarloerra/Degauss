@@ -12,7 +12,7 @@ permissions:
 
 jobs:
   ra-controller-integration:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     container: debian:bookworm
     steps:
       - name: Install source-check tools
@@ -53,7 +53,7 @@ jobs:
             -Wall -Wextra -Werror -Wno-psabi -fsyntax-only input.cpp menu.cpp
 
   test:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     env:
       # Clean runners cannot reuse incremental output. Limiting the compiler's
       # codegen fan-out keeps the embedded font packs inside runner memory
