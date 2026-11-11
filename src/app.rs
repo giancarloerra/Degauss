@@ -20595,12 +20595,11 @@ impl App {
         // Browser library transactions use the same cache/settings files.
         // Keep scrolling responsive, but do not start a second transaction or
         // leave the frontend while a browser write is committing.
-        if self.web_writing()
-            && !matches!(
-                action,
-                Action::Up | Action::Down | Action::Slower | Action::Faster
-            )
-        {
+        let web_navigation = matches!(action, Action::Up | Action::Down)
+            || (matches!(action, Action::Slower | Action::Faster)
+                && (matches!(self.screen, Screen::Find | Screen::CategoryImage)
+                    || (self.screen == Screen::Browse && self.horizontal != Horizontal::Speed)));
+        if self.web_writing() && !web_navigation {
             if self.pending.is_some() {
                 return None;
             }

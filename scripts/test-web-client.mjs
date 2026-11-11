@@ -47,6 +47,20 @@ function section(from, to) {
   return source.slice(start, end);
 }
 
+test('A missing selected theme is visibly reported on the Themes page', async () => {
+  const displayed = [];
+  const context = vm.createContext({
+    state: { epoch: 1 },
+    command: async () => ({ revision: 'theme-revision', items: [], notices: ['Theme Amber did not load; using standard.'] }),
+    header() {}, button() {}, el: () => ({}),
+    notice: message => { displayed.push(message); return {}; },
+    $: () => ({ append() {} }),
+  });
+  vm.runInContext(section('async function themesPage(', '\nasync function themeEditor('), context);
+  await context.themesPage(1);
+  assert.deepEqual(displayed, ['Theme Amber did not load; using standard.']);
+});
+
 test('An expired artwork-upload session closes its editor and returns to sign-in without retrying', async () => {
   for (const status of [401, 409]) {
     const elements = new Map([['editor', { open: true, dataset: { revision: 'revision' } }], ['login', { hidden: true }], ['shell', { hidden: false }], ['transport', {}], ['login-error', {}]]);

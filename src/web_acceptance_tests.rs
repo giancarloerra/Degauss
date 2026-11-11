@@ -559,6 +559,34 @@ fn native_web_compatibility(app: &mut App, root: &Path) {
     if app.settings.theme.is_some() || app.active_theme.is_some() {
         failures.push("Deleting the current theme left a stale case-insensitive selection");
     }
+    edit(
+        app,
+        json!({"action":"theme-save","name":"Removed Theme","text":"accent = \"#112233\"","replace":false}),
+    );
+    app.web_select_theme(Some("Removed Theme")).unwrap();
+    std::fs::remove_file(app.themes_dir.join("Removed Theme.toml")).unwrap();
+    for action in [
+        json!({"action":"theme-save","name":"Other Theme","text":"font = \"pixel\"","replace":false}),
+        json!({"action":"theme-delete","name":"Other Theme"}),
+    ] {
+        let mut request = action;
+        request["revision"] = json!(app.web_revision());
+        match app.web_command(serde_json::from_value(request).unwrap()) {
+            Ok(WebReply::Json(data)) => {
+                assert_eq!(
+                    data["notices"][0],
+                    "Theme Removed Theme did not load; using standard."
+                );
+                assert_eq!(app.settings.theme.as_deref(), Some("Removed Theme"));
+                assert!(app.active_theme.is_none());
+                assert_eq!(app.effective_palette(), app.config.colors);
+            }
+            _ => failures.push(
+                "Saving or deleting another theme failed after the selected file disappeared",
+            ),
+        }
+    }
+    app.web_select_theme(None).unwrap();
 
     let question = "Reset view selections?";
     app.message = Some(question.into());
@@ -590,6 +618,33 @@ fn native_web_compatibility(app: &mut App, root: &Path) {
     }
     app.pending = None;
     app.message = None;
+    app.open_options_page(OptionsPage::Appearance);
+    app.option_lists[OptionsPage::Appearance.index()].select(1);
+    let revision = app.web_revision();
+    app.handle(Action::Faster);
+    if app.web_revision() != revision {
+        failures.push("Native left/right changed options during a browser write");
+    }
+    app.message = None;
+    app.screen = Screen::Browse;
+    app.horizontal = Horizontal::Speed;
+    let speed = app.speed;
+    let revision = app.web_revision();
+    app.handle(Action::Faster);
+    if app.speed != speed || app.web_revision() != revision {
+        failures.push("Native speed changed settings during a browser write");
+    }
+    app.message = None;
+    app.horizontal = Horizontal::Direction;
+    app.game_list.select(0);
+    app.handle(Action::Faster);
+    assert_eq!(
+        app.game_list.selected(),
+        1,
+        "Navigation must remain available during a write"
+    );
+    app.handle(Action::Up);
+    assert_eq!(app.game_list.selected(), 0);
     app.screen = Screen::Browse;
     app.open_system = Some("NES".into());
     app.home.pending_open = Some(crate::home::Target::System {
@@ -684,7 +739,7 @@ fn native_web_compatibility(app: &mut App, root: &Path) {
     app.message = None;
     app.active_theme = None;
     app.save_settings();
-    app.web_refresh_theme().unwrap();
+    app.web_refresh_theme();
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
 

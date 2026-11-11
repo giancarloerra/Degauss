@@ -178,7 +178,15 @@ impl App {
 
     fn web_themes(&self) -> JsonValue {
         let items:Vec<_>=self.themes.iter().map(|theme|json!({"name":theme.name,"text":theme.file.to_toml(&self.config.colors),"editable":theme.file.created_by_editor})).collect();
-        json!({"items":items,"current":self.settings.theme,"revision":self.web_revision(),"base":self.config.colors})
+        let notices: Vec<_> = self
+            .settings
+            .theme
+            .as_ref()
+            .filter(|_| self.active_theme.is_none())
+            .map(|name| format!("Theme {name} did not load; using standard."))
+            .into_iter()
+            .collect();
+        json!({"items":items,"current":self.settings.theme,"revision":self.web_revision(),"base":self.config.colors,"notices":notices})
     }
 
     fn web_select_theme(&mut self, name: Option<&str>) -> std::result::Result<(), WebError> {
@@ -213,20 +221,13 @@ impl App {
         invalidate_geometry(&mut self.pending_complete_repaints, &mut self.dirty);
     }
 
-    fn web_refresh_theme(&mut self) -> std::result::Result<(), WebError> {
-        let selected = self
-            .settings
-            .theme
-            .as_deref()
-            .map(|name| {
-                self.themes
-                    .iter()
-                    .position(|theme| theme.name.eq_ignore_ascii_case(name))
-                    .ok_or_else(|| web_error("The theme no longer exists."))
-            })
-            .transpose()?;
+    fn web_refresh_theme(&mut self) {
+        let selected = self.settings.theme.as_deref().and_then(|name| {
+            self.themes
+                .iter()
+                .position(|theme| theme.name.eq_ignore_ascii_case(name))
+        });
         self.web_apply_theme(selected);
-        Ok(())
     }
 
     fn web_edit_command(
@@ -340,7 +341,7 @@ impl App {
                 }
                 let loaded = crate::theme::load_available(&self.themes_dir);
                 self.themes = loaded.themes;
-                self.web_refresh_theme()?;
+                self.web_refresh_theme();
                 Ok(self.web_themes())
             }
             WebCommand::ThemeDelete { revision, name } => {
@@ -365,7 +366,7 @@ impl App {
                 }
                 staged.commit().map_err(web_error)?;
                 self.themes = crate::theme::load_available(&self.themes_dir).themes;
-                self.web_refresh_theme()?;
+                self.web_refresh_theme();
                 Ok(self.web_themes())
             }
             WebCommand::ThemeSelect { revision, name } => {

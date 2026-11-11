@@ -708,6 +708,7 @@ async function layoutEditor(id, source) {
 async function themesPage(epoch) {
   const data = await command('themes'); if (epoch !== state.epoch) return; state.revision = data.revision;
   header('Themes', button('New theme', () => themeEditor(data, null)), button('Configured palette', async () => { await edit('theme-select', { name: null }); applyState(await command('state')); await renderRoute(); }));
+  for (const message of data.notices || []) $('page').append(notice(message));
   $('page').append(el('div', { class: 'rows' }, data.items.map(theme => el('div', { class: 'row' }, el('div', { class: 'grow' }, theme.name, theme.name === data.current ? el('small', {}, 'Selected') : null), el('div', { class: 'actions' }, button('Use theme', async () => { await edit('theme-select', { name: theme.name }); applyState(await command('state')); await renderRoute(); }), button(theme.editable ? 'Edit' : 'Copy', () => themeEditor(data, theme)), theme.editable ? button('Delete', async () => { await edit('theme-delete', { name: theme.name }); applyState(await command('state')); await renderRoute(); }) : null)))));
 }
 async function themeEditor(data, original) {
