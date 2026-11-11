@@ -328,30 +328,47 @@ fn read_previews(
             crate::cache::load_system_checked(cache_dir, &source.system)
         }
         .map_err(|error| format!("Home artwork for {}: {error}", source.system))?;
-        for (key, launch) in source.targets {
-            if cancelled.load(std::sync::atomic::Ordering::Relaxed) {
-                return Err("Home artwork reading cancelled.".into());
-            }
-            let row = cache.as_ref().and_then(|cache| {
-                cache
-                    .folders
-                    .values()
-                    .flat_map(|folder| &folder.rows)
-                    .find(|row| row.kind == crate::browse::Kind::Play(launch.clone()))
-                    .cloned()
-            });
-            if let Some(mut row) = row {
-                if let Some(provider) = &source.provider {
-                    provider.apply_prepared(std::slice::from_mut(&mut row));
-                }
-                row.details.desc.clear();
-                preview.rows.insert(key, row);
-            } else {
-                preview.missing.push(key);
-            }
-        }
+        append_previews(
+            cache.as_ref(),
+            source.provider.as_ref(),
+            source.targets,
+            cancelled,
+            &mut preview,
+        )?;
     }
     Ok(preview)
+}
+
+pub(crate) fn append_previews(
+    cache: Option<&crate::cache::SystemCache>,
+    provider: Option<&crate::artwork_pack::Provider>,
+    targets: Vec<(String, crate::browse::Launch)>,
+    cancelled: &std::sync::atomic::AtomicBool,
+    preview: &mut Preview,
+) -> Result<(), String> {
+    for (key, launch) in targets {
+        if cancelled.load(std::sync::atomic::Ordering::Relaxed) {
+            return Err("Home artwork reading cancelled.".into());
+        }
+        let row = cache.and_then(|cache| {
+            cache
+                .folders
+                .values()
+                .flat_map(|folder| &folder.rows)
+                .find(|row| row.kind == crate::browse::Kind::Play(launch.clone()))
+                .cloned()
+        });
+        if let Some(mut row) = row {
+            if let Some(provider) = provider {
+                provider.apply_prepared(std::slice::from_mut(&mut row));
+            }
+            row.details.desc.clear();
+            preview.rows.insert(key, row);
+        } else {
+            preview.missing.push(key);
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]

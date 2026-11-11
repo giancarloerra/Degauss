@@ -9,6 +9,23 @@
 #
 # Nothing regenerates this file: edit it freely.
 [[systems]]
+name = "AT&T UNIX PC (3B1 / PC7300)"
+id = "3B1"
+folders = ["3B1"]
+rbf = "_Computer/3B1"
+extensions = ["vhd", "img", "mgl"]
+[[systems.launch]]
+extensions = ["vhd"]
+type = "s"
+index = 0
+delay = 1
+[[systems.launch]]
+extensions = ["img"]
+type = "s"
+index = 1
+delay = 1
+
+[[systems]]
 name = "3DO"
 id = "3DO"
 folders = ["3DO"]
@@ -2427,11 +2444,16 @@ name = "Microdigital TK2000"
 id = "TK2000"
 folders = ["TK2000"]
 rbf = "_Computer/TK2000"
-extensions = ["nib", "dsk", "do", "po", "mgl"]
+extensions = ["nib", "dsk", "do", "po", "ct2", "mgl"]
 [[systems.launch]]
 extensions = ["nib", "dsk", "do", "po"]
 type = "s"
 index = 0
+delay = 1
+[[systems.launch]]
+extensions = ["ct2"]
+type = "f"
+index = 2
 delay = 1
 
 [[systems]]

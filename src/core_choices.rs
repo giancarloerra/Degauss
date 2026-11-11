@@ -223,7 +223,7 @@ fn validate_native_choice(actual: &Path) -> Result<()> {
 }
 
 /// N64 and Neo Geo Turbo can share their regular core's loose Main prefix.
-/// Sharp MZ also needs its installed build date to select the MZF load slot.
+/// Sharp MZ and TK2000 also need the installed build date for media support.
 /// Resolve these references without changing other families or pinned filenames.
 fn standard_reference(reference: &str, root: &Path) -> Result<String> {
     standard_reference_after(reference, root, None)?.ok_or_else(|| {
@@ -251,7 +251,7 @@ pub(crate) fn standard_reference_after(
         .and_then(|name| name.to_str())
         .filter(|name| {
             minimum.is_some()
-                || ["N64", "NeoGeo", "SharpMZ"]
+                || ["N64", "NeoGeo", "SharpMZ", "TK2000"]
                     .iter()
                     .any(|core| name.eq_ignore_ascii_case(core))
         })

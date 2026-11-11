@@ -9,6 +9,8 @@ mod explore_acceptance_tests;
 mod folder_options_acceptance_tests;
 #[path = "home_acceptance_tests.rs"]
 mod home_acceptance_tests;
+#[path = "web_acceptance_tests.rs"]
+mod web_acceptance_tests;
 
 fn information_row() -> browse::Row {
     browse::Row {
@@ -14510,6 +14512,7 @@ pub(super) fn run_ui_acceptance_flow(window: Rc<MinimalSoftwareWindow>) {
     run_information_manual_scroll_flow(&root, window.clone());
     explore_acceptance_tests::run(&root, window.clone());
     home_acceptance_tests::run(&root, window.clone());
+    web_acceptance_tests::run(&root, window.clone());
     custom_view_acceptance_tests::run(&root, window.clone());
     run_cores_browser_flow(&root, window.clone());
     run_empty_storage_rediscovery_flow(&root, window.clone());

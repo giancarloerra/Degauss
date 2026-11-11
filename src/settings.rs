@@ -296,6 +296,11 @@ pub enum SaveOutcome {
 /// every upgrade into a broken machine.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Settings {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub web_access: Option<crate::web::Config>,
+    /// Browser-only image treatment; independent of the listener configuration.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub web_crt_images: Option<bool>,
     pub speed_step: Option<usize>,
     /// Fastest scroll speed that still loads a picture per row, as an index
     /// into the speed ladder.

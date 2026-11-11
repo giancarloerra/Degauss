@@ -108,7 +108,67 @@ pub fn start(request: Request) -> Result<Job> {
     })
 }
 
-fn read(request: &Request, cancelled: &AtomicBool) -> Result<Option<String>> {
+pub(crate) fn read(request: &Request, cancelled: &AtomicBool) -> Result<Option<String>> {
+    read_using(
+        request,
+        cancelled,
+        crate::gamelist::Gamelist::full_description,
+    )
+}
+
+/// The browser repeatedly opens different games without leaving the system.
+/// Retain only the last gamelist, and check its file revision on every read.
+#[derive(Default)]
+pub(crate) struct DescriptionCache {
+    gamelist: Option<(
+        PathBuf,
+        u64,
+        std::time::SystemTime,
+        crate::gamelist::Gamelist,
+    )>,
+}
+
+impl DescriptionCache {
+    pub fn read(&mut self, request: &Request, cancelled: &AtomicBool) -> Result<Option<String>> {
+        read_using(request, cancelled, |path, folder, key, exact, cancelled| {
+            let metadata = std::fs::metadata(path)
+                .map_err(|error| DegaussError::io("reading game information", path, error))?;
+            let modified = metadata.modified().map_err(|error| {
+                DegaussError::io("reading game information revision", path, error)
+            })?;
+            if self
+                .gamelist
+                .as_ref()
+                .is_none_or(|(saved, size, stamp, _)| {
+                    saved != path || *size != metadata.len() || *stamp != modified
+                })
+            {
+                self.gamelist = None;
+                let list = crate::gamelist::Gamelist::load_descriptions(path, folder, cancelled)?;
+                self.gamelist = Some((path.to_path_buf(), metadata.len(), modified, list));
+            }
+            let list = &self.gamelist.as_ref().expect("current gamelist").3;
+            Ok(if exact {
+                list.lookup_exact(key)
+            } else {
+                list.lookup(key)
+            }
+            .and_then(|(meta, _)| meta.desc.clone()))
+        })
+    }
+}
+
+fn read_using(
+    request: &Request,
+    cancelled: &AtomicBool,
+    mut gamelist_description: impl FnMut(
+        &Path,
+        &Path,
+        &str,
+        bool,
+        &AtomicBool,
+    ) -> Result<Option<String>>,
+) -> Result<Option<String>> {
     if cancelled.load(Ordering::Relaxed) {
         return Ok(None);
     }
@@ -165,7 +225,7 @@ fn read(request: &Request, cancelled: &AtomicBool) -> Result<Option<String>> {
         }
         Ok(_) => {}
     }
-    crate::gamelist::Gamelist::full_description(&gamelist, &root, &key, exact, cancelled)
+    gamelist_description(&gamelist, &root, &key, exact, cancelled)
 }
 
 #[cfg(test)]
@@ -204,6 +264,80 @@ mod tests {
             source: Source::Gamelist,
         };
         (root, request)
+    }
+
+    #[test]
+    fn browser_description_cache_preserves_native_matching_and_refreshes_changed_files() {
+        let (root, mut request) = fixture();
+        let file = root.join("gamelist.xml");
+        let xml = "<gameList><game id=\"p\"><desc>Inherited &amp; complete\nSecond paragraph.</desc></game><game parentid=\"p\"><path>Game.nes</path></game><game><path>Title.slug</path><desc>Slug\nFull</desc></game><game><path>Duplicate.nes</path><desc>Old</desc></game><game><path>Duplicate.nes</path><desc>New\nFull</desc></game><game><path>Empty.nes</path><name>No description</name></game></gameList>";
+        std::fs::write(&file, xml).unwrap();
+        let mut cache = DescriptionCache::default();
+        let cancel = AtomicBool::new(false);
+        for name in [
+            "Game.nes",
+            "Title.nes",
+            "Duplicate.nes",
+            "Empty.nes",
+            "Missing.nes",
+            "Game.nes",
+        ] {
+            request.launch = Launch::File(root.join(name));
+            assert_eq!(
+                cache.read(&request, &cancel).unwrap(),
+                read(&request, &cancel).unwrap(),
+                "{name}"
+            );
+        }
+        let stored = cache
+            .gamelist
+            .as_ref()
+            .unwrap()
+            .3
+            .lookup("Game.nes")
+            .unwrap()
+            .0
+            .desc
+            .as_ref()
+            .unwrap()
+            .as_ptr();
+        assert!(cache.read(&request, &cancel).unwrap().is_some());
+        assert_eq!(
+            stored,
+            cache
+                .gamelist
+                .as_ref()
+                .unwrap()
+                .3
+                .lookup("Game.nes")
+                .unwrap()
+                .0
+                .desc
+                .as_ref()
+                .unwrap()
+                .as_ptr(),
+            "Repeated game reads must reuse the parsed descriptions"
+        );
+        std::fs::write(&file, "<gameList><game><path>Game.nes</path><desc>Changed description</desc></game></gameList>").unwrap();
+        assert_eq!(
+            cache.read(&request, &cancel).unwrap().as_deref(),
+            Some("Changed description")
+        );
+        std::fs::write(&file, "<gameList><game></bad>").unwrap();
+        assert!(
+            cache.read(&request, &cancel).is_err(),
+            "A changed, broken source must not return cached text"
+        );
+        std::fs::remove_file(&file).unwrap();
+        assert!(cache.read(&request, &cancel).unwrap().is_none());
+        std::fs::write(&file, xml).unwrap();
+        assert_eq!(
+            cache.read(&request, &cancel).unwrap(),
+            read(&request, &cancel).unwrap()
+        );
+        cancel.store(true, Ordering::Relaxed);
+        assert!(cache.read(&request, &cancel).unwrap().is_none());
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
@@ -256,6 +390,7 @@ mod tests {
     #[test]
     fn archive_descriptions_use_exact_multi_game_and_legacy_single_game_matching() {
         let (root, mut request) = fixture();
+        let mut cached = DescriptionCache::default();
         let archive = root.join("collection.zip");
         std::fs::write(
             &archive,
@@ -273,6 +408,10 @@ mod tests {
             None,
             "multi-game archives must not match another file's description"
         );
+        assert_eq!(
+            cached.read(&request, &AtomicBool::new(false)).unwrap(),
+            None
+        );
         std::fs::write(
             &archive,
             crate::zip::tests_archive(&["folder/Game.nes"], false),
@@ -281,6 +420,10 @@ mod tests {
         assert_eq!(
             read(&request, &AtomicBool::new(false)).unwrap().as_deref(),
             Some("Legacy\nFull text")
+        );
+        assert_eq!(
+            cached.read(&request, &AtomicBool::new(false)).unwrap(),
+            read(&request, &AtomicBool::new(false)).unwrap()
         );
         std::fs::write(
             &archive,
@@ -292,8 +435,13 @@ mod tests {
             read(&request, &AtomicBool::new(false)).unwrap().as_deref(),
             Some("Exact\nFull text")
         );
+        assert_eq!(
+            cached.read(&request, &AtomicBool::new(false)).unwrap(),
+            read(&request, &AtomicBool::new(false)).unwrap()
+        );
         std::fs::write(&archive, b"broken zip").unwrap();
         assert!(read(&request, &AtomicBool::new(false)).is_err());
+        assert!(cached.read(&request, &AtomicBool::new(false)).is_err());
         std::fs::remove_dir_all(root).unwrap();
     }
 }

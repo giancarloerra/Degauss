@@ -1171,7 +1171,9 @@ pub fn favorite_mgl_with_selections(
     // durable favourite that must survive the next dated core replacement.
     if (family.minimum_build.is_some()
         || Path::new(&family.rbf).file_name().is_some_and(|name| {
-            name.eq_ignore_ascii_case("N64") || name.eq_ignore_ascii_case("SharpMZ")
+            name.eq_ignore_ascii_case("N64")
+                || name.eq_ignore_ascii_case("SharpMZ")
+                || name.eq_ignore_ascii_case("TK2000")
         }))
         && core
             .rbf
@@ -1618,6 +1620,54 @@ mod tests {
                 .unwrap()
                 .unwrap();
         assert!(turbo.contains("<rbf>_Console/N64_80MHz</rbf>"));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn tk2000_tapes_require_the_new_build_without_restricting_existing_disks() {
+        let root =
+            std::env::temp_dir().join(format!("degauss-tk2000-build-{}", std::process::id()));
+        let games = root.join("games/TK2000");
+        std::fs::create_dir_all(&games).unwrap();
+        std::fs::create_dir_all(root.join("_Computer")).unwrap();
+        let system = shipped_system("TK2000", vec![games.clone()]);
+        let tape = games.join("Game.CT2");
+        let disk = games.join("Disk.dsk");
+        let favorite = games.join("Saved.mgl");
+        std::fs::write(&tape, b"tape fixture").unwrap();
+        std::fs::write(&disk, b"disk fixture").unwrap();
+        for date in ["20261108", "20261107", "20261106"] {
+            let core = root.join(format!("_Computer/TK2000_{date}.rbf"));
+            std::fs::write(&core, b"core").unwrap();
+            let handoff = root.join("handoff.mgl");
+            let plan = plan_with_selections(&system, &tape, &handoff, &root, false, None, None);
+            let disk_plan =
+                plan_with_selections(&system, &disk, &handoff, &root, false, None, None).unwrap();
+            assert!(disk_plan.mgl.contains("type=\"s\" index=\"0\""));
+            if date >= "20261107" {
+                assert!(plan.unwrap().mgl.contains("type=\"f\" index=\"2\""));
+                let saved = favorite_mgl_with_selections(&system, &tape, &root, false, None, None)
+                    .unwrap()
+                    .unwrap();
+                assert!(saved.contains("<rbf>_Computer/TK2000</rbf>"));
+                std::fs::write(&favorite, saved).unwrap();
+                assert!(plan_with_selections(
+                    &system, &favorite, &handoff, &root, false, None, None
+                )
+                .unwrap()
+                .mgl
+                .contains("type=\"f\" index=\"2\""));
+            } else {
+                assert!(plan.unwrap_err().to_string().contains("20261107"));
+                assert!(plan_with_selections(
+                    &system, &favorite, &handoff, &root, false, None, None
+                )
+                .unwrap_err()
+                .to_string()
+                .contains("20261107"));
+            }
+            std::fs::remove_file(core).unwrap();
+        }
         std::fs::remove_dir_all(root).unwrap();
     }
 

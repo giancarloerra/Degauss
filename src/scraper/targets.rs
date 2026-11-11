@@ -467,6 +467,34 @@ fn target_for(
     })
 }
 
+/// A manually supplied image has no remote-provider platform requirement.
+/// Keep the same root, ZIP-member and shared-gamelist ownership rules as scraping.
+pub(super) fn local_image_target(
+    systems: &[FoundSystem],
+    system_id: &str,
+    launch: &Launch,
+    title: &str,
+    excluded: &HashSet<String>,
+) -> Result<Target> {
+    let system = find_system(systems, system_id)?;
+    if is_favorites_target(system) {
+        return Err(Error::new(
+            ErrorKind::Configuration,
+            "the master Favourites shelf is not an artwork target",
+        ));
+    }
+    let target = target_for(
+        system,
+        0,
+        launch,
+        title,
+        &mut crate::zip::ArchiveCache::default(),
+    )?;
+    let mut targets = vec![target];
+    expand_affected_systems(&mut targets, systems, excluded);
+    Ok(targets.remove(0))
+}
+
 fn find_system<'a>(systems: &'a [FoundSystem], id: &str) -> Result<&'a FoundSystem> {
     systems
         .iter()

@@ -316,22 +316,7 @@ impl App {
     }
     fn delete_custom_view(&mut self, id: &str) {
         let mut settings = self.settings.clone();
-        let key = crate::custom_view::key(id);
-        settings.view_definitions.remove(id);
-        if settings.layout.as_deref() == Some(&key) {
-            settings.layout = Some("details".into());
-        }
-        if settings.custom_views.categories.as_deref() == Some(&key) {
-            settings.custom_views.categories = None;
-        }
-        settings
-            .custom_views
-            .systems
-            .retain(|_, value| *value != key);
-        for places in settings.custom_views.games.values_mut() {
-            places.retain(|_, value| *value != key);
-        }
-        settings.folder_views.retain(|_, value| *value != key);
+        crate::custom_view::remove(&mut settings, id);
         if self.save_view_settings(settings) {
             self.global_layout = self
                 .settings

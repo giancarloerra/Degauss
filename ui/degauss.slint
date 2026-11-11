@@ -624,6 +624,8 @@ export component DegaussWindow inherits Window {
     in property <string> operation-controls;
     in property <string> bottom-controls;
     in property <string> overlay-close-controls;
+    in property <image> web-qr;
+    in property <int> web-qr-side: 0;
     in property <string> overlay-read-close-controls;
     in property <string> saver-controls;
     in property <length> detail-line;
@@ -2420,7 +2422,7 @@ export component DegaussWindow inherits Window {
             property <bool> has-hint: root.overlay-dismissible && !root.index-active;
             property <float> max-scroll: max(0, (message-text.preferred-height - message-viewport.height) / 1px);
             background: root.c-surface;
-            height: self.index-report ? parent.height : root.index-active
+            height: root.web-qr-side > 0 ? parent.height : self.index-report ? parent.height : root.index-active
                 ? min(parent.height - root.pad * 2, max(root.row-height * 7, parent.height * 70%))
                 : min(parent.height - root.pad * 2,
                     max(root.row-height * 3, message-text.preferred-height + root.pad * 2
@@ -2435,7 +2437,7 @@ export component DegaussWindow inherits Window {
                 x: root.pad;
                 y: root.pad;
                 width: parent.width - root.pad * 2;
-                height: max(1px, parent.height - root.pad * 2
+                height: max(1px, parent.height - root.pad * 2 - root.web-qr-side * 1px
                     - (message-panel.index-report ? root.bar-height
                         : root.index-active ? root.pad * 2 : message-panel.has-hint ? root.bar-height : 0px));
                 clip: true;
@@ -2450,6 +2452,13 @@ export component DegaussWindow inherits Window {
                     y: max(0px, (parent.height - self.height) / 2)
                         - min(max(0, root.overlay-offset), message-panel.max-scroll) * 1px;
                 }
+            }
+            if root.web-qr-side > 0: Image {
+                source: root.web-qr;
+                width: root.web-qr-side * 1px;
+                height: root.web-qr-side * 1px;
+                x: (parent.width - self.width) / 2;
+                y: parent.height - root.bar-height - root.pad - self.height;
             }
             if message-panel.has-hint || message-panel.index-report: Text {
                 text: message-panel.index-report ? root.operation-controls

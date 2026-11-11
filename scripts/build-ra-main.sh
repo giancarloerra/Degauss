@@ -8,16 +8,16 @@ if [[ $# -ne 1 || -e "$1" ]]; then
 fi
 mkdir -p "$1"
 build_root="$(cd "$1" && pwd)"
-source_pin=01351569431bb5e8c386658932a1d4796fd96812
-archive_sha=0705439c963518d56e2adb5d3e38c64151b8ff77940d66e8768d1b3ae54b63e2
+source_pin=69f1249065f1ff3d04f5f9242355a1d5475170fe
+archive_sha=81b7bf0289bb3d7aefe478a2209bea073881dac7d3d859e610ede47ddfaf5ffe
 curl --fail --location --silent --show-error \
     "https://codeload.github.com/odelot/Main_MiSTer/tar.gz/${source_pin}" \
     -o "$build_root/upstream.tar.gz"
 actual_sha="$(shasum -a 256 "$build_root/upstream.tar.gz" | awk '{print $1}')"
 [[ "$actual_sha" == "$archive_sha" ]] || { echo "RA source checksum mismatch" >&2; exit 1; }
-ca_sha=f66dff1bdf8f96060b8177976f8b7d9254bc89bc4db933d769f7384d28480bc9
+ca_sha=427c064216761a1e72a8b30f0d954d08cb6e4435a82091fb865afd20c8497285
 curl --fail --location --silent --show-error \
-    https://curl.se/ca/cacert-2026-08-13.pem \
+    https://curl.se/ca/cacert-2026-11-05.pem \
     -o "$build_root/MiSTer_RA_Degauss.cacert.pem"
 actual_ca_sha="$(shasum -a 256 "$build_root/MiSTer_RA_Degauss.cacert.pem" | awk '{print $1}')"
 [[ "$actual_ca_sha" == "$ca_sha" ]] || { echo "CA bundle checksum mismatch" >&2; exit 1; }
@@ -32,7 +32,16 @@ patch --fuzz=0 -p1 < "$here/support/ra-main/frontend.patch"
 patch --fuzz=0 -p1 < "$here/support/ra-main/tls.patch"
 patch --fuzz=0 -p1 < "$here/support/ra-main/controller.patch"
 patch --fuzz=0 -p1 < "$here/support/ra-main/mgl-pages.patch"
+image=degauss-ra-main-build:bookworm-gcc10
+# Rebuild from the checked-in recipe (Docker may reuse matching layers), rather
+# than trusting whatever an existing local image tag happens to reference.
+docker build -t "$image" "$here/support/ra-main"
+# Exercise Linux input, terminal and TLS boundaries in the same build environment
+# on every host, including macOS. No substitute platform headers are needed.
+docker run --rm --network none -v "$PWD:/src:ro" -w /src \
+    -u "$(id -u):$(id -g)" "$image" bash -ec '
 python3 tests/run-ra-controller-tests.py
+python3 tests/run-ra-debug-log-tests.py
 python3 tests/run-degauss-controls-tests.py
 bash tests/run-degauss-physical-cd-tests.sh
 bash tests/run-degauss-shortcut-tests.sh
@@ -43,11 +52,8 @@ python3 tests/run-degauss-mgl-page-tests.py
 python3 tests/run-degauss-analog-timing-tests.py
 python3 tests/degauss_script_handover_test.py
 python3 tests/degauss_native_scripts_test.py
-image=degauss-ra-main-build:bookworm-gcc10
-# Rebuild from the checked-in recipe (Docker may reuse matching layers), rather
-# than trusting whatever an existing local image tag happens to reference.
-docker build -t "$image" "$here/support/ra-main"
 python3 tests/run-ra-http-tests.py
+'
 docker run --rm --network none -v "$PWD:/src" -w /src \
     -u "$(id -u):$(id -g)" "$image" \
     make BASE=arm-linux-gnueabihf \
@@ -80,7 +86,7 @@ printf 'RA Main source: %s\nDegauss integration base: 809893ddb8e3f7f40797579e0e
     "$source_pin" > "$build_root/SOURCE-PINS.txt"
 printf 'Degauss frontend patch SHA256: %s\n' "$(shasum -a 256 "$here/support/ra-main/frontend.patch" | awk '{print $1}')" >> "$build_root/SOURCE-PINS.txt"
 printf 'Degauss MGL pages patch SHA256: %s\n' "$(shasum -a 256 "$here/support/ra-main/mgl-pages.patch" | awk '{print $1}')" >> "$build_root/SOURCE-PINS.txt"
-printf 'CA bundle: curl Mozilla 2026-08-13 (MPL-2.0), SHA256 %s\n' "$ca_sha" >> "$build_root/SOURCE-PINS.txt"
+printf 'CA bundle: curl Mozilla 2026-11-05 (MPL-2.0), SHA256 %s\n' "$ca_sha" >> "$build_root/SOURCE-PINS.txt"
 # Keep corresponding patched source and its build instructions with the binary.
 mkdir -p "$build_root/rebuild/scripts" "$build_root/rebuild/support"
 cp "$here/scripts/build-ra-main.sh" "$here/scripts/package-ra-main.py" "$build_root/rebuild/scripts/"

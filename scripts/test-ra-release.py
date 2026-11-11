@@ -56,8 +56,10 @@ class ReleaseTests(unittest.TestCase):
 
     def test_ra_backend_pins_the_1151_source_archive_not_the_runtime_zip(self):
         build = (ROOT / 'scripts/build-ra-main.sh').read_text()
-        self.assertIn('source_pin=01351569431bb5e8c386658932a1d4796fd96812\n', build)
-        self.assertIn('archive_sha=0705439c963518d56e2adb5d3e38c64151b8ff77940d66e8768d1b3ae54b63e2\n', build)
+        self.assertIn('source_pin=69f1249065f1ff3d04f5f9242355a1d5475170fe\n', build)
+        self.assertIn('archive_sha=81b7bf0289bb3d7aefe478a2209bea073881dac7d3d859e610ede47ddfaf5ffe\n', build)
+        self.assertIn('cacert-2026-11-05.pem', build)
+        self.assertIn('ca_sha=427c064216761a1e72a8b30f0d954d08cb6e4435a82091fb865afd20c8497285\n', build)
         self.assertIn('patch --fuzz=0', build)
         patch = (ROOT / 'support/ra-main/frontend.patch').read_text()
         self.assertIn(' { RaProbeScope p(RA_PROBE_INPUT); input_poll(0); }', patch.replace('\t', ' '))

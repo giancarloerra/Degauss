@@ -60,7 +60,9 @@ impl App {
     fn name_keyboard_controls(&self) -> bool {
         matches!(
             self.name_keyboard_purpose,
-            NamePurpose::SaveView
+            NamePurpose::WebPassword
+                | NamePurpose::WebPort
+                | NamePurpose::SaveView
                 | NamePurpose::RenameView(_)
                 | NamePurpose::SaveCollection
                 | NamePurpose::RenameCollection(_)
@@ -174,10 +176,7 @@ impl App {
         self.start_explore();
     }
 
-    fn start_explore(&mut self) {
-        if self.explore.job.is_some() {
-            return;
-        }
+    fn indexed_library_request(&self, include_favorites: bool) -> crate::explore::Request {
         let sources = self
             .all_systems
             .iter()
@@ -186,7 +185,7 @@ impl App {
                     system,
                     self.settings.separate_handheld_category.unwrap_or(false),
                 );
-                !is_favorites(system.category())
+                (include_favorites || !is_favorites(system.category()))
                     && (self.show_hidden || !self.settings.hidden.contains(&system.def.id))
                     && self.categories.iter().any(|(name, _)| name == category)
             })
@@ -207,7 +206,7 @@ impl App {
                 error: self.source_problem(&system.def.id).map(str::to_string),
             })
             .collect();
-        let mut request = crate::explore::Request {
+        crate::explore::Request {
             cache_dir: self.cache_dir.clone(),
             sources,
             hidden: if self.show_hidden {
@@ -221,7 +220,14 @@ impl App {
             names: self.game_name_display,
             mra_filenames: self.settings.use_mra_filenames.unwrap_or(false),
             previous: None,
-        };
+        }
+    }
+
+    fn start_explore(&mut self) {
+        if self.explore.job.is_some() {
+            return;
+        }
+        let mut request = self.indexed_library_request(false);
         self.explore.restore_selection = Some((
             self.explore_selected().map(crate::explore::Entry::key),
             self.game_list.selected(),

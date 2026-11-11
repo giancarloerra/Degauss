@@ -68,6 +68,7 @@ mod systems;
 mod theme;
 mod theme_editor;
 mod video_preset;
+mod web;
 mod zip;
 
 use std::path::{Path, PathBuf};
@@ -122,7 +123,8 @@ degauss - a fast game browser for MiSTer FPGA
                       artwork-pack-location, artwork-pack-directory or
                       source-progress, for --render
   --select <n>        which entry to highlight in --render
-  --options-page <p>  navigation, shortcuts, appearance, library, display, developer
+  --options-page <p>  navigation, shortcuts, appearance, library, display, developer,
+                      web-access
   --find <text>       a search already typed, with --screen find
   --geometry <WxH>    geometry for --render and --bench
   --format <fmt>      rgb565 or xrgb8888, for --render and --bench
@@ -2032,6 +2034,7 @@ fn run_on_framebuffer(
     let outcome = app.run(&mut framebuffer, &mut input, &mut presenter, || {
         session.owner_alive()
     });
+    app.stop_web();
     let mask_reset = prepare_display_mask_handoff(
         &outcome,
         app.display_mask().is_some(),

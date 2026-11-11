@@ -11,7 +11,9 @@ mod hashes;
 mod libretro;
 mod platforms;
 mod targets;
+mod upload;
 mod worker;
+pub use upload::{install_uploaded_image, validate_uploaded_image, MAX_UPLOAD_BYTES};
 
 pub use config::{
     DeveloperCredentials, ImagePolicy, MetadataPolicy, ScraperSettings, ScraperSource,

@@ -535,6 +535,7 @@ impl App {
 
     fn poll_home_open(&mut self) -> Option<Outcome> {
         if self.screen != Screen::Browse
+            || self.web_writing()
             || self.opening.is_some()
             || self.source_resolution.is_some()
             || self.source_job.is_some()
