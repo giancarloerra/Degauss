@@ -32,6 +32,7 @@ Degauss plays nice with the standard MiSTer setup, folders and scripts, instead 
 16. **Core choice per system or game**, including installed RetroAchievements, Unstable and Dual SDRAM builds.
 17. **Startup and guest controls** offer optional last-game startup with cancellation and PIN-protected kiosk mode.
 18. **Fits into MiSTer**: configured controllers work straight away, with a controller tester, optional Degauss-only mappings and a five-second controller hold to return from games. Run installed scripts through MiSTer's native terminal or use Zaparoo Core launches.
+19. **Web Access** optionally brings your library, artwork, organisation, settings and launches to a phone or computer, with five independent browser views, HTTP or HTTPS, a password and a documented API.
 
 Source available, written in Rust and using Slint, and licensed for non-commercial use.
 
@@ -44,50 +45,60 @@ Source available, written in Rust and using Slint, and licensed for non-commerci
 
 ## Screenshots
 
-The images below are captured from the actual MiSTer framebuffer, mainly using
-the Blue-Yellow GE custom theme, with Standard-theme comparisons labelled
-separately. CRT presentation is applied for the README.
+Native screens are captured from MiSTer, mainly using the Blue-Yellow GE theme,
+with Standard-theme comparisons labelled separately and CRT presentation applied.
+The browser captures show Web Access with its optional CRT Image Effect enabled.
+The Web Access setup pictures use an example address; open the address shown on
+your own MiSTer.
 
 | | | |
 |---|---|---|
-| <img src="docs/screenshots/1.0.0/01-home.png" alt="Home with Explore Games and personal shortcuts" height="200"> | <img src="docs/screenshots/1.0.0/02-explore.png" alt="Explore Games" height="200"> | <img src="docs/screenshots/1.0.0/03-explore-filters.png" alt="Explore Filters" height="200"> |
+| <img src="docs/screenshots/1.0.0/01-home.png" alt="Home" height="200"> | <img src="docs/screenshots/1.0.0/02-explore.png" alt="Explore Games" height="200"> | <img src="docs/screenshots/1.0.0/03-explore-filters.png" alt="Explore Filters" height="200"> |
 | Home | Explore Games | Explore Filters |
-| <img src="docs/screenshots/1.0.0/04-personal-folder.png" alt="Personal Folders" height="200"> | <img src="docs/screenshots/1.0.0/05-home-editor.png" alt="Home Folder Editor" height="200"> | <img src="docs/screenshots/0.7.0/03-handheld.png" alt="Optional Handheld category" height="200"> |
+| <img src="docs/screenshots/1.0.0/04-personal-folder.png" alt="Personal Folders" height="200"> | <img src="docs/screenshots/1.0.0/05-home-editor.png" alt="Home Folder Editor" height="200"> | <img src="docs/screenshots/0.7.0/03-handheld.png" alt="Optional Handheld Category" height="200"> |
 | Personal Folders | Home Folder Editor | Optional Handheld Category |
-| <img src="docs/screenshots/0.6.0/02-details.png" alt="Details: DoDonPachi III" height="200"> | <img src="docs/screenshots/0.7.0/01-large-artwork.png" alt="Large Artwork Details: DonPachi" height="200"> | <img src="docs/screenshots/0.6.0/03-list.png" alt="List View: Arcade Favourites" height="200"> |
+| <img src="docs/screenshots/0.6.0/02-details.png" alt="Details View" height="200"> | <img src="docs/screenshots/0.7.0/01-large-artwork.png" alt="Large Artwork Details" height="200"> | <img src="docs/screenshots/0.6.0/03-list.png" alt="List View" height="200"> |
 | Details View | Large Artwork Details | List View |
-| <img src="docs/screenshots/0.6.0/04-gallery.png" alt="Gallery View: Arcade Favourites" height="200"> | <img src="docs/screenshots/0.6.0/05-multi-list.png" alt="Multi List View: Arcade Favourites" height="200"> | <img src="docs/screenshots/0.6.0/06-carousel.png" alt="Carousel View: Actraiser" height="200"> |
+| <img src="docs/screenshots/0.6.0/04-gallery.png" alt="Gallery View" height="200"> | <img src="docs/screenshots/0.6.0/05-multi-list.png" alt="Multi List View" height="200"> | <img src="docs/screenshots/0.6.0/06-carousel.png" alt="Carousel View" height="200"> |
 | Gallery View | Multi List View | Carousel View |
-| <img src="docs/screenshots/0.6.0/07-tiled.png" alt="Tiled View: Amiga Favourites" height="200"> | <img src="docs/screenshots/1.0.0/06-custom-view.png" alt="Named Custom View" height="200"> | <img src="docs/screenshots/1.0.0/07-custom-view-editor.png" alt="Custom View Editor" height="200"> |
+| <img src="docs/screenshots/0.6.0/07-tiled.png" alt="Tiled View" height="200"> | <img src="docs/screenshots/1.0.0/06-custom-view.png" alt="Named Custom View" height="200"> | <img src="docs/screenshots/1.0.0/07-custom-view-editor.png" alt="Custom View Editor" height="200"> |
 | Tiled View | Named Custom View | Custom View Editor |
-| <img src="docs/screenshots/0.8.0/02-core-selection.png" alt="Per-system Core Selection" height="200"> | <img src="docs/screenshots/1.1.0/01-options.png" alt="Six Options pages (Standard theme)" height="200"> | <img src="docs/screenshots/0.7.0/02-shortcuts.png" alt="Configurable Hold Shortcuts" height="200"> |
+| <img src="docs/screenshots/0.8.0/02-core-selection.png" alt="Per-system Core Selection" height="200"> | <img src="docs/screenshots/1.1.0/01-options.png" alt="Extensive Options" height="200"> | <img src="docs/screenshots/0.7.0/02-shortcuts.png" alt="Configurable Hold Shortcuts" height="200"> |
 | Per-system Core Selection | Extensive Options | Configurable Hold Shortcuts |
-| <img src="docs/screenshots/1.1.0/02-appearance.png" alt="Appearance and optional last-game startup (Standard theme)" height="200"> | <img src="docs/screenshots/1.1.0/03-library.png" alt="Global Artwork Pack default (Standard theme)" height="200"> | <img src="docs/screenshots/0.9.1/02-screen-rotation.png" alt="Complete interface rotated clockwise for a vertical display" height="200"> |
-| Appearance Settings | Library and Artwork Settings | 90° Screen Rotation |
-| <img src="docs/screenshots/1.0.0/09-core-updates.png" alt="Core Updates with All Cores, latest-first sorting and local game artwork" height="200"> | <img src="docs/screenshots/0.8.0/05-cores.png" alt="Installed Cores Browser" height="200"> | <img src="docs/screenshots/0.8.0/06-metadata-filters.png" alt="Metadata Filters" height="200"> |
-| Core Updates | Installed Cores Browser | Metadata Filters |
-| <img src="docs/screenshots/0.6.0/13-developer.png" alt="Developer" height="200"> | <img src="docs/screenshots/0.6.0/14-actions.png" alt="Grouped Actions" height="200"> | <img src="docs/screenshots/0.6.0/15-random-favourite.png" alt="Random Game and Random Favourite" height="200"> |
-| Drawing and Performance Controls | Actions for This Place | Random Game or Random Favourite |
-| <img src="docs/screenshots/1.1.0/04-folder-options.png" alt="Independent per-folder preferences (Standard theme)" height="200"> | <img src="docs/screenshots/0.6.0/17-information.png" alt="Full Game Information" height="200"> | <img src="docs/screenshots/0.6.0/18-index-progress.png" alt="Indexing Progress" height="200"> |
-| Folder Options | Full Game Information | Indexing Progress |
-| <img src="docs/screenshots/0.6.0/34-index-details.png" alt="Indexing Details" height="200"> | <img src="docs/screenshots/0.6.0/19-index-complete.png" alt="Indexing Complete" height="200"> | <img src="docs/screenshots/0.6.0/28-artwork-source.png" alt="Automatic, Gamelist or Artwork Pack" height="200"> |
-| Indexing Details | Indexing Complete | Automatic, Gamelist or Artwork Pack |
-| <img src="docs/screenshots/0.6.0/36-artwork-pack-location.png" alt="Choose an Installed Artwork Pack" height="200"> | <img src="docs/screenshots/1.0.0/10-libretro-settings.png" alt="Libretro Scraping" height="200"> | <img src="docs/screenshots/1.0.0/11-libretro-match.png" alt="Libretro Match Selection" height="200"> |
-| Choose an Installed Artwork Pack | Libretro Scraping | Libretro Match Selection |
-| <img src="docs/screenshots/0.6.0/20-manual-search.png" alt="Single-game Scraper Controls" height="200"> | <img src="docs/screenshots/0.6.0/33-manual-query.png" alt="Enter a Manual Search" height="200"> | <img src="docs/screenshots/0.6.0/24-manual-match.png" alt="Choose the Matching Game: 1944" height="200"> |
-| Single-game Scraper Controls | Enter a Manual Search | Choose the Matching Game: 1944 |
-| <img src="docs/screenshots/0.6.0/21-scraper-progress.png" alt="Scraper Preparation" height="200"> | <img src="docs/screenshots/0.6.0/35-scraper-complete.png" alt="Single-game Scrape Complete" height="200"> | <img src="docs/screenshots/0.6.0/26-scripts.png" alt="Browse Installed Scripts" height="200"> |
-| Scraper Preparation | Single-game Scrape Complete | Browse Installed Scripts |
-| <img src="docs/screenshots/0.6.0/27-script-confirmation.png" alt="Confirm Before Running" height="200"> | <img src="docs/screenshots/0.6.0/32-standard-details.png" alt="Standard Theme: Details" height="200"> | <img src="docs/screenshots/0.4.0/07-custom-theme.png" alt="Custom Theme" height="200"> |
-| Confirm Before Running | Standard Theme: Details | Custom Theme |
-| <img src="docs/screenshots/0.4.0/08-amber-theme.png" alt="Amber Theme" height="200"> | <img src="docs/screenshots/0.4.0/09-blue-orange-theme.png" alt="Blue-Orange Theme" height="200"> | <img src="docs/screenshots/0.4.0/10-mono-theme.png" alt="Mono Theme" height="200"> |
-| Amber Theme | Blue-Orange Theme | Mono Theme |
-| <img src="docs/screenshots/0.4.0/11-green-mono-theme.png" alt="Green Mono Theme" height="200"> | <img src="docs/screenshots/0.4.0/12-modern-theme.png" alt="Modern Theme" height="200"> | <img src="docs/screenshots/0.4.0/13-neon-theme.png" alt="Neon Theme" height="200"> |
-| Green Mono Theme | Modern Theme | Neon Theme |
-| <img src="docs/screenshots/0.4.0/16-theme-editor.png" alt="Theme Editor" height="200"> | <img src="docs/screenshots/0.4.0/17-category-system-image-picker.png" alt="Category &amp; System Image Picker" height="200"> | <img src="docs/screenshots/0.4.0/18-saved-custom-theme.png" alt="A Saved Custom Theme" height="200"> |
-| Theme Editor | Category & System Image Picker | A Saved Custom Theme |
-| <img src="docs/screenshots/0.9.0/01-attract-mode.png" alt="Attract Mode" height="200"> | <img src="docs/screenshots/0.9.1/01-video-effects.png" alt="Display settings with Video Effects and Scanlines selected" height="200"> | <img src="docs/screenshots/1.1.0/05-kiosk-unlock.png" alt="PIN-protected kiosk unlock (Standard theme)" height="200"> |
-| Attract Mode | Video Effects | Kiosk Unlock |
+| <img src="docs/screenshots/1.1.2/01-controller-tester.png" alt="Controller Tester" height="200"> | <img src="docs/screenshots/1.1.2/02-controller-mapping.png" alt="Degauss-only Controls" height="200"> | <img src="docs/screenshots/1.1.0/02-appearance.png" alt="Appearance and Startup" height="200"> |
+| Controller Tester | Degauss-only Controls | Appearance and Startup |
+| <img src="docs/screenshots/1.1.0/03-library.png" alt="Global Artwork Pack Default" height="200"> | <img src="docs/screenshots/0.9.1/02-screen-rotation.png" alt="90° Screen Rotation" height="200"> | <img src="docs/screenshots/1.0.0/09-core-updates.png" alt="Core Updates" height="200"> |
+| Global Artwork Pack Default | 90° Screen Rotation | Core Updates |
+| <img src="docs/screenshots/0.8.0/05-cores.png" alt="Installed Cores Browser" height="200"> | <img src="docs/screenshots/0.8.0/06-metadata-filters.png" alt="Metadata Filters" height="200"> | <img src="docs/screenshots/0.6.0/13-developer.png" alt="Drawing and Performance Controls" height="200"> |
+| Installed Cores Browser | Metadata Filters | Drawing and Performance Controls |
+| <img src="docs/screenshots/0.6.0/14-actions.png" alt="Actions for This Place" height="200"> | <img src="docs/screenshots/0.6.0/15-random-favourite.png" alt="Random Game or Random Favourite" height="200"> | <img src="docs/screenshots/1.1.0/04-folder-options.png" alt="Folder Options" height="200"> |
+| Actions for This Place | Random Game or Random Favourite | Folder Options |
+| <img src="docs/screenshots/0.6.0/17-information.png" alt="Full Game Information" height="200"> | <img src="docs/screenshots/0.6.0/18-index-progress.png" alt="Indexing Progress" height="200"> | <img src="docs/screenshots/0.6.0/34-index-details.png" alt="Indexing Details" height="200"> |
+| Full Game Information | Indexing Progress | Indexing Details |
+| <img src="docs/screenshots/0.6.0/19-index-complete.png" alt="Indexing Complete" height="200"> | <img src="docs/screenshots/0.6.0/28-artwork-source.png" alt="Automatic, Gamelist or Artwork Pack" height="200"> | <img src="docs/screenshots/0.6.0/36-artwork-pack-location.png" alt="Choose an Installed Artwork Pack" height="200"> |
+| Indexing Complete | Automatic, Gamelist or Artwork Pack | Choose an Installed Artwork Pack |
+| <img src="docs/screenshots/1.0.0/10-libretro-settings.png" alt="Libretro Scraping" height="200"> | <img src="docs/screenshots/1.0.0/11-libretro-match.png" alt="Libretro Match Selection" height="200"> | <img src="docs/screenshots/0.6.0/20-manual-search.png" alt="Single-game Scraper Controls" height="200"> |
+| Libretro Scraping | Libretro Match Selection | Single-game Scraper Controls |
+| <img src="docs/screenshots/0.6.0/33-manual-query.png" alt="Enter a Manual Search" height="200"> | <img src="docs/screenshots/0.6.0/24-manual-match.png" alt="Choose the Matching Game: 1944" height="200"> | <img src="docs/screenshots/0.6.0/21-scraper-progress.png" alt="Scraper Preparation" height="200"> |
+| Enter a Manual Search | Choose the Matching Game: 1944 | Scraper Preparation |
+| <img src="docs/screenshots/0.6.0/35-scraper-complete.png" alt="Single-game Scrape Complete" height="200"> | <img src="docs/screenshots/0.6.0/26-scripts.png" alt="Browse Installed Scripts" height="200"> | <img src="docs/screenshots/0.6.0/27-script-confirmation.png" alt="Confirm Before Running" height="200"> |
+| Single-game Scrape Complete | Browse Installed Scripts | Confirm Before Running |
+| <img src="docs/screenshots/0.6.0/32-standard-details.png" alt="Standard Theme: Details" height="200"> | <img src="docs/screenshots/0.4.0/07-custom-theme.png" alt="Custom Theme" height="200"> | <img src="docs/screenshots/0.4.0/08-amber-theme.png" alt="Amber Theme" height="200"> |
+| Standard Theme: Details | Custom Theme | Amber Theme |
+| <img src="docs/screenshots/0.4.0/09-blue-orange-theme.png" alt="Blue-Orange Theme" height="200"> | <img src="docs/screenshots/0.4.0/10-mono-theme.png" alt="Mono Theme" height="200"> | <img src="docs/screenshots/0.4.0/11-green-mono-theme.png" alt="Green Mono Theme" height="200"> |
+| Blue-Orange Theme | Mono Theme | Green Mono Theme |
+| <img src="docs/screenshots/0.4.0/12-modern-theme.png" alt="Modern Theme" height="200"> | <img src="docs/screenshots/0.4.0/13-neon-theme.png" alt="Neon Theme" height="200"> | <img src="docs/screenshots/0.4.0/16-theme-editor.png" alt="Theme Editor" height="200"> |
+| Modern Theme | Neon Theme | Theme Editor |
+| <img src="docs/screenshots/0.4.0/17-category-system-image-picker.png" alt="Category &amp; System Image Picker" height="200"> | <img src="docs/screenshots/0.4.0/18-saved-custom-theme.png" alt="A Saved Custom Theme" height="200"> | <img src="docs/screenshots/0.9.0/01-attract-mode.png" alt="Attract Mode" height="200"> |
+| Category & System Image Picker | A Saved Custom Theme | Attract Mode |
+| <img src="docs/screenshots/0.9.1/01-video-effects.png" alt="Video Effects" height="200"> | <img src="docs/screenshots/1.1.0/05-kiosk-unlock.png" alt="PIN-protected Kiosk Mode" height="200"> | <img src="docs/screenshots/1.2.0/01-web-access.png" alt="Web Access Options" height="200"> |
+| Video Effects | PIN-protected Kiosk Mode | Web Access Options |
+| <img src="docs/screenshots/1.2.0/02-web-qr.png" alt="Web Address and QR Code" height="200"> | <img src="docs/screenshots/1.2.0/03-web-explore.jpg" alt="Web Games Explorer" height="200"> | <img src="docs/screenshots/1.2.0/04-web-details.jpg" alt="Web Details View" height="200"> |
+| Web Address and QR Code | Web Games Explorer | Web Details View |
+| <img src="docs/screenshots/1.2.0/05-web-gallery.jpg" alt="Web Gallery View" height="200"> | <img src="docs/screenshots/1.2.0/06-web-carousel.jpg" alt="Web Carousel View" height="200"> | <img src="docs/screenshots/1.2.0/07-web-home-editor.jpg" alt="Web Home Editor" height="200"> |
+| Web Gallery View | Web Carousel View | Web Home Editor |
+| <img src="docs/screenshots/1.2.0/08-web-layouts.jpg" alt="Web Layouts Designer" height="200"> |  |  |
+| Web Layouts Designer |  |  |
 
 ## Watch Degauss in action
 
@@ -119,6 +130,7 @@ Click the image to watch Degauss on YouTube.
   - [External storage support](#external-storage-support)
 - [Views](#views)
 - [Settings](#settings)
+  - [Web Access](#web-access)
   - [Manual configuration overrides](#manual-configuration-overrides)
   - [Themes and colours](#themes-and-colours)
     - [Editing a theme on-device](#editing-a-theme-on-device)
@@ -1048,6 +1060,19 @@ option; its default is 400 lines at 24 kHz. Follow the
 for firmware, saved models, boot modes and writable program/user disks.
 Firmware is excluded from both libraries; existing MGLs remain unchanged.
 
+Version 1.2 adds **AT&T UNIX PC / 3B1 / PC7300** in `games/3B1`: VHD hard
+disks use image slot 0, IMG floppies use slot 1, and explicit MGLs can mount
+both. The core needs SDRAM and its two 8 KiB ROMs, `boot0.rom` and `boot1.rom`.
+Disk geometry must match the image; Degauss does not change it. Follow the
+[core's setup instructions](https://github.com/hrvach/unixpc).
+
+**TK2000** also accepts CT2 tapes in `games/TK2000`, using file-transfer slot 2
+with a core dated 20261107 or newer. Existing disk formats and MGLs stay supported.
+The core still needs `boot0.rom`. For tapes, disable the disk interface and apply
+the reset, then use the machine's normal `LOADT` / `RUN` commands. Current builds
+can leave Disk Interface on Auto with drive 1 empty. See the
+[TK2000 instructions](https://github.com/MiSTer-devel/TK2000_MiSTer).
+
 Version 1.1.3 adds **Sharp X1** (`games/SharpX1`) and **Sony SMC-777**
 (`games/SonySMC777`). Both use drive A at image slot 0 and accept explicit MGLs
 with drive B at slot 1. Sharp X1 accepts D88/2D disks and TAP tapes (slot 2);
@@ -1449,7 +1474,7 @@ button hold without enabling the Home entry.
 ## Settings
 
 Open **Y Menu → Options**, then choose Navigation, Shortcuts, Appearance,
-Library, Display or Developer. **A** enters a page; **B** returns to the Options
+Library, Display, Developer or Web Access. **A** enters a page; **B** returns to the Options
 categories. Left and right do nothing on the category list. Each page keeps
 its selected row during the current session. Inside a page, left/right adjust
 values and **A** adjusts a value or runs the selected action. Reset actions
@@ -1521,6 +1546,48 @@ If saving fails, the page stays open and a message explains the problem.
 Changes remain active for the current session; dismiss the message and press
 **B** again after resolving the storage problem to retry saving.
 Delete `settings.toml` to reset UI preferences. Manual overrides still apply.
+
+### Web Access
+
+**Options → Web Access** enables an optional browser interface on the local
+network. Set a Web Password, choose HTTPS or HTTP, then open **Open Address / QR Code** for
+the complete address and QR code. HTTPS uses this device's self-signed
+certificate; HTTP is explicitly unencrypted. Web Access is Off by default.
+
+The browser uses Degauss's library, artwork, Home folders, collections, layouts,
+themes, scrapers, core choices and settings. Drag entries to organise Home, or
+use the equivalent buttons. Browser navigation is independent; **Remote Control**
+deliberately operates the native screen. Physical input capture remains on MiSTer.
+
+**View as** selects Grid, List, Details, Gallery or Carousel for the browser
+session only. It does not change the native layout. **Change MiSTer layout**
+and the Layouts Designer deliberately edit the native layout assignments.
+**Random** beside a folder or collection title offers **Random Game** and
+**Random Favourite**, keeping its search and filters and opening details without
+launching the game.
+**Options → Web Access → CRT Image Effect** optionally adds scanlines and a
+subtle RGB pattern to browser artwork and logos, without changing text, the
+original images or the native display. It defaults to Off and changes live.
+
+The server runs only while Degauss is open. Launching a game or script pauses web
+access, and the browser reconnects when Degauss returns. Nothing is left running
+during gameplay. This is not a ROM file manager or gameplay-streaming service.
+
+See [Web Access setup and API documentation](docs/web-access.md) for HTTPS trust,
+remembered sessions, artwork uploads, editing rules and the versioned API.
+
+The setup screens below use an example address. Open the address shown on your
+own MiSTer. Browser screenshots show the optional CRT Image Effect enabled.
+
+| Web Access options | Address and QR code |
+| --- | --- |
+| ![Web Access options](docs/screenshots/1.2.0/01-web-access.png) | ![Example Web Access address and QR code](docs/screenshots/1.2.0/02-web-qr.png) |
+| Explore and filter | Details view |
+| ![Explore Games in the browser](docs/screenshots/1.2.0/03-web-explore.jpg) | ![Browser Details view](docs/screenshots/1.2.0/04-web-details.jpg) |
+| Gallery view | Carousel view |
+| ![Browser Gallery view](docs/screenshots/1.2.0/05-web-gallery.jpg) | ![Browser Carousel view](docs/screenshots/1.2.0/06-web-carousel.jpg) |
+| Home editor | Layouts Designer |
+| ![Browser Home editor](docs/screenshots/1.2.0/07-web-home-editor.jpg) | ![Browser Layouts Designer](docs/screenshots/1.2.0/08-web-layouts.jpg) |
 
 ### Manual configuration overrides
 
@@ -3097,10 +3164,13 @@ MiSTer's own format, for moving a collection over in one go.
 
 Every release carries a ready binary, so building is optional.
 
-The dependency tree is pure Rust, so a cross build needs nothing but
-rustup: no Docker, no C cross-compiler, no `arm-linux-gnueabihf-gcc`. Rust's
-own linker and its self-contained musl do the work, and `.cargo/config.toml`
-already selects them.
+The static cross build uses rustup's ARM target, linker and self-contained musl.
+Web Access's HTTPS cryptography also requires Clang with ARM support at build
+time. No Docker or extra library on MiSTer is needed. The build script uses
+macOS Command Line Tools Clang when installed, otherwise `clang` on the path;
+`CC_armv7_unknown_linux_musleabihf` can select an explicit compiler.
+On macOS, also run `rustup component add llvm-tools` for the ARM-compatible
+archive tool. Apple's archive tool does not support these ARM ELF objects.
 
 ```bash
 rustup target add armv7-unknown-linux-musleabihf
