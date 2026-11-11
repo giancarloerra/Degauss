@@ -174,7 +174,7 @@ impl Auth {
         self.sessions.retain(|_, session| session.expires > now());
         if self.sessions.len() >= MAX_SESSIONS {
             return Err(
-                "Too many remembered browsers. Change the web password to revoke them.".into(),
+                "Too many active browser sessions. Sign out of another browser or change the web password to revoke all sessions.".into(),
             );
         }
         let token = random_token()?;
@@ -264,6 +264,37 @@ impl Credentials {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn session_limit_counts_all_active_sessions_without_silently_revoking_browsers() {
+        let directory =
+            std::env::temp_dir().join(format!("degauss-web-limit-{}", random_token().unwrap()));
+        set_password(&directory, "test-only-password").unwrap();
+        let mut auth = Auth::load(directory.clone()).unwrap();
+        let mut tokens = Vec::new();
+        for at in 0..MAX_SESSIONS {
+            let verified = Verified {
+                generation: auth.password.generation.clone(),
+            };
+            tokens.push(auth.establish(verified, at % 2 == 0).unwrap().0);
+        }
+        for remember in [false, true] {
+            let verified = Verified {
+                generation: auth.password.generation.clone(),
+            };
+            let error = auth.establish(verified, remember).err().unwrap();
+            assert!(error.contains("active browser sessions"));
+            assert!(tokens.iter().all(|token| auth.session(token).is_some()));
+        }
+        auth.logout(&tokens[1]).unwrap();
+        let verified = Verified {
+            generation: auth.password.generation.clone(),
+        };
+        auth.establish(verified, false).unwrap();
+        assert_eq!(auth.sessions.len(), MAX_SESSIONS);
+        assert!(auth.session(&tokens[0]).is_some());
+        std::fs::remove_dir_all(directory).unwrap();
+    }
 
     #[test]
     fn remembered_sessions_survive_restart_but_not_password_change_or_logout() {

@@ -139,6 +139,7 @@ async function waitJob(id, verb = 'Working') {
 }
 function signedOut() {
   state.csrf = ''; state.events?.close(); state.events = null;
+  if ($('editor').open) closeModal();
   $('shell').hidden = true; $('login').hidden = false;
   $('transport').textContent = location.protocol === 'https:' ? 'Encrypted HTTPS connection.' : 'HTTP is unencrypted. Use only on a trusted local network.';
 }
@@ -758,7 +759,15 @@ function uploadControl(target) {
     try { response = await fetch('/api/v1/upload/' + encodeURIComponent(target), { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': selected.type || 'application/octet-stream', 'X-Degauss-CSRF': state.csrf, 'X-Degauss-Revision': revision }, body: selected, signal: AbortSignal.timeout(30000) }); }
     catch { throw new Error('Artwork upload was not acknowledged. Check its current state before trying again.'); }
     const result = await response.json();
-    if (!response.ok) throw new Error(result.error?.message || 'Artwork upload failed.');
+    if (!response.ok) {
+      if (response.status === 401) {
+        signedOut();
+        $('login-error').textContent = result.error?.message || 'Sign in to Degauss.';
+        return;
+      }
+      const error = new Error(result.error?.message || 'Artwork upload failed.');
+      error.code = result.error?.code; throw error;
+    }
     closeModal(); if (result.job) await waitJob(result.job); await renderRoute();
   });
   return el('div', { class: 'stack' }, field('Upload artwork', file, 'PNG or JPEG, up to 16 MiB and 4096 pixels per side. Game files are never uploaded.'), send);

@@ -477,6 +477,12 @@ pub(super) fn local_image_target(
     excluded: &HashSet<String>,
 ) -> Result<Target> {
     let system = find_system(systems, system_id)?;
+    if is_favorites_target(system) {
+        return Err(Error::new(
+            ErrorKind::Configuration,
+            "the master Favourites shelf is not an artwork target",
+        ));
+    }
     let target = target_for(
         system,
         0,

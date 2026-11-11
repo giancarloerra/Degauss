@@ -616,7 +616,8 @@ fn check_tk2000_tape_build(text: &str, path: &Path, core: &EffectiveCore) -> Res
         return Ok(());
     }
     let date = crate::systems::core_build_date(stem).or_else(|| {
-        stem.rfind("_unstable_")
+        stem.to_ascii_lowercase()
+            .rfind("_unstable_")
             .and_then(|at| stem.get(at + 10..at + 18))
     });
     if date.is_some_and(|date| date >= "20261107") {
@@ -1123,6 +1124,27 @@ extensions = ["nes", "mgl"]
             "<mistergamedescription><rbf>x</rbf>",
         ] {
             assert!(elements(text, path).is_err());
+        }
+    }
+
+    #[test]
+    fn tk2000_tape_date_recognises_the_same_case_insensitive_nightlies_as_core_selection() {
+        let tape = "<mistergamedescription><file type=\"f\" index=\"2\" path=\"Game.CT2\"/></mistergamedescription>";
+        let disk = "<mistergamedescription><file type=\"s\" index=\"0\" path=\"Disk.dsk\"/></mistergamedescription>";
+        for marker in ["unstable", "UNSTABLE", "Unstable"] {
+            for date in ["20261106", "20261107", "20261108"] {
+                let core = EffectiveCore {
+                    rbf: format!("_Unstable/TK2000_{marker}_{date}_abcdef"),
+                    setname_xml: None,
+                };
+                assert_eq!(
+                    check_tk2000_tape_build(tape, Path::new("tape.mgl"), &core).is_ok(),
+                    date >= "20261107",
+                    "{}",
+                    core.rbf
+                );
+                assert!(check_tk2000_tape_build(disk, Path::new("disk.mgl"), &core).is_ok());
+            }
         }
     }
 }

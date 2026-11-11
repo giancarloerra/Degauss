@@ -10146,7 +10146,7 @@ impl App {
     }
 
     fn poll_boot_launch(&mut self, now: Instant) -> Option<Outcome> {
-        if !self.boot_launch_waiting {
+        if !self.boot_launch_waiting || self.web_writing() {
             return None;
         }
         if let Some(deadline) = self.boot_launch_deadline {
@@ -13557,6 +13557,9 @@ impl App {
     }
 
     fn poll_ini_profiles(&mut self) -> Option<Outcome> {
+        if self.web_writing() {
+            return None;
+        }
         let result = self
             .ini_profile_job
             .as_ref()
@@ -20505,7 +20508,6 @@ impl App {
         self.rebuild_ordinary_system(&id);
     }
 
-    /// The ordinary single-system rebuild: read its folders again.
     fn cancel_index(&mut self) {
         if let Some(build) = self.build.as_mut() {
             build.cancelling = true;
@@ -20528,6 +20530,7 @@ impl App {
         self.publish_index_progress();
     }
 
+    /// The ordinary single-system rebuild: read its folders again.
     fn rebuild_ordinary_system(&mut self, id: &str) {
         self.invalidate_storage_check();
         if self.network_local_only {
@@ -20598,6 +20601,9 @@ impl App {
                 Action::Up | Action::Down | Action::Slower | Action::Faster
             )
         {
+            if self.pending.is_some() {
+                return None;
+            }
             if action == Action::Quit && self.message.is_some() {
                 self.message = None;
                 self.dirty = true;
@@ -23546,25 +23552,27 @@ impl App {
                 self.message = Some(message);
                 self.dirty = true;
             }
-            match physical_discs.poll(now) {
-                Ok(crate::physical_disc::Poll::Idle) => {}
-                Ok(crate::physical_disc::Poll::Checked(event)) => {
-                    physical_disc_error = None;
-                    if let Some(event) = event {
-                        if let Some(outcome) = self.handle_physical_disc_event(event) {
-                            self.save_settings();
-                            return Ok(outcome);
+            if !self.web_writing() {
+                match physical_discs.poll(now) {
+                    Ok(crate::physical_disc::Poll::Idle) => {}
+                    Ok(crate::physical_disc::Poll::Checked(event)) => {
+                        physical_disc_error = None;
+                        if let Some(event) = event {
+                            if let Some(outcome) = self.handle_physical_disc_event(event) {
+                                self.save_settings();
+                                return Ok(outcome);
+                            }
                         }
                     }
-                }
-                Err(error) => {
-                    let message = format!("Physical disc detection failed: {error}");
-                    if physical_disc_error.as_deref() != Some(message.as_str()) {
-                        crate::note(&format!("physical disc  {message}"));
-                        self.message = Some(message.clone());
-                        self.dirty = true;
+                    Err(error) => {
+                        let message = format!("Physical disc detection failed: {error}");
+                        if physical_disc_error.as_deref() != Some(message.as_str()) {
+                            crate::note(&format!("physical disc  {message}"));
+                            self.message = Some(message.clone());
+                            self.dirty = true;
+                        }
+                        physical_disc_error = Some(message);
                     }
-                    physical_disc_error = Some(message);
                 }
             }
 
@@ -23589,6 +23597,9 @@ impl App {
             }
             self.poll_misterzine();
             if let Some(outcome) = self.poll_web() {
+                if !matches!(outcome, Outcome::Script(_)) {
+                    self.save_settings();
+                }
                 return Ok(outcome);
             }
             self.maintain_misterzine_games(now);

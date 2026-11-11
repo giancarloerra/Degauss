@@ -823,6 +823,9 @@ impl App {
             } => {
                 self.web_check_revision(&revision)?;
                 self.web_storage_idle()?;
+                if self.message.is_some() || self.pending.is_some() {
+                    return Err(WebError::new("busy", "Close the message on MiSTer first."));
+                }
                 if ![-1, 1].contains(&delta) {
                     return Err(web_error("The option step must be -1 or 1."));
                 }
@@ -1211,6 +1214,11 @@ impl App {
                     std::env::args_os().skip(1).collect(),
                 )
                 .map_err(web_error)?;
+                if !self.save_settings() {
+                    return Err(web_error(
+                        self.message.as_deref().unwrap_or("Saving settings failed."),
+                    ));
+                }
                 Outcome::Script(Box::new(launch))
             }
             _ => {
@@ -1839,6 +1847,9 @@ impl App {
             }
             WebCommand::Rebuild { system } => {
                 self.web_storage_idle()?;
+                if self.message.is_some() || self.pending.is_some() {
+                    return Err(WebError::new("busy", "Close the message on MiSTer first."));
+                }
                 self.message = None;
                 self.index_terminal = None;
                 match system {
@@ -1879,21 +1890,39 @@ impl App {
                 self.web.rebuild_job = Some(id);
                 Ok(json!({"job":id}))
             }
-            WebCommand::Random { query, folder, favorites_only } => {
+            WebCommand::Random {
+                query,
+                folder,
+                favorites_only,
+            } => {
                 let pick = Some((next_random(&mut self.seed), favorites_only));
                 if let Some(id) = folder {
-                    let target = self.web.targets.get(&id)
-                        .ok_or_else(|| web_error("Refresh this folder before picking a game."))?;
+                    let target =
+                        self.web.targets.get(&id).ok_or_else(|| {
+                            web_error("Refresh this folder before picking a game.")
+                        })?;
                     if self.kiosk_locked && !self.kiosk_target_allowed(&target.target) {
-                        return Err(WebError::new("locked", "This folder is not available in kiosk mode."));
+                        return Err(WebError::new(
+                            "locked",
+                            "This folder is not available in kiosk mode.",
+                        ));
                     }
-                    let crate::home::Target::LibraryFolder { system, trail } = &target.target else {
+                    let crate::home::Target::LibraryFolder { system, trail } = &target.target
+                    else {
                         return Err(web_error("Choose a library folder."));
                     };
-                    return self.web_start_read(Operation::Browse {
-                        system: system.clone(), trail: trail.clone(), offset: 0, limit: 1,
-                        search: query.title.clone(), filters: query, pick,
-                    }, false);
+                    return self.web_start_read(
+                        Operation::Browse {
+                            system: system.clone(),
+                            trail: trail.clone(),
+                            offset: 0,
+                            limit: 1,
+                            search: query.title.clone(),
+                            filters: query,
+                            pick,
+                        },
+                        false,
+                    );
                 }
                 self.web_start_read(
                     Operation::Explore {

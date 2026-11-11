@@ -46,8 +46,10 @@ impl App {
     }
 
     fn controller_error(&mut self, detail: String) {
-        if let Some(id) = self.web.controller_job.take() {
-            self.web_finish_job(id, Err(web_error(&detail)));
+        if self.controllers.job.is_none() {
+            if let Some(id) = self.web.controller_job.take() {
+                self.web_finish_job(id, Err(web_error(&detail)));
+            }
         }
         crate::note(&format!("controller   {detail}"));
         let error = format!("Controller settings failed: {detail}");

@@ -10,6 +10,9 @@ impl App {
         if !self.web_writing() {
             return false;
         }
+        if self.pending.is_some() {
+            return true;
+        }
         self.message=Some("A Web Access library operation is running. Wait for it to finish, or cancel it in the browser.".into());
         self.dirty = true;
         true

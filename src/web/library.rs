@@ -700,9 +700,7 @@ impl LibraryState {
                     .map(|at| {
                         let item = &catalogue.entries[*at];
                         let mut row = item.row.clone();
-                        if pick.is_some() {
-                            row.favorite = is_favorite(&snapshot.favorites, &row);
-                        }
+                        row.favorite = is_favorite(&snapshot.favorites, &row);
                         entry(&item.system, &item.system_name, row, &[])
                     })
                     .collect();

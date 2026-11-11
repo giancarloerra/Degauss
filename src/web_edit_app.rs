@@ -186,7 +186,7 @@ impl App {
             .map(|name| {
                 self.themes
                     .iter()
-                    .position(|theme| theme.name == name)
+                    .position(|theme| theme.name.eq_ignore_ascii_case(name))
                     .ok_or_else(|| web_error("The theme no longer exists."))
             })
             .transpose()?;
@@ -200,13 +200,33 @@ impl App {
         {
             return saved;
         }
+        self.web_apply_theme(selected);
+        saved
+    }
+
+    fn web_apply_theme(&mut self, selected: Option<usize>) {
         self.active_theme = selected;
         self.font = self.effective_font();
         self.text_size = self.effective_text_size();
         self.apply_palette();
         self.apply_geometry();
         invalidate_geometry(&mut self.pending_complete_repaints, &mut self.dirty);
-        saved
+    }
+
+    fn web_refresh_theme(&mut self) -> std::result::Result<(), WebError> {
+        let selected = self
+            .settings
+            .theme
+            .as_deref()
+            .map(|name| {
+                self.themes
+                    .iter()
+                    .position(|theme| theme.name.eq_ignore_ascii_case(name))
+                    .ok_or_else(|| web_error("The theme no longer exists."))
+            })
+            .transpose()?;
+        self.web_apply_theme(selected);
+        Ok(())
     }
 
     fn web_edit_command(
@@ -303,7 +323,7 @@ impl App {
                     let original = self
                         .themes
                         .iter()
-                        .find(|theme| theme.name == name)
+                        .find(|theme| theme.name.eq_ignore_ascii_case(&name))
                         .ok_or_else(|| web_error("The theme no longer exists."))?;
                     crate::theme::replace_editor_theme(
                         &self.themes_dir,
@@ -320,8 +340,7 @@ impl App {
                 }
                 let loaded = crate::theme::load_available(&self.themes_dir);
                 self.themes = loaded.themes;
-                let current = self.settings.theme.clone();
-                self.web_select_theme(current.as_deref())?;
+                self.web_refresh_theme()?;
                 Ok(self.web_themes())
             }
             WebCommand::ThemeDelete { revision, name } => {
@@ -329,11 +348,16 @@ impl App {
                 let theme = self
                     .themes
                     .iter()
-                    .find(|theme| theme.name == name)
+                    .find(|theme| theme.name.eq_ignore_ascii_case(&name))
                     .ok_or_else(|| web_error("The theme no longer exists."))?;
                 let staged = crate::theme::stage_editor_theme_deletion(&self.themes_dir, theme)
                     .map_err(web_error)?;
-                if self.settings.theme.as_deref() == Some(&name) {
+                if self
+                    .settings
+                    .theme
+                    .as_deref()
+                    .is_some_and(|current| current.eq_ignore_ascii_case(&name))
+                {
                     if let Err(error) = self.web_select_theme(None) {
                         staged.restore().map_err(web_error)?;
                         return Err(error);
@@ -341,6 +365,7 @@ impl App {
                 }
                 staged.commit().map_err(web_error)?;
                 self.themes = crate::theme::load_available(&self.themes_dir).themes;
+                self.web_refresh_theme()?;
                 Ok(self.web_themes())
             }
             WebCommand::ThemeSelect { revision, name } => {

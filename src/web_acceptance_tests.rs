@@ -509,10 +509,183 @@ pub(super) fn run(parent: &Path, window: Rc<MinimalSoftwareWindow>) {
         "Saving credentials must not enable the listener"
     );
     random_selection(&mut app, &root, &games, &config);
+    native_web_compatibility(&mut app, &root);
     if let Some(output) = std::env::var_os("DEGAUSS_WEB_VISUAL_DIR") {
         render_documentation_examples(&mut app, Path::new(&output));
     }
     app.ui.hide().unwrap();
+}
+
+fn native_web_compatibility(app: &mut App, root: &Path) {
+    let mut failures = Vec::new();
+    let original_settings = app.settings.clone();
+    app.message = None;
+    app.settings.font = Some("smooth 2".into());
+    app.settings.theme_font_override = Some(true);
+    app.save_settings();
+    edit(
+        app,
+        json!({"action":"theme-save","name":"Web Review","text":"font = \"pixel\"","replace":false}),
+    );
+    if app.settings.theme_font_override != Some(true) {
+        failures.push("Saving an unselected theme changed the active font override");
+    }
+    app.web_select_theme(Some("Web Review")).unwrap();
+    app.settings.theme = Some("web review".into());
+    app.settings.theme_font_override = Some(true);
+    app.save_settings();
+    let request = serde_json::from_value(json!({"action":"theme-save","revision":app.web_revision(),"name":"Other Theme","text":"font = \"pixel 2\"","replace":false})).unwrap();
+    if app.web_command(request).is_err() {
+        failures.push("Saving another theme cannot refresh a case-insensitive saved selection");
+    }
+    if app.settings.theme.as_deref() != Some("web review")
+        || app.settings.theme_font_override != Some(true)
+    {
+        failures.push("Theme save changed existing persisted theme preferences");
+    }
+    edit(app, json!({"action":"theme-delete","name":"Other Theme"}));
+    if app
+        .active_theme
+        .and_then(|index| app.themes.get(index))
+        .map(|theme| theme.name.as_str())
+        != Some("Web Review")
+    {
+        failures.push("Deleting an unselected theme changed the active theme index");
+    }
+    if app.web_select_theme(Some("WEB REVIEW")).is_err() {
+        failures.push("Explicit theme selection stopped accepting native case-insensitive names");
+    }
+    edit(app, json!({"action":"theme-delete","name":"web review"}));
+    if app.settings.theme.is_some() || app.active_theme.is_some() {
+        failures.push("Deleting the current theme left a stale case-insensitive selection");
+    }
+
+    let question = "Reset view selections?";
+    app.message = Some(question.into());
+    app.pending = Some(Pending::SwitchIni(1));
+    let request = serde_json::from_value(json!({"action":"option-adjust","revision":app.web_revision(),"option":"WebCrtImages","delta":1})).unwrap();
+    if app.web_command(request).is_ok() || app.message.as_deref() != Some(question) {
+        failures.push("Browser option adjustment hid a native confirmation");
+    }
+    app.message = Some(question.into());
+    let request =
+        serde_json::from_value(json!({"action":"rebuild","system":"missing-test-system"})).unwrap();
+    let _ = app.web_command(request);
+    if app.message.as_deref() != Some(question) {
+        failures.push("Browser rebuild hid a native confirmation before validation");
+    }
+
+    let upload = crate::web::upload::Job::start(
+        crate::web::upload::Destination::Logo(root.join("review-logos")),
+        include_bytes!("../assets/degauss-logo.png").to_vec(),
+    )
+    .unwrap();
+    app.web.upload_job = Some((u64::MAX, "".into(), "".into(), upload));
+    for action in [Action::Quit, Action::Accept] {
+        app.message = Some(question.into());
+        app.handle(action);
+        if app.message.as_deref() != Some(question) || app.pending.is_none() {
+            failures.push("A blocked button hid or replaced a pending native question");
+        }
+    }
+    app.pending = None;
+    app.message = None;
+    app.screen = Screen::Browse;
+    app.open_system = Some("NES".into());
+    app.home.pending_open = Some(crate::home::Target::System {
+        system: "NES".into(),
+    });
+    app.poll_home_open();
+    if app.home.pending_open.is_none() {
+        failures.push("A pending Home launch was consumed during a browser write");
+    }
+    app.boot_launch_waiting = true;
+    app.boot_launch_deadline = Some(Instant::now());
+    let _ = app.poll_boot_launch(Instant::now());
+    if !app.boot_launch_waiting || app.boot_launch_deadline.is_none() {
+        failures.push("Boot launch was consumed while a browser write was committing");
+    }
+    app.boot_launch_waiting = false;
+    app.boot_launch_deadline = None;
+    app.web.upload_job.take();
+    app.poll_home_open();
+    assert!(
+        app.home.pending_open.is_none(),
+        "Deferred Home opening must resume after the write completes"
+    );
+
+    let job_id = app.web_new_job("Applying controller preferences");
+    app.web.controller_job = Some(job_id);
+    app.controllers.job = Some((
+        ControllerJob::Apply(Default::default()),
+        controller::Job::start(
+            &root.join("absent-controller-fifo"),
+            controller::Request::Apply(vec![]),
+        )
+        .unwrap(),
+    ));
+    app.controller_error("Reading active controller: report was replaced".into());
+    assert_eq!(app.web.controller_job, Some(job_id));
+    assert_eq!(app.web.jobs[&job_id]["state"], "running");
+    app.controllers.initialized = true;
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while app.controllers.job.is_some() {
+        app.poll_controllers(Instant::now());
+        assert!(Instant::now() < deadline);
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    assert_eq!(
+        app.web.jobs[&job_id]["state"], "failed",
+        "The actual apply failure, not the unrelated report error, must finish the browser job"
+    );
+    assert!(app.web.controller_job.is_none());
+    app.message = None;
+
+    let script = root.join("Scripts/Review.sh");
+    std::fs::create_dir_all(script.parent().unwrap()).unwrap();
+    std::fs::write(&script, "#!/bin/sh\nexit 0\n").unwrap();
+    let script = app.web_register(crate::home::Target::Script { path: script }, None);
+    app.settings.speed_step = Some(3);
+    app.web_launch(&script).unwrap();
+    assert!(matches!(app.web.outcome.take(), Some(Outcome::Script(_))));
+    assert_eq!(
+        Settings::load(&app.settings_path).unwrap().speed_step,
+        Some(3)
+    );
+    let settings_path = app.settings_path.clone();
+    app.settings_path = root.join("not-a-settings-file");
+    std::fs::create_dir_all(&app.settings_path).unwrap();
+    assert!(
+        app.web_launch(&script).is_err(),
+        "A failed settings save must stop script handover"
+    );
+    assert!(app.web.outcome.is_none());
+    app.settings_path = settings_path;
+    app.message = None;
+
+    let shelf_path = root.join("review-favourites");
+    std::fs::create_dir_all(&shelf_path).unwrap();
+    let mut shelf = app.all_systems[0].clone();
+    shelf.def.id = "Favorites".into();
+    shelf.paths = vec![shelf_path.clone()];
+    if crate::scraper::install_uploaded_image(
+        &[shelf],
+        "Favorites",
+        &browse::Launch::File(shelf_path.join("Game.mgl")),
+        "Game",
+        include_bytes!("../assets/degauss-logo.png"),
+        &Default::default(),
+    )
+    .is_ok()
+    {
+        failures.push("Legacy Favourites definitions accepted artwork at the shelf root");
+    }
+    app.settings = original_settings;
+    app.message = None;
+    app.active_theme = None;
+    app.save_settings();
+    app.web_refresh_theme().unwrap();
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
 
 fn random_selection(
@@ -569,6 +742,17 @@ fn random_selection(
             "Opening the random favourite's details must retain its real favourite state"
         );
     }
+    let pending = command(app, json!({"action":"explore","query":{"system":"NES"}}));
+    let explored = completed(app, pending);
+    assert_eq!(
+        explored["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|item| item["name"] == "Second.nes")
+            .unwrap()["favorite"],
+        true
+    );
     // Legacy query-only API calls still choose from the complete filtered list,
     // not the browser's first page. The folder equivalent applies its search.
     for folder in [JsonValue::Null, folder.clone()] {

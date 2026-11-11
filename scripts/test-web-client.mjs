@@ -47,6 +47,33 @@ function section(from, to) {
   return source.slice(start, end);
 }
 
+test('An expired artwork-upload session closes its editor and returns to sign-in without retrying', async () => {
+  for (const status of [401, 409]) {
+    const elements = new Map([['editor', { open: true, dataset: { revision: 'revision' } }], ['login', { hidden: true }], ['shell', { hidden: false }], ['transport', {}], ['login-error', {}]]);
+    let upload, requests = 0, closes = 0;
+    const context = vm.createContext({
+      $: id => elements.get(id), state: { csrf: 'session' }, location: { protocol: 'https:' }, AbortSignal,
+      closeModal: () => { closes++; elements.get('editor').open = false; },
+      input: () => ({ files: [{ size: 10, type: 'image/png' }] }),
+      button: (label, run) => { upload = run; return {}; }, el: () => ({}), field: () => ({}),
+      fetch: async () => { requests++; return { ok: false, status, json: async () => ({ error: { code: status === 401 ? 'auth' : 'conflict', message: 'Request refused' } }) }; },
+      waitJob: () => assert.fail('Failed upload must not poll a job'), renderRoute: () => assert.fail('Failed upload must not repaint a success'),
+    });
+    vm.runInContext(section('function signedOut(', '\nfunction applyState('), context);
+    vm.runInContext(section('function uploadControl(', '\nasync function gameData('), context);
+    context.uploadControl('artwork-target');
+    if (status === 401) {
+      await upload();
+      assert.equal(closes, 1); assert.equal(elements.get('login').hidden, false);
+      assert.equal(elements.get('login-error').textContent, 'Request refused'); assert.equal(context.state.csrf, '');
+    } else {
+      await assert.rejects(upload(), error => error.code === 'conflict');
+      assert.equal(closes, 0); assert.equal(elements.get('editor').open, true);
+    }
+    assert.equal(requests, 1);
+  }
+});
+
 test('Random menu preserves folder or collection filters, distinguishes favourites, and opens details without launching', async () => {
   for (const scope of [{ folder: 'folder-id', query: { title: '1942', fields: { Genre: { Known: { key: 'shooter', label: 'Shooter' } } } } }, { query: { system: 'NES' } }]) {
     const calls = [], picks = [];
