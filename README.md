@@ -1077,6 +1077,44 @@ the reset, then use the machine's normal `LOADT` / `RUN` commands. Current build
 can leave Disk Interface on Auto with drive 1 empty. See the
 [TK2000 instructions](https://github.com/MiSTer-devel/TK2000_MiSTer).
 
+**NEC PC-6001** (`games/PC6001`) indexes CAS/P6/P6T tapes, ROM/BIN/60
+cartridges, D88 disks and MGLs. Tapes use file slot 1, cartridges use file
+slot 2 and disks mount in Disk 1 (image slot 0). An explicit MGL can mount
+Disk 2 (image slot 1) on the two-drive build. **Tape auto-start** is a core
+option. Supply `boot.rom` and the additional `boot1.rom`, `boot2.rom` or
+`boot3.rom` for the other models. See the
+[PC-6001 instructions](https://github.com/MiSTer-devel/Distribution_MiSTer/blob/95539b6264968d1c69db03642a3289620222d37a/docs/PC6001/Readme.md)
+for ROM assembly, disk firmware and model-specific drive requirements.
+
+**Memotech MTX500/512** (`games/MTX512`) sends MTX/WAV tapes to **Insert Tape**
+(file slot 1) and mounts MFL/DSK images in SDX Disc A (image slot 1).
+Use an explicit MGL for Disc B (image slot 2). The writable **Save Tape**
+slot is separate. Supply `boot.rom` (OS) and `boot1.rom` (BASIC);
+`boot2.rom` is optional. See the
+[MTX guide](https://github.com/MiSTer-devel/Memotech_MiSTer/blob/9020c9b05d15f5216c08338983b2753e89b61340/docs/GUIDE.txt)
+for the SDX ROM, CP/M boot ROM and writable disc setup.
+
+**Acorn Atom** (`games/AcornAtom`) mounts VHDs in the primary SD slot
+(image slot 0). UEF/CSW tapes use file slot 1 with core builds from
+20261111. Press **F11** to start without AtoMMC, then follow the tape prompt.
+`boot0.rom` is optional firmware, not a game. See the
+[Atom tape instructions](https://github.com/MiSTer-devel/Distribution_MiSTer/blob/95539b6264968d1c69db03642a3289620222d37a/docs/AcornAtom/README.md#tape).
+
+**Acorn Electron** (`games/AcornElectron`) retains VHDs in image slot 0.
+UEF tapes use file slot 2 from build 20220211; CAS tapes use the same slot
+from 20261111. Select **File** tape input and type `*TAPE` then `CHAIN""`.
+Build 20261111 also adds ROM cartridges (file slot 3) and ADF/ADL Plus 3
+floppies (image slot 1). Enable **Plus 3**, apply the reset and save the
+core setting before launching a floppy. An explicit MGL can use the second
+cartridge socket (file slot 4) or floppy drive (image slot 2). The current
+core does not accept BIN cartridges through Main, despite listing them in
+its menu. See the
+[Electron instructions](https://github.com/MiSTer-devel/Distribution_MiSTer/blob/95539b6264968d1c69db03642a3289620222d37a/docs/AcornElectron/Readme.MD).
+
+If an existing Atom or Electron library still shows its old list after
+updating, use **Actions → Library → Rebuild This System List** there to pick
+up the new formats without reading the whole card.
+
 Version 1.1.3 adds **Sharp X1** (`games/SharpX1`) and **Sony SMC-777**
 (`games/SonySMC777`). Both use drive A at image slot 0 and accept explicit MGLs
 with drive B at slot 1. Sharp X1 accepts D88/2D disks and TAP tapes (slot 2);

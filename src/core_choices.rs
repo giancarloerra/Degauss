@@ -24,7 +24,7 @@ fn core_stem(reference: &str) -> &str {
     }
 }
 
-fn nightly_meets_minimum(stem: &str, minimum: Option<&str>) -> bool {
+pub(crate) fn nightly_meets_minimum(stem: &str, minimum: Option<&str>) -> bool {
     minimum.is_none_or(|minimum| {
         let lower = stem.to_ascii_lowercase();
         lower
@@ -251,9 +251,16 @@ pub(crate) fn standard_reference_after(
         .and_then(|name| name.to_str())
         .filter(|name| {
             minimum.is_some()
-                || ["N64", "NeoGeo", "SharpMZ", "TK2000"]
-                    .iter()
-                    .any(|core| name.eq_ignore_ascii_case(core))
+                || [
+                    "N64",
+                    "NeoGeo",
+                    "SharpMZ",
+                    "TK2000",
+                    "AcornAtom",
+                    "AcornElectron",
+                ]
+                .iter()
+                .any(|core| name.eq_ignore_ascii_case(core))
         })
     else {
         return Ok(Some(reference.to_string()));
