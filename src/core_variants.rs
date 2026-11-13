@@ -645,29 +645,48 @@ fn check_media_build(text: &str, path: &Path, core: &EffectiveCore) -> Result<()
             Event::Start(tag) | Event::Empty(tag)
                 if tag.name().as_ref().eq_ignore_ascii_case("file") =>
             {
+                let mut file = None;
+                let mut file_transfer = false;
+                let mut cartridge_slot = false;
                 for attr in tag.attributes() {
                     let attr = attr.map_err(|e| {
                         DegaussError::malformed("core launcher", path, e.to_string())
                     })?;
-                    if !attr.key.as_ref().eq_ignore_ascii_case("path") {
-                        continue;
+                    let key = attr.key.as_ref();
+                    if key.eq_ignore_ascii_case("path") {
+                        file = Some(attr);
+                    } else if key.eq_ignore_ascii_case("type") {
+                        file_transfer = attr.value.eq_ignore_ascii_case("f");
+                    } else if key.eq_ignore_ascii_case("index") {
+                        cartridge_slot = attr
+                            .value
+                            .trim()
+                            .parse::<u8>()
+                            .ok()
+                            .is_some_and(|index| matches!(index, 3 | 4));
                     }
-                    let value = crate::favorites::main_path_value(&attr, path, "core launcher")?;
-                    if let Some(extension) =
-                        Path::new(&value).extension().and_then(|ext| ext.to_str())
+                }
+                let Some(file) = file else { continue };
+                let value = crate::favorites::main_path_value(&file, path, "core launcher")?;
+                let Some(extension) = Path::new(&value).extension().and_then(|ext| ext.to_str())
+                else {
+                    continue;
+                };
+                // Electron's .rom rule is for Plus 1 cartridges, not F0
+                // firmware in an explicit launcher for an older build.
+                if extension.eq_ignore_ascii_case("rom") && !(file_transfer && cartridge_slot) {
+                    continue;
+                }
+                for &(minimum, extensions) in requirements {
+                    if too_old(minimum)
+                        && extensions
+                            .iter()
+                            .any(|ext| ext.eq_ignore_ascii_case(extension))
                     {
-                        for &(minimum, extensions) in requirements {
-                            if too_old(minimum)
-                                && extensions
-                                    .iter()
-                                    .any(|ext| ext.eq_ignore_ascii_case(extension))
-                            {
-                                return Err(DegaussError::unsupported(
-                                    "core media",
-                                    format!(".{extension} requires a dated {name} build from {minimum} or later. Update the core."),
-                                ));
-                            }
-                        }
+                        return Err(DegaussError::unsupported(
+                            "core media",
+                            format!(".{extension} requires a dated {name} build from {minimum} or later. Update the core."),
+                        ));
                     }
                 }
             }

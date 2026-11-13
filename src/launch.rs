@@ -1707,6 +1707,10 @@ mod tests {
             let legacy_index = usize::from(id == "AcornAtom");
             let vhd = games.join("Disk.vhd");
             std::fs::write(&vhd, b"disk fixture").unwrap();
+            if id == "AcornElectron" {
+                std::fs::write(games.join("boot.ROM"), b"firmware fixture").unwrap();
+                std::fs::write(games.join("Game.ROM"), b"cartridge fixture").unwrap();
+            }
             let existing = format!(
                 "<mistergamedescription><rbf>_Computer/{id}</rbf><file delay=\"1\" type=\"s\" index=\"{legacy_index}\" path=\"{}\"/></mistergamedescription>",
                 vhd.display()
@@ -1721,6 +1725,34 @@ mod tests {
                         .unwrap();
                 assert!(plan.mgl.contains("type=\"s\" index=\"0\""));
                 assert_eq!(std::fs::read_to_string(&legacy).unwrap(), existing);
+                if id == "AcornElectron" {
+                    let firmware = games.join("Firmware Setup.mgl");
+                    let text = existing.replace(
+                        "</mistergamedescription>",
+                        "<file delay=\"1\" type=\"f\" index=\"0\" path=\"boot.ROM\"/></mistergamedescription>",
+                    );
+                    std::fs::write(&firmware, &text).unwrap();
+                    let plan =
+                        plan_with_selections(&system, &firmware, &output, &root, false, None, None)
+                            .unwrap();
+                    assert!(plan.mgl.contains("type=\"f\" index=\"0\""));
+                    assert_eq!(std::fs::read_to_string(&firmware).unwrap(), text);
+
+                    let cartridge = games.join("Second Cartridge.mgl");
+                    std::fs::write(
+                        &cartridge,
+                        text.replace("index=\"0\" path=\"boot.ROM", "index=\"4\" path=\"Game.ROM"),
+                    )
+                    .unwrap();
+                    let plan = plan_with_selections(
+                        &system, &cartridge, &output, &root, false, None, None,
+                    );
+                    if date < "20261111" {
+                        assert!(plan.unwrap_err().to_string().contains("20261111"));
+                    } else {
+                        assert!(plan.unwrap().mgl.contains("type=\"f\" index=\"4\""));
+                    }
+                }
                 for &(extension, kind, index, minimum) in media {
                     let game = games.join(format!("Test.{}", extension.to_ascii_uppercase()));
                     std::fs::write(&game, b"media fixture").unwrap();
