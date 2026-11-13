@@ -167,6 +167,27 @@ pub(crate) fn same_core_identity(left: &str, right: &str) -> bool {
     normalize(left) == normalize(right)
 }
 
+const ACORN_MEDIA_CORES: [(&str, &str); 2] = [
+    ("AcornAtom", "AcornAtom_DualSDRAM"),
+    ("AcornElectron", "AcornElectron_DualSDRAM"),
+];
+
+/// An undated Acorn reference must resolve to the installed build before
+/// checking media support. A user-pinned dated reference stays fixed.
+pub(crate) fn undated_acorn_media_core(stem: &str) -> bool {
+    ACORN_MEDIA_CORES.iter().any(|(standard, dual)| {
+        stem.eq_ignore_ascii_case(standard) || stem.eq_ignore_ascii_case(dual)
+    })
+}
+
+fn acorn_media_family(stem: &str) -> Option<&'static str> {
+    ACORN_MEDIA_CORES.into_iter().find_map(|(standard, dual)| {
+        (crate::core_choices::nightly_matches(stem, standard)
+            || crate::core_choices::nightly_matches(stem, dual))
+        .then_some(standard)
+    })
+}
+
 pub(crate) fn core_present(root: &Path, rbf: &str) -> Result<bool> {
     let reference = Path::new(rbf);
     if reference
@@ -419,9 +440,7 @@ fn core_file_slot_patches(
                 // Undated custom builds retain the original direct-load profile.
                 ("f", "2", "1", &["mzf"])
             }
-        } else if same_core_identity(stem, "AcornAtom")
-            || crate::core_choices::nightly_matches(stem, "_Computer/AcornAtom")
-        {
+        } else if acorn_media_family(stem) == Some("AcornAtom") {
             ("s", "1", "0", &["vhd"])
         } else {
             return Ok(Vec::new());
@@ -613,25 +632,23 @@ fn check_media_build(text: &str, path: &Path, core: &EffectiveCore) -> Result<()
         .file_name()
         .and_then(|s| s.to_str())
         .unwrap_or("");
-    let is_family = |name, reference| {
-        same_core_identity(stem, name) || crate::core_choices::nightly_matches(stem, reference)
-    };
-    let (name, requirements): (&str, &[(&str, &[&str])]) =
-        if is_family("TK2000", "_Computer/TK2000") {
-            ("TK2000", &[("20261107", &["ct2"])])
-        } else if is_family("AcornAtom", "_Computer/AcornAtom") {
-            ("Acorn Atom", &[("20261111", &["uef", "csw"])])
-        } else if is_family("AcornElectron", "_Computer/AcornElectron") {
-            (
+    let (name, requirements): (&str, &[(&str, &[&str])]) = if same_core_identity(stem, "TK2000")
+        || crate::core_choices::nightly_matches(stem, "_Computer/TK2000")
+    {
+        ("TK2000", &[("20261107", &["ct2"])])
+    } else {
+        match acorn_media_family(stem) {
+            Some("AcornAtom") => ("Acorn Atom", &[("20261111", &["uef", "csw"])]),
+            Some("AcornElectron") => (
                 "Acorn Electron",
                 &[
                     ("20220211", &["uef"]),
                     ("20261111", &["cas", "rom", "adf", "adl"]),
                 ],
-            )
-        } else {
-            return Ok(());
-        };
+            ),
+            _ => return Ok(()),
+        }
+    };
     let too_old = |minimum| !crate::core_choices::nightly_meets_minimum(stem, Some(minimum));
     if !requirements.iter().any(|&(minimum, _)| too_old(minimum)) {
         return Ok(());

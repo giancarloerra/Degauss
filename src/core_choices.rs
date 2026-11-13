@@ -251,16 +251,10 @@ pub(crate) fn standard_reference_after(
         .and_then(|name| name.to_str())
         .filter(|name| {
             minimum.is_some()
-                || [
-                    "N64",
-                    "NeoGeo",
-                    "SharpMZ",
-                    "TK2000",
-                    "AcornAtom",
-                    "AcornElectron",
-                ]
-                .iter()
-                .any(|core| name.eq_ignore_ascii_case(core))
+                || ["N64", "NeoGeo", "SharpMZ", "TK2000"]
+                    .iter()
+                    .any(|core| name.eq_ignore_ascii_case(core))
+                || core_variants::undated_acorn_media_core(name)
         })
     else {
         return Ok(Some(reference.to_string()));
