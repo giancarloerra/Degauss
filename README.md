@@ -315,8 +315,12 @@ Game Information, favourites and core choices remain available.
 
 **Actions → Save Collection** saves the current criteria under a name.
 **Saved Collections** opens, renames or deletes those saved searches without
-copying games. **More by Developer**, **More by Publisher** and **Same Genre**
-start a cross-system search using the selected game's existing metadata.
+copying games. To edit a collection, open it there or from a Home shortcut,
+change the search or filters, then choose **Actions → Update Collection**.
+Its name and Home shortcuts stay the same. Back without updating leaves the
+saved criteria unchanged, and **Save Collection** creates a separate collection.
+**More by Developer**, **More by Publisher** and **Same Genre** start a
+cross-system search using the selected game's existing metadata.
 Back returns to the previous query or originating browser location. Returning
 from a game restores the query and selection; a fresh start begins unfiltered.
 Explore Games is **Off** by default. Enable **Options → Library → Show Explore

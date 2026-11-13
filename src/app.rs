@@ -2260,6 +2260,7 @@ fn context_help(action: &str) -> &'static str {
         FILTER_GAMES => "Filter games in this folder by their available metadata.",
         FILTER_RELEASES => "Filter Core Updates by type and source.",
         CLEAR_FILTERS => "Clear metadata filters while keeping any title search.",
+        UPDATE_COLLECTION => "Save this search and its filters to the open collection.",
         HIDE_THIS => "Hide the selected item from browsing without deleting it.",
         SHOW_THIS => "Remove this item's hidden setting so it is normally visible again.",
         SCRAPE_SYSTEM => "Open scraping settings for the entire selected system.",
@@ -9807,7 +9808,11 @@ impl App {
     /// Where browsing currently is, for the title bar.
     fn here_label(&self) -> String {
         if self.explore.active {
-            return crate::explore::NAME.to_string();
+            return self
+                .explore_collection_edit()
+                .and_then(|edit| self.settings.collections.get(&edit.id))
+                .map(|collection| collection.name.clone())
+                .unwrap_or_else(|| crate::explore::NAME.to_string());
         }
         if self.in_misterzine_browser() {
             return MISTERZINE_CATEGORY.to_string();
@@ -14997,7 +15002,11 @@ impl App {
 
     fn context_scope(&self) -> String {
         if self.explore.active {
-            return format!("Explore Games / {} matches", self.explore.matches.len());
+            return format!(
+                "{} / {} matches",
+                self.here_label(),
+                self.explore.matches.len()
+            );
         }
         if self.in_misterzine_browser() {
             return MISTERZINE_CATEGORY.to_string();
@@ -24080,6 +24089,7 @@ impl App {
                     .as_ref()
                     .map(|origin| Box::new(origin.position.clone())),
                 pivots: self.explore.pivots.clone(),
+                collection_edits: self.explore.collection_edits.clone(),
             });
             return saved;
         }
