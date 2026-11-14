@@ -20,13 +20,16 @@ struct Element {
     range: Range<usize>,
     inner: Range<usize>,
     value: String,
+    follows_acorn_build: bool,
 }
+
+const FOLLOW_ACORN_BUILD: &str = "degauss-follow-core";
 
 fn elements(text: &str, path: &Path) -> Result<(Element, Option<Element>)> {
     let mut reader = Reader::from_str(text);
     let mut depth = 0usize;
     let mut root_seen = false;
-    let mut active: Option<(bool, usize, usize)> = None;
+    let mut active: Option<(bool, usize, usize, bool)> = None;
     let mut rbf = None;
     let mut setname = None;
     let bad = |message: &str| DegaussError::malformed("core launcher", path, message.to_string());
@@ -54,13 +57,19 @@ fn elements(text: &str, path: &Path) -> Result<(Element, Option<Element>)> {
                     if depth != 1 {
                         return Err(bad("core and setname must be root children"));
                     }
-                    for a in e.attributes() {
-                        a.map_err(|e| bad(&e.to_string()))?;
+                    let is_rbf = e.name().as_ref().eq_ignore_ascii_case("rbf");
+                    let mut follows_acorn_build = false;
+                    for attribute in e.attributes() {
+                        let attribute = attribute.map_err(|e| bad(&e.to_string()))?;
+                        if is_rbf && attribute.key.as_ref() == FOLLOW_ACORN_BUILD {
+                            follows_acorn_build = attribute.value.as_ref() == "1";
+                        }
                     }
                     active = Some((
-                        e.name().as_ref().eq_ignore_ascii_case("rbf"),
+                        is_rbf,
                         start,
                         reader.buffer_position() as usize,
+                        follows_acorn_build,
                     ));
                 }
                 depth += 1;
@@ -69,7 +78,7 @@ fn elements(text: &str, path: &Path) -> Result<(Element, Option<Element>)> {
                 depth = depth
                     .checked_sub(1)
                     .ok_or_else(|| bad("unexpected closing element"))?;
-                if let Some((is_rbf, begin, inner)) = active.take() {
+                if let Some((is_rbf, begin, inner, follows_acorn_build)) = active.take() {
                     let value = quick_xml::escape::unescape(text[inner..start].trim())
                         .map_err(|e| bad(&e.to_string()))?
                         .into_owned();
@@ -84,6 +93,7 @@ fn elements(text: &str, path: &Path) -> Result<(Element, Option<Element>)> {
                         range: begin..reader.buffer_position() as usize,
                         inner: inner..start,
                         value,
+                        follows_acorn_build,
                     });
                 }
             }
@@ -165,6 +175,27 @@ pub(crate) fn same_core_identity(left: &str, right: &str) -> bool {
             .collect::<String>()
     };
     normalize(left) == normalize(right)
+}
+
+const ACORN_MEDIA_CORES: [(&str, &str); 2] = [
+    ("AcornAtom", "AcornAtom_DualSDRAM"),
+    ("AcornElectron", "AcornElectron_DualSDRAM"),
+];
+
+/// An undated Acorn reference must resolve to the installed build before
+/// checking media support. A user-pinned dated reference stays fixed.
+pub(crate) fn undated_acorn_media_core(stem: &str) -> bool {
+    ACORN_MEDIA_CORES.iter().any(|(standard, dual)| {
+        stem.eq_ignore_ascii_case(standard) || stem.eq_ignore_ascii_case(dual)
+    })
+}
+
+fn acorn_media_family(stem: &str) -> Option<&'static str> {
+    ACORN_MEDIA_CORES.into_iter().find_map(|(standard, dual)| {
+        (crate::core_choices::nightly_matches(stem, standard)
+            || crate::core_choices::nightly_matches(stem, dual))
+        .then_some(standard)
+    })
 }
 
 pub(crate) fn core_present(root: &Path, rbf: &str) -> Result<bool> {
@@ -384,9 +415,8 @@ fn preserve_setname_attributes(old: &str, new: &str, path: &Path) -> Result<Stri
     Ok(result)
 }
 
-/// Adapt only verified variant-specific ROM selectors. NES RA uses F0 where
-/// Standard/Unstable use F1; Sharp MZ moved MZF from F1 to F2 on 20261015.
-/// Explicit other file actions, tape and disk slots remain untouched.
+/// Adapt verified variant-specific ROM slots and the legacy Atom VHD slot.
+/// Explicit secondary drives and all unrelated file actions stay untouched.
 fn core_file_slot_patches(
     text: &str,
     path: &Path,
@@ -397,14 +427,14 @@ fn core_file_slot_patches(
         .file_name()
         .and_then(|name| name.to_str())
         .unwrap_or("");
-    let (from, wanted, extensions): (&str, &str, &[&str]) =
+    let (kind, from, wanted, extensions): (&str, &str, &str, &[&str]) =
         if core.rbf.eq_ignore_ascii_case("_RA_Cores/Cores/NES") {
-            ("1", "0", &["nes", "fds", "nsf"])
+            ("f", "1", "0", &["nes", "fds", "nsf"])
         } else if source_rbf.eq_ignore_ascii_case("_RA_Cores/Cores/NES")
             && (same_core_identity(stem, "NES")
                 || crate::core_choices::nightly_matches(stem, "_Console/NES"))
         {
-            ("0", "1", &["nes", "fds", "nsf"])
+            ("f", "0", "1", &["nes", "fds", "nsf"])
         } else if same_core_identity(stem, "SharpMZ")
             || crate::core_choices::nightly_matches(stem, "_Computer/SharpMZ")
         {
@@ -415,11 +445,13 @@ fn core_file_slot_patches(
                     .and_then(|at| stem.get(at + 10..at + 18))
             });
             if date.is_some_and(|date| date >= "20261015") {
-                ("1", "2", &["mzf"])
+                ("f", "1", "2", &["mzf"])
             } else {
                 // Undated custom builds retain the original direct-load profile.
-                ("2", "1", &["mzf"])
+                ("f", "2", "1", &["mzf"])
             }
+        } else if acorn_media_family(stem) == Some("AcornAtom") {
+            ("s", "1", "0", &["vhd"])
         } else {
             return Ok(Vec::new());
         };
@@ -461,7 +493,7 @@ fn core_file_slot_patches(
                             })
                     });
                 if matches_media
-                    && get("type").is_some_and(|attribute| attribute.value.as_ref() == "f")
+                    && get("type").is_some_and(|attribute| attribute.value.as_ref() == kind)
                 {
                     if let Some(index) =
                         get("index").filter(|attribute| attribute.value.as_ref() == from)
@@ -496,7 +528,7 @@ pub(crate) fn apply_with_reference(
     core: &EffectiveCore,
     reference: &str,
 ) -> Result<String> {
-    check_tk2000_tape_build(text, path, core)?;
+    check_media_build(text, path, core)?;
     let (rbf, setname) = elements(text, path)?;
     let mut patches = vec![(
         rbf.inner.clone(),
@@ -520,6 +552,17 @@ pub(crate) fn apply_with_reference(
         result.replace_range(range, &replacement);
     }
     Ok(result)
+}
+
+/// Main ignores this optional attribute. Degauss uses it only on generated
+/// Acorn favourites that must name an exact file to avoid a native collision.
+pub(crate) fn follow_acorn_build(text: &mut String, path: &Path) -> Result<()> {
+    let (rbf, _) = elements(text, path)?;
+    text.insert_str(
+        rbf.inner.start - 1,
+        &format!(r#" {FOLLOW_ACORN_BUILD}="1""#),
+    );
+    Ok(())
 }
 
 /// Only known standard/RA references are eligible for conversion. Custom MGLs
@@ -547,11 +590,11 @@ fn recognized_family(
     system: &SystemConfig,
     game: Option<&Path>,
 ) -> bool {
-    let base = Path::new(&system.rbf)
+    let configured_stem = Path::new(&system.rbf)
         .file_name()
         .and_then(|s| s.to_str())
         .unwrap_or("");
-    let base = crate::systems::undated_core_stem(base);
+    let base = crate::systems::undated_core_stem(configured_stem);
     let identity = base;
     let rule_match = game
         .and_then(|game| system.rule_for(game))
@@ -567,7 +610,18 @@ fn recognized_family(
                 .unwrap_or("");
             same_core_identity(configured, actual)
         });
+    let generated_dated_acorn = rbf.follows_acorn_build
+        && undated_acorn_media_core(configured_stem)
+        && Path::new(&rbf.value)
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|actual| {
+                crate::systems::core_build_date(actual).is_some()
+                    && crate::systems::undated_core_stem(actual).eq_ignore_ascii_case(base)
+            })
+        && Path::new(&rbf.value).parent() == Path::new(&system.rbf).parent();
     let standard_match = (rbf.value.eq_ignore_ascii_case(&system.rbf)
+        || generated_dated_acorn
         || rule_match
         || crate::core_choices::is_unstable_reference(system, &rbf.value))
         && match (
@@ -588,7 +642,7 @@ fn recognized_family(
 /// Avoid generating a temporary shortcut when its effective core is unchanged.
 pub fn needs_conversion(path: &Path, core: &EffectiveCore) -> Result<bool> {
     let text = read_launcher(path)?;
-    check_tk2000_tape_build(&text, path, core)?;
+    check_media_build(&text, path, core)?;
     let (rbf, setname) = elements(&text, path)?;
     if !rbf.value.eq_ignore_ascii_case(&core.rbf) {
         return Ok(true);
@@ -603,24 +657,32 @@ pub fn needs_conversion(path: &Path, core: &EffectiveCore) -> Result<bool> {
     )
 }
 
-/// CT2 was added at F2 in TK2000 build 20261107. Older disk libraries keep
-/// working, but cannot silently hand a tape to a core without that selector.
-fn check_tk2000_tape_build(text: &str, path: &Path, core: &EffectiveCore) -> Result<()> {
+/// Check the selected build only for media added after a core's first release.
+/// The same check applies to direct launches and persistent favourites.
+fn check_media_build(text: &str, path: &Path, core: &EffectiveCore) -> Result<()> {
     let stem = Path::new(&core.rbf)
         .file_name()
         .and_then(|s| s.to_str())
         .unwrap_or("");
-    if !same_core_identity(stem, "TK2000")
-        && !crate::core_choices::nightly_matches(stem, "_Computer/TK2000")
+    let (name, requirements): (&str, &[(&str, &[&str])]) = if same_core_identity(stem, "TK2000")
+        || crate::core_choices::nightly_matches(stem, "_Computer/TK2000")
     {
-        return Ok(());
-    }
-    let date = crate::systems::core_build_date(stem).or_else(|| {
-        stem.to_ascii_lowercase()
-            .rfind("_unstable_")
-            .and_then(|at| stem.get(at + 10..at + 18))
-    });
-    if date.is_some_and(|date| date >= "20261107") {
+        ("TK2000", &[("20261107", &["ct2"])])
+    } else {
+        match acorn_media_family(stem) {
+            Some("AcornAtom") => ("Acorn Atom", &[("20261111", &["uef", "csw"])]),
+            Some("AcornElectron") => (
+                "Acorn Electron",
+                &[
+                    ("20220211", &["uef"]),
+                    ("20261111", &["cas", "rom", "adf", "adl"]),
+                ],
+            ),
+            _ => return Ok(()),
+        }
+    };
+    let too_old = |minimum| !crate::core_choices::nightly_meets_minimum(stem, Some(minimum));
+    if !requirements.iter().any(|&(minimum, _)| too_old(minimum)) {
         return Ok(());
     }
     let mut reader = Reader::from_str(text);
@@ -632,14 +694,48 @@ fn check_tk2000_tape_build(text: &str, path: &Path, core: &EffectiveCore) -> Res
             Event::Start(tag) | Event::Empty(tag)
                 if tag.name().as_ref().eq_ignore_ascii_case("file") =>
             {
+                let mut file = None;
+                let mut file_transfer = false;
+                let mut cartridge_slot = false;
                 for attr in tag.attributes() {
                     let attr = attr.map_err(|e| {
                         DegaussError::malformed("core launcher", path, e.to_string())
                     })?;
-                    if attr.key.as_ref().eq_ignore_ascii_case("path")
-                        && attr.value.as_ref().to_ascii_lowercase().ends_with(".ct2")
+                    let key = attr.key.as_ref();
+                    if key.eq_ignore_ascii_case("path") {
+                        file = Some(attr);
+                    } else if key.eq_ignore_ascii_case("type") {
+                        file_transfer = attr.value.eq_ignore_ascii_case("f");
+                    } else if key.eq_ignore_ascii_case("index") {
+                        cartridge_slot = attr
+                            .value
+                            .trim()
+                            .parse::<u8>()
+                            .ok()
+                            .is_some_and(|index| matches!(index, 3 | 4));
+                    }
+                }
+                let Some(file) = file else { continue };
+                let value = crate::favorites::main_path_value(&file, path, "core launcher")?;
+                let Some(extension) = Path::new(&value).extension().and_then(|ext| ext.to_str())
+                else {
+                    continue;
+                };
+                // Electron's .rom rule is for Plus 1 cartridges, not F0
+                // firmware in an explicit launcher for an older build.
+                if extension.eq_ignore_ascii_case("rom") && !(file_transfer && cartridge_slot) {
+                    continue;
+                }
+                for &(minimum, extensions) in requirements {
+                    if too_old(minimum)
+                        && extensions
+                            .iter()
+                            .any(|ext| ext.eq_ignore_ascii_case(extension))
                     {
-                        return Err(DegaussError::unsupported("TK2000 tape", "CT2 requires a dated TK2000 build from 20261107 or later. Update the core; existing disk images still work."));
+                        return Err(DegaussError::unsupported(
+                            "core media",
+                            format!(".{extension} requires a dated {name} build from {minimum} or later. Update the core."),
+                        ));
                     }
                 }
             }
@@ -1138,12 +1234,12 @@ extensions = ["nes", "mgl"]
                     setname_xml: None,
                 };
                 assert_eq!(
-                    check_tk2000_tape_build(tape, Path::new("tape.mgl"), &core).is_ok(),
+                    check_media_build(tape, Path::new("tape.mgl"), &core).is_ok(),
                     date >= "20261107",
                     "{}",
                     core.rbf
                 );
-                assert!(check_tk2000_tape_build(disk, Path::new("disk.mgl"), &core).is_ok());
+                assert!(check_media_build(disk, Path::new("disk.mgl"), &core).is_ok());
             }
         }
     }

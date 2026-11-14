@@ -151,6 +151,7 @@ Click the image to watch Degauss on YouTube.
   - [Why does a core appear in MiSTer's menu but not in Degauss?](#why-does-a-core-appear-in-misters-menu-but-not-in-degauss)
   - [How can I rebuild just one system instead of the whole library?](#how-can-i-rebuild-just-one-system-instead-of-the-whole-library)
   - [Can I put a system in a different Home folder?](#can-i-put-a-system-in-a-different-home-folder)
+  - [What is the difference between a collection and a personal folder?](#what-is-the-difference-between-a-collection-and-a-personal-folder)
   - [An Artwork Pack assigns the wrong picture to a game. How can I correct it?](#an-artwork-pack-assigns-the-wrong-picture-to-a-game-how-can-i-correct-it)
   - [What MiSTer hardware has Degauss been reported working on?](#what-mister-hardware-has-degauss-been-reported-working-on)
   - [Can an AI coding agent maintain my MiSTer after Update All?](#can-an-ai-coding-agent-maintain-my-mister-after-update-all)
@@ -315,8 +316,12 @@ Game Information, favourites and core choices remain available.
 
 **Actions → Save Collection** saves the current criteria under a name.
 **Saved Collections** opens, renames or deletes those saved searches without
-copying games. **More by Developer**, **More by Publisher** and **Same Genre**
-start a cross-system search using the selected game's existing metadata.
+copying games. To edit a collection, open it there or from a Home shortcut,
+change the search or filters, then choose **Actions → Update Collection**.
+Its name and Home shortcuts stay the same. Back without updating leaves the
+saved criteria unchanged, and **Save Collection** creates a separate collection.
+**More by Developer**, **More by Publisher** and **Same Genre** start a
+cross-system search using the selected game's existing metadata.
 Back returns to the previous query or originating browser location. Returning
 from a game restores the query and selection; a fresh start begins unfiltered.
 Explore Games is **Off** by default. Enable **Options → Library → Show Explore
@@ -1072,6 +1077,50 @@ The core still needs `boot0.rom`. For tapes, disable the disk interface and appl
 the reset, then use the machine's normal `LOADT` / `RUN` commands. Current builds
 can leave Disk Interface on Auto with drive 1 empty. See the
 [TK2000 instructions](https://github.com/MiSTer-devel/TK2000_MiSTer).
+
+**NEC PC-6001** (`games/PC6001`) indexes CAS/P6/P6T tapes, ROM/BIN/60
+cartridges, D88 disks and MGLs. Tapes use file slot 1, cartridges use file
+slot 2 and disks mount in Disk 1 (image slot 0). An explicit MGL can mount
+Disk 2 (image slot 1) on the two-drive build. **Tape auto-start** is a core
+option. Supply `boot.rom` and the additional `boot1.rom`, `boot2.rom` or
+`boot3.rom` for the other models. See the
+[PC-6001 instructions](https://github.com/MiSTer-devel/Distribution_MiSTer/blob/95539b6264968d1c69db03642a3289620222d37a/docs/PC6001/Readme.md)
+for ROM assembly, disk firmware and model-specific drive requirements.
+
+**Memotech MTX500/512** (`games/MTX512`) sends MTX/WAV tapes to **Insert Tape**
+(file slot 1) and mounts MFL/DSK images in SDX Disc A (image slot 1).
+Use an explicit MGL for Disc B (image slot 2). The writable **Save Tape**
+slot is separate. Supply `boot.rom` (OS) and `boot1.rom` (BASIC);
+`boot2.rom` is optional. See the
+[MTX guide](https://github.com/MiSTer-devel/Memotech_MiSTer/blob/9020c9b05d15f5216c08338983b2753e89b61340/docs/GUIDE.txt)
+for the SDX ROM, CP/M boot ROM and writable disc setup.
+
+**Acorn Atom** (`games/AcornAtom`) mounts VHDs in the primary SD slot
+(image slot 0). UEF/CSW tapes use file slot 1 with core builds from
+20261111. Press **F11** to start without AtoMMC, then follow the tape prompt.
+`boot0.rom` is optional firmware, not a game. See the
+[Atom tape instructions](https://github.com/MiSTer-devel/Distribution_MiSTer/blob/95539b6264968d1c69db03642a3289620222d37a/docs/AcornAtom/README.md#tape).
+
+**Acorn Electron** (`games/AcornElectron`) retains VHDs in image slot 0.
+UEF tapes use file slot 2 from build 20220211; CAS tapes use the same slot
+from 20261111. Select **File** tape input and type `*TAPE` then `CHAIN""`.
+Build 20261111 also adds ROM cartridges (file slot 3) and ADF/ADL Plus 3
+floppies (image slot 1). Enable **Plus 3**, apply the reset and save the
+core setting before launching a floppy. An explicit MGL can use the second
+cartridge socket (file slot 4) or floppy drive (image slot 2). The current
+core does not accept BIN cartridges through Main, despite listing them in
+its menu. See the
+[Electron instructions](https://github.com/MiSTer-devel/Distribution_MiSTer/blob/95539b6264968d1c69db03642a3289620222d37a/docs/AcornElectron/Readme.MD).
+
+If an existing Atom or Electron library still shows its old list after
+updating, use **Actions → Library → Rebuild This System List** there to pick
+up the new formats without reading the whole card.
+If regular and Dual SDRAM builds share a folder and MiSTer would pick the
+wrong build for an undated shortcut, a new Acorn favourite names the
+validated build explicitly. Degauss follows its installed replacement when
+you launch the favourite from within Degauss. MiSTer's native menu reads
+the exact filename and may need the favourite re-added after an update.
+Hand-written launchers that name a specific build keep that choice.
 
 Version 1.1.3 adds **Sharp X1** (`games/SharpX1`) and **Sony SMC-777**
 (`games/SonySMC777`). Both use drive A at image slot 0 and accept explicit MGLs
@@ -2846,6 +2895,19 @@ save those editor changes with **Save Changes**. Personal folders can contain
 other personal folders up to three levels. The original system remains in
 its standard category unless separately hidden. See [Personal Home](#personal-home)
 for all shortcut and editing controls.
+
+### What is the difference between a collection and a personal folder?
+
+**A collection is a saved search.** Its games are whatever currently matches
+the search and filters. In **Explore Games**, set the criteria and choose
+**Actions → Save Collection**. To edit it, open it, change the criteria, then
+choose **Actions → Update Collection**. Existing Home shortcuts still point
+to it. See [Explore Games and saved collections](#explore-games-and-saved-collections).
+
+**A personal folder holds shortcuts you pick by hand.** Highlight a game and
+choose **X Actions → Add to Home → New Personal Folder**. Name it, then add
+further games to the same folder through **Add to Home**. Neither option moves
+or copies your games. See [Personal Home](#personal-home).
 
 ### An Artwork Pack assigns the wrong picture to a game. How can I correct it?
 

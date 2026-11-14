@@ -348,11 +348,17 @@ name = "Atom"
 id = "AcornAtom"
 folders = ["AcornAtom"]
 rbf = "_Computer/AcornAtom"
-extensions = ["vhd", "mgl"]
+extensions = ["vhd", "uef", "csw", "mgl"]
 
 [[systems.launch]]
 extensions = ["vhd"]
 type = "s"
+index = 0
+delay = 1
+
+[[systems.launch]]
+extensions = ["uef", "csw"]
+type = "f"
 index = 1
 delay = 1
 
@@ -647,12 +653,30 @@ name = "Electron"
 id = "AcornElectron"
 folders = ["AcornElectron"]
 rbf = "_Computer/AcornElectron"
-extensions = ["vhd", "mgl"]
+extensions = ["vhd", "uef", "cas", "rom", "adf", "adl", "mgl"]
 
 [[systems.launch]]
 extensions = ["vhd"]
 type = "s"
 index = 0
+delay = 1
+
+[[systems.launch]]
+extensions = ["uef", "cas"]
+type = "f"
+index = 2
+delay = 1
+
+[[systems.launch]]
+extensions = ["rom"]
+type = "f"
+index = 3
+delay = 1
+
+[[systems.launch]]
+extensions = ["adf", "adl"]
+type = "s"
+index = 1
 delay = 1
 
 [[systems]]
@@ -2367,6 +2391,28 @@ index = 5
 delay = 1
 
 [[systems]]
+name = "NEC PC-6001"
+id = "PC6001"
+folders = ["PC6001"]
+rbf = "_Computer/PC6001"
+extensions = ["cas", "p6", "p6t", "rom", "bin", "60", "d88", "mgl"]
+[[systems.launch]]
+extensions = ["cas", "p6", "p6t"]
+type = "f"
+index = 1
+delay = 1
+[[systems.launch]]
+extensions = ["rom", "bin", "60"]
+type = "f"
+index = 2
+delay = 1
+[[systems.launch]]
+extensions = ["d88"]
+type = "s"
+index = 0
+delay = 1
+
+[[systems]]
 name = "NEC PC-8801"
 id = "PC88"
 folders = ["PC8801", "PC88"]
@@ -2898,6 +2944,23 @@ index = 6
 delay = 1
 
 # Delivered computer cores; support files remain excluded by normal browsing.
+[[systems]]
+name = "Memotech MTX500/512"
+id = "MTX512"
+folders = ["MTX512"]
+rbf = "_Computer/MTX512"
+extensions = ["mtx", "wav", "mfl", "dsk", "mgl"]
+[[systems.launch]]
+extensions = ["mtx", "wav"]
+type = "f"
+index = 1
+delay = 1
+[[systems.launch]]
+extensions = ["mfl", "dsk"]
+type = "s"
+index = 1
+delay = 1
+
 [[systems]]
 name = "Hitachi Basic Master Level 3 / MB-S1"
 id = "BasicMasterL3"
