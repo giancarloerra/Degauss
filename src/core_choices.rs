@@ -185,6 +185,30 @@ fn validate_native_choice(actual: &Path) -> Result<()> {
         .expect("Unstable file has a name")
         .as_encoded_bytes();
     let prefix = &selected[..selected.len() - 4];
+    if native_rbf_winner(directory, prefix)?.as_deref() != Some(selected) {
+        return Err(DegaussError::unsupported("selected core version", format!(
+            "MiSTer's filename lookup would not select {}; another matching filename shadows this build",
+            actual.display())));
+    }
+    Ok(())
+}
+
+/// Can a saved MGL keep the undated Acorn reference without selecting a
+/// different build from the one used for media validation?
+pub(crate) fn native_reference_selects(
+    root: &Path,
+    reference: &str,
+    selected: &str,
+) -> Result<bool> {
+    let reference = Path::new(reference);
+    let directory = root.join(reference.parent().unwrap_or(Path::new("")));
+    let basename = reference.file_name().unwrap_or_default().as_encoded_bytes();
+    let expected = core_stem(selected).as_bytes();
+    Ok(native_rbf_winner(&directory, basename)?
+        .is_some_and(|winner| &winner[..winner.len() - 4] == expected))
+}
+
+fn native_rbf_winner(directory: &Path, prefix: &[u8]) -> Result<Option<Vec<u8>>> {
     let mut winner: Option<Vec<u8>> = None;
     let entries = std::fs::read_dir(directory)
         .map_err(|error| DegaussError::io("selected core directory", directory, error))?;
@@ -214,12 +238,7 @@ fn validate_native_choice(actual: &Path) -> Result<()> {
             winner = Some(bytes.to_vec());
         }
     }
-    if winner.as_deref() != Some(selected) {
-        return Err(DegaussError::unsupported("selected core version", format!(
-            "MiSTer's filename lookup would not select {}; another matching filename shadows this build",
-            actual.display())));
-    }
-    Ok(())
+    Ok(winner)
 }
 
 /// N64 and Neo Geo Turbo can share their regular core's loose Main prefix.

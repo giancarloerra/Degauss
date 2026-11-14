@@ -1167,22 +1167,27 @@ pub fn favorite_mgl_with_selections(
     };
     let core = crate::core_choices::resolve(&family, menu_root, selected_version, ra_first)?;
     let mut reference = core.rbf.as_str();
-    // Resolve the exact regular build for the actual handoff, not in a
-    // durable favourite that must survive the next dated core replacement.
-    if (family.minimum_build.is_some()
+    let acorn = Path::new(&family.rbf)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(crate::core_variants::undated_acorn_media_core);
+    // Prefer an undated reference so a durable favourite survives core
+    // updates. For Acorn, only drop the date if native Main would select
+    // the same build used to validate the media.
+    if (acorn
+        || family.minimum_build.is_some()
         || Path::new(&family.rbf).file_name().is_some_and(|name| {
             name.eq_ignore_ascii_case("N64")
                 || name.eq_ignore_ascii_case("SharpMZ")
                 || name.eq_ignore_ascii_case("TK2000")
-                || name
-                    .to_str()
-                    .is_some_and(crate::core_variants::undated_acorn_media_core)
         }))
         && core
             .rbf
             .get(..family.rbf.len())
             .is_some_and(|prefix| prefix.eq_ignore_ascii_case(&family.rbf))
         && core.rbf.as_bytes().get(family.rbf.len()) == Some(&b'_')
+        && (!acorn
+            || crate::core_choices::native_reference_selects(menu_root, &family.rbf, &core.rbf)?)
     {
         reference = &family.rbf;
     }
@@ -1894,6 +1899,40 @@ mod tests {
                 assert!(from_favorite.mgl.contains("type=\"s\" index=\"0\""));
                 assert_eq!(std::fs::read_to_string(legacy).unwrap(), existing);
             }
+        }
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn acorn_standard_favorite_does_not_use_a_prefix_shadowed_by_dual_sdram() {
+        let root = std::env::temp_dir().join(format!(
+            "degauss-acorn-favorite-prefix-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(root.join("_Computer")).unwrap();
+        for (id, extension, slot) in [("AcornAtom", "uef", 1), ("AcornElectron", "cas", 2)] {
+            let games = root.join("games").join(id);
+            std::fs::create_dir_all(&games).unwrap();
+            let system = shipped_system(id, vec![games.clone()]);
+            let game = games.join(format!("Tape.{extension}"));
+            std::fs::write(&game, b"tape fixture").unwrap();
+            let standard = format!("_Computer/{id}_20261111");
+            let dual = format!("_Computer/{id}_DualSDRAM_20261110");
+            std::fs::write(root.join(format!("{standard}.rbf")), b"standard").unwrap();
+            let save = || {
+                favorite_mgl_with_preference(&system, &game, &root, false)
+                    .unwrap()
+                    .unwrap()
+            };
+            assert!(save().contains(&format!("<rbf>_Computer/{id}</rbf>")));
+
+            std::fs::write(root.join(format!("{dual}.rbf")), b"dual").unwrap();
+            let favorite = save();
+            assert!(
+                favorite.contains(&format!("<rbf>{standard}</rbf>")),
+                "{favorite}"
+            );
+            assert!(favorite.contains(&format!("type=\"f\" index=\"{slot}\"")));
         }
         std::fs::remove_dir_all(root).unwrap();
     }

@@ -1115,6 +1115,10 @@ its menu. See the
 If an existing Atom or Electron library still shows its old list after
 updating, use **Actions → Library → Rebuild This System List** there to pick
 up the new formats without reading the whole card.
+If regular and Dual SDRAM builds share a folder and MiSTer would pick the
+wrong build for an undated shortcut, a new Acorn favourite names the
+validated build explicitly. If that build is later removed, re-add the
+favourite to point it at the replacement.
 
 Version 1.1.3 adds **Sharp X1** (`games/SharpX1`) and **Sony SMC-777**
 (`games/SonySMC777`). Both use drive A at image slot 0 and accept explicit MGLs
