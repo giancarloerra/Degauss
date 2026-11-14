@@ -20,13 +20,16 @@ struct Element {
     range: Range<usize>,
     inner: Range<usize>,
     value: String,
+    follows_acorn_build: bool,
 }
+
+const FOLLOW_ACORN_BUILD: &str = "degauss-follow-core";
 
 fn elements(text: &str, path: &Path) -> Result<(Element, Option<Element>)> {
     let mut reader = Reader::from_str(text);
     let mut depth = 0usize;
     let mut root_seen = false;
-    let mut active: Option<(bool, usize, usize)> = None;
+    let mut active: Option<(bool, usize, usize, bool)> = None;
     let mut rbf = None;
     let mut setname = None;
     let bad = |message: &str| DegaussError::malformed("core launcher", path, message.to_string());
@@ -54,13 +57,19 @@ fn elements(text: &str, path: &Path) -> Result<(Element, Option<Element>)> {
                     if depth != 1 {
                         return Err(bad("core and setname must be root children"));
                     }
-                    for a in e.attributes() {
-                        a.map_err(|e| bad(&e.to_string()))?;
+                    let is_rbf = e.name().as_ref().eq_ignore_ascii_case("rbf");
+                    let mut follows_acorn_build = false;
+                    for attribute in e.attributes() {
+                        let attribute = attribute.map_err(|e| bad(&e.to_string()))?;
+                        if is_rbf && attribute.key.as_ref() == FOLLOW_ACORN_BUILD {
+                            follows_acorn_build = attribute.value.as_ref() == "1";
+                        }
                     }
                     active = Some((
-                        e.name().as_ref().eq_ignore_ascii_case("rbf"),
+                        is_rbf,
                         start,
                         reader.buffer_position() as usize,
+                        follows_acorn_build,
                     ));
                 }
                 depth += 1;
@@ -69,7 +78,7 @@ fn elements(text: &str, path: &Path) -> Result<(Element, Option<Element>)> {
                 depth = depth
                     .checked_sub(1)
                     .ok_or_else(|| bad("unexpected closing element"))?;
-                if let Some((is_rbf, begin, inner)) = active.take() {
+                if let Some((is_rbf, begin, inner, follows_acorn_build)) = active.take() {
                     let value = quick_xml::escape::unescape(text[inner..start].trim())
                         .map_err(|e| bad(&e.to_string()))?
                         .into_owned();
@@ -84,6 +93,7 @@ fn elements(text: &str, path: &Path) -> Result<(Element, Option<Element>)> {
                         range: begin..reader.buffer_position() as usize,
                         inner: inner..start,
                         value,
+                        follows_acorn_build,
                     });
                 }
             }
@@ -544,6 +554,17 @@ pub(crate) fn apply_with_reference(
     Ok(result)
 }
 
+/// Main ignores this optional attribute. Degauss uses it only on generated
+/// Acorn favourites that must name an exact file to avoid a native collision.
+pub(crate) fn follow_acorn_build(text: &mut String, path: &Path) -> Result<()> {
+    let (rbf, _) = elements(text, path)?;
+    text.insert_str(
+        rbf.inner.start - 1,
+        &format!(r#" {FOLLOW_ACORN_BUILD}="1""#),
+    );
+    Ok(())
+}
+
 /// Only known standard/RA references are eligible for conversion. Custom MGLs
 /// remain direct launches, including launchers for unrelated cores or sets.
 #[cfg(test)]
@@ -569,11 +590,11 @@ fn recognized_family(
     system: &SystemConfig,
     game: Option<&Path>,
 ) -> bool {
-    let base = Path::new(&system.rbf)
+    let configured_stem = Path::new(&system.rbf)
         .file_name()
         .and_then(|s| s.to_str())
         .unwrap_or("");
-    let base = crate::systems::undated_core_stem(base);
+    let base = crate::systems::undated_core_stem(configured_stem);
     let identity = base;
     let rule_match = game
         .and_then(|game| system.rule_for(game))
@@ -589,7 +610,18 @@ fn recognized_family(
                 .unwrap_or("");
             same_core_identity(configured, actual)
         });
+    let generated_dated_acorn = rbf.follows_acorn_build
+        && undated_acorn_media_core(configured_stem)
+        && Path::new(&rbf.value)
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|actual| {
+                crate::systems::core_build_date(actual).is_some()
+                    && crate::systems::undated_core_stem(actual).eq_ignore_ascii_case(base)
+            })
+        && Path::new(&rbf.value).parent() == Path::new(&system.rbf).parent();
     let standard_match = (rbf.value.eq_ignore_ascii_case(&system.rbf)
+        || generated_dated_acorn
         || rule_match
         || crate::core_choices::is_unstable_reference(system, &rbf.value))
         && match (

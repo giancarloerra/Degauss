@@ -1166,7 +1166,6 @@ pub fn favorite_mgl_with_selections(
         return Ok(None);
     };
     let core = crate::core_choices::resolve(&family, menu_root, selected_version, ra_first)?;
-    let mut reference = core.rbf.as_str();
     let acorn = Path::new(&family.rbf)
         .file_name()
         .and_then(|name| name.to_str())
@@ -1174,24 +1173,33 @@ pub fn favorite_mgl_with_selections(
     // Prefer an undated reference so a durable favourite survives core
     // updates. For Acorn, only drop the date if native Main would select
     // the same build used to validate the media.
-    if (acorn
+    let dated_standard = core
+        .rbf
+        .get(..family.rbf.len())
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case(&family.rbf))
+        && core.rbf.as_bytes().get(family.rbf.len()) == Some(&b'_');
+    let needs_exact_acorn = acorn
+        && dated_standard
+        && !crate::core_choices::native_reference_selects(menu_root, &family.rbf, &core.rbf)?;
+    let use_family_reference = (acorn
         || family.minimum_build.is_some()
         || Path::new(&family.rbf).file_name().is_some_and(|name| {
             name.eq_ignore_ascii_case("N64")
                 || name.eq_ignore_ascii_case("SharpMZ")
                 || name.eq_ignore_ascii_case("TK2000")
         }))
-        && core
-            .rbf
-            .get(..family.rbf.len())
-            .is_some_and(|prefix| prefix.eq_ignore_ascii_case(&family.rbf))
-        && core.rbf.as_bytes().get(family.rbf.len()) == Some(&b'_')
-        && (!acorn
-            || crate::core_choices::native_reference_selects(menu_root, &family.rbf, &core.rbf)?)
-    {
-        reference = &family.rbf;
+        && dated_standard
+        && !needs_exact_acorn;
+    let reference = if use_family_reference {
+        &family.rbf
+    } else {
+        &core.rbf
+    };
+    let mut text = crate::core_variants::apply_with_reference(&text, game, &core, reference)?;
+    if needs_exact_acorn {
+        crate::core_variants::follow_acorn_build(&mut text, game)?;
     }
-    crate::core_variants::apply_with_reference(&text, game, &core, reference).map(Some)
+    Ok(Some(text))
 }
 
 /// Work out how to start one entry.
@@ -1909,6 +1917,7 @@ mod tests {
             "degauss-acorn-favorite-prefix-{}",
             std::process::id()
         ));
+        let output = root.join("launch.mgl");
         std::fs::create_dir_all(root.join("_Computer")).unwrap();
         for (id, extension, slot) in [("AcornAtom", "uef", 1), ("AcornElectron", "cas", 2)] {
             let games = root.join("games").join(id);
@@ -1929,10 +1938,38 @@ mod tests {
             std::fs::write(root.join(format!("{dual}.rbf")), b"dual").unwrap();
             let favorite = save();
             assert!(
-                favorite.contains(&format!("<rbf>{standard}</rbf>")),
+                favorite.contains(&format!("<rbf degauss-follow-core=\"1\">{standard}</rbf>")),
                 "{favorite}"
             );
             assert!(favorite.contains(&format!("type=\"f\" index=\"{slot}\"")));
+            let generated = games.join("Saved favourite.mgl");
+            let pinned = games.join("User-pinned.mgl");
+            std::fs::write(&generated, &favorite).unwrap();
+            std::fs::write(
+                &pinned,
+                format!(
+                    "<mistergamedescription><rbf>{standard}</rbf><file type=\"f\" index=\"{slot}\" path=\"{}\"/></mistergamedescription>",
+                    game.display()
+                ),
+            )
+            .unwrap();
+
+            // Update All replaces the dated RBF. A generated favourite still
+            // follows that core, while an explicit MGL keeps its pinned name.
+            let replacement = format!("_Computer/{id}_20261113");
+            std::fs::remove_file(root.join(format!("{standard}.rbf"))).unwrap();
+            std::fs::write(root.join(format!("{replacement}.rbf")), b"new standard").unwrap();
+            let plan = plan_with_selections(&system, &generated, &output, &root, false, None, None)
+                .unwrap();
+            assert!(
+                plan.mgl.contains(&format!(">{replacement}</rbf>")),
+                "a generated favourite must follow the replacement: {plan:?}"
+            );
+            assert!(plan.mgl.contains(&format!("type=\"f\" index=\"{slot}\"")));
+            assert_eq!(std::fs::read_to_string(&generated).unwrap(), favorite);
+            let explicit =
+                plan_with_selections(&system, &pinned, &output, &root, false, None, None).unwrap();
+            assert!(explicit.mgl.is_empty() && explicit.command.contains(pinned.to_str().unwrap()));
         }
         std::fs::remove_dir_all(root).unwrap();
     }
