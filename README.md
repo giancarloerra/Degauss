@@ -151,6 +151,7 @@ Click the image to watch Degauss on YouTube.
   - [Why does a core appear in MiSTer's menu but not in Degauss?](#why-does-a-core-appear-in-misters-menu-but-not-in-degauss)
   - [How can I rebuild just one system instead of the whole library?](#how-can-i-rebuild-just-one-system-instead-of-the-whole-library)
   - [Can I put a system in a different Home folder?](#can-i-put-a-system-in-a-different-home-folder)
+  - [What is the difference between a collection and a personal folder?](#what-is-the-difference-between-a-collection-and-a-personal-folder)
   - [An Artwork Pack assigns the wrong picture to a game. How can I correct it?](#an-artwork-pack-assigns-the-wrong-picture-to-a-game-how-can-i-correct-it)
   - [What MiSTer hardware has Degauss been reported working on?](#what-mister-hardware-has-degauss-been-reported-working-on)
   - [Can an AI coding agent maintain my MiSTer after Update All?](#can-an-ai-coding-agent-maintain-my-mister-after-update-all)
@@ -2888,6 +2889,19 @@ save those editor changes with **Save Changes**. Personal folders can contain
 other personal folders up to three levels. The original system remains in
 its standard category unless separately hidden. See [Personal Home](#personal-home)
 for all shortcut and editing controls.
+
+### What is the difference between a collection and a personal folder?
+
+**A collection is a saved search.** Its games are whatever currently matches
+the search and filters. In **Explore Games**, set the criteria and choose
+**Actions → Save Collection**. To edit it, open it, change the criteria, then
+choose **Actions → Update Collection**. Existing Home shortcuts still point
+to it. See [Explore Games and saved collections](#explore-games-and-saved-collections).
+
+**A personal folder holds shortcuts you pick by hand.** Highlight a game and
+choose **X Actions → Add to Home → New Personal Folder**. Name it, then add
+further games to the same folder through **Add to Home**. Neither option moves
+or copies your games. See [Personal Home](#personal-home).
 
 ### An Artwork Pack assigns the wrong picture to a game. How can I correct it?
 
