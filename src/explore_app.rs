@@ -17,6 +17,7 @@ struct ExploreBrowser {
     pending_resume: Option<crate::state::State>,
     match_warning: Option<String>,
     pivots: Vec<(crate::explore::Query, usize)>,
+    collection_edits: Vec<crate::explore::CollectionEdit>,
     selection: usize,
     revision: u64,
 }
@@ -42,6 +43,7 @@ enum ExploreMenu {
 }
 
 const SAVE_COLLECTION: &str = "Save Collection";
+const UPDATE_COLLECTION: &str = "Update Collection";
 const OPEN_COLLECTION: &str = "Saved Collections";
 const EXPLORE_COVERAGE: &str = "Indexed Coverage";
 const MORE_DEVELOPER: &str = "More by Developer";
@@ -139,6 +141,7 @@ impl App {
 
     fn open_explore(&mut self, query: Option<crate::explore::Query>) {
         if !self.explore.active {
+            self.explore.collection_edits.clear();
             self.explore.origin = Some(ExploreOrigin {
                 browsing: self.browsing,
                 list: self.game_list.clone(),
@@ -174,6 +177,41 @@ impl App {
         self.resolve_view();
         self.filter_explore(true);
         self.start_explore();
+    }
+
+    fn remember_explore_pivot(&mut self) {
+        if self.explore.active {
+            self.explore
+                .pivots
+                .push((self.explore.query.clone(), self.game_list.selected()));
+        }
+    }
+
+    fn open_explore_collection(&mut self, id: String) {
+        let Some(collection) = self.settings.collections.get(&id) else {
+            self.message = Some("Collection no longer exists.".into());
+            self.dirty = true;
+            return;
+        };
+        let query = collection.query.clone();
+        self.remember_explore_pivot();
+        self.open_explore(Some(query.clone()));
+        self.explore
+            .collection_edits
+            .push(crate::explore::CollectionEdit {
+                depth: self.explore.pivots.len(),
+                id,
+                original_query: query,
+            });
+    }
+
+    fn explore_collection_edit(&self) -> Option<&crate::explore::CollectionEdit> {
+        // A related-game pivot is an independent search, not an edit of
+        // whichever collection was open before it.
+        self.explore
+            .collection_edits
+            .last()
+            .filter(|edit| edit.depth == self.explore.pivots.len())
     }
 
     fn indexed_library_request(&self, include_favorites: bool) -> crate::explore::Request {
@@ -265,6 +303,7 @@ impl App {
             if let Some(resume) = &saved.explore {
                 self.open_explore(Some(resume.query.clone()));
                 self.explore.pivots = resume.pivots.clone();
+                self.explore.collection_edits = resume.collection_edits.clone();
                 self.explore.restore_selection = Some((saved.selected_row.clone(), saved.selected));
                 if self.explore.job.is_none() {
                     self.restore_explore_selection();
@@ -376,6 +415,9 @@ impl App {
     }
 
     fn leave_explore(&mut self) {
+        if self.explore_collection_edit().is_some() {
+            self.explore.collection_edits.pop();
+        }
         if let Some((query, selected)) = self.explore.pivots.pop() {
             self.explore.query = query;
             self.explore.selection = selected;
@@ -389,6 +431,7 @@ impl App {
         }
         self.explore.selection = self.game_list.selected();
         self.explore.active = false;
+        self.explore.collection_edits.clear();
         if let Some(origin) = self.explore.origin.take() {
             self.browsing = origin.browsing;
             self.game_list = origin.list;
@@ -447,14 +490,18 @@ impl App {
     }
 
     fn explore_actions(&mut self) {
-        let mut actions = vec![
-            FILTER_GAMES.into(),
-            SEARCH.into(),
-            CLEAR_FILTERS.into(),
+        let mut actions = vec![FILTER_GAMES.into(), SEARCH.into(), CLEAR_FILTERS.into()];
+        if self
+            .explore_collection_edit()
+            .is_some_and(|edit| edit.original_query != self.explore.query)
+        {
+            actions.push(UPDATE_COLLECTION.into());
+        }
+        actions.extend([
             SAVE_COLLECTION.into(),
             OPEN_COLLECTION.into(),
             EXPLORE_COVERAGE.into(),
-        ];
+        ]);
         if !self.filter.is_empty() {
             actions.push(CLEAR_SEARCH.into());
         }
@@ -586,17 +633,7 @@ impl App {
                 }
             }
             ExploreMenu::Collection(id) => match choice.as_str() {
-                "Open" => {
-                    if let Some(collection) = self.settings.collections.get(&id) {
-                        let query = collection.query.clone();
-                        if self.explore.active {
-                            self.explore
-                                .pivots
-                                .push((self.explore.query.clone(), self.game_list.selected()));
-                        }
-                        self.open_explore(Some(query));
-                    }
-                }
+                "Open" => self.open_explore_collection(id),
                 "Rename" => {
                     if let Some(collection) = self.settings.collections.get(&id) {
                         self.open_name_keyboard(
@@ -624,6 +661,7 @@ impl App {
                 SAVE_COLLECTION => {
                     self.open_name_keyboard(NamePurpose::SaveCollection, String::new())
                 }
+                UPDATE_COLLECTION => self.update_explore_collection(),
                 OPEN_COLLECTION => self.explore_collections(),
                 EXPLORE_COVERAGE => {
                     self.screen = Screen::Browse;
@@ -653,6 +691,38 @@ impl App {
     fn explore_save_warning(&mut self, outcome: SaveOutcome) {
         if let SaveOutcome::InstalledWithWarning(warning) = outcome {
             self.message = Some(warning.to_string());
+        }
+    }
+
+    fn update_explore_collection(&mut self) {
+        let Some(edit) = self.explore_collection_edit() else {
+            return;
+        };
+        let mut settings = self.settings.clone();
+        let Some(collection) = settings.collections.get_mut(&edit.id) else {
+            self.message = Some("Collection no longer exists.".into());
+            return;
+        };
+        if collection.query != edit.original_query {
+            self.message = Some("This collection changed since it was opened. Reopen it before updating its filters.".into());
+            return;
+        }
+        collection.query.clone_from(&self.explore.query);
+        match settings.save(&self.settings_path) {
+            Ok(outcome) => {
+                self.settings = settings;
+                self.explore
+                    .collection_edits
+                    .last_mut()
+                    .expect("open collection")
+                    .original_query
+                    .clone_from(&self.explore.query);
+                self.context_view_changed = false;
+                self.explore_back();
+                self.message = Some("Collection updated.".into());
+                self.explore_save_warning(outcome);
+            }
+            Err(error) => self.message = Some(error.to_string()),
         }
     }
 
@@ -739,11 +809,7 @@ impl App {
             key: value.to_lowercase(),
             label: value,
         });
-        if self.explore.active {
-            self.explore
-                .pivots
-                .push((self.explore.query.clone(), self.game_list.selected()));
-        }
+        self.remember_explore_pivot();
         self.open_explore(Some(query));
     }
 

@@ -350,6 +350,7 @@ mod tests {
                 query: query.clone(),
                 origin: Some(Box::new(State::default())),
                 pivots: vec![(crate::explore::Query::default(), 3)],
+                collection_edits: Vec::new(),
             }),
             selected_row: Some("1941".into()),
             selected: 2,

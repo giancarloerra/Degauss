@@ -2,3 +2,4 @@
 support/ra-main/frontend.patch whitespace=-blank-at-eol,-space-before-tab
 support/ra-main/tls.patch whitespace=-blank-at-eol,-space-before-tab
 support/ra-main/controller.patch whitespace=-blank-at-eol,-space-before-tab
+support/ra-main/mgl-pages.patch whitespace=-blank-at-eol,-space-before-tab

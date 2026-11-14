@@ -71,7 +71,10 @@ The existing protocol already sends both words after any high-bit button input.
 The `mgl-pages.patch` matches normal Degauss Main's MGL submenu handling,
 selecting the page containing an enabled file or disk slot before the existing
 transfer path runs. This includes PCXT's PCjr cartridge slots; hidden or disabled
-selectors retain the normal missing-slot handling.
+selectors follow normal Main's handling. A visible but disabled match is
+skipped. Existing SNES and NES launchers that target the first loader with
+a different slot number continue to work without edits or a library rebuild.
+The first row must accept the requested media type.
 A separate `tls.patch` changes only the active HTTP transport and
 adds a real-curl host test. It removes certificate-verification bypass, requires
 HTTPS even for redirects, ignores curl startup configuration, and reports

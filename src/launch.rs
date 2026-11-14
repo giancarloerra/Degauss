@@ -1166,24 +1166,40 @@ pub fn favorite_mgl_with_selections(
         return Ok(None);
     };
     let core = crate::core_choices::resolve(&family, menu_root, selected_version, ra_first)?;
-    let mut reference = core.rbf.as_str();
-    // Resolve the exact regular build for the actual handoff, not in a
-    // durable favourite that must survive the next dated core replacement.
-    if (family.minimum_build.is_some()
+    let acorn = Path::new(&family.rbf)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(crate::core_variants::undated_acorn_media_core);
+    // Prefer an undated reference so a durable favourite survives core
+    // updates. For Acorn, only drop the date if native Main would select
+    // the same build used to validate the media.
+    let dated_standard = core
+        .rbf
+        .get(..family.rbf.len())
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case(&family.rbf))
+        && core.rbf.as_bytes().get(family.rbf.len()) == Some(&b'_');
+    let needs_exact_acorn = acorn
+        && dated_standard
+        && !crate::core_choices::native_reference_selects(menu_root, &family.rbf, &core.rbf)?;
+    let use_family_reference = (acorn
+        || family.minimum_build.is_some()
         || Path::new(&family.rbf).file_name().is_some_and(|name| {
             name.eq_ignore_ascii_case("N64")
                 || name.eq_ignore_ascii_case("SharpMZ")
                 || name.eq_ignore_ascii_case("TK2000")
         }))
-        && core
-            .rbf
-            .get(..family.rbf.len())
-            .is_some_and(|prefix| prefix.eq_ignore_ascii_case(&family.rbf))
-        && core.rbf.as_bytes().get(family.rbf.len()) == Some(&b'_')
-    {
-        reference = &family.rbf;
+        && dated_standard
+        && !needs_exact_acorn;
+    let reference = if use_family_reference {
+        &family.rbf
+    } else {
+        &core.rbf
+    };
+    let mut text = crate::core_variants::apply_with_reference(&text, game, &core, reference)?;
+    if needs_exact_acorn {
+        crate::core_variants::follow_acorn_build(&mut text, game)?;
     }
-    crate::core_variants::apply_with_reference(&text, game, &core, reference).map(Some)
+    Ok(Some(text))
 }
 
 /// Work out how to start one entry.
@@ -1667,6 +1683,293 @@ mod tests {
                 .contains("20261107"));
             }
             std::fs::remove_file(core).unwrap();
+        }
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn acorn_media_uses_the_selected_build_without_changing_existing_launchers() {
+        let root = std::env::temp_dir().join(format!("degauss-acorn-build-{}", std::process::id()));
+        std::fs::create_dir_all(root.join("_Computer")).unwrap();
+        let output = root.join("handoff.mgl");
+        for (id, dated_builds, media) in [
+            (
+                "AcornAtom",
+                ["20251001", "20261110", "20261111"],
+                &[
+                    ("vhd", "s", 0, None),
+                    ("uef", "f", 1, Some("20261111")),
+                    ("csw", "f", 1, Some("20261111")),
+                ][..],
+            ),
+            (
+                "AcornElectron",
+                ["20220114", "20220211", "20261111"],
+                &[
+                    ("vhd", "s", 0, None),
+                    ("uef", "f", 2, Some("20220211")),
+                    ("cas", "f", 2, Some("20261111")),
+                    ("adl", "s", 1, Some("20261111")),
+                    ("rom", "f", 3, Some("20261111")),
+                ][..],
+            ),
+        ] {
+            let games = root.join(format!("games/{id}"));
+            std::fs::create_dir_all(&games).unwrap();
+            let system = shipped_system(id, vec![games.clone()]);
+            let legacy = games.join("Existing MGL.mgl");
+            let legacy_index = usize::from(id == "AcornAtom");
+            let vhd = games.join("Disk.vhd");
+            std::fs::write(&vhd, b"disk fixture").unwrap();
+            if id == "AcornElectron" {
+                std::fs::write(games.join("boot.ROM"), b"firmware fixture").unwrap();
+                std::fs::write(games.join("Game.ROM"), b"cartridge fixture").unwrap();
+            }
+            let existing = format!(
+                "<mistergamedescription><rbf>_Computer/{id}</rbf><file delay=\"1\" type=\"s\" index=\"{legacy_index}\" path=\"{}\"/></mistergamedescription>",
+                vhd.display()
+            );
+            std::fs::write(&legacy, &existing).unwrap();
+            for date in dated_builds {
+                let reference = format!("_Computer/{id}_{date}");
+                let core = root.join(format!("{reference}.rbf"));
+                std::fs::write(&core, b"core fixture").unwrap();
+                let plan =
+                    plan_with_selections(&system, &legacy, &output, &root, false, None, None)
+                        .unwrap();
+                assert!(plan.mgl.contains("type=\"s\" index=\"0\""));
+                assert_eq!(std::fs::read_to_string(&legacy).unwrap(), existing);
+                if id == "AcornElectron" {
+                    let firmware = games.join("Firmware Setup.mgl");
+                    let text = existing.replace(
+                        "</mistergamedescription>",
+                        "<file delay=\"1\" type=\"f\" index=\"0\" path=\"boot.ROM\"/></mistergamedescription>",
+                    );
+                    std::fs::write(&firmware, &text).unwrap();
+                    let plan =
+                        plan_with_selections(&system, &firmware, &output, &root, false, None, None)
+                            .unwrap();
+                    assert!(plan.mgl.contains("type=\"f\" index=\"0\""));
+                    assert_eq!(std::fs::read_to_string(&firmware).unwrap(), text);
+
+                    let cartridge = games.join("Second Cartridge.mgl");
+                    std::fs::write(
+                        &cartridge,
+                        text.replace("index=\"0\" path=\"boot.ROM", "index=\"4\" path=\"Game.ROM"),
+                    )
+                    .unwrap();
+                    let plan = plan_with_selections(
+                        &system, &cartridge, &output, &root, false, None, None,
+                    );
+                    if date < "20261111" {
+                        assert!(plan.unwrap_err().to_string().contains("20261111"));
+                    } else {
+                        assert!(plan.unwrap().mgl.contains("type=\"f\" index=\"4\""));
+                    }
+                }
+                for &(extension, kind, index, minimum) in media {
+                    let game = games.join(format!("Test.{}", extension.to_ascii_uppercase()));
+                    std::fs::write(&game, b"media fixture").unwrap();
+                    let plan =
+                        plan_with_selections(&system, &game, &output, &root, false, None, None);
+                    let favorite =
+                        favorite_mgl_with_selections(&system, &game, &root, false, None, None);
+                    if let Some(minimum) = minimum.filter(|minimum| date < *minimum) {
+                        assert!(plan.unwrap_err().to_string().contains(minimum));
+                        assert!(favorite.unwrap_err().to_string().contains(minimum));
+                        continue;
+                    }
+                    let slot = format!("type=\"{kind}\" index=\"{index}\"");
+                    let mgl = plan.unwrap().mgl;
+                    assert!(mgl.contains(&slot), "{id}/{date}: {mgl}");
+                    assert!(mgl.contains(&format!("<rbf>{reference}</rbf>")));
+                    let favorite = favorite.unwrap().unwrap();
+                    assert!(
+                        favorite.contains(&slot)
+                            && favorite.contains(&format!("<rbf>_Computer/{id}</rbf>"))
+                    );
+                }
+                std::fs::remove_file(core).unwrap();
+            }
+
+            // A fully dated, explicit MGL is passed to Main as-is, including
+            // secondary media and setup elements the catalogue does not own.
+            let reference = format!("_Computer/{id}_{}", dated_builds[2]);
+            std::fs::write(root.join(format!("{reference}.rbf")), b"core fixture").unwrap();
+            let setup = existing.replace(&format!("_Computer/{id}"), &reference);
+            std::fs::write(&legacy, &setup).unwrap();
+            let plan =
+                plan_with_selections(&system, &legacy, &output, &root, false, None, None).unwrap();
+            assert!(plan.mgl.is_empty() && plan.command.contains(legacy.to_str().unwrap()));
+            assert_eq!(std::fs::read_to_string(&legacy).unwrap(), setup);
+        }
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn acorn_dual_sdram_uses_the_selected_build_and_preserves_the_favorite_reference() {
+        let root = std::env::temp_dir().join(format!("degauss-acorn-dual-{}", std::process::id()));
+        let cores = root.join("_Computer");
+        let nightlies = root.join("_Unstable");
+        std::fs::create_dir_all(&cores).unwrap();
+        std::fs::create_dir_all(&nightlies).unwrap();
+        let table = crate::systems::load_table(Path::new("assets/systems.toml")).unwrap();
+        let output = root.join("launch.mgl");
+
+        for (id, extension, slot) in [("AcornAtom", "uef", 1), ("AcornElectron", "cas", 2)] {
+            let games = root.join("games").join(id);
+            std::fs::create_dir_all(&games).unwrap();
+            let game = games.join(format!("Tape.{extension}"));
+            std::fs::write(&game, b"tape fixture").unwrap();
+            let reference = format!("_Computer/{id}_DualSDRAM");
+            let profile = format!("dual-sdram:{reference}");
+            let old = root.join(format!("{reference}_20261110.rbf"));
+            let new = root.join(format!("{reference}_20261111.rbf"));
+            // A current single-SDRAM core must not mask an old selected dual build.
+            std::fs::write(cores.join(format!("{id}_20261113.rbf")), b"fixture").unwrap();
+            std::fs::write(&old, b"fixture").unwrap();
+            let old_nightly =
+                format!("_Unstable/{id}_DualSDRAM_unstable_20261110_1234_a1b2c3d_DB9.rbf");
+            std::fs::write(root.join(&old_nightly), b"fixture").unwrap();
+            let system = crate::systems::discover_checked(
+                &table,
+                &[root.join("games")],
+                None,
+                &crate::systems::CoreIndex::read(&root),
+            )
+            .unwrap()
+            .into_iter()
+            .find(|system| system.def.id == id)
+            .unwrap()
+            .to_config();
+            for version in [None, Some(old_nightly.as_str())] {
+                let issue = plan_with_selections(
+                    &system,
+                    &game,
+                    &output,
+                    &root,
+                    false,
+                    version,
+                    Some(&profile),
+                )
+                .unwrap_err();
+                assert!(issue.to_string().contains("20261111"), "{issue}");
+            }
+            std::fs::remove_file(old).unwrap();
+            std::fs::write(new, b"fixture").unwrap();
+            let direct = plan_with_selections(
+                &system,
+                &game,
+                &output,
+                &root,
+                false,
+                Some("standard"),
+                Some(&profile),
+            )
+            .unwrap();
+            assert!(direct
+                .mgl
+                .contains(&format!("<rbf>{reference}_20261111</rbf>")));
+            assert!(direct.mgl.contains(&format!("type=\"f\" index=\"{slot}\"")));
+            let favorite = favorite_mgl_with_selections(
+                &system,
+                &game,
+                &root,
+                false,
+                Some("standard"),
+                Some(&profile),
+            )
+            .unwrap()
+            .unwrap();
+            assert!(favorite.contains(&format!("<rbf>{reference}</rbf>")));
+            if id == "AcornAtom" {
+                let legacy = games.join("Old Atom favourite.mgl");
+                let disk = games.join("Disk.vhd");
+                std::fs::write(&disk, b"disk fixture").unwrap();
+                let existing = format!(
+                    "<mistergamedescription><rbf>{reference}</rbf><file type=\"s\" index=\"1\" path=\"{}\"/></mistergamedescription>",
+                    disk.display()
+                );
+                std::fs::write(&legacy, &existing).unwrap();
+                let from_favorite = plan_with_selections(
+                    &system,
+                    &legacy,
+                    &output,
+                    &root,
+                    false,
+                    None,
+                    Some(&profile),
+                )
+                .unwrap();
+                assert!(from_favorite
+                    .mgl
+                    .contains(&format!("<rbf>{reference}_20261111</rbf>")));
+                assert!(from_favorite.mgl.contains("type=\"s\" index=\"0\""));
+                assert_eq!(std::fs::read_to_string(legacy).unwrap(), existing);
+            }
+        }
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn acorn_standard_favorite_does_not_use_a_prefix_shadowed_by_dual_sdram() {
+        let root = std::env::temp_dir().join(format!(
+            "degauss-acorn-favorite-prefix-{}",
+            std::process::id()
+        ));
+        let output = root.join("launch.mgl");
+        std::fs::create_dir_all(root.join("_Computer")).unwrap();
+        for (id, extension, slot) in [("AcornAtom", "uef", 1), ("AcornElectron", "cas", 2)] {
+            let games = root.join("games").join(id);
+            std::fs::create_dir_all(&games).unwrap();
+            let system = shipped_system(id, vec![games.clone()]);
+            let game = games.join(format!("Tape.{extension}"));
+            std::fs::write(&game, b"tape fixture").unwrap();
+            let standard = format!("_Computer/{id}_20261111");
+            let dual = format!("_Computer/{id}_DualSDRAM_20261110");
+            std::fs::write(root.join(format!("{standard}.rbf")), b"standard").unwrap();
+            let save = || {
+                favorite_mgl_with_preference(&system, &game, &root, false)
+                    .unwrap()
+                    .unwrap()
+            };
+            assert!(save().contains(&format!("<rbf>_Computer/{id}</rbf>")));
+
+            std::fs::write(root.join(format!("{dual}.rbf")), b"dual").unwrap();
+            let favorite = save();
+            assert!(
+                favorite.contains(&format!("<rbf degauss-follow-core=\"1\">{standard}</rbf>")),
+                "{favorite}"
+            );
+            assert!(favorite.contains(&format!("type=\"f\" index=\"{slot}\"")));
+            let generated = games.join("Saved favourite.mgl");
+            let pinned = games.join("User-pinned.mgl");
+            std::fs::write(&generated, &favorite).unwrap();
+            std::fs::write(
+                &pinned,
+                format!(
+                    "<mistergamedescription><rbf>{standard}</rbf><file type=\"f\" index=\"{slot}\" path=\"{}\"/></mistergamedescription>",
+                    game.display()
+                ),
+            )
+            .unwrap();
+
+            // Update All replaces the dated RBF. A generated favourite still
+            // follows that core, while an explicit MGL keeps its pinned name.
+            let replacement = format!("_Computer/{id}_20261113");
+            std::fs::remove_file(root.join(format!("{standard}.rbf"))).unwrap();
+            std::fs::write(root.join(format!("{replacement}.rbf")), b"new standard").unwrap();
+            let plan = plan_with_selections(&system, &generated, &output, &root, false, None, None)
+                .unwrap();
+            assert!(
+                plan.mgl.contains(&format!(">{replacement}</rbf>")),
+                "a generated favourite must follow the replacement: {plan:?}"
+            );
+            assert!(plan.mgl.contains(&format!("type=\"f\" index=\"{slot}\"")));
+            assert_eq!(std::fs::read_to_string(&generated).unwrap(), favorite);
+            let explicit =
+                plan_with_selections(&system, &pinned, &output, &root, false, None, None).unwrap();
+            assert!(explicit.mgl.is_empty() && explicit.command.contains(pinned.to_str().unwrap()));
         }
         std::fs::remove_dir_all(root).unwrap();
     }

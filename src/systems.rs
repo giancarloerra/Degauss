@@ -2582,6 +2582,26 @@ extensions = ["md", "bin"]
             ("NeXT", "chd", "s", 3),
             ("NeXT", "vfd", "s", 4),
             ("NeXT", "mo", "s", 5),
+            ("PC6001", "cas", "f", 1),
+            ("PC6001", "p6", "f", 1),
+            ("PC6001", "p6t", "f", 1),
+            ("PC6001", "rom", "f", 2),
+            ("PC6001", "bin", "f", 2),
+            ("PC6001", "60", "f", 2),
+            ("PC6001", "d88", "s", 0),
+            ("MTX512", "mtx", "f", 1),
+            ("MTX512", "wav", "f", 1),
+            ("MTX512", "mfl", "s", 1),
+            ("MTX512", "dsk", "s", 1),
+            ("AcornAtom", "vhd", "s", 0),
+            ("AcornAtom", "uef", "f", 1),
+            ("AcornAtom", "csw", "f", 1),
+            ("AcornElectron", "vhd", "s", 0),
+            ("AcornElectron", "uef", "f", 2),
+            ("AcornElectron", "cas", "f", 2),
+            ("AcornElectron", "rom", "f", 3),
+            ("AcornElectron", "adf", "s", 1),
+            ("AcornElectron", "adl", "s", 1),
             ("PC88", "d88", "s", 0),
             ("PC88", "cmt", "s", 4),
             ("PC88", "t88", "s", 4),
@@ -2698,6 +2718,10 @@ extensions = ["md", "bin"]
         let table = load_table(Path::new("assets/systems.toml")).unwrap();
         let card = temp_dir("new-system-library-data");
         for (id, extension) in [
+            ("PC6001", "rom"),
+            ("MTX512", "mtx"),
+            ("AcornAtom", "uef"),
+            ("AcornElectron", "rom"),
             ("3B1", "vhd"),
             ("TK2000", "ct2"),
             ("Apple-III", "dsk"),
@@ -2727,6 +2751,7 @@ extensions = ["md", "bin"]
                 std::fs::write(folder.join("Ambiguous.img"), b"ambiguous media fixture").unwrap();
             }
             for filename in [
+                "boot.rom",
                 "boot0.rom",
                 "boot1.rom",
                 "boot2.rom",
@@ -2739,6 +2764,13 @@ extensions = ["md", "bin"]
                 "mrom.m37",
             ] {
                 std::fs::write(folder.join(filename), b"support fixture").unwrap();
+            }
+            if id == "AcornElectron" {
+                std::fs::write(
+                    folder.join("Unsupported.bin"),
+                    b"not a launchable cartridge",
+                )
+                .unwrap();
             }
             std::fs::write(folder.join("gamelist.xml"), format!("<gameList><game><path>Game.{extension}</path><name>Named Game</name><desc>Game description</desc><publisher>Publisher</publisher><image>./media/covers/game.jpg</image></game></gameList>")).unwrap();
             let found = FoundSystem {
@@ -2780,6 +2812,10 @@ extensions = ["md", "bin"]
         let table = load_table(Path::new("assets/systems.toml")).unwrap();
         let card = temp_dir("computer-multi-media-launchers");
         for (id, files) in [
+            ("PC6001", "<file delay=\"1\" type=\"s\" index=\"0\" path=\"A.d88\"/><file delay=\"1\" type=\"s\" index=\"1\" path=\"B.d88\"/>"),
+            ("MTX512", "<file delay=\"1\" type=\"s\" index=\"1\" path=\"A.mfl\"/><file delay=\"1\" type=\"s\" index=\"2\" path=\"B.mfl\"/>"),
+            ("AcornAtom", "<file delay=\"1\" type=\"s\" index=\"0\" path=\"Disk.vhd\"/><file delay=\"1\" type=\"f\" index=\"1\" path=\"Tape.uef\"/>"),
+            ("AcornElectron", "<file delay=\"1\" type=\"s\" index=\"2\" path=\"Disk.adl\"/><file delay=\"1\" type=\"f\" index=\"4\" path=\"Cartridge.rom\"/>"),
             ("3B1", "<file delay=\"1\" type=\"s\" index=\"0\" path=\"Disk.vhd\"/><file delay=\"1\" type=\"s\" index=\"1\" path=\"Floppy.img\"/>"),
             ("TK2000", "<file delay=\"1\" type=\"s\" index=\"0\" path=\"A.dsk\"/><file delay=\"1\" type=\"s\" index=\"1\" path=\"B.dsk\"/>"),
             ("BasicMasterL3", "<file delay=\"1\" type=\"s\" index=\"0\" path=\"A.d88\"/><file delay=\"1\" type=\"s\" index=\"1\" path=\"B.d88\"/><reset delay=\"1\" hold=\"1\"/>"),
@@ -2826,6 +2862,10 @@ extensions = ["md", "bin"]
         std::fs::create_dir_all(card.join("_Computer")).unwrap();
         std::fs::create_dir_all(card.join("_Console")).unwrap();
         for (id, date) in [
+            ("PC6001", "20261112"),
+            ("MTX512", "20261108"),
+            ("AcornAtom", "20261113"),
+            ("AcornElectron", "20261111"),
             ("BasicMasterL3", "20261104"),
             ("SharpMZ2500", "20261104"),
             ("IQ151", "20261028"),
@@ -2843,6 +2883,10 @@ extensions = ["md", "bin"]
         }
         let index = CoreIndex::read(&card);
         for id in [
+            "PC6001",
+            "MTX512",
+            "AcornAtom",
+            "AcornElectron",
             "BasicMasterL3",
             "SharpMZ2500",
             "IQ151",

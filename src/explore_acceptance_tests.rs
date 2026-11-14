@@ -249,6 +249,7 @@ pub(super) fn run(root: &Path, window: Rc<MinimalSoftwareWindow>) {
     assert!(app.explore.active);
     assert_eq!(app.browse_count(), 2);
     assert_eq!(app.explore_selected().unwrap().key(), selected);
+    collection_updates(&mut app, &id);
     app.leave_explore();
     app.open_explore(None);
     assert!(
@@ -325,4 +326,243 @@ pub(super) fn run(root: &Path, window: Rc<MinimalSoftwareWindow>) {
         .iter()
         .any(|(name, _)| name == crate::explore::NAME));
     app.ui.hide().unwrap();
+}
+
+fn collection_updates(app: &mut App, id: &str) {
+    fn choose(app: &mut App, label: &str) {
+        app.menu_list
+            .select(app.menu.iter().position(|row| row == label).unwrap());
+        app.handle(Action::Accept);
+    }
+
+    fn open(app: &mut App, name: &str) {
+        app.handle(Action::Context);
+        choose(app, OPEN_COLLECTION);
+        choose(app, name);
+        choose(app, "Open");
+        app.finish_background_work_for_headless();
+        assert_eq!(app.here_label(), name);
+    }
+
+    let initial = app.settings.collections[id].query.clone();
+    let unchanged_home = app.settings.home.clone();
+    let next = app.settings.next_collection;
+    open(app, "Renamed picks");
+    app.handle(Action::Context);
+    assert!(!app.menu.iter().any(|row| row == UPDATE_COLLECTION));
+    choose(app, FILTER_GAMES);
+    choose(app, "System");
+    choose(app, "NES");
+    app.handle(Action::Quit);
+    assert!(app.menu.iter().any(|row| row == UPDATE_COLLECTION));
+    choose(app, CLEAR_SEARCH);
+    app.handle(Action::Context);
+    assert_eq!(app.explore.query.title, "");
+    assert_eq!(app.explore.query.system.as_deref(), Some("NES"));
+    assert_eq!(app.settings.collections[id].query, initial);
+
+    let edited = app.explore.query.clone();
+    let settings_path = app.settings_path.clone();
+    app.settings_path = settings_path.parent().unwrap().into();
+    choose(app, UPDATE_COLLECTION);
+    assert!(app.message.is_some(), "a failed write must be visible");
+    assert_eq!(app.settings.collections[id].query, initial);
+    assert_eq!(
+        Settings::load(&settings_path).unwrap().collections[id].query,
+        initial
+    );
+    assert_eq!(
+        app.explore.query, edited,
+        "the draft remains available for retry"
+    );
+    app.settings_path = settings_path.clone();
+    app.handle(Action::Quit);
+    choose(app, UPDATE_COLLECTION);
+    assert_eq!(app.message.as_deref(), Some("Collection updated."));
+    assert_eq!(app.screen, Screen::Browse);
+    let persisted = Settings::load(&settings_path).unwrap();
+    assert_eq!(persisted.next_collection, next);
+    assert_eq!(persisted.collections.len(), 1);
+    assert_eq!(persisted.collections[id].name, "Renamed picks");
+    assert_eq!(persisted.collections[id].query, edited);
+    assert_eq!(persisted.home, unchanged_home);
+    app.handle(Action::Quit);
+
+    // A metadata pivot must not turn a related search into an update to
+    // the collection. Back restores the editable collection and its draft.
+    app.search_for("alpha");
+    let alpha_search = squashed("alpha");
+    app.handle(Action::Quit);
+    app.explore_pivot(MORE_DEVELOPER);
+    app.finish_background_work_for_headless();
+    app.handle(Action::Context);
+    assert!(!app.menu.iter().any(|row| row == UPDATE_COLLECTION));
+    app.handle(Action::Quit);
+    app.handle(Action::Quit);
+    assert_eq!(app.explore.query.title, alpha_search);
+    let resumed =
+        toml::from_str::<crate::state::State>(&toml::to_string(&app.position()).unwrap()).unwrap();
+    app.handle(Action::Quit);
+    app.handle(Action::Quit);
+    app.restore_position(&resumed);
+    app.finish_background_work_for_headless();
+    assert_eq!(app.here_label(), "Renamed picks");
+    assert_eq!(app.explore.query.title, alpha_search);
+    app.handle(Action::Context);
+    assert!(app.menu.iter().any(|row| row == UPDATE_COLLECTION));
+
+    // Save Collection still makes a copy while a collection is open.
+    choose(app, SAVE_COLLECTION);
+    assert!(app.name_keyboard_draft.is_empty());
+    app.name_keyboard_draft = "A separate search".into();
+    let save = name_keyboard::keys(app.name_keyboard_page, true)
+        .iter()
+        .position(|key| matches!(key, NameKey::Save))
+        .unwrap();
+    app.name_keyboard_list.select(save);
+    app.handle(Action::Accept);
+    let persisted = Settings::load(&settings_path).unwrap();
+    assert_eq!(persisted.collections.len(), 2);
+    assert_eq!(persisted.collections[id].query, edited);
+    let (other_id, copy) = persisted
+        .collections
+        .iter()
+        .find(|(key, _)| key.as_str() != id)
+        .unwrap();
+    assert_eq!(copy.name, "A separate search");
+    assert_eq!(copy.query.title, alpha_search);
+    assert_eq!(copy.query.system.as_deref(), Some("NES"));
+    app.handle(Action::Quit);
+    app.handle(Action::Quit);
+
+    open(app, "A separate search");
+    app.search_for("beta");
+    app.handle(Action::Quit);
+    app.handle(Action::Context);
+    assert!(app.menu.iter().any(|row| row == UPDATE_COLLECTION));
+    app.handle(Action::Quit);
+    app.handle(Action::Quit);
+    assert_eq!(app.here_label(), "Renamed picks");
+    assert_eq!(app.explore.query.title, alpha_search);
+    assert_eq!(app.settings.collections[other_id].query, copy.query);
+
+    // Web Access can update a saved query while native Browse is open.
+    // The native draft must not silently overwrite the newer criteria.
+    let web_query = crate::explore::Query {
+        title: "beta".into(),
+        ..edited.clone()
+    };
+    let revision = app.web_revision();
+    assert!(app
+        .web_command(WebCommand::CollectionSave {
+            revision,
+            id: Some(id.into()),
+            name: "Renamed picks".into(),
+            query: web_query.clone()
+        })
+        .is_ok());
+    app.handle(Action::Context);
+    choose(app, UPDATE_COLLECTION);
+    assert!(app.message.as_deref().unwrap().contains("Reopen it"));
+    assert_eq!(
+        Settings::load(&settings_path).unwrap().collections[id].query,
+        web_query
+    );
+    app.handle(Action::Quit);
+    app.handle(Action::Quit);
+    app.handle(Action::Quit);
+    assert_eq!(
+        app.explore.query.title, "beta",
+        "Back restores ordinary Explore"
+    );
+    app.handle(Action::Context);
+    assert!(!app.menu.iter().any(|row| row == UPDATE_COLLECTION));
+    app.handle(Action::Quit);
+
+    // Going back without an update must not change even the latest
+    // collection as stored by Web Access.
+    open(app, "Renamed picks");
+    assert_eq!(app.explore.query, web_query);
+    app.search_for("alpha");
+    app.handle(Action::Quit);
+    app.handle(Action::Quit);
+    assert_eq!(app.settings.collections[id].query, web_query);
+
+    // A launch from a collection pinned inside a personal folder needs to
+    // restore the edited query, the related-game pivot, and the Home shortcut.
+    app.handle(Action::Quit);
+    let folder = app
+        .settings
+        .home
+        .add(
+            crate::home::Entry {
+                name: "My games".into(),
+                target: crate::home::Target::Folder {
+                    children: Vec::new(),
+                },
+                image: None,
+            },
+            None,
+        )
+        .unwrap();
+    let shortcut = app
+        .settings
+        .home
+        .add(
+            crate::home::Entry {
+                name: "My picks".into(),
+                target: crate::home::Target::Collection {
+                    collection: id.into(),
+                },
+                image: None,
+            },
+            Some(&folder),
+        )
+        .unwrap();
+    let key = crate::home::entry_key(&shortcut);
+    app.restore_home(crate::home::Resume {
+        folder: Some(folder.clone()),
+        key: key.clone(),
+        anchor: None,
+    });
+    assert_eq!(app.selected_home_key(), Some(key.as_str()));
+    app.handle(Action::Accept);
+    app.finish_background_work_for_headless();
+    app.search_for("alpha");
+    app.handle(Action::Quit);
+    let draft = app.explore.query.clone();
+    assert_ne!(draft, web_query);
+    app.explore_pivot(MORE_DEVELOPER);
+    app.finish_background_work_for_headless();
+    assert_eq!(app.explore.pivots.len(), 1);
+    assert!(app.explore_collection_edit().is_none());
+    let related = app.explore.query.clone();
+    let selected = app.explore_selected().unwrap().key();
+    let saved: crate::state::State =
+        toml::from_str(&toml::to_string(&app.position()).unwrap()).unwrap();
+    let home = saved.home.clone().unwrap();
+    app.restore_home(home);
+    app.restore_position(&saved);
+    app.finish_background_work_for_headless();
+    assert!(
+        app.explore.active,
+        "a pinned collection must reopen after a game"
+    );
+    assert_eq!(app.explore.query, related);
+    assert_eq!(app.explore_selected().unwrap().key(), selected);
+    app.handle(Action::Quit);
+    assert_eq!(app.explore.query, draft);
+    assert_eq!(app.here_label(), "Renamed picks");
+    app.handle(Action::Context);
+    assert!(app.menu.iter().any(|row| row == UPDATE_COLLECTION));
+    app.handle(Action::Quit);
+    app.handle(Action::Quit);
+    assert!(!app.explore.active);
+    assert_eq!(app.home.folder.as_deref(), Some(folder.as_str()));
+    assert_eq!(app.selected_home_key(), Some(key.as_str()));
+    assert_eq!(
+        Settings::load(&settings_path).unwrap().collections[id].query,
+        web_query,
+        "the restored editor cannot save a draft implicitly"
+    );
 }

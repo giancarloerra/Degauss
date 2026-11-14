@@ -14,12 +14,22 @@ use crate::game_filter::{Criterion, Field};
 pub const NAME: &str = "Explore Games";
 pub const STATE_ID: &str = "__degauss_explore__";
 
+/// The collection and its original criteria at one level of Explore navigation.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CollectionEdit {
+    pub depth: usize,
+    pub id: String,
+    pub original_query: Query,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Resume {
     pub query: Query,
     pub origin: Option<Box<crate::state::State>>,
     #[serde(default)]
     pub pivots: Vec<(Query, usize)>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub collection_edits: Vec<CollectionEdit>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -1473,6 +1483,7 @@ mod tests {
             query: query.clone(),
             origin: None,
             pivots: vec![(query.clone(), 17)],
+            collection_edits: Vec::new(),
         };
         let text = toml::to_string(&resume).unwrap();
         let saved: Resume = toml::from_str(&text).unwrap();

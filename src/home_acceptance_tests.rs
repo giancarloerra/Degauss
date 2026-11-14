@@ -827,6 +827,67 @@ pub(super) fn run(root: &Path, window: Rc<MinimalSoftwareWindow>) {
     assert!(app.explore.active);
     assert_eq!(app.explore.query.title, "Example");
     assert_eq!(app.browse_count(), 1);
+    let home = app.settings.home.clone();
+    let version = app.settings.next_collection;
+    let no_match = "no matching game";
+    let saved_search = squashed(no_match);
+    app.search_for(no_match);
+    app.handle(Action::Quit);
+    let saved = app.position();
+    assert!(
+        saved.home.is_some(),
+        "game return carries the pinned Home origin"
+    );
+    let saved = toml::from_str::<crate::state::State>(&toml::to_string(&saved).unwrap()).unwrap();
+    app.handle(Action::Quit);
+    assert_eq!(app.settings.collections["example"].query.title, "Example");
+    app.restore_position(&saved);
+    app.finish_background_work_for_headless();
+    assert!(
+        !app.explore.active,
+        "game return still restores the originating Home shortcut"
+    );
+    assert_eq!(
+        app.selected_home_key(),
+        Some(entry_key(&collection).as_str())
+    );
+    app.handle(Action::Accept);
+    app.finish_background_work_for_headless();
+    assert_eq!(app.explore.query.title, "Example");
+    app.search_for(no_match);
+    app.handle(Action::Quit);
+    assert_eq!(app.explore.query.title, saved_search);
+    app.handle(Action::Context);
+    app.menu_list.select(
+        app.menu
+            .iter()
+            .position(|row| row == UPDATE_COLLECTION)
+            .unwrap(),
+    );
+    app.handle(Action::Accept);
+    assert_eq!(app.message.as_deref(), Some("Collection updated."));
+    app.handle(Action::Quit);
+    app.handle(Action::Quit);
+    assert_eq!(
+        app.selected_home_key(),
+        Some(entry_key(&collection).as_str())
+    );
+    assert_eq!(app.settings.home, home);
+    assert_eq!(app.settings.next_collection, version);
+    assert_eq!(
+        Settings::load(&app.settings_path).unwrap().collections["example"]
+            .query
+            .title,
+        saved_search
+    );
+    app.handle(Action::Accept);
+    app.finish_background_work_for_headless();
+    assert!(app.explore.active);
+    assert_eq!(app.explore.query.title, saved_search);
+    assert!(
+        app.explore.matches.is_empty(),
+        "the same pin now opens the edited query"
+    );
     app.handle(Action::Quit);
     assert_eq!(
         app.selected_home_key(),
