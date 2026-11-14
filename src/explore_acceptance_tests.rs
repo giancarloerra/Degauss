@@ -487,4 +487,82 @@ fn collection_updates(app: &mut App, id: &str) {
     app.handle(Action::Quit);
     app.handle(Action::Quit);
     assert_eq!(app.settings.collections[id].query, web_query);
+
+    // A launch from a collection pinned inside a personal folder needs to
+    // restore the edited query, the related-game pivot, and the Home shortcut.
+    app.handle(Action::Quit);
+    let folder = app
+        .settings
+        .home
+        .add(
+            crate::home::Entry {
+                name: "My games".into(),
+                target: crate::home::Target::Folder {
+                    children: Vec::new(),
+                },
+                image: None,
+            },
+            None,
+        )
+        .unwrap();
+    let shortcut = app
+        .settings
+        .home
+        .add(
+            crate::home::Entry {
+                name: "My picks".into(),
+                target: crate::home::Target::Collection {
+                    collection: id.into(),
+                },
+                image: None,
+            },
+            Some(&folder),
+        )
+        .unwrap();
+    let key = crate::home::entry_key(&shortcut);
+    app.restore_home(crate::home::Resume {
+        folder: Some(folder.clone()),
+        key: key.clone(),
+        anchor: None,
+    });
+    assert_eq!(app.selected_home_key(), Some(key.as_str()));
+    app.handle(Action::Accept);
+    app.finish_background_work_for_headless();
+    app.search_for("alpha");
+    app.handle(Action::Quit);
+    let draft = app.explore.query.clone();
+    assert_ne!(draft, web_query);
+    app.explore_pivot(MORE_DEVELOPER);
+    app.finish_background_work_for_headless();
+    assert_eq!(app.explore.pivots.len(), 1);
+    assert!(app.explore_collection_edit().is_none());
+    let related = app.explore.query.clone();
+    let selected = app.explore_selected().unwrap().key();
+    let saved: crate::state::State =
+        toml::from_str(&toml::to_string(&app.position()).unwrap()).unwrap();
+    let home = saved.home.clone().unwrap();
+    app.restore_home(home);
+    app.restore_position(&saved);
+    app.finish_background_work_for_headless();
+    assert!(
+        app.explore.active,
+        "a pinned collection must reopen after a game"
+    );
+    assert_eq!(app.explore.query, related);
+    assert_eq!(app.explore_selected().unwrap().key(), selected);
+    app.handle(Action::Quit);
+    assert_eq!(app.explore.query, draft);
+    assert_eq!(app.here_label(), "Renamed picks");
+    app.handle(Action::Context);
+    assert!(app.menu.iter().any(|row| row == UPDATE_COLLECTION));
+    app.handle(Action::Quit);
+    app.handle(Action::Quit);
+    assert!(!app.explore.active);
+    assert_eq!(app.home.folder.as_deref(), Some(folder.as_str()));
+    assert_eq!(app.selected_home_key(), Some(key.as_str()));
+    assert_eq!(
+        Settings::load(&settings_path).unwrap().collections[id].query,
+        web_query,
+        "the restored editor cannot save a draft implicitly"
+    );
 }

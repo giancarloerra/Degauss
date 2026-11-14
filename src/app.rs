@@ -24147,6 +24147,20 @@ impl App {
         }
         if let Some(resume) = &saved.home {
             self.restore_home(resume.clone());
+            // A collection pinned to Home has both a return destination and
+            // an Explore draft. After playing a result, reopen that draft
+            // over its original folder.
+            if saved.system == crate::explore::STATE_ID
+                && saved.explore.is_some()
+                && saved.selected_row.is_some()
+                && resume
+                    .anchor
+                    .as_ref()
+                    .is_some_and(|anchor| anchor.system == crate::explore::STATE_ID)
+            {
+                self.home.origin = Some(resume.clone());
+                self.explore.pending_resume = Some(saved.clone());
+            }
             return;
         }
         if saved.system == crate::explore::STATE_ID {

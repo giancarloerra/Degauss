@@ -1372,7 +1372,9 @@ impl App {
                                     Browsing::Games
                                 }
                     });
-                if at_entry {
+                // A related search inside a pinned collection goes back to
+                // that draft first, not straight to the Home shortcut.
+                if at_entry && (!self.explore.active || self.explore.pivots.is_empty()) {
                     self.restore_home(origin);
                     return Some(None);
                 }
