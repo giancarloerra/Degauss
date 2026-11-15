@@ -16,23 +16,23 @@ Degauss plays nice with the standard MiSTer setup, folders and scripts, instead 
 
 1. **Blazing-fast browsing** through large collections, with nothing left running while you play.
 2. **Your existing MiSTer library, as it is**, including SD, external storage and ZIP games that do not need unpacking.
-3. **Six built-in views**, with a different view for each system or folder if you want.
-4. **Layouts Designer** lets you choose a template, arrange list, artwork and information panels, and save your own named layouts.
-5. **Folder Options** save rotation, folder position and game-name display per library or Favourites folder, independently of global defaults.
-6. **Artwork and full game information** from existing files and artwork packs, with a global pack-type default and per-system choices, or Degauss's built-in scrapers.
-7. **Libretro Integration** adds an optional, account-free source for game information, screenshots, box art and title screens alongside ScreenScraper.
-8. **Themes** with an on-device editor, font choices and custom system images.
-9. **Home Editor** lets you reorder Home entries and choose which ones to show or hide.
-10. **Custom Folders & Collections** group games, systems and folders your way, keeping filtered searches as reusable collections, with names and custom images.
-11. **Made for CRTs and HDMI**, with smoother CRT artwork, screen-alignment controls and a rotatable interface for vertical displays.
-12. **Optional HDMI CRT effects** for the interface, including scanlines and shadow masks.
-13. **Games Explorer** optionally searches across your library, combines filters and follows metadata links, alongside shared favourites, Last Played and random picks.
-14. **Attract Mode** showcases your collection and lets you switch systems or launch the pictured game.
-15. **Expanded Core Updates** shows installed cores, available updates and What's New, with latest-first sorting and cached browsing while refreshing.
-16. **Core choice per system or game**, including installed RetroAchievements, Unstable and Dual SDRAM builds.
-17. **Startup and guest controls** offer optional last-game startup with cancellation and PIN-protected kiosk mode.
-18. **Fits into MiSTer**: configured controllers work straight away, with a controller tester, optional Degauss-only mappings and a five-second controller hold to return from games. Run installed scripts through MiSTer's native terminal or use Zaparoo Core launches.
-19. **Web Access** optionally brings your library, artwork, organisation, settings and launches to a phone or computer, with five independent browser views, HTTP or HTTPS, a password and a documented API.
+3. **Web Access** optionally brings your library, artwork, organisation, settings and launches to a phone or computer, with five independent browser views, HTTP or HTTPS, a password and a documented API.
+4. **Six built-in views**, with a different view for each system or folder if you want.
+5. **Layouts Designer** lets you choose a template, arrange list, artwork and information panels, and save your own named layouts.
+6. **Folder Options** save rotation, folder position and game-name display per library or Favourites folder, independently of global defaults.
+7. **Artwork and full game information** from existing files and artwork packs, with a global pack-type default and per-system choices, or Degauss's built-in scrapers.
+8. **Libretro Integration** adds an optional, account-free source for game information, screenshots, box art and title screens alongside ScreenScraper.
+9. **Themes** with an on-device editor, font choices and custom system images.
+10. **Home Editor** lets you reorder Home entries and choose which ones to show or hide.
+11. **Custom Folders & Collections** group games, systems and folders your way, keeping filtered searches as reusable collections, with names and custom images.
+12. **Made for CRTs and HDMI**, with smoother CRT artwork, screen-alignment controls and a rotatable interface for vertical displays.
+13. **Optional HDMI CRT effects** for the interface, including scanlines and shadow masks.
+14. **Games Explorer** optionally searches across your library, combines filters and follows metadata links, alongside shared favourites, Last Played and random picks.
+15. **Attract Mode** showcases your collection and lets you switch systems or launch the pictured game.
+16. **Expanded Core Updates** shows installed cores, available updates and What's New, with latest-first sorting and cached browsing while refreshing.
+17. **Core choice per system or game**, including installed RetroAchievements, Unstable and Dual SDRAM builds.
+18. **Startup and guest controls** offer optional last-game startup with cancellation and PIN-protected kiosk mode.
+19. **Fits into MiSTer**: configured controllers work straight away, with a controller tester, optional Degauss-only mappings and a five-second controller hold to return from games. Run installed scripts through MiSTer's native terminal or use Zaparoo Core launches.
 
 Source available, written in Rust and using Slint, and licensed for non-commercial use.
 
@@ -103,8 +103,8 @@ your own MiSTer.
 ## Watch Degauss in action
 
 <p align="center">
-  <a href="https://www.youtube.com/watch?v=VpQkgDZS5NE">
-    <img src="https://img.youtube.com/vi/VpQkgDZS5NE/maxresdefault.jpg"
+  <a href="https://www.youtube.com/watch?v=tCB7tVyOKbo">
+    <img src="https://img.youtube.com/vi/tCB7tVyOKbo/maxresdefault.jpg"
          alt="Degauss in motion" width="640">
   </a>
 </p>
