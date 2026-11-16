@@ -228,16 +228,6 @@ Native OSD controls, scripts, game controls, ordinary keyboard input and the con
 keyboard/controller return-to-Degauss shortcuts are unchanged. On-screen hints
 use the active controller's effective assignments, including non-face buttons.
 
-<p align="center">
-  <img src="docs/screenshots/1.1.2/01-controller-tester.png" alt="Live controller tester" width="720">
-</p>
-<p align="center"><em>Test the controller without changing its mapping.</em></p>
-
-<p align="center">
-  <img src="docs/screenshots/1.1.2/02-controller-mapping.png" alt="Degauss-only controller mapping editor" width="720">
-</p>
-<p align="center"><em>Optional Degauss controls, independent of game and native MiSTer mappings.</em></p>
-
 **Options → Shortcuts** can assign an optional one-second hold to A, B, X or Y.
 A short press keeps the button's normal action. An available hold runs once and
 does not also run the short action when released. If the assigned action is not
